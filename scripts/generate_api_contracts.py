@@ -285,8 +285,6 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
         GitMilestoneFork,
         # The capture fields every project write answers, alone: POST /api/git/capture.
         SaveCapture,
-        # A commit's pipeline, as GET /api/git/show/{sha} reads it.
-        PipelineGraph,
     ),
     "training": (
         TrainResponse,
@@ -357,6 +355,9 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
     ),
     # Carried by the node-data, explore, training, optimiser and output responses: shared.
     "execution-metrics": (ExecutionMetricsPayload,),
+    # A commit's pipeline (GET /api/git/show/{sha}) and the submodel actions' graphs: shared,
+    # since each node's config is its node type's model.
+    "pipeline-graph": (PipelineGraph,),
     "workbench": (
         WorkbenchStatusResponse,
         WorkbenchTablesResponse,
@@ -417,7 +418,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
 # Response groups of one model that other groups' responses carry. The frontend generator
 # compiles each once, in its own module; every other module checks only that such a field is an
 # object, and the client checks it through the shared module.
-SHARED_RESPONSE_GROUPS: tuple[str, ...] = ("execution-metrics",)
+SHARED_RESPONSE_GROUPS: tuple[str, ...] = ("execution-metrics", "pipeline-graph")
 
 
 class _BundleJsonSchema(GenerateJsonSchema):

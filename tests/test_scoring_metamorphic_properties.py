@@ -34,7 +34,7 @@ import polars as pl
 import pytest
 from hypothesis import example, find, given
 
-from haute.deploy._pruner import find_output_node, prune_for_deploy
+from haute.deploy._pruner import prune_for_deploy
 from haute.deploy._scorer import score_graph
 from haute.executor import _preview_cache, execute_graph
 from tests._project import use_project
@@ -91,6 +91,12 @@ ROW_INDEPENDENT_TRANSFORMS: tuple[RowIndependentTransform, ...] = (
 )
 
 
+OUTPUT_NODE_ID = "out"
+"""The scoring graph's last node, a Data Output passing its frame through: the relations
+compare frames, so its output is named rather than found (``find_output_node`` finds a
+Quote Response, whose answer is the document rendered from its frame)."""
+
+
 def _build_scoring_graph(parquet_path: Path, code: str):
     """Build a standard 3-node linear pipeline: apiInput -> polars -> dataOutput."""
     return _g(
@@ -101,7 +107,7 @@ def _build_scoring_graph(parquet_path: Path, code: str):
                     "data": {
                         "label": "src",
                         "nodeType": "apiInput",
-                        "config": {"path": str(parquet_path), "sourceType": "flat_file"},
+                        "config": {"path": str(parquet_path)},
                     },
                 },
                 {
@@ -113,11 +119,15 @@ def _build_scoring_graph(parquet_path: Path, code: str):
                     },
                 },
                 {
-                    "id": "out",
+                    "id": OUTPUT_NODE_ID,
                     "data": {
                         "label": "out",
                         "nodeType": "dataOutput",
-                        "config": {"output": True},
+                        "config": {
+                            "outputType": "file",
+                            "format": "parquet",
+                            "path": str(parquet_path.with_name("out.parquet")),
+                        },
                     },
                 },
             ],
@@ -222,7 +232,7 @@ def test_request_permutation_preserves_per_request_answers(
 
     for transform in ROW_INDEPENDENT_TRANSFORMS:
         graph = _build_scoring_graph(input_file, transform.code)
-        out_id = find_output_node(graph)
+        out_id = OUTPUT_NODE_ID
         pruned, _kept, _removed = prune_for_deploy(graph, out_id)
 
         unpermuted_res = score_graph(
@@ -272,7 +282,7 @@ def test_editor_and_scorer_agree_on_generated_rows(
     input_df.write_parquet(input_file)
 
     graph = _build_scoring_graph(input_file, transform.code)
-    out_id = find_output_node(graph)
+    out_id = OUTPUT_NODE_ID
     pruned, _kept, _removed = prune_for_deploy(graph, out_id)
 
     # 1. Editor path: execute_graph preview
@@ -317,7 +327,7 @@ def test_order_sensitive_operations_break_the_permutation_relation(
 
     order_sensitive_code = "df = src.with_columns(running=pl.col('x').cum_sum())"
     graph = _build_scoring_graph(input_file, order_sensitive_code)
-    out_id = find_output_node(graph)
+    out_id = OUTPUT_NODE_ID
     pruned, _kept, _removed = prune_for_deploy(graph, out_id)
 
     def _permutation_relation_fails(data: tuple[list[dict[str, Any]], list[int]]) -> bool:
@@ -390,7 +400,7 @@ def test_cold_and_warm_execution_agree_and_a_code_edit_is_never_served_stale(
     input_df.write_parquet(input_file)
 
     graph_initial = _build_scoring_graph(input_file, t_initial.code)
-    out_id = find_output_node(graph_initial)
+    out_id = OUTPUT_NODE_ID
 
     # Spy on the process-wide preview cache so a warm run is proven to be a
     # cache hit, not merely an equal recomputation. LRUCache uses __slots__,

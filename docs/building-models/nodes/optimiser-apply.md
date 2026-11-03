@@ -112,6 +112,33 @@ The node loads the latest version of `motor_pricing_optimiser` from the registry
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `sourceType` | `""` or `"file"` or `"run"` or `"registered"` | Where the optimiser result comes from; empty or absent when none is chosen yet. |
+    | `artifact_path` | text | For a file source, the saved optimiser result; for an MLflow source, its path in the run's artifacts. |
+    | `version_column` | text | The column the applied result's version is written to. |
+    | `optimised_value_column` | text | The column the chosen scenario value is written to. |
+    | `optimiser_mode` | `""` or `"online"` or `"ratebook"` | The mode of the applied result, when known. |
+    | `ratebook_input` | text | For a ratebook result, the connected input it is applied to, by its input name. |
+    | `registered_model` | text | For a registered source, the registered model's name. |
+    | `version` | text | For a registered source, the version applied, or `latest`; absent when `alias` is set. |
+    | `alias` | text | For a registered source, the alias whose version is applied; excludes `version`. |
+    | `experiment_id` | text | For a run source, the MLflow experiment's id. |
+    | `experiment_name` | text | For a run source, the experiment's name, shown when the panel reopens. |
+    | `run_id` | text | For a run source, the MLflow run holding the result. |
+    | `run_name` | text | For a run source, the run's name, shown when the panel reopens. |
+    | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is the local folder. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Optimisation](optimiser.md)  - run optimisation during development

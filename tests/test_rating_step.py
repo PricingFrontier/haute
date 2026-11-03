@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from haute.codegen import graph_to_code
-from haute.errors import ParseError
+from haute.errors import NodeConfigError, ParseError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.parser import parse_pipeline_source
@@ -140,7 +140,6 @@ class TestRatingStepExecutor:
         """Single-factor table: join on one column."""
         tables = [
             {
-                "name": "Age Factor",
                 "factors": ["age_band"],
                 "outputColumn": "age_factor",
                 "defaultValue": "1.0",
@@ -163,7 +162,6 @@ class TestRatingStepExecutor:
         # (tests/test_rating_miss_fail_loud.py).
         tables = [
             {
-                "name": "Age × Prop",
                 "factors": ["age_band", "prop_band"],
                 "outputColumn": "factor",
                 "defaultValue": None,
@@ -190,7 +188,6 @@ class TestRatingStepExecutor:
         """Three-factor table: join on three columns."""
         tables = [
             {
-                "name": "3-way",
                 "factors": ["a", "b", "c"],
                 "outputColumn": "val",
                 "defaultValue": "0.0",
@@ -215,14 +212,12 @@ class TestRatingStepExecutor:
         """Multiple tables in one node, each produces its own output column."""
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "f1",
                 "defaultValue": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
-                "name": "T2",
                 "factors": ["band"],
                 "outputColumn": "f2",
                 "defaultValue": "1.0",
@@ -248,7 +243,6 @@ class TestRatingStepExecutor:
         """Rows without a factor contract are malformed, not an empty draft."""
         tables = [
             {
-                "name": "bad",
                 "factors": [],
                 "outputColumn": "out",
                 "defaultValue": None,
@@ -260,16 +254,28 @@ class TestRatingStepExecutor:
             _build_node_fn(node)
 
     @pytest.mark.parametrize(
-        "table",
+        ("table", "setting", "shape_refuses"),
         [
-            {"factors": "band", "outputColumn": "out", "entries": []},
-            {"factors": ["band"], "outputColumn": "out", "entries": {}},
-            {"factors": [], "outputColumn": "out", "entries": [{"value": 1.0}]},
+            ({"factors": "band", "outputColumn": "out", "entries": []}, "tables[0].factors", True),
+            (
+                {"factors": ["band"], "outputColumn": "out", "entries": {}},
+                "tables[0].entries",
+                True,
+            ),
+            (
+                {"factors": [], "outputColumn": "out", "entries": [{"value": 1.0}]},
+                "tables[0].factors",
+                False,
+            ),
         ],
         ids=["non_list_factors", "non_list_entries", "empty_factors_with_entries"],
     )
-    def test_malformed_collections_generated_executor_parity(self, table: dict) -> None:
-        """Generated runtime and executor construction reject the same bad table shape."""
+    def test_malformed_collections_generated_executor_parity(
+        self, table: dict, setting: str, shape_refuses: bool
+    ) -> None:
+        """Generated runtime and executor construction reject the same bad table shape at
+        the same setting. Building the node holds it to its config model first, so a value
+        the model's shape refuses is refused in the model's words."""
         from haute._rating import apply_rating_step_from_config
 
         config = {"tables": [table]}
@@ -280,7 +286,11 @@ class TestRatingStepExecutor:
         with pytest.raises(ValueError) as executor_error:
             _build_node_fn(node)
 
-        assert str(executor_error.value) == str(generated_error.value)
+        assert setting in str(generated_error.value)
+        if shape_refuses:
+            assert f"Node 'malformed' (ratingStep) setting '{setting}'" in str(executor_error.value)
+        else:
+            assert str(executor_error.value) == str(generated_error.value)
 
     def test_incomplete_table_not_registered_for_combined_output(self):
         """F082: an incomplete table is a passthrough (no output column), so it
@@ -323,10 +333,9 @@ class TestRatingStepExecutor:
         config = {
             "tables": [
                 # Incomplete: empty entries -> passthrough, no output column.
-                {"name": "empty", "factors": ["b"], "outputColumn": "phantom", "entries": []},
+                {"factors": ["b"], "outputColumn": "phantom", "entries": []},
                 # Real table producing "factor".
                 {
-                    "name": "real",
                     "factors": ["b"],
                     "outputColumn": "factor",
                     "entries": [{"b": "A", "value": 2.0}],
@@ -356,9 +365,8 @@ class TestRatingStepExecutor:
 
         config = {
             "tables": [
-                {"name": "off", "factors": ["b"], "outputColumn": "", "entries": []},
+                {"factors": ["b"], "outputColumn": "", "entries": []},
                 {
-                    "name": "real",
                     "factors": ["b"],
                     "outputColumn": "factor",
                     "entries": [{"b": "A", "value": 2.0}],
@@ -383,14 +391,12 @@ class TestRatingStepExecutor:
         """Two tables combined via the given operation."""
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "f1",
                 "defaultValue": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
-                "name": "T2",
                 "factors": ["band"],
                 "outputColumn": "f2",
                 "defaultValue": "1.0",
@@ -417,14 +423,12 @@ class TestRatingStepExecutor:
         """Without combinedOutputs, no combination column is created."""
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "f1",
                 "defaultValue": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
-                "name": "T2",
                 "factors": ["band"],
                 "outputColumn": "f2",
                 "defaultValue": "1.0",
@@ -442,14 +446,12 @@ class TestRatingStepExecutor:
         """Explicit combinedOutputs=[] creates no combined output."""
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "f1",
                 "defaultValue": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
-                "name": "T2",
                 "factors": ["band"],
                 "outputColumn": "f2",
                 "defaultValue": "1.0",
@@ -467,7 +469,6 @@ class TestRatingStepExecutor:
         # PIN REVISION (3a.3): the miss on band 2 needs onMissing="neutral".
         tables = [
             {
-                "name": "T",
                 "factors": ["band"],
                 "outputColumn": "out",
                 "defaultValue": None,
@@ -486,14 +487,12 @@ class TestRatingStepExecutor:
         """New configs can produce several rating outputs from the same tables."""
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "f1",
                 "defaultValue": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
-                "name": "T2",
                 "factors": ["band"],
                 "outputColumn": "f2",
                 "defaultValue": "1.0",
@@ -536,7 +535,6 @@ class TestRatingStepExecutor:
         """User code can post-process columns created by the rating step."""
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "factor",
                 "defaultValue": "1.0",
@@ -563,7 +561,6 @@ class TestRatingStepExecutor:
             "bad_operation",
             [
                 {
-                    "name": "T",
                     "factors": ["band"],
                     "outputColumn": "factor",
                     "entries": [{"band": "A", "value": 2.0}],
@@ -571,7 +568,11 @@ class TestRatingStepExecutor:
             ],
             combined_outputs=[{"outputColumn": "premium", "operation": "divide", "baseValue": 100}],
         )
-        with pytest.raises(ValueError, match="Unsupported rating combine operation"):
+        with pytest.raises(
+            NodeConfigError,
+            match=r"setting 'combinedOutputs\[0\]\.operation': "
+            r"Input should be 'multiply', 'add', 'min' or 'max'",
+        ):
             _build_node_fn(node)
 
     def test_combined_outputs_missing_base_value_raises(self):
@@ -581,7 +582,9 @@ class TestRatingStepExecutor:
             [],
             combined_outputs=[{"outputColumn": "premium", "operation": "multiply"}],
         )
-        with pytest.raises(ValueError, match="requires baseValue"):
+        with pytest.raises(
+            NodeConfigError, match=r"setting 'combinedOutputs\[0\]\.baseValue': Field required"
+        ):
             _build_node_fn(node)
 
     def test_combined_outputs_boolean_base_value_raises(self):
@@ -593,13 +596,38 @@ class TestRatingStepExecutor:
                 {"outputColumn": "premium", "operation": "multiply", "baseValue": True}
             ],
         )
-        with pytest.raises(ValueError, match="requires baseValue"):
+        with pytest.raises(
+            NodeConfigError,
+            match=(
+                r"setting 'combinedOutputs\[0\]\.baseValue': Input should be a valid string, "
+                r"a valid integer or a valid number"
+            ),
+        ):
             _build_node_fn(node)
+
+    def test_a_combined_output_that_is_not_an_object_is_refused_by_position(self):
+        """The config model refuses a combined output that is not an object, at its position."""
+        node = _rating_node(
+            "malformed_combined_output",
+            [],
+            combined_outputs=[
+                {"outputColumn": "base", "operation": "multiply", "baseValue": 100},
+                "premium",
+            ],
+        )
+
+        with pytest.raises(NodeConfigError) as caught:
+            _build_node_fn(node)
+
+        assert caught.value.message == (
+            "Node 'malformed_combined_output' (ratingStep) setting 'combinedOutputs[1]': "
+            "Input should be a valid dictionary."
+        )
+        assert caught.value.setting == "combinedOutputs[1]"
 
     @pytest.mark.parametrize(
         ("combined_output", "message"),
         [
-            ("premium", "ratingStep combinedOutputs[1] must be an object"),
             (
                 {"outputColumn": "premium", "operation": "multiply", "baseValue": "abc"},
                 "ratingStep combinedOutputs[1].baseValue must be numeric",
@@ -609,7 +637,7 @@ class TestRatingStepExecutor:
                 "ratingStep combinedOutputs[1].baseValue must be finite",
             ),
         ],
-        ids=["not-an-object", "non-numeric-base", "non-finite-base"],
+        ids=["non-numeric-base", "non-finite-base"],
     )
     def test_a_malformed_combined_output_is_refused_by_position(self, combined_output, message):
         """A combined output that cannot price fails the build, naming its position."""
@@ -646,7 +674,6 @@ class TestRatingStepExecutor:
             "duplicate_output",
             [
                 {
-                    "name": "T",
                     "factors": ["band"],
                     "outputColumn": "premium",
                     "entries": [{"band": "A", "value": 2.0}],
@@ -676,7 +703,6 @@ class TestRatingStepParser:
             {
                 "tables": [
                     {
-                        "name": "T1",
                         "factors": ["age"],
                         "outputColumn": "af",
                         "defaultValue": 1.0,
@@ -856,7 +882,6 @@ class TestRatingStepCodegen:
     def test_codegen_rating_step(self):
         tables = [
             {
-                "name": "T1",
                 "factors": ["band"],
                 "outputColumn": "factor",
                 "defaultValue": 1.0,
@@ -878,7 +903,6 @@ class TestRatingStepCodegen:
 
         tables = [
             {
-                "name": "Age Factor",
                 "factors": ["age_band"],
                 "outputColumn": "age_factor",
                 "defaultValue": 1.0,
@@ -917,14 +941,12 @@ class TestRatingStepCodegen:
 
         tables = [
             {
-                "name": "T1",
                 "factors": ["b"],
                 "outputColumn": "f1",
                 "defaultValue": 1.0,
                 "entries": [{"b": "A", "value": 2.0}],
             },
             {
-                "name": "T2",
                 "factors": ["b"],
                 "outputColumn": "f2",
                 "defaultValue": 1.0,
@@ -965,7 +987,6 @@ class TestRatingStepCodegen:
 
         tables = [
             {
-                "name": "T1",
                 "factors": ["b"],
                 "outputColumn": "f1",
                 "entries": [{"b": "A", "value": 2.0}],
@@ -999,7 +1020,7 @@ class TestRatingStepCodegen:
 
         node = _rating_node(
             "rating",
-            [{"name": "T", "factors": ["b"], "outputColumn": "f", "entries": []}],
+            [{"factors": ["b"], "outputColumn": "f", "entries": []}],
             combined_outputs=[
                 {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
             ],
@@ -1024,7 +1045,6 @@ class TestRatingStepCodegen:
             "rating",
             [
                 {
-                    "name": "factor",
                     "factors": ["band"],
                     "outputColumn": "factor",
                     "defaultValue": "1.0",
@@ -1096,7 +1116,6 @@ class TestRatingStepCodegen:
             "rating",
             [
                 {
-                    "name": "Age Factor",
                     "factors": ["age_band"],
                     "outputColumn": "age_factor",
                     "defaultValue": "1.0",
@@ -1129,7 +1148,6 @@ class TestRatingStepCanonicalSidecarIntegration:
             "rating",
             [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type"],
                     "outputColumn": "vehicle_factor",
                     "entries": [
@@ -1191,7 +1209,6 @@ class TestRatingStepCanonicalSidecarIntegration:
             "rating",
             [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
                     "outputColumn": "vehicle_factor",
                     "entries": expected_entries,

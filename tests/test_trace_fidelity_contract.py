@@ -36,7 +36,6 @@ def test_rating_detail_separates_table_selection_from_post_code_output() -> None
         {
             "tables": [
                 {
-                    "name": "territory",
                     "factors": ["region"],
                     "entries": [{"region": "north", "value": 1.1}],
                     "outputColumn": "factor",
@@ -60,7 +59,6 @@ def test_rating_selection_uses_the_runtime_numeric_value_before_post_code() -> N
         {
             "tables": [
                 {
-                    "name": "territory",
                     "factors": ["region"],
                     "entries": [{"region": "north", "value": "1.10"}],
                     "outputColumn": "factor",

@@ -306,7 +306,6 @@ def _rating_step_config() -> st.SearchStrategy[dict[str, Any]]:
             "tables": st.just(
                 [
                     {
-                        "name": "T1",
                         "factors": ["age_band"],
                         "outputColumn": "age_factor",
                         "defaultValue": "1.0",
@@ -945,7 +944,6 @@ class TestEdgeCases:
                         config={
                             "tables": [
                                 {
-                                    "name": "age_table",
                                     "factors": ["age_band"],
                                     "outputColumn": "age_factor",
                                     "defaultValue": "1.0",
@@ -1052,7 +1050,6 @@ class TestEdgeCases:
                         config={
                             "tables": [
                                 {
-                                    "name": "T1",
                                     "factors": ["age_band"],
                                     "outputColumn": "factor",
                                     "defaultValue": "1.0",
@@ -1370,7 +1367,6 @@ class TestEdgeCases:
                         config={
                             "tables": [
                                 {
-                                    "name": "T1",
                                     "factors": ["region"],
                                     "outputColumn": "region_factor",
                                     "defaultValue": "1.0",
@@ -1564,7 +1560,6 @@ class TestExcludedTypeRoundTrips:
                         config={
                             "tables": [
                                 {
-                                    "name": "T1",
                                     "factors": ["region"],
                                     "outputColumn": "region_factor",
                                     "defaultValue": "1.0",

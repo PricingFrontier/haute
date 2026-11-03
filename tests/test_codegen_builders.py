@@ -68,6 +68,14 @@ def _run_generated(code: str, *inputs: object, directory: Path) -> object:
     return node(*inputs)
 
 
+def _save_sidecar(node, directory: Path) -> None:
+    """Write *node*'s sidecar where its saved module reads it, as a save does."""
+    for rel_path, content in collect_node_configs(_g({"nodes": [node.model_dump()]})).items():
+        path = directory / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
 def _collect(frame: object) -> pl.DataFrame:
     """Collect a LazyFrame; pass a DataFrame through."""
     if isinstance(frame, pl.LazyFrame):
@@ -1551,6 +1559,8 @@ class TestGenDataOutput:
         assert ".write_" not in code
         _compile_node_code(code)
 
+        # A standalone run reads a Data Output's sidecar only to check it.
+        _save_sidecar(node, tmp_path)
         scored = pl.LazyFrame({"premium": [1.0]})
         assert _run_generated(code, scored, directory=tmp_path) is scored
         assert not (tmp_path / "output").exists()
@@ -1598,6 +1608,7 @@ class TestGenDataOutput:
         code = _node_to_code(node, source_names=["input_df"])
         assert "def SinkNode(input_df): ...\n" in code
 
+        _save_sidecar(node, tmp_path)
         input_df = pl.LazyFrame({"x": [1]})
         assert _run_generated(code, input_df, directory=tmp_path) is input_df
 
@@ -1609,5 +1620,6 @@ class TestGenDataOutput:
         assert "def MultiSink(a, b, c): ...\n" in code
         _compile_node_code(code)
 
+        _save_sidecar(node, tmp_path)
         a, b, c = (pl.LazyFrame({"x": [value]}) for value in (1, 2, 3))
         assert _run_generated(code, a, b, c, directory=tmp_path) is a

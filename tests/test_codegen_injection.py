@@ -258,7 +258,7 @@ class TestTripleQuoteInjection:
             ),
             (
                 "ratingStep",
-                {"tables": [{"name": "T", "factors": ["x"], "outputColumn": "f", "entries": []}]},
+                {"tables": [{"factors": ["x"], "outputColumn": "f", "entries": []}]},
             ),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
             ("output", make_output_config(["a"])),

@@ -136,6 +136,7 @@ def test_join_rename_projection_matches_lazy_execution(tmp_path: Path, node_type
         subject.data.nodeType = node_type
         subject.data.config.pop("on")
         subject.data.config.pop("how")
+        subject.data.config.pop("maintainOrder")
         subject.data.config["code"] = "df = source.join(lookup, on='_id')"
     eager = execute_graph(
         graph,

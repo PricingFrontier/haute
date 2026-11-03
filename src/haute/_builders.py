@@ -23,9 +23,9 @@ import polars as pl
 import haute.projection as projection
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._config_validation import (
-    reject_removed_config_keys,
     resolve_exact_input_index,
     resolve_optimiser_data_input,
+    validate_node_config,
 )
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
@@ -237,26 +237,19 @@ class SourceWithCode:
 
     Calling it does both. A write of the node's whole output can instead keep the
     scan it opened and apply the code a slice of it at a time (a write recipe),
-    as a Transform's input is sliced. ``open_scan`` returns ``None`` for a source
-    with nothing to open yet, whose output is an empty frame.
+    as a Transform's input is sliced.
     """
 
-    open_scan: Callable[[], pl.LazyFrame | None]
+    open_scan: Callable[[], pl.LazyFrame]
     apply_code: Callable[[pl.LazyFrame], _Frame]
 
-    def opened(self) -> tuple[pl.LazyFrame | None, _Frame]:
+    def opened(self) -> tuple[pl.LazyFrame, _Frame]:
         """The scan this call opened and the node's output built from it."""
         scan = self.open_scan()
-        if scan is None:
-            return None, pl.LazyFrame()
         return scan, self.apply_code(scan)
 
     def __call__(self) -> _Frame:
         return self.opened()[1]
-
-
-def _allow_empty_source_path(profile: str | None) -> bool:
-    return profile in {None, ExecutionProfile.PREVIEW_EAGER.value}
 
 
 # ---------------------------------------------------------------------------
@@ -595,13 +588,9 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         _node_id: str = ctx.node.id,
         _schema_only: bool = ctx.schema_only,
-    ) -> pl.LazyFrame | None:
+    ) -> pl.LazyFrame:
         from haute._input_providers import resolve_data_input
 
-        if not _config.get("inputType") and _allow_empty_source_path(_profile):
-            # An unsaved, freshly-dropped editor node may preview empty. Strict
-            # persisted validation still rejects this shape on save.
-            return None
         return project_source_scan(
             resolve_data_input(
                 _config,
@@ -625,8 +614,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
 
     def data_input_fn() -> _Frame:
-        scan = open_scan()
-        return pl.LazyFrame() if scan is None else scan
+        return open_scan()
 
     return ctx.func_name, data_input_fn, True
 
@@ -926,14 +914,16 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
 )
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
+    # The config model's check, first: a run leaves it to this builder
+    # (``NodeConfigModel.builder_checks``) rather than normalise the tables twice.
+    tables = normalise_rating_tables(config)
+    combined_outputs = normalise_combined_outputs(config)
     problem = stepped_code_problem(
         config, NodeType.RATING_STEP, step_input_names(NodeType.RATING_STEP, [])
     )
     if problem is not None:
         # Incomplete post-rating steps must not rate the frame and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
-    tables = normalise_rating_tables(config)
-    combined_outputs = normalise_combined_outputs(config)
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
@@ -1083,14 +1073,10 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
     # node reads nothing from its input and produces no new columns.
     # Only once a source is configured do the referenced columns become
     # artifact-driven and therefore opaque.
-    source_type = config.get("sourceType", "")
-    if config.get("artifact_path", "") and not source_type:
-        from haute.errors import ConfigError
+    from haute._node_apply import require_optimiser_apply_source_type
 
-        raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
-        )
+    require_optimiser_apply_source_type(config)
+    source_type = config.get("sourceType", "")
     has_file = bool(config.get("artifact_path", "")) and source_type == "file"
     has_mlflow = source_type in ("run", "registered") and (
         (source_type == "run" and config.get("run_id"))
@@ -1127,13 +1113,9 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _schema_only = ctx.schema_only
 
     # Determine if we have a valid source configured
-    if _artifact_path and not _source_type:
-        from haute.errors import ConfigError
+    from haute._node_apply import require_optimiser_apply_source_type
 
-        raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
-        )
+    require_optimiser_apply_source_type(config)
     _has_file = bool(_artifact_path) and _source_type == "file"
     _has_mlflow = _source_type in ("run", "registered") and (
         (_source_type == "run" and _run_id) or (_source_type == "registered" and _registered_model)
@@ -1638,6 +1620,25 @@ def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 # ---------------------------------------------------------------------------
 
 
+def check_node_config_for_run(node: GraphNode) -> None:
+    """Hold a node's config to its node type's config model before it is built to run.
+
+    A run's config may hold its form's tables (a Workbench node) and the deploy
+    scorer's private transport keys. The whole model is checked, but for a type
+    whose builder applies its ``check`` as its first step (a Rating Step's tables
+    are normalised once per build); an unfinished config reports what it lacks
+    when it runs.
+    """
+    validate_node_config(
+        node.data.nodeType,
+        node.data.config,
+        require_complete=False,
+        persisted=False,
+        node_label=node.data.label,
+        at_run=True,
+    )
+
+
 def _build_node_fn(
     node: GraphNode,
     source_names: list[str] | None = None,
@@ -1655,6 +1656,7 @@ def _build_node_fn(
     reuse_loaded_model: bool = False,
     execution_profile: str | None = None,
     schema_only: bool = False,
+    config_checked: bool = False,
 ) -> tuple[str, Callable, bool]:
     """Build an executable function from a graph node dict.
 
@@ -1672,7 +1674,8 @@ def _build_node_fn(
         builder context so a builder that would otherwise materialise at
         build time (OUTPUT) returns a declared-schema empty frame instead.
     """
-    reject_removed_config_keys(node.data.nodeType, node.data.config)
+    if not config_checked:
+        check_node_config_for_run(node)
 
     if source_names is None:
         source_names = []

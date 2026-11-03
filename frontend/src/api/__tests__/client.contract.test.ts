@@ -1159,7 +1159,8 @@ describe("next-wave client runtime contracts", () => {
         base_revision: "revision-test",
         preserved_blocks: [],
       }),
-      error: "CreateSubmodelResponse: invalid contract at /graph/nodes: required",
+      // The graph is checked through the shared pipeline-graph module, at its own path.
+      error: "PipelineGraph: invalid contract at /nodes: required",
     },
     {
       name: "loadSubmodel",
@@ -1169,7 +1170,10 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "dissolveSubmodel",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response"), graph: { nodes: "bad", edges: [] } },
+      response: (() => {
+        const fixture = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+        return { ...fixture, graph: { ...(fixture.graph as Record<string, unknown>), nodes: "bad" } }
+      })(),
       call: () => dissolveSubmodel({
         instance_id: "pricing",
         graph: dummyGraph,
@@ -1179,7 +1183,7 @@ describe("next-wave client runtime contracts", () => {
         base_revision: "revision-test",
         preserved_blocks: [],
       }),
-      error: "DissolveSubmodelResponse: invalid contract at /graph",
+      error: "PipelineGraph: invalid contract at /nodes: type",
     },
     {
       name: "getMlflowDestinations",

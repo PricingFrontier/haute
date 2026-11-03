@@ -438,6 +438,7 @@ def _recover_node(
     node_type, raw, raw_changes = read_raw_node_settings(root, document, target)
     # Engine issues are completeness for a direct recover, never a plan gate.
     result = reconcile_config(node_type, raw)
+    _require_recoverable(node_type, result.config)
     edits = _reset_node(
         root,
         root_path,
@@ -465,37 +466,40 @@ def _recover_node(
     )
 
 
+def _require_recoverable(node_type: NodeType, config: dict[str, Any]) -> None:
+    """Refuse a recover whose candidate config its model refuses, before any edit is planned.
+
+    The candidate must pass the model's shape and engine rules, so a recovered
+    config always loads; one that does not (no provider survived, a required
+    value with no default to take) is refused, and Reset starts the node afresh.
+    """
+    from haute._config_validation import CONFIG_REFUSALS, validate_node_config
+
+    try:
+        validate_node_config(node_type, config, require_complete=False)
+    except CONFIG_REFUSALS as exc:
+        raise _unsupported(
+            f"Recover settings cannot rebuild these settings ({exc}). "
+            "Reset node replaces them with a new node's."
+        ) from exc
+
+
 def _recover_completeness(
     node_type: NodeType,
     config: dict[str, Any],
     recovery_id: str,
     issues: Sequence[RecoveryIssue],
 ) -> list[PipelineNodeCompleteness]:
-    """What the recover could not fix: provider gaps plus unresolved engine errors."""
-    from haute._polars_io_registry import (
-        PolarsIoConfigError,
-        data_input_completeness,
-        data_output_completeness,
-    )
+    """What a recover the model accepts could not fix: the config model's completeness gaps."""
+    from haute._config_validation import config_gaps
+    from haute._node_config_recovery import gap_pointer
 
-    try:
-        if node_type is NodeType.DATA_INPUT:
-            gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
-        elif node_type is NodeType.DATA_OUTPUT:
-            gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
-        else:
-            gaps = []
-    except PolarsIoConfigError as exc:
-        # No provider survived (a missing config file, an unknown inputType):
-        # nothing is left for Recover to keep, and Reset starts the node afresh.
-        raise _unsupported(
-            f"Recover settings cannot rebuild these settings ({exc}). "
-            "Reset node replaces them with a new node's."
-        ) from exc
+    gaps = [(gap.path, gap.code, gap.message) for gap in config_gaps(node_type, config)]
+    listed = {(gap_pointer(path), code) for path, code, _message in gaps}
     # An error the engine could not resolve must never read as fixed: the
     # recover applies and the node shows it as unfinished.
     for issue in issues:
-        if issue.severity != "error":
+        if issue.severity != "error" or (issue.path, issue.code) in listed:
             continue
         entry = (issue.path or "/", issue.code, issue.message[:1024])
         if entry not in gaps:
@@ -696,7 +700,10 @@ def apply_scoped_node_save(
         ) from exc
     try:
         config = validate_node_config(
-            target.node_type, deepcopy(request.config), require_complete=False
+            target.node_type,
+            deepcopy(request.config),
+            require_complete=False,
+            node_label=target.label,
         )
     except (ValueError, ConfigError) as exc:
         raise _unsupported(f"The proposed settings are not loadable: {exc}") from exc

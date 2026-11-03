@@ -31,7 +31,7 @@ In scope:
   `DATABRICKS_HOST` / `DATABRICKS_TOKEN` environment variables, and reuses the
   OpenAI-protocol stream normalizer internally.
 - The versioned tool/recipe registry and node descriptors the model queries (derived from the same
-  `NodeType`/config-`TypedDict` machinery, the palette defaults, and the source, sink-only
+  `NodeType`/config-model machinery, the palette defaults, and the source, sink-only
   and pass-through registries the rest of the product dispatches on, plus the palette
   names, one-line purposes and per-type usage notes owned here).
 - The assistant's authoring knowledge, shipped as repo-versioned package assets: a
@@ -2005,7 +2005,7 @@ see [the assistant evaluation](evaluation.md#tiers).
   watcher feedback.
 - **[pipeline-config](../pipeline-config/high-level.md)** — the graph model the ops mutate
   and the config-key validity rules the save path enforces; the node-type catalog is derived
-  from the same config `TypedDict`s.
+  from the same config models.
 - **[codegen](../codegen/high-level.md)** — reached only through the save service; the
   assistant never generates `.py` source itself.
 - **[io-layer](../io-layer/high-level.md)** — dataset listing and schema reads back

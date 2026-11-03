@@ -120,7 +120,10 @@ class TestWrapBuilder:
         wrapped = wrap_builder(base, hooks)
         node = _make_node("test")
         wrapped(node, source_names=["s"], extra_kwarg="val")
-        base.assert_called_once_with(node, source_names=["s"], source_ids=None, extra_kwarg="val")
+        # The wrapper checks the config before its hook and tells the base builder so.
+        base.assert_called_once_with(
+            node, source_names=["s"], source_ids=None, config_checked=True, extra_kwarg="val"
+        )
 
 
 # ---------------------------------------------------------------------------

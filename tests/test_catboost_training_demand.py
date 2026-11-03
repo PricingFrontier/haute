@@ -8,7 +8,7 @@ import pytest
 
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
-from haute._types import ModellingConfig
+from haute._node_config_models import ModellingConfig
 from haute.modelling._training_job import TrainingJob
 from haute.routes import _training_preparation as training_preparation
 from haute.routes._train_service import _training_required_columns_by_node

@@ -463,8 +463,16 @@ pipeline's sources.
   validators from their canonical Pydantic models. Every response the browser parses is one of
   them, checked by its generated validator; hand-written browser code keeps only the
   cross-field rules the UI relies on and the shapes it gives a field the server leaves open
-  (a node's config, a trace step's calculation, the training diagnostics' rows). A node's
-  config is an open object until its typed models join the contract (`PCFG-R07`).
+  (a trace step's calculation, the training diagnostics' rows). A node's config is typed by
+  its node type: the generated `NodeData` is a union tagged by `nodeType` whose branch types
+  `config` with that node type's config model
+  ([pipeline config](../pipeline-config/low-level.md)), so a response carrying a config whose
+  keys, types or enumerated values its model refuses fails the browser's validator (the
+  generated schema carries the model's shape; the engine's value rules, such as a banding
+  boundary, are the server's alone). The server holds every graph it answers with to the
+  models first: a parsed graph passed them at parse, and a route that transforms a request
+  graph checks it. The editor document's recovery nodes keep an open config, since a node is
+  unavailable precisely when its config does not load.
   A single `except HauteError` at any boundary catches the
   entire product's domain-error surface (with the documented exceptions — the OUTPUT
   dry-run request/response models are route-local, and resource-exhaustion

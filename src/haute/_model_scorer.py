@@ -1665,19 +1665,19 @@ def score_from_config(
             runtime passes the pipeline file's directory, so the config is
             always found regardless of the working directory at runtime.
     """
-    import json
-
-    from haute._io import read_user_text
 
     base = Path(base_dir) if base_dir else current_project().root
     config_path = Path(config)
     if not config_path.is_absolute():
         config_path = base / config_path
+    from haute._config_io import load_node_config
+    from haute._types import NodeType
+
     try:
         resolved = contained_path(base, config_path.resolve())
     except PathOutsideProjectError:
         raise ValueError(f"Config path {config!r} resolves outside project root") from None
-    cfg = json.loads(read_user_text(resolved))
+    cfg = load_node_config(resolved, node_type=NodeType.MODEL_SCORE)
     from haute._model_source import scoring_contract_path
 
     model_source = require_model_source(cfg)

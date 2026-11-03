@@ -352,11 +352,26 @@ def parse_tuning_config(
     *,
     algorithm: str,
     base_params: Mapping[str, Any],
-    evaluation: Mapping[str, Any],
+    evaluation: Mapping[str, Any] | None,
     configured_metrics: list[str],
 ) -> dict[str, Any] | None:
-    """Validate and canonicalise the optional public tuning object."""
+    """Validate and canonicalise the optional public tuning object.
+
+    *evaluation* ``None`` (not chosen yet) checks every rule that does not need it
+    and returns ``None``: the split's rules wait for an evaluation.
+    """
     if raw is None:
+        return None
+    if evaluation is None:
+        try:
+            TuningConfig.check_own_rules(
+                raw,
+                algorithm=algorithm,
+                base_params=base_params,
+                configured_metrics=configured_metrics,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TrainingConfigError(f"Invalid tuning config: {exc}") from exc
         return None
     try:
         evaluation_config = EvaluationConfig.from_plain_data(evaluation)
@@ -521,21 +536,6 @@ def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
     selected = set(selected_feature_columns(config))
     effective = {name: direction for name, direction in constraints.items() if name in selected}
     return effective or None
-
-
-_REMOVED_EVALUATION_FIELDS = ("split", "cross_validation")
-
-
-def reject_removed_evaluation_fields(config: Mapping[str, Any]) -> None:
-    """Reject the removed top-level split fields, naming their replacement."""
-    removed = [key for key in _REMOVED_EVALUATION_FIELDS if key in config]
-    if removed:
-        names = " and ".join(repr(key) for key in removed)
-        raise TrainingConfigError(
-            f"The modelling config field{'s' if len(removed) > 1 else ''} {names} "
-            f"{'were' if len(removed) > 1 else 'was'} removed; use the versioned "
-            "'evaluation' object."
-        )
 
 
 def training_objective_issue(config: Mapping[str, Any]) -> str | None:
@@ -708,7 +708,6 @@ def build_training_job_kwargs(
     if objective_issue is not None:
         raise TrainingConfigError(objective_issue)
     variance_power = config.get("var_power") if glm else config.get("variance_power")
-    reject_removed_evaluation_fields(config)
     feature_issue = feature_selection_issue(config)
     if feature_issue is not None:
         raise TrainingConfigError(feature_issue)

@@ -14,7 +14,7 @@ from tests._project import use_project
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from haute._config_io import config_path_for_node
+from haute._config_io import config_path_for_node, palette_default_config
 from haute.errors import ConfigError
 from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import invalidate_pipeline_index
@@ -335,7 +335,10 @@ def test_node_instance_refuses_invalid_target(
             {"id": "input", "data": {"label": "Input", "nodeType": "submodelPort", "config": {}}}
         )
     else:
+        # A config the target type declares, so the instance rule, not the
+        # route's config check, is what answers.
         body["graph"]["nodes"][1]["data"]["nodeType"] = kind
+        body["graph"]["nodes"][1]["data"]["config"] = palette_default_config(NodeType(kind))
     with _patch_parent_document(tmp_path):
         response = client.post("/api/submodel/instance", json=body)
     assert response.status_code == 400, response.text

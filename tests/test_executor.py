@@ -728,7 +728,11 @@ class TestBuildNodeFn:
         node = _n(
             {
                 "id": "sink",
-                "data": {"label": "sink", "nodeType": "dataOutput", "config": {}},
+                "data": {
+                    "label": "sink",
+                    "nodeType": "dataOutput",
+                    "config": {"outputType": "file", "format": "parquet", "path": ""},
+                },
             }
         )
         _, fn, is_source = _build_node_fn(node)
@@ -4601,6 +4605,7 @@ class TestPreambleFailureIsolation:
                                 "label": "sink",
                                 "nodeType": "dataOutput",
                                 "config": {
+                                    "outputType": "file",
                                     "path": str(tmp_path / "out.parquet"),
                                     "format": "parquet",
                                 },
@@ -4894,7 +4899,6 @@ class TestBuilderPostCodeProjection:
             {
                 "tables": [
                     {
-                        "name": "vehicle_factor",
                         "factors": ["vehicle_age_band", "cover_type"],
                         "outputColumn": "vehicle_factor",
                         "defaultValue": "1.0",

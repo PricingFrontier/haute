@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
 
+from haute._config_validation import validate_node_config
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -34,7 +35,7 @@ from haute._native_memory_limit import model_thread_address_space_allowance
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import context_thread, current_project
 from haute._seed_plans import open_seed_plan
-from haute._types import PipelineGraph
+from haute._types import NodeType, PipelineGraph
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerError,
@@ -82,15 +83,9 @@ from haute.modelling._train_config import (
     TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
-    feature_selection_issue,
     is_glm_config,
-    parse_evaluation_config,
-    parse_tuning_config,
-    reject_removed_evaluation_fields,
     role_column_reasons,
     training_objective_issue,
-    validate_modelling_config_values,
-    validate_training_device,
 )
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -270,7 +265,7 @@ def _downsampling_warning(
 
 
 def _default_train_timeout() -> float:
-    """The modelling time limit in seconds, for a job whose node config sets no ``timeout``."""
+    """The modelling time limit in seconds, from the pipeline settings: a node config holds none."""
     return project_pipeline_settings().modelling_time_limit_seconds
 
 
@@ -350,7 +345,7 @@ class TrainService:
                 "node_label": node.data.label,
                 "pipeline_source": str(body.graph.source_file or ""),
                 "start_time": start_time,
-                "timeout": config.get("timeout", _default_train_timeout()),
+                "timeout": _default_train_timeout(),
             }
             job_id = self._store.create_job(initial_job)
 
@@ -820,7 +815,7 @@ class TrainService:
                 "param": body.param,
                 "node_label": node.data.label,
                 "start_time": start_time,
-                "timeout": config.get("timeout", _default_train_timeout()),
+                "timeout": _default_train_timeout(),
             }
             job_id = self._store.create_job(initial_job)
             cancellation_token = ExecutionCancellationToken()
@@ -1255,58 +1250,32 @@ class TrainService:
 
     @staticmethod
     def _validate_config(config: dict[str, Any]) -> None:
-        """Fast upfront validation — no pipeline execution yet."""
-        target = config.get("target")
-        if not target:
-            raise InvalidRequestError(
-                "No target column selected. Open the config panel and choose a target column."
-            )
+        """Fast upfront validation — no pipeline execution yet.
 
+        The node's config model first: its malformed-value rules (the save-time
+        rules, the evaluation and tuning objects and the device), then what an
+        unfinished config lacks (a target, a complete objective, features for a
+        tree family, an evaluation), so a wrong value beats an incomplete one.
+        Checks against the materialised input schema run when training does.
+        """
+        try:
+            validate_node_config(NodeType.MODELLING, config, require_complete=True)
+        except ConfigError as exc:
+            raise InvalidRequestError(exc.message) from exc
+        except TrainingConfigError as exc:
+            raise InvalidRequestError(str(exc)) from exc
         algorithm = config.get("algorithm", "catboost")
         if algorithm not in ALGORITHM_REGISTRY:
             raise InvalidRequestError(
                 f"Unknown algorithm '{algorithm}'. "
                 f"Available algorithms: {', '.join(ALGORITHM_REGISTRY.keys())}."
             )
-
-        # Validity checks first, so a wrong value beats an incomplete one: the
-        # one malformed-value check save validation also runs (GLM values, or
-        # the loss against the chosen family's own losses, not CatBoost's, and
-        # a target that is not also a feature). Absent values are caught by the
-        # completeness gate below.
         try:
-            validate_modelling_config_values(config)
-        except TrainingConfigError as exc:
-            raise InvalidRequestError(str(exc)) from exc
-
-        # Then require a complete training objective. An unset loss/family, or
-        # an unset objective parameter (Tweedie variance power, elastic-net L1
-        # ratio, empty GLM factor set), would silently fall through to a
-        # library/literal failover — plausible numbers, wrong model. Shares the
-        # single source of truth with the build-time gate so they can't drift.
-        objective_issue = training_objective_issue(config)
-        if objective_issue is not None:
-            raise InvalidRequestError(objective_issue)
-        try:
-            reject_removed_evaluation_fields(config)
-            feature_issue = feature_selection_issue(config)
-            if feature_issue is not None:
-                raise TrainingConfigError(feature_issue)
-            evaluation = parse_evaluation_config(config.get("evaluation"))
-            validate_training_device(config)
             metrics = config.get("metrics") or []
             if not metrics:
                 # The builder derives objective-aware defaults. Reuse it rather
                 # than creating a second default-metric contract in the route.
                 build_training_job_kwargs(config, data="__config_validation__")
-            else:
-                parse_tuning_config(
-                    config.get("tuning"),
-                    algorithm=str(algorithm),
-                    base_params=build_train_params(config),
-                    evaluation=evaluation,
-                    configured_metrics=list(metrics),
-                )
         except TrainingConfigError as exc:
             raise InvalidRequestError(str(exc)) from exc
 

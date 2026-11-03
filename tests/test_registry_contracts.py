@@ -16,8 +16,9 @@ import pytest
 
 from haute import _registry as registry
 from haute import _standalone_nodes as standalone_nodes
+from haute._node_config_models import MODELLING_CONFIG_KEYS
 from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
-from haute._types import MODELLING_CONFIG_KEYS, NodeType
+from haute._types import NodeType
 from haute.errors import ConfigError
 
 
@@ -663,15 +664,32 @@ def test_standalone_passthrough_list_matches_what_a_standalone_run_does(
     untouched; each behavioural type's work needs its sidecar, so it can never
     hand its input back unchanged without reading its settings.
     """
-    sidecar = tmp_path / "config" / "optimiser" / "node.json"
-    sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(json.dumps({"data_input": "factors"}), encoding="utf-8")
+    # A standalone run holds each sidecar to its node type's config model, so each
+    # type reads a config of its own.
+    sidecars: dict[NodeType, dict[str, Any]] = {
+        NodeType.DATA_OUTPUT: {
+            "outputType": "file",
+            "format": "parquet",
+            "mode": "sink",
+            "path": "output/node.parquet",
+            "arguments": {},
+        },
+        NodeType.EXPLORE: {},
+        NodeType.EXTERNAL_FILE: {"path": "models/node.pkl", "fileType": "pickle"},
+        NodeType.MODELLING: {"target": "y", "algorithm": "catboost"},
+        NodeType.OPTIMISER: {"data_input": "factors"},
+    }
+    assert set(sidecars) == STANDALONE_PASSTHROUGH_TYPES
+    for node_type, sidecar_config in sidecars.items():
+        sidecar = tmp_path / "config" / node_type.value / "node.json"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(json.dumps(sidecar_config), encoding="utf-8")
     scored = pl.LazyFrame({"x": [1]})
     factors = pl.LazyFrame({"y": [2]})
     declaration = _declaration_in(tmp_path)
 
     for node_type in STANDALONE_PASSTHROUGH_TYPES:
-        config = {"config": "config/optimiser/node.json"}
+        config = {"config": f"config/{node_type.value}/node.json"}
         result = standalone_nodes.run_configured_node(
             node_type,
             "declaration",

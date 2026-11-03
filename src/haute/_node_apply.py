@@ -112,19 +112,23 @@ def scenario_step_count(config: Mapping[str, Any]) -> int:
 def _resolve_node_config(
     config: Mapping[str, Any] | str | PathLike[str],
     base_dir: str | Path | None,
+    node_type: NodeType,
 ) -> dict[str, Any]:
     """Resolve a config argument that may be an inline dict or a sidecar path.
 
-    A mapping is copied to a plain dict; a path is loaded through
-    :func:`haute._config_io.load_node_config` relative to *base_dir* (which
-    generated code sets to ``Path(__file__).parent``).
+    A mapping is copied to a plain dict (a run built it from a checked graph); a
+    path is loaded through :func:`haute._config_io.load_node_config` relative to
+    *base_dir* (which generated code sets to ``Path(__file__).parent``), held to
+    *node_type*'s config model.
     """
     if isinstance(config, Mapping):
         return dict(config)
     from haute._config_io import load_node_config
 
     config_path = config if isinstance(config, str) else Path(config)
-    return load_node_config(config_path, base_dir=Path(base_dir) if base_dir else None)
+    return load_node_config(
+        config_path, base_dir=Path(base_dir) if base_dir else None, node_type=node_type
+    )
 
 
 def _anchored_required_path(config: Mapping[str, Any], base_dir: str | Path | None) -> str:
@@ -162,7 +166,11 @@ def resolve_api_input_from_config(
     schema-only, so a table with no snapshot can reach the IO layer's declared
     schema tier, recorded under that node id.
     """
-    config = _resolve_node_config(config_or_path, base_dir)
+    config = _resolve_node_config(
+        config_or_path,
+        base_dir,
+        NodeType.API_INPUT,  # the Quote Input alone
+    )
     path = _anchored_required_path(config, base_dir)
 
     from haute._api_input_schema import (
@@ -209,7 +217,7 @@ def _workbench_node_config(
     a saved file's own ``run()`` loads the node's sidecar, which holds neither, and gives it
     those of the form folder of the project the file is in (specs/workbench).
     """
-    config = _resolve_node_config(config_or_path, base_dir)
+    config = _resolve_node_config(config_or_path, base_dir, node_type)
     if isinstance(config_or_path, Mapping):
         return config
     from haute._project_context import current_project
@@ -279,7 +287,7 @@ def load_external_object_from_config(
     base_dir: str | Path | None = None,
 ) -> object:
     """Load an external object from its current inline config or sidecar."""
-    config = _resolve_node_config(config_or_path, base_dir)
+    config = _resolve_node_config(config_or_path, base_dir, NodeType.EXTERNAL_FILE)
     validate_external_file_config(config)
     return load_external_file_at(_anchored_required_path(config, base_dir), config)
 
@@ -357,7 +365,7 @@ def expand_scenarios_from_config(
     base_dir=...)`` so a standalone ``pipeline.run()`` expands exactly like
     the GUI executor instead of passing the frame straight through.
     """
-    return _expand_scenarios(lf, _resolve_node_config(config, base_dir))
+    return _expand_scenarios(lf, _resolve_node_config(config, base_dir, NodeType.SCENARIO_EXPANDER))
 
 
 def _scenario_grid_columns(cfg: Mapping[str, Any]) -> dict[str, pl.DataType]:
@@ -458,6 +466,17 @@ def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
     )
 
 
+def require_optimiser_apply_source_type(config: Mapping[str, Any]) -> None:
+    """Refuse an Optimiser Apply that names an artifact without saying where it comes from."""
+    if config.get("artifact_path", "") and not config.get("sourceType", ""):
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "optimiserApply node with artifact_path requires sourceType='file'",
+            missing_field="sourceType",
+        )
+
+
 def load_configured_optimiser_artifact(
     config: Mapping[str, Any],
     base_dir: str | Path | None = None,
@@ -468,15 +487,9 @@ def load_configured_optimiser_artifact(
     passthrough. MLflow sources load from the node's ``mlflow_destination``
     (absent = auto).
     """
+    require_optimiser_apply_source_type(config)
     source_type = config.get("sourceType", "")
     artifact_path = config.get("artifact_path", "")
-    if artifact_path and not source_type:
-        from haute.errors import ConfigError
-
-        raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
-        )
     run_id = config.get("run_id", "")
     registered_model = config.get("registered_model", "")
     has_file = bool(artifact_path) and source_type == "file"
@@ -521,7 +534,7 @@ def apply_optimiser_apply_from_config(
     *dfs* are the incoming frames in declared order and *source_names* are
     their executable incoming-edge names. A *schema_only* walk reads no rows.
     """
-    cfg = _resolve_node_config(config, base_dir)
+    cfg = _resolve_node_config(config, base_dir, NodeType.OPTIMISER_APPLY)
     artifact = load_configured_optimiser_artifact(cfg, base_dir)
     if artifact is None:
         return dfs[0] if dfs else pl.LazyFrame()
@@ -605,11 +618,11 @@ def assemble_output_from_config(
     ``collect_schema()`` and never collects) the document is not assembled at
     all: an empty frame under that schema is returned.
     """
-    cfg = _resolve_node_config(config, base_dir)
+    cfg = _resolve_node_config(config, base_dir, NodeType.OUTPUT)
     mapping = cfg.get("outputMapping")
 
+    from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
     from haute._output_assembler import (
-        DEPLOY_ANSWER_PER_ROW_CONFIG_KEY,
         OutputMappingSchemaError,
         assemble_output_from_mapping,
         is_active_mapping_entry,

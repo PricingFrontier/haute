@@ -49,9 +49,8 @@ import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Node } from "@xyflow/react"
-import { validatePipelineGraph } from "../../generated/api-contracts.git.validators.mjs"
+import { validatePipelineGraph } from "../../generated/api-contracts.pipeline-graph.validators.mjs"
 import { pipelineGraphFromContract } from "../../types/guards"
-import { expectGeneratedContract } from "../../types/generatedContractValidation"
 
 // ---------------------------------------------------------------------------
 // Lazy module loaders.  Using dynamic `import()` lets the test file parse
@@ -104,7 +103,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
       id: "n1",
       type: "dataInput",
       position: { x: 0, y: 0 },
-      data: { label: "n1", description: "", nodeType: "dataInput", config: {}, editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null } },
+      data: { label: "n1", description: "", nodeType: "dataInput", config: { inputType: "file", format: "parquet", path: "" }, editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null } },
     }],
     edges: [],
     pipeline_name: "x",
@@ -121,8 +120,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
     warning: null,
     ...overrides,
   })
-  const read = (value: unknown) =>
-    pipelineGraphFromContract(expectGeneratedContract("PipelineGraph", validatePipelineGraph, value))
+  const read = (value: unknown) => pipelineGraphFromContract(validatePipelineGraph, value)
 
   it("reads a canonical graph's nodes, edges and metadata", () => {
     const parsed = read(graph())
@@ -140,7 +138,8 @@ describe("#116 - a canonical graph read as the editor's", () => {
   it("refuses a node whose data names an unknown node type", () => {
     const [node] = graph().nodes
     expect(() => read(graph({ nodes: [{ ...node, data: { ...node.data, nodeType: "mystery" } }] })))
-      .toThrow("PipelineGraph: invalid contract at /nodes/0/data/nodeType")
+      // A node's data is a union tagged by nodeType: a type it does not name matches no branch.
+      .toThrow("PipelineGraph: invalid contract at /nodes/0/data")
   })
 
   it("refuses a graph without its edges", () => {

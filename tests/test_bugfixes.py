@@ -225,8 +225,10 @@ class TestPreamblePipelineDir:
 class TestDataInputConfigPath:
     """Verify that _build_node_fn for data sources uses config.path correctly."""
 
-    def test_unconfigured_preview_source_produces_empty_frame(self):
-        """A freshly dropped editor node may preview empty before its first save."""
+    def test_a_source_without_a_provider_is_refused_when_built(self):
+        """A Data Input names its provider (the palette gives ``inputType``): a config
+        without one is refused when the node is built, naming the setting."""
+        from haute.errors import NodeConfigError
         from haute.executor import _build_node_fn
 
         node = GraphNode(
@@ -237,12 +239,8 @@ class TestDataInputConfigPath:
                 config={"path": ""},
             ),
         )
-        _, fn, is_source = _build_node_fn(node, source_names=[])
-        assert is_source is True
-
-        result = fn()
-        df = result.collect()
-        assert df.shape == (0, 0), "Empty path should produce zero-column frame"
+        with pytest.raises(NodeConfigError, match="Node 'src' \\(dataInput\\) setting 'inputType'"):
+            _build_node_fn(node, source_names=[])
 
     def test_valid_config_path_loads_data(self, tmp_path):
         """A data source with a valid parquet path should load data."""

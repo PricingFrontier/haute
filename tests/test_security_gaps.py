@@ -469,7 +469,6 @@ class TestResourceExhaustionConfig:
                 config={
                     "tables": [
                         {
-                            "name": "T",
                             "factors": ["x"],
                             "outputColumn": "f",
                             "entries": entries,

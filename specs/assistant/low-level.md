@@ -68,8 +68,9 @@ orphaned halves).
   `installed_capabilities`, `feature_flags`, `nodes`, `operations`, and
   `recipes`.
 - **`NodeCapabilityDescriptor`**: a closed description of one `NodeType`.
-  `config_schema` is derived from the canonical `TypedDict` annotations
-  (including `Required`, `Literal`, unions, lists, mappings and discriminated
+  `config_schema` is derived from the node type's config model
+  (`haute._node_config_models.NODE_CONFIG_MODELS`: its `TypedDict` annotations,
+  including `Required`, `Literal`, unions, lists, mappings and discriminated
   Data Input/Output branches) and has `additionalProperties: false`.
   `required_fields`, `optional_fields` and enum values are derived from that
   resolved schema rather than maintained separately. For Data Input and Data
@@ -274,7 +275,7 @@ orphaned halves).
     JSON `null` value removes that key. The operation schema's `config` description
     states both rules to the model: a written top-level key replaces its whole value, so
     a nested object or list is sent complete. Unknown keys for the node's type are rejected using
-    the same `TypedDict`-derived allowlist machinery the sidecar writer uses (see Edge
+    the same allowlist the sidecar writer uses (`VALID_KEYS`, from the node type's config model) (see Edge
     cases for why this is deliberately stricter than save's warn-and-drop).
   - `edit_steps {node, edits}` — changes one node's `steps` list step by step, so an edit
     never resends steps it does not change (a free-code step whose code the policy masks

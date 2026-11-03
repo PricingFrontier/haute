@@ -28,10 +28,7 @@ import pytest
 
 from haute.errors import GroupByExecutionUnsupportedError, RequestRefusedError
 from haute.routes._job_store import JobStore
-from haute.routes._optimiser_service import (
-    OptimiserSolveService,
-    _optional_positive_int,
-)
+from haute.routes._optimiser_service import OptimiserSolveService
 from haute.routes._optimiser_solver import SolveContext
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 from tests.conftest import (
@@ -357,7 +354,7 @@ def test_build_grid_still_rejects_non_finite_scenario_grid() -> None:
         service._build_grid(
             scored_lf,
             ["volume"],
-            _solver_config(chunk_size=10),
+            _solver_config(),
             "opt",
             job_id,
         )
@@ -493,10 +490,6 @@ def test_solve_worker_records_public_contract_errors() -> None:
     assert job["error_code"] == "group_by_execution_unsupported"
 
 
-def test_optional_positive_int_leaves_an_absent_value_absent() -> None:
-    assert _optional_positive_int(None, field="timeout") is None
-
-
 # ---------------------------------------------------------------------------
 # 3b.4 [M] — single-quote solve must not crash after solving
 # ---------------------------------------------------------------------------
@@ -516,7 +509,7 @@ def test_single_quote_solve_lifecycle_real_solver(client, tmp_path, clean_job_st
             "volume": pl.Series([1.0, 1.0, 1.0], dtype=pl.Float32),
         }
     ).write_parquet(source_path)
-    graph = _source_to_optimiser_graph(str(source_path), _solver_config(chunk_size=6))
+    graph = _source_to_optimiser_graph(str(source_path), _solver_config())
 
     resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
     assert resp.status_code == 200
@@ -597,7 +590,7 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     ).write_parquet(source_path)
     graph = _source_to_optimiser_graph(
         str(source_path),
-        _solver_config(constraints={"volume": {"min": 1.5}}, chunk_size=9),
+        _solver_config(constraints={"volume": {"min": 1.5}}),
     )
 
     resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})

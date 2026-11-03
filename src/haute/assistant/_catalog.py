@@ -20,8 +20,9 @@ from typing import Literal, Required, Union, cast, get_args, get_origin, get_typ
 
 from haute._cache import canonical_json
 from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
-from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
+from haute._config_validation import VALID_KEYS
 from haute._graph_shape import SINGLETON_NODE_GROUPS
+from haute._node_config_models import NODE_CONFIG_MODELS
 from haute._polars_steps import (
     AGGREGATIONS,
     BINARY_OPERATORS,
@@ -351,7 +352,7 @@ def _config_schema(node_type: NodeType) -> dict[str, object]:
     """Closed top-level schema matching VALID_KEYS, with I/O branch detail."""
     allowed = set(VALID_KEYS.get(node_type, ()))
     if node_type in (NodeType.DATA_INPUT, NodeType.DATA_OUTPUT):
-        from haute._types import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES
+        from haute._node_config_models import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES
 
         branches = (
             DATA_INPUT_CONFIG_TYPES
@@ -383,10 +384,7 @@ def _config_schema(node_type: NodeType) -> dict[str, object]:
         if required_everywhere := set.intersection(*branch_required):
             schema["required"] = sorted(required_everywhere)
         return schema
-    typed_dict = _TYPED_DICT_BY_NODE_TYPE.get(node_type)
-    if typed_dict is None:
-        return {"type": "object", "properties": {}, "additionalProperties": False}
-    schema = _schema_for_typeddict(typed_dict, keys=allowed)
+    schema = _schema_for_typeddict(NODE_CONFIG_MODELS[node_type].shape, keys=allowed)
     raw_properties = schema["properties"]
     if not isinstance(raw_properties, dict):
         raise TypeError("Derived config schema properties must be a dictionary")

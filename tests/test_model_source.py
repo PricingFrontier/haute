@@ -25,20 +25,25 @@ from haute._model_source import (
     parse_model_source,
     require_model_source,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, NodeConfigError
 from tests._source_files import source_files
 
-INVALID_SOURCES: dict[str, dict[str, Any]] = {
+# Sources the node's config model accepts in shape, so the parse is what refuses them.
+PARSE_REFUSED_SOURCES: dict[str, dict[str, Any]] = {
     "run without run_id": {"sourceType": "run", "run_id": ""},
     "registered without model": {"sourceType": "registered", "registered_model": ""},
     "file without model_path": {"sourceType": "file", "model_path": ""},
-    "unknown sourceType": {"sourceType": "mlflow", "run_id": "abc"},
     "version beside alias": {
         "sourceType": "registered",
         "registered_model": "pricing",
         "version": "3",
         "alias": "champion",
     },
+}
+UNKNOWN_SOURCE: dict[str, Any] = {"sourceType": "mlflow", "run_id": "abc"}
+INVALID_SOURCES: dict[str, dict[str, Any]] = {
+    **PARSE_REFUSED_SOURCES,
+    "unknown sourceType": UNKNOWN_SOURCE,
 }
 
 
@@ -89,7 +94,9 @@ def _explain(config: dict[str, Any], _tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("source", list(INVALID_SOURCES.values()), ids=list(INVALID_SOURCES))
+@pytest.mark.parametrize(
+    "source", list(PARSE_REFUSED_SOURCES.values()), ids=list(PARSE_REFUSED_SOURCES)
+)
 @pytest.mark.parametrize(
     "consumer",
     [
@@ -109,6 +116,42 @@ def test_an_invalid_source_fails_identically_in_every_consumer(
         consumer(config, tmp_path)
 
     _same_error(caught.value, expected)
+    mock_load.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    [
+        pytest.param(lambda config, _tmp: _build(config), id="builder"),
+        pytest.param(_score_from_config, id="score_from_config"),
+    ],
+)
+@patch("haute._mlflow_io.load_mlflow_model")
+def test_an_unknown_source_type_is_refused_by_the_config_model_before_the_parse(
+    mock_load: Any, consumer: Any, tmp_path: Path
+) -> None:
+    """A run holds the config to its model, whose ``sourceType`` takes only known sources."""
+    with pytest.raises(
+        NodeConfigError,
+        match=r"setting 'sourceType': Input should be '', 'run', 'registered' or 'file'",
+    ) as caught:
+        consumer(_config(UNKNOWN_SOURCE), tmp_path)
+
+    assert caught.value.setting == "sourceType"
+    mock_load.assert_not_called()
+
+
+@patch("haute._mlflow_io.load_mlflow_model")
+def test_the_trace_explanation_refuses_an_unknown_source_type_with_the_parse(
+    mock_load: Any, tmp_path: Path
+) -> None:
+    """The explanation parses a built node's config itself, so the parse names the source."""
+    config = _config(UNKNOWN_SOURCE)
+
+    with pytest.raises(ConfigError) as caught:
+        _explain(config, tmp_path)
+
+    _same_error(caught.value, _parse_error(config))
     mock_load.assert_not_called()
 
 

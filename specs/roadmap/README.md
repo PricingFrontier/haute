@@ -30,7 +30,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM (deferred until RustyStats fits out of core), XGBoost through external memory when a job will not fit; evaluation planning that holds its memberships compactly | `MOD-R11` |
 | [Optimiser validation](optimiser-validation.md) | A calibrated solve-memory forecast in the Solve panel that warns and never refuses; per-point convergence traces from price_contour's frontier sweep; the optimiser result workspace's open robustness and CSV questions | `OPT-W02` |
-| [Pipeline config](pipeline-config.md) | Typed configs, node specification | `PCFG-R07` |
+| [Pipeline config](pipeline-config.md) | Node specification | `PCFG-R09` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision); `_report_table` relativity overflow guard | `TBOOST-11` |

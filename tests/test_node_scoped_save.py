@@ -358,7 +358,9 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
         )
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "repair_action_unsupported"
-        assert "Unknown inputType" in response.json()["detail"]["message"]
+        message = response.json()["detail"]["message"]
+        assert "setting 'inputType'" in message
+        assert "does not match any of the expected tags" in message
     assert {p: p.read_bytes() for p in before} == before
 
 

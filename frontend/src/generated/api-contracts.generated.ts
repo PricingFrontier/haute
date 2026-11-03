@@ -18,6 +18,44 @@ export type AssistantStreamEventPayload =
   | AssistantFailedEvent
   | AssistantCancelledEvent;
 /**
+ * ``GET /api/mlflow/experiments``.
+ */
+export type MlflowExperimentList = MlflowExperimentSummary[];
+/**
+ * ``GET /api/mlflow/runs``.
+ */
+export type MlflowRunList = MlflowRunSummary[];
+/**
+ * ``GET /api/mlflow/models``.
+ */
+export type MlflowModelList = MlflowModelSummary[];
+/**
+ * ``GET /api/mlflow/model-versions``.
+ */
+export type MlflowModelVersionList = MlflowModelVersionSummary[];
+export type NodeData =
+  | ApiInputNodeData
+  | WorkbenchInputNodeData
+  | WorkbenchOutputNodeData
+  | DataInputNodeData
+  | DataOutputNodeData
+  | PolarsNodeData
+  | EdgeJoinNodeData
+  | ModelScoreNodeData
+  | BandingNodeData
+  | RatingStepNodeData
+  | OutputNodeData
+  | ExploreNodeData
+  | ExternalFileNodeData
+  | LiveSwitchNodeData
+  | ModellingNodeData
+  | OptimiserNodeData
+  | ScenarioExpanderNodeData
+  | OptimiserApplyNodeData
+  | ConstantNodeData
+  | SubmodelNodeData
+  | SubmodelPortNodeData;
+/**
  * Canonical node-type identifiers shared with the React Flow frontend.
  *
  * Inherits from ``StrEnum`` so ``NodeType.API_INPUT == "apiInput"`` is ``True``
@@ -45,22 +83,6 @@ export type NodeType =
   | 'constant'
   | 'submodel'
   | 'submodelPort';
-/**
- * ``GET /api/mlflow/experiments``.
- */
-export type MlflowExperimentList = MlflowExperimentSummary[];
-/**
- * ``GET /api/mlflow/runs``.
- */
-export type MlflowRunList = MlflowRunSummary[];
-/**
- * ``GET /api/mlflow/models``.
- */
-export type MlflowModelList = MlflowModelSummary[];
-/**
- * ``GET /api/mlflow/model-versions``.
- */
-export type MlflowModelVersionList = MlflowModelVersionSummary[];
 
 /**
  * Strict V1 API DTO for one shared execution-planning decision.
@@ -1874,94 +1896,6 @@ export interface SaveCapture {
   uncaptured: string[];
   warnings: string[];
 }
-/**
- * React Flow graph structure used throughout Haute.
- *
- * This is the canonical type for the graph dict passed between
- * parser, executor, codegen, deploy, and the server API layer.
- */
-export interface PipelineGraph {
-  active_source: string;
-  edges: GraphEdge[];
-  global_constants: GlobalConstant[];
-  global_constants_error: string | null;
-  nodes: GraphNode[];
-  pipeline_description: string | null;
-  pipeline_name: string | null;
-  preamble: string | null;
-  preserved_blocks: string[];
-  source_file: string | null;
-  source_revision: string | null;
-  sources: string[];
-  submodels: {
-    [k: string]: SubmodelDefinition;
-  } | null;
-  warning: string | null;
-}
-/**
- * A single edge in the React Flow graph.
- */
-export interface GraphEdge {
-  id: string;
-  source: string;
-  sourceHandle: string | null;
-  target: string;
-  targetHandle: string | null;
-}
-/**
- * A single node in the React Flow graph.
- */
-export interface GraphNode {
-  data: NodeData;
-  id: string;
-  position: {
-    [k: string]: number;
-  };
-  type: string;
-}
-/**
- * Data payload for a single pipeline node.
- */
-export interface NodeData {
-  config: {
-    [k: string]: unknown;
-  };
-  description: string;
-  editor: NodeEditorState;
-  label: string;
-  nodeType: NodeType;
-}
-/**
- * One shared, file-backed submodel definition and its public interface.
- */
-export interface SubmodelDefinition {
-  definitionId: string;
-  file: string;
-  graph: PipelineGraph;
-  inputPorts: SubmodelInputPort[];
-  outputPorts: SubmodelOutputPort[];
-}
-/**
- * A public input with ordered internal targets, or none while unrouted.
- */
-export interface SubmodelInputPort {
-  name: string;
-  targets: SubmodelEndpoint[];
-}
-/**
- * One stable public-port binding to an internal definition endpoint.
- */
-export interface SubmodelEndpoint {
-  handleId: string | null;
-  nodeId: string;
-}
-/**
- * A public output backed by exactly one internal source.
- */
-export interface SubmodelOutputPort {
-  name: string;
-  source: SubmodelEndpoint;
-}
 export interface InputCacheBuildResponse {
   build_class: 'bounded' | 'admitted_eager';
   forced: boolean;
@@ -2906,6 +2840,1878 @@ export interface CreateSubmodelResponse {
   source_revision: string;
   status: string;
   submodel_file: string;
+}
+/**
+ * React Flow graph structure used throughout Haute.
+ *
+ * This is the canonical type for the graph dict passed between
+ * parser, executor, codegen, deploy, and the server API layer.
+ */
+export interface PipelineGraph {
+  active_source: string;
+  edges: GraphEdge[];
+  global_constants: GlobalConstant[];
+  global_constants_error: string | null;
+  nodes: GraphNode[];
+  pipeline_description: string | null;
+  pipeline_name: string | null;
+  preamble: string | null;
+  preserved_blocks: string[];
+  source_file: string | null;
+  source_revision: string | null;
+  sources: string[];
+  submodels: {
+    [k: string]: SubmodelDefinition;
+  } | null;
+  warning: string | null;
+}
+/**
+ * A single edge in the React Flow graph.
+ */
+export interface GraphEdge {
+  id: string;
+  source: string;
+  sourceHandle: string | null;
+  target: string;
+  targetHandle: string | null;
+}
+/**
+ * A single node in the React Flow graph.
+ */
+export interface GraphNode {
+  data: NodeData;
+  id: string;
+  position: {
+    [k: string]: number;
+  };
+  type: string;
+}
+/**
+ * A apiInput node's data, its config typed by its config model.
+ */
+export interface ApiInputNodeData {
+  config: ApiInputConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'apiInput';
+}
+/**
+ * A Quote Input: the request's sample file and the tables read from it.
+ */
+export interface ApiInputConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The sample request file, relative to the project root (a JSON, JSONL, NDJSON, XML or flat
+   * file).
+   */
+  path?: string;
+  selected_columns?: string[];
+  /**
+   * For a structured request file, the tables read from it: each a path into the document, a
+   * label, and its columns.
+   */
+  tables?: TableV2[];
+}
+/**
+ * A declared column contract: the columns a node reads and produces.
+ */
+export interface ContractColumns {
+  /**
+   * The columns the node reads from its input, or `null` when they are not known.
+   */
+  inputs: string[] | null;
+  /**
+   * For a node with several inputs, the columns it reads from each input, by node id.
+   */
+  inputs_by_parent?: {
+    [k: string]: string[] | null;
+  } | null;
+  /**
+   * The columns the node produces, or `null` when they are not known.
+   */
+  outputs: string[] | null;
+}
+/**
+ * One table entry inside ``tables[]``.
+ */
+export interface TableV2 {
+  /**
+   * The table's columns.
+   */
+  columns?: ColumnV2[];
+  /**
+   * The path the editor shows for the table, or `null` to show `path`.
+   */
+  displayPath?: string | null;
+  /**
+   * Whether the table is one of the node's outputs.
+   */
+  emit?: boolean;
+  /**
+   * The table's name, which a connection's `source_port` names it by.
+   */
+  label?: string;
+  /**
+   * The JSONPath of the table's rows in the request document, such as `$[:]`.
+   */
+  path?: string;
+  /**
+   * The column identifying each row, or `null` for none.
+   */
+  row_id_column?: string | null;
+}
+/**
+ * One column entry inside ``tables[].columns[]``.
+ */
+export interface ColumnV2 {
+  /**
+   * A date column's strftime pattern for its source values; ISO `%Y-%m-%d` when absent.
+   */
+  format?: string;
+  /**
+   * Whether the column serves as a key of its table; the run never reads it.
+   */
+  key?: boolean;
+  /**
+   * The values a categorical column takes, or `null` when it has none listed.
+   */
+  levels?: (string | null)[] | null;
+  /**
+   * The column's name in the table.
+   */
+  name?: string;
+  /**
+   * Where the column came from: `inferred`, `inherited` from a parent table's key, or `manual`;
+   * the run never reads it.
+   */
+  origin?: 'inferred' | 'inherited' | 'manual';
+  /**
+   * The JSONPath its values are read from, under the table's path.
+   */
+  path?: string;
+  /**
+   * Whether the column is part of the table the node reads.
+   */
+  selected?: boolean;
+  /**
+   * Whether the type was `Confirmed` by hand or `Inferred` from the sample.
+   */
+  status?: 'Confirmed' | 'Inferred';
+  /**
+   * The column's type: `int`, `float`, `str`, `bool` or `date`.
+   */
+  type?: 'int' | 'float' | 'str' | 'bool' | 'date';
+}
+/**
+ * A workbenchInput node's data, its config typed by its config model.
+ */
+export interface WorkbenchInputNodeData {
+  config: WorkbenchInputConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'workbenchInput';
+}
+/**
+ * A Workbench Input: given its tables and sample from the project's form wherever it runs.
+ */
+export interface WorkbenchInputConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The form's sample quote, given to the node where it runs; never stored in its config file.
+   */
+  sample?: {
+    [k: string]: unknown;
+  };
+  selected_columns?: string[];
+  /**
+   * The form's input tables, given to the node where it runs; never stored in its config file.
+   */
+  tables?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A workbenchOutput node's data, its config typed by its config model.
+ */
+export interface WorkbenchOutputNodeData {
+  config: WorkbenchOutputConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'workbenchOutput';
+}
+/**
+ * A Workbench Output: fills the form's response tables from its connected frames.
+ */
+export interface WorkbenchOutputConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  selected_columns?: string[];
+  /**
+   * The form's response tables, given to the node where it runs; never stored in its config file.
+   *
+   */
+  tables?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A dataInput node's data, its config typed by its config model.
+ */
+export interface DataInputNodeData {
+  config:
+    | DataInputFileConfig
+    | DataInputDatabaseConfig
+    | DataInputLakehouseConfig
+    | DataInputDatabricksConfig
+    | DataInputInlineConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'dataInput';
+}
+/**
+ * A Data Input reading a file.
+ */
+export interface DataInputFileConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The file format, such as `parquet`, `csv` or `ndjson`.
+   */
+  format?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The provider: a file.
+   */
+  inputType: 'file';
+  mode?: '' | 'read' | 'scan';
+  /**
+   * The file, relative to the project root or absolute.
+   */
+  path?: string;
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A Data Input reading a database query.
+ */
+export interface DataInputDatabaseConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  /**
+   * The named connection in `connections.toml`; exactly one of `connection` and `uri`.
+   */
+  connection?: string;
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The format of a database read: `database`.
+   */
+  format?: 'database';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The provider: a database.
+   */
+  inputType: 'database';
+  /**
+   * The SQL query whose rows the node reads.
+   */
+  query?: string;
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+  /**
+   * A credential-free database URI; exactly one of `connection` and `uri`.
+   */
+  uri?: string;
+}
+/**
+ * A Data Input reading a lakehouse table.
+ */
+export interface DataInputLakehouseConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The table format: `delta` or `iceberg`.
+   */
+  format?: 'delta' | 'iceberg';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The provider: a lakehouse table.
+   */
+  inputType: 'lakehouse';
+  mode?: '' | 'read' | 'scan';
+  /**
+   * The table's location.
+   */
+  path?: string;
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A Data Input reading a Databricks table.
+ */
+export interface DataInputDatabricksConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The SQL warehouse's HTTP path.
+   */
+  http_path?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The provider: Databricks.
+   */
+  inputType: 'databricks';
+  /**
+   * A SQL query to read instead of the whole table.
+   */
+  query?: string;
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+  /**
+   * The table, as `catalog.schema.table`.
+   */
+  table?: string;
+}
+/**
+ * A Data Input holding its rows inline.
+ */
+export interface DataInputInlineConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The format of inline rows: `records`.
+   */
+  format?: 'records';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The provider: rows held in the config.
+   */
+  inputType: 'inline';
+  mode?: '' | 'read' | 'scan';
+  /**
+   * The rows, each an object from column name to value.
+   */
+  records?: {
+    [k: string]: unknown;
+  }[];
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A dataOutput node's data, its config typed by its config model.
+ */
+export interface DataOutputNodeData {
+  config: DataOutputFileConfig | DataOutputDatabaseConfig | DataOutputLakehouseConfig | DataOutputDatabricksConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'dataOutput';
+}
+/**
+ * A Data Output writing a file.
+ */
+export interface DataOutputFileConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The file format, such as `parquet` or `csv`.
+   */
+  format?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  mode?: 'sink' | 'write';
+  /**
+   * The destination: a file.
+   */
+  outputType: 'file';
+  /**
+   * The file written, relative to the project root or absolute.
+   */
+  path?: string;
+  selected_columns?: string[];
+}
+/**
+ * A Data Output writing a database table.
+ */
+export interface DataOutputDatabaseConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  column_renames?: {
+    [k: string]: string;
+  };
+  /**
+   * The named connection in `connections.toml`; exactly one of `connection` and `uri`.
+   */
+  connection?: string;
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The format of a database write: `database`.
+   */
+  format?: 'database';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  mode?: 'sink' | 'write';
+  /**
+   * The destination: a database.
+   */
+  outputType: 'database';
+  selected_columns?: string[];
+  /**
+   * The table written.
+   */
+  table?: string;
+  /**
+   * A credential-free database URI; exactly one of `connection` and `uri`.
+   */
+  uri?: string;
+}
+/**
+ * A Data Output writing a lakehouse table.
+ */
+export interface DataOutputLakehouseConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The table format: `delta` or `iceberg`.
+   */
+  format?: 'delta' | 'iceberg';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  mode?: 'sink' | 'write';
+  /**
+   * The destination: a lakehouse table.
+   */
+  outputType: 'lakehouse';
+  /**
+   * The table's location.
+   */
+  path?: string;
+  selected_columns?: string[];
+}
+/**
+ * A Data Output loading a Databricks table.
+ */
+export interface DataOutputDatabricksConfig {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The SQL warehouse's HTTP path.
+   */
+  http_path?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The destination: Databricks.
+   */
+  outputType: 'databricks';
+  selected_columns?: string[];
+  /**
+   * The table, as `catalog.schema.table`.
+   */
+  table?: string;
+  /**
+   * Whether a load replaces the table's rows or adds to them.
+   */
+  write_mode?: 'overwrite' | 'append';
+}
+/**
+ * A polars node's data, its config typed by its config model.
+ */
+export interface PolarsNodeData {
+  config: TransformConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'polars';
+}
+/**
+ * A Polars transform: code, or the steps it is rendered from.
+ */
+export interface TransformConfig {
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The keyword-only parameters of a transform written as code, each with its literal default.
+   */
+  keyword_parameters?: KeywordParameter[];
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * One keyword-only parameter of a transform written as code, and its literal default.
+ */
+export interface KeywordParameter {
+  /**
+   * Its literal default, which a run binds.
+   */
+  default: string | number | boolean | null;
+  /**
+   * The parameter's name in the function signature.
+   */
+  name: string;
+}
+/**
+ * A edgeJoin node's data, its config typed by its config model.
+ */
+export interface EdgeJoinNodeData {
+  config: EdgeJoinConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'edgeJoin';
+}
+/**
+ * An Edge Join: joins its `join` input onto its `base` input.
+ */
+export interface EdgeJoinConfig {
+  /**
+   * Whether key columns of the same name are merged into one.
+   */
+  coalesce?: boolean;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The join type.
+   */
+  how?: 'inner' | 'left' | 'right' | 'full' | 'semi' | 'anti' | 'cross';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The key column or columns on the base input.
+   */
+  leftOn?: string | string[];
+  /**
+   * Which input's row order the result keeps; required, which the engine's join rules
+   * check with the values it takes.
+   */
+  maintainOrder?: 'none' | 'left' | 'right' | 'left_right' | 'right_left';
+  /**
+   * The key column or columns both inputs share; or use `leftOn` and `rightOn`.
+   */
+  on?: string | string[];
+  /**
+   * The key column or columns on the join input, matched in order with `leftOn`.
+   */
+  rightOn?: string | string[];
+  selected_columns?: string[];
+  /**
+   * The suffix added to a join-input column whose name the base input already has.
+   */
+  suffix?: string;
+  /**
+   * The cardinality the keys must have, checked when the join runs; `null` checks none.
+   */
+  validate?: '1:1' | '1:m' | 'm:1' | 'm:m' | null;
+}
+/**
+ * A modelScore node's data, its config typed by its config model.
+ */
+export interface ModelScoreNodeData {
+  config: ModelScoreConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'modelScore';
+}
+/**
+ * A Model Score: scores a model from a file, an MLflow run or a registered model.
+ */
+export interface ModelScoreConfig {
+  /**
+   * For a registered source, the alias whose version is scored, such as `champion`; excludes
+   * `version`.
+   */
+  alias?: string;
+  /**
+   * For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`.
+   */
+  artifact_path?: string;
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * For a run source, the MLflow experiment's id.
+   */
+  experiment_id?: string;
+  /**
+   * For a run source, the experiment's name, shown when the panel reopens.
+   */
+  experiment_name?: string;
+  /**
+   * The feature contract the model scores under, when it is not beside the model.
+   */
+  feature_contract_path?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is
+   * the local folder.
+   */
+  mlflow_destination?: '' | 'databricks' | 'server';
+  /**
+   * For a file source, the model file in the project, such as `models/freq.cbm`.
+   */
+  model_path?: string;
+  /**
+   * The column the prediction is written to; `prediction` when absent.
+   */
+  output_column?: string;
+  /**
+   * For a registered source, the registered model's name, such as `catalog.schema.model`.
+   */
+  registered_model?: string;
+  /**
+   * For a run source, the MLflow run whose model is scored.
+   */
+  run_id?: string;
+  /**
+   * For a run source, the run's name, shown when the panel reopens.
+   */
+  run_name?: string;
+  selected_columns?: string[];
+  /**
+   * Where the model comes from; empty or absent when no source is chosen yet.
+   */
+  sourceType?: '' | 'run' | 'registered' | 'file';
+  steps?: {
+    [k: string]: unknown;
+  }[];
+  /**
+   * Whether the model predicts a value or a class probability.
+   */
+  task?: 'regression' | 'classification';
+  /**
+   * For a registered source, the version scored, or `latest`; absent when `alias` is set.
+   */
+  version?: string;
+}
+/**
+ * A banding node's data, its config typed by its config model.
+ */
+export interface BandingNodeData {
+  config: BandingConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'banding';
+}
+/**
+ * A Banding node: one or more factors banded from input columns.
+ */
+export interface BandingConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The factors, each an input column, an output column and its bands.
+   */
+  factors?: BandingFactor[];
+  inputMapping?: {
+    [k: string]: string;
+  };
+  selected_columns?: string[];
+}
+/**
+ * One factor of a Banding node: an input column mapped to bands.
+ */
+export interface BandingFactor {
+  /**
+   * Whether the column is banded by numeric or date boundaries or by category.
+   */
+  banding?: 'breakpoints' | 'categorical';
+  /**
+   * The input column banded.
+   */
+  column?: string;
+  /**
+   * The band of a value no rule matches; `null` leaves it empty.
+   */
+  default?: string | null;
+  /**
+   * The column the band is written to.
+   */
+  outputColumn?: string;
+  /**
+   * For breakpoints, whether each band includes its upper boundary (`true`, the default) or its
+   * lower one.
+   */
+  rightClosed?: boolean;
+  /**
+   * The bands: rule rows in the editor, or a map from each boundary or value to its band in the
+   * config file.
+   */
+  rules?:
+    | {
+        [k: string]: unknown;
+      }[]
+    | {
+        [k: string]: unknown;
+      };
+}
+/**
+ * A ratingStep node's data, its config typed by its config model.
+ */
+export interface RatingStepNodeData {
+  config: RatingStepConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'ratingStep';
+}
+/**
+ * A Rating Step: rating tables looked up by factor and their combined outputs.
+ */
+export interface RatingStepConfig {
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  /**
+   * Columns combined from the tables' values.
+   */
+  combinedOutputs?: RatingCombinedOutput[];
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+  /**
+   * The rating tables.
+   */
+  tables?: RatingTable[];
+}
+/**
+ * A column a Rating Step combines from its tables' values.
+ */
+export interface RatingCombinedOutput {
+  /**
+   * The value the combination starts from: a number, or the editor's text of one.
+   */
+  baseValue: string | number;
+  /**
+   * How the tables' values are combined.
+   */
+  operation: 'multiply' | 'add' | 'min' | 'max';
+  /**
+   * The combined column.
+   */
+  outputColumn: string;
+}
+/**
+ * One table of a Rating Step: a value looked up by up to three factor columns.
+ */
+export interface RatingTable {
+  /**
+   * The value of a factor combination the table does not hold; `null` for none.
+   */
+  defaultValue?: string | number | null;
+  /**
+   * The table's rows, each a level of every factor and its `value`.
+   */
+  entries?: {
+    [k: string]: unknown;
+  }[];
+  /**
+   * For each factor, the type its levels are read as.
+   */
+  factorDtypes?: {
+    [k: string]: {
+      [k: string]: unknown;
+    };
+  };
+  /**
+   * The factor columns the table is keyed by, at most three.
+   */
+  factors?: string[];
+  /**
+   * With no default, whether a missing combination fails the run (`error`) or takes the neutral
+   * value (`neutral`).
+   */
+  onMissing?: 'error' | 'neutral';
+  /**
+   * The column the looked-up value is written to.
+   */
+  outputColumn?: string;
+}
+/**
+ * A output node's data, its config typed by its config model.
+ */
+export interface OutputNodeData {
+  config: OutputConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'output';
+}
+/**
+ * A Quote Response: the JSON response document assembled from mapped columns.
+ */
+export interface OutputConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The mapping rows, each a column of an incoming frame and the response path it fills.
+   */
+  outputMapping?: OutputMappingEntry[];
+  selected_columns?: string[];
+}
+/**
+ * One row of a Quote Response's mapping: a column and the response path it fills.
+ */
+export interface OutputMappingEntry {
+  /**
+   * Whether the row is part of the response.
+   */
+  enabled: boolean;
+  /**
+   * The JSONPath in the response document the column fills, such as `$[:].premium`.
+   */
+  output_path: string;
+  /**
+   * The column whose values fill the path.
+   */
+  source_column: string;
+  /**
+   * The incoming frame the column comes from, by its input name.
+   */
+  source_port: string;
+}
+/**
+ * A explore node's data, its config typed by its config model.
+ */
+export interface ExploreNodeData {
+  config: ExploreConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'explore';
+}
+/**
+ * An Explore node: overview cards, pivots and charts over its input.
+ */
+export interface ExploreConfig {
+  /**
+   * The chart cards.
+   */
+  charts?: ExploreChartConfig[];
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  overview?: ExploreOverviewConfig;
+  /**
+   * The formulas the node's pivots share.
+   */
+  pivot_formulas?: ExplorePivotFormula[];
+  /**
+   * The pivot cards.
+   */
+  pivots?: ExplorePivotPersistedConfig[];
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * Which overview cards an Explore node shows.
+ */
+export interface ExploreOverviewConfig {
+  /**
+   * Show the categorical summary card.
+   */
+  categorical_summary?: boolean;
+  /**
+   * Show the data quality card.
+   */
+  data_quality?: boolean;
+  /**
+   * Show the dataset snapshot card.
+   */
+  dataset_snapshot?: boolean;
+  /**
+   * Show the numeric summary card.
+   */
+  numeric_summary?: boolean;
+  /**
+   * Show the schema card.
+   */
+  schema?: boolean;
+}
+/**
+ * A formula over a pivot's values, shared by the node's pivots.
+ */
+export interface ExplorePivotFormula {
+  /**
+   * Decimal places shown; `null` uses the format's default.
+   */
+  decimal_places: number | null;
+  /**
+   * The formula's heading.
+   */
+  display_name: string;
+  /**
+   * The formula, over values' references.
+   */
+  expression: string;
+  /**
+   * The formula's id.
+   */
+  id: string;
+  /**
+   * How its values are shown.
+   */
+  number_format: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
+  /**
+   * The name other formulas refer to it by.
+   */
+  reference: string;
+  /**
+   * Whether thousands are grouped.
+   */
+  use_grouping: boolean;
+}
+/**
+ * One Explore pivot card as stored: shared formulas are selected by id.
+ */
+export interface ExplorePivotPersistedConfig {
+  /**
+   * The fields laid across the columns.
+   */
+  columns: ExplorePivotAxisPlacement[];
+  /**
+   * Whether the pivot is shown.
+   */
+  enabled: boolean;
+  /**
+   * The filters.
+   */
+  filters: ExplorePivotFilterPlacement[];
+  /**
+   * The shared formulas the pivot shows, by id.
+   */
+  formulas: string[];
+  /**
+   * The pivot's id.
+   */
+  id: string;
+  /**
+   * The pivot's name.
+   */
+  name: string;
+  options: ExplorePivotOptions;
+  /**
+   * The fields laid down the rows.
+   */
+  rows: ExplorePivotRowPlacement[];
+  /**
+   * The order its values and formulas are shown in, by id.
+   */
+  value_order: string[];
+  /**
+   * The aggregated values.
+   */
+  values: ExplorePivotValuePlacement[];
+  /**
+   * The pivot state's version.
+   */
+  version: 1;
+}
+/**
+ * A field laid across a pivot's columns.
+ */
+export interface ExplorePivotAxisPlacement {
+  /**
+   * Decimal places shown; `null` uses the format's default.
+   */
+  decimal_places: number | null;
+  /**
+   * The column.
+   */
+  field: string;
+  /**
+   * The placement's id.
+   */
+  id: string;
+  /**
+   * How its values are shown.
+   */
+  number_format: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
+  /**
+   * Whether thousands are grouped.
+   */
+  use_grouping: boolean;
+}
+/**
+ * A field filtering a pivot to chosen members.
+ */
+export interface ExplorePivotFilterPlacement {
+  /**
+   * The column filtered.
+   */
+  field: string;
+  /**
+   * The placement's id.
+   */
+  id: string;
+  /**
+   * The members kept.
+   */
+  members: ExplorePivotMember[];
+}
+/**
+ * One member of a pivot filter, typed so dates and numbers keep their identity.
+ */
+export interface ExplorePivotMember {
+  /**
+   * The member's type.
+   */
+  kind: 'null' | 'string' | 'boolean' | 'integer' | 'float' | 'nan' | 'date' | 'datetime' | 'time' | 'decimal';
+  /**
+   * The member's value, as JSON holds a value of its type.
+   */
+  value: string | number | boolean | null;
+}
+/**
+ * A pivot's totals and sorting.
+ */
+export interface ExplorePivotOptions {
+  /**
+   * Show a grand total column.
+   */
+  column_grand_totals: boolean;
+  /**
+   * Show a grand total row.
+   */
+  row_grand_totals: boolean;
+  /**
+   * The value rows are sorted by; `null` for none.
+   */
+  sort_by: string | null;
+}
+/**
+ * A field laid down a pivot's rows.
+ */
+export interface ExplorePivotRowPlacement {
+  decimal_places: number | null;
+  field: string;
+  id: string;
+  number_format: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
+  /**
+   * The order of its members.
+   */
+  sort: 'ascending' | 'descending';
+  use_grouping: boolean;
+}
+/**
+ * An aggregated value shown in a pivot's cells.
+ */
+export interface ExplorePivotValuePlacement {
+  /**
+   * How the column is aggregated.
+   */
+  aggregation: 'sum' | 'count' | 'average' | 'min' | 'max' | 'median' | 'distinct_count';
+  /**
+   * The colour scale of its cells.
+   */
+  color_scale: 'none' | 'low_red_high_green' | 'low_green_high_red';
+  /**
+   * The field the colour scale is computed within; `null` for the whole value.
+   */
+  color_scale_split_by: string | null;
+  /**
+   * Decimal places shown; `null` uses the format's default.
+   */
+  decimal_places: number | null;
+  /**
+   * The value's heading.
+   */
+  display_name: string;
+  /**
+   * The column aggregated.
+   */
+  field: string;
+  /**
+   * The placement's id.
+   */
+  id: string;
+  /**
+   * How its values are shown.
+   */
+  number_format: 'general' | 'number' | 'percent' | 'currency_gbp' | 'currency_usd' | 'currency_eur';
+  /**
+   * The name a formula refers to the value by.
+   */
+  reference: string;
+  /**
+   * Whether rows are sorted by this value.
+   */
+  sort_rows: 'none' | 'ascending' | 'descending';
+  /**
+   * Whether thousands are grouped.
+   */
+  use_grouping: boolean;
+}
+/**
+ * A externalFile node's data, its config typed by its config model.
+ */
+export interface ExternalFileNodeData {
+  config: ExternalFileConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'externalFile';
+}
+/**
+ * A Load File node: loads an object from a file for its code to use.
+ */
+export interface ExternalFileConfig {
+  code?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * How the file is loaded.
+   */
+  fileType?: 'pickle' | 'json' | 'joblib';
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The file, relative to the project root.
+   */
+  path?: string;
+  selected_columns?: string[];
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A liveSwitch node's data, its config typed by its config model.
+ */
+export interface LiveSwitchNodeData {
+  config: LiveSwitchConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'liveSwitch';
+}
+/**
+ * A Source Switch: routes one of its inputs by the run's source.
+ */
+export interface LiveSwitchConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * For each connected input, the source that routes to it, such as `live` or `batch`.
+   */
+  input_scenario_map?: {
+    [k: string]: string;
+  };
+  /**
+   * The connected inputs, in the order of the function's parameters (recorded by the parse).
+   */
+  inputs?: string[];
+  selected_columns?: string[];
+}
+/**
+ * A modelling node's data, its config typed by its config model.
+ */
+export interface ModellingNodeData {
+  config: ModellingConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'modelling';
+}
+/**
+ * A Model Training node: trains a model on its input.
+ */
+export interface ModellingConfig {
+  /**
+   * The model family: `catboost`, `glm`, `xgboost`, `lightgbm`, `ebm` or `tboost`; CatBoost when
+   * absent.
+   */
+  algorithm?: string;
+  /**
+   * For a GLM, the penalty strength; `null` chooses it by cross-validation.
+   */
+  alpha?: number | null;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * For a GLM, the cross-validation folds that choose the penalty strength (2 to 20).
+   */
+  cv_folds?: number;
+  /**
+   * For a GLM, the seed of the cross-validation split.
+   */
+  cv_seed?: number;
+  /**
+   * For a GLM, which cross-validated strength is chosen: the minimum or one standard error above
+   * it.
+   */
+  cv_selection?: 'min' | '1se';
+  /**
+   * For XGBoost, whether it trains on the CPU or a GPU; the CPU when absent.
+   */
+  device?: 'cpu' | 'gpu';
+  /**
+   * How the model is evaluated: the holdout or cross-validation split.
+   */
+  evaluation?: {
+    [k: string]: unknown;
+  };
+  /**
+   * For a GLM, the error distribution, such as `poisson` or `gamma`.
+   */
+  family?: string;
+  /**
+   * The columns the model trains on.
+   */
+  feature_columns?: string[];
+  /**
+   * For each weighted feature, its weight in feature selection.
+   */
+  feature_weights?: {
+    [k: string]: number;
+  };
+  /**
+   * The column assigning rows to cross-validation folds.
+   */
+  fold_column?: string;
+  /**
+   * Columns identifying rows, kept with the predictions but never trained on.
+   */
+  id_columns?: string[];
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * For a GLM, interaction terms between features.
+   */
+  interactions?: {
+    [k: string]: unknown;
+  }[];
+  /**
+   * For a GLM, whether the model has an intercept.
+   */
+  intercept?: boolean;
+  /**
+   * For an elastic-net GLM, the share of the L1 penalty, from 0 to 1.
+   */
+  l1_ratio?: number;
+  /**
+   * For a GLM, the link function, such as `log`.
+   */
+  link?: string;
+  /**
+   * The loss trained on, from the family's own losses; `null` takes the task's default.
+   */
+  loss_function?: string | null;
+  /**
+   * For a GLM, the most solver iterations; `null` takes the solver's default.
+   */
+  max_iter?: number | null;
+  /**
+   * The evaluation metrics reported.
+   */
+  metrics?: string[];
+  /**
+   * The MLflow server or Databricks workspace a run is logged to; empty or absent is the local
+   * folder.
+   */
+  mlflow_destination?: '' | 'databricks' | 'server';
+  /**
+   * The MLflow experiment a logged run goes to.
+   */
+  mlflow_experiment?: string;
+  /**
+   * The Export pane's file path; empty or absent uses the default.
+   */
+  model_export_path?: string;
+  /**
+   * For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none.
+   */
+  monotone_constraints?: {
+    [k: string]: number;
+  } | null;
+  /**
+   * The model's name, used for its run and exported file.
+   */
+  name?: string;
+  /**
+   * For a GLM, the offset column; `null` for none.
+   */
+  offset?: string | null;
+  /**
+   * The folder a trained model is written to.
+   */
+  output_dir?: string;
+  /**
+   * The family's own parameters, by name.
+   */
+  params?: {
+    [k: string]: unknown;
+  };
+  /**
+   * For a binary classifier, the label trained as positive; `true` or `1` when absent.
+   */
+  positive_class?: string | number | boolean;
+  /**
+   * Whether the final model is refit on all development rows (`true`, the default) or keeps the
+   * holdout fit.
+   */
+  refit_on_development?: boolean;
+  /**
+   * For a GLM, the penalty: `ridge`, `lasso` or `elastic_net`; empty or `null` for none.
+   */
+  regularization?: string | null;
+  /**
+   * For a GLM, the robust standard error type; `null` for model-based errors.
+   */
+  robust_standard_errors?: 'HC0' | 'HC1' | 'HC2' | 'HC3' | null;
+  /**
+   * The most rows trained on; `null` trains on every row.
+   */
+  row_limit?: number | null;
+  selected_columns?: string[];
+  /**
+   * The column the model predicts.
+   */
+  target?: string;
+  /**
+   * Whether the model predicts a value or a class.
+   */
+  task?: 'regression' | 'classification';
+  /**
+   * For a GLM, each feature's term: linear, categorical, a spline or a banded factor.
+   */
+  terms?: {
+    [k: string]: unknown;
+  };
+  /**
+   * For a negative binomial GLM, the dispersion; `null` when not set.
+   */
+  theta?: number | null;
+  /**
+   * For a GLM, the solver's convergence tolerance; `null` takes the solver's default.
+   */
+  tol?: number | null;
+  /**
+   * Hyperparameter tuning settings; `null` or absent trains with `params` as set.
+   */
+  tuning?: {
+    [k: string]: unknown;
+  } | null;
+  /**
+   * For a Tweedie GLM, the variance power (1 to 2); `null` when not set.
+   */
+  var_power?: number | null;
+  /**
+   * For a Tweedie loss, the variance power; `null` when not set.
+   */
+  variance_power?: number | null;
+  /**
+   * The column weighting each row, such as exposure.
+   */
+  weight?: string;
+}
+/**
+ * A optimiser node's data, its config typed by its config model.
+ */
+export interface OptimiserNodeData {
+  config: OptimiserConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'optimiser';
+}
+/**
+ * An Optimiser node: chooses each quote's scenario under constraints.
+ */
+export interface OptimiserConfig {
+  /**
+   * Up to 12 columns the result is broken down by; never given to the solver.
+   */
+  analysis_columns?: string[];
+  /**
+   * The connected input the analysis columns come from; `data_input` when absent.
+   */
+  analysis_input?: string;
+  /**
+   * For a ratebook, the connected input giving the factors' bands.
+   */
+  banding_source?: string;
+  /**
+   * For a ratebook, the coordinate-descent tolerance.
+   */
+  cd_tolerance?: number;
+  column_renames?: {
+    [k: string]: string;
+  };
+  /**
+   * For each constrained column, its bound: `min`, `max`, `min_pct` or `max_pct`.
+   */
+  constraints?: {
+    [k: string]: {
+      [k: string]: number;
+    };
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The connected input optimised, by its input name; may be absent with one input.
+   */
+  data_input?: string;
+  /**
+   * For a ratebook, the factor groups the table is fitted over.
+   */
+  factor_columns?: string[][];
+  /**
+   * For each constraint swept by the frontier, its range.
+   */
+  frontier_ranges?: {
+    [k: string]: {
+      [k: string]: number;
+    };
+  };
+  /**
+   * The number of points on the frontier.
+   */
+  frontier_steps?: number;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * For a ratebook, the most coordinate-descent passes.
+   */
+  max_cd_iterations?: number;
+  /**
+   * The most solver iterations.
+   */
+  max_iter?: number;
+  /**
+   * The MLflow server or Databricks workspace a result is logged to; empty or absent is the local
+   * folder.
+   */
+  mlflow_destination?: '' | 'databricks' | 'server';
+  /**
+   * The MLflow experiment a logged result goes to.
+   */
+  mlflow_experiment?: string;
+  /**
+   * Whether each quote is optimised (`online`) or a factor table is fitted (`ratebook`).
+   */
+  mode?: 'online' | 'ratebook';
+  /**
+   * The column the optimiser maximises.
+   */
+  objective?: string;
+  /**
+   * The column identifying each quote.
+   */
+  quote_id?: string;
+  /**
+   * The Export pane's save path, relative to the project root.
+   */
+  result_export_path?: string;
+  /**
+   * The column holding each scenario's grid position.
+   */
+  scenario_index?: string;
+  /**
+   * The column holding each scenario's value.
+   */
+  scenario_value?: string;
+  selected_columns?: string[];
+  /**
+   * The solver's convergence tolerance.
+   */
+  tolerance?: number;
+}
+/**
+ * A scenarioExpander node's data, its config typed by its config model.
+ */
+export interface ScenarioExpanderNodeData {
+  config: ScenarioExpanderConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'scenarioExpander';
+}
+/**
+ * A Scenario Expander: one row per quote and grid value.
+ */
+export interface ScenarioExpanderConfig {
+  code?: string;
+  /**
+   * The column the grid value is written to, such as `scenario_value`.
+   */
+  column_name?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The grid's last value.
+   */
+  max_value?: number;
+  /**
+   * The grid's first value.
+   */
+  min_value?: number;
+  /**
+   * The column identifying each quote.
+   */
+  quote_id?: string;
+  selected_columns?: string[];
+  /**
+   * The number of grid values, at least 1.
+   */
+  stepCount?: number;
+  /**
+   * The column the grid position (from 0) is written to, such as `scenario_index`.
+   */
+  step_column?: string;
+  steps?: {
+    [k: string]: unknown;
+  }[];
+}
+/**
+ * A optimiserApply node's data, its config typed by its config model.
+ */
+export interface OptimiserApplyNodeData {
+  config: OptimiserApplyConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'optimiserApply';
+}
+/**
+ * An Optimiser Apply node: applies a saved optimiser result to quotes.
+ */
+export interface OptimiserApplyConfig {
+  /**
+   * For a registered source, the alias whose version is applied; excludes `version`.
+   */
+  alias?: string;
+  /**
+   * For a file source, the saved optimiser result; for an MLflow source, its path in the run's
+   * artifacts.
+   */
+  artifact_path?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * For a run source, the MLflow experiment's id.
+   */
+  experiment_id?: string;
+  /**
+   * For a run source, the experiment's name, shown when the panel reopens.
+   */
+  experiment_name?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is
+   * the local folder.
+   */
+  mlflow_destination?: '' | 'databricks' | 'server';
+  /**
+   * The column the chosen scenario value is written to.
+   */
+  optimised_value_column?: string;
+  /**
+   * The mode of the applied result, when known.
+   */
+  optimiser_mode?: '' | 'online' | 'ratebook';
+  /**
+   * For a ratebook result, the connected input it is applied to, by its input name.
+   */
+  ratebook_input?: string;
+  /**
+   * For a registered source, the registered model's name.
+   */
+  registered_model?: string;
+  /**
+   * For a run source, the MLflow run holding the result.
+   */
+  run_id?: string;
+  /**
+   * For a run source, the run's name, shown when the panel reopens.
+   */
+  run_name?: string;
+  selected_columns?: string[];
+  /**
+   * Where the optimiser result comes from; empty or absent when none is chosen yet.
+   */
+  sourceType?: '' | 'file' | 'run' | 'registered';
+  /**
+   * For a registered source, the version applied, or `latest`; absent when `alias` is set.
+   */
+  version?: string;
+  /**
+   * The column the applied result's version is written to.
+   */
+  version_column?: string;
+}
+/**
+ * A constant node's data, its config typed by its config model.
+ */
+export interface ConstantNodeData {
+  config: ConstantConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'constant';
+}
+/**
+ * A Constant node: a one-row frame of named values.
+ */
+export interface ConstantConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  selected_columns?: string[];
+  /**
+   * The values, one column each.
+   */
+  values?: ConstantValue[];
+}
+/**
+ * One value of a Constant node; an entry without a name is skipped.
+ */
+export interface ConstantValue {
+  /**
+   * The column the value is written to.
+   */
+  name?: string;
+  /**
+   * The value, read as a number where it is one and kept as it is otherwise.
+   */
+  value?: string | number | boolean | null;
+}
+/**
+ * A submodel node's data, its config typed by its config model.
+ */
+export interface SubmodelNodeData {
+  config: SubmodelConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'submodel';
+}
+/**
+ * A submodel occurrence: which definition it is, and its name in the pipeline.
+ */
+export interface SubmodelConfig {
+  /**
+   * The occurrence's name in the pipeline.
+   */
+  alias?: string;
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  /**
+   * The submodel definition this occurrence runs.
+   */
+  definitionId?: string;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  /**
+   * For an instance, the occurrence whose definition it shares.
+   */
+  instanceOf?: string;
+  selected_columns?: string[];
+}
+/**
+ * A submodelPort node's data, its config typed by its config model.
+ */
+export interface SubmodelPortNodeData {
+  config: SubmodelPortConfig;
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: 'submodelPort';
+}
+/**
+ * A submodel's input or output port: a structural node with no settings of its own.
+ */
+export interface SubmodelPortConfig {
+  column_renames?: {
+    [k: string]: string;
+  };
+  contract?: 'opaque' | ContractColumns;
+  inputMapping?: {
+    [k: string]: string;
+  };
+  selected_columns?: string[];
+}
+/**
+ * One shared, file-backed submodel definition and its public interface.
+ */
+export interface SubmodelDefinition {
+  definitionId: string;
+  file: string;
+  graph: PipelineGraph;
+  inputPorts: SubmodelInputPort[];
+  outputPorts: SubmodelOutputPort[];
+}
+/**
+ * A public input with ordered internal targets, or none while unrouted.
+ */
+export interface SubmodelInputPort {
+  name: string;
+  targets: SubmodelEndpoint[];
+}
+/**
+ * One stable public-port binding to an internal definition endpoint.
+ */
+export interface SubmodelEndpoint {
+  handleId: string | null;
+  nodeId: string;
+}
+/**
+ * A public output backed by exactly one internal source.
+ */
+export interface SubmodelOutputPort {
+  name: string;
+  source: SubmodelEndpoint;
 }
 export interface CreateNodeInstanceResponse {
   definition_id: string;

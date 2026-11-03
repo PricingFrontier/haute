@@ -69,7 +69,7 @@ from haute.deploy._schema import _read_sample_row, infer_input_schema
 from haute.deploy._scorer import DeployInput, QuoteRequest, score_graph
 from haute.deploy._utils import shipped_graph
 from haute.deploy._validators import score_test_quotes
-from haute.errors import ConfigError, RequestRefusedError
+from haute.errors import ConfigError, NodeConfigError, RequestRefusedError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
@@ -1056,13 +1056,21 @@ def test_a_workbench_inputs_table_point_follows_its_sample(project: Path) -> Non
 
 _MISFITS = {
     "wrong type": ({"policy": {"limit": "lots"}}, "policy.limit is 'lots', not 'int'"),
-    "not an object": ([], "the sample is a list, not an object"),
     "object for a list": ({"items": {"value": 1}}, "items is an object, not a list"),
     "value for an object": ({"policy": 17}, "policy is a value, not an object"),
     "value in a list": ({"items": [{"item_id": "A"}, 5]}, "items[1] is a value, not a row"),
     "null in a list": ({"items": [None]}, "items[0] is null, not a row"),
     "list in a list": ({"items": [[1]]}, "items[0] is a list, not a row"),
 }
+
+
+def test_a_sample_that_is_not_an_object_is_refused_when_the_node_is_built(project: Path) -> None:
+    # The form always gives an object (``sample_quote``); anything else is refused by the
+    # Workbench Input's config model when the node is built, naming the setting.
+    with pytest.raises(
+        NodeConfigError, match=r"Node 'request' \(workbenchInput\) setting 'sample': "
+    ):
+        _preview(_sampled(project, []), "listed")
 
 
 @pytest.mark.parametrize(("sample", "reason"), list(_MISFITS.values()), ids=list(_MISFITS))
@@ -1354,7 +1362,9 @@ def _request(nid: str, node_type: NodeType) -> GraphNode:
     """A request input as the editor holds it: a Workbench Input holds no tables."""
     if node_type is NodeType.WORKBENCH_INPUT:
         return _node(nid, node_type, {})
-    return _node(nid, node_type, {"tables": copy.deepcopy(_TABLES[:1]), "path": "quotes.json"})
+    return _node(
+        nid, node_type, {"tables": copy.deepcopy(_QUOTE_TABLES[:1]), "path": "quotes.json"}
+    )
 
 
 def _nested() -> dict[str, SubmodelDefinition]:

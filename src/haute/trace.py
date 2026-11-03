@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -122,6 +122,7 @@ from haute.executor import (
 )
 from haute.graph_utils import (
     GraphEdge,
+    GraphNode,
     NodeType,
     PipelineGraph,
     topo_sort_ids,
@@ -369,6 +370,24 @@ def _integer_output_node_ids(
         for step in steps
         if _is_integer_output_column(eager_outputs, step.node_id, column)
     }
+
+
+def request_row_identity(
+    nodes: Iterable[GraphNode], target_row: Mapping[str, Any]
+) -> tuple[str | None, Any]:
+    """The traced row's identity: a request table's ``row_id_column`` and its value.
+
+    The first request input table, in graph order, whose row id column the traced row
+    carries; ``(None, None)`` when none does.
+    """
+    for node in nodes:
+        if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
+            continue
+        for table in node.data.config.get("tables") or ():
+            column = table.get("row_id_column")
+            if column and column in target_row:
+                return column, target_row[column]
+    return None, None
 
 
 def execute_trace(
@@ -1488,14 +1507,7 @@ def _execute_trace_core(
     target_row = cached_rows.get(target_node_id) or {}
     output_value = target_row.get(column) if column else target_row
 
-    # ---------- Row identity from the request input ----------
-    row_id_column: str | None = None
-    row_id_value: Any = None
-    for n in nodes:
-        if n.data.nodeType in REQUEST_INPUT_NODE_TYPES and n.data.config.get("row_id_column"):
-            row_id_column = n.data.config["row_id_column"]
-            row_id_value = target_row.get(row_id_column)
-            break
+    row_id_column, row_id_value = request_row_identity(nodes, target_row)
 
     total_ms = round((time.perf_counter() - t_start) * 1000, 2)
 

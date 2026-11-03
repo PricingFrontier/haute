@@ -142,6 +142,7 @@ import {
   withPipelineGraph,
   traceFromContract,
   type ExecutionMetricsValidator,
+  type PipelineGraphValidator,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
@@ -167,10 +168,16 @@ const sessionValidators = () => import("../generated/api-contracts.session.valid
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 const executionMetricsValidators = () =>
   import("../generated/api-contracts.execution-metrics.validators.mjs")
+const pipelineGraphValidators = () => import("../generated/api-contracts.pipeline-graph.validators.mjs")
 
 /** The shared execution-metrics validator, for a response that carries execution metrics. */
 async function metricsValidator(): Promise<ExecutionMetricsValidator> {
   return (await executionMetricsValidators()).validateExecutionMetricsPayload
+}
+
+/** The shared pipeline-graph validator, for a response that answers with a canonical graph. */
+async function graphValidator(): Promise<PipelineGraphValidator> {
+  return (await pipelineGraphValidators()).validatePipelineGraph
 }
 import {
   parseRemoveBrokenConnectionApplyResponse,
@@ -1238,6 +1245,7 @@ export function createSubmodel(
 ): Promise<SubmodelCreateResponse> {
   return post<unknown>("/api/submodel/create", payload, options).then(async (data) => withPipelineGraph(
     expectGeneratedContract("CreateSubmodelResponse", (await pipelineValidators()).validateCreateSubmodelResponse, data),
+    await graphValidator(),
   ))
 }
 
@@ -1247,6 +1255,7 @@ export function createNodeInstance(
 ): Promise<NodeInstanceCreateResponse> {
   return post<unknown>("/api/submodel/instance", payload, options).then(async (data) => withPipelineGraph(
     expectGeneratedContract("CreateNodeInstanceResponse", (await pipelineValidators()).validateCreateNodeInstanceResponse, data),
+    await graphValidator(),
   ))
 }
 
@@ -1265,6 +1274,7 @@ export function loadSubmodel(
     options,
   ).then(async (data) => withPipelineGraph(
     expectGeneratedContract("SubmodelGraphResponse", (await pipelineValidators()).validateSubmodelGraphResponse, data),
+    await graphValidator(),
   ))
 }
 
@@ -1283,6 +1293,7 @@ export function dissolveSubmodel(
 ): Promise<DissolveSubmodelResponse> {
   return post<unknown>("/api/submodel/dissolve", payload, options).then(async (data) => withPipelineGraph(
     expectGeneratedContract("DissolveSubmodelResponse", (await pipelineValidators()).validateDissolveSubmodelResponse, data),
+    await graphValidator(),
   ))
 }
 
@@ -2474,9 +2485,7 @@ export function getCommitPipeline(
   return request<unknown>(
     `/api/git/show/${encodeURIComponent(sha)}?source_file=${encodeURIComponent(sourceFile)}`,
     options,
-  ).then(async (data) => pipelineGraphFromContract(
-    expectGeneratedContract("PipelineGraph", (await gitValidators()).validatePipelineGraph, data),
-  ))
+  ).then(async (data) => pipelineGraphFromContract(await graphValidator(), data))
 }
 
 /** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).

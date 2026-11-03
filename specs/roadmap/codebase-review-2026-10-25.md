@@ -210,14 +210,13 @@ puts it in front of the owner because of what it can cost in production:
 Already tracked before this review and not repeated: the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the per-type
-validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
+branches (`PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
 (`MOD-M01`, `MOD-M02`); the assistant
-catalog's hand tables and
-key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
+catalog's hand tables (`PCFG-R09`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead

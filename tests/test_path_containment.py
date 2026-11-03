@@ -682,8 +682,9 @@ class TestNodeConfigs:
         from haute.errors import ConfigError
 
         project, _ = layout
-        # An in-project config gets past containment to its own validation.
-        with pytest.raises(ConfigError, match="no model source"):
+        # An in-project config gets past containment to its own validation: the
+        # Model Score's config model refuses the fixture's ``k``.
+        with pytest.raises(ConfigError, match="config keys the node type does not declare: 'k'"):
             score_from_config(config="data/doc.json", base_dir=project)
         with pytest.raises(ValueError, match="resolves outside project root"):
             score_from_config(config=_escaping(project, escape, "doc.json"), base_dir=project)

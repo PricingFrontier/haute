@@ -224,8 +224,12 @@ package input validated by `hatch_build.py`, not hand-edited source.
   "In the pipeline file" table (a closed admonition whose `Setting in the editor |
   Stored as` table maps editor labels to config keys, nested keys written with
   their parent path such as `tables[].emit`) names only top-level keys accepted by
-  `haute._config_validation.VALID_KEYS` for its type,
-  and no published page (outside `exclude_docs`) uses retired node vocabulary
+  `haute._config_validation.VALID_KEYS` for its type, each page's generated
+  config-keys table (between `<!-- config-keys:start -->` and
+  `<!-- config-keys:end -->` inside that admonition: one row per key, nested keys
+  under their parent's path, with its type and its description from the node
+  type's config model) is what `scripts/generate_node_config_reference.py --check`
+  expects, and no published page (outside `exclude_docs`) uses retired node vocabulary
   such as Data Source, Data Sink or `flat_file`.
 - Package/install smoke coverage is defined and run by
   [engineering-quality](../engineering-quality/low-level.md#testing), notably

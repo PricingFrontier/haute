@@ -535,7 +535,6 @@ class TestRatingStepSingleTable:
         rating_config = {
             "tables": [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type"],
                     "outputColumn": "vehicle_factor",
                     "defaultValue": "1.0",
@@ -548,7 +547,6 @@ class TestRatingStepSingleTable:
                     ],
                 },
                 {
-                    "name": "channel_factor",
                     "factors": ["channel"],
                     "outputColumn": "channel_factor",
                     "defaultValue": "1.0",

@@ -557,6 +557,7 @@ class TestEditorAndPackagedScoringAgree:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from haute._output_assembler import render_output_document
         from haute.deploy._model_code import HauteModel
         from haute.deploy._pruner import find_output_node, prune_for_deploy
         from haute.deploy._scorer import score_graph
@@ -575,7 +576,7 @@ class TestEditorAndPackagedScoringAgree:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": str(input_file), "sourceType": "flat_file"},
+                            "config": {"path": str(input_file)},
                         },
                     },
                     {
@@ -592,8 +593,10 @@ class TestEditorAndPackagedScoringAgree:
                         "id": "out",
                         "data": {
                             "label": "out",
-                            "nodeType": "dataOutput",
-                            "config": {"output": True},
+                            "nodeType": "output",
+                            "config": make_output_config(
+                                ["x", "label", "doubled"], source_port="trans"
+                            ),
                         },
                     },
                 ],
@@ -644,8 +647,8 @@ class TestEditorAndPackagedScoringAgree:
         ctx.artifacts = {"deploy_manifest": str(manifest_path)}
         model.load_context(ctx)
 
-        predict_df = model.predict(ctx, input_df.to_pandas())
-        predict_rows = pl.from_pandas(predict_df).to_dicts()
+        predict_frame = pl.from_pandas(model.predict(ctx, input_df.to_pandas()))
+        predict_rows = predict_frame.to_dicts()
 
         # JSON-safe conversion
         def to_json_safe(rows: list[dict]) -> list[dict]:
@@ -656,4 +659,11 @@ class TestEditorAndPackagedScoringAgree:
         predict_json = to_json_safe(predict_rows)
 
         assert len(editor_json) == 3
-        assert editor_json == score_json == predict_json
+        assert score_json == predict_json
+        # The editor previews the Quote Response's document; a deployment answers with
+        # the document rendered from its frame (null fields left out).
+        assert (
+            editor_json
+            == to_json_safe(render_output_document(score_df))
+            == to_json_safe(render_output_document(predict_frame))
+        )
