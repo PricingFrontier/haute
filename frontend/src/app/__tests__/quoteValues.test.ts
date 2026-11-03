@@ -35,6 +35,7 @@ import {
   writeDraft,
   writeSuperseded,
   type KeptCreation,
+  type Values,
 } from "../quoteValues"
 
 describe("values", () => {
@@ -46,7 +47,7 @@ describe("values", () => {
 
   it("put back on the sheets keep each row's values in store columns the form dropped", () => {
     const kept = JSON.stringify({ mileage: 100 })
-    const values = { equipment: [{ "equipment.item": "Crane", gone: "x", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] }
+    const values: Values = { equipment: [{ "equipment.item": "Crane", gone: "x", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] }
     expect(onSheets(sheetForm(), values)).toEqual({ equipment: [{ "equipment.item": "Crane", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] })
   })
 
