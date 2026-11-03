@@ -68,11 +68,24 @@ REGISTRATIONS: Mapping[str, int | str] = {
 _NODE_TYPE_ANNOTATIONS = frozenset({"NodeType", "NodeType | str", "str | NodeType"})
 
 #: Functions whose job is one node type, each with its member and why.
-SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {}
+SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
+    ("_ram_estimate.py", "estimate_safe_training_rows"): (
+        "MODELLING",
+        "the Model Training RAM estimate: a tree model target trains only its selected columns",
+    ),
+}
 
 #: Node-type-looking strings that are not about node types:
 #: ``(module, qualname, value, context) -> (count, reason)``.
 NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
+    ("projection.py", "_node_selector_roots", "polars", "compare:node.module"): (
+        1,
+        "the polars module name in an import",
+    ),
+    ("projection.py", "_is_selector_construction", "polars", "compare:val.value.id"): (
+        1,
+        "the polars module name as a call receiver",
+    ),
     ("_trace_lineage.py", "_Derivation._rule_references", "banding", "compare:detail_type"): (
         1,
         "trace detail type",
@@ -138,7 +151,6 @@ BASELINE: Mapping[str, int] = {
     "_polars_selectors.py": 1,
     "_polars_steps.py": 2,
     "_quote_store/_rows.py": 2,
-    "_ram_estimate.py": 24,
     "_rating.py": 2,
     "_recovery_sources.py": 2,
     "_seed_plans.py": 8,
@@ -156,7 +168,6 @@ BASELINE: Mapping[str, int] = {
     "executor.py": 7,
     "modelling/_train_config.py": 1,
     "pipeline.py": 11,
-    "projection.py": 80,
     "routes/_helpers.py": 1,
     "routes/_job_store.py": 2,
     "routes/_optimiser_input.py": 1,

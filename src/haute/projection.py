@@ -35,7 +35,7 @@ from haute._estimate_calibration import (
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
 from haute._model_source import model_score_output_column
-from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._polars_call_shapes import (
     replace_call_has_literal_mapping,
     replace_strict_call_has_literal_mapping,
@@ -1218,14 +1218,14 @@ def _execution_strategy_provenance_items(
         # planner has already incorporated that contract into ``demand``;
         # provenance must describe the resulting demand without loading the
         # same artifact a second time.
-        if node.data.nodeType is NodeType.MODEL_SCORE:
+        if _projection_of(node.data.nodeType).model_contract:
             continue
         produced, referenced = projection_contract(node).to_tuple()
         if produced is not None and referenced is not None:
             for column in sorted(referenced):
                 add(column, "expression", node_id, column)
 
-        if node.data.nodeType is NodeType.EDGE_JOIN:
+        if _has_projection_rule(node, _EDGE_JOIN_FAN_IN_RULE.name):
             base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
             for column in sorted(base_keys | join_keys):
                 add(column, "join_key", node_id, column)
@@ -2995,7 +2995,7 @@ def materialising_operator_sequences_by_input_names(
     found: dict[str, tuple[str, ...]] = {}
     for node_id in order:
         node = node_map[node_id]
-        if node.data.nodeType is not NodeType.POLARS:
+        if node_spec(node.data.nodeType).code != "transform":
             continue
         code = node.data.config.get("code")
         if not isinstance(code, str) or not code.strip():
@@ -3195,7 +3195,7 @@ def builder_required_output_columns_by_node(
         if isinstance(required_columns, AllExceptColumns):
             demands[node_id] = None
             continue
-        if node.data.nodeType == NodeType.MODEL_SCORE:
+        if _has_projection_rule(node, _MODEL_SCORE_BUILDER_DEMAND_RULE_NAME):
             demands[node_id] = (
                 None
                 if preserve_eager_model_score_inputs
@@ -3221,7 +3221,7 @@ def _declared_api_input_port_columns(
     """
     if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
         return None
-    if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+    if node_spec(node.data.nodeType).workbench:
         return _declared_workbench_port_columns(node)
     tables = node.data.config.get("tables")
     if not isinstance(tables, list):
@@ -3428,7 +3428,7 @@ def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str
         contract = get_node_contract(node_type, config)
     except HauteError as exc:
         if (
-            node_type is not NodeType.MODEL_SCORE
+            not _projection_of(node_type).model_contract
             or is_public_contract_error(exc)
             or not _authored_refusal(exc)
         ):
@@ -3459,7 +3459,7 @@ def _projection_contract_from_registered(
 ) -> Contract:
     """Apply projection-specific interpretation to one registered contract."""
     contract = overlay_declared_contract(node, registered)
-    if node.data.nodeType == NodeType.POLARS and not _has_user_polars_code(node):
+    if node_spec(node.data.nodeType).code == "transform" and not _has_user_polars_code(node):
         # A code-free Polars node is a passthrough: undeclared sides read and
         # produce nothing. This is a projection default, not a config-derived
         # builder side, so it must not displace the node's declaration.
@@ -3467,15 +3467,9 @@ def _projection_contract_from_registered(
     return contract
 
 
-# Builders that run their optional ``code`` over their own output as ``df``.
-_POST_CODE_BUILDER_TYPES = frozenset(
-    {NodeType.MODEL_SCORE, NodeType.RATING_STEP, NodeType.SCENARIO_EXPANDER}
-)
-
-
 def _builder_post_code(node: GraphNode) -> str | None:
     """Return a builder's post-code, which runs over the builder output as ``df``."""
-    if node.data.nodeType not in _POST_CODE_BUILDER_TYPES:
+    if not _projection_of(node.data.nodeType).post_code:
         return None
     code = str(node.data.config.get("code") or "").strip()
     return code or None
@@ -3498,11 +3492,11 @@ def _pre_post_code_contract(
     ``<output>_proba`` among it that the contract does not prove the scorer
     produces leaves the inputs unknown (see below).
     """
-    if node.data.nodeType is NodeType.MODEL_SCORE:
+    if _projection_of(node.data.nodeType).model_contract:
         scorer_config = {
             key: value for key, value in node.data.config.items() if key not in {"code", "steps"}
         }
-        scorer = _node_column_contract(node, NodeType.MODEL_SCORE, scorer_config)
+        scorer = _node_column_contract(node, node.data.nodeType, scorer_config)
         contract = effective
         if scorer.inputs:
             # The executor still checks the declared inputs at the node's boundary.
@@ -3562,7 +3556,7 @@ class OptimiserParentDemandRule:
         edge_count_by_parent: dict[str, int] = {}
         for edge in incoming:
             edge_count_by_parent[edge.source] = edge_count_by_parent.get(edge.source, 0) + 1
-        if not parent_set or node.data.nodeType != NodeType.OPTIMISER:
+        if not parent_set or not _has_projection_rule(node, self.name):
             return None
 
         config = node.data.config
@@ -3696,7 +3690,7 @@ class OptimiserApplyParentDemandRule:
         incoming_edges: Iterable[GraphEdge],
     ) -> ParentDemandResult | None:
         incoming = list(incoming_edges)
-        if node.data.nodeType is not NodeType.OPTIMISER_APPLY or len(incoming) != 1:
+        if not _has_projection_rule(node, self.name) or len(incoming) != 1:
             return None
         from haute._builders import online_apply_input_columns
         from haute._node_apply import load_configured_optimiser_artifact
@@ -3749,7 +3743,7 @@ def parent_demands_for_node(
 
     Return optimiser- or online-apply-specific parent demands when configured.
     """
-    if node.data.nodeType is NodeType.OPTIMISER_APPLY:
+    if _has_projection_rule(node, _OPTIMISER_APPLY_PARENT_DEMAND_RULE.name):
         return _OPTIMISER_APPLY_PARENT_DEMAND_RULE.parent_demands(node, incoming_edges)
     return _OPTIMISER_PARENT_DEMAND_RULE.parent_demands(
         node,
@@ -3781,7 +3775,7 @@ class OpaqueContractRule:
                 node_id=node.id,
                 node_type=node.data.nodeType.value,
             )
-        if len(parent_set) > 1 and node.data.nodeType == NodeType.POLARS:
+        if len(parent_set) > 1 and _has_projection_rule(node, _POLARS_FAN_IN_RULE.name):
             return _unprojected_boundary_demands()
         if _user_code_has_unbounded_projection_contract(node):
             return _unprojected_boundary_demands()
@@ -3795,28 +3789,15 @@ class OpaqueContractRule:
 _OPAQUE_CONTRACT_RULE = OpaqueContractRule()
 
 
-_USER_CODE_NODE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset(
-    {
-        NodeType.DATA_INPUT,
-        NodeType.EXTERNAL_FILE,
-        NodeType.MODEL_SCORE,
-        NodeType.OPTIMISER_APPLY,
-        NodeType.POLARS,
-        NodeType.RATING_STEP,
-        NodeType.SCENARIO_EXPANDER,
-    }
-)
-
-
 def _has_projection_user_code(node: GraphNode) -> bool:
-    if node.data.nodeType not in _USER_CODE_NODE_TYPES:
+    if not _projection_of(node.data.nodeType).user_code:
         return False
     code = node.data.config.get("code")
     return isinstance(code, str) and bool(code.strip())
 
 
 def _has_user_polars_code(node: GraphNode) -> bool:
-    if node.data.nodeType != NodeType.POLARS:
+    if node_spec(node.data.nodeType).code != "transform":
         return False
     code = node.data.config.get("code")
     return isinstance(code, str) and bool(code.strip())
@@ -3825,7 +3806,8 @@ def _has_user_polars_code(node: GraphNode) -> bool:
 def _user_code_has_unbounded_projection_contract(node: GraphNode) -> bool:
     if not _has_projection_user_code(node):
         return False
-    if node.data.nodeType == NodeType.DATA_INPUT and source_user_code_preserves_column_projection(
+    lineage_source = _projection_of(node.data.nodeType).source_code == "lineage"
+    if lineage_source and source_user_code_preserves_column_projection(
         str(node.data.config.get("code") or "")
     ):
         return False
@@ -3845,12 +3827,11 @@ def _must_run_source_user_code_unprojected(node: GraphNode, demand: set[str] | N
     its builder reads exactly the columns that code consumes.  An External File
     opens no scan, so its code is analysed as a transform instead.
     """
-    if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES | {
-        NodeType.DATA_INPUT,
-    } or not _user_code_has_unbounded_projection_contract(node):
+    source_code = _projection_of(node.data.nodeType).source_code
+    if source_code == "none" or not _user_code_has_unbounded_projection_contract(node):
         return False
     return not (
-        node.data.nodeType == NodeType.DATA_INPUT
+        source_code == "lineage"
         and demand is not None
         and source_user_code_scan_columns(
             node.data.config,
@@ -3890,7 +3871,7 @@ class PolarsFanInRule:
         referenced: set[str],
     ) -> ParentDemandResult | None:
         parent_set = set(parent_ids)
-        if len(parent_set) <= 1 or node.data.nodeType != NodeType.POLARS:
+        if len(parent_set) <= 1 or not _has_projection_rule(node, self.name):
             return None
 
         parent_inputs = declared_inputs_by_parent(node, parent_set)
@@ -4095,7 +4076,7 @@ def edge_join_fan_in_demands_for_node(
 ) -> ParentDemandResult | None:
     """Return routed demands for an opaque-contract edge-join fan-in node."""
     incoming = list(incoming_edges)
-    if node.data.nodeType != NodeType.EDGE_JOIN or len(incoming) <= 1:
+    if not _has_projection_rule(node, _EDGE_JOIN_FAN_IN_RULE.name) or len(incoming) <= 1:
         return None
     return _EDGE_JOIN_FAN_IN_RULE.parent_demands(
         node,
@@ -4114,94 +4095,162 @@ UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME = "unprojected_streaming_boundary"
 RUNTIME_INFERRED_STREAMING_RULE_NAME = "runtime_inferred_streaming"
 
 
-def _coverage(
-    node_type: NodeType,
+SourceCode = Literal["none", "full_width", "lineage"]
+
+
+@dataclass(frozen=True)
+class _NodeProjection:
+    """How projection plans one node type: its rules and the facts they read.
+
+    ``rules``, ``opaque`` and ``note`` are the type's
+    :class:`ProjectionRuleCoverage`; a rule applies to a node exactly when its
+    type's entry names it (:func:`_has_projection_rule`).
+    """
+
+    rules: frozenset[str]
+    opaque: bool = False
+    note: str = ""
+    #: Its ``code`` runs inside its builder, so projection must prove what that
+    #: code reads before it narrows the node's inputs.
+    user_code: bool = False
+    #: Its builder runs its optional ``code`` over its own output as ``df``.
+    post_code: bool = False
+    #: Its contract comes from loading its model: a refusal of the model becomes
+    #: the node's setting error, provenance never loads it a second time, and its
+    #: code-free contract is the scorer's.
+    model_contract: bool = False
+    #: A scanning source's post-load code: ``full_width`` runs over the whole
+    #: scan when the code's reads are unproven; ``lineage`` also lets the column
+    #: lineage model prove the scan columns (a Data Input); ``none`` is not such a
+    #: source.
+    source_code: SourceCode = "none"
+    #: A terminal node's demand is its output mapping's active source columns.
+    output_mapping: bool = False
+
+
+def _projection(
     *rules: str,
     opaque: bool = False,
     note: str = "",
-) -> ProjectionRuleCoverage:
-    return ProjectionRuleCoverage(
-        node_type=node_type,
+    user_code: bool = False,
+    post_code: bool = False,
+    model_contract: bool = False,
+    source_code: SourceCode = "none",
+    output_mapping: bool = False,
+) -> _NodeProjection:
+    return _NodeProjection(
         rules=frozenset(rules),
         opaque=opaque,
         note=note,
+        user_code=user_code,
+        post_code=post_code,
+        model_contract=model_contract,
+        source_code=source_code,
+        output_mapping=output_mapping,
     )
 
+
+#: How projection plans each node type. Projection's user-code types (the
+#: request inputs and Apply Optimisation included, Explore excluded) are its own
+#: membership, not the specification's code surface.
+_PROJECTION_BY_NODE_TYPE: Mapping[NodeType, _NodeProjection] = node_type_table(
+    "projection",
+    {
+        NodeType.API_INPUT: _projection(
+            _SOURCE_SCAN_RULE_NAME, user_code=True, source_code="full_width"
+        ),
+        NodeType.WORKBENCH_INPUT: _projection(
+            _SOURCE_SCAN_RULE_NAME, user_code=True, source_code="full_width"
+        ),
+        NodeType.DATA_INPUT: _projection(
+            _SOURCE_SCAN_RULE_NAME, user_code=True, source_code="lineage"
+        ),
+        NodeType.EXTERNAL_FILE: _projection(
+            _GENERIC_CONTRACT_RULE_NAME,
+            POLARS_COLUMN_LINEAGE_RULE_NAME,
+            user_code=True,
+        ),
+        NodeType.CONSTANT: _projection(_SOURCE_SCAN_RULE_NAME),
+        NodeType.POLARS: _projection(
+            _GENERIC_CONTRACT_RULE_NAME,
+            _POLARS_FAN_IN_RULE.name,
+            POLARS_COLUMN_LINEAGE_RULE_NAME,
+            user_code=True,
+        ),
+        NodeType.EDGE_JOIN: _projection(
+            _EDGE_JOIN_FAN_IN_RULE.name,
+            note=(
+                "edge joins keep an opaque column contract but route demand "
+                "concretely via parent produced-column ownership"
+            ),
+        ),
+        NodeType.DATA_OUTPUT: _projection(_GENERIC_CONTRACT_RULE_NAME),
+        NodeType.BANDING: _projection(_GENERIC_CONTRACT_RULE_NAME),
+        NodeType.RATING_STEP: _projection(
+            _GENERIC_CONTRACT_RULE_NAME, user_code=True, post_code=True
+        ),
+        NodeType.OUTPUT: _projection(_GENERIC_CONTRACT_RULE_NAME, output_mapping=True),
+        NodeType.WORKBENCH_OUTPUT: _projection(_GENERIC_CONTRACT_RULE_NAME),
+        NodeType.EXPLORE: _projection(_GENERIC_CONTRACT_RULE_NAME),
+        NodeType.MODELLING: _projection(_GENERIC_CONTRACT_RULE_NAME),
+        NodeType.SCENARIO_EXPANDER: _projection(
+            _GENERIC_CONTRACT_RULE_NAME, user_code=True, post_code=True
+        ),
+        NodeType.OPTIMISER_APPLY: _projection(
+            _GENERIC_CONTRACT_RULE_NAME,
+            _OPTIMISER_APPLY_PARENT_DEMAND_RULE.name,
+            user_code=True,
+        ),
+        NodeType.MODEL_SCORE: _projection(
+            _MODEL_SCORE_BUILDER_DEMAND_RULE_NAME,
+            user_code=True,
+            post_code=True,
+            model_contract=True,
+        ),
+        NodeType.OPTIMISER: _projection(
+            _GENERIC_CONTRACT_RULE_NAME,
+            _OPTIMISER_PARENT_DEMAND_RULE.name,
+        ),
+        NodeType.LIVE_SWITCH: _projection(
+            _GENERIC_CONTRACT_RULE_NAME,
+            _LIVE_SWITCH_PRUNE_RULE_NAME,
+        ),
+        NodeType.SUBMODEL: _projection(
+            _OPAQUE_CONTRACT_RULE.name,
+            opaque=True,
+            note="submodel boundaries are opaque until expanded into a concrete graph",
+        ),
+        NodeType.SUBMODEL_PORT: _projection(
+            _OPAQUE_CONTRACT_RULE.name,
+            opaque=True,
+            note="submodel ports inherit their concrete contract from the expanded subgraph",
+        ),
+    },
+)
 
 _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage] = (
     MappingProxyType(
         {
-            NodeType.API_INPUT: _coverage(NodeType.API_INPUT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.WORKBENCH_INPUT: _coverage(NodeType.WORKBENCH_INPUT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.DATA_INPUT: _coverage(NodeType.DATA_INPUT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.EXTERNAL_FILE: _coverage(
-                NodeType.EXTERNAL_FILE,
-                _GENERIC_CONTRACT_RULE_NAME,
-                POLARS_COLUMN_LINEAGE_RULE_NAME,
-            ),
-            NodeType.CONSTANT: _coverage(NodeType.CONSTANT, _SOURCE_SCAN_RULE_NAME),
-            NodeType.POLARS: _coverage(
-                NodeType.POLARS,
-                _GENERIC_CONTRACT_RULE_NAME,
-                _POLARS_FAN_IN_RULE.name,
-                POLARS_COLUMN_LINEAGE_RULE_NAME,
-            ),
-            NodeType.EDGE_JOIN: _coverage(
-                NodeType.EDGE_JOIN,
-                _EDGE_JOIN_FAN_IN_RULE.name,
-                note=(
-                    "edge joins keep an opaque column contract but route demand "
-                    "concretely via parent produced-column ownership"
-                ),
-            ),
-            NodeType.DATA_OUTPUT: _coverage(NodeType.DATA_OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.WORKBENCH_OUTPUT: _coverage(
-                NodeType.WORKBENCH_OUTPUT,
-                _GENERIC_CONTRACT_RULE_NAME,
-            ),
-            NodeType.EXPLORE: _coverage(NodeType.EXPLORE, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.MODELLING: _coverage(NodeType.MODELLING, _GENERIC_CONTRACT_RULE_NAME),
-            NodeType.SCENARIO_EXPANDER: _coverage(
-                NodeType.SCENARIO_EXPANDER,
-                _GENERIC_CONTRACT_RULE_NAME,
-            ),
-            NodeType.OPTIMISER_APPLY: _coverage(
-                NodeType.OPTIMISER_APPLY,
-                _GENERIC_CONTRACT_RULE_NAME,
-                _OPTIMISER_APPLY_PARENT_DEMAND_RULE.name,
-            ),
-            NodeType.MODEL_SCORE: _coverage(
-                NodeType.MODEL_SCORE,
-                _MODEL_SCORE_BUILDER_DEMAND_RULE_NAME,
-            ),
-            NodeType.OPTIMISER: _coverage(
-                NodeType.OPTIMISER,
-                _GENERIC_CONTRACT_RULE_NAME,
-                _OPTIMISER_PARENT_DEMAND_RULE.name,
-            ),
-            NodeType.LIVE_SWITCH: _coverage(
-                NodeType.LIVE_SWITCH,
-                _GENERIC_CONTRACT_RULE_NAME,
-                _LIVE_SWITCH_PRUNE_RULE_NAME,
-            ),
-            NodeType.SUBMODEL: _coverage(
-                NodeType.SUBMODEL,
-                _OPAQUE_CONTRACT_RULE.name,
-                opaque=True,
-                note="submodel boundaries are opaque until expanded into a concrete graph",
-            ),
-            NodeType.SUBMODEL_PORT: _coverage(
-                NodeType.SUBMODEL_PORT,
-                _OPAQUE_CONTRACT_RULE.name,
-                opaque=True,
-                note="submodel ports inherit their concrete contract from the expanded subgraph",
-            ),
+            node_type: ProjectionRuleCoverage(
+                node_type=node_type,
+                rules=entry.rules,
+                opaque=entry.opaque,
+                note=entry.note,
+            )
+            for node_type, entry in _PROJECTION_BY_NODE_TYPE.items()
         }
     )
 )
+
+
+def _projection_of(node_type: NodeType) -> _NodeProjection:
+    """How projection plans *node_type*."""
+    return _PROJECTION_BY_NODE_TYPE[node_type]
+
+
+def _has_projection_rule(node: GraphNode, rule: str) -> bool:
+    """Whether *rule* applies to *node*: its type's projection coverage names it."""
+    return rule in _PROJECTION_BY_NODE_TYPE[node.data.nodeType].rules
 
 
 def projection_rule_coverage_by_node_type() -> Mapping[NodeType, ProjectionRuleCoverage]:
@@ -4547,7 +4596,7 @@ def prune_live_switch_edges(
 ) -> list[GraphEdge]:
     """Remove edges to live-switch nodes from inputs inactive for *source*."""
     switch_nodes = {
-        nid: node for nid, node in node_map.items() if node.data.nodeType == NodeType.LIVE_SWITCH
+        nid: node for nid, node in node_map.items() if node_spec(node.data.nodeType).scenario_router
     }
     if not switch_nodes:
         return edges
@@ -4658,12 +4707,6 @@ def _exact_columns_for_parent_edge(
     return exact_output_by_node.get(edge.source)
 
 
-# Node kinds whose ``code`` runs over their incoming frames and is analysed with
-# compositional column lineage. An External File also binds its loaded
-# artifact as ``obj``, which lineage treats as a value like any preamble name.
-_LINEAGE_CODE_NODE_TYPES = frozenset({NodeType.POLARS, NodeType.EXTERNAL_FILE})
-
-
 def _lineage_input_bindings(
     node: GraphNode,
     incoming_edges: Iterable[GraphEdge],
@@ -4728,7 +4771,10 @@ def _analyse_polars_node_lineage(
     selector_aliases: frozenset[str] = frozenset(),
     known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
-    if node.data.nodeType not in _LINEAGE_CODE_NODE_TYPES:
+    # Node kinds whose ``code`` runs over their incoming frames are analysed with
+    # compositional column lineage. An External File also binds its loaded
+    # artifact as ``obj``, which lineage treats as a value like any preamble name.
+    if not _has_projection_rule(node, POLARS_COLUMN_LINEAGE_RULE_NAME):
         return None
     produced, referenced = contract.to_tuple()
     if produced is not None and referenced is not None:
@@ -4752,7 +4798,7 @@ def _analyse_polars_node_lineage(
         schemas[binding.name] = binding.exact_columns
     df_input: str | None = None
     value_names: frozenset[str] = frozenset()
-    if node.data.nodeType is NodeType.EXTERNAL_FILE:
+    if node_spec(node.data.nodeType).code == "object_hook":
         # The loaded artifact comes from JSON, the restricted unpickler, or a
         # model loader, so ``obj`` is a value and never a Polars expression.
         value_names = frozenset({"obj"})
@@ -4957,7 +5003,7 @@ def compute_prepared_plan(
         has_seed = node_id in seeded_required
         seed = seeded_required.get(node_id, set())
         if not outgoing:
-            if node.data.nodeType == NodeType.OUTPUT:
+            if _projection_of(node.data.nodeType).output_mapping:
                 # Keep the projection contract aligned with output assembly:
                 # incomplete editor rows do not demand a blank source column.
                 from haute._output_assembler import is_active_mapping_entry
@@ -5156,7 +5202,7 @@ def compute_prepared_plan(
             continue
 
         if len(incoming) != len(parent_ids):
-            if node.data.nodeType == NodeType.EDGE_JOIN:
+            if _has_projection_rule(node, _EDGE_JOIN_FAN_IN_RULE.name):
                 parent_produced = {edge.source: produced_for_routing(edge) for edge in incoming}
                 edge_join_demands = edge_join_fan_in_demands_for_node(
                     node,
@@ -5173,7 +5219,7 @@ def compute_prepared_plan(
                     message="edge-join fan-in ownership rule",
                 )
                 continue
-            if node.data.nodeType == NodeType.OPTIMISER:
+            if _has_projection_rule(node, _OPTIMISER_PARENT_DEMAND_RULE.name):
                 optimiser_demands = parent_demands_for_node(
                     node,
                     incoming,
