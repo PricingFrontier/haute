@@ -283,12 +283,13 @@ test.describe("frontend canvas assurance", () => {
 
     await page.keyboard.press(saveShortcut)
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
+    // The sidecar writes the table as a grid: a row of leading levels and rates (READ-26).
     await expect.poll(() => {
       const config = readJson(ratingConfigPath)
       const tables = config.tables as JsonObject[]
-      return numericLeaves(tables[0]?.entries)
+      return numericLeaves(tables[0]?.rows)
     }).toEqual(expect.arrayContaining([1.23]))
-    expect(numericLeaves((readJson(ratingConfigPath).tables as JsonObject[])[0].entries))
+    expect(numericLeaves((readJson(ratingConfigPath).tables as JsonObject[])[0].rows))
       .toHaveLength(8)
 
     await page.reload()

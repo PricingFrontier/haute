@@ -142,7 +142,7 @@ test.describe("Transform step builder journey", () => {
     await page.getByTestId("node-palette-item-polars").dragTo(canvas, {
       targetPosition: { x: 250, y: 150 },
     })
-    const newNode = page.getByLabel(/Transform node: Transform/i)
+    const newNode = page.getByLabel(/Transform node: polars\b/i)
     await expect(newNode).toBeVisible()
     await newNode.click()
     const panel = page.getByTestId("node-panel")
@@ -217,7 +217,9 @@ test.describe("Transform step builder journey", () => {
     await save(page)
     await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("def browser_steps(raw_rows: pl.LazyFrame)")
     const main = readFileSync(mainPath, "utf8")
-    expect(main).not.toContain("config=")
+    // The transform's decorator names no config file (a Data Input's still does).
+    expect(main).toMatch(/@pipeline\.polars\ndef browser_steps\(/)
+    expect(main).not.toContain("config/polars")
     expect(main).toContain("df = df.head(3)")
     expect(main).toContain(snippet.replace(/\n/g, "\n    "))
     expect(existsSync(sidecarPath)).toBe(false)
