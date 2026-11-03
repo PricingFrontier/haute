@@ -3052,7 +3052,7 @@ class DatabricksConnectionResponse(BaseModel):
     """
 
     configured: bool
-    auth_mode: Literal["pat", "service_principal", "cli_login", "browser_login", "profile", ""] = ""
+    auth_mode: Literal["pat", "service_principal", "cli_login", "profile", ""] = ""
     profile: str = ""
     sdk_auth_type: str = ""
     detail: str = ""

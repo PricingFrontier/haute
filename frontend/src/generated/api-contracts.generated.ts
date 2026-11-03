@@ -302,7 +302,7 @@ export interface TableItem {
  * ``external-browser``). ``detail`` says what is missing when not configured.
  */
 export interface DatabricksConnectionResponse {
-  auth_mode: 'pat' | 'service_principal' | 'cli_login' | 'browser_login' | 'profile' | '';
+  auth_mode: 'pat' | 'service_principal' | 'cli_login' | 'profile' | '';
   configured: boolean;
   detail: string;
   profile: string;

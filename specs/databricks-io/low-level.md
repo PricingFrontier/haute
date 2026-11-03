@@ -17,15 +17,14 @@
 
 - `DatabricksCredentials` is a frozen, slotted internal dataclass containing the
   normalised workspace host, bare SQL hostname, selected auth mode (`pat`,
-  `service_principal`, `cli_login`, `browser_login` or `profile`), the selected
-  credential fields, the profile name (mode `profile`) and the SDK auth type
-  (`DATABRICKS_AUTH_TYPE`'s value, or the one the profile declares, if any). Token,
-  client id, and client secret fields are excluded from its representation.
-  `signs_in_as_user` is true for the three user sign-ins; `sign_in_failure()` is
-  the problem and the remedy, in haute's words, when one cannot be completed (the
-  `databricks auth login` command for the CLI forms, naming the profile or
-  `DATABRICKS_HOST` rather than the host; finishing the browser sign-in for the
-  browser forms).
+  `service_principal`, `cli_login` or `profile`), the selected credential fields,
+  the profile name (mode `profile`) and the SDK auth type (`DATABRICKS_AUTH_TYPE`'s
+  value, or the one pinned for the profile). Token, client id, and client secret
+  fields are excluded from its representation. `signs_in_as_user` is true for the
+  two user sign-ins; `sign_in_failure()` is the problem and the remedy, in haute's
+  words, when one cannot be completed (the `databricks auth login` command for the
+  CLI forms, naming the profile or `DATABRICKS_HOST` rather than the host; checking
+  the profile's own credentials for a profile pinned to a token or pair).
 - `DatabricksConfigError(HauteError)` reports missing host/authentication/http-path
   configuration or an unavailable OAuth provider dependency. The class is owned
   by `src/haute/_databricks_credentials.py` and re-exported by `src/haute/_databricks_io.py`.
@@ -122,19 +121,24 @@ selects, in this order:
 
 1. A named profile (`DATABRICKS_CONFIG_PROFILE`, mode `profile`). The profile is read
    from the Databricks CLI's config file (`DATABRICKS_CONFIG_FILE`, else
-   `~/.databrickscfg`) with `configparser`, as the SDK reads it, `DEFAULT` section
-   inherited; its `host` is required and its `auth_type`, if declared, is recorded.
-   Reading the file here, with the standard library, keeps resolution free of the SDK
-   and of any sign-in side effect. A missing file, an unknown profile, a profile
-   without a host, and an unparseable file are each refused naming the file and the
-   profile (never a line of the file) with the `databricks auth login ... --profile`
-   command that creates the profile. A profile beside any of the other five variables
-   is refused naming both, because the SDK merges the environment over a profile and
+   `~/.databrickscfg`) with `configparser`, as the SDK reads it: each profile has only
+   its own keys, and `DEFAULT` is a profile of its own, inherited by none (the parser
+   is given an impossible default-section name so `[DEFAULT]` is ordinary). Its
+   `host` is required. Its sign-in is pinned: the `auth_type` it declares, else `pat`
+   when it holds a `token`, else `oauth-m2m` when it holds a `client_id` and
+   `client_secret`; a profile naming only a host is refused, and so is one declaring
+   `external-browser`. Reading the file here, with the standard library, keeps
+   resolution free of the SDK and of any sign-in side effect. A missing file, an
+   unknown profile, a profile without a host, an unparseable file, a host-only
+   profile and a browser profile are each refused naming the file and the profile
+   (never a line of the file) with the `databricks auth login ... --profile` command
+   that writes a complete one. A profile beside any of the other five variables is
+   refused naming both, because the SDK merges the environment over a profile and
    the identity haute acts as would otherwise be a quiet merge.
-2. An auth type (`DATABRICKS_AUTH_TYPE`): `databricks-cli` selects mode `cli_login`
-   and `external-browser` mode `browser_login`; any other value is refused naming the
-   two accepted. `DATABRICKS_HOST` is required. An auth type beside a token or a
-   service-principal field is refused naming both.
+2. An auth type (`DATABRICKS_AUTH_TYPE`): `databricks-cli` selects mode `cli_login`;
+   any other value, `external-browser` included, is refused naming the accepted one.
+   `DATABRICKS_HOST` is required. An auth type beside a token or a service-principal
+   field is refused naming both.
 3. A non-empty token (mode `pat`); otherwise both service-principal fields (mode
    `service_principal`). A token beside the pair simply wins, because a Databricks
    App's injected pair must be overridable. When neither is present the missing
@@ -156,14 +160,18 @@ can carry different scopes. MLflow itself reads `DATABRICKS_CONFIG_PROFILE` for 
 beside the MLflow pair; one profile serves both through
 `MLFLOW_TRACKING_URI=databricks://<profile>`.
 
-`databricks_sdk_config(credentials)` is the SDK `Config` for a user sign-in:
-`Config(profile=...)` for mode `profile`, `Config(host=..., auth_type=...)` for the
-other two. Building it signs in (the SDK runs `databricks auth token`, or opens the
-browser), so it is called only where a connection is about to be made. The SDK's
-construction-time `ValueError` becomes `DatabricksSignInError` with
-`credentials.sign_in_failure()`'s words. `databricks_workspace_client` builds
-`WorkspaceClient(host, token)`, `WorkspaceClient(host, client_id, client_secret)` or
-`WorkspaceClient(config=databricks_sdk_config(...))` by mode.
+`databricks_sdk_config(credentials, retry_timeout_seconds=None)` is the SDK `Config`
+for a user sign-in: `Config(profile=..., auth_type=<pinned>)` for mode `profile`,
+`Config(host=..., auth_type="databricks-cli")` for mode `cli_login`; the auth type is
+always passed, so the SDK never walks its default chain. Building it signs in (the
+SDK runs `databricks auth token`), so it is called only where a connection is about
+to be made. The SDK's construction-time `ValueError` becomes `DatabricksSignInError`
+with `credentials.sign_in_failure()`'s words. `databricks_workspace_client(credentials,
+retry_timeout_seconds=None)` builds `WorkspaceClient(host, token)`,
+`WorkspaceClient(host, client_id, client_secret)` or
+`WorkspaceClient(config=databricks_sdk_config(...))` by mode; the optional retry
+deadline bounds how long the SDK retries an unreachable workspace (its default is
+300 s).
 
 `_resolve_connection(http_path, node_label=...)` passes the mandatory node
 `http_path` as such an additional requirement; there is no `DATABRICKS_HTTP_PATH`
@@ -193,17 +201,19 @@ the listing is consumed (the SDK's listings are lazy) into `_browsing_failure`'s
 `resolve_databricks_credentials()` alone: `configured`, the `auth_mode`, the `profile`
 name and the `sdk_auth_type` when there is one, or `configured: false` with the
 resolver's message as `detail`. No SDK is imported and no network call is made, so a
-page load can never open a browser; only the test, a listing or a fetch signs in. The
+page load can never run the CLI; only the test, a listing or a fetch signs in. The
 host is not answered.
 
 `POST /api/databricks/test-connection` (`DatabricksTestConnectionResponse`) signs in
-through `databricks_workspace_client` and calls `current_user.me()`; it answers
-`ok: true` with the `identity` (the user name, else the display name, which a service
-principal has) and the SDK config's `auth_type`. A missing SDK, a configuration
-failure, a sign-in failure, refused credentials, a missing grant and any other SDK
-failure answer `ok: false` with `detail` worded as the browsing answers are (below),
-never a 5xx, and are logged as `databricks_connection_test_failed`. For a browser
-sign-in the test is the call that opens the browser.
+through `databricks_workspace_client` with `retry_timeout_seconds=_TEST_RETRY_SECONDS`
+(30) and calls `current_user.me()`; it answers `ok: true` with the `identity` (the
+user name, else the display name, which a service principal has) and the SDK config's
+`auth_type`. A missing SDK, a configuration failure, a sign-in failure, refused
+credentials, an unreachable workspace (the SDK's `TimeoutError` once the retry
+deadline is spent, or a `requests` connection error or timeout it lets through:
+`_workspace_unreachable`), a missing grant and any other SDK failure answer
+`ok: false` with `detail` worded as the browsing answers are (below), never a 5xx,
+and are logged as `databricks_connection_test_failed`.
 
 ## Edge cases and invariants
 
@@ -251,8 +261,10 @@ endpoint's answer, which counts only for the codes that refuse the client or its
 (`invalid_client`, `invalid_grant`, `unauthorized_client`); then `PermissionDenied` 403, naming what was listed; `NotFound` from a listing inside
 a catalog or schema 404, naming that catalog or schema; any other `DatabricksError` 502.
 Each is logged as `databricks_browsing_failed` with the error type and the SDK's text
-(a sign-in failure's SDK text is its cause, logged with it),
-the token and client secret scrubbed (`redact_sensitive_text`).
+(a sign-in failure's SDK text is its cause, logged with it), the token, the client
+secret and the workspace host scrubbed (`redact_sensitive_text` with all four as known
+secrets: the SDK appends `Config: host=..., profile=...` to a sign-in failure, and the
+component keeps host values out of its logs).
 
 ## Testing
 
@@ -260,18 +272,22 @@ the token and client secret scrubbed (`redact_sensitive_text`).
   projections, PAT precedence, incomplete-pair failures, aggregated named
   requirements, representation/error redaction, and which failures count as a refusal
   of the credentials (no other `ValueError` does); the user sign-ins: a profile read
-  from a config file named by `DATABRICKS_CONFIG_FILE` (host, declared auth type,
-  `DEFAULT` inheritance, no declared type), a missing file, an unknown profile, a
-  profile without a host and an unparseable file each refused by name without a line
-  of the file, a profile beside each other selector refused by name, each accepted
-  auth type selected, an auth type without a host and an unknown auth type refused,
-  an auth type beside a token or pair field refused, the missing message naming every
-  form; and the SDK handoff through a fake `databricks` executable
-  (`DATABRICKS_CLI_PATH`): the header is the token the CLI prints, byte for byte, a
-  profile is signed in with the profile's host, an exiting CLI with the "refresh
-  token is invalid" text becomes `DatabricksSignInError` with the login command, and
-  the auth-type form's failure names `DATABRICKS_HOST` rather than the host. The
-  handoff tests record the SDK version they were observed under.
+  from a config file named by `DATABRICKS_CONFIG_FILE` (host and declared auth type;
+  no `DEFAULT` inheritance, as the SDK; `DEFAULT` as a profile of its own; the sign-in
+  pinned from a token, a pair or a declared type), a missing file, an unknown
+  profile, a profile without a host, an unparseable file, a host-only profile (even
+  with `DATABRICKS_USERNAME`/`DATABRICKS_PASSWORD` set) and a profile declaring
+  `external-browser` each refused by name without a line of the file, a profile
+  beside each other selector refused by name, the CLI auth type selected, an auth
+  type without a host and any other auth type refused, an auth type beside a token
+  or pair field refused, the missing message naming every form; and the SDK handoff
+  through a fake `databricks` executable (`DATABRICKS_CLI_PATH`, one class skipped
+  on Windows): the header is the token the CLI prints, byte for byte, a profile's
+  pinned sign-in wins over ambient basic-auth variables, a profile is signed in with
+  the profile's host, an exiting CLI with the "refresh token is invalid" text
+  becomes `DatabricksSignInError` with the login command, and the auth-type form's
+  failure names `DATABRICKS_HOST` rather than the host. The handoff tests record
+  the SDK version they were observed under.
 - `tests/test_databricks_io.py` covers SQL credential adaptation (token, service
   principal, and a user sign-in whose provider builds the SDK config only when the
   connector asks and hands it the config's `authenticate`; a profile connects to the
@@ -293,12 +309,14 @@ the token and client secret scrubbed (`redact_sensitive_text`).
   stub token endpoint refuses through the real SDK 401 naming its pair, and listing
   again once the secret is corrected, an expired CLI sign-in 401 naming the profile
   and the login command, a missing grant 403, and any other SDK failure 502 with its text logged,
-  the token scrubbed; the connection endpoint (the token form without the host, a
-  profile with its declared sign-in, what is missing, and that a browser sign-in never
-  builds a client); and the connection test (the identity and sign-in kind, the
-  display-name fallback, an expired sign-in, a refused token, any other SDK failure
-  with its text logged and the token scrubbed, missing configuration and a missing SDK,
-  each `ok: false` and never a 5xx).
+  the token scrubbed; a sign-in failure's log keeping the SDK's text but not the host,
+  while browsing and while testing; the connection endpoint (the token form without
+  the host, a profile with its pinned sign-in, what is missing, and that a CLI
+  sign-in never builds a client); and the connection test (the identity and sign-in
+  kind, the display-name fallback, an expired sign-in, a refused token, an
+  unreachable workspace answered within seconds under a one-second retry deadline,
+  any other SDK failure with its text logged and the token scrubbed, missing
+  configuration and a missing SDK, each `ok: false` and never a 5xx).
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes
   the shared resolution result for both auth modes and preserves normalised
   workspace hosts.

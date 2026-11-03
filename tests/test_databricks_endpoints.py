@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -330,10 +331,10 @@ def test_the_connection_reports_a_profile_and_its_declared_auth_type(
 
 
 def test_the_connection_never_signs_in(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A browser sign-in opens a browser when the SDK client is built; the connection
-    answer must come from the environment alone, so a page load never does that."""
+    """A CLI sign-in runs the CLI when the SDK client is built; the connection answer
+    must come from the environment alone, so a page load never does that."""
     monkeypatch.delenv("DATABRICKS_TOKEN")
-    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "external-browser")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
 
     with patch(
         "haute.routes.databricks.databricks_workspace_client",
@@ -342,8 +343,57 @@ def test_the_connection_never_signs_in(client: TestClient, monkeypatch: pytest.M
         body = client.get("/api/databricks/connection").json()
 
     assert body["configured"] is True
-    assert body["auth_mode"] == "browser_login"
-    assert body["sdk_auth_type"] == "external-browser"
+    assert body["auth_mode"] == "cli_login"
+    assert body["sdk_auth_type"] == "databricks-cli"
+
+
+def _expired_with_the_sdk_s_text() -> DatabricksSignInError:
+    """A sign-in failure as the SDK raises it: its cause carries the SDK's debug
+    string, which names the workspace host."""
+    cause = ValueError(
+        "default auth: databricks-cli: cannot get access token: Error: A new access token "
+        "could not be retrieved because the refresh token is invalid. Config: "
+        "host=https://workspace.example, profile=work, auth_type=databricks-cli"
+    )
+    error = DatabricksSignInError(
+        "Databricks sign-in for profile 'work' failed or has expired",
+        "run `databricks auth login --profile work` and try again",
+    )
+    error.__cause__ = cause
+    return error
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "event"),
+    [
+        ("GET", "/api/databricks/catalogs", "databricks_browsing_failed"),
+        ("POST", "/api/databricks/test-connection", "databricks_connection_test_failed"),
+    ],
+)
+def test_a_sign_in_failure_s_log_keeps_the_sdk_s_text_but_not_the_host(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    method: str,
+    path: str,
+    event: str,
+) -> None:
+    _profile_env(monkeypatch, tmp_path, "databricks-cli")
+
+    with (
+        patch(
+            "haute.routes.databricks.databricks_workspace_client",
+            side_effect=_expired_with_the_sdk_s_text(),
+        ),
+        structlog.testing.capture_logs() as logs,
+    ):
+        response = client.request(method, path)
+
+    assert response.status_code in (200, 401)
+    (entry,) = [log for log in logs if log["event"] == event]
+    assert "refresh token is invalid" in entry["error"]
+    assert "workspace.example" not in entry["error"]
+    assert "workspace.example" not in response.text
 
 
 def test_the_connection_says_what_is_missing(
@@ -463,6 +513,32 @@ def test_the_connection_test_reports_any_other_sdk_failure_with_its_text_logged(
     (entry,) = [log for log in logs if log["event"] == "databricks_connection_test_failed"]
     assert "Upstream busy" in entry["error"]
     assert "dapi-secret-value" not in entry["error"]
+
+
+def test_the_connection_test_reports_an_unreachable_workspace_within_seconds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SDK retries connection failures until its retry deadline (300 s by
+    default) and then raises a plain TimeoutError; the test bounds the deadline and
+    answers in words, never a 5xx after five minutes."""
+    monkeypatch.setenv("DATABRICKS_HOST", "http://127.0.0.1:9")
+    monkeypatch.setattr("haute.routes.databricks._TEST_RETRY_SECONDS", 1)
+
+    started = time.monotonic()
+    response = client.post("/api/databricks/test-connection")
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "identity": "",
+        "sdk_auth_type": "",
+        "detail": (
+            "Databricks did not answer: check the workspace is reachable (VPN or proxy) "
+            "and try again."
+        ),
+    }
+    assert elapsed < 30
 
 
 def test_the_connection_test_reports_missing_configuration(

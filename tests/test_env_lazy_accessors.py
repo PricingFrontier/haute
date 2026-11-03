@@ -397,6 +397,26 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_CLIENT_SECRET",
         "os.getenv",
     ),
+    # The Databricks SDK's and CLI's own selectors for a user sign-in, and the
+    # CLI config file a named profile is read from, as the SDK reads it.
+    (
+        "src/haute/_databricks_credentials.py",
+        "<module>.resolve_databricks_credentials",
+        "DATABRICKS_CONFIG_PROFILE",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_credentials.py",
+        "<module>.resolve_databricks_credentials",
+        "DATABRICKS_AUTH_TYPE",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_credentials.py",
+        "<module>._profile_host_and_auth_type",
+        "DATABRICKS_CONFIG_FILE",
+        "os.getenv",
+    ),
     (
         "src/haute/deploy/_databricks_serving.py",
         "<module>.serving_credentials",

@@ -753,7 +753,6 @@ describe("DatabricksConnection", () => {
   it.each([
     ["service_principal", "Service principal (DATABRICKS_CLIENT_ID)"],
     ["cli_login", "Databricks CLI sign-in (DATABRICKS_AUTH_TYPE)"],
-    ["browser_login", "Browser sign-in (DATABRICKS_AUTH_TYPE)"],
   ] as const)("names the %s form", async (auth_mode, words) => {
     mockGetConnection.mockResolvedValue(connection({ auth_mode }))
     render(<DatabricksConnection />)

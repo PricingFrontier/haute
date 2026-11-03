@@ -111,8 +111,18 @@ def _refused_credentials(credentials: DatabricksCredentials, exc: BaseException)
 def _log_failure(
     event: str, exc: BaseException, credentials: DatabricksCredentials, **fields: Any
 ) -> None:
-    """Log *exc* with the credentials scrubbed; a sign-in failure's SDK text is its cause."""
-    secrets = (credentials.token or "", credentials.client_secret or "")
+    """Log *exc* with the credentials and the host scrubbed.
+
+    A sign-in failure's SDK text is its cause, and the SDK appends its own debug
+    string to it (``Config: host=..., profile=...``), so the workspace host is
+    scrubbed too: the component keeps host values out of its logs.
+    """
+    secrets = (
+        credentials.token or "",
+        credentials.client_secret or "",
+        credentials.workspace_host,
+        credentials.server_hostname,
+    )
     text = str(exc) if exc.__cause__ is None else f"{exc} ({exc.__cause__})"
     logger.warning(
         event,
@@ -184,11 +194,34 @@ def databricks_connection() -> DatabricksConnectionResponse:
     )
 
 
+#: How long the connection test lets the SDK retry an unreachable workspace. The
+#: SDK's default is 300 s, after which it raises a plain TimeoutError; an analyst
+#: with the VPN off should learn that in seconds, not minutes.
+_TEST_RETRY_SECONDS = 30
+
+
+def _workspace_unreachable(exc: BaseException) -> bool:
+    """The SDK gave up reaching the workspace: its retry loop's ``TimeoutError`` once
+    ``retry_timeout_seconds`` is spent, or a connection failure it let through."""
+    if isinstance(exc, TimeoutError):
+        return True
+    try:
+        import requests
+    except ImportError:
+        return False
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
 def _test_failure(credentials: DatabricksCredentials, exc: BaseException) -> tuple[str, str]:
     from databricks.sdk.errors import PermissionDenied
 
     if credentials_rejected(exc):
         return _refused_credentials(credentials, exc)
+    if _workspace_unreachable(exc):
+        return (
+            "Databricks did not answer",
+            "check the workspace is reachable (VPN or proxy) and try again",
+        )
     if isinstance(exc, PermissionDenied):
         return (
             "The Databricks credentials may not read who they sign in as",
@@ -199,10 +232,7 @@ def _test_failure(credentials: DatabricksCredentials, exc: BaseException) -> tup
 
 @router.post("/test-connection", response_model=DatabricksTestConnectionResponse)
 def databricks_test_connection() -> DatabricksTestConnectionResponse:
-    """Sign in and ask the workspace who haute is; expected failures never 5xx.
-
-    For a browser sign-in this is the call that opens the browser.
-    """
+    """Sign in and ask the workspace who haute is; expected failures never 5xx."""
     try:
         import databricks.sdk  # noqa: F401
     except ImportError:
@@ -212,10 +242,10 @@ def databricks_test_connection() -> DatabricksTestConnectionResponse:
     except DatabricksConfigError as exc:
         return DatabricksTestConnectionResponse(ok=False, detail=str(exc))
     try:
-        client = databricks_workspace_client(credentials)
+        client = databricks_workspace_client(credentials, retry_timeout_seconds=_TEST_RETRY_SECONDS)
         me = client.current_user.me()
     except Exception as exc:
-        if not (_is_sdk_error(exc) or credentials_rejected(exc)):
+        if not (_is_sdk_error(exc) or credentials_rejected(exc) or _workspace_unreachable(exc)):
             raise
         problem, remedy = _test_failure(credentials, exc)
         _log_failure("databricks_connection_test_failed", exc, credentials)

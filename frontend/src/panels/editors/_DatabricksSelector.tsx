@@ -32,8 +32,6 @@ function describeDatabricksConnection(connection: DatabricksConnectionResponse):
       return "Service principal (DATABRICKS_CLIENT_ID)"
     case "cli_login":
       return "Databricks CLI sign-in (DATABRICKS_AUTH_TYPE)"
-    case "browser_login":
-      return "Browser sign-in (DATABRICKS_AUTH_TYPE)"
     case "profile":
       return connection.sdk_auth_type
         ? `Profile ${connection.profile} (${connection.sdk_auth_type})`

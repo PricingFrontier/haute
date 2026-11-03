@@ -1,6 +1,6 @@
 """Shared Databricks credential resolution with redaction-safe errors.
 
-Five forms sign haute in to a workspace, every one selected in the environment
+Four forms sign haute in to a workspace, every one selected in the environment
 (the project's ``.env``), never in the pipeline:
 
 * ``DATABRICKS_HOST`` + ``DATABRICKS_TOKEN`` — a personal access token.
@@ -8,17 +8,24 @@ Five forms sign haute in to a workspace, every one selected in the environment
   service principal (a Databricks App injects this pair).
 * ``DATABRICKS_HOST`` + ``DATABRICKS_AUTH_TYPE=databricks-cli`` — the user's own
   sign-in, held by the Databricks CLI after ``databricks auth login``.
-* ``DATABRICKS_HOST`` + ``DATABRICKS_AUTH_TYPE=external-browser`` — the user's own
-  sign-in through a browser the SDK opens itself.
 * ``DATABRICKS_CONFIG_PROFILE`` — a profile of the CLI's config file, which names
-  the host and one of the forms above.
+  the host and one of the forms above (the CLI's sign-in, a token, or a pair).
 
-The last three are the user sign-ins, ruled in on 2026-10-26: a workspace that
-issues no personal access tokens, and a user with no service principal, otherwise
-has no way in, while a user sign-in gives the user their own Unity Catalog grants
-with no secret on disk. Every form is explicit — haute never falls through to
-whatever credentials happen to be on the machine — so the identity haute acts as
-is always the one named here.
+The user sign-ins are ruled in (2026-10-26): a workspace that issues no personal
+access tokens, and a user with no service principal, otherwise has no way in,
+while a user sign-in gives the user their own Unity Catalog grants with no
+secret on disk. Every form is explicit — haute never falls through to whatever
+credentials happen to be on the machine — so the identity haute acts as is
+always the one named here; a profile therefore has its sign-in pinned at
+resolution rather than left to the SDK's default chain, which would try an
+Azure CLI login or ``DATABRICKS_USERNAME``/``DATABRICKS_PASSWORD`` first.
+
+The SDK's own browser sign-in (``external-browser``) is not offered: the SDK
+waits for the browser's redirect with no timeout and no way to cancel from
+outside, so an abandoned sign-in would hang a request for good and keep its port.
+A browser sign-in is still available through ``databricks auth login``, which
+opens the browser in a process the user controls; haute then uses it as the CLI
+form or a profile.
 """
 
 from __future__ import annotations
@@ -33,20 +40,25 @@ from typing import Any, Literal
 
 from haute.errors import HauteError
 
-AuthMode = Literal["pat", "service_principal", "cli_login", "browser_login", "profile"]
+AuthMode = Literal["pat", "service_principal", "cli_login", "profile"]
 
 #: The SDK auth types ``DATABRICKS_AUTH_TYPE`` may name, and the mode each selects.
-USER_SIGN_IN_AUTH_TYPES: Mapping[str, AuthMode] = {
-    "databricks-cli": "cli_login",
-    "external-browser": "browser_login",
-}
+USER_SIGN_IN_AUTH_TYPES: Mapping[str, AuthMode] = {"databricks-cli": "cli_login"}
 
-_USER_SIGN_IN_MODES = frozenset({"cli_login", "browser_login", "profile"})
+_USER_SIGN_IN_MODES = frozenset({"cli_login", "profile"})
+
+#: The SDK auth type haute refuses wherever it appears (see the module docstring).
+_BROWSER_AUTH_TYPE = "external-browser"
 
 _SIGN_IN_ALTERNATIVES = (
-    "or a user sign-in: DATABRICKS_AUTH_TYPE=databricks-cli or external-browser "
-    "with DATABRICKS_HOST, or DATABRICKS_CONFIG_PROFILE=<profile>"
+    "or a user sign-in: DATABRICKS_AUTH_TYPE=databricks-cli with DATABRICKS_HOST, "
+    "or DATABRICKS_CONFIG_PROFILE=<profile>"
 )
+
+#: ``configparser`` folds a ``[DEFAULT]`` section into every other section; the SDK
+#: does not (it reads each profile's own keys, and ``DEFAULT`` is a profile of its
+#: own). Naming an impossible default section makes ``[DEFAULT]`` ordinary here too.
+_NO_DEFAULT_SECTION = "\x00no-default-section"
 
 
 class DatabricksConfigError(HauteError):
@@ -54,8 +66,8 @@ class DatabricksConfigError(HauteError):
 
 
 class DatabricksSignInError(DatabricksConfigError):
-    """A user sign-in the SDK could not complete: an expired CLI login, an abandoned
-    browser flow, a profile whose credentials the workspace refused.
+    """A user sign-in the SDK could not complete: an expired CLI login, or a profile
+    whose credentials the workspace refused.
 
     ``problem`` and ``remedy`` are haute's own words, so a caller can set the problem
     in its own sentence ("..., so the catalogs could not be listed"). The SDK's text,
@@ -80,13 +92,13 @@ class DatabricksCredentials:
     client_secret: str | None = field(repr=False)
     #: The profile ``DATABRICKS_CONFIG_PROFILE`` names (mode ``profile``).
     profile: str | None = None
-    #: The SDK auth type: ``DATABRICKS_AUTH_TYPE``'s value, or the one the profile
-    #: declares (a profile need not declare one).
+    #: The SDK auth type for a user sign-in: ``DATABRICKS_AUTH_TYPE``'s value, or the
+    #: one pinned for the profile (declared by it, or implied by its token or pair).
     sdk_auth_type: str | None = None
 
     @property
     def signs_in_as_user(self) -> bool:
-        """Whether the SDK signs the user in (CLI, browser, or a profile), rather
+        """Whether the SDK performs the sign-in (the CLI's, or a profile's), rather
         than haute presenting a token or service principal it holds."""
         return self.auth_mode in _USER_SIGN_IN_MODES
 
@@ -97,15 +109,9 @@ class DatabricksCredentials:
         values out; ``DATABRICKS_HOST`` is named in its place.
         """
         if self.auth_mode == "profile":
-            subject = f"Databricks sign-in for profile '{self.profile}'"
-            if self.sdk_auth_type == "external-browser":
+            if self.sdk_auth_type == "databricks-cli":
                 return (
-                    f"{subject} did not complete",
-                    "finish signing in in the browser and try again",
-                )
-            if self.sdk_auth_type in (None, "", "databricks-cli"):
-                return (
-                    f"{subject} failed or has expired",
+                    f"Databricks sign-in for profile '{self.profile}' failed or has expired",
                     f"run `databricks auth login --profile {self.profile}` and try again",
                 )
             return (
@@ -116,11 +122,6 @@ class DatabricksCredentials:
             return (
                 "The Databricks CLI sign-in failed or has expired",
                 "run `databricks auth login --host <your DATABRICKS_HOST>` and try again",
-            )
-        if self.auth_mode == "browser_login":
-            return (
-                "The Databricks browser sign-in did not complete",
-                "finish signing in in the browser and try again",
             )
         raise ValueError(f"{self.auth_mode} is not a user sign-in")
 
@@ -172,20 +173,26 @@ def _refuse_beside(selector: str, others: Mapping[str, str]) -> None:
 
 
 def _profile_host_and_auth_type(profile: str) -> tuple[str, str]:
-    """The host and declared auth type of *profile* in the Databricks CLI's config file.
+    """The host of *profile* in the Databricks CLI's config file, and its pinned sign-in.
 
     Read as the SDK reads it: ``DATABRICKS_CONFIG_FILE`` or ``~/.databrickscfg``, an
-    INI file whose ``DEFAULT`` section every profile inherits. Reading the file here,
-    with the standard library, keeps resolution free of the SDK and of any sign-in
-    side effect, so a status check can never open a browser.
+    INI file in which each profile has only its own keys (a ``[DEFAULT]`` section is
+    the profile named ``DEFAULT``, inherited by none). Reading the file here, with the
+    standard library, keeps resolution free of the SDK and of any sign-in side
+    effect, so a status check can never run the CLI.
+
+    The sign-in is pinned so the SDK never walks its default chain for a profile:
+    the ``auth_type`` the profile declares; else ``pat`` when it holds a ``token``;
+    else ``oauth-m2m`` when it holds a ``client_id`` and ``client_secret``; else the
+    profile is refused. ``external-browser`` is refused too (module docstring).
     """
     path = Path(os.getenv("DATABRICKS_CONFIG_FILE", "").strip() or "~/.databrickscfg").expanduser()
-    login = f"run `databricks auth login --host <workspace URL> --profile {profile}` to create it"
-    parser = configparser.ConfigParser(interpolation=None)
+    login = f"run `databricks auth login --host <workspace URL> --profile {profile}`"
+    parser = configparser.ConfigParser(interpolation=None, default_section=_NO_DEFAULT_SECTION)
     if not path.is_file():
         raise DatabricksConfigError(
             f"DATABRICKS_CONFIG_PROFILE names profile '{profile}', but there is no "
-            f"Databricks CLI config file at {path}: {login}."
+            f"Databricks CLI config file at {path}: {login} to create it."
         )
     try:
         parser.read(path, encoding="utf-8")
@@ -193,12 +200,12 @@ def _profile_host_and_auth_type(profile: str) -> tuple[str, str]:
         # The parser's message quotes the offending line, which may be a token.
         raise DatabricksConfigError(
             f"The Databricks CLI config file {path} could not be read as a profiles file "
-            f"(line {getattr(exc, 'lineno', '?')}): repair it, or {login}."
+            f"(line {getattr(exc, 'lineno', '?')}): repair it, or {login} to rewrite it."
         ) from None
     if profile not in parser:
         raise DatabricksConfigError(
             f"DATABRICKS_CONFIG_PROFILE names profile '{profile}', which {path} does not "
-            f"define: {login}."
+            f"define: {login} to create it."
         )
     section = parser[profile]
     host = section.get("host", "").strip().rstrip("/")
@@ -208,7 +215,24 @@ def _profile_host_and_auth_type(profile: str) -> tuple[str, str]:
             f"or sign in again with `databricks auth login --host <workspace URL> "
             f"--profile {profile}`."
         )
-    return host, section.get("auth_type", "").strip()
+    declared = section.get("auth_type", "").strip()
+    if declared == _BROWSER_AUTH_TYPE:
+        raise DatabricksConfigError(
+            f"Profile '{profile}' in {path} declares auth_type = external-browser, which "
+            f"Haute does not run (the SDK's browser sign-in cannot be timed out or "
+            f"cancelled): sign in with {login}, which writes auth_type = databricks-cli."
+        )
+    if declared:
+        return host, declared
+    if section.get("token", "").strip():
+        return host, "pat"
+    if section.get("client_id", "").strip() and section.get("client_secret", "").strip():
+        return host, "oauth-m2m"
+    raise DatabricksConfigError(
+        f"Profile '{profile}' in {path} names only a host, so it does not say how to sign "
+        f"in: {login}, which writes auth_type = databricks-cli, or add a token or a "
+        f"client_id and client_secret to it."
+    )
 
 
 def resolve_databricks_credentials(
@@ -241,17 +265,18 @@ def resolve_databricks_credentials(
                 "DATABRICKS_AUTH_TYPE": auth_type,
             },
         )
-        host, declared = _profile_host_and_auth_type(profile)
+        host, pinned = _profile_host_and_auth_type(profile)
         if requirements:
             raise _missing(requirements)
-        return _credentials(host, "profile", profile=profile, sdk_auth_type=declared or None)
+        return _credentials(host, "profile", profile=profile, sdk_auth_type=pinned)
 
     if auth_type:
         mode = USER_SIGN_IN_AUTH_TYPES.get(auth_type)
         if mode is None:
             raise DatabricksConfigError(
-                "DATABRICKS_AUTH_TYPE must be databricks-cli (the sign-in the Databricks CLI "
-                "holds) or external-browser (a browser sign-in the SDK opens)."
+                "DATABRICKS_AUTH_TYPE must be databricks-cli, the sign-in the Databricks CLI "
+                "holds after `databricks auth login`. (The SDK's external-browser sign-in is "
+                "not offered: it cannot be timed out or cancelled.)"
             )
         _refuse_beside(
             "DATABRICKS_AUTH_TYPE",
@@ -317,14 +342,18 @@ def credentials_rejected(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and str(exc).partition(":")[0] in _REFUSED_CREDENTIAL_CODES
 
 
-def databricks_sdk_config(credentials: DatabricksCredentials) -> Any:
+def databricks_sdk_config(
+    credentials: DatabricksCredentials, *, retry_timeout_seconds: int | None = None
+) -> Any:
     """The SDK ``Config`` that performs a user sign-in (``signs_in_as_user``).
 
-    Building it signs in: the CLI form runs ``databricks auth token``, the browser
-    form may open the browser, and a profile does whatever its ``auth_type`` says,
-    so this is called only where a connection is about to be made, never from a
-    status check. A sign-in the SDK cannot complete is its construction-time
-    ``ValueError``; it becomes a :class:`DatabricksSignInError` worded by haute.
+    Building it signs in: the CLI form runs ``databricks auth token``, and a profile
+    does whatever its pinned ``auth_type`` says, so this is called only where a
+    connection is about to be made, never from a status check. The auth type is
+    always passed, so the SDK never walks its default chain. A sign-in the SDK
+    cannot complete is its construction-time ``ValueError``; it becomes a
+    :class:`DatabricksSignInError` worded by haute. *retry_timeout_seconds* bounds
+    how long the SDK retries an unreachable workspace (its default is 300).
 
     Raises :class:`ImportError` when the ``databricks`` extra is not installed;
     each caller words that for its own surface.
@@ -335,27 +364,55 @@ def databricks_sdk_config(credentials: DatabricksCredentials) -> Any:
         raise ValueError(f"{credentials.auth_mode} authenticates without an SDK config")
     try:
         if credentials.auth_mode == "profile":
-            return Config(profile=credentials.profile)
-        return Config(host=credentials.workspace_host, auth_type=credentials.sdk_auth_type)
+            config = Config(profile=credentials.profile, auth_type=credentials.sdk_auth_type)
+        else:
+            config = Config(host=credentials.workspace_host, auth_type=credentials.sdk_auth_type)
     except ValueError as exc:
         problem, remedy = credentials.sign_in_failure()
         raise DatabricksSignInError(problem, remedy) from exc
+    if retry_timeout_seconds is not None:
+        config.retry_timeout_seconds = retry_timeout_seconds
+    return config
 
 
-def databricks_workspace_client(credentials: DatabricksCredentials) -> Any:
+def databricks_workspace_client(
+    credentials: DatabricksCredentials, *, retry_timeout_seconds: int | None = None
+) -> Any:
     """A ``databricks.sdk.WorkspaceClient`` authenticated as *credentials* select.
 
-    Raises :class:`ImportError` when the ``databricks`` extra is not installed;
-    each caller words that for its own surface.
+    *retry_timeout_seconds* bounds how long the SDK retries an unreachable workspace
+    (its default is 300). Raises :class:`ImportError` when the ``databricks`` extra
+    is not installed; each caller words that for its own surface.
     """
     from databricks.sdk import WorkspaceClient
 
-    if credentials.auth_mode == "pat":
-        return WorkspaceClient(host=credentials.workspace_host, token=credentials.token)
-    if credentials.auth_mode == "service_principal":
+    if credentials.signs_in_as_user:
+        return WorkspaceClient(
+            config=databricks_sdk_config(credentials, retry_timeout_seconds=retry_timeout_seconds)
+        )
+    if retry_timeout_seconds is None:
+        if credentials.auth_mode == "pat":
+            return WorkspaceClient(host=credentials.workspace_host, token=credentials.token)
         return WorkspaceClient(
             host=credentials.workspace_host,
             client_id=credentials.client_id,
             client_secret=credentials.client_secret,
         )
-    return WorkspaceClient(config=databricks_sdk_config(credentials))
+    # The retry deadline is a Config attribute the client reads at construction,
+    # not a WorkspaceClient argument, so a bounded client is built from a Config.
+    from databricks.sdk.core import Config
+
+    if credentials.auth_mode == "pat":
+        config = Config(
+            host=credentials.workspace_host,
+            token=credentials.token,
+            retry_timeout_seconds=retry_timeout_seconds,
+        )
+    else:
+        config = Config(
+            host=credentials.workspace_host,
+            client_id=credentials.client_id,
+            client_secret=credentials.client_secret,
+            retry_timeout_seconds=retry_timeout_seconds,
+        )
+    return WorkspaceClient(config=config)

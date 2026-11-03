@@ -163,32 +163,98 @@ def test_a_named_profile_is_read_from_the_cli_config_file(
     assert credentials.signs_in_as_user
 
 
-def test_a_profile_inherits_the_default_section_as_the_cli_does(
+def test_a_profile_does_not_inherit_the_default_section_as_the_sdk_does_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """``configparser`` would hand ``[team]`` the ``[DEFAULT]`` host; the SDK reads each
+    profile's own keys only, so haute must refuse what the SDK would fail on."""
     _profiles_file(
         tmp_path,
         monkeypatch,
-        "[DEFAULT]\nhost = shared.example\n\n[team]\nauth_type = external-browser\n",
+        "[DEFAULT]\nhost = shared.example\n\n[team]\nauth_type = databricks-cli\n",
     )
     monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "team")
 
-    credentials = resolve_databricks_credentials()
-
-    assert credentials.workspace_host == "shared.example"
-    assert credentials.sdk_auth_type == "external-browser"
+    with pytest.raises(DatabricksConfigError, match="Profile 'team' .* has no host"):
+        resolve_databricks_credentials()
 
 
-def test_a_profile_without_a_declared_auth_type_is_still_a_profile(
+def test_the_default_section_is_the_profile_named_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _profiles_file(tmp_path, monkeypatch, "[work]\nhost = https://workspace.example\n")
+    _profiles_file(
+        tmp_path, monkeypatch, "[DEFAULT]\nhost = shared.example\nauth_type = databricks-cli\n"
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "DEFAULT")
+
+    credentials = resolve_databricks_credentials()
+
+    assert credentials.profile == "DEFAULT"
+    assert credentials.workspace_host == "shared.example"
+    assert credentials.sdk_auth_type == "databricks-cli"
+
+
+@pytest.mark.parametrize(
+    ("section", "pinned"),
+    [
+        ("token = dapi-in-file", "pat"),
+        ("client_id = app-id\nclient_secret = app-secret", "oauth-m2m"),
+        ("auth_type = azure-cli", "azure-cli"),
+    ],
+)
+def test_a_profile_s_sign_in_is_pinned_from_what_it_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, section: str, pinned: str
+) -> None:
+    _profiles_file(tmp_path, monkeypatch, f"[work]\nhost = https://workspace.example\n{section}\n")
     monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
 
     credentials = resolve_databricks_credentials()
 
     assert credentials.auth_mode == "profile"
-    assert credentials.sdk_auth_type is None
+    assert credentials.sdk_auth_type == pinned
+    # The file's own credentials stay in the file: the SDK reads them, haute never does.
+    assert credentials.token is None
+    assert credentials.client_secret is None
+
+
+def test_a_profile_naming_only_a_host_is_refused_even_with_ambient_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Left unpinned, the SDK's default chain would sign in with whatever the machine
+    has, basic auth from the environment or an Azure CLI login, before the CLI's."""
+    path = _profiles_file(tmp_path, monkeypatch, "[work]\nhost = https://workspace.example\n")
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+    monkeypatch.setenv("DATABRICKS_USERNAME", "someone")
+    monkeypatch.setenv("DATABRICKS_PASSWORD", "ambient-secret")
+
+    with pytest.raises(DatabricksConfigError) as exc_info:
+        resolve_databricks_credentials()
+
+    message = str(exc_info.value)
+    assert "Profile 'work'" in message
+    assert str(path) in message
+    assert "names only a host" in message
+    assert "databricks auth login --host <workspace URL> --profile work" in message
+    assert "ambient-secret" not in message
+
+
+def test_a_profile_declaring_the_browser_sign_in_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _profiles_file(
+        tmp_path,
+        monkeypatch,
+        "[work]\nhost = https://workspace.example\nauth_type = external-browser\n",
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+
+    with pytest.raises(DatabricksConfigError) as exc_info:
+        resolve_databricks_credentials()
+
+    message = str(exc_info.value)
+    assert "Profile 'work'" in message
+    assert "external-browser" in message
+    assert "databricks auth login --host <workspace URL> --profile work" in message
 
 
 def test_a_missing_config_file_is_refused_naming_the_profile(
@@ -273,20 +339,16 @@ def test_a_profile_is_refused_beside_any_other_selector(
     assert value not in message
 
 
-@pytest.mark.parametrize(
-    ("auth_type", "mode"),
-    [("databricks-cli", "cli_login"), ("external-browser", "browser_login")],
-)
-def test_an_auth_type_selects_a_user_sign_in_with_the_host(
-    monkeypatch: pytest.MonkeyPatch, auth_type: str, mode: str
+def test_the_cli_auth_type_selects_the_cli_sign_in_with_the_host(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DATABRICKS_HOST", " https://workspace.example/ ")
-    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", auth_type)
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
 
     credentials = resolve_databricks_credentials()
 
-    assert credentials.auth_mode == mode
-    assert credentials.sdk_auth_type == auth_type
+    assert credentials.auth_mode == "cli_login"
+    assert credentials.sdk_auth_type == "databricks-cli"
     assert credentials.workspace_host == "https://workspace.example"
     assert credentials.server_hostname == "workspace.example"
     assert credentials.profile is None
@@ -308,11 +370,14 @@ def test_an_auth_type_without_a_host_is_refused(monkeypatch: pytest.MonkeyPatch)
     assert "DATABRICKS_TOKEN" not in message
 
 
-def test_an_unknown_auth_type_is_refused_naming_the_two_accepted(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("auth_type", ["oauth-m2m", "external-browser", "pat"])
+def test_any_other_auth_type_is_refused_naming_the_accepted_one(
+    monkeypatch: pytest.MonkeyPatch, auth_type: str
 ) -> None:
+    """Only the CLI's sign-in is offered through the auth type: a token or pair has
+    its own variables, and the SDK's browser sign-in cannot be timed out or cancelled."""
     monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
-    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "oauth-m2m")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", auth_type)
 
     with pytest.raises(DatabricksConfigError) as exc_info:
         resolve_databricks_credentials()
@@ -320,8 +385,6 @@ def test_an_unknown_auth_type_is_refused_naming_the_two_accepted(
     message = str(exc_info.value)
     assert "DATABRICKS_AUTH_TYPE" in message
     assert "databricks-cli" in message
-    assert "external-browser" in message
-    assert "oauth-m2m" not in message
 
 
 @pytest.mark.parametrize(
@@ -369,7 +432,11 @@ def test_the_missing_message_names_every_sign_in_form(monkeypatch: pytest.Monkey
 def test_user_sign_ins_have_no_credential_fields_to_redact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _profiles_file(tmp_path, monkeypatch, "[work]\nhost = https://workspace.example\n")
+    _profiles_file(
+        tmp_path,
+        monkeypatch,
+        "[work]\nhost = https://workspace.example\nauth_type = databricks-cli\n",
+    )
     monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
 
     rendered = repr(resolve_databricks_credentials())
@@ -423,6 +490,26 @@ class TestSdkHandoffThroughTheCli:
         assert config.authenticate() == {"Authorization": "Bearer cli-token-123"}
         assert config.auth_type == "databricks-cli"
         assert databricks_workspace_client(credentials).config.auth_type == "databricks-cli"
+
+    def test_a_profile_s_pinned_sign_in_wins_over_ambient_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SDK loads the environment before the profile and, left to its default
+        chain, would sign in with basic auth; the pinned auth type forces the CLI."""
+        _fake_cli(tmp_path, monkeypatch, f"printf '%s' '{_CLI_TOKEN_JSON}'\n")
+        _profiles_file(
+            tmp_path,
+            monkeypatch,
+            "[work]\nhost = https://workspace.example\nauth_type = databricks-cli\n",
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
+        monkeypatch.setenv("DATABRICKS_USERNAME", "someone")
+        monkeypatch.setenv("DATABRICKS_PASSWORD", "ambient-secret")
+
+        config = databricks_sdk_config(resolve_databricks_credentials())
+
+        assert config.auth_type == "databricks-cli"
+        assert config.authenticate() == {"Authorization": "Bearer cli-token-123"}
 
     def test_a_profile_signs_in_through_the_cli_with_the_profile_s_host(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

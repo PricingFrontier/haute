@@ -234,7 +234,9 @@ def test_a_profile_connects_to_the_profile_s_host(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     profiles = tmp_path / "databrickscfg"
-    profiles.write_text("[work]\nhost = https://profile.example/\n", encoding="utf-8")
+    profiles.write_text(
+        "[work]\nhost = https://profile.example/\nauth_type = databricks-cli\n", encoding="utf-8"
+    )
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(profiles))
     monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "work")
     recorded, authenticate = _stub_sdk_config(monkeypatch)
@@ -244,7 +246,8 @@ def test_a_profile_connects_to_the_profile_s_host(
     assert host == "profile.example"
     assert http_path == "/sql/warehouse"
     assert auth_kwargs["credentials_provider"]() is authenticate
-    assert recorded == {"profile": "work"}
+    # The pinned sign-in travels to the SDK, so it never walks its default chain.
+    assert recorded == {"profile": "work", "auth_type": "databricks-cli"}
 
 
 @pytest.mark.usefixtures("_no_ambient_databricks_env")
@@ -252,7 +255,7 @@ def test_user_sign_in_provider_reports_missing_sdk(monkeypatch: pytest.MonkeyPat
     import sys
 
     monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
-    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "external-browser")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
     monkeypatch.setitem(sys.modules, "databricks.sdk.core", None)
 
     _, auth_kwargs, _ = _connection_settings("/sql/warehouse")
