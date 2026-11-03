@@ -14,8 +14,10 @@ unfinished step) keeps its placeholder body, and its step list moves into the pi
 Each converted node's rebuilt steps are compared with the steps the file held. A node
 whose steps differ is reported: its code stays as it is, and the statements Haute does not
 recognise load as code steps. A file that no longer parses after the change is put back,
-and nothing of it is changed. Haute keeps no copy of this conversion; the file is removed
-once the owner has run it.
+and nothing of it is changed. It converts pipeline files only: a project with a submodel's
+Polars node on a ``config=`` file (``@submodel.polars(config=...)``) is refused before
+anything is changed, since the one project it is for has none. Haute keeps no copy of this
+conversion; the file is removed once the owner has run it.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from haute._types import NodeType
 from haute.parser import parse_pipeline_file
 
 DECORATOR = re.compile(r'@pipeline\.polars\(config="(?P<path>config/polars/[^"]+\.json)"\)')
+SUBMODEL_DECORATOR = re.compile(r"@submodel\.polars\(config=")
 COLUMN_SETTINGS = ("selected_columns", "column_renames")
 
 
@@ -106,14 +109,22 @@ def _convert(pipeline: Path) -> list[str]:
 
 
 def convert(projects: list[Path]) -> tuple[list[Path], list[str]]:
-    pipelines = sorted(
+    files = sorted(
         {
             file
             for project in projects
             for file in project.rglob("*.py")
-            if ".venv" not in file.parts and DECORATOR.search(file.read_bytes().decode("utf-8"))
+            if ".venv" not in file.parts
         }
     )
+    sources = {file: file.read_bytes().decode("utf-8") for file in files}
+    submodels = [file for file, source in sources.items() if SUBMODEL_DECORATOR.search(source)]
+    if submodels:
+        raise SystemExit(
+            "These submodel files hold Polars nodes on config= files, which this conversion "
+            "does not convert; nothing was changed: " + ", ".join(map(str, submodels))
+        )
+    pipelines = [file for file, source in sources.items() if DECORATOR.search(source)]
     report: list[str] = []
     for pipeline in pipelines:
         report.extend(_convert(pipeline))
