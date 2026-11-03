@@ -30,9 +30,9 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
-from haute._io import load_external_object
 from haute._logging import get_logger
 from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
+from haute._model_source import model_score_output_column, model_score_task
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._polars_utils import streaming_collect
 from haute._types import (
@@ -383,7 +383,7 @@ def omittable_request_columns(
             continue
         scoring_model = load_local_model_cached(
             model_path,
-            config.get("task", "regression"),
+            model_score_task(config),
             _bundled_contract_path(node.id, remap),
         )
         exposure = scoring_model.offset_column
@@ -426,10 +426,7 @@ def _attach_bundled_model_contract_inputs(
             nodes.append(node)
             continue
 
-        scoring_model = load_local_model_cached(
-            model_path,
-            config.get("task", "regression"),
-        )
+        scoring_model = load_local_model_cached(model_path, model_score_task(config))
         raw_features: Any = scoring_model.feature_names
         invalid_feature_container = isinstance(raw_features, str | bytes)
         if invalid_feature_container:
@@ -786,6 +783,24 @@ def _reject_incomplete_stepped_nodes(graph: PipelineGraph, relevant_node_ids: se
             )
 
 
+def _require_request_input_edge_names(
+    graph: PipelineGraph, relevant_node_ids: Collection[str]
+) -> None:
+    """Refuse a scored edge out of a request input that names no frame.
+
+    A Quote Input emits a frame per table, so each edge out of it must name its
+    frame (``sourceHandle``); the shared edge-name resolver raises for one that does
+    not, so direct frame injection can never bypass that rule.
+    """
+    node_by_id = {node.id: node for node in graph.nodes}
+    for edge in graph.edges:
+        if edge.source not in relevant_node_ids or edge.target not in relevant_node_ids:
+            continue
+        source_node = node_by_id.get(edge.source)
+        if source_node is not None and source_node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
+            edge_input_name(edge, source_node)
+
+
 def _score_graph_lazy(
     graph: PipelineGraph,
     input_df: DeployInput,
@@ -805,13 +820,7 @@ def _score_graph_lazy(
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
     _reject_incomplete_stepped_nodes(graph, relevant_node_ids)
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
-    node_by_id = {node.id: node for node in graph.nodes}
-    for edge in graph.edges:
-        if edge.source not in relevant_node_ids or edge.target not in relevant_node_ids:
-            continue
-        source_node = node_by_id.get(edge.source)
-        if source_node is not None and source_node.data.nodeType in REQUEST_INPUT_NODE_TYPES:
-            edge_input_name(edge, source_node)
+    _require_request_input_edge_names(graph, relevant_node_ids)
     for node in graph.nodes:
         if node.id in relevant_node_ids:
             # Strategy planning now precedes function construction. Preserve
@@ -950,124 +959,52 @@ def _score_graph_lazy(
 
             return func_name, bundled_snapshot_input, True
 
-        # Intercept: externalFile with remapped artifact path
+        # Intercept: an External File served from its bundled copy runs the body every
+        # Load File runs (its steps or code, its input names), reading that copy by the
+        # node's fileType.
         if node_type == NodeType.EXTERNAL_FILE and remap:
             remapped_path = _remap_artifact(nid, config, remap, "path")
             if remapped_path is not None:
-                code = config.get("code", "").strip()
-                file_type = config.get("fileType", "pickle")
+                from haute._builders import external_file_node_fn
+                from haute._node_apply import load_external_file_at
+
+                _bundled_object_path: str = remapped_path
+                return external_file_node_fn(
+                    config,
+                    func_name=func_name,
+                    node_id=nid,
+                    source_names=source_names,
+                    orig_source_names=build_kwargs.get("orig_source_names"),
+                    preamble_ns=build_kwargs.get("preamble_ns"),
+                    load_object=lambda: load_external_file_at(_bundled_object_path, config),
+                )
+
+        # Intercept: a file-sourced Optimiser Apply loads its bundled copy, then applies it
+        # through the body every Optimiser Apply runs. One sourced from MLflow loads at
+        # request time from its own destination, exactly as the builder does.
+        if node_type == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file" and remap:
+            remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
+            if remapped_path is not None:
+                _opt_remapped: str = remapped_path
                 _src_names = list(source_names)
-                _orig_src_names = build_kwargs.get("orig_source_names")
 
-                _remapped: str = remapped_path  # narrowed by the `is not None` guard above
-                if code:
-
-                    def external_fn(
-                        *dfs: _Frame,
-                        _p: str = _remapped,
-                        _ft: str = file_type,
-                        _code: str = code,
-                        _sn: list[str] = _src_names,
-                        _orig: list[str] | None = _orig_src_names,
-                        _ns: dict[str, Any] = _preamble_names,
-                    ) -> _Frame:
-                        from haute._user_exec import _exec_user_code
-
-                        obj = load_external_object(_p, _ft)
-                        return _exec_user_code(
-                            _code,
-                            _sn,
-                            dfs,
-                            extra_ns={**_ns, "obj": obj},
-                            orig_source_names=_orig,
-                            alias_first_input_as_df=True,
-                        )
-
-                    return func_name, external_fn, False
-                else:
-
-                    def external_passthrough(*dfs: _Frame) -> _Frame:
-                        return dfs[0] if dfs else pl.LazyFrame()
-
-                    return func_name, external_passthrough, False
-
-        # Intercept: optimiserApply with remapped artifact path or MLflow source
-        if node_type == NodeType.OPTIMISER_APPLY:
-            _vcol = config.get("version_column", "__optimiser_version__")
-            _opt_col = config.get("optimised_value_column", "")
-            _ratebook_input = config.get("ratebook_input", "")
-            _src_names = list(source_names)
-            _st = config.get("sourceType", "")
-
-            # File-based with remap
-            if _st == "file" and remap:
-                remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
-                if remapped_path is not None:
-                    _opt_remapped: str = remapped_path
-
-                    def optimiser_apply_fn(
-                        *dfs: _Frame,
-                        _path: str = _opt_remapped,
-                        _version_col: str = _vcol,
-                        _optimised_value_col: str = _opt_col,
-                        _rb_input: str = _ratebook_input,
-                        _src_names_arg: list[str] = _src_names,
-                    ) -> _Frame:
-                        from haute._builders import _dispatch_apply, _select_optimiser_apply_input
-                        from haute._optimiser_io import load_optimiser_artifact
-
-                        artifact = load_optimiser_artifact(_path)
-                        lf = _select_optimiser_apply_input(
-                            dfs,
-                            artifact,
-                            _rb_input,
-                            _src_names_arg,
-                        )
-                        return _dispatch_apply(lf, artifact, _version_col, _optimised_value_col)
-
-                    return func_name, optimiser_apply_fn, False
-
-            # MLflow-sourced (downloads from MLflow at runtime)
-            if _st in ("run", "registered"):
-                _rid = config.get("run_id", "")
-                _rm = config.get("registered_model", "")
-                _ver = config.get("version", "latest")
-                _alias = str(config.get("alias", "") or "")
-                _dest = str(config.get("mlflow_destination", "") or "")
-
-                def optimiser_apply_mlflow_fn(
+                def optimiser_apply_fn(
                     *dfs: _Frame,
-                    _source_type: str = _st,
-                    _run_id: str = _rid,
-                    _reg_model: str = _rm,
-                    _opt_ver: str = _ver,
-                    _opt_alias: str = _alias,
-                    _destination: str = _dest,
-                    _version_col: str = _vcol,
-                    _optimised_value_col: str = _opt_col,
-                    _rb_input: str = _ratebook_input,
-                    _src_names_arg: list[str] = _src_names,
+                    _path: str = _opt_remapped,
+                    _config: Mapping[str, Any] = config,
+                    _names: list[str] = _src_names,
                 ) -> _Frame:
-                    from haute._builders import _dispatch_apply, _select_optimiser_apply_input
-                    from haute._optimiser_io import load_mlflow_optimiser_artifact
+                    from haute._node_apply import apply_optimiser_artifact
+                    from haute._optimiser_io import load_optimiser_artifact
 
-                    artifact = load_mlflow_optimiser_artifact(
-                        source_type=_source_type,
-                        run_id=_run_id,
-                        registered_model=_reg_model,
-                        version=_opt_ver,
-                        alias=_opt_alias,
-                        destination=_destination,
+                    return apply_optimiser_artifact(
+                        *dfs,
+                        artifact=load_optimiser_artifact(_path),
+                        config=_config,
+                        source_names=_names,
                     )
-                    lf = _select_optimiser_apply_input(
-                        dfs,
-                        artifact,
-                        _rb_input,
-                        _src_names_arg,
-                    )
-                    return _dispatch_apply(lf, artifact, _version_col, _optimised_value_col)
 
-                return func_name, optimiser_apply_mlflow_fn, False
+                return func_name, optimiser_apply_fn, False
 
         # Intercept: modelScore with bundled feature contract — verify
         # the live input schema matches the training contract BEFORE any
@@ -1079,8 +1016,8 @@ def _score_graph_lazy(
             remapped_path = (
                 _remap_artifact(nid, config, remap, model_artifact_field(config)) if remap else None
             )
-            _task = config.get("task", "regression")
-            _output_col = config.get("output_column", "prediction")
+            _task = model_score_task(config)
+            _output_col = model_score_output_column(config)
             _src_names = list(source_names)
             _code = str(config.get("code") or "").strip()
             _score_source = "live"

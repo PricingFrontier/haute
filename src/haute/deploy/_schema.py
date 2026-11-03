@@ -16,6 +16,7 @@ from haute._cache import (
     graph_fingerprint,
     polars_version,
 )
+from haute._file_ops import atomic_write_text
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._types import REQUEST_INPUT_NODE_TYPES
@@ -37,7 +38,11 @@ logger = get_logger(component="deploy.schema")
 # is a runtime warning or a bundle-time refusal.
 DeployBatchRuntime = Literal["hard_capped_worker", "in_process"]
 
-_SCHEMA_CACHE_FILE = ".haute_cache/output_schema.json"
+#: The output-schema cache, under the resolved project root.
+SCHEMA_CACHE_FILE = Path(".haute_cache") / "output_schema.json"
+#: The fingerprints the cache keeps, the most recently written last: enough for the
+#: pipelines and staging/production variants a project deploys, never unbounded.
+_SCHEMA_CACHE_ENTRIES = 32
 _DEPLOY_SCHEMA_EXECUTION_POLICY = "deploy-output-schema:v1"
 
 
@@ -428,19 +433,52 @@ def _capped_worker_output_schema(
         plan.cleanup(primary_error=primary_error)
 
 
+def _read_schema_cache(path: Path) -> dict[str, dict[str, str]]:
+    """The cached schemas by fingerprint; none when the file is absent or not a cache."""
+    if not path.is_file():
+        return {}
+    try:
+        entries = _json.loads(path.read_text(encoding="utf-8"))["entries"]
+        if not isinstance(entries, dict):
+            raise TypeError(f"entries is a {type(entries).__name__}")
+        return {str(fp): dict(schema) for fp, schema in entries.items()}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("corrupt_schema_cache", path=str(path), error=str(exc))
+        return {}
+
+
+def _write_schema_cache(
+    path: Path, entries: dict[str, dict[str, str]], fingerprint: str, schema: dict[str, str]
+) -> None:
+    """Write *entries* with *fingerprint*'s *schema* added, keeping the newest ones.
+
+    The write is atomic, so a reader, or a build interrupted mid-write, never leaves a
+    partial file; a concurrent build's entry written in between is only a later miss.
+    """
+    entries = dict(entries)
+    entries.pop(fingerprint, None)
+    entries[fingerprint] = schema
+    kept = dict(list(entries.items())[-_SCHEMA_CACHE_ENTRIES:])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, _json.dumps({"entries": kept}))
+
+
 def infer_output_schema(
     graph: PipelineGraph,
     output_node_id: str,
     input_node_ids: list[str],
     artifact_paths: dict[str, str] | None = None,
+    *,
+    project_root: Path,
 ) -> dict[str, str]:
     """Infer the output schema by dry-running one sample row.
 
     Executes the pruned graph with a single sample row injected at each
     input node, and reads the output node's columns + types.
 
-    Results are cached in ``.haute_cache/output_schema.json`` keyed by
-    graph fingerprint so unchanged pipelines skip the dry-run.  The bundled
+    Results are cached in ``<project_root>/.haute_cache/output_schema.json``, one
+    entry per graph fingerprint, so each unchanged pipeline skips the dry-run however
+    the project's pipelines alternate.  The bundled
     artifact identity (:func:`artifact_identity_fingerprint`) is mixed into
     the key so a model retrained in place — same graph config but different
     served bytes — busts the cache instead of baking a stale schema into the
@@ -457,6 +495,7 @@ def infer_output_schema(
         artifact_paths: The bundled artifacts (``artifact_name → local_path``)
             the container serves, threaded into the dry-run so validate-time
             scoring matches serve-time scoring byte-for-byte.
+        project_root: The resolved project root, which holds the cache.
 
     Returns:
         Dict of column_name → polars dtype string.
@@ -468,16 +507,12 @@ def infer_output_schema(
         artifact_paths=artifact_paths,
     )
 
-    # Check cache
-    cache_path = Path(_SCHEMA_CACHE_FILE)
-    if cache_path.exists():
-        try:
-            cached = _json.loads(cache_path.read_text(encoding="utf-8"))
-            if cached.get("fingerprint") == fp:
-                logger.info("output_schema_cache_hit", fingerprint=fp[:8])
-                return dict(cached["schema"])
-        except Exception as exc:
-            logger.warning("corrupt_schema_cache", path=str(cache_path), error=str(exc))
+    cache_path = project_root / SCHEMA_CACHE_FILE
+    entries = _read_schema_cache(cache_path)
+    cached = entries.get(fp)
+    if cached is not None:
+        logger.info("output_schema_cache_hit", fingerprint=fp[:8])
+        return cached
 
     from haute.deploy._batch_scoring import BatchScoreError
     from haute.errors import DeployError, GroupByExecutionUnsupportedError
@@ -535,8 +570,7 @@ def infer_output_schema(
     # exception (e.g. a non-serialisable schema) is a real bug and must
     # propagate rather than be masked by a bare ``except: pass``.
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(_json.dumps({"fingerprint": fp, "schema": schema}), encoding="utf-8")
+        _write_schema_cache(cache_path, entries, fp, schema)
     except OSError as exc:
         logger.warning("output_schema_cache_write_failed", path=str(cache_path), error=str(exc))
 

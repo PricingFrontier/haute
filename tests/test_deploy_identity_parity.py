@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -169,7 +170,9 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
             "haute.deploy._scorer.score_graph",
             return_value=pl.DataFrame({"prediction": [1.0]}),
         ) as first:
-            r1 = infer_output_schema(graph, "out", ["src"], artifact_paths=artifact_paths)
+            r1 = infer_output_schema(
+                graph, "out", ["src"], artifact_paths=artifact_paths, project_root=tmp_path
+            )
         first.assert_called_once()
         assert r1 == {"prediction": "Float64"}
 
@@ -181,7 +184,9 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
             "haute.deploy._scorer.score_graph",
             return_value=pl.DataFrame({"prediction": [1]}),
         ) as second:
-            r2 = infer_output_schema(graph, "out", ["src"], artifact_paths=artifact_paths)
+            r2 = infer_output_schema(
+                graph, "out", ["src"], artifact_paths=artifact_paths, project_root=tmp_path
+            )
 
         # The dry-run MUST re-run (cache busted) and observe the new dtype.
         second.assert_called_once()
@@ -209,14 +214,83 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
         cache_dir = tmp_path / ".haute_cache"
         cache_dir.mkdir()
         (cache_dir / "output_schema.json").write_text(
-            json.dumps({"fingerprint": fp, "schema": {"premium": "Float64"}})
+            json.dumps({"entries": {fp: {"premium": "Float64"}}})
         )
 
         with patch("haute.deploy._scorer.score_graph") as score:
-            result = infer_output_schema(graph, "out", ["src"], artifact_paths={})
+            result = infer_output_schema(
+                graph, "out", ["src"], artifact_paths={}, project_root=tmp_path
+            )
 
         score.assert_not_called()  # cache hit — key unchanged
         assert result == {"premium": "Float64"}
+
+    def test_alternating_pipelines_each_keep_their_entry(self, tmp_path):
+        """DEP-R12B: the cache holds one entry per fingerprint, not the last deploy's."""
+        import haute.deploy._schema as schema_module
+        from haute.deploy._schema import SCHEMA_CACHE_FILE, infer_output_schema
+
+        pq = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq)
+        first = _passthrough_schema_graph(pq)
+        second = first.model_copy(
+            update={
+                "nodes": [
+                    node.with_config(make_output_config(["x"])) if node.id == "out" else node
+                    for node in first.nodes
+                ]
+            }
+        )
+        dry_runs: list[str] = []
+
+        def dry_run(graph: Any, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+            name = "second" if graph.node_map["out"].data.config["outputMapping"] else "first"
+            dry_runs.append(name)
+            return {f"{name}_premium": "Float64"}
+
+        with patch.object(schema_module, "_dry_run_output_schema", side_effect=dry_run):
+            for graph in (first, second, first, second):
+                infer_output_schema(graph, "out", ["src"], project_root=tmp_path)
+            assert dry_runs == ["first", "second"], "each unchanged pipeline reuses its entry"
+
+            pl.DataFrame({"x": [2.0]}).write_parquet(pq)
+            infer_output_schema(first, "out", ["src"], project_root=tmp_path)
+            assert dry_runs == ["first", "second", "first"], "a changed input is a new entry"
+
+        entries = json.loads((tmp_path / SCHEMA_CACHE_FILE).read_text())["entries"]
+        assert len(entries) == 3
+
+    def test_a_dry_run_from_another_cwd_writes_the_cache_atomically_under_the_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEP-R12B: the cache is the project's, never the working directory's."""
+        import shutil
+
+        import haute.deploy._schema as schema_module
+        from haute.deploy import DeployConfig, resolve_config
+        from haute.deploy._schema import SCHEMA_CACHE_FILE
+
+        example = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
+        project = tmp_path / "project"
+        shutil.copytree(example / "minimal_live_quote", project)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        writes: list[Path] = []
+        atomic_write_text = schema_module.atomic_write_text
+
+        def recording_write(path: Path, data: str) -> None:
+            writes.append(path)
+            atomic_write_text(path, data)
+
+        with (
+            patch.object(schema_module, "atomic_write_text", side_effect=recording_write),
+            resolve_config(DeployConfig.from_toml(project / "haute.toml")),
+        ):
+            pass
+
+        assert writes == [project.resolve() / SCHEMA_CACHE_FILE]
+        assert not (elsewhere / ".haute_cache").exists()
 
     def test_cache_identity_changes_when_direct_input_bytes_change(self, tmp_path):
         from haute.deploy._schema import deploy_schema_cache_fingerprint

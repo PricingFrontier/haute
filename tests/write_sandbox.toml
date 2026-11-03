@@ -601,13 +601,6 @@ strict = [
 # on a listed class no run recorded.
 [census]
 
-[census."repo:.haute_cache"]
-reason = """\
-    Production code keeps its cache and logs under the project's .haute_cache \
-    (training's memory log, the deploy output-schema cache, the runtime spill \
-    store and its storage budget), and observe-mode tests leave the project \
-    root at the repository root."""
-
 [census."runner-temp:_runner_file_commands"]
 reason = """\
     The coverage scripts and the CLI's impact report append a job summary to \

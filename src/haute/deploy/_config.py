@@ -5,10 +5,11 @@ from __future__ import annotations
 import copy
 import os
 import re
+from collections.abc import Collection, Sequence
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
@@ -222,6 +223,55 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
 }
 
 
+_T = TypeVar("_T", str, int, bool)
+
+_TOML_TYPE_NAMES: dict[type, str] = {str: "a string", int: "an integer", bool: "true or false"}
+
+
+class _TomlTable:
+    """One ``haute.toml`` table, each value read as the type its key takes.
+
+    A value of another type is refused naming the key, never loaded as given or
+    replaced by the default: ``port = "x"`` or ``serving_scale_to_zero = "yes"``
+    would otherwise reach a build or a serving endpoint.
+    """
+
+    def __init__(self, data: object, section: str) -> None:
+        if not isinstance(data, dict):
+            raise ValueError(f"[{section}] must be a table; got {data!r}.")
+        self._data: dict[str, Any] = data
+        self._section = section
+
+    def table(self, key: str) -> _TomlTable:
+        """The sub-table *key*, empty when the file has none."""
+        section = f"{self._section}.{key}" if self._section else key
+        return _TomlTable(self._data.get(key, {}), section)
+
+    def get(self, key: str, kind: type[_T], default: _T) -> _T:
+        """*key*'s value, *default* when the table does not set it."""
+        value = self.optional(key, kind)
+        return default if value is None else value
+
+    def optional(self, key: str, kind: type[_T]) -> _T | None:
+        """*key*'s value, ``None`` when the table does not set it."""
+        if key not in self._data:
+            return None
+        value = self._data[key]
+        # A TOML boolean is a Python int: an integer key never takes true or false.
+        if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+            raise ValueError(
+                f"[{self._section}] {key} must be {_TOML_TYPE_NAMES[kind]}; got {value!r}."
+            )
+        return value
+
+    def array(self, key: str) -> list[Any] | None:
+        """*key*'s array, ``None`` when the table does not set it."""
+        value = self._data.get(key)
+        if value is not None and not isinstance(value, list):
+            raise ValueError(f"[{self._section}] {key} must be an array; got {value!r}.")
+        return value
+
+
 def _validate_toml_keys(data: dict[str, Any], path: Path) -> None:
     """Raise ValueError if haute.toml contains unknown keys."""
     errors: list[str] = []
@@ -327,41 +377,34 @@ class DeployConfig:
 
         _validate_toml_keys(data, path)
 
-        project = data.get("project", {})
-        deploy = data.get("deploy", {})
-        db_raw = deploy.get("databricks", {})
-        ct_raw = deploy.get("container", {})
-        aca_raw = deploy.get("azure-container-apps", {})
-        ecs_raw = deploy.get("aws-ecs", {})
-        gcr_raw = deploy.get("gcp-run", {})
-        tq = data.get("test_quotes", {})
-        safety_raw = data.get("safety", {})
-        approval_raw = safety_raw.get("approval", {})
-        ci_raw = data.get("ci", {})
-        ci_staging = ci_raw.get("staging", {})
+        root = _TomlTable(data, "")
+        project = root.table("project")
+        deploy = root.table("deploy")
+        db_raw = deploy.table("databricks")
+        ct_raw = deploy.table("container")
+        aca_raw = deploy.table("azure-container-apps")
+        ecs_raw = deploy.table("aws-ecs")
+        gcr_raw = deploy.table("gcp-run")
+        safety_raw = root.table("safety")
+        ci_raw = root.table("ci")
+        ci_staging = ci_raw.table("staging")
+        ci_production = ci_raw.table("production")
 
-        pipeline_file = Path(project.get("pipeline", "main.py"))
-        model_name = deploy.get("model_name", project.get("name", pipeline_file.stem))
-        endpoint_name = deploy.get("endpoint_name")
-        target = deploy.get("target", "databricks")
-        output_fields_raw = deploy.get("output_fields")
-        if output_fields_raw is not None and not isinstance(output_fields_raw, list):
-            raise ValueError(
-                "[deploy].output_fields must be an array of output column names; "
-                f"got {type(output_fields_raw).__name__}."
-            )
+        pipeline_file = Path(project.get("pipeline", str, "main.py"))
+        model_name = deploy.get("model_name", str, project.get("name", str, pipeline_file.stem))
+        output_fields_raw = deploy.array("output_fields")
         # Preserve an explicit empty array so resolution can reject it with the
         # output-schema context an operator needs to correct it.
         output_fields = list(output_fields_raw) if output_fields_raw is not None else None
 
-        tq_dir = _test_quotes_dir(path.parent, tq)
+        tq_dir = _test_quotes_dir(path.parent, root.table("test_quotes").optional("dir", str))
 
         db_config = DatabricksConfig(
-            experiment_name=db_raw.get("experiment_name", "/Shared/haute/default"),
-            catalog=db_raw.get("catalog", "main"),
-            schema=db_raw.get("schema", "pricing"),
-            serving_workload_size=db_raw.get("serving_workload_size", "Small"),
-            serving_scale_to_zero=db_raw.get("serving_scale_to_zero", True),
+            experiment_name=db_raw.get("experiment_name", str, "/Shared/haute/default"),
+            catalog=db_raw.get("catalog", str, DEFAULT_CATALOG),
+            schema=db_raw.get("schema", str, DEFAULT_SCHEMA),
+            serving_workload_size=db_raw.get("serving_workload_size", str, "Small"),
+            serving_scale_to_zero=db_raw.get("serving_scale_to_zero", bool, True),
         )
 
         # ``base_image`` has no implicit default — the empty string flows
@@ -369,50 +412,50 @@ class DeployConfig:
         # unpinned image for container targets.  Users must explicitly set a
         # patch- or digest-pinned image in [deploy.container].
         ct_config = ContainerConfig(
-            registry=ct_raw.get("registry", ""),
-            port=ct_raw.get("port", 8080),
-            base_image=ct_raw.get("base_image", ""),
+            registry=ct_raw.get("registry", str, ""),
+            port=ct_raw.get("port", int, 8080),
+            base_image=ct_raw.get("base_image", str, ""),
         )
 
         aca_config = AzureContainerAppsConfig(
-            resource_group=aca_raw.get("resource_group", ""),
-            container_app_name=aca_raw.get("container_app_name", ""),
-            environment_name=aca_raw.get("environment_name", ""),
+            resource_group=aca_raw.get("resource_group", str, ""),
+            container_app_name=aca_raw.get("container_app_name", str, ""),
+            environment_name=aca_raw.get("environment_name", str, ""),
         )
 
         ecs_config = AwsEcsConfig(
-            region=ecs_raw.get("region", "eu-west-1"),
-            cluster=ecs_raw.get("cluster", ""),
-            service=ecs_raw.get("service", ""),
+            region=ecs_raw.get("region", str, "eu-west-1"),
+            cluster=ecs_raw.get("cluster", str, ""),
+            service=ecs_raw.get("service", str, ""),
         )
 
         gcr_config = GcpRunConfig(
-            project=gcr_raw.get("project", ""),
-            region=gcr_raw.get("region", "europe-west1"),
-            service=gcr_raw.get("service", ""),
+            project=gcr_raw.get("project", str, ""),
+            region=gcr_raw.get("region", str, "europe-west1"),
+            service=gcr_raw.get("service", str, ""),
         )
 
         safety_config = SafetyConfig(
-            impact_dataset=safety_raw.get("impact_dataset", ""),
-            min_approvers=approval_raw.get("min_approvers", 2),
+            impact_dataset=safety_raw.get("impact_dataset", str, ""),
+            min_approvers=safety_raw.table("approval").get("min_approvers", int, 2),
         )
 
         ci_config = CIConfig(
-            provider=ci_raw.get("provider", "github"),
+            provider=ci_raw.get("provider", str, "github"),
             staging_endpoint_suffix=ci_staging.get(
-                "endpoint_suffix", DEFAULT_STAGING_ENDPOINT_SUFFIX
+                "endpoint_suffix", str, DEFAULT_STAGING_ENDPOINT_SUFFIX
             ),
-            staging_endpoint_url=ci_staging.get("endpoint_url", ""),
-            production_endpoint_url=ci_raw.get("production", {}).get("endpoint_url", ""),
-            production_environment=ci_raw.get("production", {}).get("environment", ""),
+            staging_endpoint_url=ci_staging.get("endpoint_url", str, ""),
+            production_endpoint_url=ci_production.get("endpoint_url", str, ""),
+            production_environment=ci_production.get("environment", str, ""),
         )
 
         config = cls(
             pipeline_file=pipeline_file,
             model_name=model_name,
             project_dir=path.parent,
-            target=target,
-            endpoint_name=endpoint_name,
+            target=deploy.get("target", str, "databricks"),
+            endpoint_name=deploy.optional("endpoint_name", str),
             output_fields=output_fields,
             test_quotes_dir=tq_dir,
             databricks=db_config,
@@ -474,10 +517,18 @@ class DeployConfig:
         return cls(**kwargs)
 
     def override(self, **cli_kwargs: Any) -> DeployConfig:
-        """Return a copy with non-None CLI flags applied over TOML values."""
+        """Return a copy with non-None CLI flags applied over TOML values.
+
+        Raises:
+            TypeError: A key that is not a ``DeployConfig`` field, which would otherwise
+                be dropped without a word.
+        """
+        unknown = sorted(set(cli_kwargs) - {f.name for f in fields(self)})
+        if unknown:
+            raise TypeError(f"DeployConfig.override() got unknown key(s): {', '.join(unknown)}")
         c = copy.deepcopy(self)
         for key, val in cli_kwargs.items():
-            if val is not None and hasattr(c, key):
+            if val is not None:
                 setattr(c, key, val)
         return c
 
@@ -491,14 +542,18 @@ def test_quote_files(directory: Path) -> list[Path]:
     return sorted(directory.glob("*.json"))
 
 
-def _test_quotes_dir(project_dir: Path, table: object) -> Path | None:
-    """The test quotes' folder: ``[test_quotes] dir``, or ``tests/quotes`` when *table*
-    names none, which is checked only while it holds test quotes, so a project with neither
-    has no gate to fail. The folder is the project's own, as the Files panels take a path:
-    one outside the project, or reached through a link or junction, is refused naming why."""
-    configured = table.get("dir") if isinstance(table, dict) else None
-    named = isinstance(configured, str) and bool(configured)
-    relative = configured if isinstance(configured, str) and configured else DEFAULT_TEST_QUOTES_DIR
+def _test_quotes_dir(project_dir: Path, configured: str | None) -> Path | None:
+    """The test quotes' folder: ``[test_quotes] dir``, or ``tests/quotes`` when it names
+    none, which is checked only while it holds test quotes, so a project with neither
+    has no gate to fail. A ``dir`` that names no folder (an empty string) is refused rather
+    than read as none, which would disable the gate. The folder is the project's own, as
+    the Files panels take a path: one outside the project, or reached through a link or
+    junction, is refused naming why."""
+    if configured == "":
+        raise ValueError(
+            "[test_quotes] dir must name the project's test quotes folder; got an empty string."
+        )
+    relative = DEFAULT_TEST_QUOTES_DIR if configured is None else configured
     directory, problem = ordinary_path_problem(project_dir, relative)
     if problem is not None:
         shown = (
@@ -510,7 +565,39 @@ def _test_quotes_dir(project_dir: Path, table: object) -> Path | None:
             f"{shown} {PATH_PROBLEMS[problem]}: [test_quotes] dir must be a folder of the "
             "project's own."
         )
-    return directory if named or test_quote_files(directory) else None
+    return directory if configured is not None or test_quote_files(directory) else None
+
+
+_ENV_BOOLEANS: dict[str, bool] = {
+    "true": True,
+    "1": True,
+    "yes": True,
+    "false": False,
+    "0": False,
+    "no": False,
+}
+
+#: Each ``HAUTE_`` override: the config attribute it sets (``section.field`` for a
+#: nested one) and the type it is read as.
+_ENV_OVERRIDES: dict[str, tuple[str, type[str] | type[bool]]] = {
+    "HAUTE_MODEL_NAME": ("model_name", str),
+    "HAUTE_ENDPOINT_NAME": ("endpoint_name", str),
+    "HAUTE_TARGET": ("target", str),
+    "HAUTE_SERVING_WORKLOAD_SIZE": ("databricks.serving_workload_size", str),
+    "HAUTE_SERVING_SCALE_TO_ZERO": ("databricks.serving_scale_to_zero", bool),
+}
+
+
+def _env_bool(name: str, raw: str) -> bool:
+    """*raw* as a boolean, from ``true``/``false``, ``1``/``0`` or ``yes``/``no`` in any
+    case; any other value raises rather than reading as ``False`` (a typo would turn
+    scale-to-zero off)."""
+    try:
+        return _ENV_BOOLEANS[raw.strip().lower()]
+    except KeyError:
+        raise ValueError(
+            f"{name}={raw!r} is not a boolean: use true or false (or 1/0, yes/no)."
+        ) from None
 
 
 def _apply_env_overrides(config: DeployConfig) -> DeployConfig:
@@ -521,30 +608,29 @@ def _apply_env_overrides(config: DeployConfig) -> DeployConfig:
       2. Environment vars   HAUTE_MODEL_NAME=foo
       3. haute.toml         model_name = "foo"
     """
-    env_map: dict[str, tuple[str, type]] = {
-        "HAUTE_MODEL_NAME": ("model_name", str),
-        "HAUTE_ENDPOINT_NAME": ("endpoint_name", str),
-        "HAUTE_TARGET": ("target", str),
-        "HAUTE_SERVING_WORKLOAD_SIZE": ("databricks.serving_workload_size", str),
-        "HAUTE_SERVING_SCALE_TO_ZERO": ("databricks.serving_scale_to_zero", bool),
-    }
-    for env_key, (attr_path, attr_type) in env_map.items():
-        val = os.environ.get(env_key)
-        if val is None:
+    for env_key, (attr_path, attr_type) in _ENV_OVERRIDES.items():
+        raw = os.environ.get(env_key)
+        if raw is None:
             continue
-        if "." in attr_path:
-            obj_name, field_name = attr_path.split(".", 1)
-            obj = getattr(config, obj_name)
-            if attr_type is bool:
-                setattr(obj, field_name, val.lower() in ("true", "1", "yes"))
-            else:
-                setattr(obj, field_name, val)
-        else:
-            if attr_type is bool:
-                setattr(config, attr_path, val.lower() in ("true", "1", "yes"))
-            else:
-                setattr(config, attr_path, val)
+        value: str | bool = _env_bool(env_key, raw) if attr_type is bool else raw
+        owner: object = config
+        *sections, field_name = attr_path.split(".")
+        for section in sections:
+            owner = getattr(owner, section)
+        setattr(owner, field_name, value)
     return config
+
+
+def output_fields_are_valid(fields: Sequence[object], available: Collection[str]) -> bool:
+    """Whether *fields* is a non-empty, duplicate-free list of non-empty column names, each
+    one of *available*: the ``[deploy] output_fields`` rule resolution and validation share."""
+    names = [field for field in fields if isinstance(field, str) and field]
+    return (
+        bool(names)
+        and len(names) == len(fields)
+        and len(set(names)) == len(names)
+        and all(name in available for name in names)
+    )
 
 
 @dataclass
@@ -555,6 +641,10 @@ class ResolvedDeploy:
     """
 
     config: DeployConfig
+    pipeline_file: Path
+    """The pipeline as resolved: canonical, inside the project."""
+    project_root: Path
+    """The resolved project root every generated file and bundled path stays inside."""
     full_graph: PipelineGraph
     pruned_graph: PipelineGraph
     input_node_ids: list[str]
@@ -676,6 +766,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         collect_artifacts,
         prepare_shipped_snapshots,
         refuse_data_outside_pipeline_folder,
+        with_served_configs,
     )
     from haute.deploy._request_frame import request_frame_schema
     from haute.deploy._request_rows import record_digests, request_rows
@@ -699,13 +790,15 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
 
     # Ensure .env is loaded (idempotent — also called in from_toml, but
     # needed here for programmatic DeployConfig construction).
+    # The canonical pipeline is resolution's own: the caller's config keeps the path it
+    # gave, so a second resolution of it (staging, then production) starts the same.
     if config.project_dir is not None:
         project_root = config.project_dir.resolve()
         pipeline_candidate = config.pipeline_file
         if not pipeline_candidate.is_absolute():
             pipeline_candidate = project_root / pipeline_candidate
-        canonical_pipeline = resolve_pipeline_file(pipeline_candidate)
-        if not is_contained(project_root, canonical_pipeline):
+        pipeline_file = resolve_pipeline_file(pipeline_candidate)
+        if not is_contained(project_root, pipeline_file):
             raise DeployError(
                 "Configured pipeline resolves outside the configured project root. "
                 "Move it inside the project or correct [project].pipeline.",
@@ -713,9 +806,8 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                 project_root=str(project_root),
             )
     else:
-        canonical_pipeline = resolve_pipeline_file(config.pipeline_file)
-        project_root = canonical_pipeline.parent
-    config.pipeline_file = canonical_pipeline
+        pipeline_file = resolve_pipeline_file(config.pipeline_file)
+        project_root = pipeline_file.parent
     _load_env(project_root)
     _validate_python_versions(config, project_root)
 
@@ -723,9 +815,9 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     # occurrence expanded into its own nodes (``submodel_runtime/<occurrence>/<node>``),
     # so the response, the request input and the artefacts inside a submodel are
     # found, bundled and scored, and the submodel's nodes run in its place.
-    full_graph = parse_pipeline_file(config.pipeline_file, flatten=True)
+    full_graph = parse_pipeline_file(pipeline_file, flatten=True)
     if not full_graph.nodes:
-        raise ValueError(f"No nodes found in {config.pipeline_file}")
+        raise ValueError(f"No nodes found in {pipeline_file}")
     # One request input and one response, counting those inside submodels, as
     # save requires: a pipeline file written by hand can hold more.
     validate_singleton_groups(full_graph)
@@ -774,7 +866,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
 
     # Collect artifacts. Snapshot generations remain leased until the
     # resolved deployment is validated and shipped (or explicitly closed).
-    pipeline_dir = config.pipeline_file.parent
+    pipeline_dir = pipeline_file.parent
     resources = ExitStack()
     snapshot_provenance: dict[str, dict[str, Any]] = {}
     model_sources: dict[str, dict[str, Any]] = {}
@@ -792,7 +884,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                 try:
                     resolve_runtime_file_path(
                         raw_path,
-                        source_file=config.pipeline_file,
+                        source_file=pipeline_file,
                         pipeline_dir=pipeline_dir,
                         project_root=project_root,
                         prefer="pipeline",
@@ -815,8 +907,9 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
             raise DeployError(" ".join(project_modules.unbundled_imports))
         # Only data in the pipeline folder ships, from a snapshot that is current.
         refuse_data_outside_pipeline_folder(pruned_graph, deploy_inputs, pipeline_dir, project_root)
-        with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
+        with runtime_project_root_scope(pipeline_file, project_root=project_root):
             prepare_shipped_snapshots(pruned_graph, deploy_inputs, pipeline_dir, project_root)
+        served_configs: dict[str, dict[str, Any]] = {}
         artifacts = collect_artifacts(
             pruned_graph,
             deploy_inputs,
@@ -825,7 +918,11 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
             resources=resources,
             snapshot_provenance=snapshot_provenance,
             model_sources=model_sources,
+            served_configs=served_configs,
         )
+        # The graph that ships names each MLflow model's bundled file; the parsed graph,
+        # whose nodes it shared, keeps the configs the pipeline file gave.
+        pruned_graph = with_served_configs(pruned_graph, served_configs)
         # Before anything below reads an artefact: every copy into a bundle is checked
         # against these, so it carries the bytes this resolution checked.
         artifact_digests = record_digests(artifacts)
@@ -838,7 +935,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         # Schema inference re-resolves the graph's relative paths; scoping them to
         # the project root validated above makes it read the files that check
         # admitted, never one outside the project.
-        with runtime_project_root_scope(config.pipeline_file, project_root=project_root):
+        with runtime_project_root_scope(pipeline_file, project_root=project_root):
             input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
             from haute.deploy._scorer import reads_records
 
@@ -869,20 +966,12 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                 output_node_id,
                 deploy_inputs,
                 artifact_paths=artifact_paths,
+                project_root=project_root,
             )
         if config.output_fields is not None:
             fields = config.output_fields
             available = list(output_schema)
-            invalid = (
-                not fields
-                or any(not isinstance(field, str) or not field for field in fields)
-                or (
-                    all(isinstance(field, str) for field in fields)
-                    and len(fields) != len(set(fields))
-                )
-                or any(isinstance(field, str) and field not in output_schema for field in fields)
-            )
-            if invalid:
+            if not output_fields_are_valid(fields, output_schema):
                 raise DeployError(
                     "[deploy].output_fields must be a non-empty, duplicate-free list "
                     "of non-empty output column names present in the inferred schema. "
@@ -900,7 +989,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
 
     logger.info(
         "config_resolved",
-        pipeline=str(config.pipeline_file),
+        pipeline=str(pipeline_file),
         total_nodes=len(full_graph.nodes),
         pruned_nodes=len(pruned_graph.nodes),
         removed_nodes=len(removed_ids),
@@ -910,6 +999,8 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     )
     return ResolvedDeploy(
         config=config,
+        pipeline_file=pipeline_file,
+        project_root=project_root,
         full_graph=full_graph,
         pruned_graph=pruned_graph,
         input_node_ids=deploy_inputs,

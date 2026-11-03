@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -21,13 +22,19 @@ from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
 from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
+from haute.deploy._lock import DOCKER_PLATFORM, TARGET_PLATFORM, lock_requirements
 from haute.deploy._mlflow import DeployResult
 from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
 from haute.deploy._request_rows import copy_verified
-from haute.deploy._utils import artifact_file_name, build_manifest, model_source_line
+from haute.deploy._utils import (
+    artifact_file_name,
+    build_manifest,
+    model_source_line,
+    owned_build_dir,
+)
 from haute.errors import DeployError
 
 logger = get_logger(component="deploy.container")
@@ -59,6 +66,41 @@ _SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     (PRICE_CONTOUR_DISTRIBUTION, PRICE_CONTOUR_DISTRIBUTION),
 )
 
+#: haute's own requirements a scoring image leaves out, reviewed against the scoring
+#: runtime policy (specs/deploy, Scoring runtime): the editor, assistant, training,
+#: tuning, workbench-store and registry stacks, and each model engine, which the image
+#: installs only when a bundled artefact needs it (``_extra_deps_by_artifact``) or the
+#: graph loads from MLflow. The image's runtime check accepts haute's requirement on one of
+#: these being absent, and no other: a requirement haute adds is reviewed here first.
+HAUTE_SCORING_OMISSIONS: frozenset[str] = frozenset(
+    {
+        "alembic",
+        "anthropic",
+        "catboost",
+        "interpret-core",
+        "libcst",
+        "lightgbm",
+        "mlflow",
+        "openai",
+        "optuna",
+        "pandas",
+        "python-multipart",
+        "rustystats",
+        "scipy",
+        "sqlalchemy",
+        "t-boost",
+        "tomlkit",
+        "xgboost",
+        "xgboost-cpu",
+    }
+)
+
+#: The lock files a bundle carries beside its Dockerfile: the runtime, haute (installed
+#: without its dependencies) and the record the image's runtime check reads.
+RUNTIME_LOCK_FILE = "requirements.lock"
+HAUTE_LOCK_FILE = "haute.lock"
+LOCK_RECORD_FILE = "dependency_lock.json"
+
 
 def _validate_base_image(base_image: str) -> None:
     """Validate base_image to prevent command injection."""
@@ -80,10 +122,11 @@ class ContainerBuildResult:
     """Intermediate result from build_and_push_image()."""
 
     image_tag: str
-    manifest_path: Path
-    build_dir: Path
     model_name: str
-    model_version: int
+    model_version: str
+    """The image's tag (the commit it was built from), the version a container carries."""
+    build_dir: Path | None
+    """The build's directory when it was kept, else ``None``: removed once it shipped."""
 
 
 def write_bundle(
@@ -95,16 +138,23 @@ def write_bundle(
 
     The manifest (``build_manifest`` with its artifacts at ``artifacts/<file>``, each
     key's flat ``artifact_file_name``, and *manifest_extras* added), the artifacts copied
-    under ``artifacts/``, and the project's utility package beside them, any earlier
-    build's removed first.
+    under ``artifacts/``, and the project's utility package beside them. *build_dir* must
+    be empty or not exist yet: a bundle holds its own build's files and nothing else, so
+    one holding anything is refused rather than written over.
 
     Returns:
         Path to the written ``deploy_manifest.json``.
     """
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
+    if any(build_dir.iterdir()):
+        raise DeployError(
+            f"{build_dir} already holds files: a bundle is written into an empty directory, "
+            "so it ships only its own build's files.",
+            build_dir=str(build_dir),
+        )
     artifacts_dir = build_dir / "artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
+    artifacts_dir.mkdir()
 
     manifest = build_manifest(resolved)
     manifest["artifacts"] = {
@@ -123,11 +173,6 @@ def write_bundle(
             name=artifact_name,
         )
 
-    # A reused build directory must not keep an earlier build's utility code:
-    # a stale package would shadow the module this build validated.
-    if (build_dir / UTILITY_PACKAGE).is_dir():
-        shutil.rmtree(build_dir / UTILITY_PACKAGE)
-    (build_dir / f"{UTILITY_PACKAGE}.py").unlink(missing_ok=True)
     utility = resolved.project_modules.utility
     if utility is not None and utility.is_dir():
         shutil.copytree(
@@ -152,15 +197,15 @@ def prepare_build_directory(
     """Prepare the container build directory with manifest, artifacts, app.py, and Dockerfile.
 
     Steps:
-        1. Create build directory
-        2. Write the bundle (``write_bundle``): the manifest, with the container's pinned
-           dependencies, the artifacts and the utility package
+        1. Write the bundle (``write_bundle``) into the empty *build_dir*: the manifest,
+           with the container's pinned dependencies, the artifacts and the utility package
+        2. Copy the haute wheel, when haute_requirement names one
         3. Generate FastAPI app source
-        4. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
+        4. Generate Dockerfile
 
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
-        build_dir: Destination directory for the build artefacts.
+        build_dir: Destination directory for the build artefacts, empty or not yet made.
         haute_requirement: Optional override for the ``haute`` dependency in the Dockerfile.
             When it names a local wheel file (*.whl), the wheel is copied into ``build_dir``
             and the Dockerfile gains ``COPY <wheel name> .`` before ``pip install ./<wheel name>``.
@@ -183,34 +228,57 @@ def prepare_build_directory(
     _validate_model_name(model_name)
 
     build_dir = Path(build_dir)
-    build_dir.mkdir(parents=True, exist_ok=True)
 
-    wheel_name: str | None = None
+    wheel_path: Path | None = None
     haute_pip_dep: str | None = None
     if haute_requirement is not None:
         if haute_requirement.lower().endswith(".whl"):
             wheel_path = Path(haute_requirement)
-            wheel_name = wheel_path.name
-            dest_wheel = build_dir / wheel_name
-            if wheel_path.resolve() != dest_wheel.resolve():
-                shutil.copy2(wheel_path, dest_wheel)
-            haute_pip_dep = f"./{wheel_name}"
+            haute_pip_dep = f"./{wheel_path.name}"
         else:
             haute_pip_dep = haute_requirement
+    wheel_name = wheel_path.name if wheel_path is not None else None
 
     extra_pins = [
         _pinned_dockerfile_dependency(name, name, required_by=["the app"])
         for name in extra_dependencies
     ]
+    haute_root, *runtime_roots = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
+    python_version = container_python_version(resolved)
+    # The closure is resolved once, here, for the image's Python and platform, and the
+    # image installs exactly it: a rebuild of this bundle installs the same runtime.
+    lock = lock_requirements(
+        [*runtime_roots, *extra_pins],
+        python_version=python_version,
+        platform=TARGET_PLATFORM,
+        constraints=haute_constraints(),
+    )
     manifest_path = write_bundle(
         resolved,
         build_dir,
         {
             "container_dependencies": [
-                *_pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep),
-                *extra_pins,
-            ]
+                haute_root,
+                *(f"{name}=={version}" for name, version in sorted(lock.pins.items())),
+            ],
+            "dependency_lock": lock.provenance(),
         },
+    )
+    if wheel_path is not None:
+        shutil.copy2(wheel_path, build_dir / wheel_path.name)
+    (build_dir / RUNTIME_LOCK_FILE).write_text(lock.requirements, encoding="utf-8")
+    (build_dir / HAUTE_LOCK_FILE).write_text(
+        _haute_lock(haute_root, wheel_path, python_version), encoding="utf-8"
+    )
+    (build_dir / LOCK_RECORD_FILE).write_text(
+        json.dumps(
+            {
+                **lock.provenance(),
+                "haute_omitted": sorted(HAUTE_SCORING_OMISSIONS - set(lock.pins)),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
     app_source = _generate_app_source(config.model_name, ct.port)
@@ -220,10 +288,8 @@ def prepare_build_directory(
         ct.base_image,
         ct.port,
         resolved,
-        haute_pip_dep=haute_pip_dep,
         wheel_name=wheel_name,
         extra_files=extra_files,
-        extra_pins=extra_pins,
         sqlserver_odbc=sqlserver_odbc,
     )
     (build_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
@@ -234,23 +300,25 @@ def prepare_build_directory(
 def build_and_push_image(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> ContainerBuildResult:
     """Build a Docker image from a resolved pipeline - shared by all container targets.
 
     Steps:
-        1. Build deployment manifest JSON
-        2. Generate FastAPI app source
-        3. Copy artifacts into build directory
-        4. Generate Dockerfile
-        5. Build Docker image
-        6. Push to registry (if configured)
+        1. Stage the bundle, app and Dockerfile in a directory this build owns under the
+           project's ``.haute_build`` (``owned_build_dir``)
+        2. Build the Docker image
+        3. Push it to the registry (if configured)
+        4. Remove the build's directory, shipped or failed, unless *keep_build*
 
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
         progress: Optional callback for step-by-step progress messages.
+        keep_build: Keep the build's directory, named in the result, for inspection.
 
     Returns:
-        ContainerBuildResult with image tag and paths for the caller.
+        ContainerBuildResult with the image tag.
     """
 
     def _log(msg: str) -> None:
@@ -264,11 +332,7 @@ def build_and_push_image(
     _validate_base_image(ct.base_image)
     _validate_model_name(model_name)
 
-    # 1. Create build directory
-    build_dir = Path.cwd() / ".haute_build"
-    build_dir.mkdir(exist_ok=True)
-
-    try:
+    with owned_build_dir(resolved, keep=keep_build) as build_dir:
         _log("Building deployment manifest...")
         manifest_path = prepare_build_directory(resolved, build_dir)
         _log(f"  Manifest: {manifest_path}")
@@ -278,21 +342,17 @@ def build_and_push_image(
         _log("Generating FastAPI app...")
         _log("Generating Dockerfile...")
 
-        # 6. Determine image tag
         git_sha = _git_sha_short()
-        version = _next_version()
         if ct.registry:
             image_tag = f"{ct.registry.rstrip('/')}/{model_name}:{git_sha}"
         else:
             image_tag = f"{model_name}:{git_sha}"
 
-        # 7. Build Docker image
         _log(f"Building Docker image: {image_tag}")
         _check_docker_available()
         _docker_build(build_dir, image_tag)
         _log(f"  ✓ Image built: {image_tag}")
 
-        # 8. Push if registry is configured
         if ct.registry:
             _log(f"Pushing to registry: {ct.registry}")
             _docker_push(image_tag)
@@ -300,21 +360,21 @@ def build_and_push_image(
         else:
             _log("  No registry configured - image is local only.")
 
-        return ContainerBuildResult(
-            image_tag=image_tag,
-            manifest_path=manifest_path,
-            build_dir=build_dir,
-            model_name=model_name,
-            model_version=version,
-        )
-    except BaseException:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise
+    if keep_build:
+        _log(f"  Build kept in {build_dir}")
+    return ContainerBuildResult(
+        image_tag=image_tag,
+        model_name=model_name,
+        model_version=git_sha,
+        build_dir=build_dir if keep_build else None,
+    )
 
 
 def deploy_to_container(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> DeployResult:
     """Generic container target - build and push only, no service update.
 
@@ -322,19 +382,21 @@ def deploy_to_container(
     For managed platform targets (Azure Container Apps, AWS ECS, GCP Cloud
     Run), use ``deploy_to_platform_container()`` instead.
     """
-    result = build_and_push_image(resolved, progress)
+    result = build_and_push_image(resolved, progress, keep_build=keep_build)
     return DeployResult(
         model_name=result.model_name,
         model_version=result.model_version,
         model_uri=result.image_tag,
         endpoint_url=None,
-        manifest_path=result.manifest_path,
+        build_dir=result.build_dir,
     )
 
 
 def deploy_to_platform_container(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
+    *,
+    keep_build: bool = False,
 ) -> DeployResult:
     """Platform container target (azure-container-apps, aws-ecs, gcp-run): build and push.
 
@@ -349,7 +411,7 @@ def deploy_to_platform_container(
             f"Target '{target}' pushes the scoring image for a manual service update, "
             "so it needs a registry: set [deploy.container] registry in haute.toml."
         )
-    result = build_and_push_image(resolved, progress)
+    result = build_and_push_image(resolved, progress, keep_build=keep_build)
     if progress:
         progress(
             f"Service not updated: updating {target} is not implemented yet. "
@@ -360,7 +422,7 @@ def deploy_to_platform_container(
         model_version=result.model_version,
         model_uri=result.image_tag,
         endpoint_url=None,
-        manifest_path=result.manifest_path,
+        build_dir=result.build_dir,
     )
 
 
@@ -375,6 +437,7 @@ def _generate_app_source(model_name: str, port: int) -> str:
 import json
 import logging
 import tempfile
+import uuid
 from pathlib import Path
 
 import polars as pl
@@ -419,6 +482,7 @@ from haute.deploy._batch_scoring import (
 )
 from haute.deploy._request_frame import frame_rows, request_frame_schema
 from haute.deploy._request_rows import RequestRows
+from haute.deploy._response_json import ndjson_rows, response_json
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
@@ -516,6 +580,44 @@ app = FastAPI(
     version=_manifest.get("haute_version", "0.0.0"),
 )
 
+#: A 500's message. The failure's detail (a path, an internal name) stays in the
+#: service's log, under the request id the envelope names.
+_INTERNAL_ERROR_MESSAGE = (
+    "The quote could not be scored. The service's log holds the detail under this request_id."
+)
+
+
+@app.middleware("http")
+async def _request_id(request: Request, call_next):
+    """Give each request an id, sent back as X-Request-ID, that its log lines carry.
+
+    A failure no route handled is answered here as every other 500 is, naming the id.
+    """
+    request.state.request_id = uuid.uuid4().hex
+    try:
+        response = await call_next(request)
+    except Exception:
+        response = _internal_error(request, "deploy_request_failed")
+    response.headers["X-Request-ID"] = request.state.request_id
+    return response
+
+
+def _internal_error(request: Request, event: str) -> JSONResponse:
+    """Log the failure being handled under the request's id and answer a 500 naming it.
+
+    Never the exception's text: it can carry file paths and internal identifiers.
+    """
+    request_id = request.state.request_id
+    logger.exception("%s request_id=%s", event, request_id)
+    return JSONResponse(
+        status_code=500,
+        content={{
+            "error_code": "deploy_internal_error",
+            "error": _INTERNAL_ERROR_MESSAGE,
+            "request_id": request_id,
+        }},
+    )
+
 
 @app.get("/health")
 def health() -> dict:
@@ -534,6 +636,13 @@ def health() -> dict:
         "execution_policy": _manifest.get("execution_policy"),
         "request_rows": _manifest["request_rows"],
     }}
+
+
+class _DocumentResponse(JSONResponse):
+    """The JSON envelope, its rows encoded as NDJSON encodes them (``response_json``)."""
+
+    def render(self, content) -> bytes:
+        return response_json(content)
 
 
 def _quote_response_content(result: pl.DataFrame, execution_context):
@@ -572,12 +681,9 @@ def _materialize_quote_ndjson(plan):
             stage_name="deploy_stream_batch",
             node_id=_output_node_id,
         ):
-            if batch.height == 0:
-                continue
-            text = batch.write_ndjson()
-            if text and not text.endswith("\\n"):
-                text += "\\n"
-            spool.write(text.encode("utf-8"))
+            # The rows the JSON envelope renders, one line each: the same document
+            # whichever the client asks for.
+            spool.write(ndjson_rows(batch))
         spool.seek(0)
         return spool
     except BaseException:
@@ -624,12 +730,9 @@ def _materialize_batch_ndjson(plan, result):
             stage_name="deploy_batch_stream",
             node_id=_output_node_id,
         ):
-            if batch.height == 0:
-                continue
-            text = batch.write_ndjson()
-            if text and not text.endswith("\\n"):
-                text += "\\n"
-            spool.write(text.encode("utf-8"))
+            # The rows the JSON envelope renders, one line each: the same document
+            # whichever the client asks for.
+            spool.write(ndjson_rows(batch))
         spool.seek(0)
         return spool
     except BaseException:
@@ -637,7 +740,7 @@ def _materialize_batch_ndjson(plan, result):
         raise
 
 
-def _batch_error_response(exc):
+def _batch_error_response(request, exc):
     if exc.kind in {{"contract", "bounded"}}:
         if exc.payload is not None:
             return JSONResponse(status_code=422, content=exc.payload)
@@ -661,11 +764,7 @@ def _batch_error_response(exc):
                 "reason": exc.detail,
             }},
         )
-    logger.exception("deploy_quote_batch_failed")
-    return JSONResponse(
-        status_code=500,
-        content={{"error_code": "deploy_internal_error", "error": exc.detail}},
-    )
+    return _internal_error(request, "deploy_quote_batch_failed")
 
 
 async def _quote_batch(request: Request, rows: list):
@@ -705,7 +804,7 @@ async def _quote_batch(request: Request, rows: list):
                 media_type="application/x-ndjson",
             )
         else:
-            response = JSONResponse(
+            response = _DocumentResponse(
                 content=await run_in_threadpool(_batch_response_content, result)
             )
     except ExecutionAdmissionError as exc:
@@ -738,13 +837,9 @@ async def _quote_batch(request: Request, rows: list):
         if is_public_contract_error(exc):
             response = JSONResponse(status_code=422, content=exc.to_payload())
         else:
-            logger.exception("deploy_quote_batch_failed")
-            response = JSONResponse(
-                status_code=500,
-                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-            )
+            response = _internal_error(request, "deploy_quote_batch_failed")
     except BatchScoreError as exc:
-        response = _batch_error_response(exc)
+        response = _batch_error_response(request, exc)
     except (
         IsolatedWorkerMemoryLimitExceededError,
         IsolatedWorkerMemoryLimitUnsupportedError,
@@ -778,25 +873,13 @@ async def _quote_batch(request: Request, rows: list):
                 ),
             )
         else:
-            logger.exception("deploy_quote_batch_failed")
-            response = JSONResponse(
-                status_code=500,
-                content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-            )
-    except IsolatedWorkerError as exc:
-        logger.exception("deploy_quote_batch_failed")
-        response = JSONResponse(
-            status_code=500,
-            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-        )
-    except Exception as exc:
+            response = _internal_error(request, "deploy_quote_batch_failed")
+    except IsolatedWorkerError:
+        response = _internal_error(request, "deploy_quote_batch_failed")
+    except Exception:
         # Same contract as the live path: an unexpected parent-side failure is
         # logged and reported as the internal-error envelope, never a bare 500.
-        logger.exception("deploy_quote_batch_failed")
-        response = JSONResponse(
-            status_code=500,
-            content={{"error_code": "deploy_internal_error", "error": str(exc)}},
-        )
+        response = _internal_error(request, "deploy_quote_batch_failed")
     except BaseException as exc:
         primary_error = exc
         raise
@@ -804,17 +887,10 @@ async def _quote_batch(request: Request, rows: list):
         if plan is not None:
             try:
                 plan.cleanup(primary_error=primary_error)
-            except BatchScoreCleanupError as cleanup_error:
+            except BatchScoreCleanupError:
                 # The request rows and the scored parquet are still on disk;
                 # that is a data-retention defect even after a good score.
-                logger.exception("deploy_quote_batch_cleanup_failed")
-                response = JSONResponse(
-                    status_code=500,
-                    content={{
-                        "error_code": "deploy_internal_error",
-                        "error": str(cleanup_error),
-                    }},
-                )
+                response = _internal_error(request, "deploy_quote_batch_cleanup_failed")
     return response
 
 
@@ -899,7 +975,7 @@ async def quote(request: Request) -> JSONResponse:
             execution_context=execution_context,
             request_rows=_request_rows,
         )
-        return JSONResponse(content=_quote_response_content(result, execution_context))
+        return _DocumentResponse(content=_quote_response_content(result, execution_context))
     except ExecutionAdmissionError as exc:
         return JSONResponse(status_code=507, content=exc.to_payload())
     except ExecutionCancelledError as exc:
@@ -928,23 +1004,9 @@ async def quote(request: Request) -> JSONResponse:
     except HauteError as exc:
         if is_public_contract_error(exc):
             return JSONResponse(status_code=422, content=exc.to_payload())
-        logger.exception("deploy_quote_failed")
-        return JSONResponse(
-            status_code=500,
-            content={{
-                "error_code": "deploy_internal_error",
-                "error": str(exc),
-            }},
-        )
-    except Exception as exc:
-        logger.exception("deploy_quote_failed")
-        return JSONResponse(
-            status_code=500,
-            content={{
-                "error_code": "deploy_internal_error",
-                "error": str(exc),
-            }},
-        )
+        return _internal_error(request, "deploy_quote_failed")
+    except Exception:
+        return _internal_error(request, "deploy_quote_failed")
 '''
 
 
@@ -970,17 +1032,15 @@ def _generate_dockerfile(
     port: int,
     resolved: ResolvedDeploy,
     *,
-    haute_pip_dep: str | None = None,
     wheel_name: str | None = None,
     extra_files: Sequence[str] = (),
-    extra_pins: Sequence[str] = (),
     sqlserver_odbc: bool = False,
 ) -> str:
-    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py and
-    installing *extra_pins*, pinned requirements, with the runtime, and the libraries SQL
-    Server's driver loads first when *sqlserver_odbc* (:data:`SQLSERVER_ODBC_STEPS`)."""
-    haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
-    runtime_line = " ".join([*runtime_deps, *extra_pins])
+    """Generate a Dockerfile for the scoring container, copying *extra_files* beside app.py, and
+    the libraries SQL Server's driver loads first when *sqlserver_odbc*
+    (:data:`SQLSERVER_ODBC_STEPS`). It installs the bundle's locks (``prepare_build_directory``)
+    with ``--require-hashes``, never resolving anything, and then checks the installed
+    runtime against them (``haute.deploy._runtime_check``)."""
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
     utility = resolved.project_modules.utility
     if utility is None:
@@ -1006,11 +1066,16 @@ ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 # Keep Polars' out-of-core spilling off and inside the container's storage,
 # and load an unknown Arrow extension column as its storage type.
 {polars_env}
-{odbc_steps}# Install the pinned scoring runtime, then haute itself without its
-# dependencies: they include the editor, assistant, training and tuning
-# stacks, which a scoring container never runs.
-RUN pip install --no-cache-dir {runtime_line}
-{copy_wheel}RUN pip install --no-cache-dir --no-deps {haute_dep}
+{odbc_steps}# Install the locked scoring runtime, every distribution pinned by version and hash
+# and resolved for this image's Python and platform when the bundle was built, then
+# haute itself without its dependencies: they include the editor, assistant, training
+# and tuning stacks, which a scoring container never runs. Then check the installed
+# runtime against the lock.
+COPY {RUNTIME_LOCK_FILE} {HAUTE_LOCK_FILE} {LOCK_RECORD_FILE} ./
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary :all: \\
+    -r {RUNTIME_LOCK_FILE}
+{copy_wheel}RUN pip install --no-cache-dir --no-deps --require-hashes -r {HAUTE_LOCK_FILE}
+RUN python -m haute.deploy._runtime_check {LOCK_RECORD_FILE}
 
 # Copy application code and artifacts
 COPY deploy_manifest.json .
@@ -1021,6 +1086,45 @@ EXPOSE {port}
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]
 """
+
+
+def container_python_version(resolved: ResolvedDeploy) -> str:
+    """The Python a scoring image runs: its official ``python`` base image's, else the
+    project's (``deployed_python_version``), which resolution keeps the image in step with."""
+    from haute._project_python import base_image_python_version, deployed_python_version
+
+    return base_image_python_version(
+        resolved.config.container.base_image
+    ) or deployed_python_version(resolved.project_root)
+
+
+def haute_constraints() -> list[str]:
+    """haute's own requirements as constraints for a scoring image's lock: haute is
+    installed without its dependencies beside it, so whatever the lock holds must be a
+    version haute admits. Extras and the requirements of haute's own extras are left out."""
+    from importlib import metadata
+
+    from packaging.requirements import Requirement
+
+    constraints: list[str] = []
+    for line in metadata.distribution("haute").requires or ():
+        requirement = Requirement(line)
+        if requirement.marker is not None and "extra" in str(requirement.marker):
+            continue
+        requirement.extras = set()
+        constraints.append(str(requirement))
+    return constraints
+
+
+def _haute_lock(haute_root: str, wheel_path: Path | None, python_version: str) -> str:
+    """The lock haute itself installs from, without its dependencies: the bundled wheel by
+    its digest, or the index release resolved alone, hashed."""
+    if wheel_path is not None:
+        digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+        return f"./{wheel_path.name} --hash=sha256:{digest}\n"
+    return lock_requirements(
+        [haute_root], python_version=python_version, platform=TARGET_PLATFORM, no_deps=True
+    ).requirements
 
 
 def _pinned_dockerfile_deps(
@@ -1185,11 +1289,6 @@ def _extra_deps_by_artifact(resolved: ResolvedDeploy) -> dict[str, list[str]]:
     return dict(sorted(needed.items()))
 
 
-def _detect_extra_deps(resolved: ResolvedDeploy) -> list[str]:
-    """Detect extra Python packages needed based on artifact file extensions."""
-    return list(_extra_deps_by_artifact(resolved))
-
-
 # ── Docker build / push ─────────────────────────────────────────────
 
 
@@ -1212,7 +1311,7 @@ def _check_docker_available() -> None:
 def _docker_build(build_dir: Path, image_tag: str) -> None:
     """Build a Docker image from the build directory."""
     result = subprocess.run(
-        ["docker", "build", "-t", image_tag, "."],
+        ["docker", "build", "--platform", DOCKER_PLATFORM, "-t", image_tag, "."],
         cwd=build_dir,
         capture_output=True,
         text=True,
@@ -1265,12 +1364,3 @@ def _git_sha_short() -> str:
         return "local"
     ok, sha = _run_git_ok("rev-parse", "--short", "HEAD")
     return sha if ok else "local"
-
-
-def _next_version() -> int:
-    """Simple version counter based on existing local images.
-
-    Returns 1 if no previous images exist. In production, the
-    registry or git tags are the real version source.
-    """
-    return 1

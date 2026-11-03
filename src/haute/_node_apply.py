@@ -281,8 +281,13 @@ def load_external_object_from_config(
     """Load an external object from its current inline config or sidecar."""
     config = _resolve_node_config(config_or_path, base_dir)
     validate_external_file_config(config)
-    path = _anchored_required_path(config, base_dir)
+    return load_external_file_at(_anchored_required_path(config, base_dir), config)
 
+
+def load_external_file_at(path: str, config: Mapping[str, Any]) -> object:
+    """Load the object at *path* as the Load File node *config* reads its file: by its
+    ``fileType``. A deployment reads its bundled copy so."""
+    validate_external_file_config(config)
     from haute._io import load_external_object
 
     return load_external_object(path, config["fileType"])
@@ -521,19 +526,41 @@ def apply_optimiser_apply_from_config(
     artifact = load_configured_optimiser_artifact(cfg, base_dir)
     if artifact is None:
         return dfs[0] if dfs else pl.LazyFrame()
+    return apply_optimiser_artifact(
+        *dfs, artifact=artifact, config=cfg, source_names=source_names, schema_only=schema_only
+    )
 
-    version_col = cfg.get("version_column", "__optimiser_version__")
-    optimised_value_col = cfg.get("optimised_value_column", "")
-    ratebook_input = cfg.get("ratebook_input", "")
+
+def optimiser_apply_version_column(config: Mapping[str, Any]) -> str:
+    """The column an Optimiser Apply node records the applied artifact's version in."""
+    return str(config.get("version_column", "__optimiser_version__"))
+
+
+def apply_optimiser_artifact(
+    *dfs: _Frame,
+    artifact: dict[str, Any],
+    config: Mapping[str, Any],
+    source_names: list[str] | None = None,
+    schema_only: bool = False,
+) -> _Frame:
+    """Apply a loaded optimiser *artifact* as the Optimiser Apply node *config* says.
+
+    The body every Optimiser Apply runs, wherever its artifact was loaded from: the
+    executor's and generated code's (:func:`apply_optimiser_apply_from_config`) and a
+    deployment's, which loads the bundled copy.
+    """
     names = list(source_names) if source_names is not None else []
-
     # Selection + dispatch live in _builders (widely re-exported); imported
     # lazily to keep this module free of an executor import cycle.
     from haute._builders import _dispatch_apply, _select_optimiser_apply_input
 
-    input_lf = _select_optimiser_apply_input(dfs, artifact, ratebook_input, names)
+    input_lf = _select_optimiser_apply_input(dfs, artifact, config.get("ratebook_input", ""), names)
     return _dispatch_apply(
-        input_lf, artifact, version_col, optimised_value_col, schema_only=schema_only
+        input_lf,
+        artifact,
+        optimiser_apply_version_column(config),
+        config.get("optimised_value_column", ""),
+        schema_only=schema_only,
     )
 
 

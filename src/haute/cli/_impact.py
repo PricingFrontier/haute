@@ -46,6 +46,8 @@ def handle_impact(config: ImpactConfig) -> None:
 
     from haute.deploy._config import DeployConfig
     from haute.deploy._impact import (
+        ImpactAlignmentError,
+        ImpactEndpointError,
         ImpactReport,
         build_report,
         format_markdown,
@@ -105,54 +107,57 @@ def handle_impact(config: ImpactConfig) -> None:
     # Input answers takes exactly one quote per request.
     batch_size = config.batch_size if deploy_config.safety.impact_dataset else 1
 
-    # Score via the appropriate transport
-    if transport.kind == "databricks":
-        staging_preds, prod_preds, prod_exists = _impact_databricks(
-            staging_name,
-            prod_name,
-            records,
-            batch_size,
-        )
-    elif transport.kind == "http":
-        staging_preds, prod_preds, prod_exists = _impact_http(
-            transport.staging_url,
-            transport.prod_url,
-            records,
-            batch_size,
-        )
-    else:
-        click.echo(
-            f"  \u26a0 Impact analysis not yet implemented for target '{deploy_config.target}'.",
-            err=True,
-        )
-        return
-
-    # Build report
-    if not prod_exists:
-        report = ImpactReport(
-            pipeline_name=deploy_config.model_name,
-            staging_endpoint=staging_name,
-            prod_endpoint=prod_name,
-            dataset_path=dataset_label,
-            total_rows=total_rows,
-            sampled_rows=len(records),
-            scored_rows=len(staging_preds),
-            failed_rows=len(records) - len(staging_preds),
-            column_stats=[],
-            segments={},
-            is_first_deploy=True,
-        )
-    else:
-        report = build_report(
-            staging_preds=staging_preds,
-            prod_preds=prod_preds,
-            input_df=input_df,
-            pipeline_name=deploy_config.model_name,
-            staging_endpoint=staging_name,
-            prod_endpoint=prod_name,
-            dataset_path=dataset_label,
-            total_rows=total_rows,
-        )
+    # Score via the appropriate transport. An endpoint that does not answer, or answers
+    # another number of predictions than quotes, fails the step: nothing is compared.
+    try:
+        if transport.kind == "databricks":
+            staging_preds, prod_preds, first_deploy = _impact_databricks(
+                staging_name,
+                prod_name,
+                records,
+                batch_size,
+            )
+        elif transport.kind == "http":
+            staging_preds, prod_preds, first_deploy = _impact_http(
+                transport.staging_url,
+                transport.prod_url,
+                records,
+                batch_size,
+                project_root,
+            )
+        else:
+            click.echo(
+                f"  \u26a0 Impact analysis not yet implemented for target "
+                f"'{deploy_config.target}'.",
+                err=True,
+            )
+            return
+        if first_deploy is not None:
+            report = ImpactReport(
+                pipeline_name=deploy_config.model_name,
+                staging_endpoint=staging_name,
+                prod_endpoint=prod_name,
+                dataset_path=dataset_label,
+                total_rows=total_rows,
+                sampled_rows=len(records),
+                column_stats=[],
+                segments={},
+                first_deploy=first_deploy,
+            )
+        else:
+            report = build_report(
+                staging_preds=staging_preds,
+                prod_preds=prod_preds,
+                input_df=input_df,
+                pipeline_name=deploy_config.model_name,
+                staging_endpoint=staging_name,
+                prod_endpoint=prod_name,
+                dataset_path=dataset_label,
+                total_rows=total_rows,
+            )
+    except (ImpactEndpointError, ImpactAlignmentError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
 
     # Print terminal report
     click.echo(format_terminal(report))
@@ -273,10 +278,10 @@ def impact(endpoint_suffix: str | None, sample: int, batch_size: int) -> None:
 
 
 # Exception class names the Databricks SDK raises when an endpoint is not
-# found. These indicate "production has never been deployed" and are the
-# only shapes that should flip ``prod_exists`` to False — every other
-# exception (timeout, 5xx, connection error) is a real failure and must
-# propagate.
+# found: the workspace's authoritative answer that production has never been
+# deployed, and the only shapes that skip the comparison — every other
+# exception (timeout, 5xx, authentication, connection error) is a real failure
+# and must propagate.
 _DATABRICKS_NOT_FOUND_CLASSES: frozenset[str] = frozenset({"NotFound", "ResourceDoesNotExist"})
 
 
@@ -294,34 +299,19 @@ def _is_databricks_not_found(exc: BaseException) -> bool:
     return False
 
 
-def _is_http_not_found(exc: BaseException) -> bool:
-    """Return ``True`` iff *exc* is an HTTP 404 wrapped by ``score_http_*``.
-
-    ``haute.deploy._impact.score_http_endpoint_batched`` turns urllib
-    ``HTTPError`` into a ``RuntimeError`` whose message embeds ``HTTP 404``.
-    We inspect the message for that exact token so that other status codes
-    (5xx) and transport-level exceptions (``TimeoutError``,
-    ``ConnectionRefusedError``, …) remain genuine failures and propagate
-    to the caller.
-    """
-    if not isinstance(exc, RuntimeError):
-        return False
-    return "HTTP 404" in str(exc)
-
-
 def _impact_databricks(
     staging_name: str,
     prod_name: str,
     records: list[dict],
     batch_size: int,
-) -> tuple[list, list, bool]:
+) -> tuple[list, list, str | None]:
     """Score through Databricks endpoints for impact analysis.
 
-    Only ``NotFound`` / ``ResourceDoesNotExist`` from the prod endpoint
-    lookup are classified as "first deploy" — every other exception
-    (timeout, 5xx, connection refused, etc.) is re-raised so the caller
-    sees the real failure rather than silently treating transient issues
-    as "no prod yet".
+    Returns the staging and production predictions and, when production was not
+    compared, why. Only ``NotFound`` / ``ResourceDoesNotExist`` from the prod endpoint
+    lookup, the workspace's own record, skips the comparison as a first deployment;
+    every other exception (timeout, 5xx, authentication, connection refused) is
+    re-raised so a transient issue is never read as "no prod yet".
     """
     from haute.deploy._config import _load_env
     from haute.deploy._databricks_serving import ServingEndpointError, serving_workspace_client
@@ -344,29 +334,49 @@ def _impact_databricks(
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
-    # Check if prod endpoint exists. Only 'does not exist' signals flip
-    # prod_exists to False; anything else propagates.
-    prod_exists = True
+    first_deploy: str | None = None
     try:
         ws.serving_endpoints.get(prod_name)
     except Exception as exc:
-        if _is_databricks_not_found(exc):
-            click.echo(f"  First deployment - production endpoint '{prod_name}' not found")
-            prod_exists = False
-        else:
+        if not _is_databricks_not_found(exc):
             raise
+        first_deploy = f"the workspace has no production endpoint '{prod_name}'."
+        click.echo(f"  First deployment - production endpoint '{prod_name}' not found")
 
-    # Score staging
     click.echo(f"  Scoring through staging ({staging_name})...")
     staging_preds = score_endpoint_batched(ws, staging_name, records, batch_size, click.echo)
+    if first_deploy is not None:
+        return staging_preds, [], first_deploy
+    click.echo(f"  Scoring through production ({prod_name})...")
+    prod_preds = score_endpoint_batched(ws, prod_name, records, batch_size, click.echo)
+    return staging_preds, prod_preds, None
 
-    if prod_exists:
-        click.echo(f"  Scoring through production ({prod_name})...")
-        prod_preds = score_endpoint_batched(ws, prod_name, records, batch_size, click.echo)
-    else:
-        prod_preds = []
 
-    return staging_preds, prod_preds, prod_exists
+def _production_released(project_root: Path) -> bool:
+    """Whether production has been released: origin holds a ``deploy/`` release tag.
+
+    The generated production job tags every release it ships (``RELEASE_TAG_PREFIX``),
+    so origin's tags are the authoritative record for a target whose production is only
+    an address. Tags that cannot be read fail the step: impact never guesses.
+    """
+    from haute._git_core import _run_git_ok, git_binary_available
+    from haute._scaffold import RELEASE_TAG_PREFIX
+
+    pattern = f"refs/tags/{RELEASE_TAG_PREFIX}*"
+    ok, tags = (
+        _run_git_ok("ls-remote", "--tags", "origin", pattern, cwd=project_root)
+        if git_binary_available()
+        else (False, "")
+    )
+    if not ok:
+        click.echo(
+            "Error: Could not read the release tags on origin (git ls-remote --tags origin "
+            f"'{pattern}'). Impact compares production once a release is tagged there, so "
+            "it needs the repository's origin and read access to it.",
+            err=True,
+        )
+        raise SystemExit(1)
+    return bool(tags)
 
 
 def _impact_http(
@@ -374,47 +384,34 @@ def _impact_http(
     prod_url: str,
     records: list[dict],
     batch_size: int,
-) -> tuple[list, list, bool]:
+    project_root: Path,
+) -> tuple[list, list, str | None]:
     """Score through HTTP endpoints (container target) for impact analysis.
 
-    Only an HTTP 404 on the prod URL (surfaced as ``RuntimeError('HTTP 404 ...')``
-    by :mod:`haute.deploy._impact`) is treated as 'no prod yet'. Every other
-    exception — timeouts, 5xx, ``ConnectionRefusedError``, and so on — is
-    re-raised so transport failures are never silently misclassified as
-    first-deploy scenarios.
+    Returns the staging and production predictions and, when production was not
+    compared, why. Production is compared once a release of it is recorded on origin
+    (:func:`_production_released`); before the first, the comparison is skipped and
+    the report says so. After it, production must answer: an unset address fails
+    naming the key, and a 404, an authentication failure, a timeout or no answer
+    fails naming the address, never reads as a first deployment.
     """
     from haute.deploy._impact import score_http_endpoint_batched
 
-    # Score staging
+    released = _production_released(project_root)
+    if released and not prod_url:
+        click.echo(
+            "Error: Production has been released (origin has deploy/ release tags), but "
+            "[ci.production] endpoint_url is not set in haute.toml, so there is nothing "
+            "to compare staging with.",
+            err=True,
+        )
+        raise SystemExit(1)
+
     click.echo(f"  Scoring through staging ({staging_url})...")
-    staging_preds = score_http_endpoint_batched(
-        staging_url,
-        records,
-        batch_size,
-        click.echo,
-    )
-
-    # Score production (if URL is configured)
-    prod_exists = bool(prod_url)
-    prod_preds: list = []
-    if prod_exists:
-        click.echo(f"  Scoring through production ({prod_url})...")
-        try:
-            prod_preds = score_http_endpoint_batched(
-                prod_url,
-                records,
-                batch_size,
-                click.echo,
-            )
-        except Exception as exc:
-            if _is_http_not_found(exc):
-                click.echo(
-                    "  First deployment - production endpoint not yet available "
-                    f"(404 at {prod_url})"
-                )
-                prod_exists = False
-                prod_preds = []
-            else:
-                raise
-
-    return staging_preds, prod_preds, prod_exists
+    staging_preds = score_http_endpoint_batched(staging_url, records, batch_size, click.echo)
+    if not released:
+        click.echo("  First deployment - no production release is tagged on origin yet")
+        return staging_preds, [], "no production release is recorded (origin has no deploy/ tag)."
+    click.echo(f"  Scoring through production ({prod_url})...")
+    prod_preds = score_http_endpoint_batched(prod_url, records, batch_size, click.echo)
+    return staging_preds, prod_preds, None

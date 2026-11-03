@@ -325,6 +325,12 @@ def _azure_devops_trigger_paths() -> str:
     return "\n".join([*dirs, *files])
 
 
+#: The prefix of the git tag the generated production job pushes for each release it
+#: ships. ``haute impact`` reads origin's tags under it as the record that production has
+#: been released.
+RELEASE_TAG_PREFIX = "deploy/"
+
+
 def _release_tag_script(target: str, indent: str) -> str:
     """Shell lines, indented, that tag the production release in git.
 
@@ -337,7 +343,7 @@ def _release_tag_script(target: str, indent: str) -> str:
     """
     if target in _CONTAINER_BASED_TARGETS:
         lines = [
-            'TAG="deploy/$(git rev-parse --short HEAD)"',
+            f'TAG="{RELEASE_TAG_PREFIX}$(git rev-parse --short HEAD)"',
             'if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then',
             '  echo "Release tag $TAG already exists."',
             "else",
@@ -354,8 +360,8 @@ def _release_tag_script(target: str, indent: str) -> str:
             "    exit 1",
             "    ;;",
             "esac",
-            'git tag "deploy/v$VERSION"',
-            'git push origin "deploy/v$VERSION"',
+            f'git tag "{RELEASE_TAG_PREFIX}v$VERSION"',
+            f'git push origin "{RELEASE_TAG_PREFIX}v$VERSION"',
         ]
     return "\n".join(indent + line for line in lines)
 
@@ -1541,7 +1547,9 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
         pool:
           vmImage: ubuntu-latest
         steps:
+          # Impact reads origin's release tags, which needs the pipeline's token.
           - checkout: self
+            persistCredentials: true
           - task: UsePythonVersion@0
             inputs:
               versionSpec: "3.11"

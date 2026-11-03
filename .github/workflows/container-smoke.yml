@@ -3,8 +3,12 @@ name: Container Smoke
 # Weekly build and execution of the generated scoring container image for the
 # minimal_live_quote example. The PR and package-smoke checks verify the Python
 # package, static contracts, and in-process execution. This lane builds the real
-# Docker image on ubuntu-latest, boots it, and checks /health and /quote with
-# the shipped golden request. It is deliberately NOT a required per-PR check:
+# Docker image on ubuntu-latest from its locked runtime (the build itself checks the
+# installed runtime against the lock), builds it again from the same bundle to show
+# both install the same runtime, boots it, and checks /health and /quote with the
+# shipped golden request. It also installs the Databricks model's locked
+# environment with pip into a fresh virtual environment, runs pip check, and scores
+# the golden request through the loaded model (scripts/pyfunc_smoke.py). It is deliberately NOT a required per-PR check:
 # building a Docker image and running an isolated container requires Docker and
 # adds runner overhead that would slow down every PR (ledger W13-S02, ENG-T12).
 #
@@ -63,7 +67,19 @@ jobs:
         run: uv run python scripts/container_smoke.py --build-dir .container-smoke --wheel dist-smoke/haute-*.whl --serve-check
 
       - name: Build scoring container image
-        run: docker build -t haute-container-smoke .container-smoke/image
+        run: docker build --platform linux/amd64 -t haute-container-smoke .container-smoke/image
+
+      # The bundle's lock is resolved once; a rebuild from it installs the same runtime.
+      - name: Rebuild from the same bundle and compare the installed runtime
+        run: |
+          docker build --no-cache --platform linux/amd64 \
+            -t haute-container-smoke-rebuild .container-smoke/image
+          docker run --rm --entrypoint pip haute-container-smoke freeze --all > first.txt
+          docker run --rm --entrypoint pip haute-container-smoke-rebuild freeze --all > second.txt
+          diff first.txt second.txt
+
+      - name: Install the Databricks model's locked environment and score
+        run: uv run python scripts/pyfunc_smoke.py --wheel "dist-smoke/haute-*.whl" --work-dir .pyfunc-smoke
 
       - name: Run scoring container
         run: docker run -d --name haute-smoke -p 8080:8080 haute-container-smoke

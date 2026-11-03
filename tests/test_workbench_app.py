@@ -1284,11 +1284,13 @@ def test_haute_app_build_push_publishes_the_image_and_prints_its_digest_last(
     tag = f"acr.example.io/pricing/motor:{commit}"
     assert [command[1:3] for command in docker.commands] == [
         ["info"],
-        ["build", "-t"],
+        ["build", "--platform"],
         ["push", tag],
         ["image", "inspect"],
     ]
-    assert docker.commands[1][3] == tag and docker.commands[3][-1] == tag
+    # Built for the platform its runtime lock was resolved for.
+    assert docker.commands[1][3:6] == ["linux/amd64", "-t", tag]
+    assert docker.commands[3][-1] == tag
     assert f"Image pushed: {tag}" in result.output
     # The last line is what was published, by digest: what CI records and a host runs.
     assert result.output.rstrip().splitlines()[-1] == (
