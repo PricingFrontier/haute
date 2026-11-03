@@ -11,6 +11,8 @@ import ast
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from tests._source_files import REPO_ROOT, source_files
 
 #: ``chdir`` calls a test may make, by file and enclosing scope: none sets a project.
@@ -101,6 +103,7 @@ def _is_cwd_read(func: ast.expr) -> bool:
     )
 
 
+@pytest.mark.meta
 def test_no_test_changes_directory_to_set_a_project() -> None:
     found: Counter[tuple[str, str]] = Counter()
     for path in source_files(REPO_ROOT / "tests"):
@@ -112,6 +115,7 @@ def test_no_test_changes_directory_to_set_a_project() -> None:
     )
 
 
+@pytest.mark.meta
 def test_production_code_never_reads_the_working_directory_for_a_project() -> None:
     found: Counter[tuple[str, str]] = Counter()
     for path in source_files(REPO_ROOT / "src" / "haute"):
