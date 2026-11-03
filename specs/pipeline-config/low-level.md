@@ -835,7 +835,8 @@ it on the reading node instead of aborting the walk, and every other run propaga
   frames. The standalone `run()`/`score()` first adds the edges parameters imply, inferred as
   `_build_edges` infers them, then binds every node (`src/haute/pipeline.py::_bind_edges`),
   naming each input as the parser does (an ordinary source by its sanitised name, stated
-  or implied) and reading an External File's `inputMapping` from its `config=` sidecar,
+  or implied) and reading an External File's `inputMapping` from its `config=` sidecar
+  both to infer its edges and to bind them (`_raw_node`, `_input_mapping`),
   refusing the same shapes as an `ExecutionError` before any node runs. A submodel file's nodes are checked when that file is parsed, so
   the failure is the submodel's own: the editor marks the node unavailable inside its
   definition, and the submodel's inspector lists it with Recover settings, which rebinds it. Because the parser also infers an edge from any parameter named

@@ -445,11 +445,12 @@ def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project
     assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
 
 
+@pytest.mark.parametrize("connected", [True, False], ids=["connected", "inferred"])
 def test_an_external_file_binds_through_the_input_mapping_its_sidecar_holds(
-    project: Path,
+    project: Path, connected: bool
 ) -> None:
-    """The run binds the hook's parameter through its sidecar's ``inputMapping``, as the
-    parser does, rather than refusing the parameter as naming no input."""
+    """The run binds the hook's parameter through its sidecar's ``inputMapping``, and infers
+    its edge through it when no ``connect()`` states one, as the parser does."""
     (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
     config = write_node_config(
         project,
@@ -469,8 +470,7 @@ def test_an_external_file_binds_through_the_input_mapping_its_sidecar_holds(
         "def lookup(original: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
         "    df = original\n"
         '    df = df.with_columns(scaled=pl.col("value") * obj["factor"])\n'
-        "    return df\n\n\n"
-        'pipeline.connect("rows", "lookup")\n',
+        "    return df\n" + ('\n\npipeline.connect("rows", "lookup")\n' if connected else ""),
     )
 
     assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]

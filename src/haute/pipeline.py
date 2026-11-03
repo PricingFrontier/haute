@@ -1349,15 +1349,21 @@ class _WiredEdge:
 
 
 def _raw_node(node: Node) -> dict[str, Any]:
-    """A live node as the static graph builders read a parsed one."""
+    """A live node as the static graph builders read a parsed one: its ``inputMapping``
+    resolved, an External File's from its sidecar, as a parse reads it, so inferring its
+    edges maps its parameters as the parser maps them."""
     from haute._standalone_nodes import _parameters
 
     positional = _parameters(node.fn)[0]
+    config = {key: value for key, value in node.config.items() if not key.startswith("_")}
+    mapping = _input_mapping(node)
+    if mapping is not None:
+        config["inputMapping"] = dict(mapping)
     return {
         "func_name": node.name,
         "node_type": node.node_type,
         "description": node.description,
-        "config": {key: value for key, value in node.config.items() if not key.startswith("_")},
+        "config": config,
         # A live node has no parsed body, so no parse findings.
         "editor": NodeEditorState(),
         "param_names": positional,
