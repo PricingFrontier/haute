@@ -10,6 +10,7 @@ import pytest
 from haute.modelling import TrainingJob
 from haute.modelling._export import generate_training_script
 from haute.modelling._train_config import TrainingConfigError
+from tests._project import use_project
 
 STRICT_RANDOM_EVALUATION = {
     "schema_version": 1,
@@ -744,14 +745,12 @@ class TestExecutedExportMlflowDestinations:
         tmp_path: Path,
         tiny_training_data: Path,
     ) -> None:
-        from haute._sandbox import set_project_root
 
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb-fake.example.com")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-fake-token")
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         output_dir = tmp_path / "outputs"
         config = {
@@ -782,7 +781,6 @@ class TestExecutedExportMlflowDestinations:
         tmp_path: Path,
         tiny_training_data: Path,
     ) -> None:
-        from haute._sandbox import set_project_root
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
@@ -799,8 +797,7 @@ class TestExecutedExportMlflowDestinations:
         (exec_root / "haute.toml").write_text('[mlflow]\nfolder = "store_b"\n', encoding="utf-8")
 
         # Generation environment: the local folder is store_a here.
-        monkeypatch.chdir(gen_root)
-        set_project_root(gen_root)
+        use_project(gen_root)
 
         config = {
             **MINIMAL_CONFIG,
@@ -813,8 +810,7 @@ class TestExecutedExportMlflowDestinations:
         assert "mlflow_destination" not in script
 
         # Execution environment: the local folder resolves here, to store_b.
-        monkeypatch.chdir(exec_root)
-        set_project_root(exec_root)
+        use_project(exec_root)
 
         namespace: dict[str, Any] = {"__name__": "__main__"}
         exec(compile(script, "<exported_training_script>", "exec"), namespace)
@@ -837,7 +833,6 @@ class TestExecutedExportMlflowDestinations:
         tmp_path: Path,
         tiny_training_data: Path,
     ) -> None:
-        from haute._sandbox import set_project_root
         from haute.errors import MlflowConfigError
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
@@ -846,8 +841,7 @@ class TestExecutedExportMlflowDestinations:
         monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         output_dir = tmp_path / "outputs"
         config = {
@@ -876,7 +870,6 @@ class TestExecutedExportMlflowDestinations:
         tmp_path: Path,
         tiny_training_data: Path,
     ) -> None:
-        from haute._sandbox import set_project_root
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
@@ -884,8 +877,7 @@ class TestExecutedExportMlflowDestinations:
         monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         output_dir = tmp_path / "outputs"
         config = {

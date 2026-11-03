@@ -13,6 +13,7 @@ from haute._execution_context import ExecutionProfile
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import preview_input_node_ids, preview_lineage_admitted
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -41,8 +42,7 @@ def _code(code: str) -> dict[str, Any]:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
-    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame({"id": [1, 2, 3], "a": [1, 2, 3]}).write_csv(haute_scratch / "policies.csv")
     pl.DataFrame({"id": [1, 2, 3], "d": [0.1, 0.2, 0.3]}).write_parquet(

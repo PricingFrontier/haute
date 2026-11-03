@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -262,14 +263,12 @@ def test_haute_train_logs_an_exported_script_with_an_experiment(
     import polars as pl
     from mlflow.tracking import MlflowClient
 
-    from haute._sandbox import set_project_root
     from haute.modelling._export import generate_training_script
 
     for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data = tmp_path / "data.parquet"
     pl.DataFrame(
         {

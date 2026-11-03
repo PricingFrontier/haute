@@ -5,9 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
-# The command core is the sole process boundary.  Its helpers are imported
-# explicitly into this domain's namespace so extracted functions retain their
-# original signatures and semantics without a facade dependency.
 from haute._git_core import (
     NO_HOOKS,
     CompensationStep,
@@ -59,6 +56,11 @@ from haute._git_setup import (
     set_working_branch,
 )
 from haute._logging import get_logger
+
+# The command core is the sole process boundary.  Its helpers are imported
+# explicitly into this domain's namespace so extracted functions retain their
+# original signatures and semantics without a facade dependency.
+from haute._project_context import current_project
 from haute._project_layout import versioned_name
 from haute.schemas import (
     GitCommitResponse,
@@ -614,7 +616,7 @@ def _hook_installed(name: str, cwd: Path | None) -> bool:
 
 
 def _git_path(path: str, cwd: Path | None) -> Path:
-    return (cwd or Path.cwd()) / _run_git("rev-parse", "--git-path", path, cwd=cwd)
+    return (cwd or current_project().root) / _run_git("rev-parse", "--git-path", path, cwd=cwd)
 
 
 def _run_hook(name: str, *args: str, env: dict[str, str], cwd: Path | None) -> None:
@@ -881,7 +883,7 @@ def restore_version(
     if code != 0:
         logger.warning("git_command_failed", cmd=["git", "restore"], stderr=stderr)
         raise GitError(stderr or "git restore failed")
-    _wipe_volatile_artefacts(cwd or Path.cwd())
+    _wipe_volatile_artefacts(cwd or current_project().root)
 
     logger.info("version_restored", working=working, sha=restored, restored_from=target)
     return GitRestoreVersionResponse(
@@ -938,5 +940,5 @@ def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
     if left:
         raise GitFilesInUseError(_held_files(stderr) or left)
     clear_interrupted(project_root)
-    _wipe_volatile_artefacts(cwd or Path.cwd())
+    _wipe_volatile_artefacts(cwd or current_project().root)
     logger.info("interrupted_tree_retried", files=files)

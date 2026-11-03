@@ -34,6 +34,7 @@ from haute._process_memory import (
     current_process_virtual_bytes,
     process_rss_bytes,
 )
+from haute._project_context import ProjectContext, current_project, project_scope
 
 logger = get_logger(component="worker_isolation")
 
@@ -800,6 +801,8 @@ def run_isolated_worker(
             kwargs,
             worker_config.memory_limit_bytes,
             worker_config.require_memory_limit,
+            # The caller's project, which the child installs for the function.
+            current_project(),
         ),
     )
     primary_error: BaseException | None = None
@@ -941,7 +944,8 @@ def _isolated_worker_entrypoint(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     memory_limit_bytes: int | None,
-    require_memory_limit: bool = False,
+    require_memory_limit: bool,
+    project: ProjectContext,
 ) -> None:
     from haute._polars_utils import apply_spawned_streaming_chunk_size
 
@@ -967,7 +971,8 @@ def _isolated_worker_entrypoint(
     )
     with native_memory_backend_scope(lease.backend if applied else None, lease):
         try:
-            envelope = ("ok", function(*args, **kwargs))
+            with project_scope(project):
+                envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:
             envelope = _worker_error_envelope(
                 memory_error_for_thread_start_failure(exc) if applied else exc

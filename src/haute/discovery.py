@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from haute._project import _looks_like_pipeline_file, _toml_configured_pipeline
+from haute._project_context import current_project
 from haute.errors import ConfigError
 
 _SKIP = {"__init__.py", "setup.py", "conftest.py"}
@@ -27,7 +28,7 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
     Parameters
     ----------
     root:
-        Directory to scan.  Defaults to ``Path.cwd()``.
+        Directory to scan.  Defaults to the current project's root.
     Returns
     -------
     list[Path]
@@ -39,7 +40,7 @@ def discover_pipelines(root: Path | None = None) -> list[Path]:
         When a candidate file cannot be read.
     """
     if root is None:
-        root = Path.cwd()
+        root = current_project().root
 
     found: list[Path] = []
     seen: set[Path] = set()

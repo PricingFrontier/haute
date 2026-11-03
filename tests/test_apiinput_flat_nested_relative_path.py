@@ -42,9 +42,10 @@ from typing import Any
 import pytest
 
 from haute._path_resolution import RuntimePathOutsideProjectError
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests._project import use_project
 
 #: The apiInput ``path`` written into the node config — RELATIVE, pipeline-
 #: directory-relative (resolves under ``rating/`` at runtime), and FLAT (``.csv``
@@ -65,9 +66,9 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     Yields the on-disk absolute data path; the node config carries the RELATIVE
     ``path`` which must anchor to ``<root>/rating/data/...``.
     """
-    monkeypatch.chdir(tmp_path)  # cwd == project root, NOT the pipeline dir
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)  # cwd == project root, NOT the pipeline dir
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
 
     # haute.toml declares the nested pipeline — the anchor both the cache route
@@ -85,7 +86,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     yield data_path
 
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -140,9 +141,9 @@ def test_apiinput_flat_out_of_cwd_absolute_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Direct execution rejects absolute file inputs outside its project root."""
-    monkeypatch.chdir(tmp_path)  # cwd == project root
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)  # cwd == project root
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
     try:
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
@@ -157,5 +158,5 @@ def test_apiinput_flat_out_of_cwd_absolute_is_rejected(
         with pytest.raises(RuntimePathOutsideProjectError, match="outside the project root"):
             execute_graph(graph, target_node_id="src")
     finally:
-        set_project_root(original)
+        use_project(original)
         _preview_cache.clear()

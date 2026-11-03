@@ -30,6 +30,7 @@ from haute._polars_utils import bounded_collect_batches, bounded_sink
 from haute._types import PipelineGraph
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.execution import execute_lazy_graph
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 # Every profile that writes or reads a `bounded` snapshot. If this list and
@@ -64,7 +65,7 @@ def test_the_bounded_profiles_here_are_the_ones_that_share_snapshots() -> None:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     return haute_scratch
 

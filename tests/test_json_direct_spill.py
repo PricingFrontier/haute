@@ -18,11 +18,13 @@ import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _cache, _records, _runtime_storage, _shred, _source_proof, _writer
+from haute._project_context import current_project
+from tests._project import use_project
 
 
 @pytest.fixture(autouse=True)
 def _isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _runtime_storage._cleanup_direct_spill_dirs()
     yield
     _runtime_storage._cleanup_direct_spill_dirs()
@@ -351,16 +353,15 @@ def test_persistent_cache_uses_shared_aggregate_bounded_writer(
         original_flush(writer)
 
     monkeypatch.setattr(writer_type, "flush", _observe_flush)
-    from haute._sandbox import _get_project_root, set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         build_test_api_input_snapshots(data, config)
         out = _cache.load_v2_api_source(str(data), config, read_snapshots=True)
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
     assert len([rows for rows, _bytes in flushes if rows]) > 2
     assert all(rows <= 3 for rows, _bytes in flushes if rows)

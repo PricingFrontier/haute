@@ -91,6 +91,11 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
     def load_context(self, context: PythonModelContext) -> None:
         """Called once when the model is loaded for serving."""
         manifest_path = Path(context.artifacts["deploy_manifest"])
+        # The model scores in its own project, the folder its manifest ships in,
+        # whatever the serving process's working directory.
+        from haute._project_context import ProjectContext
+
+        self._project = ProjectContext.at(manifest_path.parent)
         self._manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         _require_deployed_polars(self._manifest["polars_version"])
         self._graph = PipelineGraph.model_validate(self._manifest["pruned_graph"])
@@ -134,8 +139,14 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         model_input: pd.DataFrame,
         params: dict | None = None,
     ) -> pd.DataFrame:
-        """Score one or more rows through the pipeline."""
+        """Score one or more rows through the pipeline, in the model's project."""
 
+        from haute._project_context import project_scope
+
+        with project_scope(self._project):
+            return self._predict(model_input)
+
+    def _predict(self, model_input: pd.DataFrame) -> pd.DataFrame:
         from haute.deploy._scorer import admit_deploy_execution, score_graph
 
         execution_context = admit_deploy_execution(

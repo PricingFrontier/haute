@@ -14,6 +14,7 @@ from structlog.testing import capture_logs
 
 from haute._polars_io_registry import data_input_is_direct
 from haute._polars_utils import read_parquet_metadata
+from haute._project_context import current_project
 from haute._ram_estimate import (
     _OVERHEAD_MULTIPLIER,
     MaterialisationEstimate,
@@ -52,6 +53,7 @@ from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.modelling._train_config import TrainingConfigError
+from tests._project import use_project, work_elsewhere
 from tests.conftest import build_test_input_snapshot
 
 
@@ -266,7 +268,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
     )
     opened: list[object] = []
 
-    monkeypatch.setattr("haute._builders._configured_pipeline_dir", lambda: tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr(
         "haute._polars_io_registry.validate_data_input_config",
         lambda _config: {"validated": True},
@@ -279,7 +281,7 @@ def test_persistent_data_input_uses_verified_generation_row_count(
         "haute._input_providers.source_cache_identity",
         lambda _config, *, base_dir: ("identity", base_dir),
     )
-    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr(
         "haute._source_cache.SourceCacheStore",
         lambda root: SimpleNamespace(
@@ -2775,12 +2777,11 @@ def json_api_input(tmp_path, monkeypatch):
 
     import json as _json
 
-    from haute._sandbox import _get_project_root, set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
-    monkeypatch.chdir(tmp_path)
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
 
     data_path = tmp_path / "quotes.json"
     data_path.write_text(
@@ -2797,7 +2798,7 @@ def json_api_input(tmp_path, monkeypatch):
     try:
         yield data_path, config
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
 
 class TestJsonApiInputPortMetadata:
@@ -2970,9 +2971,8 @@ class TestJsonApiInputPortMetadata:
         import json as _json
 
         from haute._ram_estimate import _json_api_input_port_metadata
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         data_path = tmp_path / "unbuilt.json"
         data_path.write_text(_json.dumps([{"policy_id": 1, "drivers": []}]), encoding="utf-8")
         config = _json_port_config(data_path)  # no snapshot built for this config
@@ -3931,7 +3931,6 @@ def _nested_pipeline_project(tmp_path: Path) -> Path:
     such as ``data/policies.parquet`` names a project-root file, while anchoring
     it to the pipeline directory alone names ``rating/data/policies.parquet``.
     """
-    from haute._sandbox import set_project_root
 
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "t"\npipeline = "rating/main.py"\n',
@@ -3941,7 +3940,7 @@ def _nested_pipeline_project(tmp_path: Path) -> Path:
     pipeline_dir.mkdir(exist_ok=True)
     main_py = pipeline_dir / "main.py"
     main_py.write_text("", encoding="utf-8")
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return main_py
 
 
@@ -3962,7 +3961,7 @@ class TestEstimatorResolvesPathsLikeTheExecutor:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         main_py = _nested_pipeline_project(tmp_path)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "data").mkdir()
         pl.DataFrame({"policy_id": [1, 2, 3]}).write_parquet(tmp_path / "data" / "policies.parquet")
         node = _make_source_node(
@@ -3986,7 +3985,7 @@ class TestEstimatorResolvesPathsLikeTheExecutor:
         from haute.execution import canonical_dataframe_execution_graph
 
         main_py = _nested_pipeline_project(tmp_path)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "rating" / "outputs").mkdir(parents=True)
         (tmp_path / "outputs").mkdir()
         pl.DataFrame({"policy_id": [1, 2]}).write_parquet(
@@ -4017,10 +4016,9 @@ class TestEstimatorResolvesPathsLikeTheExecutor:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         main_py = _nested_pipeline_project(tmp_path)
-        # The estimator must not depend on the process working directory: a
-        # locator is project-relative, not cwd-relative, exactly as execution
-        # treats it.
-        monkeypatch.chdir(tmp_path / "rating")
+        # The estimator reads the installed project, never the working directory: a
+        # locator is project-relative, exactly as execution treats it.
+        work_elsewhere(tmp_path / "rating")
         (tmp_path / "data").mkdir()
         pl.DataFrame({"quote_id": [1, 2, 3, 4]}).write_parquet(tmp_path / "data" / "quotes.parquet")
         node = _make_source_node(

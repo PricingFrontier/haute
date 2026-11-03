@@ -16,6 +16,7 @@ import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import NativeMemoryLease, model_thread_address_space_allowance
+from haute._project_context import context_thread
 from haute._worker_isolation import IsolatedWorkerConfig, IsolatedWorkerError
 from haute._worker_protocol import (
     WorkerFailurePayload,
@@ -1776,8 +1777,8 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
         # for the publication and then observes the completed record.
         def publish_with_cancel_waiting():
             nonlocal cancel_thread
-            cancel_thread = threading.Thread(
-                target=lambda: (started.set(), cancellation.update(service.cancel(job_id))),
+            cancel_thread = context_thread(
+                lambda: (started.set(), cancellation.update(service.cancel(job_id))),
                 daemon=True,
             )
             cancel_thread.start()

@@ -19,6 +19,7 @@ from haute._types import GraphNode, NodeData, NodeType
 from haute.codegen import _node_to_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 from haute.executor import execute_graph
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
 # ---------------------------------------------------------------------------
@@ -1556,12 +1557,11 @@ class TestArtifactPathAnchoring:
 
     @staticmethod
     def _project(tmp_path: Path) -> tuple[Path, Path]:
-        from haute._sandbox import set_project_root
 
         project = tmp_path / "project"
         pipelines = project / "pipelines"
         pipelines.mkdir(parents=True)
-        set_project_root(project)
+        use_project(project)
         return project, pipelines
 
     @staticmethod
@@ -1586,7 +1586,6 @@ class TestArtifactPathAnchoring:
     ) -> None:
         project, pipelines = self._project(tmp_path)
         self._write(project / "artifacts" / "opt.json", "root")
-        monkeypatch.chdir(tmp_path)
 
         assert self._load("artifacts/opt.json", pipelines)["version"] == "root"
 
@@ -1596,7 +1595,6 @@ class TestArtifactPathAnchoring:
     ) -> None:
         _project, pipelines = self._project(tmp_path)
         self._write(pipelines / "opt.json", "pipeline")
-        monkeypatch.chdir(tmp_path)
 
         assert self._load("opt.json", pipelines)["version"] == "pipeline"
 

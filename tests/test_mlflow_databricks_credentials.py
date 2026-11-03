@@ -40,8 +40,8 @@ from haute._mlflow_utils import (
     bind_mlflow_databricks_credentials,
     resolve_backend,
 )
-from haute._sandbox import set_project_root
 from haute.errors import MlflowConfigError
+from tests._project import use_project
 
 GENERAL_HOST = "https://general.example.invalid"
 GENERAL_TOKEN = "general-token-000"
@@ -90,7 +90,7 @@ def _hermetic_databricks_environment(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "databrickscfg"))
     # A fluent tracking URI left by another test would override the environment.
     monkeypatch.setattr("mlflow.tracking._tracking_service.utils._tracking_uri", None)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
 
 
 @dataclass(frozen=True)
@@ -980,9 +980,13 @@ _COLD_START_SCRIPT = textwrap.dedent(
 
     requests.Session.request = fake_request
 
-    from haute._mlflow_utils import resolve_backend
+    from pathlib import Path
 
-    backend = resolve_backend("databricks")
+    from haute._mlflow_utils import resolve_backend
+    from haute._project_context import ProjectContext, project_scope
+
+    with project_scope(ProjectContext.at(Path.cwd())):
+        backend = resolve_backend("databricks")
 
     from mlflow.tracking import MlflowClient
 

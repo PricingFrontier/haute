@@ -72,6 +72,7 @@ from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests._project import use_project
 from tests.conftest import (
     build_test_input_snapshot,
     current_source_revision,
@@ -4196,7 +4197,7 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     init_repo(tmp_path)
     (tmp_path / "haute.toml").write_text("", encoding="utf-8", newline="\n")
     set_working_branch("pricing/test-user/steps", tmp_path, create=True, cwd=tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 

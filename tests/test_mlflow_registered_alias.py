@@ -14,6 +14,7 @@ import pytest
 from haute._config_validation import validate_node_config
 from haute._types import NodeType
 from haute.errors import ConfigError
+from tests._project import use_project
 
 
 @pytest.fixture()
@@ -22,14 +23,13 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     from catboost import CatBoostRegressor
     from mlflow.tracking import MlflowClient
 
-    from haute._sandbox import set_project_root
     from haute.modelling._feature_contract import build_contract, save_contract
     from haute.modelling._training_job import model_contract_filename
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_MLFLOW_HOST", "DATABRICKS_MLFLOW_TOKEN"):
         monkeypatch.delenv(name, raising=False)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / ".cache")
     uri = (tmp_path / "mlruns").as_uri()
     client = MlflowClient(tracking_uri=uri, registry_uri=uri)
@@ -313,7 +313,7 @@ class TestDeployRecordsTheResolvedAlias:
 
         example = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
         shutil.copytree(example / "minimal_live_quote", tmp_path, dirs_exist_ok=True)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "data" / "quote.json").write_text('[{"quote_id": "q1", "age": 30.0}]')
         request = json.loads((tmp_path / "config" / "request.json").read_text())
         request["tables"][0]["columns"][1] |= {"name": "age", "path": "$[:].age", "type": "float"}
@@ -379,7 +379,7 @@ class TestDeployRecordsTheResolvedAlias:
         from tests.conftest import make_graph
         from tests.test_deploy import _write_cached_model
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # The model and the contract its run logged, as a preview leaves them.
         _write_cached_model(tmp_path, "run_7", "model.cbm", b"model")
         graph = make_graph(

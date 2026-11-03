@@ -16,6 +16,7 @@ from typing import Any
 
 import click
 
+from haute._project_context import current_project
 from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
 
 
@@ -35,7 +36,7 @@ def handle_smoke(config: SmokeConfig) -> None:
     """
     from haute.deploy._config import DeployConfig
 
-    toml_path = Path.cwd() / "haute.toml"
+    toml_path = current_project().root / "haute.toml"
     if not toml_path.exists():
         click.echo("Error: No haute.toml found.", err=True)
         raise SystemExit(1)
@@ -158,7 +159,7 @@ def _smoke_databricks(endpoint_name: str, json_files: list[Path]) -> bool:
         wait_for_endpoint,
     )
 
-    _load_env(Path.cwd())
+    _load_env(current_project().root)
 
     # The endpoint is reached with the serving pair, as deploy reaches it. A deploy
     # returns once its endpoint serves, so this wait is short unless another update

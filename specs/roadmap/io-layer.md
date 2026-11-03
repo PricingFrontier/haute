@@ -42,8 +42,8 @@ part reader); a repeated usage call within the interval reads no generation.
 `src/haute/routes/cache.py::cache_usage`; `src/haute/_node_snapshots.py::NodeSnapshotStore.usage`.
 
 ### IO-R07 — Memory admission and isolated worker execution for explicit Data Input cache builds, project-root path anchoring, and non-overlapping parallel JSONL schema inference
-**Why:** Three IO and JSON-shredding defects affect explicit Data Input cache builds,
-route path resolution and parallel JSONL schema inference:
+**Why:** Two IO and JSON-shredding defects affect explicit Data Input cache builds and
+parallel JSONL schema inference:
 1. When automatic input preparation builds a `"bounded"` Data Input snapshot
    (`src/haute/_input_preparation.py::_run_build`), it dispatches to
    `run_supervised_data_input_build` in an isolated child process with an
@@ -53,9 +53,7 @@ route path resolution and parallel JSONL schema inference:
    directly on a daemon thread inside the FastAPI server process with
    `execution_context=None`, bypassing server memory admission, chunked-write RSS
    monitoring and process isolation.
-2. `input_cache._project_root` and `json_cache._resolve_data_path` hardcode
-   `Path.cwd()` instead of resolving from the configured project root.
-3. In `_infer_jsonl_in_parallel(data_path, ranges)` (`_json_shred/_inference.py`),
+2. In `_infer_jsonl_in_parallel(data_path, ranges)` (`_json_shred/_inference.py`),
    `_learn_jsonl_prefix(data_path, ranges[-1][1])` walks up to `_INITIAL_SAMPLE_RECORDS`
    (`10,000`) records from byte `0` into `merged`, and then `tasks` dispatches **all**
    byte `ranges` (including the prefix bytes starting at `0`) to the worker pool.
@@ -68,25 +66,22 @@ route path resolution and parallel JSONL schema inference:
 **Plan:** Route `"bounded"` Data Input builds in `routes/input_cache.py::_run_build`
 through the same memory admission and `run_supervised_data_input_build` isolated
 worker path as `_input_preparation.py::_run_build` (sharing the build runner
-between both entry points); resolve project paths in `input_cache` and
-`json_cache` from `_get_project_root()`; and have `_learn_jsonl_prefix` return the
+between both entry points); and have `_learn_jsonl_prefix` return the
 byte offset where prefix sampling stopped so `_infer_jsonl_in_parallel` skips the
 already-walked prefix bytes (and returns `merged` immediately when the prefix pass
 reached `ranges[-1][1]`).
 
 **Acceptance:** Clicking **Cache** (`POST /api/input-cache/build`) on a `"bounded"`
 Data Input runs under `run_supervised_data_input_build` with a bounded
-`ExecutionContext` rather than in-process with `execution_context=None`; both
-`/api/input-cache/*` and `/api/json-cache/*` resolve relative paths against the
-configured project root when `Path.cwd()` differs; and `_infer_jsonl_in_parallel`
+`ExecutionContext` rather than in-process with `execution_context=None`; and
+`_infer_jsonl_in_parallel`
 starts worker ranges at the byte offset after `_learn_jsonl_prefix` and dispatches
 no worker tasks when the prefix pass already reached EOF.
 
-**Dependencies:** Coordinates with `PCFG-R04` (one project context).
+**Dependencies:** None.
 
 **Evidence:** `src/haute/routes/input_cache.py::_run_build`;
 `src/haute/_input_preparation.py::_run_build`;
-`src/haute/routes/input_cache.py::_project_root`;
 `src/haute/routes/json_cache.py::_resolve_data_path`;
 `src/haute/_json_shred/_inference.py::_learn_jsonl_prefix`;
 `src/haute/_json_shred/_inference.py::_infer_jsonl_in_parallel`;

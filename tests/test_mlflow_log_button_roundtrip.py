@@ -34,6 +34,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from tests._project import use_project
 from tests.training_artifacts_support import publish_trained_job
 
 # This integration test needs the real core MLflow package. Keep the guard for
@@ -68,7 +69,6 @@ TARGET = "y"
 @pytest.fixture
 def local_mlflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     """Local file-store MLflow rooted in tmp without ambient credentials."""
-    from haute._sandbox import set_project_root
 
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)
     monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
@@ -76,8 +76,8 @@ def local_mlflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Pa
     monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # conftest restores the original project root.
+    use_project(tmp_path)
+    use_project(tmp_path)  # conftest restores the original project root.
     training_root = (tmp_path / "training-artifacts").resolve()
     monkeypatch.setattr(
         "haute.routes._training_artifacts.training_artifact_root", lambda: training_root

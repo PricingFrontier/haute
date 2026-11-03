@@ -45,7 +45,7 @@ from haute._interactive_workers import (
 from haute._mlflow_utils import allow_file_store_if_local
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_steps import STEPPED_NODE_TYPES, is_stepped_config
-from haute._sandbox import bound_project_root
+from haute._project_context import ProjectContext, project_scope
 from haute._types import SINK_ONLY_NODE_TYPES, NodeEditorState, NodeType
 from haute.assistant._config import (
     AssistantConfig,
@@ -77,7 +77,7 @@ from haute.assistant._tools import (
 from haute.deploy._config import _load_env
 from haute.executor import execute_graph
 from haute.graph_utils import flatten_graph
-from haute.routes._helpers import parse_pipeline_to_graph, pipeline_dir
+from haute.routes._helpers import parse_pipeline_to_graph
 from haute.schemas import AssistantChangeDataCheck, AssistantTurnOutcomeKind
 from scripts.assistant_eval_report import (
     DATA_FINDINGS_LAYER,
@@ -1821,24 +1821,21 @@ def _initialize_mutation_gate(project_root: Path) -> None:
 
 @contextmanager
 def _working_directory(path: Path) -> Iterator[None]:
-    """Enter a fixture copy as the working directory and the sandbox project root.
+    """Run inside a fixture copy as the installed project, in its folder.
 
-    The sandbox root is process-wide and set lazily, so it is bound here and
-    restored on exit; otherwise a later case would resolve its data paths
-    against an earlier case's deleted copy.
+    Each case is its own project, so a later case never resolves its data paths
+    against an earlier case's deleted copy. The case runs in the copy's folder, as
+    ``haute serve`` runs in its project's root, because the pipeline's own code
+    reads relative paths from the working directory.
     """
 
     previous = Path.cwd()
-    pipeline_dir.cache_clear()
     os.chdir(path)
-    pipeline_dir.cache_clear()
     try:
-        with bound_project_root(path):
+        with project_scope(ProjectContext.at(path)):
             yield
     finally:
-        pipeline_dir.cache_clear()
         os.chdir(previous)
-        pipeline_dir.cache_clear()
 
 
 @contextmanager

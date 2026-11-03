@@ -24,9 +24,10 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots
 
 
@@ -113,12 +114,12 @@ def _multi_port_config(data_path: Path) -> dict[str, Any]:
 def isolated_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Set the sandbox project root to tmp_path so apiInput data + cache
     live in the test's isolated tree. Restore on teardown."""
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
     yield tmp_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -541,7 +542,7 @@ def test_preview_route_response_carries_node_frame_columns(isolated_root) -> Non
     """
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -1047,7 +1048,7 @@ def test_multi_port_ancestor_node_frame_columns_via_route(isolated_root) -> None
     """
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
@@ -1282,7 +1283,7 @@ def test_port_label_select_through_preview_route(isolated_root) -> None:
     """
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))

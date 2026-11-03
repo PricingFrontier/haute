@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from haute._project_context import context_thread
 from haute.errors import RequestRefusedError
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason
 from haute.routes._job_store import (
@@ -535,7 +536,7 @@ class TestJobStoreTTL:
         )
         assert len(timers) == 1
 
-        eviction = threading.Thread(target=store.get_job, args=(job_id,))
+        eviction = context_thread(store.get_job, args=(job_id,))
         eviction.start()
         assert cleanup_started.wait(timeout=1)
 
@@ -543,7 +544,7 @@ class TestJobStoreTTL:
             _create_job(store, {"status": "running"})
             concurrent_access_finished.set()
 
-        concurrent_access = threading.Thread(target=access_store)
+        concurrent_access = context_thread(access_store)
         concurrent_access.start()
         eviction.join(timeout=6)
         concurrent_access.join(timeout=6)
@@ -591,8 +592,8 @@ class TestJobStoreTTL:
             assert store.get_job(stale_id) is None
             return True
 
-        outer_operation = threading.Thread(
-            target=lambda: results.append(store.has_job_matching(nested_predicate))
+        outer_operation = context_thread(
+            lambda: results.append(store.has_job_matching(nested_predicate))
         )
         outer_operation.start()
         assert cleanup_started.wait(timeout=5)
@@ -601,7 +602,7 @@ class TestJobStoreTTL:
             _create_job(store, {"status": "running"})
             concurrent_access_finished.set()
 
-        concurrent_access = threading.Thread(target=access_store)
+        concurrent_access = context_thread(access_store)
         concurrent_access.start()
         outer_operation.join(timeout=7)
         concurrent_access.join(timeout=7)
@@ -887,7 +888,7 @@ class TestJobStoreConcurrency:
             with lock:
                 job_ids.append(jid)
 
-        threads = [threading.Thread(target=create_one, args=(i,)) for i in range(10)]
+        threads = [context_thread(create_one, args=(i,)) for i in range(10)]
         for t in threads:
             t.start()
         for t in threads:
@@ -913,7 +914,7 @@ class TestJobStoreConcurrency:
             barrier.wait()
             store.update_job(job_id, counter=value)
 
-        threads = [threading.Thread(target=update_one, args=(ids[i], i + 1)) for i in range(n_jobs)]
+        threads = [context_thread(update_one, args=(ids[i], i + 1)) for i in range(n_jobs)]
         for t in threads:
             t.start()
         for t in threads:
@@ -940,7 +941,7 @@ class TestJobStoreConcurrency:
             barrier.wait()
             store.update_job(job_id, **{f"field_{idx}": idx})
 
-        threads = [threading.Thread(target=update_field, args=(i,)) for i in range(n_threads)]
+        threads = [context_thread(update_field, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -974,7 +975,7 @@ class TestJobStoreConcurrency:
                 with lock:
                     read_results.append(result is not None or target == "nonexistent")
 
-        threads = [threading.Thread(target=create_and_read, args=(i,)) for i in range(n_ops)]
+        threads = [context_thread(create_and_read, args=(i,)) for i in range(n_ops)]
         for t in threads:
             t.start()
         for t in threads:
@@ -1002,9 +1003,7 @@ class TestJobStoreConcurrency:
             with lock:
                 new_ids.append(jid)
 
-        threads = [
-            threading.Thread(target=create_with_eviction, args=(i,)) for i in range(n_threads)
-        ]
+        threads = [context_thread(create_with_eviction, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -1083,8 +1082,8 @@ class TestJobStoreConcurrency:
                     errors.append(exc)
 
             threads = [
-                threading.Thread(target=updater),
-                threading.Thread(target=evictor),
+                context_thread(updater),
+                context_thread(evictor),
             ]
             for t in threads:
                 t.start()
@@ -1166,7 +1165,7 @@ class TestJobStoreConcurrency:
                 with lock:
                     errors.append(exc)
 
-        threads = [threading.Thread(target=race, args=(i,)) for i in range(n_threads)]
+        threads = [context_thread(race, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -1384,7 +1383,7 @@ class TestAtomicUpdate:
             barrier.wait()
             store.atomic_update(job_id, {f"field_{idx}": idx})
 
-        threads = [threading.Thread(target=update_field, args=(i,)) for i in range(n_threads)]
+        threads = [context_thread(update_field, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -1442,8 +1441,8 @@ class TestAtomicUpdate:
                     },
                 )
 
-        reader_thread = threading.Thread(target=reader, daemon=True)
-        writer_thread = threading.Thread(target=writer)
+        reader_thread = context_thread(reader, daemon=True)
+        writer_thread = context_thread(writer)
         reader_thread.start()
         writer_thread.start()
         writer_thread.join(timeout=5)
@@ -2565,8 +2564,8 @@ class TestUpdateJobRaceCondition:
             for i in range(1, 101):
                 store.update_job(job_id, step=i, progress=i / 100.0)
 
-        reader_t = threading.Thread(target=reader, daemon=True)
-        writer_t = threading.Thread(target=writer_non_atomic)
+        reader_t = context_thread(reader, daemon=True)
+        writer_t = context_thread(writer_non_atomic)
         reader_t.start()
         writer_t.start()
         writer_t.join(timeout=5)
@@ -2599,8 +2598,8 @@ class TestUpdateJobRaceCondition:
             for i in range(1, 101):
                 store2.atomic_update(job_id2, {"step": i, "progress": i / 100.0})
 
-        reader_t2 = threading.Thread(target=reader2, daemon=True)
-        writer_t2 = threading.Thread(target=writer_atomic)
+        reader_t2 = context_thread(reader2, daemon=True)
+        writer_t2 = context_thread(writer_atomic)
         reader_t2.start()
         writer_t2.start()
         writer_t2.join(timeout=5)
@@ -2736,8 +2735,8 @@ class TestLongRunningJobEviction:
             barrier.wait()
             store.get_job("some_other_id")
 
-        bg = threading.Thread(target=background_worker)
-        main = threading.Thread(target=main_thread_poller)
+        bg = context_thread(background_worker)
+        main = context_thread(main_thread_poller)
         bg.start()
         main.start()
         main.join(timeout=5)
@@ -3016,7 +3015,7 @@ class TestEvictionDuringIteration:
                 with lock:
                     errors.append(exc)
 
-        threads = [threading.Thread(target=create_and_evict, args=(i,)) for i in range(n_threads)]
+        threads = [context_thread(create_and_evict, args=(i,)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -3062,8 +3061,8 @@ class TestEvictionDuringIteration:
                     except Exception as exc:
                         errors.append(exc)
 
-        t_update = threading.Thread(target=updater)
-        t_read = threading.Thread(target=reader)
+        t_update = context_thread(updater)
+        t_read = context_thread(reader)
         t_update.start()
         t_read.start()
         t_update.join(timeout=10)
@@ -3112,8 +3111,8 @@ class TestEvictionDuringIteration:
                 except Exception as exc:
                     errors.append(exc)
 
-        t1 = threading.Thread(target=iterator)
-        t2 = threading.Thread(target=evictor)
+        t1 = context_thread(iterator)
+        t2 = context_thread(evictor)
         t1.start()
         t2.start()
         t1.join(timeout=10)

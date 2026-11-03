@@ -24,6 +24,7 @@ from haute._git import (
 from scripts.e2e_git_topologies import SeededTopology, seed_deep, seed_rich
 from tests._git_helpers import git_run as _git
 from tests._git_helpers import init_repo as _init_repo
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -480,7 +481,7 @@ class TestGraphRoute:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, topo = rich_repo
-        monkeypatch.chdir(repo)
+        use_project(repo)
         res = client.get("/api/git/graph")
         assert res.status_code == 200
         body = res.json()
@@ -508,7 +509,7 @@ class TestGraphRoute:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, topo = rich_repo
-        monkeypatch.chdir(repo)
+        use_project(repo)
         assert client.get("/api/git/graph?limit=0").status_code == 422
         assert client.get("/api/git/graph?limit=501").status_code == 422
         res = client.get("/api/git/graph?limit=1")
@@ -520,7 +521,7 @@ class TestGraphRoute:
     def test_not_a_git_repo_is_a_verbatim_domain_error(
         self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         res = client.get("/api/git/graph")
         assert res.status_code == 400
         assert res.json()["detail"] == "Not a git repository. Run 'git init' first."

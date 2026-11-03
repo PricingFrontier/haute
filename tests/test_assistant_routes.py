@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from haute.assistant._providers import TextDelta, TurnStop
 from haute.assistant._session import SessionStore
 from haute.schemas import AssistantChangeRecord
+from tests._project import project_app, use_project
 
 pytestmark = pytest.mark.usefixtures("project_root")
 
@@ -50,7 +51,7 @@ def _message(session_id: str, message: str = "hi", source_file: str = "main.py")
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text(_PIPELINE, encoding="utf-8")
     return tmp_path
 
@@ -71,7 +72,7 @@ def configured(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture()
 def client(project_root: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 

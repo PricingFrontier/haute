@@ -21,6 +21,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, Submodel
 from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
+from tests._project import use_project
 
 
 def _node(node_id: str, node_type: str = "polars", **config: object) -> GraphNode:
@@ -526,8 +527,8 @@ def _save_rates(client: TestClient, project: Path, content: str):  # noqa: ANN20
 
 @pytest.fixture()
 def utility_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     return _project(tmp_path, "rate_lookup")
 
 
@@ -554,8 +555,8 @@ def test_saving_a_utility_that_adds_an_unrelated_helper_is_accepted(
 def test_saving_a_utility_imported_only_by_a_submodel_is_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "utility").mkdir()
     (tmp_path / "utility" / "rates.py").write_text("import polars as pl\n", encoding="utf-8")
     (tmp_path / "modules").mkdir()

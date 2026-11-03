@@ -12,6 +12,7 @@ import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, walk_graph
+from haute._project_context import context_thread
 from haute._user_exec import _exec_user_code
 from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
@@ -22,6 +23,7 @@ from haute.executor import (
     execute_graph,
     write_data_output,
 )
+from tests._project import use_project
 from tests.conftest import (
     build_test_input_snapshot,
     make_ready_file_input_config,
@@ -310,7 +312,7 @@ class TestCompilePreamble:
 
     def test_utility_modules_evicted_between_calls(self, tmp_path, monkeypatch):
         """Ensure utility modules are re-imported fresh each call, not cached."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -328,7 +330,7 @@ class TestCompilePreamble:
 
     def test_raises_preamble_error_on_name_error(self, tmp_path, monkeypatch):
         """Broken utility code should raise PreambleError, not crash the server."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -340,7 +342,7 @@ class TestCompilePreamble:
 
     def test_raises_preamble_error_on_syntax_error(self, tmp_path, monkeypatch):
         """Utility file with syntax error should raise PreambleError."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -352,7 +354,7 @@ class TestCompilePreamble:
 
     def test_preamble_error_includes_utility_file_path(self, tmp_path, monkeypatch):
         """Error message should reference the utility file, not just '<string>'."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -2423,7 +2425,7 @@ class TestExecuteGraphErrorPaths:
     def test_broken_preamble_only_errors_preamble_nodes(self, tmp_path, monkeypatch):
         """A broken preamble should only error transform/live-switch nodes,
         not data sources that don't use preamble bindings."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Create a utility module with a NameError
         util_dir = tmp_path / "utility"
@@ -3616,7 +3618,7 @@ class TestPreviewCacheInvalidation:
         _widen_sandbox_root,
     ):
         """Changing imported utility code must not serve stale preview rows."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         utility_dir = tmp_path / "utility"
         utility_dir.mkdir()
         (utility_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -3655,7 +3657,7 @@ class TestPreviewCacheInvalidation:
         from haute.executor import commit_prepared_data_output, prepare_data_output
         from haute.graph_utils import PipelineGraph
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         utility_dir = tmp_path / "utility"
         utility_dir.mkdir()
         (utility_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -3772,7 +3774,7 @@ class TestPreambleLockConcurrency:
 
         import haute.executor as executor
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
 
         blocker = types.ModuleType("preamble_blocker")
@@ -3813,11 +3815,11 @@ class TestPreambleLockConcurrency:
             finally:
                 fast_done.set()
 
-        slow_thread = threading.Thread(target=compile_slow)
+        slow_thread = context_thread(compile_slow)
         slow_thread.start()
         assert blocker.started.wait(2), "slow compile never reached preamble exec"
 
-        fast_thread = threading.Thread(target=compile_fast)
+        fast_thread = context_thread(compile_fast)
         fast_thread.start()
         assert not fast_done.wait(0.2), "non-import cache miss bypassed active preamble exec"
 
@@ -3841,7 +3843,7 @@ class TestPreambleLockConcurrency:
 
         import haute.executor as executor
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
         source = "HOT_HIT = 1\n"
         ns_first = _compile_preamble(source, execution_fingerprint="pinned-hot")
@@ -3861,7 +3863,7 @@ class TestPreambleLockConcurrency:
                 finished.set()
 
         try:
-            thread = threading.Thread(target=compile_worker)
+            thread = context_thread(compile_worker)
             thread.start()
             assert finished.wait(1), "hot cache hit waited on the import-state lock"
             thread.join(timeout=1)
@@ -3900,7 +3902,7 @@ class TestPreambleLockConcurrency:
 
         import haute.executor as executor
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline_a = tmp_path / "pipeline_a"
         pipeline_b = tmp_path / "pipeline_b"
         for pipeline_dir, value in ((pipeline_a, "A"), (pipeline_b, "B")):
@@ -3951,11 +3953,11 @@ class TestPreambleLockConcurrency:
             except BaseException as exc:
                 errors.append(exc)
 
-        thread_a = threading.Thread(target=compile_a)
+        thread_a = context_thread(compile_a)
         thread_a.start()
         assert a_waiting.wait(2), "first compile never reached utility eviction"
 
-        thread_b = threading.Thread(target=compile_b)
+        thread_b = context_thread(compile_b)
         thread_b.start()
         assert b_started.wait(2)
         release_a.set()
@@ -3976,7 +3978,7 @@ class TestPreambleLockConcurrency:
         """One preview request should hash utility files once via a shared memo."""
         import haute.executor as executor
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
         executor._preview_cache.clear()
 
@@ -4036,9 +4038,8 @@ class TestPreambleLockConcurrency:
         Real failure: intermittent KeyError in importlib._bootstrap when
         two requests hit _compile_preamble simultaneously.
         """
-        import threading
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text("")
@@ -4054,7 +4055,7 @@ class TestPreambleLockConcurrency:
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=compile_worker) for _ in range(5)]
+        threads = [context_thread(compile_worker) for _ in range(5)]
         for t in threads:
             t.start()
         for t in threads:
@@ -4069,7 +4070,7 @@ class TestPreambleLockConcurrency:
         """A compile never edits sys.path, so repeated preview clicks cannot grow it."""
         import sys
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         before = list(sys.path)
 
         _compile_preamble("X = 1\n")
@@ -4476,7 +4477,7 @@ class TestPreambleFailureIsolation:
         Real failure: user breaks utility code, entire pipeline shows
         errors including data sources, blocking all debugging.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -4515,7 +4516,7 @@ class TestPreambleFailureIsolation:
     def test_broken_preamble_leaves_the_live_switch_alone(self, tmp_path, monkeypatch):
         """A Source Switch runs no code, so a broken preamble does not fail it; the nodes
         that run code report the preamble (TestLiveSwitch pins them beside a switch)."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -4575,7 +4576,7 @@ class TestPreambleFailureIsolation:
         Real failure: sink nodes display 'preamble error' when they
         have nothing to do with preamble code, confusing the user.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()

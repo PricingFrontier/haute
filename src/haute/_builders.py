@@ -16,7 +16,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
@@ -89,6 +88,7 @@ from haute._polars_steps import (
     step_refusal,
 )
 from haute._price_contour import price_contour
+from haute._project_context import current_project
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, parse_combined_factor_bounds
 from haute._rating import (
     _apply_rating_step_outputs,
@@ -462,27 +462,6 @@ def _explore_columns(config: dict[str, Any]) -> _ColumnContract:
     return _passthrough_columns(config)
 
 
-def _configured_pipeline_dir() -> Path | None:
-    """Return the project's configured pipeline directory, or ``None``.
-
-    This is the pipeline-directory candidate used by the cache-build route and
-    by the shared retained-input helpers. It is the directory holding the
-    pipeline's ``main.py``, taken from ``haute.toml [project].pipeline`` under
-    the execution-scoped project root.
-
-    Read through the core, deploy-safe :mod:`haute._project` reader (stdlib
-    ``tomllib`` only) rather than ``routes._helpers.pipeline_dir`` so this
-    builder never drags the FastAPI route layer into the executor/deploy import
-    path.  ``None`` when there is no ``haute.toml`` or no ``[project].pipeline``,
-    so resolution falls back to the execution-scoped project root.
-    """
-    from haute._path_resolution import current_runtime_project_root
-    from haute._project import _toml_configured_pipeline
-
-    configured = _toml_configured_pipeline(current_runtime_project_root())
-    return configured.parent if configured is not None else None
-
-
 def load_external_file_object(config: Mapping[str, Any]) -> object:
     """Load a Load File node's object exactly as the node does when it runs.
 
@@ -491,7 +470,7 @@ def load_external_file_object(config: Mapping[str, Any]) -> object:
     dry-run calls this to prove a Load File it writes, since a node with empty
     steps passes its input through and never loads the file.
     """
-    return load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
+    return load_external_object_from_config(config, base_dir=current_project().pipeline_dir)
 
 
 def _resolve_runtime_data_path(data_path: str) -> str:
@@ -508,14 +487,14 @@ def _resolve_runtime_data_path(data_path: str) -> str:
         return data_path
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
+    from haute._path_resolution import resolve_node_input_path
 
-    project_root = current_runtime_project_root()
+    project_root = current_project().root
 
     resolved = str(
         resolve_node_input_path(
             data_path,
-            pipeline_dir=_configured_pipeline_dir(),
+            pipeline_dir=current_project().pipeline_dir,
             project_root=project_root,
         )
     )
@@ -587,7 +566,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
         return resolve_api_input_from_config(
             _config,
-            base_dir=_configured_pipeline_dir(),
+            base_dir=current_project().pipeline_dir,
             profile=_profile,
             columns=projected.columns,
             port_columns=_port_columns,
@@ -626,7 +605,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return project_source_scan(
             resolve_data_input(
                 _config,
-                base_dir=_configured_pipeline_dir(),
+                base_dir=current_project().pipeline_dir,
                 profile=_profile,
                 schema_tier_node=_node_id if _schema_only else None,
             ),
@@ -1242,7 +1221,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     ):
         # A model file scores under the contract saved beside it, so planning
         # reads the same contract the scorer binds.
-        discovered = model_contract_path(model_source, None, _configured_pipeline_dir())
+        discovered = model_contract_path(model_source, None, current_project().pipeline_dir)
         feature_contract_path = str(discovered) if discovered is not None else None
     if isinstance(feature_contract_path, str) and feature_contract_path:
         # Stat-gated cache: this planner runs during graph construction on
@@ -1319,7 +1298,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     # loads exactly the model the scorer built for this node loads, from the
     # node's own destination.
     scoring_model = load_scoring_model(
-        model_source, model_score_task(config), base_dir=_configured_pipeline_dir()
+        model_source, model_score_task(config), base_dir=current_project().pipeline_dir
     )
     if scoring_model.feature_names:
         return _model_score_inputs(
@@ -1358,7 +1337,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     from haute._model_scorer import ModelScorer
     from haute._model_source import scoring_contract_path
 
-    base_dir = _configured_pipeline_dir()
+    base_dir = current_project().pipeline_dir
     required_output_columns = projection.model_score_required_output_columns(
         config,
         ctx.required_output_columns,

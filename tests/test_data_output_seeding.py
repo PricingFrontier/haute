@@ -19,9 +19,9 @@ from polars.testing import assert_frame_equal
 
 from haute._node_snapshots import NodeSnapshotStore
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
-from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
 from haute.routes import pipeline as pipeline_route
+from tests._project import project_app, use_project
 from tests.test_training_seeding import _MODELLING, _counting_builds, _train
 
 _ROWS = 120
@@ -29,8 +29,7 @@ _ROWS = 120
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
-    set_project_root(haute_scratch)
+    use_project(haute_scratch)
     for profile in ("LAZY_SINK", "TRAINING"):
         monkeypatch.setenv(f"HAUTE_{profile}_MEMORY_LIMIT_MB", "1024")
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
@@ -137,7 +136,7 @@ def _inline_worker(monkeypatch: pytest.MonkeyPatch, child: Any = None) -> list[A
 def _write(monkeypatch: pytest.MonkeyPatch, graph: dict[str, Any], **extra: Any) -> _Write:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     calls = _counting_builds(monkeypatch)
     response = TestClient(app, raise_server_exceptions=False).post(
@@ -383,7 +382,7 @@ def test_terminated_data_output_worker_leaves_no_capture_staging(
 
     def staged_then_killed(*args: Any) -> Any:
         handoff = args[-2]
-        store = NodeSnapshotStore(handoff.project_root)
+        store = NodeSnapshotStore(handoff.store_root)
         resolver = DataPointResolver(
             PipelineGraph.model_validate(graph), source="batch", store=store
         )

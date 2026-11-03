@@ -180,11 +180,11 @@ platforms, and on Windows with long paths on, nothing is renamed.
    `source_cache_identity`, `source_signature`, direct Parquet resolution, data points and
    the RAM estimate), the engine's canonical graph (`canonical_dataframe_execution_graph`)
    and runtime-input fingerprint, the node builders, the standalone sidecar run, the
-   standalone `Pipeline.run()` and `score()` (which scope the runtime root from the pipeline's
-   file through `standalone_project_root_scope` unless an execution already scoped one: the
-   nearest Haute project (`haute.toml`) holding the file, whatever the working directory;
-   a script in no project keeps the current project if it holds the file, else its own
-   folder), the explicit snapshot build, the preview request's path check and the API Input's schema
+   standalone `Pipeline.run()`, `score()` and a configured node called directly (which run
+   in the project `standalone_project_scope` installs from the pipeline's file unless one
+   is installed already: the nearest Haute project (`haute.toml`) holding the file,
+   whatever the working directory, or the file's own folder in no project; a pipeline with
+   no defining file runs in the project holding the session's working directory), the explicit snapshot build, the preview request's path check and the API Input's schema
    inference, so one locator names one file at every seam. Deploy bundles a Data Input's
    file by its own rule, the pipeline directory first ([deploy](../deploy/low-level.md)).
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
@@ -192,8 +192,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    No cache-mode field is stored — validation rejects a config still carrying the removed
    `cacheMode` field as inactive; nothing is normalised or migrated.
 4. Direct Parquet resolution anchors the configured path by the anchoring rule
-   (`anchor_config_source_path`; a pipeline directory outside the runtime project is its
-   own root, as `_infer_project_root` treats a pipeline outside the selected project) and
+   (`anchor_config_source_path`; a pipeline directory outside the current project is its
+   own root) and
    returns the registry's `scan_parquet` lazy scan without creating or consulting a source
    snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a

@@ -8,6 +8,7 @@ import threading
 import pytest
 
 from haute._lru_cache import LRUCache
+from haute._project_context import context_thread
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -483,7 +484,7 @@ class TestConcurrency:
             except Exception as exc:
                 errors.append(exc)
 
-        threads = [threading.Thread(target=writer, args=(t * 100,)) for t in range(5)]
+        threads = [context_thread(writer, args=(t * 100,)) for t in range(5)]
         for t in threads:
             t.start()
         for t in threads:
@@ -515,7 +516,7 @@ class TestConcurrency:
             except Exception as exc:
                 errors.append(exc)
 
-        threads = [threading.Thread(target=worker, args=(t,)) for t in range(4)]
+        threads = [context_thread(worker, args=(t,)) for t in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -534,7 +535,7 @@ class TestConcurrency:
             for i in range(start, start + 50):
                 cache.put(i, i)
 
-        threads = [threading.Thread(target=writer, args=(t * 50,)) for t in range(4)]
+        threads = [context_thread(writer, args=(t * 50,)) for t in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -867,8 +868,8 @@ class TestEvictWhere:
             except Exception as exc:
                 errors.append(exc)
 
-        threads = [threading.Thread(target=writer, args=(t * 100,)) for t in range(4)]
-        threads.append(threading.Thread(target=evictor))
+        threads = [context_thread(writer, args=(t * 100,)) for t in range(4)]
+        threads.append(context_thread(evictor))
         for t in threads:
             t.start()
         for t in threads:

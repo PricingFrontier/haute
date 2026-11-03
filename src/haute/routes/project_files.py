@@ -29,6 +29,7 @@ from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._project_layout import (
     LOCAL_FOLDERS,
     PIPELINE_FILES_SUBFOLDERS,
@@ -36,7 +37,6 @@ from haute._project_layout import (
     pipeline_files_folder,
     versioned_name,
 )
-from haute._sandbox import _get_project_root
 from haute.hosted import databricks_app_environment
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import LedgerCapture, capture_save_in_ledger
@@ -184,7 +184,7 @@ def _state(states: dict[str, FileState], project_relative: str) -> FileState | N
 
 
 def _list_folder(place_name: ProjectFilePlace, path: str) -> ProjectFolderResponse:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     folder = _target(project_root, place_name, path)
     place = folder.place
     at_root = folder.relative == ""
@@ -301,7 +301,7 @@ class _WritePlan:
 
 def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -> _WritePlan:
     """Everything a write can check before its body is read."""
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = _writable_file_target(project_root, place, path)
     display = target.project_relative
     if target.place.name == "local" and databricks_app_environment() is not None:
@@ -392,7 +392,7 @@ def _check_staging(project_root: Path, relative: str) -> None:
 def _publish_write(
     plan: _WritePlan, staging: Path, replace_revision: str | None
 ) -> ProjectFileWriteResponse:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = plan.target
     display = target.project_relative
     if target.place.name == "pipeline" and read_working_branch(project_root) != plan.branch:
@@ -481,7 +481,7 @@ async def write_project_file(
                 400, "length_mismatch", f"The upload of {display} ended before it was complete."
             )
         return await project_write(
-            _get_project_root().resolve(), lambda: _publish_write(plan, staging, replace_revision)
+            current_project().root, lambda: _publish_write(plan, staging, replace_revision)
         )
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
@@ -492,7 +492,7 @@ async def write_project_file(
 
 
 def _download_target(place: ProjectFilePlace, path: str) -> Path:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = _file_target(project_root, place, path)
     if not target.path.is_file():
         raise _refusal(404, "file_missing", f"{target.project_relative} doesn't exist.")
@@ -513,7 +513,7 @@ async def download_project_file(place: ProjectFilePlace, path: str) -> FileRespo
 
 
 def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDeleteResponse:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = _writable_file_target(project_root, place, path)
     display = target.project_relative
     _target(project_root, target.place.name, target.relative)
@@ -548,6 +548,4 @@ async def delete_project_file(
     place: ProjectFilePlace, path: str, revision: str
 ) -> ProjectFileDeleteResponse:
     """Delete one file, if it is still the revision the analyst saw."""
-    return await project_write(
-        _get_project_root().resolve(), lambda: _delete(place, path, revision)
-    )
+    return await project_write(current_project().root, lambda: _delete(place, path, revision))

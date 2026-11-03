@@ -195,7 +195,8 @@ A content signature proved under a settled native revision is also recorded on d
 new process reuses it instead of reading the whole file again. One record per resolved source
 path lives at `<project root>/.haute_cache/source_proofs/<name>.json`, where `<name>` is the
 SHA-256 hex of `os.path.normcase(<resolved path>)` and the project root is
-`haute._sandbox._get_project_root()`, read through `_source_proof._proof_record_root()`.
+the current project's (`haute._project_context.current_project().root`), read through
+`_source_proof._proof_record_root()`.
 
 A record (`schema_version` 2) is `canonical_json` bytes written through
 `_file_ops.atomic_write_bytes`. It has exactly these keys at each level; a missing or extra

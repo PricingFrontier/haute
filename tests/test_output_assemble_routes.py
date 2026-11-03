@@ -27,11 +27,12 @@ from haute._interactive_workers import (
     InteractiveWorkerRemoteError,
     InteractiveWorkerTimeoutError,
 )
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.routes._timeouts import BlockingWorkTimeoutError
 from haute.schemas import NodeResult
+from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots
 from tests.test_output_nested_roundtrip import (
     _FIXTURE,
@@ -69,18 +70,18 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Path]]:
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
 
-    from haute.server import app
+    app = project_app()
 
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
     yield TestClient(app), data_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -263,7 +264,7 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
             background_task,
         )
 
-    from haute.server import app
+    app = project_app()
 
     with (
         patch(

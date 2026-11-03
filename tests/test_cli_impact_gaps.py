@@ -18,6 +18,7 @@ import pytest
 
 from haute.cli._helpers import TransportInfo
 from haute.cli._impact import ImpactConfig, _impact_databricks, handle_impact
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,7 +31,7 @@ def _write_min_project(
     """Minimal haute.toml + impact dataset rooted at *tmp_path*."""
     import polars as pl
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     toml = (
         '[project]\nname = "t"\npipeline = "main.py"\n'
         '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'

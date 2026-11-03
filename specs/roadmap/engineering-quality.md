@@ -151,8 +151,10 @@ supervision, timeout, memory-limit and crash-classification tests pass
 against it.
 
 **Dependencies:** None. The optimiser's input estimate already runs on the
-warm interactive worker pool. `PCFG-R04` and `API-R03` wait on it in the
-[delivery plan](delivery-plan.md), so the worker request format changes once.
+warm interactive worker pool. `API-R03` waits on it in the
+[delivery plan](delivery-plan.md). Every request of the three mechanisms already
+carries the submitting call's project, which the worker installs for the request; the
+unified format carries it the same way.
 
 **Evidence:** `src/haute/_worker_isolation.py::run_isolated_worker`;
 `src/haute/_interactive_workers.py::InteractiveWorkerPool`;

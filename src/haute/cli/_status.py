@@ -10,10 +10,10 @@ Split into:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import click
 
+from haute._project_context import current_project
 from haute.cli._helpers import resolve_model_name
 
 
@@ -35,7 +35,7 @@ def handle_status(config: StatusConfig) -> None:
     """
     from haute.deploy._config import DatabricksConfig, DeployConfig
 
-    toml_path = Path.cwd() / "haute.toml"
+    toml_path = current_project().root / "haute.toml"
     toml_exists = toml_path.exists()
 
     # Resolve model name: CLI > TOML > error with hint.

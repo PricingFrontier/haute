@@ -22,9 +22,10 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml` (`haute_toml` for an automated project, `workbench_haute_toml` for a workbench one), `.env.example` (`env_example`, `app_env_example`), `connections.toml` (`connections_toml`), CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes) and a workbench project's for 3 providers (`workbench_ci_files`, likewise), the CI secrets a target or an app host needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), whose of the two a project's CI reads (`ci_credentials`), starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
-| `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
+| `src/haute/_project.py` | Project-root discovery from an explicit start (`get_project_root(start)`, the walk-up `src/haute/_project_context.py::resolve_project` uses; `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file(path)`, 4-tier fallback in a folder; the CLI passes the shell's working directory when no path is given). |
+| `src/haute/_project_context.py` | The project a call works in. `ProjectContext` (frozen, slotted, picklable: the absolute, resolved `root`; `ProjectContext.at(root)` takes the root as given; the `pipeline_dir` property reads the root's `haute.toml` when used: the folder of `[project].pipeline`, or the root without one, a malformed file or a pipeline outside the root raising `ConfigError`), `resolve_project(start)` (the one resolver: `get_project_root(start)` then `at`), `project_scope(context)` (a context manager over one `ContextVar`, the one accessor's installer) and `current_project()` (the installed context, `NoProjectContextError` when none; `installed_project()`, for an entry point that installs its own, reports that nothing is installed instead of raising), `standalone_project_scope(source_file)` and `project_holding(folder)` (a standalone run's or a file-given CLI command's project: an installed one, else the project holding the file's folder, else that folder; no file: the working directory, the one entry-point read of it), `graph_pipeline_dir(graph)` (the folder of `graph.source_file`, a relative one under the project root), `context_thread` (a `threading.Thread` running its target in a copy of the starting context) and `ProjectContextMiddleware` (ASGI, installs an app's context for every HTTP request, websocket and lifespan). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
-| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
+| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding and `src/haute/_project_context.py::ProjectContext.pipeline_dir`. |
 
 ## Key types and data structures
 
@@ -410,9 +411,10 @@ the executor, codegen and projection), looks up and invokes the registered callb
 `KeyError` rather than silently falling back to opaque, so a new node type added without a
 contract registration is caught immediately.
 
-**Project/pipeline resolution (`_project.py`).** `resolve_pipeline_file(path)`: `None` →
-`_resolve_default_in(cwd)`; an existing directory → the same fallback scoped to it; an
-existing file → resolved as-is, no discovery; a non-existent path → `FileNotFoundError`.
+**Project/pipeline resolution (`src/haute/_project.py`).** `resolve_pipeline_file(path)`: an
+existing directory → `_resolve_default_in` scoped to it (the CLI passes the shell's working
+directory when no path is given); an existing file → resolved as-is, no discovery; a
+non-existent path → `FileNotFoundError`.
 `_resolve_default_in` tries, in order: `[project].pipeline` from `haute.toml` (existence and
 "looks like a pipeline" both checked — either failure raises `FileNotFoundError` naming the
 configured path, so a typo never silently falls through to auto-discovery); a root-level
@@ -870,6 +872,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
 
 ## Error handling
 
+- **`NoProjectContextError`** (`haute._project_context`, a `HauteError`) — a call that needs
+  the project made with none installed: it names `project_scope` and the CLI and server as
+  the ways to install one, and is never answered from the working directory.
+- **`ConfigError`** from `resolve_project` — no `haute.toml` at or above the start, or one
+  outside a git repository (`haute serve` prints it and exits 1), or a malformed
+  `haute.toml`.
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; a sidecar
   that is not UTF-8, naming the file and the first byte that is not; a decorator keyword
   beside `config=` and `contract=` on a sidecar-backed node, naming the node and the
@@ -938,6 +946,35 @@ it on the reading node instead of aborting the walk, and every other run propaga
 
 ## Testing
 
+- `tests/test_project_context.py` verifies the project context: `resolve_project` walking up
+  to the first `haute.toml` inside git and its `ConfigError` outside one, the pipeline folder
+  from `[project].pipeline` and the root without it, `current_project()` raising
+  `NoProjectContextError` with nothing installed and never reading the working directory,
+  `project_scope` nesting and restoring, `context_thread` running in the starting context,
+  `standalone_project_scope` (an installed project wins; else the file's project; else its
+  folder; no file: the working directory's project), a standalone `run()` and a configured
+  node called directly reading a relative path from the file's project with the working
+  directory elsewhere, an app built for project A serving A after the test installs and
+  changes directory to project B, two apps for two projects in sequence each listing their
+  own pipelines without a cache reset, `haute serve` outside a project exiting 1 with the
+  resolver's message, the uvicorn factory refusing without `HAUTE_PROJECT_ROOT`, interactive
+  and isolated worker requests running in the submitting call's project with the worker's
+  working directory elsewhere and two projects' requests on one warm worker each reading
+  their own (their `utility` too, A then B then A with a cached preamble and a deferred
+  import), a job thread reading its request's project, a worker request after `PUT
+  /api/mlflow/settings` using the new destination, and `validate_project_path` anchoring a
+  relative path at the root rather than the working directory.
+- `tests/test_project_context_lint.py` holds the ratchets, each an exact list of allowed
+  sites with the reason: no `os.chdir` or `monkeypatch.chdir` in the tests apart from
+  `tests._project.use_project` (which installs a test's project and runs the test in its
+  folder, as `haute serve` runs in its project's root), the harness (a strict test runs in
+  its project; every test ends where it started) and tests of code that itself changes or
+  reads the working directory (the spawned interpreter's relative path, the Databricks
+  bootstrap), and
+  no `Path.cwd()` / `os.getcwd()` in `src/haute` apart from the CLI group's one read of the
+  shell's directory, the Polars spill folder fixed at import, the standalone entry point for
+  a pipeline with no defining file (`standalone_project_scope`) and the underwriter app's
+  guard that a release never replaces the working directory.
 - `tests/test_column_contracts_adoption.py` verifies builder contract adoption, parser/executor boundary enforcement and the boundary checks' messages, a draft banding factor passing through without a contract error, codegen metadata, model-score exceptions, and overhead benchmark.
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.

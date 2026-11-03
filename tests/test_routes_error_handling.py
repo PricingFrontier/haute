@@ -25,6 +25,8 @@ import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
+from tests._project import project_app, use_project
+
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
 
 
@@ -36,9 +38,9 @@ _SAFE_DETAIL = "Operation failed. Check the server logs for details."
 @pytest.fixture()
 def project_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """TestClient rooted at a clean temp project directory."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text('import haute\npipeline = haute.Pipeline("p")\n')
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -135,7 +137,7 @@ class TestSubmodelCreateValueErrorSanitisation:
 
     @pytest.fixture()
     def _isolated_cwd(self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        monkeypatch.chdir(haute_scratch)
+        use_project(haute_scratch)
         return haute_scratch
 
     def _two_node_graph(self) -> dict:
@@ -169,7 +171,7 @@ class TestSubmodelCreateValueErrorSanitisation:
         self,
         _isolated_cwd: Path,
     ) -> None:
-        from haute.server import app
+        app = project_app()
 
         client = TestClient(app, raise_server_exceptions=False)
         (_isolated_cwd / "main.py").write_text(
@@ -552,7 +554,9 @@ class TestApiWsNotFoundReturnsJson:
         """
         from fastapi.testclient import TestClient
 
-        from haute.server import STATIC_DIR, app
+        from haute.server import STATIC_DIR
+
+        app = project_app()
 
         if not STATIC_DIR.exists():
             pytest.skip("No frontend build present — SPA serving not active")

@@ -35,6 +35,7 @@ from haute.modelling._feature_contract import (
     load_contract,
     save_contract,
 )
+from tests._project import use_project
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -473,7 +474,7 @@ def test_pdp_ranking_preserves_native_prediction_order(
     from haute.modelling._algorithms import CatBoostAlgorithm
     from haute.modelling._training_job import TrainingJob
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     features = ["first", "amount"]
     display_order = ["amount", "first"]
     n = 80

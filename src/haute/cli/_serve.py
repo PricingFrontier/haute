@@ -36,6 +36,7 @@ from haute._local_security import (
     ensure_local_session_token_env,
 )
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
 from haute.cli._polars_startup import POLARS_SETTINGS
 
@@ -158,6 +159,8 @@ class ServeConfig:
 
     port: int
     no_browser: bool
+    #: The project the server serves, resolved once by the command.
+    project_root: Path
     host: str = "localhost"
 
 
@@ -480,7 +483,8 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
         )
     try:
         uvicorn.run(
-            "haute.server:app",
+            "haute.server:create_app_from_environment",
+            factory=True,
             host=config.host,
             port=config.port,
             reload=True,
@@ -555,7 +559,8 @@ def _run_prod_mode(config: ServeConfig) -> None:
     if not config.no_browser:
         _open_browser_after_backend_ready(_http_url(config), config.host, config.port)
     uvicorn.run(
-        "haute.server:app",
+        "haute.server:create_app_from_environment",
+        factory=True,
         host=config.host,
         port=config.port,
     )
@@ -573,6 +578,10 @@ def handle_serve(config: ServeConfig) -> None:
     """
     _require_loopback_host(config)
     _configure_trusted_hosts(config)
+    from haute.server import PROJECT_ROOT_ENV
+
+    # Uvicorn builds the app in its own process (the reloader's child) from this.
+    os.environ[PROJECT_ROOT_ENV] = str(config.project_root)
     logger.info("polars_settings", **POLARS_SETTINGS)
     frontend_dir = _detect_dev_frontend_dir()
     if frontend_dir is not None:
@@ -601,13 +610,25 @@ def serve(host: str | None, port: int, no_browser: bool) -> None:
     Host resolution precedence (first match wins):
 
     1. ``--host`` passed on the CLI.
-    2. ``[server] host = "..."`` in ``haute.toml`` at the current
-       working directory.
+    2. ``[server] host = "..."`` in the project's ``haute.toml``.
     3. ``localhost`` (loopback-only default).
 
     Whichever source wins, non-loopback values are rejected before startup.
     """
+    from haute._project_context import resolve_project
+    from haute.errors import ConfigError
+
+    # The server serves the project holding the working directory, and none outside one.
+    try:
+        project = resolve_project(current_project().root)
+    except ConfigError as exc:
+        click.echo(f"Error: {exc.message}. Run 'haute serve' inside a Haute project.", err=True)
+        raise SystemExit(1) from exc
+    # Haute reads the project from its context; the user's pipeline code reads a relative
+    # path from the working directory, so the server runs in the project's root and both
+    # name the same file wherever the command was started.
+    os.chdir(project.root)
     if host is None:
-        host = _load_toml_server_host(Path.cwd()) or "localhost"
-    config = ServeConfig(host=host, port=port, no_browser=no_browser)
+        host = _load_toml_server_host(project.root) or "localhost"
+    config = ServeConfig(host=host, port=port, no_browser=no_browser, project_root=project.root)
     handle_serve(config)

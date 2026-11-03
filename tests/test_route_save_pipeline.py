@@ -23,6 +23,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, Submodel
 from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService, _OnDisk
 from haute.schemas import SavePipelineRequest
+from tests._project import project_app, use_project
 from tests.conftest import current_source_revision, make_output_config
 from tests.conftest import make_edge as _make_edge
 
@@ -540,7 +541,7 @@ class TestValidateScenarioExpanderGridSize:
         step_count: float | None,
         message: str,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         service = SavePipelineService(tmp_path)
         main = tmp_path / "main.py"
 
@@ -667,7 +668,7 @@ class TestValidateDeclaredConfigKeys:
     def test_a_refused_save_leaves_every_existing_file_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "main.py").write_text(
             'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
         )
@@ -919,7 +920,7 @@ class TestSaveSimpleGraph:
         from haute.executor import execute_graph
         from haute.parser import parse_pipeline_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         source = _make_node(
             "source",
             "source",
@@ -1491,8 +1492,8 @@ class TestRemoveStaleConfigFiles:
 class TestSaveEndpointIntegration:
     @pytest.fixture()
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        monkeypatch.chdir(tmp_path)
-        from haute.server import app
+        use_project(tmp_path)
+        app = project_app()
 
         return TestClient(app)
 
@@ -2391,8 +2392,8 @@ def _make_graph_payload(extra_node_label: str | None = None) -> dict:
 class TestStaleSavePrecondition:
     @pytest.fixture()
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        monkeypatch.chdir(tmp_path)
-        from haute.server import app
+        use_project(tmp_path)
+        app = project_app()
 
         return TestClient(app)
 
@@ -2771,7 +2772,7 @@ class TestStaleSavePrecondition:
         # Keep the static calling convention so args[4] really is ``touched``.
         monkeypatch.setattr(SavePipelineService, "_write_sidecar", staticmethod(_sidecar_wrapper))
 
-        from haute.server import app
+        app = project_app()
 
         no_raise_client = TestClient(app, raise_server_exceptions=False)
         resp_edit = no_raise_client.post(

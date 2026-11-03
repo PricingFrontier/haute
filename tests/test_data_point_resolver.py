@@ -30,6 +30,7 @@ from haute._node_snapshots import (
 )
 from haute._source_cache import SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 _TIMEOUT = 60.0
@@ -107,7 +108,7 @@ def _graph(project: Path, *, source_code: str = "", join_code: str | None = None
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame(
         {
@@ -128,8 +129,9 @@ def _capture(
     source: str = "live",
 ) -> NodeSnapshotPublication:
     """Materialise one node's output as a run would and publish it."""
+    from haute._project_context import graph_pipeline_dir
     from haute.execution import execute_lazy_graph
-    from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+    from haute.executor import _build_node_fn, _compile_preamble
 
     resolver = DataPointResolver(graph, source=source, store=store)
     identity = resolver.node_output_slot(node_id).identity(resolver.node_output_signature(node_id))
@@ -137,7 +139,7 @@ def _capture(
         resolver.graph,
         _build_node_fn,
         target_node_id=node_id,
-        preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+        preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph))
         or None,
         source=source,
         enforce_contracts=True,

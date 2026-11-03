@@ -208,7 +208,7 @@ the names earlier nodes took; without it each keeps its name and gets as `collis
 message of the first violation of its own name (duplicate, reserved, built-in or
 support-code collision) naming it. The identities are resolved for the resolved names. With
 a naming context the response's `violations` is
-`name_violations_payload(name_violations(graph, utility_reader(pipeline_dir(), cwd)))` over
+`name_violations_payload(name_violations(graph, utility_reader(project.pipeline_dir, project.root)))` over
 the graph after the nodes are applied, the executable-name and support-code violations, and
 without it `null`. Resolution without a
 naming context is pure and performs no project I/O; with one it reads the utility files the

@@ -41,7 +41,7 @@ from haute._input_preparation import snapshot_backed_inputs
 from haute._node_config_recovery import reconcile_config
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._trace_enrichment import detect_row_lineage_type
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
@@ -75,6 +75,7 @@ from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.node_data import node_data_service
 from haute.schemas import EditorIdentityRequestNode
+from tests._project import project_app, use_project
 from tests._source_files import source_files
 from tests._workbench_helpers import form_table, without_form_tables, workbench_project
 from tests.conftest import build_test_api_input_snapshots, make_output_config
@@ -513,13 +514,12 @@ def _edge(source: str, target: str, port: str | None = None) -> GraphEdge:
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """One temporary project for the generated modules and the input snapshots."""
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     try:
         yield tmp_path
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 def _pricing(project: Path, node_type: NodeType) -> PipelineGraph:
@@ -1118,7 +1118,8 @@ def test_a_misfit_sample_answers_the_preview_route_with_422(
     from fastapi.testclient import TestClient
 
     from haute._interactive_workers import shutdown_interactive_worker_pool
-    from haute.server import app
+
+    app = project_app()
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
     monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")

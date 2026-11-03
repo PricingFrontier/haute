@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, NotRequired, cast
 
 import numpy as np
 
+from haute._project_context import context_thread, graph_pipeline_dir
 from haute.errors import (
     ConflictError,
     InsufficientMemoryError,
@@ -66,7 +67,6 @@ from haute._polars_utils import (
     current_streaming_chunk_size,
     streaming_collect,
 )
-from haute._sandbox import _get_project_root
 from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
 from haute._step_progress import StepProgress
 from haute._types import (
@@ -1255,7 +1255,7 @@ class OptimiserSolveService:
                 execution_token=execution_token,
             )
 
-        thread = threading.Thread(target=_setup_background, daemon=True)
+        thread = context_thread(_setup_background, daemon=True)
         try:
             start_job_thread(thread)
         except Exception as exc:
@@ -1544,7 +1544,6 @@ class OptimiserSolveService:
                 build_and_solve,
                 SessionSolveRequest(
                     session_id=job_id,
-                    project_root=str(_get_project_root()),
                     node_id=body.node_id,
                     mode=mode,
                     config=dict(config),
@@ -1837,7 +1836,6 @@ class OptimiserSolveService:
                         node_id: frozenset(columns)
                         for node_id, columns in required_columns_by_node.items()
                     },
-                    project_root=str(_get_project_root()),
                     seed_plan=handoff,
                     output_path=output_path,
                     scratch_dir=scratch_dir,
@@ -2780,7 +2778,6 @@ class OptimiserSolveService:
                             node_id: frozenset(columns)
                             for node_id, columns in required_columns_by_node.items()
                         },
-                        project_root=str(_get_project_root()),
                         seed_plan=handoff,
                         scratch_dir=scratch_dir,
                     ),
@@ -2865,7 +2862,7 @@ class OptimiserSolveService:
                         exc_info=True,
                     )
 
-        thread = threading.Thread(target=_auto_range_background, daemon=True)
+        thread = context_thread(_auto_range_background, daemon=True)
         try:
             start_job_thread(thread)
         except Exception as exc:
@@ -3123,7 +3120,6 @@ class OptimiserSolveService:
             from haute.executor import (
                 _build_node_fn,
                 _compile_preamble,
-                _pipeline_dir,
                 _resolve_batch_scenario,
             )
 
@@ -3133,14 +3129,14 @@ class OptimiserSolveService:
                 if preamble_fingerprint is not None
                 else preamble_execution_fingerprint(
                     body.graph.preamble or "",
-                    pipeline_dir=_pipeline_dir(body.graph),
+                    pipeline_dir=graph_pipeline_dir(body.graph),
                 )
             )
 
             preamble_ns = (
                 _compile_preamble(
                     body.graph.preamble or "",
-                    pipeline_dir=_pipeline_dir(body.graph),
+                    pipeline_dir=graph_pipeline_dir(body.graph),
                     execution_fingerprint=pinned,
                 )
                 or None
@@ -3700,7 +3696,7 @@ class OptimiserSolveService:
                 with solver_worker_context():
                     _solve_background()
 
-        thread = threading.Thread(target=_solve_background_in_worker_context, daemon=True)
+        thread = context_thread(_solve_background_in_worker_context, daemon=True)
         try:
             start_job_thread(thread)
         except Exception as exc:

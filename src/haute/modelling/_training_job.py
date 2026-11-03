@@ -3329,7 +3329,7 @@ class TrainingJob:
         """Log this scripted run to MLflow as a contracted candidate run."""
         import uuid
 
-        from haute._sandbox import _get_project_root
+        from haute._project_context import current_project
         from haute.modelling._candidate_run import (
             CandidateArtifacts,
             build_candidate_run,
@@ -3376,7 +3376,7 @@ class TrainingJob:
                 job_id=uuid.uuid4().hex,
                 node_label=self.name,
                 training_identity_sha256=self.training_identity_sha256,
-                project_root=_get_project_root(),
+                project_root=current_project().root,
             ),
             algorithm=self.algorithm,
             weight=self.weight or "",

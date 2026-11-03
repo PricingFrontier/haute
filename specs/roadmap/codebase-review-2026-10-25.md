@@ -208,20 +208,16 @@ puts it in front of the owner because of what it can cost in production:
 | Tests, scripts and CI | ENG-6 | `ENGQ-R01` |
 | Tests, scripts and CI | ENG-17 | `ENGQ-R11` (Decision) |
 
-Already tracked before this review and not repeated: the `cwd`-captured sandbox
-root used by the deploy modules, the underwriter app and the server
-(`PCFG-R04`); the
+Already tracked before this review and not repeated: the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
 the hand-maintained
-browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
-parser (`PCFG-R04`), the per-type
+browser contract (`API-R03`); the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
 points without convergence traces (`OPT-PC04`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
-(`MOD-M01`, `MOD-M02`); the git routes' and the
-assistant's current-directory project root (`PCFG-R04`); the assistant
+(`MOD-M01`, `MOD-M02`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the
@@ -232,10 +228,8 @@ browser's hand-written contract mirrors (`API-R03`) and the dead
 utilities (`ENGQ-R01`); in the workbench UI and
 the app shell, the
 chart theme observer written twice (`EDA-R03`) and knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
-and CI, the campaign-named test modules (`ENGQ-R05`), the test-only reset hooks in
-production code (`ENGQ-R01`), and the
-189 test modules that change directory because production resolves the project
-root from it (`PCFG-R04`).
+and CI, the campaign-named test modules (`ENGQ-R05`) and the test-only reset hooks in
+production code (`ENGQ-R01`).
 
 ## Verdicts that changed or stayed open
 

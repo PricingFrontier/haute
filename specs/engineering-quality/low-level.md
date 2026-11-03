@@ -211,10 +211,9 @@
   `tests/test_server.py`, `tests/test_trace_api.py`,
   `tests/test_trace_multi_frame.py`, `tests/test_adversarial_inputs.py` and
   `tests/test_security_gaps.py`. A test marked `in_process` patches a seam and
-  stays in threads even there. An interactive worker resolves the project root
-  from its own working directory, so a test that sets the root in memory
-  without changing directory fails across the boundary for that reason;
-  carrying the project into every worker request is `PCFG-R04`'s.
+  stays in threads even there. Every worker request carries the submitting
+  call's project and the worker installs it for that request, so a test's
+  project reaches a worker whatever the worker's working directory.
 - **E2E project reset** (`frontend/e2e/projectIsolation.ts`) verifies the git toplevel,
   restores `main`, deletes other branches, version tags and the deleted branches' pins under
   `refs/haute/`, scrubs untracked files with `git clean -fdx`, and reseeds the working

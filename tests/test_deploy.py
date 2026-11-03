@@ -20,9 +20,12 @@ import pytest
 import haute
 from haute._mlflow_io import _artifact_cache_path
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute._project_context import context_thread
 from haute.deploy._served_haute import ServedHaute
 from haute.graph_utils import PipelineGraph
 from haute.parser import parse_pipeline_file
+from tests._project import use_project
+from tests._source_files import REPO_ROOT
 
 if TYPE_CHECKING:
     pass
@@ -34,9 +37,15 @@ from tests.conftest import make_output_config
 # Fixtures
 # ---------------------------------------------------------------------------
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 DATA_DIR = FIXTURE_DIR / "data"
+
+
+@pytest.fixture(autouse=True)
+def _repository_project() -> None:
+    """The fixture pipeline is the repository's: its relative paths resolve there."""
+    use_project(REPO_ROOT)
 
 
 def _fake_backend(digest: str = "a" * 16) -> ResolvedBackend:
@@ -579,7 +588,7 @@ class TestBundler:
         """MODEL_SCORE nodes download .cbm from MLflow and include in artifacts."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Pre-populate the disk cache so download is skipped.
         _write_cached_model(tmp_path, "run_abc", "model.cbm")
@@ -689,7 +698,7 @@ class TestBundler:
         """MODEL_SCORE with sourceType='registered' resolves via MLflow and bundles."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Pre-populate the disk cache so _download_model_artifact succeeds.
         _write_cached_model(tmp_path, "resolved_run_123", "model.cbm", b"fake registered model")
@@ -727,7 +736,7 @@ class TestBundler:
         """sourceType='registered' with version='latest' resolves correctly."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         _write_cached_model(tmp_path, "run_latest", "model.cbm", b"latest model")
 
@@ -762,7 +771,7 @@ class TestBundler:
         """sourceType='registered' with empty version (defaults to latest)."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         _write_cached_model(tmp_path, "run_empty_ver", "model.cbm", b"model data")
 
@@ -854,7 +863,7 @@ class TestBundler:
         """Pipeline with both run-based and registered MODEL_SCORE nodes."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Cache for run-based model and registered model (resolved to run_resolved).
         _write_cached_model(tmp_path, "run_direct", "direct.cbm", b"direct model")
@@ -905,7 +914,7 @@ class TestBundler:
         """sourceType='run' explicitly set still works (no regression)."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         _write_cached_model(tmp_path, "run_explicit", "model.cbm", b"explicit run model")
 
@@ -938,7 +947,7 @@ class TestBundler:
         """MODEL_SCORE without sourceType is untouched, as in the preview: nothing bundles."""
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         _write_cached_model(tmp_path, "run_default", "model.cbm", b"default model")
 
@@ -973,7 +982,7 @@ class TestBundler:
         from haute.deploy import _bundler as bundler_mod
         from haute.deploy._bundler import collect_artifacts
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         backend_a = _fake_backend("a" * 16)
         backend_b = _fake_backend("b" * 16)
@@ -1610,9 +1619,9 @@ allow_aggregate_statistics = false
         shutil.copytree(
             FIXTURE_DIR, tmp_path / "fixtures", ignore=shutil.ignore_patterns("__pycache__")
         )
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         config = DeployConfig(
-            pipeline_file=PIPELINE_FILE.relative_to(PIPELINE_FILE.parts[0]),
+            pipeline_file=Path("fixtures/pipeline.py"),
             model_name="test-model",
         )
         resolved = resolve_config(config)
@@ -1748,8 +1757,9 @@ class TestDatabricksTracking:
 
         with mock_mlflow_deploy() as mocks:
             mocks.log_model.side_effect = log_model
-            first = threading.Thread(target=deploy, args=("first",), name="first")
-            second = threading.Thread(target=deploy, args=("second",), name="second")
+            # Each deploy runs in the test's project, as a deploy command does.
+            first = context_thread(deploy, args=("first",), name="first")
+            second = context_thread(deploy, args=("second",), name="second")
             first.start()
             assert first_logged.wait(30)
             second.start()

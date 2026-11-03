@@ -42,6 +42,7 @@ from haute._polars_io_registry import (
     snapshot_input_plan,
     validate_data_input_config,
 )
+from haute._project_context import current_project
 from haute._source_cache import (
     BuildClass,
     SourceCacheBuildContext,
@@ -121,13 +122,13 @@ def schema_tier_recorder(schema_only: bool) -> RecordedSchemaTiers | None:
 
 
 def _base_path(base_dir: str | Path | None) -> Path:
-    return Path(base_dir).resolve() if base_dir is not None else Path.cwd().resolve()
+    return Path(base_dir).resolve() if base_dir is not None else current_project().root
 
 
 def _cache_root() -> Path:
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
 
-    return _get_project_root().resolve()
+    return current_project().root
 
 
 def _resolved_config_path(config: Mapping[str, Any], base_dir: str | Path | None) -> dict[str, Any]:

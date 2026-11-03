@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 import weakref
@@ -290,7 +291,8 @@ class IsolatedSupervisorThread(threading.Thread):
     """Supervisor thread whose parent-side infrastructure failure is observable."""
 
     def __init__(self, *, target: Any) -> None:
-        super().__init__(target=target, daemon=True)
+        # The job runs in the project of the request that started it.
+        super().__init__(target=contextvars.copy_context().run, args=(target,), daemon=True)
         self._infrastructure_failure: SupervisorInfrastructureError | None = None
 
     @property

@@ -569,10 +569,9 @@ def load_external_object(path: str, file_type: str) -> object:
     """
     from haute._sandbox import validate_project_path
 
-    validate_project_path(path)
-
-    digest = content_hash(Path(path))
-    return _load_cached(path, digest, file_type)
+    resolved = validate_project_path(path)
+    digest = content_hash(resolved)
+    return _load_cached(str(resolved), digest, file_type)
 
 
 def _load_external_object_uncached(path: str, file_type: str) -> object:

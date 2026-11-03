@@ -34,8 +34,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute.executor import _build_node_fn
+from tests._project import use_project
 from tests.conftest import make_node as _n
 
 #: The external object ``path`` written into the node config — RELATIVE and
@@ -70,9 +71,9 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     Yields the on-disk absolute object path; the node config carries the RELATIVE
     ``path`` which must anchor to ``<root>/rating/models/...``.
     """
-    monkeypatch.chdir(tmp_path)  # cwd == project root, NOT the pipeline dir
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)  # cwd == project root, NOT the pipeline dir
+    original = current_project().root
+    use_project(tmp_path)
 
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
     pipeline_directory = tmp_path / "rating"
@@ -87,7 +88,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     yield object_path
 
-    set_project_root(original)
+    use_project(original)
 
 
 def test_external_file_loads_pipeline_relative_path_from_project_root(nested_project) -> None:
@@ -129,8 +130,7 @@ def test_external_file_resolver_rejects_out_of_project_absolute(
     """The shared runtime resolver rejects absolute paths outside the project."""
     from haute._builders import _resolve_runtime_data_path
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
 
     outside = tmp_path.parent / "elsewhere" / "models" / "factor.json"

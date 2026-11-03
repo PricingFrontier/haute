@@ -21,6 +21,7 @@ from typing import Literal, cast
 from urllib.parse import SplitResult, urlsplit
 
 from haute import _git
+from haute._project_context import current_project
 from haute.errors import ConfigError, HauteError
 from haute.schemas import GitWorkingBranchResponse
 
@@ -178,21 +179,12 @@ def mutations_readiness(
     always renders.
     """
 
-    root = _normalise_project_root(project_root)
+    root = current_project().root if project_root is None else project_root.resolve()
     try:
         status = _git.working_branch_status(root)
     except HauteError as exc:
         return False, str(exc)
     return _mutation_readiness(status)
-
-
-def _normalise_project_root(project_root: Path | None) -> Path:
-    """Return the resolved directory containing the project's ``haute.toml``."""
-
-    root = Path.cwd() if project_root is None else Path(project_root)
-    if root.is_file():
-        root = root.parent
-    return root.resolve()
 
 
 def _read_assistant_table(project_root: Path) -> dict[str, object] | None:
@@ -585,7 +577,7 @@ def assistant_readiness(
     policy and the shared Git working-branch state permit edits.
     """
 
-    root = _normalise_project_root(project_root)
+    root = current_project().root if project_root is None else project_root.resolve()
     table = _read_assistant_table(root)
     provider: str | None
     model: str | None
@@ -642,7 +634,7 @@ def resolve_assistant_config(project_root: Path | None = None) -> AssistantConfi
     Provider adapters use this resolver only after the status gate has passed.
     """
 
-    root = _normalise_project_root(project_root)
+    root = current_project().root if project_root is None else project_root.resolve()
     table = _read_assistant_table(root)
     if table is None:
         raise ConfigError("No [assistant] table is configured in haute.toml.")
@@ -657,7 +649,7 @@ def resolve_assistant_config(project_root: Path | None = None) -> AssistantConfi
 def resolve_egress_policy(project_root: Path | None = None) -> EgressPolicy:
     """Resolve only the closed egress policy, without probing SDKs or credentials."""
 
-    root = _normalise_project_root(project_root)
+    root = current_project().root if project_root is None else project_root.resolve()
     table = _read_assistant_table(root)
     if table is None:
         raise ConfigError("No [assistant] table is configured in haute.toml.")

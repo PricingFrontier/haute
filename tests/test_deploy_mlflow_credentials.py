@@ -18,11 +18,11 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import haute
-from haute._sandbox import set_project_root
 from haute.deploy._config import DeployConfig
 from haute.deploy._served_haute import ServedHaute
 from haute.errors import DeployError
 from tests._deploy_helpers import make_resolved_deploy
+from tests._project import use_project
 
 GENERAL_HOST = "https://general.example.invalid"
 GENERAL_TOKEN = "general-token-000"
@@ -54,7 +54,7 @@ def _hermetic_databricks_environment(tmp_path: Path, monkeypatch: pytest.MonkeyP
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "databrickscfg"))
-    set_project_root(tmp_path)
+    use_project(tmp_path)
 
 
 @dataclass

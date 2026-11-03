@@ -2,7 +2,7 @@
 
 The project's ``utility`` package is the one piece of project code a preamble
 imports: the executor's finder answers it from the pipeline directory and the
-working directory (:func:`haute._project_imports.utility_search_dirs`), and deploy
+project root (:func:`haute._project_imports.utility_search_dirs`), and deploy
 ships the same package. Any other module found in those directories is project code
 the bundle does not carry, which the editor does not import either, so validation
 refuses it.
@@ -43,7 +43,7 @@ def resolve_project_modules(preamble: str, pipeline_dir: Path) -> ProjectModules
             directories, or a bundled ``utility`` file does not parse.
     """
     # The directories the executor's utility finder searches; a pipeline directory
-    # that is also the working directory is one entry, so one namespace package is
+    # that is also the project root is one entry, so one namespace package is
     # never reported as split.
     project_dirs = utility_search_dirs(pipeline_dir)
     importlib.invalidate_caches()

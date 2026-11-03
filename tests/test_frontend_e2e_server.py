@@ -8,6 +8,7 @@ import pytest
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file
 from scripts import run_frontend_e2e_server
+from tests._project import use_project
 
 
 def test_blank_scaffold_is_augmented_with_complete_browser_graph(
@@ -36,7 +37,7 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
         data_dir / "optimiser_quotes.parquet"
     )
     monkeypatch.setattr(run_frontend_e2e_server, "E2E_PROJECT_DIR", tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     run_frontend_e2e_server._augment_starter_pipeline()
 

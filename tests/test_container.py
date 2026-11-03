@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._project_context import context_thread
 from haute._types import NodeType
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
@@ -51,6 +52,7 @@ from haute.deploy._utils import build_manifest as _build_manifest
 from haute.errors import DeployError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
+from tests._project import use_project
 
 # Container builds pin price-contour from the package index; see the fixture.
 pytestmark = pytest.mark.usefixtures("released_price_contour")
@@ -315,7 +317,7 @@ class TestGenerateAppSource:
         artifact.write_bytes(b"artifact")
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
+        use_project(elsewhere)
 
         module = _load_generated_app(
             tmp_path,
@@ -1478,7 +1480,7 @@ class TestBuildAndPushImage:
         """Each build runs from ``tmp_path/elsewhere``, not the project: a build's files
         belong under the project, wherever it is deployed from."""
         (tmp_path / "elsewhere").mkdir()
-        monkeypatch.chdir(tmp_path / "elsewhere")
+        use_project(tmp_path / "elsewhere")
 
     def _make_resolved_with_artifacts(
         self,
@@ -1805,7 +1807,7 @@ class TestBuildAndPushImage:
             build_and_push_image(first)
             build_and_push_image(second)
             threads = [
-                threading.Thread(target=build_and_push_image, args=(resolved,))
+                context_thread(build_and_push_image, args=(resolved,))
                 for resolved in (first, second)
             ]
             for thread in threads:

@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._project_context import context_thread
 from haute.errors import RequestRefusedError
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
@@ -428,12 +429,12 @@ def test_publish_completion_publishes_before_competing_cancellation() -> None:
         assert allow_publisher_return.wait(timeout=2)
         return {"result": {"value": 1}}
 
-    completion = threading.Thread(
-        target=lambda: published.append(lifecycle.publish_completion(job_id, publish=publish))
+    completion = context_thread(
+        lambda: published.append(lifecycle.publish_completion(job_id, publish=publish))
     )
     completion.start()
     assert publisher_entered.wait(timeout=2)
-    cancellation = threading.Thread(target=lambda: lifecycle.transition(job_id, to="cancelled"))
+    cancellation = context_thread(lambda: lifecycle.transition(job_id, to="cancelled"))
     cancellation.start()
     allow_publisher_return.set()
     completion.join(timeout=2)
@@ -573,7 +574,7 @@ def test_singleflight_same_job_fans_in_idempotently_under_contention() -> None:
             with result_lock:
                 handles.append(handle)
 
-    threads = [threading.Thread(target=acquire) for _ in range(barrier.parties)]
+    threads = [context_thread(acquire) for _ in range(barrier.parties)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -607,7 +608,7 @@ def test_singleflight_same_key_has_one_owner_and_releases_for_retry() -> None:
             with result_lock:
                 handles.append(handle)
 
-    threads = [threading.Thread(target=acquire, args=(index,)) for index in range(barrier.parties)]
+    threads = [context_thread(acquire, args=(index,)) for index in range(barrier.parties)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -654,7 +655,7 @@ def test_singleflight_different_keys_acquire_independently_under_contention() ->
             with result_lock:
                 handles.append(handle)
 
-    threads = [threading.Thread(target=acquire, args=(index,)) for index in range(barrier.parties)]
+    threads = [context_thread(acquire, args=(index,)) for index in range(barrier.parties)]
     for thread in threads:
         thread.start()
     for thread in threads:

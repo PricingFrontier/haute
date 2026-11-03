@@ -9,10 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
+from tests._project import use_project
+
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph, pipeline_dir
+from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph
 
 DEFINITION_ID = "pricing-definition"
 INSTANCE_ID = "pricing"
@@ -21,11 +23,9 @@ ALIAS = "pricing"
 
 @pytest.fixture(autouse=True)
 def _isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    pipeline_dir.cache_clear()
+    use_project(tmp_path)
     invalidate_pipeline_index()
     yield
-    pipeline_dir.cache_clear()
     invalidate_pipeline_index()
 
 

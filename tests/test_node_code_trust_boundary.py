@@ -24,6 +24,7 @@ import pytest
 
 from haute._sandbox import UnsafeCodeError
 from haute._user_exec import _exec_user_code
+from tests._project import use_project
 
 MARKER = "HAUTE_TEST_TRUST_BOUNDARY_MARKER"
 
@@ -42,7 +43,7 @@ class TestAccidentGuardAtTheNodeEntryPoint:
         workdir.mkdir()
         sentinel = workdir / "sentinel.txt"
         sentinel.write_text("intact", encoding="utf-8")
-        monkeypatch.chdir(workdir)
+        use_project(workdir)
         code = f'open("sentinel.txt", "w").write("clobbered")\ndf = rows\n{call}'
 
         with pytest.raises(UnsafeCodeError, match="pipeline code cannot call it"):
@@ -209,7 +210,7 @@ class TestNodeCodeIsTrustedProjectCode:
         outside = tmp_path / "outside"
         project.mkdir()
         outside.mkdir()
-        monkeypatch.chdir(project)
+        use_project(project)
         target = outside / "written_by_node_code.csv"
 
         code = (

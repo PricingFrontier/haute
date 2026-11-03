@@ -824,7 +824,7 @@ also refuses (400, naming up to 5 paths) a summary whose JSON artifacts hold NaN
 (`_require_finite_summary_artifacts`). A materialised ratebook point whose kept factor table
 holds a non-finite rate, or two levels that canonicalise to one key, is refused by
 `_serialise_ratebook_factor_table_rows` with an `InvalidRequestError` (400) naming the table and
-level, on `/frontier/select`, `/save` and `/mlflow/log` alike. Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
+level, on `/frontier/select`, `/save` and `/mlflow/log` alike. Save resolves `output_path` with `contained_path(current_project().root, ...)`
 — a relative path against the project root, the base `/pipeline/read-json` uses, and an absolute
 path only inside it. A bare filename (no `/` or `\`) is placed under
 `_project_layout.default_model_folder` first, the pipeline folder's `files/models/`, so Commit

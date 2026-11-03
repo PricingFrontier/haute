@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from importlib.resources import files
+from pathlib import Path
 
 
 def _assert_static_assets_present() -> None:
@@ -16,9 +17,12 @@ def _assert_static_assets_present() -> None:
 
 
 def _assert_server_routes_present() -> None:
-    from haute.server import app
+    import tempfile
 
-    schema = app.openapi()
+    from haute._project_context import ProjectContext
+    from haute.server import create_app
+
+    schema = create_app(ProjectContext.at(Path(tempfile.gettempdir()))).openapi()
     route_paths = set(schema["paths"])
     expected = {
         "/api/pipeline",

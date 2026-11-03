@@ -29,6 +29,7 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError, SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 
 ALL = NodeSnapshotColumns.all()
 _WIDE = ["id", "a", "b", "c", "d", "a2", "c2"]
@@ -76,7 +77,7 @@ def _graph(
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame({"id": [1, 2, 3], "a": [1, 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]}).write_parquet(
         haute_scratch / "quotes.parquet"
@@ -1126,7 +1127,7 @@ def test_open_seed_plan_prepares_only_readable_inputs_first(
 
     monkeypatch.setattr(input_preparation, "prepare_input_snapshots", prepare)
     monkeypatch.setattr(seed_plans, "open_resolved_seed_plan", resolved)
-    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    use_project(project)
 
     open_seed_plan(_request(_two_input_modelling(project)), staging_token="a1b2c3d4e5f6")
 
@@ -1320,7 +1321,7 @@ def _record_preparation(monkeypatch: pytest.MonkeyPatch, project: Path) -> list[
         "prepare_input_snapshots",
         lambda order, *args, **kwargs: prepared.append(list(order)),
     )
-    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    use_project(project)
     return prepared
 
 
@@ -1359,7 +1360,7 @@ def test_a_capture_published_while_preparing_is_seeded(
     import haute._input_preparation as input_preparation
 
     graph = _csv_joined(project)
-    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    use_project(project)
     prepared: list[list[str]] = []
     published: list[str] = []
 
@@ -1388,7 +1389,7 @@ def test_a_moved_input_pointer_re_resolves_under_the_prepared_signatures(
     from haute._source_cache import SourceCacheStore
 
     graph = _csv_joined(project)
-    monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project)
+    use_project(project)
     before = _identity(store, graph, "J").digest
     real_prepare = input_preparation.prepare_input_snapshots
     prepared: list[list[str]] = []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -85,7 +86,7 @@ def test_concurrent_same_key_misses_call_loader_once(tmp_path: Path) -> None:
         return cache.get_or_load("key", str(path), loader)
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(get_value) for _ in range(8)]
+        futures = [executor.submit(contextvars.copy_context().run, get_value) for _ in range(8)]
         start.set()
         assert loading.wait(timeout=2)
         release.set()
@@ -119,9 +120,13 @@ def test_a_caller_queued_across_a_change_reuses_the_next_load(tmp_path: Path) ->
         return path.read_text()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(cache.get_or_load, "key", str(path), loader)
+        first = executor.submit(
+            contextvars.copy_context().run, cache.get_or_load, "key", str(path), loader
+        )
         assert loading.wait(timeout=5)
-        queued = executor.submit(cache.get_or_load, "key", str(path), loader)
+        queued = executor.submit(
+            contextvars.copy_context().run, cache.get_or_load, "key", str(path), loader
+        )
         deadline = time.monotonic() + 5
         while cache._load_locks["key"].participants < 2:
             assert time.monotonic() < deadline, "the second caller never queued"
@@ -155,10 +160,14 @@ def test_clear_during_active_load_preserves_the_single_flight_gate(tmp_path: Pat
         return loaded
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(cache.get_or_load, "key", str(path), loader)
+        first = executor.submit(
+            contextvars.copy_context().run, cache.get_or_load, "key", str(path), loader
+        )
         assert loading.wait(timeout=2)
         cache.clear()
-        second = executor.submit(cache.get_or_load, "key", str(path), loader)
+        second = executor.submit(
+            contextvars.copy_context().run, cache.get_or_load, "key", str(path), loader
+        )
         duplicated_while_first_was_active = duplicate_load.wait(timeout=0.5)
         release.set()
         values = [first.result(timeout=2), second.result(timeout=2)]

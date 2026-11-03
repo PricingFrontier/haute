@@ -20,7 +20,9 @@ import polars as pl
 import pytest
 
 from haute._hashing import content_hash_bytes
+from haute._project_context import current_project
 from haute.deploy._request_rows import RequestRows
+from tests._project import use_project
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node
 
@@ -450,6 +452,7 @@ class TestHauteModelEdgeCases:
 
         model = HauteModel()
         model._graph = MagicMock()
+        model._project = current_project()
         model._input_node_ids = ["src"]
         model._output_node_id = "out"
         model._artifact_paths = {}
@@ -618,7 +621,7 @@ class TestInferOutputSchemaEdgeCases:
         """infer_output_schema with empty input_node_ids raises ValueError."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         graph = _g(
             {
@@ -639,7 +642,7 @@ class TestInferOutputSchemaEdgeCases:
         """If cache writing fails, infer_output_schema still returns the schema."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         pq_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
@@ -683,7 +686,7 @@ class TestInferOutputSchemaEdgeCases:
         """infer_output_schema raises when input node has no path for sample row."""
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         graph = _g(
             {

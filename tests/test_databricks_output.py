@@ -639,7 +639,7 @@ def test_worker_reports_databricks_failures_by_kind(
     )
 
     outcome = pipeline_route._prepare_data_output_worker(
-        PipelineGraph(), "sink", "batch", str(tmp_path), False, None, None, budget
+        PipelineGraph(), "sink", "batch", False, None, None, budget
     )
 
     assert (outcome.failure_kind, outcome.detail) == (expected_kind, str(failure))

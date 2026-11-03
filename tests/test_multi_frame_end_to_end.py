@@ -71,9 +71,10 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import NodeType
 from haute.executor import _preview_cache
+from tests._project import project_app, use_project
 
 # Reuse the canonical multi-port helpers (same imports test_output_assemble_routes
 # uses) — single source of truth for the apiInput shred config, the OUTPUT
@@ -150,18 +151,18 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
     """In-process app rooted at an isolated tmp project (see module docstring,
     HARNESS CHOICE). TestClient is instantiated BARE so the lifespan/file-watcher
     never starts; chdir + set_project_root keep the cache dir under tmp_path."""
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
 
-    from haute.server import app
+    app = project_app()
 
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
     yield TestClient(app), data_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 

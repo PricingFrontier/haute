@@ -20,6 +20,7 @@ from haute._types import PipelineGraph
 from haute.errors import ParseError, RequestRefusedError
 from haute.parser import parse_pipeline_source_with_name_violations
 from haute.routes._save_pipeline import SavePipelineService
+from tests._project import use_project
 
 _CHILD = """
 import haute
@@ -166,7 +167,7 @@ def test_the_identity_request_reports_what_remains_after_each_rename(
 def test_a_preview_of_a_graph_with_a_violation_reports_it_at_the_node(
     project: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(project.parent)
+    use_project(project.parent)
     graph = _parsed(project)
 
     response = client.post(

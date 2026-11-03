@@ -7,15 +7,15 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._sandbox import set_project_root
 from haute.executor import execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.trace import execute_trace
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_source_node
 
 
 def _rating_graph(tmp_path: Path) -> PipelineGraph:
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data = tmp_path / "data.parquet"
     pl.DataFrame(
         {

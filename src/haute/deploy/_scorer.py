@@ -1109,12 +1109,13 @@ def _score_graph_lazy(
     )
 
     # Compile preamble so utility imports are available in transform nodes.
-    from haute.executor import _compile_preamble, _pipeline_dir
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _compile_preamble
 
     preamble_ns = (
         _compile_preamble(
             graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
+            pipeline_dir=graph_pipeline_dir(graph),
         )
         or None
     )

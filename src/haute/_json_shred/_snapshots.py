@@ -329,7 +329,6 @@ class ApiInputBuildRequest:
     data_path: str
     labels: tuple[str, ...]
     cache_root: str
-    project_root: str
     profile: ExecutionProfile
     plans: dict[str, TableBuildPlan]
     scratch_token: str
@@ -348,9 +347,7 @@ def build_api_input_tables_worker(
 ) -> ApiInputBuildOutcome:
     """Spawn entrypoint: build the requested tables under the child's own hard cap."""
     from haute._execution_admission import create_isolated_execution_context
-    from haute._sandbox import set_project_root
 
-    set_project_root(Path(request.project_root))
     context: ExecutionContext | None = None
     try:
         context = create_isolated_execution_context(budget)
@@ -395,7 +392,6 @@ def run_supervised_api_input_build(
     as done; otherwise the worker's failure is raised.
     """
     from haute._input_preparation import supervise_build
-    from haute._sandbox import _get_project_root
 
     tables = _distinct_tables(source, labels)
     plans = new_table_build_plans(source, [table.label for table in tables])
@@ -405,7 +401,6 @@ def run_supervised_api_input_build(
         data_path=str(source.data_path),
         labels=tuple(table.label for table in tables),
         cache_root=str(store.root),
-        project_root=str(_get_project_root()),
         profile=profile,
         plans=plans,
         scratch_token=scratch_token,

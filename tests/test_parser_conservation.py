@@ -21,6 +21,7 @@ from haute._submodel_instances import qualified_runtime_node_id
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
+from tests._project import project_app, use_project
 
 
 def _write(tmp_path: Path, name: str, code: str) -> Path:
@@ -1653,7 +1654,7 @@ class TestPolarsParameterBinding:
     ) -> None:
         from fastapi.testclient import TestClient
 
-        from haute.server import app
+        app = project_app()
 
         pipeline_file = _write(
             tmp_path,
@@ -1695,7 +1696,7 @@ class TestPolarsParameterBinding:
             for diagnostic in b_diagnostics
         )
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         client = TestClient(app, raise_server_exceptions=False)
         get_response = client.get("/api/pipeline")
         assert get_response.status_code == 200
@@ -1893,7 +1894,7 @@ class TestKeywordOnlyParametersAtSave:
     ) -> None:
         from tests.conftest import current_source_revision
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         config = {"code": "df = source", "keyword_parameters": parameters, **extra}
         response = client.post(
             "/api/pipeline/save",
@@ -1913,7 +1914,7 @@ class TestKeywordOnlyParametersAtSave:
     def test_the_full_save_writes_a_binding_back(self, client, monkeypatch, tmp_path) -> None:
         from tests.conftest import current_source_revision
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         config = {
             "code": "df = source.with_columns(y=pl.col('x') * factor)",
             "keyword_parameters": [{"name": "factor", "default": 1.2}],

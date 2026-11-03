@@ -14,18 +14,20 @@ import orjson
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._project import project_app, use_project
+
 
 @pytest.fixture()
 def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Chdir into a fresh tmp dir."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
 def client(isolated_cwd: Path) -> TestClient:
     """TestClient under the same isolated cwd, for route-level tests."""
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app)
 

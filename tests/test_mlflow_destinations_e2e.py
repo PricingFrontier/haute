@@ -40,6 +40,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from tests._project import use_project
 from tests.conftest import make_edge, make_file_input_config, make_graph, make_output_config
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_solved_result
@@ -52,7 +53,6 @@ mlflow = pytest.importorskip(
     reason="core mlflow dependency is unavailable",
 )
 
-from haute._sandbox import set_project_root  # noqa: E402 — after importorskip by design
 from haute.errors import MlflowConfigError  # noqa: E402
 from haute.executor import execute_graph  # noqa: E402
 from haute.modelling._feature_contract import build_contract, save_contract  # noqa: E402
@@ -96,8 +96,8 @@ def project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # conftest restores the original project root.
+    use_project(tmp_path)
+    use_project(tmp_path)  # conftest restores the original project root.
     # Keep every disk-cached artifact inside this test's tmp tree.
     cache_root = tmp_path / ".cache" / "models"
     monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: cache_root)

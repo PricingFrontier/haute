@@ -41,6 +41,7 @@ from typing import IO, Any
 
 from haute._databricks_credentials import credentials_rejected
 from haute._logging import get_logger
+from haute._project_context import context_thread
 from haute._storage_types import (
     StorageClaimedError,
     StorageConfigError,
@@ -515,8 +516,8 @@ class _ClaimHeartbeat:
             # the outgoing thread still watches.
             self._thread.join(timeout=2.0)
         self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run, args=(self._stop,), name="haute-uc-claim", daemon=True
+        self._thread = context_thread(
+            self._run, args=(self._stop,), name="haute-uc-claim", daemon=True
         )
         self._thread.start()
 

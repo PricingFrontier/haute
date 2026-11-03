@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 import haute._worker_isolation as isolation
+from haute._project_context import context_thread, current_project
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -185,7 +186,7 @@ def test_server_shutdown_cancels_a_running_job_and_leaves_no_worker(
     process_name = f"haute-shutdown-test-{job_id}"
 
     async def run_and_shut_down() -> float:
-        async with server._lifespan(server.app):
+        async with server._lifespan(server.create_app(current_project())):
             supervisor.launch_protocol(
                 job_id,
                 _sleeping_protocol_worker,
@@ -236,9 +237,9 @@ def test_job_shutdown_stops_other_jobs_while_one_holds_its_registry() -> None:
             publishing.set()
             release.wait(30)
 
-    holder = threading.Thread(target=publish, name="haute-test-publishing-job", daemon=True)
-    waiter = threading.Thread(
-        target=free_token.event.wait, args=(30,), name="haute-test-waiting-job", daemon=True
+    holder = context_thread(publish, name="haute-test-publishing-job", daemon=True)
+    waiter = context_thread(
+        free_token.event.wait, args=(30,), name="haute-test-waiting-job", daemon=True
     )
     start_job_thread(holder)
     start_job_thread(waiter)
@@ -285,8 +286,8 @@ def test_the_lifespan_logs_the_jobs_that_outlive_its_bound(
 
 def test_job_shutdown_returns_at_its_bound_naming_the_jobs_still_running() -> None:
     release = threading.Event()
-    thread = threading.Thread(
-        target=release.wait, args=(30,), name="haute-test-unstoppable-job", daemon=True
+    thread = context_thread(
+        release.wait, args=(30,), name="haute-test-unstoppable-job", daemon=True
     )
     start_job_thread(thread)
     try:
@@ -376,7 +377,7 @@ def test_worker_cancellation_gate_serializes_request_after_publication() -> None
         gate.request()
 
     with gate.publication_guard():
-        requester = threading.Thread(target=request_cancellation)
+        requester = context_thread(request_cancellation)
         requester.start()
         assert request_started.wait(timeout=1.0)
         assert requester.is_alive()
@@ -1296,6 +1297,7 @@ def test_isolated_entrypoint_applies_native_lease_before_callable(
         {"increment": 3},
         memory_limit,
         caps_supported,
+        current_project(),
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", 5)
@@ -1324,6 +1326,8 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
         ("child boom",),
         {},
         128,
+        False,
+        current_project(),
     )
 
     status, payload = pickle.loads(results.get_nowait())
@@ -1360,6 +1364,7 @@ def test_isolated_entrypoint_exposes_native_backend_only_during_callable(
         {},
         128,
         True,
+        current_project(),
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", "cgroup")
@@ -1384,7 +1389,9 @@ def test_isolated_entrypoint_leaves_native_lease_active_until_process_teardown(
         ),
     )
 
-    isolation_mod._isolated_worker_entrypoint(results, _go(), lambda: "result", (), {}, 128, True)
+    isolation_mod._isolated_worker_entrypoint(
+        results, _go(), lambda: "result", (), {}, 128, True, current_project()
+    )
 
     assert pickle.loads(results.get_nowait()) == ("ok", "result")
     assert events == ["apply"]
@@ -1420,7 +1427,9 @@ def test_isolated_worker_starts_its_result_feeder_before_the_cap(
         NativeMemoryLease, "apply", lambda self, *_a, **_k: events.append("cap") or False
     )
 
-    isolation_mod._isolated_worker_entrypoint(RecordingQueue(), _go(), int, ("7",), {}, 128, False)
+    isolation_mod._isolated_worker_entrypoint(
+        RecordingQueue(), _go(), int, ("7",), {}, 128, False, current_project()
+    )
 
     # The ready report, then the result.
     assert events == ["feeder", "cap", "put", "put"]
@@ -1982,7 +1991,9 @@ def test_worker_entrypoint_reports_native_setup_failure(monkeypatch: pytest.Monk
         "apply",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cap")),
     )
-    isolation._isolated_worker_entrypoint(queue, _go(), lambda: 1, (), {}, 10, True)
+    isolation._isolated_worker_entrypoint(
+        queue, _go(), lambda: 1, (), {}, 10, True, current_project()
+    )
     assert queue.actions == ["put", "close", "join"]
     assert pickle.loads(queue.value)[0] == "error"
 
@@ -2095,6 +2106,7 @@ def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
         {},
         64,
         False,
+        current_project(),
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", None)

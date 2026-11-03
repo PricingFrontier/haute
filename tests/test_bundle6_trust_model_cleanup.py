@@ -43,6 +43,7 @@ import pytest
 
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.schemas import SavePipelineRequest
+from tests._project import use_project
 from tests.conftest import current_source_revision
 
 # ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ from tests.conftest import current_source_revision
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Clean temp project root with a minimal pipeline shell."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text('import haute\npipeline = haute.Pipeline("main")\n')
     return tmp_path
 

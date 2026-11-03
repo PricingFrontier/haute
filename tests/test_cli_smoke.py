@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -31,7 +32,7 @@ def _setup_smoke_project(
 
     A Databricks project's endpoint is reached with the serving pair, as CI provides it.
     """
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     if target == "databricks":
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://rating.example")
         monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "rating-token")
@@ -276,7 +277,7 @@ class TestSmokeHttp:
     ) -> None:
         """BUG-21: the generated step ran ``haute smoke --endpoint-suffix "-staging"``,
         which the command refuses for a container target, on every run."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         assert (
             runner.invoke(cli, ["init", "--target", "container", "--ci", "github"]).exit_code == 0
         )
@@ -597,7 +598,7 @@ class TestSmokeUnsupportedTarget:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "m"\nendpoint_name = "e"\ntarget = "sagemaker"\n'

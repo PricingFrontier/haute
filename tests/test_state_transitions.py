@@ -20,6 +20,7 @@ import pytest
 from haute.errors import RequestRefusedError
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import TERMINAL_REASONS, JobStore, TerminalReason
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -389,7 +390,7 @@ class TestDeleteProtectedBranch:
         from tests._git_helpers import init_repo as _init_repo
 
         repo = _init_repo(tmp_path)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # Move off main so the delete attempt targets a different-than-current branch
         _git(tmp_path, "checkout", "-b", "pricing/test-user/work")
         return repo

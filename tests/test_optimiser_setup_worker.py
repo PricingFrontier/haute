@@ -23,7 +23,6 @@ from fastapi import HTTPException
 from haute._execution_admission import ExecutionAdmissionError, IsolatedExecutionBudget
 from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
 from haute._polars_utils import set_streaming_chunk_size
-from haute._sandbox import set_project_root
 from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerMemoryLimitExceededError,
@@ -46,6 +45,7 @@ from haute.routes._optimiser_worker import (
     classify_optimiser_failure,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 from tests.test_optimiser_seeding import parallel_edge_graph, scored_graph
 
@@ -68,7 +68,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     whole in-flight budget, and a job releases its reservation only after it
     reports its outcome, so the next job a test starts at once would be refused.
     """
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "1024")
     monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "1024")
     return tmp_path

@@ -484,7 +484,6 @@ class TrainingPreparationRequest:
     source: str
     parquet_path: str
     config: dict[str, Any]
-    project_root: str
     row_limit: int | None = None
     project_to_keep_columns: bool = False
     keep_columns: list[str] | None = None
@@ -519,8 +518,8 @@ def estimate_training_memory(
 ) -> RamEstimate:
     """Estimate from the snapshots training can reuse, without preparing inputs."""
     from haute._node_snapshots import NodeSnapshotStore
+    from haute._project_context import current_project
     from haute._ram_estimate import estimate_safe_training_rows
-    from haute._sandbox import _get_project_root
 
     node = _find_modelling_node(graph, node_id)
     required = _training_required_columns_by_node(node_id, node.data.config)
@@ -528,7 +527,7 @@ def estimate_training_memory(
     # cache evidence. Keep the generations leased through all metadata reads.
     with open_resolved_seed_plan(
         training_seed_plan_request(graph, node_id, source, required),
-        store=NodeSnapshotStore(_get_project_root()),
+        store=NodeSnapshotStore(current_project().root),
     ) as plan:
         return estimate_safe_training_rows(plan.estimation_graph(graph), node_id, source=source)
 
@@ -695,7 +694,8 @@ def _execute_and_sink_training_frame(
         write_file,
     )
     from haute._polars_utils import _malloc_trim
-    from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
+    from haute._project_context import graph_pipeline_dir
+    from haute.executor import _build_node_fn, _compile_preamble, _preview_cache
     from haute.modelling._algorithms import _mem_checkpoint
     from haute.trace import _cache as _trace_cache
 
@@ -712,7 +712,7 @@ def _execute_and_sink_training_frame(
     _mem_checkpoint("cleared preview cache")
 
     preamble_ns = (
-        _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)) or None
+        _compile_preamble(graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)) or None
         if request.preamble_supplied
         else None
     )
@@ -996,12 +996,6 @@ def prepare_training_data_worker(
     native cap, so an unavailable materialisation estimate plans
     conservatively here instead of being rejected outright.
     """
-    from haute._sandbox import set_project_root
-
-    # The spawned child starts with the interpreter's default sandbox root.
-    # Carry the parent's resolved root across so path validation inside the
-    # child accepts exactly the sources the request was admitted against.
-    set_project_root(Path(request.project_root))
     context: ExecutionContext | None = None
     try:
         context = create_isolated_execution_context(budget)

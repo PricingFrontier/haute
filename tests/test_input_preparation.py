@@ -31,7 +31,7 @@ from haute._input_preparation import (
 from haute._input_providers import build_input_snapshot, resolve_data_input
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_io_registry import PolarsIoConfigError
-from haute._sandbox import set_project_root
+from haute._project_context import context_thread
 from haute._source_cache import SourceCacheStore
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
@@ -41,6 +41,7 @@ from haute._worker_isolation import (
     process_memory_caps_supported,
 )
 from haute.errors import InputPreparationError
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -100,8 +101,7 @@ def _project(
     *,
     retire_grace_seconds: float | None = None,
 ) -> SourceCacheStore:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     store = SourceCacheStore(tmp_path)
     if retire_grace_seconds is not None:
         # The sandbox fixture wraps the store constructor, so the retirement
@@ -379,7 +379,7 @@ def test_two_concurrent_executions_share_one_build(
         except BaseException as exc:  # pragma: no cover - surfaced by the assertion
             errors.append(exc)
 
-    threads = [threading.Thread(target=run) for _ in range(2)]
+    threads = [context_thread(run) for _ in range(2)]
     try:
         for thread in threads:
             thread.start()
@@ -1142,7 +1142,7 @@ def test_a_spawned_build_is_stopped_when_the_execution_is_cancelled(
         entered.wait(30)
         context.cancellation_token.cancel()
 
-    canceller = threading.Thread(target=cancel_when_running)
+    canceller = context_thread(cancel_when_running)
     canceller.start()
     try:
         with pytest.raises(InputPreparationError) as excinfo:
@@ -1873,7 +1873,7 @@ def test_a_single_flight_waiter_inherits_the_owners_typed_failure(
         except BaseException as exc:  # noqa: BLE001 - recorded for the assertion below
             owner_failure.append(exc)
 
-    owner = threading.Thread(target=run_owner)
+    owner = context_thread(run_owner)
     owner.start()
     try:
         # The other thread owns the slot before this execution asks for it.

@@ -41,6 +41,7 @@ from haute._polars_steps import (
     step_input_names,
     stepped_surface_for,
 )
+from haute._project_context import current_project
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
@@ -563,7 +564,7 @@ def _resolve_node_config(
                 keywords=keywords,
             )
         normalised_ref = config_ref.replace("\\", "/")
-        base = base_dir or Path.cwd()
+        base = base_dir or current_project().root
         try:
             loaded = load_node_config(normalised_ref, base_dir=base)
         except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:

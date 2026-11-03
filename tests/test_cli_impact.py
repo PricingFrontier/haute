@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -30,7 +31,7 @@ def _setup_impact_project(
     prod_url: str = "",
 ) -> None:
     """Set up a tmp project with haute.toml and impact dataset."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     container_section = (
         '[deploy.container]\nbase_image = "python:3.11.9-slim"\n'
         if target in {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
@@ -70,7 +71,7 @@ class TestImpact:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["impact"])
         assert result.exit_code == 1
         assert "haute.toml" in result.output.lower()
@@ -81,7 +82,7 @@ class TestImpact:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "m"\n'
@@ -98,7 +99,7 @@ class TestImpact:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text(
             '[project]\nname = "t"\npipeline = "main.py"\n'
             '[deploy]\nmodel_name = "m"\n'

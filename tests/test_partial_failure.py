@@ -24,12 +24,12 @@ import os
 import stat
 import sys
 import tempfile
-import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from haute._project_context import context_thread, current_project
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.routes._helpers import (
     broadcast,
@@ -40,6 +40,7 @@ from haute.routes._helpers import (
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests._project import project_app, use_project
 from tests.conftest import current_source_revision
 
 # ---------------------------------------------------------------------------
@@ -473,7 +474,7 @@ class TestFileWatcherRaceCondition:
         import haute.routes._helpers as helpers
 
         # Set up some fake state
-        helpers._pipeline_index = {"fake": Path("/fake")}
+        helpers._pipeline_index = (current_project().root, {"fake": Path("/fake")})
         helpers._module_deps = {"fake_mod": {Path("/fake")}}
 
         invalidate_pipeline_index()
@@ -517,7 +518,7 @@ class TestStalePipelineIndex:
 
         # Inject a stale entry directly
         fake_path = tmp_path / "deleted_pipeline.py"
-        helpers._pipeline_index = {"stale_pipe": fake_path}
+        helpers._pipeline_index = (current_project().root, {"stale_pipe": fake_path})
         try:
             result = helpers.lookup_pipeline_by_name("stale_pipe")
             assert result == fake_path
@@ -654,9 +655,9 @@ class TestStaleSaveUnderLock:
 
         from fastapi.testclient import TestClient
 
-        from haute.server import app
+        app = project_app()
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # ``save_lock`` is a module-level asyncio.Lock, and asyncio binds one to
         # an event loop the first time it is awaited while already held. Any
         # earlier test that contended it left it bound to that test's loop, so
@@ -747,8 +748,8 @@ class TestStaleSaveUnderLock:
                 )
                 responses.append(r)
 
-            t1 = threading.Thread(target=_post_edit, args=(graph_a,))
-            t2 = threading.Thread(target=_post_edit, args=(graph_b,))
+            t1 = context_thread(_post_edit, args=(graph_a,))
+            t2 = context_thread(_post_edit, args=(graph_b,))
             t1.start()
             t2.start()
             t1.join()

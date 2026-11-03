@@ -63,9 +63,9 @@ from haute._input_preparation import preparation_base_dir, prepare_input_snapsho
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._path_resolution import runtime_project_root_scope
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_steps import stepped_surface_allows_input_references
+from haute._project_context import graph_pipeline_dir
 from haute._seed_plans import (
     ListedSeed,
     SeedPlan,
@@ -118,7 +118,6 @@ from haute.executor import (
     _build_node_fn,
     _compile_preamble,
     _estimate_preview_cache_entry_bytes,
-    _pipeline_dir,
     _seeded_fingerprint,
 )
 from haute.graph_utils import (
@@ -495,14 +494,13 @@ def execute_trace(
     )
     if not seed_plan:
         return core(snapshot_plan=None)
-    with runtime_project_root_scope(graph.source_file):
-        snapshot_plan = _open_trace_seed_plan(
-            graph,
-            target_node_id,
-            source=source,
-            seed_plan=seed_plan,
-            execution_context=execution_context,
-        )
+    snapshot_plan = _open_trace_seed_plan(
+        graph,
+        target_node_id,
+        source=source,
+        seed_plan=seed_plan,
+        execution_context=execution_context,
+    )
     with snapshot_plan:
         if not snapshot_plan.decision.seeds:
             # Nothing listed covers what the trace reads: it runs as one
@@ -694,22 +692,21 @@ def _above_seed_inputs_moved(
     """
     if execution_context.admission is None:
         return False
-    with runtime_project_root_scope(graph.source_file):
-        records = prepare_input_snapshots(
-            [
-                node_id
-                for node_id in lineage_preparation_order(graph, seed_id, source)
-                if node_id != seed_id
-            ],
-            graph.node_map,
-            profile=execution_context.profile,
-            execution_context=execution_context,
-            base_dir=preparation_base_dir(graph),
-            schema_only=False,
-        )
-        if all(record.action == "reused" for record in records):
-            return False
-        return node_output_identity(graph, seed_id, source=source).digest != leased_identity_digest
+    records = prepare_input_snapshots(
+        [
+            node_id
+            for node_id in lineage_preparation_order(graph, seed_id, source)
+            if node_id != seed_id
+        ],
+        graph.node_map,
+        profile=execution_context.profile,
+        execution_context=execution_context,
+        base_dir=preparation_base_dir(graph),
+        schema_only=False,
+    )
+    if all(record.action == "reused" for record in records):
+        return False
+    return node_output_identity(graph, seed_id, source=source).digest != leased_identity_digest
 
 
 def _continue_above_seed(
@@ -1029,15 +1026,14 @@ def _execute_trace_core(
     # by. Only an admitted context can spawn the hard-capped build. A seed plan
     # already prepared exactly the inputs this trace computes.
     if snapshot_plan is None and execution_context.admission is not None:
-        with runtime_project_root_scope(graph.source_file):
-            prepare_input_snapshots(
-                lineage_preparation_order(graph, target_node_id, source),
-                graph.node_map,
-                profile=execution_context.profile,
-                execution_context=execution_context,
-                base_dir=preparation_base_dir(graph),
-                schema_only=False,
-            )
+        prepare_input_snapshots(
+            lineage_preparation_order(graph, target_node_id, source),
+            graph.node_map,
+            profile=execution_context.profile,
+            execution_context=execution_context,
+            base_dir=preparation_base_dir(graph),
+            schema_only=False,
+        )
     execution_facade.plan_execution_strategy(
         execution_facade.ProjectionRequest(
             graph=graph,
@@ -1651,7 +1647,7 @@ def _trace_preamble_ns(graph: PipelineGraph, preamble_ns: dict[str, Any] | None)
     Caller-supplied names win, for test convenience.
     """
     return {
-        **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+        **_compile_preamble(graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)),
         **(preamble_ns or {}),
     }
 

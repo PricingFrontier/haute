@@ -135,16 +135,15 @@ def _build_deadline() -> float:
 
 def preparation_base_dir(graph: Any) -> Path | None:
     """Anchor directory used by preparation, matching ``resolve_data_input``."""
-    from haute._builders import _configured_pipeline_dir
-    from haute._cache import _pipeline_dir
+    from haute._project_context import current_project, graph_pipeline_dir
 
-    return _pipeline_dir(graph) or _configured_pipeline_dir()
+    return graph_pipeline_dir(graph) or current_project().pipeline_dir
 
 
 def _cache_root() -> Path:
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
 
-    return _get_project_root().resolve()
+    return current_project().root
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +185,6 @@ class InputPreparationRequest:
     config: dict[str, Any]
     base_dir: str
     cache_root: str
-    project_root: str
     profile: ExecutionProfile
     refresh: bool
     generation_id: str
@@ -217,9 +215,7 @@ def build_input_snapshot_worker(
 ) -> InputPreparationOutcome:
     """Spawn entrypoint: run the explicit build under the child's own hard cap."""
     from haute._input_providers import build_input_snapshot
-    from haute._sandbox import set_project_root
 
-    set_project_root(Path(request.project_root))
     context: ExecutionContext | None = None
     try:
         context = create_isolated_execution_context(budget)
@@ -459,7 +455,6 @@ def run_supervised_data_input_build(
     store: SourceCacheStore,
     identity: SourceCacheIdentity,
     base_dir: Path,
-    project_root: Path,
     profile: ExecutionProfile,
     refresh: bool,
     budget: IsolatedExecutionBudget,
@@ -476,7 +471,6 @@ def run_supervised_data_input_build(
         config=dict(config),
         base_dir=str(base_dir),
         cache_root=str(store.root),
-        project_root=str(project_root),
         profile=profile,
         refresh=refresh,
         generation_id=generation_id,
@@ -975,7 +969,7 @@ def _run_build(
 
     if budget is None:
         raise RuntimeError("a spawned snapshot build requires an admitted budget")
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
 
     base_dir = target.base_dir
     build = run_supervised_data_input_build(
@@ -983,8 +977,7 @@ def _run_build(
         target.config,
         store=store,
         identity=identity,
-        base_dir=Path(base_dir).resolve() if base_dir is not None else Path.cwd().resolve(),
-        project_root=_get_project_root(),
+        base_dir=Path(base_dir).resolve() if base_dir is not None else current_project().root,
         profile=target.profile,
         refresh=refresh,
         budget=budget,

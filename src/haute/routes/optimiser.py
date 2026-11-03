@@ -42,6 +42,7 @@ from haute._mlflow_utils import (
     registry_uri_for_tracking,
 )
 from haute._pipeline_settings import project_pipeline_settings
+from haute._project_context import current_project
 from haute._project_layout import default_model_folder
 from haute._ratebook_collar import (
     COMBINED_FACTOR_BOUNDS_KEY,
@@ -49,7 +50,7 @@ from haute._ratebook_collar import (
     parse_combined_factor_bounds,
 )
 from haute._rating import is_rating_dtype_descriptor
-from haute._sandbox import _get_project_root, contained_path
+from haute._sandbox import contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import IsolatedWorkerHostError, resolve_worker_memory_enforcement
 from haute.errors import RequestRefusedError
@@ -836,7 +837,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     # Relative and absolute paths both resolve inside the project root, the
     # base the pipeline's own file reads use. A bare filename lands in the
     # pipeline folder's files/models/, which Commit versions with the pipeline.
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     output_path = body.output_path
     if "/" not in output_path and "\\" not in output_path:
         output_path = f"{default_model_folder(project_root)}/{output_path}"

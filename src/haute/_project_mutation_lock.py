@@ -12,6 +12,7 @@ from typing import Literal
 
 from haute._artifact_paths import safe_path
 from haute._file_lock import FileLock
+from haute._project_context import current_project
 
 
 class ProjectMutationLock(asyncio.Lock):
@@ -27,7 +28,7 @@ class ProjectMutationLock(asyncio.Lock):
             # Even a rejected mutation or read-only preview takes this lock.
             # Keep its stable rendezvous file outside authored project storage.
             identity = hashlib.sha256(
-                os.path.normcase(str(Path.cwd().resolve())).encode()
+                os.path.normcase(str(current_project().root)).encode()
             ).hexdigest()
             path = safe_path(Path(tempfile.gettempdir()), f"haute-project-locks/{identity}.lock")
             # A lock of its own, not the process's shared one for this path:

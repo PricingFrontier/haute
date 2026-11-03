@@ -20,6 +20,7 @@ from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult, TraceResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
+from tests._project import project_app
 from tests.conftest import build_test_input_snapshot, head_frame_resolver
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
@@ -783,7 +784,8 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
 ) -> None:
     import haute.routes.pipeline as route_mod
     from haute.routes._supersession import SupersessionCoordinator
-    from haute.server import app
+
+    app = project_app()
 
     request_count = 6
     coordinator = SupersessionCoordinator()

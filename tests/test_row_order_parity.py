@@ -25,6 +25,7 @@ from haute._types import PipelineGraph
 from haute.codegen import graph_to_code
 from haute.deploy._scorer import score_graph
 from haute.executor import _preview_cache, execute_graph, write_data_output
+from tests._project import use_project
 from tests.conftest import make_file_output_config, make_ready_file_input_config
 
 RUNS = 20
@@ -163,7 +164,7 @@ def test_every_surface_gives_the_same_rows_in_the_same_order_on_every_run(
     haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # ``Pipeline.run`` reads the Quote Input's sample inside a Haute project.
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "haute.toml").write_text('[project]\nname = "order"\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(haute_scratch)], check=True)
     graph = _graph(haute_scratch)

@@ -407,8 +407,8 @@ class SavePipelineService:
     Parameters
     ----------
     project_root:
-        Absolute path to the project working directory (``Path.cwd()``
-        at startup).  All file I/O is sandboxed under this directory.
+        Absolute path to the current project's root.  All file I/O is
+        sandboxed under this directory.
     pipeline_root:
         Directory that contains the pipeline file and its ``config/``
         subfolder.  Defaults to *project_root* when not given.

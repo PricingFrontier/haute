@@ -36,7 +36,7 @@ def _has_git(path: Path) -> bool:
     return False
 
 
-def get_project_root(start: Path | None = None) -> Path:
+def get_project_root(start: Path) -> Path:
     """Walk upward from ``start`` to find the Haute project root.
 
     The project root is the first ancestor directory (inclusive of
@@ -47,8 +47,7 @@ def get_project_root(start: Path | None = None) -> Path:
     Parameters
     ----------
     start:
-        Directory to start the search from. Defaults to ``Path.cwd()``
-        when ``None`` or omitted.
+        Directory to start the search from.
 
     Returns
     -------
@@ -65,9 +64,6 @@ def get_project_root(start: Path | None = None) -> Path:
         Propagated unwrapped when the filesystem refuses to stat an
         ancestor directory.
     """
-    if start is None:
-        start = Path.cwd()
-
     if not start.exists():
         raise ConfigError(
             "start path does not exist; check the path or cd to a Haute project",
@@ -266,7 +262,7 @@ def _resolve_default_in(root: Path) -> Path:
     )
 
 
-def resolve_pipeline_file(path: Path | None) -> Path:
+def resolve_pipeline_file(path: Path) -> Path:
     """Resolve a user-supplied pipeline path to a concrete absolute file.
 
     The canonical pipeline-file resolver — every CLI command and every
@@ -275,11 +271,11 @@ def resolve_pipeline_file(path: Path | None) -> Path:
 
     Resolution rules:
 
-    * ``None`` → run the fallback chain (TOML-configured → ``main.py``
-      → single auto-discovery → raise) scoped to :func:`pathlib.Path.cwd`.
-      See :func:`_resolve_default_in` for the full tier ordering.
-    * A **directory** → same fallback chain, but scoped to that
-      directory.  ``haute run ./rating`` is therefore symmetric with
+    * A **directory** → run the fallback chain (TOML-configured →
+      ``main.py`` → single auto-discovery → raise) scoped to that
+      directory; see :func:`_resolve_default_in` for the full tier
+      ordering. The CLI passes the shell's working directory when no path
+      is given, so ``haute run ./rating`` is symmetric with
       ``cd rating && haute run``.
     * An **existing file** → resolved to its absolute path.  No
       discovery or TOML lookup — the user pointed at exactly this file.
@@ -292,7 +288,7 @@ def resolve_pipeline_file(path: Path | None) -> Path:
     Parameters
     ----------
     path:
-        The user-supplied path, or ``None`` to use the project default.
+        The user-supplied path: a pipeline file or a folder to resolve one in.
 
     Returns
     -------
@@ -306,9 +302,6 @@ def resolve_pipeline_file(path: Path | None) -> Path:
         without finding a candidate.  The message always enumerates what
         was tried so users can diagnose and fix their invocation.
     """
-    if path is None:
-        return _resolve_default_in(Path.cwd())
-
     if path.is_dir():
         return _resolve_default_in(path)
 

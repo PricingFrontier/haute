@@ -58,6 +58,7 @@ from haute._node_snapshots import (
     snapshot_write_class,
 )
 from haute._pipeline_settings import read_pipeline_settings
+from haute._project_context import current_project
 from haute._registry import NODE_REGISTRY
 from haute._source_cache import (
     SourceCacheCorruptError,
@@ -1031,10 +1032,11 @@ class _SeedMovedError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class SeedPlanHandoff:
-    """A plan as a spawned worker receives it: the decision and its staging token."""
+    """A plan as a spawned worker receives it: the decision, the root of the store the
+    parent leased its generations in, and its staging token."""
 
     decision: SeedPlanDecision
-    project_root: str
+    store_root: str
     staging_token: str
 
 
@@ -1193,7 +1195,7 @@ class SeedPlan:
     def handoff(self) -> SeedPlanHandoff:
         return SeedPlanHandoff(
             decision=self.decision,
-            project_root=str(self.store.root),
+            store_root=str(self.store.root),
             staging_token=self.staging_token,
         )
 
@@ -1264,7 +1266,7 @@ class SeedPlan:
         """Lease, in a spawned worker, exactly the generations the parent leased."""
         return cls._leased(
             handoff.decision,
-            store if store is not None else NodeSnapshotStore(handoff.project_root),
+            store if store is not None else NodeSnapshotStore(handoff.store_root),
             staging_token=handoff.staging_token,
             owns_staging=False,
             require_current=False,
@@ -1360,9 +1362,8 @@ def open_seed_plan(
 
 
 def _project_store() -> NodeSnapshotStore:
-    from haute._sandbox import _get_project_root
 
-    return NodeSnapshotStore(_get_project_root())
+    return NodeSnapshotStore(current_project().root)
 
 
 def _readable_node_ids(resolver: _Resolver) -> set[str]:
@@ -1491,7 +1492,6 @@ def _flat_file_api_input_is_bounded(config: Mapping[str, object]) -> bool:
     the lineage is simply not admitted and the preview runs exactly as before.
     """
     from haute._api_input_schema import is_json_api_input_path
-    from haute._builders import _configured_pipeline_dir
     from haute._node_apply import resolve_api_input_from_config
     from haute.errors import BoundedMemoryUnsupportedError, HauteError
 
@@ -1501,7 +1501,7 @@ def _flat_file_api_input_is_bounded(config: Mapping[str, object]) -> bool:
     try:
         frame = resolve_api_input_from_config(
             dict(config),
-            base_dir=_configured_pipeline_dir(),
+            base_dir=current_project().pipeline_dir,
             profile=ExecutionProfile.LAZY_SINK.value,
         )
         if isinstance(frame, dict):

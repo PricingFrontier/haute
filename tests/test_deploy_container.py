@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests._project import use_project
+
 
 class TestCheckDockerAvailable:
     """Tests for _check_docker_available()."""
@@ -92,7 +94,7 @@ class TestGitShaShort:
         from haute._git_core import _run_git
         from haute.deploy._container import _git_sha_short
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _run_git("init", "-q")
         _run_git(
             "-c",
@@ -111,7 +113,7 @@ class TestGitShaShort:
     def test_returns_local_outside_a_repository(self, tmp_path, monkeypatch) -> None:
         from haute.deploy._container import _git_sha_short
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
 
         assert _git_sha_short() == "local"

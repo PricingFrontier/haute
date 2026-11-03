@@ -11,91 +11,13 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 
-`PCFG-R04`, `PCFG-R07` and `PCFG-R09` come from the
+`PCFG-R07` and `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 
 ## Planned improvements
-
-### PCFG-R04 — One project context
-**Why:** About a dozen functions resolve the project root or pipeline
-directory, with different rules, several of them from the process's current
-directory: the sandbox root is the current directory captured on first use;
-the project module walks up for `haute.toml` and git, which is the resolver
-the specification describes; runtime execution uses a context variable; the project `utility` finder
-searches the pipeline directory and then the current directory
-(`_project_imports.utility_search_dirs`, which the cache fingerprint and the deploy
-bundle share); the route helper `pipeline_dir` returns the current directory even when
-`haute.toml` is missing, only logging an error, which contradicts this
-component's rule that not being inside a project raises; the input-cache
-routes use the current directory; node data uses the sandbox root; and
-builders, hosted storage, MLflow settings and the assistant each have their
-own. `executor._pipeline_dir` and `_cache._pipeline_dir` are identical copies.
-One step is taken: `pipeline_dir` reads `[project].pipeline` through
-`_project._toml_configured_pipeline`, the reader the builders already use,
-instead of parsing `haute.toml` itself.
-
-**Decided (24 September 2026):**
-- *Workers.* The project context is a small frozen, picklable value (the
-  project root and the resolved pipeline file) resolved once at CLI or server
-  start. Every worker request carries it in place of today's bare
-  `project_root` string, and the worker installs it for the length of the
-  request through the one accessor, a context manager over a `ContextVar` (the
-  mechanism `_path_resolution` already uses for the runtime root). Nothing is
-  inherited from the parent and no global is mutated, so concurrent requests
-  in a warm pool cannot see each other's project; `set_project_root` goes.
-  Settings the server can change while running (the `[mlflow]` table that
-  `PUT /api/mlflow/settings` writes) are not frozen into the context: they
-  are read from the context root's `haute.toml` when used, as the MLflow
-  destination resolver does today, so the next request sees an update.
-- *Tests.* A `project` fixture builds the context for `tmp_path` and installs
-  it through the same accessor, and the application is built for a context
-  (`create_app(context)`), so a `TestClient` serves exactly that project.
-  Modules migrate one at a time; a ratchet like the write-sandbox lint counts
-  the remaining `chdir` sites so the number only falls. There is no
-  compatibility shim: the current-directory fallbacks are deleted when the
-  ratchet reaches zero.
-
-**Plan:** Specify the context and its accessor in the pipeline-config and
-server-api specifications. Add the context value, the accessor, the `project`
-fixture, `create_app(context)` and the `chdir` ratchet; carry the context in
-worker requests; move each resolver's callers onto the accessor and delete the
-resolver. Migrate the test modules off `chdir` (about 160) in batches, then
-delete the current-directory fallbacks.
-
-**Acceptance:** One resolver remains; starting the server outside a project
-fails with the specified error; a server started for project A still serves
-A after the test changes directory to project B; worker requests carry the
-context and no worker mutates a process global; a worker request made after
-an MLflow settings update uses the new destination; the `chdir` ratchet is at
-zero; the identical helper copies are gone.
-
-**Dependencies:** `ROAD-WORKER-05` (engineering quality), so the worker request
-format changes once. Most resolvers sit in files the execution, caching,
-optimiser and assistant work also touch (`executor`, `_cache`,
-`routes/input_cache`, `_input_preparation`, `_data_points`, `assistant`).
-
-**Evidence:** `src/haute/_project.py::get_project_root`;
-`src/haute/_sandbox.py::_get_project_root`;
-`src/haute/_path_resolution.py::current_runtime_project_root`;
-`src/haute/routes/_helpers.py::pipeline_dir`;
-`src/haute/routes/input_cache.py::_project_root`;
-`src/haute/routes/_node_data_service.py::node_data_project_root`;
-`src/haute/_builders.py::_configured_pipeline_dir`;
-`src/haute/_project_storage.py::resolve_project_dir`;
-`src/haute/modelling/_mlflow_settings.py::_project_root_default`;
-`src/haute/assistant/_config.py::_normalise_project_root`;
-`src/haute/executor.py::_pipeline_dir`; `src/haute/_cache.py::_pipeline_dir`.
-The interactive pool's targets carry no root at all
-(`src/haute/routes/pipeline.py::_execute_preview_worker`,
-`_execute_trace_worker`,
-`src/haute/routes/_optimiser_worker.py::optimiser_estimate_worker`): a worker
-resolves it from its own working directory, which differs from the server's
-whenever the root was set without changing directory. The process-mode CI lane
-(`backend-process-mode`) shows it: a test whose root is set that way fails there.
 
 ### PCFG-R07 — Typed config models per node type
 **Why:** `NodeData.config` is `dict[str, Any]`. The shared validator is strict

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import sys
 import threading
@@ -12,6 +13,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+
+from haute._project_context import current_project
+from tests._project import project_app, use_project
 
 
 def _file_config(path: str = "input.csv") -> dict[str, Any]:
@@ -42,10 +46,9 @@ def client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     from haute.routes import input_cache
-    from haute.server import app
 
-    monkeypatch.setattr(input_cache, "_project_root", lambda: tmp_path)
-    monkeypatch.setattr(input_cache, "_pipeline_base_dir", lambda: tmp_path)
+    app = project_app()
+
     input_cache._reset_for_tests()
     with TestClient(app) as test_client:
         yield test_client
@@ -823,12 +826,15 @@ def test_clear_and_build_admission_are_linearized(
     monkeypatch.setattr(input_cache, "build_input_snapshot", fail_build)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
+        # Each request runs in the test's project, as the server would run it.
         clearing = pool.submit(
+            contextvars.copy_context().run,
             input_cache.clear_input_cache,
             InputCacheSourceRequest(config=_file_config()),
         )
         assert clear_entered.wait(timeout=5)
         building = pool.submit(
+            contextvars.copy_context().run,
             input_cache.build_input_cache,
             InputCacheBuildRequest(config=_file_config()),
         )
@@ -1066,7 +1072,6 @@ def test_build_identity_names_the_file_execution_opens(
     """
     from haute._input_preparation import preparation_base_dir
     from haute._input_providers import source_cache_identity, source_signature
-    from haute._sandbox import set_project_root
     from haute._types import GraphNode, NodeData, PipelineGraph
     from haute.execution import canonical_dataframe_execution_graph
     from haute.routes import input_cache
@@ -1084,10 +1089,7 @@ def test_build_identity_names_the_file_execution_opens(
     (tmp_path / "data" / "x.csv").write_text("id,value\n1,a\n", encoding="utf-8")
     (pipeline_dir / "data").mkdir()
     (pipeline_dir / "data" / "x.csv").write_text("id,value\n9,z\n10,y\n", encoding="utf-8")
-    set_project_root(tmp_path)
-
-    monkeypatch.setattr(input_cache, "_project_root", lambda: tmp_path)
-    monkeypatch.setattr(input_cache, "_pipeline_base_dir", lambda: pipeline_dir)
+    use_project(tmp_path)
 
     raw_config = _file_config("data/x.csv")
     node = GraphNode(
@@ -1115,7 +1117,7 @@ def test_build_identity_names_the_file_execution_opens(
     assert built_identity.descriptor["path"] == str((tmp_path / "data" / "x.csv").resolve())
     assert source_signature(
         built_config,
-        base_dir=input_cache._pipeline_base_dir(),
+        base_dir=current_project().pipeline_dir,
     ) == source_signature(executed_config, base_dir=execution_base_dir)
 
 
@@ -1180,10 +1182,9 @@ class _ApiInputWorker:
         import haute._execution_admission as admission
         from haute._execution_admission import IsolatedExecutionBudget
         from haute._execution_context import ExecutionProfile
-        from haute._sandbox import set_project_root
         from haute.routes import input_cache
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         worker = self
         budget = IsolatedExecutionBudget(
             operation="input_snapshot_build",
@@ -1483,7 +1484,6 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
 ) -> None:
     """A real capped worker, stopped by cancellation or its deadline, publishes nothing."""
     from haute._json_shred import _snapshots
-    from haute._sandbox import set_project_root
     from haute._worker_isolation import process_memory_caps_supported
 
     if not process_memory_caps_supported():
@@ -1492,7 +1492,7 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
         monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
     if stop == "timed_out":
         pipeline_settings(pipeline_time_limit_minutes=6 / 60)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     source = _write_quotes(tmp_path)
     monkeypatch.setattr(_snapshots, "build_api_input_tables_worker", _blocking_table_worker)
     inputs = tmp_path / ".haute_cache" / "inputs"

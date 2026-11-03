@@ -18,6 +18,7 @@ from haute.schemas import (
     WorkbenchAppQuoteNote,
     WorkbenchAppQuoteSaveRequest,
 )
+from tests._project import project_app
 
 #: The documents a request carries whole: a pipeline graph with its constants, and a
 #: workbench form. They are what the project's files hold, checked as those files are.
@@ -68,7 +69,7 @@ def _subclasses(model: type[BaseModel]) -> list[type[BaseModel]]:
 
 
 def test_every_request_body_bounds_its_strings_lists_and_mappings() -> None:
-    from haute.server import app
+    app = project_app()
 
     spec = app.openapi()
     components = spec["components"]["schemas"]

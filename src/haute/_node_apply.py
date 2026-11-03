@@ -134,9 +134,10 @@ def _anchored_required_path(config: Mapping[str, Any], base_dir: str | Path | No
         raise ValueError("retained input config requires non-empty 'path'")
 
     from haute._path_case_audit import warn_if_case_ambiguous
-    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
+    from haute._path_resolution import resolve_node_input_path
+    from haute._project_context import current_project
 
-    project_root = current_runtime_project_root()
+    project_root = current_project().root
 
     resolved = resolve_node_input_path(path, pipeline_dir=base_dir, project_root=project_root)
     warn_if_case_ambiguous(resolved, stop=project_root)
@@ -211,12 +212,11 @@ def _workbench_node_config(
     config = _resolve_node_config(config_or_path, base_dir)
     if isinstance(config_or_path, Mapping):
         return config
-    from haute._project import get_project_root
+    from haute._project_context import current_project
     from haute._workbench_nodes import given_config, project_form_tables
 
     owner = "Workbench Input" if node_type is NodeType.WORKBENCH_INPUT else "Workbench Output"
-    root = get_project_root(Path(base_dir) if base_dir is not None else None)
-    return given_config(node_type, config, project_form_tables(root, owner=owner))
+    return given_config(node_type, config, project_form_tables(current_project().root, owner=owner))
 
 
 def resolve_workbench_input_from_config(
@@ -450,12 +450,11 @@ def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
     (``RuntimePathOutsideProjectError``), as for every other node input. The
     executor passes the canonical graph's already-resolved absolute path.
     """
-    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
+    from haute._path_resolution import resolve_node_input_path
+    from haute._project_context import current_project
 
     return str(
-        resolve_node_input_path(
-            path, pipeline_dir=base_dir, project_root=current_runtime_project_root()
-        )
+        resolve_node_input_path(path, pipeline_dir=base_dir, project_root=current_project().root)
     )
 
 

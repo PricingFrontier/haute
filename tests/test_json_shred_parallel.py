@@ -13,6 +13,7 @@ mechanism.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,7 @@ from haute._json_shred._writer import (
     _raise_chunk_error,
     _shred_chunk,
 )
+from tests._project import use_project
 
 
 def _write_jsonl(path: Path, records: list[Any]) -> Path:
@@ -729,7 +731,9 @@ def test_parallel_inference_runs_off_the_main_thread(
     _force_parallel(monkeypatch, chunk_bytes=30_000)
 
     with ThreadPoolExecutor(max_workers=1) as thread_pool:
-        schema = thread_pool.submit(infer_v2_schema_from_data, src).result()
+        schema = thread_pool.submit(
+            contextvars.copy_context().run, infer_v2_schema_from_data, src
+        ).result()
 
     assert schema["tables"]
 
@@ -1374,10 +1378,9 @@ def test_failed_parallel_build_leaves_no_staging_directory(
             }
         ]
     }
-    from haute._sandbox import set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     config = {"path": str(src), "contract": "opaque", **schema}
 
     _force_parallel(monkeypatch)
@@ -1404,7 +1407,9 @@ def test_parallel_build_runs_off_the_main_thread(
 
     _force_parallel(monkeypatch)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        _skip, frames = pool.submit(_shred_build, src, schema, tmp_path / "cache").result()
+        _skip, frames = pool.submit(
+            contextvars.copy_context().run, _shred_build, src, schema, tmp_path / "cache"
+        ).result()
 
     root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
     assert frames[root_label].height == 300

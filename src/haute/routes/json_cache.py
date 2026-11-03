@@ -16,7 +16,6 @@ traceback and answers the sanitized internal-error detail.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import orjson
@@ -26,7 +25,7 @@ from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
-from haute.routes._helpers import pipeline_dir
+from haute._project_context import current_project
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
 
@@ -51,7 +50,11 @@ def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
 def _resolve_data_path(path: str) -> str:
     try:
         return str(
-            resolve_node_input_path(path, pipeline_dir=pipeline_dir(), project_root=Path.cwd())
+            resolve_node_input_path(
+                path,
+                pipeline_dir=current_project().pipeline_dir,
+                project_root=current_project().root,
+            )
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None

@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -123,14 +124,17 @@ class PlatformProxyBoundary:
         await self._app(scope, receive, send)
 
 
-def create_app() -> ASGIApp:
-    """Build the ASGI app for a recognised hosted environment.
+def create_app(project_dir: Path) -> ASGIApp:
+    """Build the ASGI app serving the project in *project_dir* for a recognised hosted
+    environment.
 
     Raises when called outside one — hosted mode is an explicit
     deployment decision, never a fallback. Within one, request
     authentication is delegated to the platform proxy: the local session
     gate is disabled process-wide (the documented hosted trust model)
-    and the server app is wrapped in :class:`PlatformProxyBoundary`.
+    and the server app is wrapped in :class:`PlatformProxyBoundary`. The
+    project is *project_dir* itself, the folder the bootstrap restored or
+    seeded.
     """
     environment = databricks_app_environment()
     if environment is None:
@@ -141,10 +145,11 @@ def create_app() -> ASGIApp:
         )
     os.environ[DISABLE_AUTH_ENV] = "1"
     # Imported here so the trust decision above is already recorded when
-    # the server module (and its middleware stack) initialises — and, in
-    # deployments that restore a bound project, after the working
-    # directory is already the restored clone.
-    from haute.server import app as server_app
+    # the server module (and its middleware stack) initialises.
+    from haute._project_context import ProjectContext
+    from haute.server import create_app as create_server_app
+
+    server_app = create_server_app(ProjectContext.at(project_dir))
 
     logger.info(
         "hosted_mode_enabled",

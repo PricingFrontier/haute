@@ -23,6 +23,7 @@ from haute._dedicated_workers import (
 )
 from haute._native_memory_limit import JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, native_memory_caps_supported
 from haute._process_memory import process_rss_bytes
+from haute._project_context import context_thread
 from haute._step_progress import StepProgress, current_job_progress_reporter
 from haute.routes import _optimiser_frontier, _optimiser_service, _optimiser_session
 from haute.routes._optimiser_session import (
@@ -31,6 +32,7 @@ from haute.routes._optimiser_session import (
     SESSION_KEY,
     SolverSession,
 )
+from tests._project import use_project
 from tests.test_optimiser_setup_worker import _banding_parquet as _banding_for
 from tests.test_optimiser_setup_worker import (
     _online_graph,
@@ -135,9 +137,8 @@ def plain_memory_error(_request: Any) -> Any:
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    from haute._sandbox import set_project_root
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
@@ -671,7 +672,6 @@ class TestSessionCommandLifetime:
         signals: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import threading
 
         from haute.routes import _optimiser_artifacts
 
@@ -690,7 +690,7 @@ class TestSessionCommandLifetime:
         )
         monkeypatch.setattr(_optimiser_frontier, "apply_point", block_then_return)
         answers: list[Any] = []
-        requester = threading.Thread(target=lambda: answers.append(_apply_point(client, job_id, 1)))
+        requester = context_thread(lambda: answers.append(_apply_point(client, job_id, 1)))
         requester.start()
         _wait_for_entry(session)
         _optimiser_service_store().clear_result_data(job_id, keys=(SESSION_KEY,))

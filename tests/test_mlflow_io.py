@@ -30,6 +30,7 @@ from haute._mlflow_io import (
 )
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
 from haute._model_scorer import _cleanup_registered_temp_files
+from tests._project import use_project
 
 # The backend ``mock_mlflow_env`` pins, and the one the destination-free
 # helper tests below thread through explicitly.
@@ -250,7 +251,7 @@ class TestInvalidSourceType:
 class TestModelCache:
     def test_cache_hit(self, mock_mlflow_env, tmp_path, monkeypatch):
         """Second call with same args returns cached model without re-download."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
             _FAKE_BACKEND.digest,
@@ -1758,13 +1759,13 @@ class TestLoadMlflowModelFastCache:
     """Tests for the fast-path cache check in load_mlflow_model."""
 
     def test_disk_cache_root_is_relative_to_current_working_directory(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         assert _disk_cache_root() == tmp_path / ".cache" / "models"
 
     def test_fast_path_cache_hit_for_run_with_artifact(self, tmp_path, monkeypatch):
         """source_type=run with artifact_path hits fast-path cache."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         backend = resolve_backend("")
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
@@ -1800,7 +1801,7 @@ class TestLoadMlflowModelFastCache:
         monkeypatch,
     ):
         """Run artifacts already cached on disk should load without MLflow setup."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         backend = resolve_backend("")
         cached = _artifact_cache_path(
             tmp_path / ".cache" / "models",

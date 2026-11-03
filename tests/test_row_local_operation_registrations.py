@@ -30,6 +30,7 @@ from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from haute.projection import code_recompute_facts
 from haute.trace import execute_trace
+from tests._project import use_project
 from tests.test_snapshot_seeding import _run
 
 _REGISTERED = (
@@ -156,7 +157,7 @@ def _graph(root: Path) -> PipelineGraph:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     return haute_scratch
 

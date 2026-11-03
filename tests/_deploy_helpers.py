@@ -10,7 +10,7 @@ from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
 from haute.graph_utils import PipelineGraph
 
-FIXTURE_DIR = Path("tests/fixtures")
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 DEFAULT_PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 # Patch-pinned image used by tests that target container builds but do not

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from haute._interactive_workers import InteractiveWorkerCrashedError, InteractiveWorkerPool
+from haute._project_context import context_thread
 from haute._step_progress import ProgressCell, StepProgress, current_job_progress_reporter
 from haute.routes._preview_progress import PreviewProgressRegistry
 
@@ -57,7 +58,7 @@ def test_every_accepted_reading_is_one_complete_update() -> None:
                 StepProgress(done=sequence, total=sequence, label=f"step {sequence}"),
             )
 
-    writer = threading.Thread(target=publish)
+    writer = context_thread(publish)
     writer.start()
     readings = 0
     try:

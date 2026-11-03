@@ -16,6 +16,7 @@ Covers remediation items:
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import time
 from pathlib import Path
@@ -399,7 +400,7 @@ def test_execute_pipeline_adapts_public_contract_errors() -> None:
             side_effect=_group_by_contract_error(),
         ),
         patch("haute.executor._compile_preamble", return_value={}),
-        patch("haute.executor._pipeline_dir", return_value=None),
+        patch("haute.routes._optimiser_service.graph_pipeline_dir", return_value=None),
         patch("haute.executor._resolve_batch_scenario", return_value="batch"),
     ):
         with pytest.raises(RequestRefusedError) as exc_info:
@@ -462,8 +463,8 @@ def test_frontier_auto_range_adapts_public_contract_errors(tmp_path) -> None:
 
 def test_solve_worker_records_public_contract_errors() -> None:
     class InlineThread:
-        def __init__(self, *, target, daemon):
-            self.target = target
+        def __init__(self, *, target, daemon, args=(), kwargs=None, name=None):
+            self.target = functools.partial(target, *args, **(kwargs or {}))
             self.daemon = daemon
 
         def start(self) -> None:

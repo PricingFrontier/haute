@@ -29,6 +29,7 @@ from concurrent.futures import wait as wait_for_futures
 from typing import Generic, TypeVar
 
 from haute._execution_context import ExecutionCancellationToken
+from haute._project_context import context_thread
 
 T = TypeVar("T")
 K = TypeVar("K", bound=Hashable)
@@ -68,7 +69,7 @@ class _Flight(Generic[T]):
             finally:
                 on_done(self)
 
-        threading.Thread(target=target, name=f"flight-{self.key!r}", daemon=True).start()
+        context_thread(target, name=f"flight-{self.key!r}", daemon=True).start()
 
 
 class FlightSubscription(Generic[T]):

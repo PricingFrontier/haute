@@ -14,6 +14,7 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import PreambleError, _compile_preamble
+from tests._project import use_project
 from tests.conftest import (
     make_file_input_config,
     make_ready_file_input_config,
@@ -68,7 +69,7 @@ class TestEnsureSourceFile:
         """Should not overwrite an existing source_file."""
         from haute.routes.pipeline import _ensure_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "other/main.py"\n')
 
         graph = PipelineGraph(source_file="existing/pipeline.py")
@@ -79,7 +80,7 @@ class TestEnsureSourceFile:
         """Should read pipeline path from haute.toml when source_file is None."""
         from haute.routes.pipeline import _ensure_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
 
         graph = PipelineGraph()
@@ -91,7 +92,7 @@ class TestEnsureSourceFile:
         """Should leave source_file as None when haute.toml doesn't exist."""
         from haute.routes.pipeline import _ensure_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         graph = PipelineGraph()
         _ensure_source_file(graph)
@@ -101,7 +102,7 @@ class TestEnsureSourceFile:
         """Should leave source_file as None when [project].pipeline is missing."""
         from haute.routes.pipeline import _ensure_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text("[project]\nname = 'test'\n")
 
         graph = PipelineGraph()
@@ -112,7 +113,7 @@ class TestEnsureSourceFile:
         """Should not crash on malformed haute.toml."""
         from haute.routes.pipeline import _ensure_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text("this is not valid toml {{{{")
 
         graph = PipelineGraph()
@@ -123,7 +124,7 @@ class TestEnsureSourceFile:
         """Should treat empty string source_file the same as None."""
         from haute.routes.pipeline import _ensure_source_file
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "my/pipe.py"\n')
 
         graph = PipelineGraph(source_file="")
@@ -151,7 +152,7 @@ class TestPreamblePipelineDir:
         (util_dir / "helpers.py").write_text("MAGIC = 42\n")
 
         # Set cwd to project root (not the pipeline dir)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         ns = _compile_preamble(
             "from utility.helpers import MAGIC\n",
@@ -174,7 +175,7 @@ class TestPreamblePipelineDir:
         (mod_dir / "helpers.py").write_text("MAGIC = 42\n")
 
         # Set cwd to project root — module is in rating/, not on path
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         # Ensure the module is not already importable
         for key in [k for k in sys.modules if k.startswith(mod_name)]:
@@ -202,7 +203,7 @@ class TestPreamblePipelineDir:
         util_dir = pipeline_dir / "utility"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text("VAL = 99\n")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         evict_utility_modules()
         before = list(sys.path)
 
@@ -333,38 +334,38 @@ class TestPipelineDir:
     """Verify _pipeline_dir correctly derives the pipeline directory."""
 
     def test_returns_none_when_no_source_file(self):
-        from haute.executor import _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
 
         graph = PipelineGraph()
-        assert _pipeline_dir(graph) is None
+        assert graph_pipeline_dir(graph) is None
 
     def test_returns_none_for_empty_source_file(self):
-        from haute.executor import _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
 
         graph = PipelineGraph(source_file="")
-        assert _pipeline_dir(graph) is None
+        assert graph_pipeline_dir(graph) is None
 
     def test_returns_parent_for_relative_path(self, monkeypatch, tmp_path):
-        from haute.executor import _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "rating").mkdir()
         (tmp_path / "rating" / "main.py").write_text("")
 
         graph = PipelineGraph(source_file="rating/main.py")
-        result = _pipeline_dir(graph)
+        result = graph_pipeline_dir(graph)
         assert result is not None
         assert result.name == "rating"
 
     def test_returns_parent_for_absolute_path(self, tmp_path):
-        from haute.executor import _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
 
         pipeline_file = tmp_path / "myproject" / "pipeline.py"
         pipeline_file.parent.mkdir(parents=True, exist_ok=True)
         pipeline_file.write_text("")
 
         graph = PipelineGraph(source_file=str(pipeline_file))
-        result = _pipeline_dir(graph)
+        result = graph_pipeline_dir(graph)
         assert result is not None
         assert result == pipeline_file.parent.resolve()
 
@@ -383,7 +384,7 @@ class TestPreviewRouteSourceFile:
         from haute.routes.pipeline import _ensure_source_file
 
         # Set up project structure
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         util_dir = pipeline_dir / "utility"
@@ -404,9 +405,9 @@ class TestPreviewRouteSourceFile:
         assert graph.source_file == "rating/main.py"
 
         # Now the preamble should compile with the correct pipeline_dir
-        from haute.executor import _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
 
-        pdir = _pipeline_dir(graph)
+        pdir = graph_pipeline_dir(graph)
         assert pdir is not None
         assert pdir.name == "rating"
 
@@ -428,11 +429,9 @@ class TestPreviewRouteSourceFile:
         preview must still read ``data/...`` from the project root when that
         file exists there.
         """
-        from haute._sandbox import set_project_root
         from haute.executor import execute_graph
 
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         (pipeline_dir / "main.py").write_text("", encoding="utf-8")
@@ -470,10 +469,8 @@ class TestPreviewRouteSourceFile:
         monkeypatch,
     ):
         """A draft Explore node must not break previews for unrelated nodes."""
-        from haute._sandbox import set_project_root
 
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         data_path = tmp_path / "claims.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(data_path)
 
@@ -558,10 +555,8 @@ class TestPreviewRouteSourceFile:
         monkeypatch,
     ):
         """Explore preview should show the dataframe after its own code runs."""
-        from haute._sandbox import set_project_root
 
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         data_path = tmp_path / "claims.parquet"
         pl.DataFrame({"x": [1, 2, 3, 4]}).write_parquet(data_path)
 
@@ -618,7 +613,7 @@ class TestParserConfigLoadWarning:
     def test_raises_when_config_missing(self, tmp_path, monkeypatch):
         """Parsing a pipeline with a missing config file raises ``ConfigError``
         (post Item #18 fail-loudly contract)."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         (pipeline_dir / "main.py").write_text(
@@ -636,7 +631,7 @@ class TestParserConfigLoadWarning:
 
     def test_no_warning_when_config_exists(self, tmp_path, monkeypatch):
         """Parsing a pipeline with a valid config file should not set graph.warning."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         config_dir = pipeline_dir / "config" / "data_input"
@@ -660,7 +655,7 @@ class TestParserConfigLoadWarning:
     def test_a_config_that_is_not_utf8_fails_the_parse(self, tmp_path, monkeypatch):
         """A config file with a Windows-1252 en-dash (0x96) is refused naming the file and
         the byte, never read with a replacement character the next save would write."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
         config_dir = pipeline_dir / "config" / "banding"

@@ -558,7 +558,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             continue
         try:
             from haute._polars_io_registry import validate_data_input_config
-            from haute._sandbox import _get_project_root
+            from haute._project_context import current_project
             from haute.deploy._bundler import (
                 _resolve_direct_parquet_source,
                 shipped_snapshot_config,
@@ -585,7 +585,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             identity = source_cache_identity(
                 snapshot_config, base_dir=resolved.pipeline_file.parent
             )
-            SourceCacheStore(_get_project_root()).open_generation(identity)
+            SourceCacheStore(current_project().root).open_generation(identity)
         except Exception as exc:
             logger.exception(
                 "deploy_data_input_validation_failed",

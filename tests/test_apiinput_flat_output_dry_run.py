@@ -32,9 +32,10 @@ from fastapi.testclient import TestClient
 
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests._project import project_app, use_project
 
 _CSV = "customer_id,premium\n1,100.0\n2,200.0\n"
 _EXPECTED_DOCUMENT = [
@@ -69,12 +70,12 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     (tmp_path / "rating").mkdir()
     (tmp_path / "rating" / "main.py").write_text("# pipeline entry\n")
     (tmp_path / "data").mkdir()
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
     yield tmp_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -142,7 +143,7 @@ def test_flat_apiinput_to_output_dry_run_route(nested_project: Path) -> None:
     422. The volatile mapping is supplied on the request; the graph's OUTPUT
     config is left empty so the route's config-swap is exercised too.
     """
-    from haute.server import app
+    app = project_app()
 
     csv_path = nested_project / "data" / "customers.csv"
     csv_path.write_text(_CSV)

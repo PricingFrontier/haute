@@ -52,12 +52,15 @@ from haute._lru_cache import LRUCache
 from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
-    _infer_project_root,
     _normalise_path_text,
-    runtime_project_root_scope,
 )
 from haute._pipeline_settings import project_pipeline_settings
-from haute._project_imports import bind_project_utility, evict_utility_modules
+from haute._project_context import current_project, graph_pipeline_dir
+from haute._project_imports import (
+    bind_project_utility,
+    evict_utility_modules,
+    utility_bound_to,
+)
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     compile_project_code,
@@ -146,21 +149,6 @@ _preamble_lock = threading.Lock()
 # storing per-key ``_PreambleCell`` slots in the ``lru_cache`` and computing
 # the namespace into the cell under ``_preamble_lock`` with a double-check —
 # see ``_compile_preamble``.
-
-
-def _pipeline_dir(graph: PipelineGraph) -> Path | None:  # pragma: no mutate
-    """Derive the pipeline file's parent directory from ``graph.source_file``.
-
-    Returns *None* when the graph has no source file metadata (e.g.
-    dynamically constructed graphs in tests).
-    """
-    sf = graph.source_file
-    if not sf:
-        return None
-    p = Path(sf)
-    if not p.is_absolute():
-        p = Path.cwd() / p
-    return p.resolve().parent
 
 
 class PreviewProjectionError(HauteValidationError):
@@ -294,7 +282,7 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
         msg = f"Import/preamble error: {exc}"
         if source_file and source_file != "<string>":
             try:
-                rel: str | Path = _Path(source_file).relative_to(_Path.cwd())
+                rel: str | Path = _Path(source_file).relative_to(current_project().root)
             except ValueError:
                 rel = source_file
             msg = f"Error in {rel} line {source_line}: {exc}"
@@ -344,13 +332,13 @@ _preamble_cells_guard = threading.Lock()
 @functools.lru_cache(maxsize=128)
 def _compile_preamble_cached(
     preamble: str,
-    cwd: str,
+    project_root: str,
     pipeline_dir_str: str | None,  # pragma: no mutate
     _execution_fingerprint: str,
 ) -> _PreambleCell:
     """Cache-facing worker — returns the per-key single-flight cell.
 
-    Keyed on ``(preamble, cwd, pipeline_dir_str, _execution_fingerprint)``
+    Keyed on ``(preamble, project_root, pipeline_dir_str, _execution_fingerprint)``
     so different pipelines sharing an identical preamble text but different
     utility contents still get distinct cache slots when callers request
     dependency refresh.
@@ -367,7 +355,7 @@ def _compile_preamble_cached(
 
 def _compile_preamble_into_cell(
     preamble: str,
-    cwd: str,
+    project_root: str,
     pipeline_dir_str: str | None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
@@ -377,7 +365,7 @@ def _compile_preamble_into_cell(
     and can consult process-global import state.
     """
     validate_user_code(preamble)
-    rebound = bind_project_utility(pipeline_dir_str, working_dir=cwd)
+    rebound = bind_project_utility(pipeline_dir_str, project_root=project_root)
     if rebound or preamble_imports_utility(preamble):
         # A cache miss for a utility-importing preamble (a changed digest) or a
         # newly bound project: the next import loads utility's source again, which
@@ -426,11 +414,9 @@ def _compile_preamble(
         return {}
 
     # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
-    # subfolder), then in the working directory (``haute._project_imports``); both
+    # subfolder), then in the project root (``haute._project_imports``); both
     # are part of the cache key, as two projects can share a preamble's text.
-    import os
-
-    cwd = os.getcwd()
+    project_root = str(current_project().root)
 
     # Normalise pipeline_dir to a string at the boundary so lru_cache's
     # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
@@ -453,12 +439,20 @@ def _compile_preamble(
     with _preamble_cells_guard:
         cell = _compile_preamble_cached(
             preamble,
-            cwd,
+            project_root,
             pipeline_dir_str,
             execution_fingerprint,
         )
     ns = cell.ns
     if ns is not None:
+        # A cached namespace's deferred ``utility`` imports run when the frame is
+        # collected, so they must find this project's package even when another
+        # project's compile bound the finder since: rebind it and forget the other
+        # project's modules. A process serves one project at a time.
+        if not utility_bound_to(pipeline_dir_str, project_root=project_root):
+            with _preamble_lock:
+                if bind_project_utility(pipeline_dir_str, project_root=project_root):
+                    evict_utility_modules()
         return ns
 
     # Single-flight population: first caller compiles under ``_preamble_lock``
@@ -468,7 +462,7 @@ def _compile_preamble(
     # semantically-equal-but-distinct namespace.
     with _preamble_lock:
         if cell.ns is None:
-            cell.ns = _compile_preamble_into_cell(preamble, cwd, pipeline_dir_str)
+            cell.ns = _compile_preamble_into_cell(preamble, project_root, pipeline_dir_str)
         return cell.ns
 
 
@@ -883,7 +877,7 @@ def _submodel_schema_warnings(
             if preamble_ns is None:
                 try:
                     preamble_ns = _compile_preamble(
-                        graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
+                        graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph)
                     )
                 except schema_errors as exc:
                     # Each affected input reports the same failed compilation.
@@ -1064,34 +1058,33 @@ def execute_graph(
     execution_context.record_preview_seed_plan(())
     if not shared_snapshots or target_node_id is None or not graph.source_file:
         return core(snapshot_plan=None, seed_plan_request=None)
-    with runtime_project_root_scope(graph.source_file):
-        # With caching off in the project's pipeline settings a preview neither
-        # reads nor writes node-output snapshots: it runs without a plan.
-        if not project_pipeline_settings().caching_enabled or not preview_lineage_admitted(
-            graph, target_node_id, source=source
-        ):
-            return core(snapshot_plan=None, seed_plan_request=None)
-        request = SeedPlanRequest(
-            graph=graph,
-            target_node_id=target_node_id,
-            source=source,
-            profile=ExecutionProfile.PREVIEW_EAGER,
-            required_columns_by_node=_preview_required_columns_by_node(
-                graph,
-                target_node_id,
-                requested_preview_columns,
-            )
-            or None,
-            # The requested columns only say which to show first; one the
-            # node no longer produces (a deselected column) is dropped, as
-            # without a plan.
-            best_effort_demand=True,
+    # With caching off in the project's pipeline settings a preview neither
+    # reads nor writes node-output snapshots: it runs without a plan.
+    if not project_pipeline_settings().caching_enabled or not preview_lineage_admitted(
+        graph, target_node_id, source=source
+    ):
+        return core(snapshot_plan=None, seed_plan_request=None)
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id=target_node_id,
+        source=source,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        required_columns_by_node=_preview_required_columns_by_node(
+            graph,
+            target_node_id,
+            requested_preview_columns,
         )
-        plan = open_seed_plan(
-            request,
-            execution_context=execution_context,
-            staging_token=staging_token,
-        )
+        or None,
+        # The requested columns only say which to show first; one the
+        # node no longer produces (a deselected column) is dropped, as
+        # without a plan.
+        best_effort_demand=True,
+    )
+    plan = open_seed_plan(
+        request,
+        execution_context=execution_context,
+        staging_token=staging_token,
+    )
     with plan:
         return core(snapshot_plan=plan, seed_plan_request=request)
 
@@ -1171,15 +1164,14 @@ def _execute_graph_core(
     # generation's pointer is the one this preview entry is keyed by. A seed
     # plan was opened after preparing exactly the inputs its execution reads.
     if snapshot_plan is None:
-        with runtime_project_root_scope(graph.source_file):
-            prepare_input_snapshots(
-                lineage_preparation_order(graph, target_node_id, source),
-                graph.node_map,
-                profile=execution_context.profile,
-                execution_context=execution_context,
-                base_dir=preparation_base_dir(graph),
-                schema_only=False,
-            )
+        prepare_input_snapshots(
+            lineage_preparation_order(graph, target_node_id, source),
+            graph.node_map,
+            profile=execution_context.profile,
+            execution_context=execution_context,
+            base_dir=preparation_base_dir(graph),
+            schema_only=False,
+        )
     # Read once: this key, and the key a capturing preview stores under after
     # it ran, describe the inputs as they were here, never a later read.
     runtime_identity = execution_facade.lineage_runtime_input_identity(
@@ -1234,8 +1226,7 @@ def _execute_graph_core(
         )
         if now.digest != runtime_identity.digest:
             return None
-        with runtime_project_root_scope(graph.source_file):
-            decision = resolve_seed_plan(seed_plan_request, store=snapshot_plan.store)
+        decision = resolve_seed_plan(seed_plan_request, store=snapshot_plan.store)
         read = {
             (generation.identity.digest, generation.generation_id)
             for generation in read_generations
@@ -1658,7 +1649,7 @@ def _eager_execute(
     try:
         preamble_ns = _compile_preamble(
             graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
+            pipeline_dir=graph_pipeline_dir(graph),
             memo=fingerprint_memo,
         )
     except PreambleError as exc:
@@ -1991,10 +1982,7 @@ def resolve_data_output_path(
 
     if is_databricks_output(config):
         return None, str(config.get("table", ""))
-    root = _infer_project_root(
-        project_root=project_root,
-        source_file=graph.source_file,
-    )
+    root = current_project().root if project_root is None else Path(project_root).resolve()
     fmt_entry = format_for_config(config)
     if fmt_entry.source_kind == "database":
         raw_uri = config.get("uri")
@@ -2003,7 +1991,7 @@ def resolve_data_output_path(
 
             validate_sqlite_project_path(
                 raw_uri,
-                base_dir=_pipeline_dir(graph) or root,
+                base_dir=graph_pipeline_dir(graph) or root,
                 project_root=root,
             )
         return None, str(config.get("table", ""))
@@ -2137,10 +2125,7 @@ def prepare_data_output(
     config = _data_output_config(graph, output_node_id)
     from haute._polars_io_registry import data_output_group
 
-    root = _infer_project_root(
-        project_root=project_root,
-        source_file=graph.source_file,
-    )
+    root = current_project().root if project_root is None else Path(project_root).resolve()
     out, path = resolve_data_output_path(graph, config, project_root=root)
     is_file_target = data_output_group(config) == "file"
     if is_file_target and out is not None and out.exists() and not overwrite:
@@ -2182,11 +2167,11 @@ def prepare_data_output(
         # shares one namespace without re-hashing.
         pinned = preamble_execution_fingerprint(
             graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
+            pipeline_dir=graph_pipeline_dir(graph),
         )
         preamble_ns = _compile_preamble(
             graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
+            pipeline_dir=graph_pipeline_dir(graph),
             execution_fingerprint=pinned,
         )
 

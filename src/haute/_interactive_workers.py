@@ -32,6 +32,7 @@ from haute._parent_watch import exit_with_parent
 from haute._polars_environment import release_polars_spill_dir
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
+from haute._project_context import current_project, project_scope
 from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
 from haute._worker_isolation import (
     IsolatedWorkerError,
@@ -291,7 +292,7 @@ def _interactive_worker_entrypoint(
             request = pickle.loads(raw_request)
             if request == ("shutdown",):
                 return
-            if not isinstance(request, tuple) or len(request) != 8 or request[0] != "run":
+            if not isinstance(request, tuple) or len(request) != 9 or request[0] != "run":
                 raise RuntimeError("interactive worker received a malformed request")
             (
                 _kind,
@@ -302,6 +303,7 @@ def _interactive_worker_entrypoint(
                 native_growth,
                 native_required,
                 streaming_chunk_size,
+                project,
             ) = request
             # A warm worker outlives the server's setting: each task carries the
             # value the server runs with when it hands the task over.
@@ -321,7 +323,9 @@ def _interactive_worker_entrypoint(
             with native_memory_backend_scope(backend, lease):
                 if run_function:
                     try:
-                        with bind_job_progress(progress_cell, job_id):
+                        # The request's project, for this request alone: a warm worker
+                        # serves requests from every project its server has.
+                        with bind_job_progress(progress_cell, job_id), project_scope(project):
                             value = function(*args, **kwargs)
                         envelope = ("result", job_id, "ok", value)
                         del value
@@ -759,6 +763,7 @@ class InteractiveWorkerPool:
             memory_growth_limit_bytes,
             require_memory_limit,
             current_streaming_chunk_size(),
+            current_project(),
         )
         try:
             return pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)
