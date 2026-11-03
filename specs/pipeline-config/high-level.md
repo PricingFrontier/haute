@@ -257,7 +257,9 @@ job follows staging directly): nothing runs the pushed image until someone updat
 by hand, so those checks would test the old service. The production job tags the release in git:
 Databricks as `deploy/v<registered model version>`; a container-based target, which has no
 registered version, as `deploy/<short commit>` (the commit its image tag carries), leaving an
-existing tag in place when the same commit is deployed again. GitHub uses
+existing tag in place when the same commit is deployed again. Those tags are the record
+`haute impact` reads, for a container target, of whether production has been released, so the
+impact job's checkout keeps credentials for origin as the production job's does. GitHub uses
 a separate `workflow_dispatch`-triggered workflow; GitLab uses `when: manual` on the production
 job; Azure DevOps runs the production job as a `deployment` under an environment, `production`
 unless `haute.toml` names another, whose actual approval check is configured on that
@@ -586,7 +588,7 @@ Source Switches route on:
   (its Source Switches' one non-live source, or `"batch"`), as they do today;
 - deployed scoring uses `live`;
 - `pipeline.run(source=...)` uses the source it is given, which it requires, and
-  `pipeline.score()` and `haute run` use `live`.
+  `pipeline.score()` uses `live`, and `haute run` `live` unless `--source` names another.
 
 A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
 Polars callback that reads a constant during collection reads the run's value on whichever

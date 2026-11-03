@@ -359,9 +359,10 @@ jobs:
 
       - run: uv sync --group dev --locked
 
-      # `-m` here REPLACES the `-m 'not perf'` in pyproject's addopts rather than
-      # combining with it, so both exclusions have to be spelled out. Dropping
-      # `not perf` would pull the benchmarks into this lane.
+      # `-m` here REPLACES the `-m 'not perf and not index'` in pyproject's addopts
+      # rather than combining with it, so every exclusion has to be spelled out.
+      # Dropping `not perf` would pull the benchmarks into this lane, and dropping
+      # `not index` the package-index resolves the dependencies workflow runs.
       #
       # `not meta` keeps the repo-health checks (specs/docs consistency) out of
       # the compatibility legs. They read files rather than exercise behaviour,
@@ -372,7 +373,7 @@ jobs:
       - name: Pytest shard ${{ matrix.shard }}/3 (compat, no coverage)
         run: >
           uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
-          -m "not perf and not meta"
+          -m "not perf and not meta and not index"
           --shard=${{ matrix.shard }}/3 --shard-lane=compat
           --junitxml=.cache/junit/compat-${{ matrix.python-version }}-shard${{ matrix.shard }}.xml
           -o junit_family=xunit1

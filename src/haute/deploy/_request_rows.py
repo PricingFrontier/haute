@@ -43,6 +43,7 @@ from haute._logging import get_logger
 from haute._node_builder import node_fn_name
 from haute._polars_operations import POLARS_OPERATIONS, OperationClass
 from haute._polars_selectors import preamble_selector_aliases
+from haute._topo import topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.chunking import classify_row_local_expression
 from haute.errors import DeployError, QuoteAnswerRowsError, RequestRowCountError
@@ -935,7 +936,8 @@ def prove_request_rows(
         edges_by_target=edges_by_target,
         selector_aliases=preamble_selector_aliases(graph.preamble or ""),
     )
-    for node_id in _topological_order(graph, node_map, edges_by_target):
+    known_edges = [edge for edges in edges_by_target.values() for edge in edges]
+    for node_id in topo_sort_ids(list(node_map), known_edges):
         walk.facts[node_id] = walk.node(node_map[node_id])
     output = node_map[output_node_id]
     if walk.facts[output_node_id].rows is not _Rows.REQUEST and not walk.refusals:
@@ -943,30 +945,6 @@ def prove_request_rows(
     if walk.refusals:
         return "quote_by_quote", tuple(walk.refusals), tuple(walk.checks)
     return "in_request_order", (), tuple(walk.checks)
-
-
-def _topological_order(
-    graph: PipelineGraph,
-    node_map: Mapping[str, GraphNode],
-    edges_by_target: Mapping[str, Sequence[GraphEdge]],
-) -> list[str]:
-    remaining = {node_id: len(edges_by_target.get(node_id, ())) for node_id in node_map}
-    children: dict[str, list[str]] = {}
-    for target, edges in edges_by_target.items():
-        for edge in edges:
-            children.setdefault(edge.source, []).append(target)
-    ready = [node.id for node in graph.nodes if remaining[node.id] == 0]
-    order: list[str] = []
-    while ready:
-        node_id = ready.pop(0)
-        order.append(node_id)
-        for child in children.get(node_id, ()):
-            remaining[child] -= 1
-            if remaining[child] == 0:
-                ready.append(child)
-    if len(order) != len(node_map):
-        raise DeployError("The deployed graph has a cycle.")
-    return order
 
 
 # ---------------------------------------------------------------------------

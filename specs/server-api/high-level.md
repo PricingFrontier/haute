@@ -540,7 +540,8 @@ ledger capture.
 entry point used by both `save(...)` and assistant dry-run. It performs the
 same singleton, data-I/O, declared-config-key, Edge Join role/key/topology,
 sanitized-name, API-input and path validation that can be decided without staging
-files. A Quote Input table labelled like another node is refused there, naming the table, the
+files, including the sidecar paths the save would write (`_collect_node_configs_recursive`:
+a Windows reserved device name such as `CON.json`, or two paths one file ignoring case). A Quote Input table labelled like another node is refused there, naming the table, the
 Quote Input and the node, because a parameter of that name would read both and the saved
 file would not reload. It rejects any edge out of a node type that has no output
 (`haute._types.SINK_ONLY_NODE_TYPES`: Quote Response, Data Output, Explore, Model

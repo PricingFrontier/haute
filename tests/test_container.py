@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -25,12 +26,12 @@ from haute.deploy._container import (
     DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
     ContainerBuildResult,
     _check_docker_available,
-    _detect_extra_deps,
     _docker_push,
+    _extra_deps_by_artifact,
     _generate_app_source,
     _generate_dockerfile,
     _git_sha_short,
-    _next_version,
+    _pinned_dockerfile_deps,
     _validate_base_image,
     _validate_model_name,
     build_and_push_image,
@@ -64,6 +65,7 @@ def _make_resolved(
     container: ContainerConfig | None = None,
     model_name: str = "test-model",
     target: str = "container",
+    project_root: Path | None = None,
 ) -> ResolvedDeploy:
     """Build a minimal ResolvedDeploy for container unit tests.
 
@@ -83,6 +85,7 @@ def _make_resolved(
         input_schema={"age": "int", "region": "str"},
         output_schema={"premium": "float"},
         removed_node_ids=["exposure"],
+        **({} if project_root is None else {"project_root": project_root}),
     )
 
 
@@ -148,18 +151,10 @@ class _FakeRequest:
 _EXPECTED_XGBOOST = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
 
 
-def _dockerfile_install_lines(dockerfile: str) -> tuple[list[str], str]:
-    """The scoring-runtime requirements and the ``--no-deps`` haute requirement."""
-    prefix = "RUN pip install --no-cache-dir "
-    install_lines = [line for line in dockerfile.splitlines() if line.startswith(prefix)]
-    assert len(install_lines) == 2, "Dockerfile installs the runtime, then haute"
-    runtime, haute = (line.removeprefix(prefix) for line in install_lines)
-    assert haute.startswith("--no-deps "), haute
-    return runtime.split(), haute.removeprefix("--no-deps ")
-
-
-def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
-    return _dockerfile_install_lines(dockerfile)[0]
+def _runtime_roots(resolved: ResolvedDeploy) -> tuple[list[str], str]:
+    """The roots a scoring image's runtime lock resolves, and its haute requirement."""
+    haute, *roots = _pinned_dockerfile_deps(resolved)
+    return roots, haute
 
 
 # ---------------------------------------------------------------------------
@@ -568,8 +563,85 @@ class TestGenerateAppSource:
         assert response.status_code == 500
         body = response.json()
         assert body["error_code"] == "deploy_internal_error"
-        assert "corrupt model artifact" in body["error"]
         assert body != {"error": "Validation error"}
+
+    def test_a_500_names_its_request_id_and_never_the_exception_text(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DEP-R15: the envelope carries an id the log line carries too, not the detail."""
+        module = _load_generated_app(
+            tmp_path,
+            monkeypatch,
+            pl.DataFrame({"premium": [100.0]}),
+        )
+
+        def fail_score_graph(**_kwargs):
+            raise RuntimeError("cannot open /srv/models/motor/secret_model.cbm")
+
+        monkeypatch.setattr(module, "score_graph", fail_score_graph)
+        client = TestClient(module.app, raise_server_exceptions=False)
+
+        with caplog.at_level("ERROR", logger="haute.deploy.container"):
+            failed = client.post("/quote", json={"age": 30})
+        healthy = client.get("/health")
+
+        assert failed.status_code == 500
+        body = failed.json()
+        assert "/srv/models" not in failed.text
+        assert body["error_code"] == "deploy_internal_error"
+        assert body["request_id"] == failed.headers["X-Request-ID"]
+        [record] = caplog.records
+        assert body["request_id"] in record.getMessage()
+        assert "/srv/models/motor/secret_model.cbm" in str(record.exc_info[1])
+        # Every response names its request; each request gets its own id.
+        assert healthy.headers["X-Request-ID"] not in {"", body["request_id"]}
+
+    def test_a_failure_no_route_handles_is_the_correlated_500(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DEP-R15: an exception escaping the route still names its request id."""
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [100.0]}))
+
+        def broken_framing(*_args, **_kwargs):
+            raise RuntimeError("frame builder broke at /srv/haute/app.py")
+
+        monkeypatch.setattr(module, "frame_rows", broken_framing)
+        client = TestClient(module.app, raise_server_exceptions=False)
+
+        with caplog.at_level("ERROR", logger="haute.deploy.container"):
+            failed = client.post("/quote", json={"age": 30})
+
+        assert failed.status_code == 500
+        assert "/srv/haute" not in failed.text
+        body = failed.json()
+        assert body["error_code"] == "deploy_internal_error"
+        assert body["request_id"] == failed.headers["X-Request-ID"]
+        [record] = caplog.records
+        assert record.getMessage() == f"deploy_request_failed request_id={body['request_id']}"
+
+    @pytest.mark.parametrize(
+        "body",
+        [b'{"age": ' + b"9" * 4400 + b"}", b"[" * 100_000 + b"]" * 100_000],
+        ids=["integer-past-the-digit-limit", "nesting-past-the-recursion-limit"],
+    )
+    def test_json_python_cannot_read_is_an_invalid_json_422(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes
+    ) -> None:
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [100.0]}))
+
+        response = TestClient(module.app).post(
+            "/quote", content=body, headers={"Content-Type": "application/json"}
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "invalid_json"
+        assert response.headers["X-Request-ID"]
 
     def test_quote_rejects_oversized_content_length_before_json_materialisation(
         self,
@@ -906,9 +978,11 @@ class TestGenerateAppSource:
 
         assert response.status_code == 500
         assert response.json()["error_code"] == "deploy_internal_error"
-        assert "late stream failure" in response.json()["error"]
+        assert "late stream failure" not in response.text
         assert cleanup_calls == [True]
-        log_failure.assert_called_once_with("deploy_quote_failed")
+        log_failure.assert_called_once_with(
+            "%s request_id=%s", "deploy_quote_failed", response.json()["request_id"]
+        )
 
     def test_ndjson_materialization_runs_off_event_loop(
         self,
@@ -1008,17 +1082,22 @@ class TestGenerateDockerfile:
         assert "EXPOSE 9090" in df
         assert '"9090"' in df
 
-    def test_includes_base_deps(self) -> None:
-        resolved = _make_resolved()
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        for dep in ("haute", "polars", "fastapi", "uvicorn[standard]"):
-            assert dep in df
+    def test_installs_the_bundles_locks_by_hash_and_checks_the_runtime(self) -> None:
+        """DEP-R09: the image resolves nothing; it installs the locks and checks them."""
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        installs = [line for line in df.splitlines() if line.startswith("RUN pip install")]
+        assert installs == [
+            "RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary :all: \\",
+            "RUN pip install --no-cache-dir --no-deps --require-hashes -r haute.lock",
+        ]
+        assert "    -r requirements.lock\n" in df
+        assert "COPY requirements.lock haute.lock dependency_lock.json ./\n" in df
+        check = "RUN python -m haute.deploy._runtime_check dependency_lock.json\n"
+        assert df.index(check) > df.index("-r haute.lock")
 
     def test_pins_core_runtime_dependencies(self) -> None:
-        resolved = _make_resolved()
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps, haute = _dockerfile_install_lines(df)
+        deps, haute = _runtime_roots(_make_resolved())
 
         assert haute == f"haute=={version('haute')}"
         assert f"polars=={version('polars')}" in deps
@@ -1030,17 +1109,14 @@ class TestGenerateDockerfile:
         self,
     ) -> None:
         # DEP-R02: haute's own dependencies bring the assistant, tuning, editor
-        # and MLflow stacks; the image installs haute --no-deps plus a pinned
+        # and MLflow stacks; the image installs haute --no-deps plus a locked
         # scoring runtime instead.
-        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
-
-        deps, haute = _dockerfile_install_lines(df)
+        deps, haute = _runtime_roots(_make_resolved())
         names = {dep.split("==")[0].split("[")[0] for dep in deps}
 
         assert haute == f"haute=={version('haute')}"
         assert names == {name for name, _ in _SCORING_RUNTIME_DEPENDENCIES}
         assert not names & {"anthropic", "openai", "optuna", "libcst", "mlflow", "tomlkit"}
-        assert df.index("--no-deps") > df.index(deps[0])
 
     @pytest.mark.parametrize(("source_type", "needs_mlflow"), [("run", True), ("file", False)])
     def test_an_mlflow_sourced_optimiser_apply_adds_mlflow(
@@ -1065,9 +1141,7 @@ class TestGenerateDockerfile:
             ),
         )
 
-        deps = _dockerfile_pip_install_deps(
-            _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        )
+        deps, _haute = _runtime_roots(resolved)
 
         assert (f"mlflow=={version('mlflow')}" in deps) is needs_mlflow
 
@@ -1085,13 +1159,11 @@ class TestGenerateDockerfile:
         monkeypatch.setattr(_container, "metadata_version", fake_version)
 
         with pytest.raises(DeployError, match="Cannot pin dependency 'fastapi'"):
-            _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+            _pinned_dockerfile_deps(_make_resolved())
 
     def test_includes_catboost_for_cbm(self) -> None:
         resolved = _make_resolved(artifacts={"freq.cbm": Path("models/freq.cbm")})
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps = _dockerfile_pip_install_deps(df)
+        deps, _haute = _runtime_roots(resolved)
 
         assert f"catboost=={version('catboost')}" in deps
         assert "catboost" not in deps
@@ -1102,9 +1174,7 @@ class TestGenerateDockerfile:
         install whatever is latest at image-build time and load the pickle
         under a different version than wrote it."""
         resolved = _make_resolved(artifacts={"model.pkl": Path("models/model.pkl")})
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps = _dockerfile_pip_install_deps(df)
+        deps, _haute = _runtime_roots(resolved)
 
         assert f"scikit-learn=={version('scikit-learn')}" in deps
         assert "scikit-learn" not in deps
@@ -1113,9 +1183,7 @@ class TestGenerateDockerfile:
         resolved = _make_resolved(
             artifacts={"sev.lgbm": Path("sev.lgbm"), "freq.cbm": Path("freq.cbm")}
         )
-        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
-
-        deps = _dockerfile_pip_install_deps(df)
+        deps, _haute = _runtime_roots(resolved)
 
         assert deps[-3:] == [
             f"catboost=={version('catboost')}",
@@ -1141,7 +1209,7 @@ class TestGenerateDockerfile:
         resolved = _make_resolved(artifacts={"model.lgb": Path("models/model.lgb")})
 
         with pytest.raises(DeployError) as excinfo:
-            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+            _pinned_dockerfile_deps(resolved)
 
         message = str(excinfo.value)
         assert "'lightgbm'" in message
@@ -1156,11 +1224,11 @@ class TestGenerateDockerfile:
 class TestDetectExtraDeps:
     def test_empty_artifacts(self) -> None:
         resolved = _make_resolved(artifacts={})
-        assert _detect_extra_deps(resolved) == []
+        assert list(_extra_deps_by_artifact(resolved)) == []
 
     def test_cbm_maps_to_catboost(self) -> None:
         resolved = _make_resolved(artifacts={"m.cbm": Path("m.cbm")})
-        assert _detect_extra_deps(resolved) == ["catboost"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["catboost"]
 
     @pytest.mark.parametrize("artifact", ["m.pkl", "m.pickle", "m.joblib"])
     def test_a_pickle_brings_every_package_the_restricted_unpickler_allows(
@@ -1182,24 +1250,22 @@ class TestDetectExtraDeps:
 
         assert allowed - in_runtime_or_stdlib == set(importable_from)
         resolved = _make_resolved(artifacts={artifact: Path(artifact)})
-        assert _detect_extra_deps(resolved) == sorted(importable_from.values())
+        assert list(_extra_deps_by_artifact(resolved)) == sorted(importable_from.values())
 
     def test_lgb_maps_to_lightgbm(self) -> None:
         resolved = _make_resolved(artifacts={"m.lgb": Path("m.lgb")})
-        assert _detect_extra_deps(resolved) == ["lightgbm"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["lightgbm"]
 
     def test_xgb_maps_to_the_installed_xgboost_distribution(self) -> None:
         resolved = _make_resolved(artifacts={"m.xgb": Path("m.xgb")})
-        assert _detect_extra_deps(resolved) == [_EXPECTED_XGBOOST]
+        assert list(_extra_deps_by_artifact(resolved)) == [_EXPECTED_XGBOOST]
 
     def test_an_xgboost_model_pins_the_distribution_installed_here(self) -> None:
         # haute depends on xgboost-cpu except on macOS; pinning reads installed
         # metadata, so naming the wrong distribution fails Dockerfile generation.
         resolved = _make_resolved(artifacts={"m.ubj": Path("m.ubj")})
 
-        deps = _dockerfile_pip_install_deps(
-            _generate_dockerfile("python:3.11-slim", 8080, resolved)
-        )
+        deps, _haute = _runtime_roots(resolved)
 
         assert f"{_EXPECTED_XGBOOST}=={version(_EXPECTED_XGBOOST)}" in deps
         assert f"pandas=={version('pandas')}" in deps
@@ -1220,19 +1286,19 @@ class TestDetectExtraDeps:
         # haute is installed --no-deps, so every exported model format must name
         # the engine that loads it (and pandas where haute's encoding needs it).
         resolved = _make_resolved(artifacts={artifact: Path(artifact)})
-        assert _detect_extra_deps(resolved) == expected
+        assert list(_extra_deps_by_artifact(resolved)) == expected
 
     def test_onnx_maps_to_onnxruntime(self) -> None:
         resolved = _make_resolved(artifacts={"m.onnx": Path("m.onnx")})
-        assert _detect_extra_deps(resolved) == ["onnxruntime"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["onnxruntime"]
 
     def test_txt_does_not_match(self) -> None:
         resolved = _make_resolved(artifacts={"readme.txt": Path("readme.txt")})
-        assert _detect_extra_deps(resolved) == []
+        assert list(_extra_deps_by_artifact(resolved)) == []
 
     def test_json_does_not_match(self) -> None:
         resolved = _make_resolved(artifacts={"config.json": Path("config.json")})
-        assert _detect_extra_deps(resolved) == []
+        assert list(_extra_deps_by_artifact(resolved)) == []
 
     def test_multiple_artifacts_deduped_and_sorted(self) -> None:
         resolved = _make_resolved(
@@ -1242,11 +1308,11 @@ class TestDetectExtraDeps:
                 "glm.rsglm": Path("glm.rsglm"),
             }
         )
-        assert _detect_extra_deps(resolved) == ["catboost", "rustystats"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["catboost", "rustystats"]
 
     def test_case_insensitive(self) -> None:
         resolved = _make_resolved(artifacts={"Model.CBM": Path("Model.CBM")})
-        assert _detect_extra_deps(resolved) == ["catboost"]
+        assert list(_extra_deps_by_artifact(resolved)) == ["catboost"]
 
 
 # ---------------------------------------------------------------------------
@@ -1362,16 +1428,6 @@ class TestDockerPush:
 
 
 # ---------------------------------------------------------------------------
-# _next_version
-# ---------------------------------------------------------------------------
-
-
-class TestNextVersion:
-    def test_returns_one(self) -> None:
-        assert _next_version() == 1
-
-
-# ---------------------------------------------------------------------------
 # _check_docker_available (additional: FileNotFoundError path)
 # ---------------------------------------------------------------------------
 
@@ -1417,16 +1473,30 @@ class TestBuildAndPushImage:
         "_generate_dockerfile",
     ]
 
+    @pytest.fixture(autouse=True)
+    def _deploy_from_elsewhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each build runs from ``tmp_path/elsewhere``, not the project: a build's files
+        belong under the project, wherever it is deployed from."""
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+
     def _make_resolved_with_artifacts(
         self,
         tmp_path: Path,
         registry: str = "",
+        artifacts: dict[str, str] | None = None,
     ) -> ResolvedDeploy:
-        """Create a resolved deploy with real artifact files in tmp_path."""
-        artifact_file = tmp_path / "model.cbm"
-        artifact_file.write_text("fake model data")
+        """A resolved deploy of the project at ``tmp_path/project`` with real artifact files."""
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        paths = {}
+        for name, content in (artifacts or {"model.cbm": "fake model data"}).items():
+            path = project / name
+            path.write_text(content)
+            paths[name] = path
         return _make_resolved(
-            artifacts={"model.cbm": artifact_file},
+            artifacts=paths,
+            project_root=project,
             container=ContainerConfig(
                 registry=registry,
                 port=8080,
@@ -1440,10 +1510,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_full_build_no_registry(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1455,14 +1523,15 @@ class TestBuildAndPushImage:
         """Without registry: builds locally, does not push."""
         resolved = self._make_resolved_with_artifacts(tmp_path, registry="")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
         assert isinstance(result, ContainerBuildResult)
         assert result.image_tag == "test-model:abc1234"
         assert result.model_name == "test-model"
-        assert result.model_version == 1
-        assert result.manifest_path.exists()
+        # A container's version is its image's tag, the commit it was built from.
+        assert result.model_version == "abc1234"
+        assert result.build_dir is not None
+        assert (result.build_dir / "deploy_manifest.json").exists()
         mock_build.assert_called_once()
         mock_push.assert_not_called()
 
@@ -1472,10 +1541,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="def5678")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_full_build_with_registry(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1487,8 +1554,7 @@ class TestBuildAndPushImage:
         """With registry: builds and pushes."""
         resolved = self._make_resolved_with_artifacts(tmp_path, registry="myregistry.io/models")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
         assert result.image_tag == "myregistry.io/models/test-model:def5678"
         mock_push.assert_called_once_with("myregistry.io/models/test-model:def5678")
@@ -1499,10 +1565,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_artifacts_copied_to_build_dir(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1514,9 +1578,9 @@ class TestBuildAndPushImage:
         """Artifact files are copied into .haute_build/artifacts/."""
         resolved = self._make_resolved_with_artifacts(tmp_path)
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
+        assert result.build_dir is not None
         artifact_dest = result.build_dir / "artifacts" / "model.cbm"
         assert artifact_dest.exists()
         assert artifact_dest.read_text() == "fake model data"
@@ -1527,10 +1591,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_dockerfile_and_app_generated(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1542,9 +1604,9 @@ class TestBuildAndPushImage:
         """Dockerfile and app.py are generated in the build directory."""
         resolved = self._make_resolved_with_artifacts(tmp_path)
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
+        assert result.build_dir is not None
         assert (result.build_dir / "Dockerfile").exists()
         assert (result.build_dir / "app.py").exists()
         assert (result.build_dir / "deploy_manifest.json").exists()
@@ -1555,10 +1617,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_manifest_records_the_pinned_container_dependencies(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1570,28 +1630,45 @@ class TestBuildAndPushImage:
         """A reader of the container can see exactly what it was built against."""
         resolved = self._make_resolved_with_artifacts(tmp_path)
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
-        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-        assert manifest["container_dependencies"] == [
-            f"haute=={version('haute')}",
+        assert result.build_dir is not None
+        manifest = json.loads((result.build_dir / "deploy_manifest.json").read_text())
+        # The roots, each at the version installed here, and (the offline resolver adds
+        # none) their closure, locked for the image: haute first, then every lock pin.
+        roots = [
             *(
                 f"{install_name}=={version(distribution)}"
                 for distribution, install_name in _SCORING_RUNTIME_DEPENDENCIES
             ),
             f"catboost=={version('catboost')}",
         ]
+        assert manifest["dependency_lock"]["roots"] == roots
+        assert manifest["dependency_lock"]["platform"] == "x86_64-manylinux_2_28"
+        assert manifest["dependency_lock"]["python_version"] == "3.11.9"
+        assert manifest["container_dependencies"] == [
+            f"haute=={version('haute')}",
+            *sorted(root.replace("[standard]", "") for root in roots),
+        ]
+        # The image installs the lock and checks its runtime against the record.
+        build_dir = result.build_dir
+        assert "--hash=sha256:" in (build_dir / "requirements.lock").read_text()
+        haute_lock = (build_dir / "haute.lock").read_text()
+        assert f"\nhaute=={version('haute')} \\\n    --hash=sha256:" in haute_lock
+        # The index is recorded without the credential the resolve used.
+        assert "s3cret" not in haute_lock + (build_dir / "requirements.lock").read_text()
+        record = json.loads((build_dir / "dependency_lock.json").read_text())
+        assert record["pins"]["catboost"] == version("catboost")
+        assert "catboost" not in record["haute_omitted"], "a selected engine is never omitted"
+        assert "optuna" in record["haute_omitted"]
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
     @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_cleanup_on_exception(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1599,16 +1676,22 @@ class TestBuildAndPushImage:
         mock_df: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Build directory is removed when an exception occurs."""
+        """A failed build removes its own directory and nothing else under .haute_build."""
         mock_build.side_effect = RuntimeError("docker build failed")
         resolved = self._make_resolved_with_artifacts(tmp_path)
+        builds = tmp_path / "project" / ".haute_build"
+        builds.mkdir()
+        (builds / "notes.txt").write_text("the user's own file")
+        (builds / "other-build").mkdir()
+        (builds / "other-build" / "deploy_manifest.json").write_text("{}")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            with pytest.raises(RuntimeError, match="docker build failed"):
-                build_and_push_image(resolved)
+        with pytest.raises(RuntimeError, match="docker build failed"):
+            build_and_push_image(resolved)
 
-        build_dir = tmp_path / ".haute_build"
-        assert not build_dir.exists()
+        assert sorted(path.name for path in builds.iterdir()) == ["notes.txt", "other-build"]
+        assert (builds / "notes.txt").read_text() == "the user's own file"
+        assert (builds / "other-build" / "deploy_manifest.json").read_text() == "{}"
+        assert not (tmp_path / "elsewhere" / ".haute_build").exists()
 
     @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
     @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
@@ -1616,10 +1699,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_progress_callback_called(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1632,8 +1713,7 @@ class TestBuildAndPushImage:
         resolved = self._make_resolved_with_artifacts(tmp_path)
         messages: list[str] = []
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            build_and_push_image(resolved, progress=messages.append)
+        build_and_push_image(resolved, progress=messages.append)
 
         assert any("manifest" in m.lower() for m in messages)
         assert any("docker image" in m.lower() for m in messages)
@@ -1644,10 +1724,8 @@ class TestBuildAndPushImage:
     @patch("haute.deploy._container._docker_build")
     @patch("haute.deploy._container._check_docker_available")
     @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
-    @patch("haute.deploy._container._next_version", return_value=1)
     def test_registry_trailing_slash_stripped(
         self,
-        mock_version: MagicMock,
         mock_sha: MagicMock,
         mock_check: MagicMock,
         mock_build: MagicMock,
@@ -1659,10 +1737,86 @@ class TestBuildAndPushImage:
         """Trailing slash on registry is stripped from image tag."""
         resolved = self._make_resolved_with_artifacts(tmp_path, registry="myregistry.io/")
 
-        with patch("haute.deploy._container.Path.cwd", return_value=tmp_path):
-            result = build_and_push_image(resolved)
+        result = build_and_push_image(resolved, keep_build=True)
 
         assert result.image_tag == "myregistry.io/test-model:abc1234"
+
+    @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
+    @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
+    @patch("haute.deploy._container._docker_push")
+    @patch("haute.deploy._container._docker_build")
+    @patch("haute.deploy._container._check_docker_available")
+    @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
+    def test_a_shipped_build_leaves_nothing_behind_and_runs_from_any_cwd(
+        self,
+        mock_sha: MagicMock,
+        mock_check: MagicMock,
+        mock_build: MagicMock,
+        mock_push: MagicMock,
+        mock_app: MagicMock,
+        mock_df: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """DEP-R12A: the build stages under the project and is removed once it shipped."""
+        resolved = self._make_resolved_with_artifacts(tmp_path)
+
+        result = build_and_push_image(resolved)
+
+        assert result.build_dir is None
+        assert list((tmp_path / "project" / ".haute_build").iterdir()) == []
+        assert not (tmp_path / "elsewhere" / ".haute_build").exists()
+
+    @patch("haute.deploy._container._generate_dockerfile", return_value="FROM python:3.11-slim\n")
+    @patch("haute.deploy._container._generate_app_source", return_value="# app\n")
+    @patch("haute.deploy._container._docker_push")
+    @patch("haute.deploy._container._check_docker_available")
+    @patch("haute.deploy._container._git_sha_short", return_value="abc1234")
+    def test_consecutive_and_concurrent_builds_ship_only_their_own_artifacts(
+        self,
+        mock_sha: MagicMock,
+        mock_check: MagicMock,
+        mock_push: MagicMock,
+        mock_app: MagicMock,
+        mock_df: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """DEP-R12A: an earlier or a simultaneous build's artefacts never reach a bundle."""
+        import threading
+
+        shipped: dict[str, list[str]] = {}
+        both_staged = threading.Barrier(2, timeout=30)
+
+        def docker_build(build_dir: Path, image_tag: str) -> None:
+            manifest = json.loads((build_dir / "deploy_manifest.json").read_text())
+            shipped[manifest["output_node_id"] + "@" + str(build_dir)] = sorted(
+                path.name for path in (build_dir / "artifacts").iterdir()
+            )
+            assert sorted(Path(path).name for path in manifest["artifacts"].values()) == sorted(
+                path.name for path in (build_dir / "artifacts").iterdir()
+            )
+            if threading.current_thread() is not threading.main_thread():
+                both_staged.wait()
+
+        first = self._make_resolved_with_artifacts(tmp_path, artifacts={"a.cbm": "A"})
+        second = self._make_resolved_with_artifacts(tmp_path, artifacts={"b.cbm": "B"})
+        second = dataclasses.replace(second, output_node_id="second")
+
+        with patch("haute.deploy._container._docker_build", side_effect=docker_build):
+            build_and_push_image(first)
+            build_and_push_image(second)
+            threads = [
+                threading.Thread(target=build_and_push_image, args=(resolved,))
+                for resolved in (first, second)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        assert len(shipped) == 4, "every build stages in a directory of its own"
+        for key, files in shipped.items():
+            assert files == (["b.cbm"] if key.startswith("second@") else ["a.cbm"])
+        assert list((tmp_path / "project" / ".haute_build").iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1679,33 +1833,31 @@ class TestDeployToContainer:
     ) -> None:
         mock_build.return_value = ContainerBuildResult(
             image_tag="test-model:abc1234",
-            manifest_path=tmp_path / "deploy_manifest.json",
-            build_dir=tmp_path,
             model_name="test-model",
-            model_version=1,
+            model_version="abc1234",
+            build_dir=tmp_path,
         )
         resolved = _make_resolved()
         result = deploy_to_container(resolved)
 
         assert isinstance(result, DeployResult)
         assert result.model_name == "test-model"
-        assert result.model_version == 1
+        assert result.model_version == "abc1234"
         assert result.model_uri == "test-model:abc1234"
         assert result.endpoint_url is None
-        assert result.manifest_path == tmp_path / "deploy_manifest.json"
+        assert result.build_dir == tmp_path
 
     @patch("haute.deploy._container.build_and_push_image")
     def test_passes_progress_to_build(self, mock_build: MagicMock) -> None:
         mock_build.return_value = ContainerBuildResult(
             image_tag="m:v",
-            manifest_path=Path("m.json"),
-            build_dir=Path(),
             model_name="m",
-            model_version=1,
+            model_version="abc1234",
+            build_dir=None,
         )
         progress_fn = MagicMock()
         deploy_to_container(_make_resolved(), progress=progress_fn)
-        mock_build.assert_called_once_with(_make_resolved(), progress_fn)
+        mock_build.assert_called_once_with(_make_resolved(), progress_fn, keep_build=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1720,10 +1872,9 @@ class TestDeployToPlatformContainer:
     def _built(tmp_path: Path) -> ContainerBuildResult:
         return ContainerBuildResult(
             image_tag="registry.example/test-model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
             model_name="test-model",
-            model_version=1,
+            model_version="abc1234",
+            build_dir=None,
         )
 
     @pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
@@ -1743,7 +1894,7 @@ class TestDeployToPlatformContainer:
         assert isinstance(result, DeployResult)
         assert result.model_uri == "registry.example/test-model:abc"
         assert result.endpoint_url is None
-        mock_build.assert_called_once_with(resolved, messages.append)
+        mock_build.assert_called_once_with(resolved, messages.append, keep_build=False)
         assert messages[-1] == (
             f"Service not updated: updating {target} is not implemented yet. "
             "Point the service at registry.example/test-model:abc."

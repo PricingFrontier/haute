@@ -27,7 +27,13 @@ from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
-from haute._model_source import BoundModel, ModelSource, require_model_source
+from haute._model_source import (
+    BoundModel,
+    ModelSource,
+    model_score_output_column,
+    model_score_task,
+    require_model_source,
+)
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_utils import bounded_collect_batches
 from haute._sandbox import contained_path
@@ -1675,8 +1681,8 @@ def score_from_config(
     model_source = require_model_source(cfg)
     scorer = ModelScorer(
         model_source=model_source,
-        task=cfg.get("task", "regression"),
-        output_col=cfg.get("output_column", "prediction"),
+        task=model_score_task(cfg),
+        output_col=model_score_output_column(cfg),
         source=_scenario_ctx.get(),
         feature_contract_path=scoring_contract_path(model_source, cfg, base_dir),
         base_dir=base_dir,

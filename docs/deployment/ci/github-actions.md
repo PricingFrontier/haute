@@ -76,7 +76,7 @@ The `ci.yml` workflow runs immediately:
 - **Lint & format** - checks your code style with `ruff`
 - **Type check** - runs `mypy` to catch type errors
 - **Tests** - runs `pytest`
-- **Pipeline validation** - runs `haute lint` and `haute deploy --dry-run` to check your pipeline parses correctly and test quotes pass
+- **Pipeline validation** - runs `haute lint`, which refuses what the editor would refuse to save, and `haute deploy --dry-run`, which checks the test quotes pass
 
 If any of these fail, the PR gets a red ❌ and you can see what went wrong.
 
@@ -327,7 +327,7 @@ Check the deploy step logs in the Actions run. For Azure Container Apps, AWS ECS
 
 ### Impact analysis shows unexpected results
 
-The impact analysis compares staging vs production. On a first deploy, a missing production endpoint is recorded as a first-deployment report; a missing or unready **staging** endpoint is still a real failure. Make sure staging is ready before the impact job runs.
+The impact analysis compares staging vs production. Before production's first release it reports a first deployment instead: on Databricks when the production endpoint does not exist, on the container target when the repository has no `deploy/...` release tag, which the production workflow pushes. After that, a production endpoint that cannot be reached fails the job, as does a missing or unready **staging** endpoint. Make sure staging is ready before the impact job runs.
 
 ### "HEAD (...) does not match staged SHA (...)"
 

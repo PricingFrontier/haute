@@ -201,6 +201,77 @@ def _bump_mtime(path: Path) -> None:
 
 
 class TestModelLoadedOncePerArtifact:
+    def test_a_resolution_loads_each_bundled_model_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # DEP-R13: the omittable-input read, the policy and schema dry runs and the
+        # lookup checks all bind the model through the one stat-gated cache.
+        import json
+        import shutil
+
+        import pandas as pd
+        from catboost import CatBoostRegressor
+
+        import haute._mlflow_io as mlflow_io
+        from haute.deploy import DeployConfig, resolve_config
+        from haute.modelling._training_job import model_contract_filename
+
+        example = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
+        project = tmp_path / "project"
+        shutil.copytree(example / "minimal_live_quote", project)
+        monkeypatch.chdir(tmp_path)
+        ages = pd.DataFrame({"age": [float(age) for age in range(20, 40)]})
+        model = CatBoostRegressor(iterations=3, depth=2, verbose=0, allow_writing_files=False)
+        model.fit(ages, ages["age"] * 2.0)
+        model.get_metadata()["haute_offset_column"] = ""
+        model_path = project / "model.cbm"
+        model.save_model(str(model_path))
+        save_contract(
+            build_contract(
+                features=["age"],
+                feature_types={"age": "Float64"},
+                categorical_features=[],
+                target_name="y",
+                target_type="Float64",
+                task="regression",
+            ),
+            model_path.with_name(model_contract_filename(model_path.stem)),
+        )
+        (project / "data" / "quote.json").write_text('[{"quote_id": "q1", "age": 30.0}]')
+        request = json.loads((project / "config" / "request.json").read_text())
+        request["tables"][0]["columns"][1] |= {"name": "age", "path": "$[:].age", "type": "float"}
+        (project / "config" / "request.json").write_text(json.dumps(request))
+        (project / "config" / "score.json").write_text(
+            json.dumps({"sourceType": "file", "model_path": "model.cbm", "task": "regression"})
+        )
+        (project / "config" / "output.json").write_text(
+            json.dumps(make_output_config(["prediction"], source_port="scored"))
+        )
+        (project / "pipeline.py").write_text(
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("scored_quote", description="Scores a model.")\n\n\n'
+            '@pipeline.api_input(config="config/request.json")\ndef quote(): ...\n\n\n'
+            '@pipeline.model_score(config="config/score.json")\ndef scored(quote): ...\n\n\n'
+            '@pipeline.output(config="config/output.json")\ndef response(scored): ...\n\n\n'
+            'pipeline.connect("quote", "scored", source_port="quote")\n'
+            'pipeline.connect("scored", "response")\n'
+        )
+        loads: list[str] = []
+        load = mlflow_io.load_local_model
+
+        def counting_load(path: str, *args: Any, **kwargs: Any) -> ScoringModel:
+            loads.append(path)
+            return load(path, *args, **kwargs)
+
+        with (
+            patch.object(mlflow_io, "load_local_model", side_effect=counting_load),
+            resolve_config(DeployConfig.from_toml(project / "haute.toml")) as resolved,
+        ):
+            assert set(resolved.artifacts) == {"scored__model.cbm", "scored__feature_contract.json"}
+            assert resolved.output_schema == {"prediction": "Float64"}
+
+        assert len(loads) == 1, loads
+
     def test_repeated_quotes_load_model_once(self, tmp_path: Path) -> None:
         cbm_path, contract_path = _write_bundle(tmp_path)
         graph = _model_score_graph()

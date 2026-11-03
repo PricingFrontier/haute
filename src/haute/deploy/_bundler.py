@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
@@ -66,6 +67,7 @@ def collect_artifacts(
     resources: ExitStack | None = None,
     snapshot_provenance: dict[str, dict[str, Any]] | None = None,
     model_sources: dict[str, dict[str, Any]] | None = None,
+    served_configs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
     """Discover and collect all artifacts needed for deployment.
 
@@ -87,6 +89,10 @@ def collect_artifacts(
             node's resolution (registered model, alias, concrete version and
             run ID), resolved once here so the bundle records exactly what it
             packaged.
+        served_configs: When given, receives the config each MLflow-sourced
+            ``modelScore`` node is served under: its ``artifact_path`` the
+            downloaded file's name, the key the deployed scorer finds the bundled
+            model by. The graph's own configs are never written to.
 
     Returns:
         Dict of artifact_name → absolute_path.
@@ -216,10 +222,12 @@ def collect_artifacts(
                 pipeline_dir,
                 backend=backend,
             )
-            # Patch config so the scorer can build a matching artifact key
-            config["artifact_path"] = Path(artifact_path).name
-            artifact_name = f"{nid}__{config['artifact_path']}"
-            artifacts.add(nid, artifact_name, local_path)
+            # The served config names the downloaded file, the key the scorer finds
+            # the bundled model by; the parsed graph's config is left as it was.
+            served_name = Path(artifact_path).name
+            if served_configs is not None:
+                served_configs[nid] = {**config, "artifact_path": served_name}
+            artifacts.add(nid, f"{nid}__{served_name}", local_path)
 
             # An MLflow model is served under the contract its run logged beside
             # it, the one the preview binds, so each request is checked against
@@ -242,6 +250,19 @@ def collect_artifacts(
             )
 
     return artifacts
+
+
+def with_served_configs(
+    graph: PipelineGraph, served_configs: Mapping[str, Mapping[str, Any]]
+) -> PipelineGraph:
+    """*graph* with each node in *served_configs* carrying the config it is served under."""
+    if not served_configs:
+        return graph
+    nodes = [
+        node.with_config(served_configs[node.id]) if node.id in served_configs else node
+        for node in graph.nodes
+    ]
+    return graph.model_copy(update={"nodes": nodes})
 
 
 def _collect_model_file(
@@ -331,57 +352,50 @@ def _collect_static_data_input(
     (:func:`shipped_snapshot_config`), keeping its exact verified parquet and
     metadata files alive during bundle construction.
     """
-    from haute._polars_io_registry import validate_data_input_config
-    from haute._source_cache import SourceCacheCorruptError
-    from haute.errors import DeployError
+    from haute._input_providers import source_cache_identity
+    from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheCorruptError, SourceCacheStore
 
     try:
-        validated = shipped_snapshot_config(
-            node_id, validate_data_input_config(config), pipeline_dir, project_root
+        validated = validate_data_input_config(config)
+    except PolarsIoConfigError as exc:
+        raise DeployError(
+            f"Data Input node {node_id!r} is not deployable: invalid Data Input "
+            f"configuration: {exc}",
+            node_id=node_id,
+        ) from exc
+    snapshot_config = shipped_snapshot_config(node_id, validated, pipeline_dir, project_root)
+    if snapshot_config is None:
+        source_path = _resolve_direct_parquet_source(node_id, config, pipeline_dir, project_root)
+        artifacts.add(node_id, _artifact_name(node_id, source_path), source_path)
+        return
+
+    if resources is None:
+        raise DeployError(
+            f"Data Input node {node_id!r} requires a deploy resource owner "
+            "to hold its snapshot generation lease.",
+            node_id=node_id,
         )
-        if validated is None:
-            source_path = _resolve_direct_parquet_source(
-                node_id,
-                config,
-                pipeline_dir,
-                project_root,
-            )
-            artifacts.add(node_id, _artifact_name(node_id, source_path), source_path)
-            return
-
-        from haute._input_providers import source_cache_identity
-        from haute._sandbox import _get_project_root
-        from haute._source_cache import SourceCacheStore
-
-        if resources is None:
-            raise DeployError(
-                f"Data Input node {node_id!r} requires a deploy resource owner "
-                "to hold its snapshot generation lease.",
-                node_id=node_id,
-            )
-        identity = source_cache_identity(validated, base_dir=pipeline_dir)
+    identity = source_cache_identity(snapshot_config, base_dir=pipeline_dir)
+    # Only a snapshot that is missing or does not verify is the project's to rebuild;
+    # any other failure to lease it keeps its own type and message.
+    try:
         generation = resources.enter_context(SourceCacheStore(_get_project_root()).lease(identity))
-        for path in generation.data_paths:
-            artifacts.add(node_id, f"{node_id}__snapshot.{path.name}", path)
-        artifacts.add(node_id, f"{node_id}__snapshot.meta.json", generation.metadata_path)
-        if snapshot_provenance is not None:
-            snapshot_provenance[node_id] = {
-                "provider": identity.provider,
-                **generation.metadata.to_dict(),
-            }
-    except DeployError:
-        raise
     except (FileNotFoundError, SourceCacheCorruptError) as exc:
         raise DeployError(
             f"Data Input node {node_id!r} requires a ready, valid matching snapshot "
             "before deployment.",
             node_id=node_id,
         ) from exc
-    except Exception as exc:
-        raise DeployError(
-            f"Data Input node {node_id!r} is not deployable: invalid Data Input configuration.",
-            node_id=node_id,
-        ) from exc
+    for path in generation.data_paths:
+        artifacts.add(node_id, f"{node_id}__snapshot.{path.name}", path)
+    artifacts.add(node_id, f"{node_id}__snapshot.meta.json", generation.metadata_path)
+    if snapshot_provenance is not None:
+        snapshot_provenance[node_id] = {
+            "provider": identity.provider,
+            **generation.metadata.to_dict(),
+        }
 
 
 def _resolve_direct_parquet_source(

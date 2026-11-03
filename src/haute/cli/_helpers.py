@@ -4,13 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-
-# ``subprocess`` is intentionally imported at module scope so tests enforcing
-# the cascade-free contract (codebase-review #79) can patch it and assert
-# ``subprocess.call`` / ``subprocess.Popen`` are never invoked. The runtime
-# code does not use subprocess anywhere in this module —
-# :func:`_open_browser` delegates to :mod:`webbrowser` exclusively.
-import subprocess  # noqa: F401
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,8 +14,15 @@ if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
 
 from haute._logging import get_logger
+from haute.errors import HauteError
 
 logger = get_logger(component="cli")
+
+#: The failures a command reports as one line and exit 1: Haute's own errors (a refused
+#: configuration, a pipeline that does not parse, a deploy that cannot go ahead), a value
+#: that cannot be used and a file that cannot be read. Anything else is a defect and
+#: reaches the terminal with its traceback.
+EXPECTED_FAILURES: tuple[type[Exception], ...] = (HauteError, ValueError, OSError)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ ENDPOINT_SUFFIX_HELP = 'Suffix appended to endpoint name (e.g. "-staging").'
 
 
 # ---------------------------------------------------------------------------
-# Model name resolution — CLI > haute.toml > error
+# Model name resolution — CLI > HAUTE_MODEL_NAME > haute.toml > error
 # ---------------------------------------------------------------------------
 
 
@@ -49,13 +49,15 @@ def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
     Encodes the precedence rule used across every CLI command that accepts
     a model name:
 
-        CLI flag  >  haute.toml [deploy].model_name  >  error
+        CLI value  >  HAUTE_MODEL_NAME  >  haute.toml [deploy].model_name  >  error
 
     Parameters
     ----------
     cli_arg:
         The value supplied on the command line (``--model-name`` flag or
-        positional argument).  ``None`` means no CLI value was given.
+        positional argument).  ``None`` or an empty string means no CLI value
+        was given, and a non-empty ``HAUTE_MODEL_NAME`` environment variable
+        is used next.
     toml_path:
         Path to a ``haute.toml`` file to read ``[deploy].model_name`` from.
         ``None`` means no project config is available.
@@ -68,7 +70,8 @@ def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
     Raises
     ------
     ValueError
-        When *cli_arg* is ``None`` and no usable TOML source is available
+        When neither *cli_arg* nor ``HAUTE_MODEL_NAME`` gives a name and no usable
+        TOML source is available
         — either *toml_path* is ``None``, or the TOML file lacks a
         ``[deploy].model_name`` entry.  The message always names both
         user-facing fixes (``--model-name`` flag or
@@ -227,8 +230,8 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
     - ``"unsupported"`` — target has no transport implementation yet
 
     For ``"http"`` targets the ``staging_url`` (and ``prod_url`` when
-    available) are populated from ``config.ci``.  Raises ``SystemExit``
-    if the staging URL is required but missing.
+    available) are populated from ``config.ci``.  Raises
+    :class:`click.ClickException` if the staging URL is required but missing.
     """
     from haute.deploy._config import _CONTAINER_BASED_TARGETS
 
@@ -238,12 +241,9 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
     if config.target in _CONTAINER_BASED_TARGETS:
         staging_url = config.ci.staging_endpoint_url
         if not staging_url:
-            click.echo(
-                "Error: No staging endpoint URL configured.\n"
-                "  Set [ci.staging] endpoint_url in haute.toml.",
-                err=True,
+            raise click.ClickException(
+                "No staging endpoint URL configured. Set [ci.staging] endpoint_url in haute.toml."
             )
-            raise SystemExit(1)
         prod_url = config.ci.production_endpoint_url
         return TransportInfo(kind="http", staging_url=staging_url, prod_url=prod_url)
 

@@ -29,10 +29,11 @@ name: Dependencies
 # including changed defaults, which alter results without breaking a call — is
 # reported to the run summary instead of paging anyone.
 #
-# The two jobs here run on deliberately different cadences, because they answer
+# The jobs here run on deliberately different cadences, because they answer
 # questions that move at different speeds:
 #
 #   unlocked-resolve      weekly (Mon 04:41) + dispatch
+#   deployment-wheels     weekly (Mon 04:41) + dispatch + dependency/deploy-runtime changes
 #   locked-advisory-audit daily (06:29) + dispatch + lock/policy changes
 #
 # The advisory audit is the only check in this repository that is NOT a pure
@@ -53,6 +54,10 @@ on:
       - "frontend/package-lock.json"
       - "scripts/check_dependency_audit.py"
       - "security/accepted-risks.toml"
+      - "src/haute/deploy/_lock.py"
+      - "src/haute/deploy/_container.py"
+      - "src/haute/_model_flavors.py"
+      - "tests/test_deploy_wheels.py"
       - ".github/workflows/dependencies.yml"
   push:
     branches: [main]
@@ -63,6 +68,10 @@ on:
       - "frontend/package-lock.json"
       - "scripts/check_dependency_audit.py"
       - "security/accepted-risks.toml"
+      - "src/haute/deploy/_lock.py"
+      - "src/haute/deploy/_container.py"
+      - "src/haute/_model_flavors.py"
+      - "tests/test_deploy_wheels.py"
       - ".github/workflows/dependencies.yml"
   workflow_dispatch:
     inputs:
@@ -225,6 +234,52 @@ jobs:
             --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
           if [ -n "${existing}" ]; then
             gh issue close "${existing}" --comment "Green again: ${RUN_URL}"
+          fi
+
+  # Every dependency a deployment can install must have a wheel for Linux x86_64:
+  # a deploy or app build locks its runtime from wheels only (haute.deploy._lock)
+  # and fails on one without, so this resolves every profile against the index,
+  # for each supported Python, before a deploy meets it. It runs when the
+  # dependencies or the deploy runtime change, and with the weekly lane, since a
+  # release inside haute's ranges can ship without a wheel; not on the daily sweep.
+  deployment-wheels:
+    if: github.event_name != 'schedule' || github.event.schedule == '41 4 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.8.22"
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Lock every deployment profile from wheels, for each supported Python
+        run: uv run pytest tests/test_deploy_wheels.py -m index -q -p no:randomly
+
+      - name: Raise the alarm (find-or-create dependency-watch issue)
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Deployment dependencies are missing a wheel"
+          body="A deployment profile no longer locks from wheels for Linux x86_64. Run: ${RUN_URL}
+
+          A dependency inside haute's ranges released without a wheel for a supported Python. Deploys and app builds fail the same way until a release with one is pinned."
+          gh label create dependency-watch --color D93F0B --force \
+            --description "Automated: scheduled dependency lane failures"
+          existing="$(gh issue list --state open --label dependency-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label dependency-watch --body "${body}"
           fi
 
   locked-advisory-audit:

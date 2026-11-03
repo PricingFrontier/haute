@@ -47,7 +47,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
       }}
     >
       <Icon size={14} style={{ color: accent }} className="shrink-0" />
-      <span className="flex-1" style={{ color: "var(--text-primary)" }}>{toast.text}</span>
+      <span className="flex-1 whitespace-pre-line" style={{ color: "var(--text-primary)" }}>{toast.text}</span>
       {toast.action !== undefined && (
         <button
           type="button"

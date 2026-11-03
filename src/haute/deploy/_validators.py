@@ -21,7 +21,7 @@ from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
 from haute._workbench_form import identity_clashes
-from haute.deploy._config import ResolvedDeploy, test_quote_files
+from haute.deploy._config import ResolvedDeploy, output_fields_are_valid, test_quote_files
 from haute.deploy._scorer import (
     DeployInput,
     QuoteRequest,
@@ -137,9 +137,7 @@ def test_quote_requests(directory: Path) -> list[dict[str, Any]]:
 
     Raises ``ValueError`` when a file cannot be read as test quotes.
     """
-    return [
-        case.input for path in test_quote_files(directory) for case in _load_test_quote_cases(path)
-    ]
+    return [row for path in test_quote_files(directory) for row in load_test_quote_file(path)]
 
 
 def _is_numeric(value: Any) -> bool:
@@ -469,10 +467,6 @@ def price_test_quotes_live(
     return LiveTestQuotes(priced, checked, errors)
 
 
-def _project_root(resolved: ResolvedDeploy) -> Path:
-    return (resolved.config.project_dir or resolved.config.pipeline_file.parent).resolve()
-
-
 def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
     """Whether the form the workbench nodes took their tables from fits the pipeline.
 
@@ -484,7 +478,7 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
     document = resolved.workbench_form
     if document is None:
         return []
-    form = read_workbench_config(_project_root(resolved)).form
+    form = read_workbench_config(resolved.project_root).form
     errors = [f"{form}: {clash}." for clash in identity_clashes(document.spec)]
     return errors + [f"{form}/{found}." for found in unresolved_references(document.spec)]
 
@@ -570,21 +564,18 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
                 shipped_snapshot_config,
             )
 
-            project_root = (
-                resolved.config.project_dir or resolved.config.pipeline_file.parent
-            ).resolve()
             snapshot_config = shipped_snapshot_config(
                 node.id,
                 validate_data_input_config(node.data.config),
-                resolved.config.pipeline_file.parent,
-                project_root,
+                resolved.pipeline_file.parent,
+                resolved.project_root,
             )
             if snapshot_config is None:
                 _resolve_direct_parquet_source(
                     node.id,
                     node.data.config,
-                    resolved.config.pipeline_file.parent,
-                    project_root,
+                    resolved.pipeline_file.parent,
+                    resolved.project_root,
                 )
                 continue
 
@@ -592,7 +583,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             from haute._source_cache import SourceCacheStore
 
             identity = source_cache_identity(
-                snapshot_config, base_dir=resolved.config.pipeline_file.parent
+                snapshot_config, base_dir=resolved.pipeline_file.parent
             )
             SourceCacheStore(_get_project_root()).open_generation(identity)
         except Exception as exc:
@@ -622,12 +613,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
 
     output_fields = resolved.config.output_fields
     if output_fields is not None and (
-        not output_fields
-        or any(not isinstance(field, str) or not field for field in output_fields)
-        or (
-            all(isinstance(field, str) for field in output_fields)
-            and len(output_fields) != len(set(output_fields))
-        )
+        not output_fields_are_valid(output_fields, resolved.output_schema)
         or list(resolved.output_schema) != output_fields
     ):
         errors.append(
@@ -658,32 +644,30 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
         # out has no rows, a one-row one its row of nulls), and its reader
         # refuses a quote that does not fit, naming the spot, when it is
         # scored below, so its cases are not held to the columns here.
+        #
+        # Each file is read once: the cases the pre-check reads are the ones scored. A
+        # file whose rows miss columns names every such row and is not scored, since its
+        # request would only be refused on the first of them.
         required_cols = set(resolved.input_schema or {})
         reads_quotes = _reads_one_quote_per_request(resolved)
         for jf in test_quote_files(tq_dir):
+            started = time.perf_counter()
             try:
-                cleaned = load_test_quote_file(jf)
+                cases = _load_test_quote_cases(jf)
             except Exception as exc:
                 test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
                 continue
-            if reads_quotes:
+            missing_rows = (
+                [] if reads_quotes else _rows_missing_columns(jf.name, cases, required_cols)
+            )
+            if missing_rows:
+                test_quote_errors.extend(missing_rows)
                 continue
-            for row in cleaned:
-                missing = sorted(required_cols - set(row))
-                if missing:
-                    test_quote_errors.append(
-                        f"test quote {jf.name!r} failed: missing required input "
-                        f"column(s) {missing}; provided columns {sorted(row)}."
-                    )
-                    break
-
-        # Actual scoring pass — surfaces runtime errors.
-        quote_results = score_test_quotes(resolved, tq_dir)
-        for q in quote_results:
-            if q.get("status") == "error":
-                test_quote_errors.append(
-                    f"test quote {q.get('file', '<unknown>')!r} failed: {q.get('error', '')}"
-                )
+            # Actual scoring pass — surfaces runtime errors.
+            result = _score_test_quote_cases(resolved, jf.name, cases, started=started)
+            quote_results.append(result)
+            if result["status"] == "error":
+                test_quote_errors.append(f"test quote {jf.name!r} failed: {result['error']}")
 
     if errors or test_quote_errors:
         logger.warning(
@@ -702,6 +686,20 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
     # are empty (the branch above raises otherwise), so validation passed.
     logger.info("validation_passed")
     return quote_results
+
+
+def _rows_missing_columns(name: str, cases: list[_TestQuoteCase], required: set[str]) -> list[str]:
+    """One message per row of the test-quote file *name* whose input leaves out a column
+    the request requires, naming the row, the missing columns and those it gives."""
+    messages = []
+    for row_index, case in enumerate(cases):
+        missing = sorted(required - set(case.input))
+        if missing:
+            messages.append(
+                f"test quote {name!r} row {row_index} failed: missing required input "
+                f"column(s) {missing}; provided columns {sorted(case.input)}."
+            )
+    return messages
 
 
 def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
@@ -750,6 +748,30 @@ def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult
     """Score one test-quote file as :func:`score_test_quotes` scores each: its cases
     priced and each expected output compared, answering its result (``status`` ``ok`` or
     ``error`` with why); never raises for the file."""
+    started = time.perf_counter()
+    try:
+        cases = _load_test_quote_cases(jf)
+    except Exception as exc:
+        return _test_quote_result(jf.name, started, error=exc)
+    return _score_test_quote_cases(resolved, jf.name, cases, started=started)
+
+
+def _test_quote_result(
+    name: str, started: float, *, rows: int = 0, error: Exception | None = None
+) -> TestQuoteResult:
+    return {
+        "file": name,
+        "rows": rows,
+        "status": "ok" if error is None else "error",
+        "time_ms": round((time.perf_counter() - started) * 1000, 1),
+        "error": "" if error is None else str(error),
+    }
+
+
+def _score_test_quote_cases(
+    resolved: ResolvedDeploy, name: str, cases: list[_TestQuoteCase], *, started: float
+) -> TestQuoteResult:
+    """The result of the test-quote file *name*'s parsed *cases*, priced and checked."""
     one_quote_per_request = _reads_one_quote_per_request(resolved)
     # A Quote Input with tables reads its quotes as their records, as served.
     as_records = reads_records(resolved.pruned_graph, resolved.input_node_ids)
@@ -768,9 +790,7 @@ def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult
             request_rows=resolved.request_rows,
         )
 
-    t0 = time.perf_counter()
     try:
-        cases = _load_test_quote_cases(jf)
         if not cases:
             rows = 0
         elif one_quote_per_request:
@@ -788,19 +808,5 @@ def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult
             rows = output.height
 
     except Exception as exc:
-        elapsed = (time.perf_counter() - t0) * 1000
-        return {
-            "file": jf.name,
-            "rows": 0,
-            "status": "error",
-            "time_ms": round(elapsed, 1),
-            "error": str(exc),
-        }
-    elapsed = (time.perf_counter() - t0) * 1000
-    return {
-        "file": jf.name,
-        "rows": rows,
-        "status": "ok",
-        "time_ms": round(elapsed, 1),
-        "error": "",
-    }
+        return _test_quote_result(name, started, error=exc)
+    return _test_quote_result(name, started, rows=rows)

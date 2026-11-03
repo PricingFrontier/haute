@@ -80,41 +80,43 @@ def check_credentials(config: DeployConfig) -> None:
         check_databricks_credentials()
 
 
-def _dispatch_resolved(resolved: ResolvedDeploy) -> DeployResult:
+def _dispatch_resolved(resolved: ResolvedDeploy, *, keep_build: bool) -> DeployResult:
     """Ship an already validated deployment to its configured backend."""
     target = resolved.config.target
 
     if target == "databricks":
-        return deploy_to_mlflow(resolved)
+        return deploy_to_mlflow(resolved, keep_build=keep_build)
 
     if target == "container":
         from haute.deploy._container import deploy_to_container
 
-        return deploy_to_container(resolved)
+        return deploy_to_container(resolved, keep_build=keep_build)
 
     if target in _CONTAINER_PLATFORM_TARGETS:
         from haute.deploy._container import deploy_to_platform_container
 
-        return deploy_to_platform_container(resolved)
+        return deploy_to_platform_container(resolved, keep_build=keep_build)
 
     raise ValueError(f"Unhandled deploy target '{target}'")  # pragma: no cover
 
 
-def deploy_resolved(resolved: ResolvedDeploy) -> DeployResult:
+def deploy_resolved(resolved: ResolvedDeploy, *, keep_build: bool = False) -> DeployResult:
     """Deploy a resolved deployment object without resolving or validating again.
 
     Callers must have already run ``validate_deploy(resolved)``. This path is
     used by ``haute deploy`` after it resolves, validates, and scores test
-    quotes so the backend receives that exact same resolved object.
+    quotes so the backend receives that exact same resolved object. The build's
+    own directory under the project's ``.haute_build`` is removed once it has
+    shipped, unless *keep_build*.
     """
     try:
         _validate_target(resolved.config.target)
-        return _dispatch_resolved(resolved)
+        return _dispatch_resolved(resolved, keep_build=keep_build)
     finally:
         resolved.close()
 
 
-def deploy(config: DeployConfig) -> DeployResult:
+def deploy(config: DeployConfig, *, keep_build: bool = False) -> DeployResult:
     """Resolve config, validate the resolved deployment, and deploy it."""
     # Validate target *before* resolve_config() so bad targets don't trigger
     # unrelated errors (e.g. "No output node found") from config resolution.
@@ -124,6 +126,6 @@ def deploy(config: DeployConfig) -> DeployResult:
 
     try:
         validate_deploy(resolved)
-        return _dispatch_resolved(resolved)
+        return _dispatch_resolved(resolved, keep_build=keep_build)
     finally:
         resolved.close()

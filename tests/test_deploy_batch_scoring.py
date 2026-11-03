@@ -548,7 +548,8 @@ class TestGeneratedAppBatchPath:
             (
                 BatchScoreOutcome(failure_kind="error", detail="boom"),
                 500,
-                {"error_code": "deploy_internal_error", "error": "boom"},
+                # The detail stays in the log, under the request id the envelope names.
+                {"error_code": "deploy_internal_error"},
             ),
         ],
         ids=["contract", "bounded", "memory", "cancelled", "error"],
@@ -568,7 +569,11 @@ class TestGeneratedAppBatchPath:
         response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
 
         assert response.status_code == status
-        assert response.json() == expected
+        body = response.json()
+        if status == 500:
+            assert body.pop("request_id") == response.headers["X-Request-ID"]
+            assert "boom" not in body.pop("error")
+        assert body == expected
         harness.assert_cleaned_up()
 
     @pytest.mark.parametrize(
@@ -726,10 +731,9 @@ class TestGeneratedAppBatchPath:
         )
 
         assert response.status_code == 500
-        assert response.json() == {
-            "error_code": "deploy_internal_error",
-            "error": "staging disk vanished",
-        }
+        assert response.json()["error_code"] == "deploy_internal_error"
+        assert response.json()["request_id"] == response.headers["X-Request-ID"]
+        assert "staging disk vanished" not in response.text
         harness.assert_cleaned_up()
 
     def test_health_reports_batch_enforcement_and_execution_policy(
@@ -1156,15 +1160,6 @@ class TestPrepareAndAccept:
 # ---------------------------------------------------------------------------
 
 
-def _force_schema_cache_miss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the on-disk output-schema cache at an empty temp location."""
-    monkeypatch.setattr(
-        _schema,
-        "_SCHEMA_CACHE_FILE",
-        str(tmp_path / "schema_cache" / "output_schema.json"),
-    )
-
-
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestOutputSchemaConservativeFallback:
     def test_cache_miss_proves_the_schema_in_the_real_capped_worker(
@@ -1174,7 +1169,6 @@ class TestOutputSchemaConservativeFallback:
     ) -> None:
         """A real spawn: nothing is patched across the process boundary."""
         graph = _write_policy_sample(tmp_path, _conservative_graph())
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         # The spawned child computes its own project root from the working
         # directory it inherits, so the sample must live inside it.
         monkeypatch.chdir(tmp_path)
@@ -1190,7 +1184,7 @@ class TestOutputSchemaConservativeFallback:
 
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, "out", ["quotes"])
+        schema = infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         # The OUTPUT node maps the aggregation only; the dtype comes from the
         # parquet the worker actually wrote.
@@ -1240,7 +1234,6 @@ class TestOutputSchemaConservativeFallback:
                 ]
             }
         )
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
         spawns: list[str] = []
         real_runner = _schema.run_isolated_worker
@@ -1251,7 +1244,7 @@ class TestOutputSchemaConservativeFallback:
 
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, "out", ["quotes"])
+        schema = infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         assert spawns == [DEPLOY_BATCH_PROCESS_NAME]
         assert schema == {"total": "Float64"}
@@ -1262,7 +1255,6 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         graph, output_id = _fixture_graph()
-        _force_schema_cache_miss(tmp_path, monkeypatch)
         dry_runs: list[int] = []
         spawns: list[str] = []
         real_dry_run = _schema._dry_run_output_schema
@@ -1278,7 +1270,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "_dry_run_output_schema", counting_dry_run)
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, output_id, ["quotes"])
+        schema = infer_output_schema(graph, output_id, ["quotes"], project_root=tmp_path)
 
         assert schema
         assert len(dry_runs) == 1
@@ -1290,7 +1282,6 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         graph = _write_policy_sample(tmp_path, _conservative_graph())
-        _force_schema_cache_miss(tmp_path, monkeypatch)
 
         def unsupported_runner(_function, *_args, config):
             raise IsolatedWorkerMemoryLimitUnsupportedError(
@@ -1300,7 +1291,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "run_isolated_worker", unsupported_runner)
 
         with pytest.raises(DeployError) as error:
-            infer_output_schema(graph, "out", ["quotes"])
+            infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         message = str(error.value)
         assert "hard-capped batch worker" in message
@@ -1315,7 +1306,6 @@ class TestOutputSchemaConservativeFallback:
     ) -> None:
         """The worker ran but could not produce the rows — e.g. it hit its cap."""
         graph = _write_policy_sample(tmp_path, _conservative_graph())
-        _force_schema_cache_miss(tmp_path, monkeypatch)
 
         def failing_runner(_function, *_args, config):
             return BatchScoreOutcome(
@@ -1327,7 +1317,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "run_isolated_worker", failing_runner)
 
         with pytest.raises(DeployError) as error:
-            infer_output_schema(graph, "out", ["quotes"])
+            infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
 
         message = str(error.value)
         assert "agg" in message
@@ -1368,7 +1358,7 @@ class TestBatchCleanupFailsLoud:
         assert response.status_code == 500
         body = response.json()
         assert body["error_code"] == "deploy_internal_error"
-        assert "temporary directory" in body["error"]
+        assert body["request_id"] == response.headers["X-Request-ID"]
         assert len(harness.contexts[0].release_calls) == 1
         monkeypatch.undo()
         shutil.rmtree(harness.plan.temp_dir, ignore_errors=True)
@@ -1377,6 +1367,7 @@ class TestBatchCleanupFailsLoud:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         module = _load_app(tmp_path)
         harness = _BatchHarness(module, monkeypatch)
@@ -1390,10 +1381,15 @@ class TestBatchCleanupFailsLoud:
         )
         self._break_rmtree(monkeypatch)
 
-        response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
+        with caplog.at_level("ERROR", logger="haute.deploy.container"):
+            response = TestClient(module.app).post("/quote", json=[{"age": 30}, {"age": 31}])
 
         assert response.status_code == 500
-        assert "temporary directory" in response.json()["error"]
+        [record] = caplog.records
+        assert record.getMessage() == (
+            f"deploy_quote_batch_cleanup_failed request_id={response.json()['request_id']}"
+        )
+        assert "temporary directory" in str(record.exc_info[1])
         assert len(harness.contexts[0].release_calls) == 1
         monkeypatch.undo()
         shutil.rmtree(harness.plan.temp_dir, ignore_errors=True)

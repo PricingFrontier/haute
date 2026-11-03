@@ -72,7 +72,9 @@ base_image = "python:3.11.9-slim"
     deploy_config = DeployConfig.from_toml(toml_path)
     resolved = resolve_config(deploy_config)
 
-    image_dir.mkdir(parents=True, exist_ok=True)
+    # A bundle is written into an empty directory; this script owns the one it is given.
+    if image_dir.exists():
+        shutil.rmtree(image_dir)
     try:
         prepare_build_directory(
             resolved,

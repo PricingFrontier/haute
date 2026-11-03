@@ -29,6 +29,7 @@ correctness issues:
 from __future__ import annotations
 
 import socket
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +40,7 @@ import pytest
 
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency
+from haute.deploy._impact import ImpactEndpointError
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -392,6 +394,7 @@ class TestDeployCiDetection:
 
         resolved = self._mock_resolved()
         deploy_result = MagicMock()
+        deploy_result.build_dir = None
         deploy_result.model_name = "test-model"
         deploy_result.model_version = 1
         deploy_result.endpoint_url = "https://host/ep/invocations"
@@ -549,17 +552,12 @@ class TestServePortConflictDetection:
 
 
 class TestImpactProdExistsFailsLoudly:
-    """The current ``_impact_databricks`` / ``_impact_http`` implementations
-    catch every ``Exception`` and silently flip ``prod_exists`` to ``False``.
-    That means a transient 500 or a network timeout is misclassified as a
-    "first deploy" scenario, and the deploy proceeds without the intended
-    impact comparison.
+    """Production is skipped as a first deployment only on an authoritative record.
 
-    Correct behaviour:
-    - 404 / NotFound / ResourceDoesNotExist → ``prod_exists=False`` (no
-      production yet, first deploy).
-    - timeout, 5xx, connection errors, any other exception → propagate so
-      the caller sees the real failure.
+    - Databricks: the workspace's NotFound / ResourceDoesNotExist for the endpoint.
+    - HTTP: no ``deploy/`` release tag on origin (DEP-R11); a 404 is never one.
+    - Timeouts, 5xx, authentication and connection errors propagate so the caller
+      sees the real failure.
     """
 
     @pytest.fixture(autouse=True)
@@ -588,9 +586,9 @@ class TestImpactProdExistsFailsLoudly:
                 return_value=[{"p": 1.0}],
             ),
         ):
-            staging, prod, exists = _impact_databricks("stg", "prod", [{"x": 1}], 100)
+            staging, prod, first_deploy = _impact_databricks("stg", "prod", [{"x": 1}], 100)
 
-        assert exists is False
+        assert first_deploy == "the workspace has no production endpoint 'prod'."
         assert prod == []
 
     def test_databricks_resource_does_not_exist_sets_prod_exists_false(
@@ -612,8 +610,8 @@ class TestImpactProdExistsFailsLoudly:
                 return_value=[{"p": 1.0}],
             ),
         ):
-            _, _, exists = _impact_databricks("stg", "prod", [{"x": 1}], 100)
-        assert exists is False
+            _, _, first_deploy = _impact_databricks("stg", "prod", [{"x": 1}], 100)
+        assert first_deploy is not None
 
     def test_databricks_timeout_must_raise(self) -> None:
         """A network timeout is NOT a 'no prod' signal — it must propagate."""
@@ -670,103 +668,115 @@ class TestImpactProdExistsFailsLoudly:
             _impact_databricks("stg", "prod", [{"x": 1}], 100)
 
     # ---- http branch ----
+    # Production is compared once origin records a release of it: the production job
+    # tags each one deploy/... A real origin, with or without such a tag, decides.
 
-    def test_http_no_prod_url_sets_prod_exists_false(self) -> None:
-        """Empty prod URL means 'not configured yet' — prod_exists=False."""
+    @staticmethod
+    def _project(tmp_path: Path, *, released: bool) -> Path:
+        def git(cwd: Path, *args: str) -> None:
+            subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+        origin = tmp_path / "origin.git"
+        project = tmp_path / "project"
+        project.mkdir()
+        git(tmp_path, "init", "--bare", str(origin))
+        git(project, "init", "-b", "main")
+        git(project, "remote", "add", "origin", str(origin))
+        if released:
+            git(
+                project,
+                "-c",
+                "user.name=CI",
+                "-c",
+                "user.email=ci@example",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "release",
+            )
+            git(project, "tag", "deploy/abc1234")
+            git(project, "push", "origin", "deploy/abc1234")
+        return project
+
+    def test_http_without_a_release_skips_production_whatever_its_address(
+        self, tmp_path: Path
+    ) -> None:
+        """DEP-R11: before the first release, production is not contacted at all."""
         from haute.cli._impact import _impact_http
 
+        project = self._project(tmp_path, released=False)
         with patch(
             "haute.deploy._impact.score_http_endpoint_batched",
             return_value=[{"p": 1.0}],
-        ):
-            _, prod, exists = _impact_http("http://stg/quote", "", [{"x": 1}], 100)
-        assert exists is False
+        ) as score:
+            _, prod, first_deploy = _impact_http(
+                "http://stg", "http://prod-typo", [{"x": 1}], 100, project
+            )
         assert prod == []
+        assert first_deploy == "no production release is recorded (origin has no deploy/ tag)."
+        assert [call.args[0] for call in score.call_args_list] == ["http://stg"]
 
-    def test_http_404_sets_prod_exists_false(self) -> None:
-        """A 404 HTTPError on the prod URL is treated as 'no prod yet'.
-
-        ``score_http_endpoint_batched`` wraps urllib HTTPErrors as
-        ``RuntimeError("HTTP 404: ...")``. The ``_impact_http`` function
-        should classify this as a first-deploy signal.
-        """
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ImpactEndpointError("http://prod/quote", "HTTP 404: not found", status=404),
+            ImpactEndpointError("http://prod/quote", "HTTP 401: unauthorised", status=401),
+            ImpactEndpointError("http://prod/quote", "no answer (timed out)"),
+            ImpactEndpointError("http://prod/quote", "no answer (connection refused)"),
+        ],
+        ids=["404", "authentication", "timeout", "unreachable"],
+    )
+    def test_http_after_a_release_production_must_answer(
+        self, tmp_path: Path, failure: ImpactEndpointError
+    ) -> None:
+        """DEP-R11: a mistyped or failing production address is never a first deploy."""
         from haute.cli._impact import _impact_http
 
+        project = self._project(tmp_path, released=True)
+        with (
+            patch(
+                "haute.deploy._impact.score_http_endpoint_batched",
+                side_effect=[[{"p": 1.0}], failure],
+            ),
+            pytest.raises(ImpactEndpointError, match="http://prod/quote") as raised,
+        ):
+            _impact_http("http://stg", "http://prod", [{"x": 1}], 100, project)
+        assert raised.value is failure
+
+    def test_http_after_a_release_compares_production(self, tmp_path: Path) -> None:
+        from haute.cli._impact import _impact_http
+
+        project = self._project(tmp_path, released=True)
         with patch(
             "haute.deploy._impact.score_http_endpoint_batched",
-            side_effect=[
-                [{"p": 1.0}],  # staging ok
-                RuntimeError("HTTP 404 from http://prod/quote: not found"),
-            ],
+            side_effect=[[{"p": 1.0}], [{"p": 2.0}]],
         ):
-            _, prod, exists = _impact_http(
-                "http://stg/quote",
-                "http://prod/quote",
-                [{"x": 1}],
-                100,
+            staging, prod, first_deploy = _impact_http(
+                "http://stg", "http://prod", [{"x": 1}], 100, project
             )
-        assert exists is False
-        assert prod == []
+        assert (staging, prod, first_deploy) == ([{"p": 1.0}], [{"p": 2.0}], None)
 
-    def test_http_timeout_must_raise(self) -> None:
-        """A network timeout on prod is NOT a 'no prod' signal — must propagate."""
+    def test_http_after_a_release_without_a_production_address_fails(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         from haute.cli._impact import _impact_http
 
-        with (
-            patch(
-                "haute.deploy._impact.score_http_endpoint_batched",
-                side_effect=[
-                    [{"p": 1.0}],  # staging ok
-                    TimeoutError("read timed out"),
-                ],
-            ),
-            pytest.raises(TimeoutError, match="timed out"),
-        ):
-            _impact_http(
-                "http://stg/quote",
-                "http://prod/quote",
-                [{"x": 1}],
-                100,
-            )
+        project = self._project(tmp_path, released=True)
+        with pytest.raises(SystemExit):
+            _impact_http("http://stg", "", [{"x": 1}], 100, project)
+        assert "[ci.production] endpoint_url" in capsys.readouterr().err
 
-    def test_http_500_must_raise(self) -> None:
-        """A 5xx HTTP error on prod must propagate, not be swallowed."""
+    def test_http_tags_that_cannot_be_read_fail_closed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Without an origin to read, impact cannot know whether production exists."""
         from haute.cli._impact import _impact_http
 
-        with (
-            patch(
-                "haute.deploy._impact.score_http_endpoint_batched",
-                side_effect=[
-                    [{"p": 1.0}],  # staging ok
-                    RuntimeError("HTTP 500 from http://prod/quote: server error"),
-                ],
-            ),
-            pytest.raises(RuntimeError, match="HTTP 500"),
-        ):
-            _impact_http(
-                "http://stg/quote",
-                "http://prod/quote",
-                [{"x": 1}],
-                100,
-            )
-
-    def test_http_connection_refused_must_raise(self) -> None:
-        """Connection refused on prod must propagate (fail loudly)."""
-        from haute.cli._impact import _impact_http
-
-        with (
-            patch(
-                "haute.deploy._impact.score_http_endpoint_batched",
-                side_effect=[
-                    [{"p": 1.0}],  # staging ok
-                    ConnectionRefusedError("connection refused"),
-                ],
-            ),
-            pytest.raises(ConnectionRefusedError, match="refused"),
-        ):
-            _impact_http(
-                "http://stg/quote",
-                "http://prod/quote",
-                [{"x": 1}],
-                100,
-            )
+        project = tmp_path / "project"
+        project.mkdir()
+        subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+        with pytest.raises(SystemExit):
+            _impact_http("http://stg", "http://prod", [{"x": 1}], 100, project)
+        assert "Could not read the release tags on origin" in capsys.readouterr().err

@@ -60,6 +60,7 @@ from haute._keyword_parameters import (
     validate_keyword_parameters,
 )
 from haute._logging import get_logger
+from haute._model_source import model_score_output_column, model_score_task
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
@@ -68,6 +69,7 @@ from haute._node_apply import (
     expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
+    optimiser_apply_version_column,
     resolve_api_input_from_config,
     resolve_workbench_input_from_config,
     scenario_step_count,
@@ -737,38 +739,65 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 @_register(NodeType.EXTERNAL_FILE, recompute_cost="code", opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    code = str(config.get("code") or "").strip()
-    _src_names = list(ctx.source_names)
+    # Anchor a relative object path to the pipeline dir before the load (same fix as the
+    # v2 apiInput closure). ``load_external_object`` resolves the path against cwd via
+    # ``content_hash`` / ``validate_project_path``, so a nested-pipeline relative
+    # ``path`` served from the project root would otherwise hash/open the wrong (or a
+    # missing) file. Resolved at call time, mirroring codegen.
+    return external_file_node_fn(
+        config,
+        func_name=ctx.func_name,
+        node_id=ctx.node.id,
+        source_names=ctx.source_names,
+        orig_source_names=ctx.orig_source_names,
+        preamble_ns=ctx.preamble_ns,
+        load_object=lambda: load_external_file_object(config),
+    )
 
-    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
+
+def external_file_node_fn(
+    config: Mapping[str, Any],
+    *,
+    func_name: str,
+    node_id: str,
+    source_names: Sequence[str],
+    orig_source_names: Sequence[str] | None,
+    preamble_ns: Mapping[str, Any] | None,
+    load_object: Callable[[], object],
+) -> tuple[str, Callable, bool]:
+    """The body of a Load File (External File) node, its object read by *load_object*.
+
+    Every Load File runs it: the executor's reads the configured path, a deployment's
+    the bundled copy. Its steps or code run with the object as ``obj`` beside the
+    preamble's names and its inputs by their edge names; without either it passes
+    its first input through.
+    """
+    code = str(config.get("code") or "").strip()
+    _src_names = list(source_names)
+
+    _orig_src = list(orig_source_names) if orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
-    _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
+    _preamble_ext = dict(preamble_ns) if preamble_ns else {}
     if isinstance(config.get("steps"), list):
         # Steps address the other inputs by their edge names (the first is
         # already df); a stepped node never carries inputMapping beside them.
         if _in_map is not None:
-            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
+            raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=node_id)
         names = set(_src_names)
         problem = stepped_code_problem(
             config, NodeType.EXTERNAL_FILE, step_input_names(NodeType.EXTERNAL_FILE, sorted(names))
         )
         if problem is not None:
             return (
-                ctx.func_name,
+                func_name,
                 _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"),
                 False,
             )
     if code:
 
         def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            # Anchor a relative object path to the pipeline dir before the load
-            # (same fix as the v2 apiInput closure). ``load_external_object``
-            # resolves the path against cwd via ``content_hash`` /
-            # ``validate_project_path``, so a nested-pipeline relative ``path``
-            # served from the project root would otherwise hash/open the wrong
-            # (or a missing) file. Resolved at call time, mirroring codegen.
             ens = dict(_preamble_ext)
-            ens["obj"] = load_external_file_object(config)
+            ens["obj"] = load_object()
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
             else:
@@ -782,9 +811,9 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 alias_first_input_as_df=True,
             )
 
-        return ctx.func_name, external_fn, False
+        return func_name, external_fn, False
     else:
-        return ctx.func_name, _passthrough_fn, False
+        return func_name, _passthrough_fn, False
 
 
 def _output_columns(config: dict[str, Any]) -> _ColumnContract:
@@ -1093,7 +1122,7 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
 
     # Produced: configured apply sources append a version column and can
     # rename the final optimiser value column when requested.
-    vcol = config.get("version_column", "__optimiser_version__")
+    vcol = optimiser_apply_version_column(config)
     produced = {vcol} if vcol else set()
     opt_value_col = config.get("optimised_value_column", "")
     if opt_value_col:
@@ -1186,7 +1215,7 @@ def _model_score_inputs(
 
 
 def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
-    out = config.get("output_column", "prediction") or "prediction"
+    out = model_score_output_column(config)
     produced = {out}
 
     # Post-processing code can reference arbitrary columns — opaque. A nonempty
@@ -1290,7 +1319,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     # loads exactly the model the scorer built for this node loads, from the
     # node's own destination.
     scoring_model = load_scoring_model(
-        model_source, config.get("task", "regression"), base_dir=_configured_pipeline_dir()
+        model_source, model_score_task(config), base_dir=_configured_pipeline_dir()
     )
     if scoring_model.feature_names:
         return _model_score_inputs(
@@ -1337,8 +1366,8 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     )
     scorer = ModelScorer(
         model_source=model_source,
-        task=config.get("task", "regression"),
-        output_col=config.get("output_column", "prediction"),
+        task=model_score_task(config),
+        output_col=model_score_output_column(config),
         code=code,
         source_names=list(ctx.source_names),
         source=ctx.source or "live",

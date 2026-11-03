@@ -115,9 +115,9 @@ class TestImpactDatabricksProdScoring:
                 side_effect=[staging_preds, prod_preds],
             ) as mock_score,
         ):
-            staging, prod, exists = _impact_databricks("stg", "prod", [{"x": 1}], 100)
+            staging, prod, first_deploy = _impact_databricks("stg", "prod", [{"x": 1}], 100)
 
-        assert exists is True
+        assert first_deploy is None
         assert staging == staging_preds
         assert prod == prod_preds
         # Both staging and production were scored.

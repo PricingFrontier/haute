@@ -8,78 +8,73 @@ from typing import Any
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
 from haute._types import REQUEST_INPUT_NODE_TYPES, RESPONSE_NODE_TYPES
-from haute.graph_utils import (
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-    ancestors,
-)
+from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 logger = get_logger(component="deploy.pruner")
 
 
-def _live_only_edges(
-    nodes: list[GraphNode],
+def _live_input_edges(
+    switch: GraphNode,
     edges: list[GraphEdge],
+    node_map: Mapping[str, GraphNode],
     *,
-    submodels: Mapping[str, Any] | None = None,
+    submodels: Mapping[str, Any] | None,
 ) -> list[GraphEdge]:
-    """Filter edges so liveSwitch nodes only keep their live input.
+    """The edges into *switch* that carry its live input.
 
-    For deployment we only want the live branch.  Input names are derived
-    from each incoming edge, so multiple frames emitted by one apiInput are
-    routed independently.
+    Selection is per edge, by the edge-derived input name, so two frames from one
+    Quote Input are routed independently. A switch with no input mapped to ``live``,
+    or whose live input matches no connected edge, raises ``ValueError``.
     """
-    switch_ids: set[str] = set()
-    for n in nodes:
-        if n.data.nodeType == NodeType.LIVE_SWITCH:
-            switch_ids.add(n.id)
-
-    if not switch_ids:
-        return edges
-
-    # For each switch, identify the live input name from config and retain
-    # only edges whose shared edge-derived name matches it.
-    switch_live_edge_ids: dict[str, set[str]] = {}
-    node_map = {n.id: n for n in nodes}
-
-    def _matching_edge_ids(switch_id: str, input_name: str) -> set[str]:
-        return {
-            edge.id
-            for edge in edges
-            if edge.target == switch_id
-            and edge_input_name(
-                edge,
-                node_map[edge.source],
-                submodels=submodels,
-            )
-            == input_name
-        }
-
-    for sid in switch_ids:
-        config = node_map[sid].data.config
-        input_scenario_map = config.get("input_scenario_map", {})
-        live_input_name = next(
-            name for name, scenario in input_scenario_map.items() if scenario == "live"
+    input_scenario_map = switch.data.config.get("input_scenario_map") or {}
+    live_inputs = [name for name, scenario in input_scenario_map.items() if scenario == "live"]
+    if not live_inputs:
+        raise ValueError(
+            f"LiveSwitch node '{switch.id}' maps no input to the 'live' scenario in "
+            "input_scenario_map, so a deployment cannot tell which branch it serves. "
+            "Map one of its inputs to 'live'."
         )
-        matching_edges = _matching_edge_ids(sid, live_input_name)
-        if not matching_edges:
-            raise ValueError(
-                f"LiveSwitch node '{sid}': input_scenario_map live input '{live_input_name}' "
-                "does not match any connected node"
-            )
-        switch_live_edge_ids[sid] = matching_edges
+    live_input_name = live_inputs[0]
+    matching = [
+        edge
+        for edge in edges
+        if edge_input_name(edge, node_map[edge.source], submodels=submodels) == live_input_name
+    ]
+    if not matching:
+        raise ValueError(
+            f"LiveSwitch node '{switch.id}': input_scenario_map live input '{live_input_name}' "
+            "does not match any connected node"
+        )
+    return matching
 
-    filtered: list[GraphEdge] = []
-    for e in edges:
-        if e.target in switch_ids:
-            if e.id in switch_live_edge_ids.get(e.target, set()):
-                filtered.append(e)
-        else:
-            filtered.append(e)
 
-    return filtered
+def _live_ancestry(graph: PipelineGraph, output_node_id: str) -> tuple[set[str], set[str]]:
+    """The nodes and edges the output depends on when served: ``(node ids, edge ids)``.
+
+    Walks backward from *output_node_id*; at each Live Switch it reaches, only the
+    edges of the switch's live input are followed. A switch the output does not
+    reach, or reaches only through another switch's non-live branch, is never
+    inspected.
+    """
+    node_map = {node.id: node for node in graph.nodes}
+    incoming: dict[str, list[GraphEdge]] = {}
+    for edge in graph.edges:
+        if edge.source in node_map and edge.target in node_map:
+            incoming.setdefault(edge.target, []).append(edge)
+    needed = {output_node_id}
+    kept_edges: set[str] = set()
+    pending = [output_node_id]
+    while pending:
+        node = node_map[pending.pop()]
+        edges = incoming.get(node.id, [])
+        if node.data.nodeType == NodeType.LIVE_SWITCH:
+            edges = _live_input_edges(node, edges, node_map, submodels=graph.submodels)
+        for edge in edges:
+            kept_edges.add(edge.id)
+            if edge.source not in needed:
+                needed.add(edge.source)
+                pending.append(edge.source)
+    return needed, kept_edges
 
 
 def prune_for_deploy(
@@ -98,22 +93,19 @@ def prune_for_deploy(
         (pruned_graph, kept_node_ids, removed_node_ids)
 
     Raises:
-        ValueError: If output_node_id is not in the graph.
+        ValueError: If output_node_id is not in the graph, or a Live Switch the
+            output reaches has no live input or one matching no connected edge.
     """
-    nodes = graph.nodes
-    edges = graph.edges
-
-    all_ids = {n.id for n in nodes}
+    all_ids = {n.id for n in graph.nodes}
     if output_node_id not in all_ids:
         raise ValueError(
             f"Output node '{output_node_id}' not found in graph. Available nodes: {sorted(all_ids)}"
         )
 
-    deploy_edges = _live_only_edges(nodes, edges, submodels=graph.submodels)
-    needed = ancestors(output_node_id, deploy_edges, all_ids)
+    needed, kept_edge_ids = _live_ancestry(graph, output_node_id)
 
-    kept_nodes = [n for n in nodes if n.id in needed]
-    kept_edges = [e for e in deploy_edges if e.source in needed and e.target in needed]
+    kept_nodes = [n for n in graph.nodes if n.id in needed]
+    kept_edges = [e for e in graph.edges if e.id in kept_edge_ids]
     removed_ids = sorted(all_ids - needed)
 
     pruned_graph = graph.model_copy(update={"nodes": kept_nodes, "edges": kept_edges})

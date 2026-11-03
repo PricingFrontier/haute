@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from click.testing import CliRunner
 
 
+#: Why a first deployment's production is not compared, as the transport says it.
+_NO_PRODUCTION = "the workspace has no production endpoint 'test-ep'."
+
+
 def _setup_impact_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -122,7 +126,7 @@ class TestImpact:
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
-            mock_db.return_value = (staging_preds, [], False)
+            mock_db.return_value = (staging_preds, [], _NO_PRODUCTION)
             result = runner.invoke(cli, ["impact"])
 
         assert result.exit_code == 0, result.output
@@ -146,7 +150,7 @@ class TestImpact:
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
-            mock_db.return_value = (staging_preds, prod_preds, True)
+            mock_db.return_value = (staging_preds, prod_preds, None)
             mock_report.return_value = MagicMock()
             result = runner.invoke(cli, ["impact"])
 
@@ -163,6 +167,38 @@ class TestImpact:
         result = runner.invoke(cli, ["impact"])
         assert result.exit_code == 1
         assert "staging" in result.output.lower() and "url" in result.output.lower()
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "endpoint",
+            "alignment",
+        ],
+    )
+    def test_an_endpoint_or_alignment_failure_exits_naming_it(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+    ) -> None:
+        """DEP-R11: a production that does not answer, or answers short, fails the step."""
+        from haute.deploy._impact import ImpactAlignmentError, ImpactEndpointError
+
+        _setup_impact_project(
+            tmp_path, monkeypatch, target="container", staging_url="http://stg", prod_url="http://p"
+        )
+        error = (
+            ImpactEndpointError("http://p/quote", "HTTP 404: not found", status=404)
+            if failure == "endpoint"
+            else ImpactAlignmentError("Batch 1 of 1 sent 2 quotes but the endpoint answered 1")
+        )
+        with patch("haute.cli._impact._impact_http", side_effect=error):
+            result = runner.invoke(cli, ["impact"])
+
+        assert result.exit_code == 1
+        assert f"Error: {error}" in result.output
+        assert not (tmp_path / "impact_report.md").exists()
 
     def test_container_target_success(
         self,
@@ -187,7 +223,7 @@ class TestImpact:
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
-            mock_http.return_value = (staging_preds, prod_preds, True)
+            mock_http.return_value = (staging_preds, prod_preds, None)
             mock_report.return_value = MagicMock()
             result = runner.invoke(cli, ["impact"])
 
@@ -229,7 +265,7 @@ class TestImpact:
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
             patch("haute.deploy._impact.format_markdown", return_value="# Markdown Report"),
         ):
-            mock_db.return_value = ([], [], False)
+            mock_db.return_value = ([], [], _NO_PRODUCTION)
             result = runner.invoke(cli, ["impact"])
 
         assert result.exit_code == 0, result.output
@@ -250,7 +286,7 @@ class TestImpact:
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
-            mock_db.return_value = ([], [], False)
+            mock_db.return_value = ([], [], _NO_PRODUCTION)
             result = runner.invoke(cli, ["impact", "--sample", "2"])
 
         assert result.exit_code == 0, result.output
@@ -261,7 +297,7 @@ class TestImpact:
 
 class TestImpactDatabricks:
     def test_prod_endpoint_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When prod endpoint doesn't exist, should return prod_exists=False."""
+        """The workspace's own NotFound for the endpoint skips the comparison, saying why."""
         from haute.cli._impact import _impact_databricks
 
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://rating.example")
@@ -275,57 +311,11 @@ class TestImpactDatabricks:
             patch("haute.deploy._config._load_env"),
             patch("haute.deploy._impact.score_endpoint_batched", return_value=[{"p": 1.0}]),
         ):
-            staging, prod, exists = _impact_databricks("stg", "prod", [{"x": 1}], 100)
+            staging, prod, first_deploy = _impact_databricks("stg", "prod", [{"x": 1}], 100)
 
-        assert exists is False
+        assert first_deploy == "the workspace has no production endpoint 'prod'."
         assert prod == []
         assert len(staging) == 1
-
-
-class TestImpactHttp:
-    def test_prod_404_marks_first_deploy(self) -> None:
-        """A 404 on the prod URL is the only 'unreachable' signal that
-        should be treated as 'no production yet'. Other transport errors
-        (connection refused, timeout, 5xx) must propagate — see
-        ``test_cli_fail_loudly.py::TestImpactProdExistsFailsLoudly`` for
-        the full contract.
-        """
-        from haute.cli._impact import _impact_http
-
-        with patch(
-            "haute.deploy._impact.score_http_endpoint_batched",
-            side_effect=[
-                [{"p": 1.0}],  # staging succeeds
-                RuntimeError("HTTP 404 from http://prod/quote: not found"),
-            ],
-        ):
-            staging, prod, exists = _impact_http(
-                "http://stg/quote",
-                "http://prod/quote",
-                [{"x": 1}],
-                100,
-            )
-
-        assert exists is False
-        assert prod == []
-
-    def test_no_prod_url(self) -> None:
-        """If prod_url is empty, prod_exists should be False."""
-        from haute.cli._impact import _impact_http
-
-        with patch(
-            "haute.deploy._impact.score_http_endpoint_batched",
-            return_value=[{"p": 1.0}],
-        ):
-            staging, prod, exists = _impact_http(
-                "http://stg/quote",
-                "",
-                [{"x": 1}],
-                100,
-            )
-
-        assert exists is False
-        assert prod == []
 
 
 class TestImpactWithoutAPortfolioSample:
@@ -358,7 +348,7 @@ class TestImpactWithoutAPortfolioSample:
             patch("haute.cli._impact._impact_databricks") as mock_db,
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
         ):
-            mock_db.return_value = ([{"premium": 1.0}, {"premium": 2.0}], [], False)
+            mock_db.return_value = ([{"premium": 1.0}, {"premium": 2.0}], [], _NO_PRODUCTION)
             result = runner.invoke(cli, ["impact"])
 
         assert result.exit_code == 0, result.output
@@ -371,10 +361,11 @@ class TestImpactWithoutAPortfolioSample:
         assert "Dataset: test quotes (tests/quotes) (2 rows)" in result.output
         assert "test quotes (tests/quotes)" in (tmp_path / "impact_report.md").read_text()
 
-    def test_a_comparison_segments_by_the_quotes_text_fields(
+    def test_a_comparison_is_given_every_scalar_field_of_the_quotes(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._project(tmp_path, monkeypatch, [{"input": {"Area": "A", "n": 1}}] * 3)
+        quote = {"Area": "A", "n": 1, "excess": 250.5, "renewal": True, "drivers": [{"age": 30}]}
+        self._project(tmp_path, monkeypatch, [{"input": quote}] * 3)
 
         with (
             patch("haute.cli._impact._impact_databricks") as mock_db,
@@ -382,12 +373,12 @@ class TestImpactWithoutAPortfolioSample:
             patch("haute.deploy._impact.format_terminal", return_value="Report"),
             patch("haute.deploy._impact.format_markdown", return_value="# Report"),
         ):
-            mock_db.return_value = ([{"p": 1.0}] * 3, [{"p": 1.0}] * 3, True)
+            mock_db.return_value = ([{"p": 1.0}] * 3, [{"p": 1.0}] * 3, None)
             result = runner.invoke(cli, ["impact"])
 
         assert result.exit_code == 0, result.output
         input_df = report.call_args.kwargs["input_df"]
-        assert input_df.to_dicts() == [{"Area": "A"}] * 3
+        assert input_df.to_dicts() == [{"Area": "A", "n": 1, "excess": 250.5, "renewal": True}] * 3
 
     def test_no_test_quotes_to_compare_fails(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -482,3 +473,33 @@ def test_a_field_first_answered_late_is_never_silently_dropped() -> None:
             dataset_path="test quotes (tests/quotes)",
             total_rows=101,
         )
+
+
+class TestImpactDatasetStaysInTheProject:
+    """``[safety] impact_dataset`` is read only from inside the project root."""
+
+    @pytest.mark.parametrize("outside", ["relative", "absolute"])
+    def test_a_dataset_outside_the_project_is_refused_before_reading(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        outside: str,
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        elsewhere = tmp_path / "elsewhere.parquet"
+        pl.DataFrame({"Area": ["A"]}).write_parquet(elsewhere)
+        named = "../elsewhere.parquet" if outside == "relative" else elsewhere.as_posix()
+        _setup_impact_project(project, monkeypatch, impact_dataset=named)
+
+        with (
+            patch("polars.read_parquet") as read_parquet,
+            patch("haute.cli._impact._impact_databricks") as mock_db,
+        ):
+            result = runner.invoke(cli, ["impact"])
+
+        assert result.exit_code == 1, result.output
+        assert f"[safety] impact_dataset {named!r} is not a file in the project" in result.output
+        read_parquet.assert_not_called()
+        mock_db.assert_not_called()

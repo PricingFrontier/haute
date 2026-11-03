@@ -232,35 +232,6 @@ class TestOpenBrowserSingleCall:
     only sensible "fallback" (hand the URL to the human).
     """
 
-    def test_uses_single_webbrowser_open_on_success(self) -> None:
-        """Happy path: one call to ``webbrowser.open``, no subprocess hack.
-
-        The correctly-refactored implementation routes to
-        :func:`webbrowser.open` regardless of platform and must never
-        touch ``subprocess.*``.  The old cascade's platform branch is
-        gone entirely, so this test no longer needs to pin
-        ``sys.platform`` — any platform it runs on should take the same
-        single-call path.
-        """
-        with (
-            patch("haute.cli._helpers.webbrowser") as mock_wb,
-            patch("haute.cli._helpers.subprocess") as mock_sub,
-        ):
-            mock_wb.open.return_value = True
-
-            from haute.cli._helpers import _open_browser
-
-            _open_browser("http://localhost:8000")
-
-            # Exactly one webbrowser.open call — no retries.
-            assert mock_wb.open.call_count == 1, (
-                f"Expected exactly 1 webbrowser.open call, got {mock_wb.open.call_count}"
-            )
-            mock_wb.open.assert_called_once_with("http://localhost:8000")
-            # No subprocess hacks — platform dispatch is webbrowser's job.
-            mock_sub.call.assert_not_called()
-            mock_sub.Popen.assert_not_called()
-
     def test_failure_prints_url_to_user(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When the browser can't be launched, the URL must be surfaced.
 
@@ -309,18 +280,17 @@ class TestOpenBrowserSingleCall:
             "platform dispatch should be handled by webbrowser.open() alone."
         )
 
-        with (
-            patch("haute.cli._helpers.webbrowser") as mock_wb,
-            patch("haute.cli._helpers.subprocess") as mock_sub,
-        ):
+        # Nor ``subprocess``: launching the browser is webbrowser's job alone.
+        assert not hasattr(helpers_mod, "subprocess")
+
+        with patch("haute.cli._helpers.webbrowser") as mock_wb:
             mock_wb.open.return_value = True
 
             from haute.cli._helpers import _open_browser
 
             _open_browser("http://example.com")
 
-            mock_sub.call.assert_not_called()
-            mock_sub.Popen.assert_not_called()
+            mock_wb.open.assert_called_once_with("http://example.com")
 
 
 # ---------------------------------------------------------------------------

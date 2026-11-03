@@ -692,17 +692,16 @@ class SavePipelineService:
             touched_file.target: _artifact_digest(touched_file.target) for touched_file in touched
         }
         captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
-        # The capture runs the project's git hooks, which may rewrite what the save wrote
-        # (a formatter's pre-commit hook), whether or not they then let the commit through:
-        # hand back the document they left, so the editor's next save is made against the
-        # revision on disk.
+        # Something outside Haute (an IDE, a formatter on watch) may rewrite what the save
+        # wrote while the capture runs: hand back the document on disk, so the editor's next
+        # save is made against the revision there.
         if any(_artifact_digest(target) != digest for target, digest in written.items()):
             committed_document = _helpers.load_pipeline_editor_document(
                 py_path, project_root=self._root
             )
             source_revision = committed_document.source_revision
             if not source_revision:
-                raise RuntimeError("The project's git hooks left the saved pipeline unreadable.")
+                raise RuntimeError("The saved pipeline changed on disk and no longer reads.")
             committed_payload = committed_document.model_dump(mode="json", by_alias=True)
 
         self.committed = CommittedDocument(
@@ -793,6 +792,8 @@ class SavePipelineService:
         self._validate_optimiser_input_selectors(flattened)
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
+        # The sidecar paths a save writes: a reserved device name or two paths one file.
+        self._collect_node_configs_recursive(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
         self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)

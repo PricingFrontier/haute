@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +17,7 @@ from haute.deploy import DeployConfig, resolve_config
 from haute.deploy._container import build_and_push_image, prepare_build_directory
 from haute.errors import DeployError
 from scripts.container_smoke import run_smoke
+from tests._fake_uv import path_with_fake_uv
 
 # Container builds pin price-contour from the package index; see the fixture.
 pytestmark = pytest.mark.usefixtures("released_price_contour")
@@ -59,11 +62,13 @@ class TestPrepareBuildDirectory:
             assert (build_dir / "artifacts").is_dir()
 
             dockerfile_text = (build_dir / "Dockerfile").read_text(encoding="utf-8")
-            assert "RUN pip install --no-cache-dir --no-deps haute==" in dockerfile_text
-            assert "polars==" in dockerfile_text
-            assert "fastapi==" in dockerfile_text
-            assert "uvicorn[standard]==" in dockerfile_text
+            assert "-r haute.lock" in dockerfile_text
             assert ".whl" not in dockerfile_text
+            # The runtime is locked beside the Dockerfile, haute alone from the index.
+            runtime_lock = (build_dir / "requirements.lock").read_text(encoding="utf-8")
+            for name in ("polars==", "fastapi==", "uvicorn=="):
+                assert f"\n{name}" in runtime_lock
+            assert "\nhaute==" in (build_dir / "haute.lock").read_text(encoding="utf-8")
         finally:
             resolved.close()
 
@@ -85,7 +90,11 @@ class TestPrepareBuildDirectory:
             assert (build_dir / "haute-9.9.9-py3-none-any.whl").is_file()
             dockerfile_text = (build_dir / "Dockerfile").read_text(encoding="utf-8")
             assert "COPY haute-9.9.9-py3-none-any.whl ." in dockerfile_text
-            assert "--no-deps ./haute-9.9.9-py3-none-any.whl" in dockerfile_text
+            # The bundled wheel installs by the digest of the bytes the bundle holds.
+            digest = hashlib.sha256(fake_wheel.read_bytes()).hexdigest()
+            assert (build_dir / "haute.lock").read_text(encoding="utf-8") == (
+                f"./haute-9.9.9-py3-none-any.whl --hash=sha256:{digest}\n"
+            )
             assert "haute==" not in dockerfile_text
 
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -103,7 +112,6 @@ class TestBuildAndPushImageCleanup:
         resolved = _resolve_minimal_live_quote(tmp_path, monkeypatch)
         try:
             with (
-                patch("haute.deploy._container.Path.cwd", return_value=tmp_path),
                 patch("haute.deploy._container._check_docker_available"),
                 patch("haute.deploy._container._git_sha_short", return_value="abc1234"),
                 patch(
@@ -114,8 +122,8 @@ class TestBuildAndPushImageCleanup:
                 with pytest.raises(DeployError, match="Docker build failed"):
                     build_and_push_image(resolved)
 
-            build_dir = tmp_path / ".haute_build"
-            assert not build_dir.exists()
+            # The failed build's own directory is gone; the project's .haute_build stays.
+            assert list((resolved.project_root / ".haute_build").iterdir()) == []
         finally:
             resolved.close()
 
@@ -156,6 +164,8 @@ class TestContainerSmokeServeCheck:
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            # The script locks the runtime with the uv on PATH: the offline stand-in here.
+            env={**os.environ, "PATH": path_with_fake_uv(tmp_path / "bin")},
         )
         assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         assert "GET /health response:" in result.stdout

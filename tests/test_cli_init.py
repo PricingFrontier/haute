@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import stat
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -19,7 +22,7 @@ from haute._scaffold import (
 )
 from haute._workbench_form import blank_form
 from haute.cli import cli
-from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
+from haute.cli._init_cmd import _ensure_haute_dependency
 from tests._git_helpers import git_run
 
 if TYPE_CHECKING:
@@ -311,14 +314,75 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
 
-    def test_removes_root_main_py_from_uv_init(
+    @pytest.mark.parametrize(
+        ("folder", "named"),
+        [(".tmp-e2e-project", "tmp_e2e_project"), ("Motor Pricing!", "motor_pricing")],
+    )
+    def test_a_new_pyproject_is_named_as_a_package_name_must_be(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        folder: str,
+        named: str,
+    ):
+        project = tmp_path / folder
+        project.mkdir()
+        monkeypatch.chdir(project)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        with open(project / "pyproject.toml", "rb") as fh:
+            assert tomllib.load(fh)["project"]["name"] == named
+
+    def test_a_folder_name_without_a_letter_or_digit_is_refused(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        project = tmp_path / "---"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        result = runner.invoke(cli, ["init"])
+        assert result.exit_code == 1
+        assert "gives no project name" in result.output
+        assert not (project / "pyproject.toml").exists()
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_removes_root_main_py_from_uv_init(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
+    ):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "main.py").write_text("print('hello from uv init')\n")
+        # Exactly what uv 0.9 writes for a project named my-proj.
+        placeholder = (
+            'def main():\n    print("Hello from my-proj!")\n\n\n'
+            'if __name__ == "__main__":\n    main()\n'
+        )
+        (tmp_path / "main.py").write_bytes(placeholder.replace("\n", newline).encode())
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / "main.py").exists()
-        assert "removed root main.py" in result.output.lower()
+        assert "Removed root main.py, uv init's placeholder" in result.output
+        assert (tmp_path / "rating" / "main.py").exists()
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            # The placeholder edited by the team: no longer uv's.
+            'def main():\n    print("Hello from my-proj!")\n    run_batch()\n\n\n'
+            'if __name__ == "__main__":\n    main()\n',
+            "import haute\n\npipeline = haute.Pipeline('legacy')\n",
+        ],
+    )
+    def test_keeps_a_root_main_py_the_team_wrote(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        content: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.py").write_text(content, encoding="utf-8", newline="\n")
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "main.py").read_text(encoding="utf-8") == content
+        assert "Kept root main.py: it is not uv init's placeholder." in result.output
         assert (tmp_path / "rating" / "main.py").exists()
 
     def test_creates_pyproject_toml_if_missing(
@@ -638,7 +702,7 @@ class TestEnsureHauteDependency:
         # A project set up again as a workbench: its haute keeps its version, marker and other
         # extras, and none is taken away.
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(layout.format(deps=f'"polars", {_toml_basic_string(listed)}'))
+        pyproject.write_text(layout.format(deps=f'"polars", {json.dumps(listed)}'))
         assert _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
         with open(pyproject, "rb") as fh:
             assert tomllib.load(fh)["project"]["dependencies"] == ["polars", gains]
@@ -775,23 +839,6 @@ class TestEnsureHauteDependencyTomlSafety:
         assert 'numpy; python_version >= "3.11"' in deps
         assert "haute" in deps
 
-    @pytest.mark.parametrize(
-        "value",
-        [
-            'foo; python_version >= "3.11"',  # env marker with double quotes
-            "back\\slash",  # backslash
-            "tab\tchar",  # control char shorthand
-            "null\x00byte",  # \uXXXX control-char escape
-            'both "\\ mixed',  # quote + backslash together
-        ],
-    )
-    def test_toml_basic_string_round_trips(self, value: str):
-        # F131: whatever escaping the helper produces must be valid TOML that
-        # parses back to the original value.
-        emitted = _toml_basic_string(value)
-        parsed = tomllib.loads(f"x = {emitted}")
-        assert parsed["x"] == value
-
     def test_quoted_project_header_not_duplicated(self, tmp_path: Path):
         # F142: a quoted [ "project" ] header is the project table for tomllib;
         # the textual scan must recognise it and edit in place rather than
@@ -888,15 +935,39 @@ class TestEnsureHauteDependencyTomlSafety:
         with pytest.raises(ValueError, match="array-of-tables"):
             _ensure_haute_dependency(pyproject, "foo")
 
-    def test_haute_where_its_extras_cannot_be_added_raises_naming_them(self, tmp_path: Path):
-        # An inline [project] table has no array to rewrite: the extras are named for the
-        # analyst to add, and the file is left as it was.
+    def test_an_inline_project_table_gains_the_extras(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
-        text = 'project = { name = "foo", dependencies = ["haute>=1"] }\n'
-        pyproject.write_text(text, encoding="utf-8")
-        with pytest.raises(ValueError, match="add the azure, sqlserver extras to it yourself"):
-            _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
-        assert pyproject.read_text(encoding="utf-8") == text
+        pyproject.write_text(
+            'project = { name = "foo", dependencies = ["haute>=1"] }\n', encoding="utf-8"
+        )
+        assert _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
+        parsed = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        assert parsed["project"]["dependencies"] == ["haute[azure,sqlserver]>=1"]
+
+    def test_comments_and_layout_outside_the_entry_are_kept(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        rest = "[dependency-groups]\ndev = []\n\n[tool.mypy]\nstrict = true\n"
+        pyproject.write_text(
+            '[project]\nname = "foo"  # the model\ndependencies = [\n'
+            '    "polars",  # frames\n    "numpy",\n]\n\n' + rest,
+            encoding="utf-8",
+        )
+        assert _ensure_haute_dependency(pyproject, "foo")
+        assert pyproject.read_text(encoding="utf-8") == (
+            '[project]\nname = "foo"  # the model\ndependencies = [\n'
+            '    "haute",\n    "polars",  # frames\n    "numpy",\n]\n\n' + rest
+        )
+
+    def test_a_one_line_array_is_laid_out_one_entry_a_line(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "foo"\ndependencies = ["polars", "numpy"]\n', encoding="utf-8"
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        assert pyproject.read_text(encoding="utf-8").startswith(
+            '[project]\nname = "foo"\ndependencies = [\n'
+            '    "haute",\n    "polars",\n    "numpy",\n]\n'
+        )
 
 
 def _own_files(project_dir: Path) -> dict[Path, bytes]:
@@ -1751,3 +1822,123 @@ class TestInitCiRunsTheProjectsPython:
             )
             assert pins, relative
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
+
+
+class TestPreCommitHookFormatsWhatIsStaged:
+    """The generated pre-commit hook, run by git with the real ruff, formats and checks the
+    staged content only, and a problem ruff cannot fix stops the commit."""
+
+    @pytest.fixture
+    def repository(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
+        from tests._git_helpers import init_repo, install_hook
+
+        (tmp_path / "repo").mkdir()
+        repository = init_repo(tmp_path / "repo")
+        git_run(repository, "config", "core.hooksPath", ".git/hooks")
+        install_hook(repository, "pre-commit", pre_commit_hook())
+        # `uv run ruff ...` as the hook runs it, on this interpreter's ruff.
+        shims = tmp_path / "shims"
+        shims.mkdir()
+        python = Path(sys.executable).as_posix()
+        shim = (
+            "#!/bin/sh",
+            'while [ "$1" != ruff ]; do shift; done',
+            "shift",
+            f'exec "{python}" -m ruff "$@"',
+        )
+        (shims / "uv").write_text(
+            "\n".join(shim) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (shims / "uv").chmod(0o755)
+        env = {**os.environ, "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"}
+        return repository, env
+
+    @staticmethod
+    def _commit(repository: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "commit", "-m", "change"],
+            cwd=repository,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_a_partially_staged_file_commits_only_its_formatted_staged_hunk(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        module = repo / "pricing.py"
+        module.write_text("x  =  1\n", encoding="utf-8", newline="\n")
+        git_run(repo, "add", "pricing.py")
+        module.write_text("x  =  1\ny  =  2\n", encoding="utf-8", newline="\n")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode == 0, result.stderr
+        assert git_run(repo, "show", "HEAD:pricing.py") == "x = 1"
+        # The unstaged line stays unstaged, in the working tree as it was written.
+        assert module.read_text(encoding="utf-8") == "x  =  1\ny  =  2\n"
+        assert "+y  =  2" in git_run(repo, "diff", "--", "pricing.py")
+
+    def test_a_wholly_staged_file_is_formatted_in_the_working_tree_too(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        module = repo / "pricing.py"
+        module.write_text("import os\nx  =  1\n", encoding="utf-8", newline="\n")
+        git_run(repo, "add", "pricing.py")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode == 0, result.stderr
+        assert git_run(repo, "show", "HEAD:pricing.py") == "x = 1"
+        assert module.read_text(encoding="utf-8") == "x = 1\n"
+        assert git_run(repo, "status", "--porcelain", "--", "pricing.py") == ""
+
+    def test_a_non_ascii_file_name_is_formatted(self, repository: tuple[Path, dict[str, str]]):
+        repo, env = repository
+        (repo / "café.py").write_text("x  =  1\n", encoding="utf-8", newline="\n")
+        git_run(repo, "add", "café.py")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode == 0, result.stderr
+        assert git_run(repo, "show", "HEAD:café.py") == "x = 1"
+
+    def test_a_problem_ruff_cannot_fix_stops_the_commit(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        (repo / "pricing.py").write_text(
+            "def price():\n    return undefined_rate\n", encoding="utf-8", newline="\n"
+        )
+        git_run(repo, "add", "pricing.py")
+        head = git_run(repo, "rev-parse", "HEAD")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode != 0
+        # At the lines of the content the hook wrote: the problem line, after formatting.
+        assert "pricing.py:2:12: F821 Undefined name `undefined_rate`" in result.stderr
+        assert git_run(repo, "rev-parse", "HEAD") == head
+
+    def test_safe_fixes_are_kept_when_a_problem_stops_the_commit(
+        self, repository: tuple[Path, dict[str, str]]
+    ):
+        repo, env = repository
+        module = repo / "pricing.py"
+        module.write_text(
+            "import os\n\n\ndef price():\n    return undefined_rate\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        git_run(repo, "add", "pricing.py")
+
+        result = self._commit(repo, env)
+
+        assert result.returncode != 0
+        # The unused import went; the reported line is the file's as it now is.
+        assert module.read_text(encoding="utf-8") == "def price():\n    return undefined_rate\n"
+        assert "pricing.py:2:12: F821" in result.stderr

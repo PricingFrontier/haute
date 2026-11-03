@@ -109,7 +109,7 @@ my-project/
 ```
 <!-- scaffold-tree-after:end -->
 
-A root `main.py` left over from `uv init` is removed; Haute uses `rating/main.py` as the project pipeline. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced, and a starter pipeline or test is written only where the folder has none, so a `rating/main.py` already there is kept.
+A root `main.py` that is still the placeholder `uv init` wrote is removed, since Haute uses `rating/main.py` as the project pipeline; a root `main.py` you have changed or written yourself is kept. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced, and a starter pipeline or test is written only where the folder has none, so a `rating/main.py` already there is kept.
 
 To change your answers later (another CI provider, another deploy target, or the other kind of project), run `haute init` again. It asks the same questions with your project's current answers as the defaults, then writes `haute.toml` afresh, the workflow files for your answers (removing the previous provider's) and `.env.example`. It never changes `rating/` or `tests/`. Anything you set in `haute.toml` yourself, such as the registry or the Databricks catalog, and the MLflow settings saved from the app, goes back to its default: copy what you need back from the previous version (`git diff haute.toml`).
 
@@ -258,7 +258,7 @@ Haute validates a deployment graph and scores configured test quotes before a no
 | **Dry-run validation** | Parses the pipeline, checks all model files exist, scores test quotes |
 | **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
 | **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint. For HTTP endpoints it reads the address from `[ci.staging] endpoint_url` in `haute.toml` and does not accept `--endpoint-suffix` (see [Docker](targets/docker.md#step-3-give-smoke-and-impact-their-endpoints)) |
-| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`. The report is advisory and never fails the run |
+| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`, or on the test quotes when none is named, as `haute init` leaves it. A sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`. The report is advisory: the changes it shows never fail the run, but an endpoint that cannot be reached, or answers with a different number of rows than quotes it was sent, does |
 | **Approval gate** | Configure this in GitHub, GitLab, Azure DevOps, or your own release process; `min_approvers` is configuration metadata, not an enforced gate |
 | **Rollback** | Use your target platform's model/image revision and rollback procedure |
 

@@ -25,8 +25,6 @@ records corrections to that audit's claims and proposed remedies.
 |---|---|---|
 | [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, tools that never stall the server, facts the model can trust, the core's and the tools' hygiene, the chat panel's failures and clicks; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred); assistant apply retaining the authenticated revision through commit, and workbench form tables resolved from the configured project root | `ASSIST-54` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | A shutdown that cancels every job, one failure classification with persistence failures surfaced, one worker envelope and one cgroup resolver, one worker primitive; operation-raised timeouts propagated by shared flights and the latest-wins queue | `ROAD-WORKER-06` |
-| [CLI](cli.md) | `haute init` keeping a root `main.py` it did not write, `haute run` as a lazy walk, `haute lint` running the editor's validators, `pyproject.toml` through `tomlkit`, error reporting, generated CI hygiene; `haute impact` dataset confinement and `lint`/`run` pipeline resolution error handling | `CLI-R01` |
-| [Deploy](deploy.md) | Every target's dependency closure locked, typed `haute.toml`, impact alignment, build directories under the project, one copy of each deploy mechanism; matching JSON and NDJSON output documents | `DEP-R09` |
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred); noncolliding relationship aliases and cached responses naming their consumer; pivot header format lookup by field name, fresh config reads after confirmation dialogs, and Explore error assistant action | `EDA-R01` |
@@ -107,11 +105,12 @@ It combines an initial subsystem-wide pass and executed Python behavioural probe
 with a systematic batch-by-batch pass over all 961 authored production source files
 (`376,420` lines across `src/haute/` and `frontend/src/`, tracked in a scratch
 inventory ledger with `0` unread files remaining). It maps the verified findings to
-new component packages (`ASSIST-62`, `CLI-R07`,
+new component packages (`ASSIST-62`,
 `EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
 `GIT-R19`, `IO-R07`,
 `API-R04`, `TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
-`DEP-R13`; findings whose packages were delivered have been removed.
+`DEP-R13` (delivered, with the deploy roadmap retired); findings whose packages were
+delivered have been removed.
 It is a supporting report and owns no work; the packages in the component roadmaps
 above carry the plans.
 

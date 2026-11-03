@@ -277,7 +277,10 @@ class TestInit:
             '[project]\nname = "motor-pricing"\nversion = "0.1.0"\n'
             'requires-python = ">=3.11"\ndependencies = []\n',
         )
-        (tmp_path / "main.py").write_text("print('hello')\n")
+        (tmp_path / "main.py").write_text(
+            'def main():\n    print("Hello from motor-pricing!")\n\n\n'
+            'if __name__ == "__main__":\n    main()\n'
+        )
 
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
@@ -475,7 +478,7 @@ class TestRun:
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(
             cli,
-            ["run", pipeline_file],
+            ["run", pipeline_file, "--node", "transform"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
@@ -495,7 +498,7 @@ class TestRun:
             ),
             encoding="utf-8",
         )
-        result = runner.invoke(cli, ["run", str(main)])
+        result = runner.invoke(cli, ["run", str(main), "--node", "transform"])
         assert result.exit_code == 1
         assert "✗ transform (line 2): " in result.output, result.output
 
@@ -507,7 +510,7 @@ class TestRun:
             + "\n\n@pipeline.polars\ndef pl() -> pl.LazyFrame:\n    return None\n",
             encoding="utf-8",
         )
-        result = runner.invoke(cli, ["run", str(main)])
+        result = runner.invoke(cli, ["run", str(main), "--node", "transform"])
         assert result.exit_code == 1
         assert "takes the name `pl`" in result.output
 
@@ -515,7 +518,7 @@ class TestRun:
         self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(project_dir)
-        result = runner.invoke(cli, ["run"], catch_exceptions=False)
+        result = runner.invoke(cli, ["run", "--node", "transform"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert "test_cli" in result.output
 
@@ -586,16 +589,17 @@ pipeline.connect("source", "bad")
 '''
         p = tmp_path / "broken.py"
         p.write_text(code)
-        result = runner.invoke(cli, ["run", str(p)])
+        result = runner.invoke(cli, ["run", str(p), "--node", "bad"])
         assert result.exit_code == 1
-        assert "failed" in result.output.lower() or "✗" in result.output
+        assert isinstance(result.exception, SystemExit)
+        assert "nonexistent_column" in result.output
 
     def test_run_shows_output_preview(self, runner: CliRunner, project_dir: Path):
         """Successful run should show output preview from last node."""
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(
             cli,
-            ["run", pipeline_file],
+            ["run", pipeline_file, "--node", "transform"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
@@ -619,10 +623,10 @@ pipeline.connect("source", "bad")
             'pipeline.connect("factors", "premium", source_port="factored")\n',
         )
 
-        result = runner.invoke(cli, ["run", str(path)], catch_exceptions=False)
+        result = runner.invoke(cli, ["run", str(path), "--node", "premium"], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
-        assert "premium: 1 rows" in result.output
+        assert "Output - premium (1 rows):" in result.output
         assert "120.0" in result.output
 
     def test_run_shows_pipeline_name(self, runner: CliRunner, project_dir: Path):
@@ -630,7 +634,7 @@ pipeline.connect("source", "bad")
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(
             cli,
-            ["run", pipeline_file],
+            ["run", pipeline_file, "--node", "transform"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
@@ -638,17 +642,17 @@ pipeline.connect("source", "bad")
         assert "2 nodes" in result.output
 
     def test_run_shows_per_node_success(self, runner: CliRunner, project_dir: Path):
-        """Successful nodes should show row x col counts."""
+        """Each walked node shows its column count, read from its plan."""
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(
             cli,
-            ["run", pipeline_file],
+            ["run", pipeline_file, "--node", "transform"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        # Each successful node shows rows x cols
-        assert "rows" in result.output
-        assert "cols" in result.output
+        assert "\u2713 source: 1 cols" in result.output
+        assert "\u2713 transform: 2 cols" in result.output
+        assert "Output - transform (3 rows):" in result.output
 
     def test_run_parse_error(self, runner: CliRunner, tmp_path: Path):
         """A .py file that raises during parsing should give a parse error."""
@@ -658,27 +662,31 @@ pipeline.connect("source", "bad")
         assert result.exit_code == 1
         assert "error" in result.output.lower()
 
-    def test_run_execute_error(self, runner: CliRunner, tmp_path: Path):
-        """When execute_graph raises, the error is reported."""
-        from unittest.mock import MagicMock, patch
+    def test_an_expected_execution_failure_is_one_line(self, runner: CliRunner, project_dir: Path):
+        from unittest.mock import patch
 
-        from haute.graph_utils import PipelineGraph
-
-        mock_graph = MagicMock(spec=PipelineGraph)
-        mock_graph.nodes = [MagicMock()]  # non-empty
-        mock_graph.pipeline_name = "test"
-
-        with (
-            patch("haute._project.resolve_pipeline_file", return_value=tmp_path / "x.py"),
-            patch("haute.parser.parse_pipeline_file", return_value=mock_graph),
-            patch(
-                "haute.executor.execute_graph",
-                side_effect=RuntimeError("execution boom"),
-            ),
-        ):
-            result = runner.invoke(cli, ["run", str(tmp_path / "x.py")])
+        with patch("haute.execution.execute_lazy_graph", side_effect=ValueError("no rows")):
+            result = runner.invoke(
+                cli, ["run", str(project_dir / "main.py"), "--node", "transform"]
+            )
         assert result.exit_code == 1
-        assert "execution boom" in result.output.lower() or "error" in result.output.lower()
+        assert isinstance(result.exception, SystemExit)
+        assert "Error executing pipeline: no rows" in result.output
+
+    def test_a_defect_in_execution_keeps_its_traceback(self, runner: CliRunner, project_dir: Path):
+        from unittest.mock import patch
+
+        with patch("haute.execution.execute_lazy_graph", side_effect=TypeError("boom")):
+            result = runner.invoke(
+                cli, ["run", str(project_dir / "main.py"), "--node", "transform"]
+            )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, TypeError)
+
+    def test_an_unknown_node_is_refused(self, runner: CliRunner, project_dir: Path):
+        result = runner.invoke(cli, ["run", str(project_dir / "main.py"), "--node", "nope"])
+        assert result.exit_code == 1
+        assert "The pipeline has no node 'nope'." in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -699,7 +707,7 @@ class TestLint:
         pipeline_file = str(project_dir / "main.py")
         result = runner.invoke(cli, ["lint", pipeline_file], catch_exceptions=False)
         assert result.exit_code == 0, result.output
-        assert "No structural issues" in result.output
+        assert "No issues found" in result.output
 
     def test_lint_auto_discover(
         self,
