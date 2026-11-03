@@ -455,3 +455,67 @@ class TestScoreGraphStaticDataSourceRemap:
         assert isinstance(result, pl.DataFrame)
         assert set(result.columns) >= {"area", "factor"}
         assert sorted(result["area"].to_list()) == ["A", "B"]
+
+
+# ===========================================================================
+# score_graph — a Data Input deployed as the request input
+# ===========================================================================
+
+
+class TestScoreGraphPromotedDataInput:
+    """A Data Input deployed as the request input is fed the live frame in place
+    of its source, and its post-load code runs on that frame."""
+
+    def test_the_live_frame_runs_through_its_post_load_code(self):
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "path": "data/never_read.parquet",
+                                "arguments": {},
+                                "code": "df = df.with_columns(doubled=pl.col('x') * 2)",
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {
+                                "outputMapping": [
+                                    {
+                                        "source_port": "src",
+                                        "source_column": col,
+                                        "output_path": f"$[:].{col}",
+                                        "enabled": True,
+                                    }
+                                    for col in ("x", "doubled")
+                                ],
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+        )
+
+        assert result["x"].to_list() == [1.0, 2.0]
+        assert result["doubled"].to_list() == [2.0, 4.0]
