@@ -127,6 +127,7 @@ def test_a_text_constant_is_promoted_as_text(conversion: ModuleType, tmp_path: P
         ("inside an aggregation", "priced's step 2 reads a constant in an aggregation"),
         ("code after the join", "priced's step 3 is code, which Haute cannot read"),
         ("overwritten", "priced's step 2 writes the column 'load'"),
+        ("rows from elsewhere", "priced's step 2 (concat) can bring rows or values in 'load'"),
     ],
 )
 def test_a_constant_stays_naming_the_condition_that_failed(
@@ -177,6 +178,11 @@ def test_a_constant_stays_naming_the_condition_that_failed(
                 gross(),
                 DROP,
             ],
+        ),
+        # The appended rows hold a load of their own, which a global constant would replace.
+        "rows from elsewhere": lambda: _graph(
+            tmp_path,
+            [{"id": "c", "kind": "concat", "how": "diagonal", "inputs": ["quotes"]}, gross(), DROP],
         ),
     }[case]()
 

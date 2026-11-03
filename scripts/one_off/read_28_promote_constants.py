@@ -16,6 +16,9 @@ only when all of these hold, else it is left and the failed condition reported:
   with_column step's arithmetic, values and functions), outside any group-by, window or
   condition;
 - no step writes a constant column, and no code step follows the join;
+- while a constant column is in the frame, no step brings rows or values into it without
+  naming it: no concat, join, cast, fill-null, pivot or unpivot, so each row's constant
+  value is the Constant's own wherever a formula reads it;
 - no constant column reaches the node's output: a later step selects it out or drops it;
 - each constant's name is a valid global constant name that no global constant has.
 
@@ -39,6 +42,10 @@ from haute._project_context import standalone_project_scope
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant, NodeType
 from haute.codegen import graph_to_code
 from haute.graph_utils import GraphEdge, GraphNode, PipelineGraph
+
+#: Step kinds that can bring rows, or values, into a column without naming it: appended or
+#: joined rows hold their own value there, and a cast, a fill or a reshape changes it.
+_REACHING_KINDS = frozenset({"concat", "join", "cast", "fill_null", "pivot", "unpivot"})
 
 #: The expression types a formula is made of, where a column and a scalar behave alike.
 FORMULA_TYPES = frozenset({"binary", "operand", "function"})
@@ -135,6 +142,11 @@ def _check(
         kind = step["kind"]
         if kind == "free_code":
             raise NotPromotedError(f"{stepped.id}'s step {number} is code, which Haute cannot read")
+        if kind in _REACHING_KINDS and live:
+            raise NotPromotedError(
+                f"{stepped.id}'s step {number} ({kind}) can bring rows or values in "
+                f"{sorted(live)[0]!r}"
+            )
         if kind == "with_column" and step.get("name") in names:
             raise NotPromotedError(
                 f"{stepped.id}'s step {number} writes the column {step['name']!r}"
