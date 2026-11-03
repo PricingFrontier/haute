@@ -35,7 +35,7 @@ The owner decided the following on 3 November 2026:
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
 The packages fall into three groups:
-- **Defect fixes:** `READ-01` to `READ-06`.
+- **Defect fixes:** `READ-02` to `READ-06`.
 - **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
@@ -45,7 +45,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-01 | Planned | P1 | One binding rule wires every node type's parameters to its inputs, in the parser and in a standalone run alike. |
 | READ-02 | Planned | P1 | A module docstring written by hand in `main.py` is kept on save. |
 | READ-03 | Planned | P2 | Files a project's scaffold writes have LF line endings, at creation and at every checkout. |
 | READ-04 | Planned | P3 | Git ignores `test_quotes_report.md`. |
@@ -72,40 +71,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-01 — One binding rule wires every node type's parameters
-**Why:** Only Polars nodes have their parameters checked against the edges into them. For every other node type the check is skipped ("Non-Polars node types have no authored signature and are skipped"), a reason older than the declarations of 26 September 2026. The investigation tested three cases:
-- a typo in a parameter is ignored;
-- a parameter naming one node while `connect()` names another gives the node both edges, with no error;
-- a parameter naming a Workbench table that has no `connect()` call gives no edge and no error.
-
-The parser infers edges from parameter names, but the runtime `Pipeline` takes edges only from `connect()` and passes inputs in the order of the connections. So `haute run` and a plain `import main; pipeline.run()` can wire the same node differently. Even with the same edges, a different order changes what each parameter receives.
-
-**Plan:**
-- Write one binding function, used by the parser and the runtime `Pipeline` alike. It turns a node's signature and its `connect()` calls into the node's inputs. It tells the inputs the decorator consumes from the parameters the function receives:
-  - a parameter names the upstream node it reads, or the name `inputMapping` gives it;
-  - a Data Input hook receives as `df` the frame its decorator loads. It is a source and has no inputs, so `df` names no input and consumes no edge;
-  - a frame hook (Rating Step, Model Score, Scenario Expander and Explore) receives as `df` the frame its decorator makes from its first input. The first input is therefore named by no parameter, and its edge is stated by `connect()`. The remaining parameters name the other inputs;
-  - External File's parameters name all of its inputs, and its keyword-only `obj` is the loaded object;
-  - a ported input (`base`, `join`, a Workbench table) binds by its port.
-- Refuse four mismatches, naming the node and the parameter:
-  - a parameter that names no input;
-  - an input that is neither named by a parameter nor consumed by the decorator;
-  - a parameter that disagrees with its `connect()` call;
-  - `connect()` calls in an order that differs from the inputs' order.
-- Land this in a commit of its own, before `READ-30`.
-
-**Acceptance:**
-- A parser test for each of the four mismatches, each refused with the node and the parameter named. They run on a non-Polars declaration, on a frame hook with two inputs and on External File.
-- A Data Input hook with no incoming connections is accepted.
-- Tests for reversed connections, ported inputs, a Data Input hook and a submodel.
-- The reference pipeline gives every node the same output from `haute run`, from a standalone `import main` and from a dry-run deploy.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_parser_bindings.py::assert_polars_parameters_bound`;
-`src/haute/_graph_builders.py::_build_edges`; `src/haute/pipeline.py::Pipeline`;
-`src/haute/_standalone_nodes.py`.
 
 ### READ-02 — A hand-written module docstring is kept on save
 **Why:** Codegen writes its own module docstring at the top of `main.py` and replaces one the analyst wrote, without notice. Also, `haute init` writes a different docstring from codegen's, so a new project's first save always rewrites it.
@@ -630,16 +595,15 @@ The owner judged that the complexity isn't worth it.
 - 5 name a Workbench table that the parameter already names.
 
 **Plan:**
-- Once `READ-01` binds signatures and edges by one rule, write `connect()` only for an edge that the signature cannot name exactly:
+- Signatures and edges are bound by one rule ([pipeline-config](../pipeline-config/high-level.md), Binding parameters to inputs), and the parser and the runtime `Pipeline` alike infer an edge from a parameter named after a node. Write `connect()` only for an edge that the signature cannot name exactly:
   - an edge with a port the parameter's place doesn't give;
   - the input a frame hook's decorator consumes, which no parameter names (for example `connect("source", "rate")` for `def rate(df)`).
-- The runtime `Pipeline` takes the other edges from the signatures through that rule.
 
 **Acceptance:**
 - The reference pipeline regenerates with only the needed calls, its frame hooks' calls kept.
 - `haute run`, a standalone `import main` and a dry-run deploy give every node the same output.
 
-**Dependencies:** `READ-01`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/pipeline.py::Pipeline`; `src/haute/_graph_builders.py::_build_edges`.
 

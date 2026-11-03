@@ -87,6 +87,25 @@ decorator to act on, so the live API treats it as a plain function and a standal
 its body as written; the static parser rejects that form, so it never appears in a saved
 pipeline file.
 
+**Binding parameters to inputs.** One rule binds every node's positional parameters to its
+inputs, in the parser and in a standalone run alike, so `haute run`, a plain `import main` and
+a deployed scorer wire a node the same way. A node's inputs are the connections its
+`connect()` calls state, and one more for each parameter named after another node that no
+`connect()` joins to it. Each parameter names one input: every positional parameter of a
+Polars node (through a declared `inputMapping`), of a declaration and of an External File
+(whose keyword-only `obj` is the loaded object); a frame hook (Rating Step, Model Score,
+Scenario Expander, Explore) takes as `df` the frame its decorator makes from its first input,
+which no parameter names and a `connect()` states, and its other parameters name the other
+inputs; a Data Input hook's `df` is the frame it loads and names no input. An input that
+arrives on a target port (an Edge Join's `base` and `join`, a Workbench Output's table) binds
+by its port. Four shapes are refused, naming the node and the parameter: a parameter that
+names no input; an input that no parameter names and the decorator does not take; a
+parameter naming an input no `connect()` states while a stated input goes unnamed; and
+stated inputs whose `connect()` calls come in another order than the parameters read them.
+The parser refuses them as a `ParseError`, so the document loads degraded with the node
+unavailable; a standalone run refuses them as an `ExecutionError` before any node runs. A
+node that binds receives its frames in the order its parameters read them, in every run.
+
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
 configuration, contract, topology, and submodel failures raise and no recovered graph
@@ -138,7 +157,8 @@ Keyword-only parameters are configuration and never become graph edges.
 executor over the live decorator graph (each refusing a pipeline with no nodes, "Pipeline has
 no nodes") (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
-instead). They topologically sort the registered nodes and edges, run each node with its
+instead). They bind every node's parameters to its inputs (see Binding parameters to
+inputs), topologically sort the registered nodes and edges, run each node with its
 wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
 decorator and then its hook, if it has one — and resolve which node's output to return.
 Like the graph walker, they never resolve a Source Switch's inactive branch: an edge into a

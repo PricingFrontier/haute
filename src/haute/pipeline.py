@@ -313,6 +313,35 @@ class NodeRegistry:
         self._edges: list[RegisteredEdge] = []
         self._submodel_registrations: list[RegisteredSubmodel] = []
         self._pipeline_dir = "."
+        #: Whether ``_edges`` already holds every implied edge, each node's in bound order.
+        self._edges_bound = False
+
+    def _wired_edges(self, occurrences: Mapping[str, Any] | None = None) -> list[_WiredEdge]:
+        """Each edge into a node, named as its parameter must name it: the ``connect()``
+        calls in order, then the edges a parameter named after another node implies,
+        inferred as the parser infers them. An edge out of one of *occurrences* is named
+        by the caller, which knows its port."""
+        from haute._graph_builders import _build_edges
+
+        stated = {(edge.source, edge.target) for edge in self._edges}
+        implied = [
+            RegisteredEdge(edge.source, edge.target)
+            for edge in _build_edges([_raw_node(node) for node in self._nodes], [])
+            if (edge.source, edge.target) not in stated
+        ]
+        return [
+            *(
+                _WiredEdge(
+                    edge,
+                    edge.source
+                    if occurrences is not None and edge.source in occurrences
+                    else _input_name(self._node_map.get(edge.source), edge),
+                    True,
+                )
+                for edge in self._edges
+            ),
+            *(_WiredEdge(edge, edge.source, False) for edge in implied),
+        ]
 
     @property
     def global_constants(self) -> Any:
@@ -731,49 +760,57 @@ class Pipeline(NodeRegistry):
         pipeline file, and its nodes run as ``<occurrence>.<node>``. An edge into an
         occurrence's input port feeds every node the port targets, and an edge out of
         an output port leaves the node the port names, as flattening wires them for
-        ``haute run``. A submodel's node that takes several inputs receives them in
-        its parameters' order; the pipeline's own nodes keep their connection order.
+        ``haute run``. Every node receives its inputs in its parameters' order, by
+        the rule the parser binds them with (:mod:`haute._node_bindings`).
         """
+        registrations = {
+            registration.name: registration for registration in self._submodel_registrations
+        }
         occurrences: dict[str, Submodel] = {
-            registration.name: registration.definition
-            for registration in self._submodel_registrations
+            name: registration.definition for name, registration in registrations.items()
         }
 
         nodes = list(self._nodes)
         # Each edge carries the name its target's parameter has for it.
-        labelled: list[tuple[str, RegisteredEdge]] = []
+        wired: list[_WiredEdge] = []
         for occurrence, definition in occurrences.items():
             nodes.extend(
                 dataclasses.replace(node, name=f"{occurrence}.{node.name}")
                 for node in definition._nodes
             )
-            labelled.extend(
-                (
-                    # The name the target's parameter has for this frame, as the
-                    # graph executor names it: a Quote Input by its frame handle.
-                    executable_input_name(
-                        node_type=definition._node_map[edge.source].node_type,
-                        label=edge.source,
-                        source_handle=edge.source_port,
-                    ),
+            wired.extend(
+                _WiredEdge(
                     RegisteredEdge(
-                        f"{occurrence}.{edge.source}",
-                        f"{occurrence}.{edge.target}",
-                        edge.source_port,
-                        edge.target_port,
+                        f"{occurrence}.{item.edge.source}",
+                        f"{occurrence}.{item.edge.target}",
+                        item.edge.source_port,
+                        item.edge.target_port,
                     ),
+                    item.name,
+                    item.stated,
                 )
-                for edge in definition._edges
+                for item in definition._wired_edges()
             )
-        for edge in self._edges:
-            label = edge.source
+        for item in self._wired_edges(occurrences):
+            edge = item.edge
+            name, stated = item.name, item.stated
             sources: list[tuple[str, str | None]] = [(edge.source, edge.source_port)]
             if edge.source in occurrences:
                 endpoint = _submodel_output(occurrences[edge.source], edge.source, edge.source_port)
                 sources = [(f"{edge.source}.{endpoint.node_id}", endpoint.handle_id)]
+                name = executable_input_name(
+                    node_type=NodeType.SUBMODEL,
+                    label=edge.source,
+                    source_handle=f"out__{edge.source_port}",
+                    instance_of=registrations[edge.source].instance_of,
+                    source_handles=[
+                        f"out__{port.name}" for port in occurrences[edge.source].output_ports
+                    ],
+                )
             targets: list[tuple[str, str | None]] = [(edge.target, edge.target_port)]
             if edge.target in occurrences:
-                label = edge.target_port or ""
+                # A port input: the definition's file states no connect() for it.
+                name, stated = edge.target_port or "", False
                 port_targets = _submodel_input(
                     occurrences[edge.target], edge.target, edge.target_port
                 )
@@ -781,8 +818,8 @@ class Pipeline(NodeRegistry):
                     (f"{edge.target}.{endpoint.node_id}", endpoint.handle_id)
                     for endpoint in port_targets
                 ]
-            labelled.extend(
-                (label, RegisteredEdge(source, target, source_port, target_port))
+            wired.extend(
+                _WiredEdge(RegisteredEdge(source, target, source_port, target_port), name, stated)
                 for source, source_port in sources
                 for target, target_port in targets
             )
@@ -791,9 +828,20 @@ class Pipeline(NodeRegistry):
         expanded._global_constants_file = self._global_constants_file
         expanded._nodes = nodes
         expanded._node_map = {node.name: node for node in nodes}
-        inner = {node.name for node in nodes[len(self._nodes) :]}
-        expanded._edges = _in_parameter_order(labelled, expanded._node_map, inner)
+        expanded._edges = _bind_edges(wired, expanded._nodes)
+        expanded._edges_bound = True
         return expanded
+
+    def _with_edges_bound(self) -> Pipeline:
+        """A copy of this pipeline with the edges its parameters imply, each node's inputs
+        in its parameters' order, by the rule the parser binds them with."""
+        bound = Pipeline(self.name, self.description)
+        bound._global_constants_file = self._global_constants_file
+        bound._nodes = list(self._nodes)
+        bound._node_map = dict(self._node_map)
+        bound._edges = _bind_edges(self._wired_edges(), bound._nodes)
+        bound._edges_bound = True
+        return bound
 
     def _pipeline_file(self) -> str | None:
         """The file that defines this pipeline: its first node's, or its registrations'."""
@@ -910,6 +958,8 @@ class Pipeline(NodeRegistry):
             raise TypeError(self._missing_source_message())
         if self._submodel_registrations:
             return self._with_submodels_expanded().run(source=source)
+        if not self._edges_bound:
+            return self._with_edges_bound().run(source=source)
 
         _token = _scenario_ctx.set(source)
         try:
@@ -979,6 +1029,8 @@ class Pipeline(NodeRegistry):
             raise ValueError("Pipeline has no nodes")
         if self._submodel_registrations:
             return self._with_submodels_expanded().score(df)
+        if not self._edges_bound:
+            return self._with_edges_bound().score(df)
         _token = _scenario_ctx.set("live")
         try:
             with standalone_project_root_scope(self._pipeline_file()):
@@ -1076,30 +1128,7 @@ class Pipeline(NodeRegistry):
         """Convert the live registry through the canonical static graph builders."""
         from haute._graph_builders import _build_edges, _build_rf_nodes
 
-        raw_nodes: list[dict[str, Any]] = []
-        for node in self._nodes:
-            signature = inspect.signature(node.fn)
-            positional_param_names = [
-                parameter.name
-                for parameter in signature.parameters.values()
-                if parameter.name != "self"
-                and parameter.kind
-                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            ]
-            raw_nodes.append(
-                {
-                    "func_name": node.name,
-                    "node_type": node.config.get("_node_type", NodeType.POLARS),
-                    "description": node.description,
-                    "config": {
-                        key: value for key, value in node.config.items() if not key.startswith("_")
-                    },
-                    # A live node has no parsed body, so no parse findings.
-                    "editor": NodeEditorState(),
-                    "param_names": positional_param_names,
-                    "edge_param_names": positional_param_names,
-                }
-            )
+        raw_nodes = [_raw_node(node) for node in self._nodes]
         explicit_edges = [
             (edge.source, edge.target, edge.source_port, edge.target_port) for edge in self._edges
         ]
@@ -1303,46 +1332,74 @@ def _submodel_output(definition: Submodel, occurrence: str, port: str | None) ->
     )
 
 
-def _in_parameter_order(
-    labelled: list[tuple[str, RegisteredEdge]], nodes: Mapping[str, Node], inner: set[str]
-) -> list[RegisteredEdge]:
-    """The edges, each *inner* (submodel) node's inputs in its parameters' order.
+@dataclass(frozen=True)
+class _WiredEdge:
+    """An edge into a node, the name its target's parameter must give it, and whether a
+    ``connect()`` in the target's own file states it."""
 
-    A submodel's file declares a port input on the node rather than connecting
-    it, so registration order cannot place it among the node's other inputs.
-    *labelled* pairs each edge with the name it would fill: its source's name,
-    or the input port's for an edge into an occurrence. An input whose name is a
-    positional parameter takes that parameter's place; the others fill the
-    remaining parameters in order, as a configured hook's first parameter,
-    ``df``, names no input. An inner node with more inputs than parameters, and
-    every node of the pipeline itself, keeps registration order, as a pipeline
-    without submodels does.
-    """
+    edge: RegisteredEdge
+    name: str
+    stated: bool
+
+
+def _raw_node(node: Node) -> dict[str, Any]:
+    """A live node as the static graph builders read a parsed one."""
     from haute._standalone_nodes import _parameters
 
-    by_target: dict[str, list[tuple[str, RegisteredEdge]]] = {}
-    for label, edge in labelled:
-        by_target.setdefault(edge.target, []).append((label, edge))
-    ordered: list[RegisteredEdge] = []
-    for target, incoming in by_target.items():
-        node = nodes.get(target)
-        if node is None or target not in inner or len(incoming) < 2:
-            ordered.extend(edge for _, edge in incoming)
-            continue
-        positional = _parameters(node.fn)[0]
-        slots: list[RegisteredEdge | None] = [None] * len(positional)
-        unnamed: list[RegisteredEdge] = []
-        for label, edge in incoming:
-            index = positional.index(label) if label in positional else None
-            if index is not None and slots[index] is None:
-                slots[index] = edge
-            else:
-                unnamed.append(edge)
-        open_slots = [index for index, edge in enumerate(slots) if edge is None]
-        if len(unnamed) > len(open_slots):
-            ordered.extend(edge for _, edge in incoming)
-            continue
-        for index, edge in zip(open_slots, unnamed, strict=False):
-            slots[index] = edge
-        ordered.extend(edge for edge in slots if edge is not None)
-    return ordered
+    positional = _parameters(node.fn)[0]
+    return {
+        "func_name": node.name,
+        "node_type": node.node_type,
+        "description": node.description,
+        "config": {key: value for key, value in node.config.items() if not key.startswith("_")},
+        # A live node has no parsed body, so no parse findings.
+        "editor": NodeEditorState(),
+        "param_names": positional,
+        "edge_param_names": positional,
+    }
+
+
+def _input_name(source: Node | None, edge: RegisteredEdge) -> str:
+    """The name a parameter gives *edge*'s frame: a Quote or Workbench Input's table, or
+    the source node's name."""
+    if source is not None and source.node_type in REQUEST_INPUT_NODE_TYPES:
+        return edge.source_port or edge.source
+    return edge.source
+
+
+def _bind_edges(wired: Sequence[_WiredEdge], nodes: Sequence[Node]) -> list[RegisteredEdge]:
+    """*wired*'s edges, each node's inputs in the order its parameters read them.
+
+    Every node is bound, connected or not, by :func:`haute._node_bindings.bind_node_inputs`,
+    the rule the parser binds a pipeline file's nodes with; a node whose parameters do not
+    bind is refused before anything runs. Each node's edges keep the places its edges
+    held, filled in the bound order.
+    """
+    from haute._node_bindings import NodeInput, bind_node_inputs
+    from haute._standalone_nodes import _parameters
+
+    edges = [item.edge for item in wired]
+    places: dict[str, list[int]] = {}
+    for place, item in enumerate(wired):
+        places.setdefault(item.edge.target, []).append(place)
+    for node in nodes:
+        targeted = places.get(node.name, [])
+        # Stated inputs in their connect() order, then the ones no connect() states.
+        ordered = [place for place in targeted if wired[place].stated] + [
+            place for place in targeted if not wired[place].stated
+        ]
+        mapping = node.config.get("inputMapping")
+        order = bind_node_inputs(
+            node_id=node.name,
+            node_type=node.node_type,
+            positional=_parameters(node.fn)[0],
+            inputs=[
+                NodeInput(wired[place].name, wired[place].edge.target_port, wired[place].stated)
+                for place in ordered
+            ],
+            input_mapping=mapping if isinstance(mapping, Mapping) else None,
+            error=ExecutionError,
+        )
+        for place, index in zip(targeted, order, strict=True):
+            edges[place] = wired[ordered[index]].edge
+    return edges

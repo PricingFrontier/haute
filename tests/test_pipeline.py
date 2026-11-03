@@ -275,7 +275,7 @@ class TestPipeline:
             return df.with_columns(y=pl.col("x") * 3)
 
         # No connect() calls — must raise, not silently use wrong data
-        with pytest.raises(ValueError, match="no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.run(source="batch")
 
     def test_score_no_edges_raises(self):
@@ -291,7 +291,7 @@ class TestPipeline:
             return df.with_columns(y=pl.col("x") + 100)
 
         custom = pl.DataFrame({"x": [5]})
-        with pytest.raises(ValueError, match="no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.score(custom)
 
     def test_to_graph_with_explicit_edges(self):
@@ -342,9 +342,9 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame:
+        def transform(source: pl.DataFrame) -> pl.DataFrame:
             captured.append(_scenario_ctx.get())
-            return df
+            return source
 
         p.connect("source", "transform")
         p.run(source="batch")
@@ -366,9 +366,9 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame:
+        def transform(source: pl.DataFrame) -> pl.DataFrame:
             captured.append(_scenario_ctx.get())
-            return df
+            return source
 
         p.connect("source", "transform")
         p.score(pl.DataFrame({"x": [5]}))
@@ -385,7 +385,7 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def boom(df: pl.DataFrame) -> pl.DataFrame:
+        def boom(source: pl.DataFrame) -> pl.DataFrame:
             raise RuntimeError("kaboom")
 
         p.connect("source", "boom")
@@ -570,8 +570,8 @@ class TestPipelinePortAwareExecution:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
-        def consume(quotes: pl.DataFrame) -> pl.DataFrame:
-            return quotes
+        def consume(api_source: pl.DataFrame) -> pl.DataFrame:
+            return api_source
 
         p.connect("api_source", "consume")
         seed = pl.DataFrame({"quote_id": [17]})
@@ -854,15 +854,15 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def b(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def b(a: pl.DataFrame) -> pl.DataFrame:
+            return a
 
         @p.polars
         def c(df: pl.DataFrame) -> pl.DataFrame:
             return df
 
         p.connect("a", "b")
-        with pytest.raises(ValueError, match="disconnected|no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.run(source="batch")
 
     def test_self_loop_detected(self):
@@ -888,16 +888,16 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def b(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(b=pl.col("x") + 10)
+        def b(a: pl.DataFrame) -> pl.DataFrame:
+            return a.with_columns(b=pl.col("x") + 10)
 
         @p.polars
-        def c(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(c=pl.col("x") + 100)
+        def c(a: pl.DataFrame) -> pl.DataFrame:
+            return a.with_columns(c=pl.col("x") + 100)
 
         @p.polars
-        def d(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-            return left.hstack(right.select("c"))
+        def d(b: pl.DataFrame, c: pl.DataFrame) -> pl.DataFrame:
+            return b.hstack(c.select("c"))
 
         p.connect("a", "b").connect("a", "c").connect("b", "d").connect("c", "d")
         result = p.run(source="batch")
@@ -922,8 +922,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [888]})
 
         @p.polars
-        def merge(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b.rename({"x": "y"}))
+        def merge(src1: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
+            return src1.hstack(src2.rename({"x": "y"}))
 
         p.connect("src1", "merge").connect("src2", "merge")
         with pytest.raises(ExecutionError, match="[Mm]ark exactly one source"):
@@ -938,8 +938,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [999]})
 
         @p.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(y=pl.col("x") + 1)
+        def transform(src: pl.DataFrame) -> pl.DataFrame:
+            return src.with_columns(y=pl.col("x") + 1)
 
         p.connect("src", "transform")
         result = p.score(pl.DataFrame({"x": [41]}))
@@ -957,8 +957,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"y": [77]})
 
         @p.polars
-        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+        def combine(live_src: pl.DataFrame, static_src: pl.DataFrame) -> pl.DataFrame:
+            return live_src.hstack(static_src)
 
         p.connect("live_src", "combine").connect("static_src", "combine")
         input_df = pl.DataFrame({"x": [42]})
@@ -1012,8 +1012,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [888]})
 
         @p.polars
-        def merge(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b.rename({"x": "y"}))
+        def merge(src1: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
+            return src1.hstack(src2.rename({"x": "y"}))
 
         p.connect("src1", "merge").connect("src2", "merge")
         input_df = pl.DataFrame({"x": [42]})
@@ -1032,8 +1032,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"y": [55]})
 
         @p.polars
-        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+        def combine(live: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
+            return live.hstack(static)
 
         p.connect("live", "combine").connect("static", "combine")
         input_df = pl.DataFrame({"x": [10]})
@@ -1062,7 +1062,7 @@ class TestPipelineEdgeCases:
         def unconnected(df: pl.DataFrame) -> pl.DataFrame:
             return df
 
-        with pytest.raises(ValueError, match="no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.run(source="batch")
 
     def test_to_graph_config_filters_internal_keys(self):
@@ -1184,12 +1184,12 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def result(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(kept=pl.lit("output"))
+        def result(src: pl.DataFrame) -> pl.DataFrame:
+            return src.with_columns(kept=pl.lit("output"))
 
         @p.data_output
-        def audit(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(sink=pl.lit("side_effect"))
+        def audit(result: pl.DataFrame) -> pl.DataFrame:
+            return result.with_columns(sink=pl.lit("side_effect"))
 
         # 'audit' is wired after 'result' so it sorts last in topo order, but
         # 'result' is the declared output that must be returned.
@@ -1207,12 +1207,12 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def left(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def left(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
         @p.polars
-        def right(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def right(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
         p.connect("src", "left").connect("src", "right")
         with pytest.raises(ExecutionError, match="multiple terminal nodes"):
@@ -1226,12 +1226,12 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def out_a(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def out_a(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
         @p.output
-        def out_b(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def out_b(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
         p.connect("src", "out_a").connect("src", "out_b")
         with pytest.raises(ExecutionError, match="multiple response nodes"):
@@ -1245,12 +1245,12 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def result(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(kept=pl.lit("output"))
+        def result(live: pl.DataFrame) -> pl.DataFrame:
+            return live.with_columns(kept=pl.lit("output"))
 
         @p.data_output
-        def audit(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(sink=pl.lit("side_effect"))
+        def audit(result: pl.DataFrame) -> pl.DataFrame:
+            return result.with_columns(sink=pl.lit("side_effect"))
 
         p.connect("live", "result").connect("result", "audit")
         out = p.score(pl.DataFrame({"x": [7]}))
@@ -1324,11 +1324,11 @@ class TestNodeArityValidation:
             return pl.DataFrame({"x": [2]})
 
         @p.polars
-        def one_input(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def one_input(a: pl.DataFrame) -> pl.DataFrame:
+            return a
 
         p.connect("a", "one_input").connect("b", "one_input")
-        with pytest.raises(ExecutionError, match="accepts 1 input.*2 edge"):
+        with pytest.raises(ExecutionError, match="input 'b' is connected but no parameter"):
             p.run(source="batch")
 
     def test_multi_param_node_under_wired_raises_haute_error(self):
@@ -1340,11 +1340,11 @@ class TestNodeArityValidation:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def needs_two(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-            return left.hstack(right)
+        def needs_two(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
+            return a.hstack(b)
 
         p.connect("a", "needs_two")
-        with pytest.raises(ExecutionError, match="accepts 2 input.*1 edge"):
+        with pytest.raises(ExecutionError, match="parameter 'b' names no input"):
             p.run(source="batch")
 
     def test_node_call_extra_dfs_raises(self):
@@ -1375,8 +1375,8 @@ class TestApiInputDecoratorMarksSeed:
             return pl.DataFrame({"y": [5]})
 
         @p.polars
-        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+        def combine(live: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
+            return live.hstack(static)
 
         p.connect("live", "combine").connect("static", "combine")
         result = p.score(pl.DataFrame({"x": [9]}))

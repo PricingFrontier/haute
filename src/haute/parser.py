@@ -40,7 +40,7 @@ from haute._graph_builders import (
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_source
 from haute._logging import get_logger
-from haute._parser_bindings import assert_polars_parameters_bound, assert_request_frames_named
+from haute._parser_bindings import assert_request_frames_named, bind_parameters
 from haute._parser_conservation import (
     assert_parser_structure_conserved,
     missing_submodel_error,
@@ -427,7 +427,7 @@ def parse_pipeline_source_with_name_violations(
         submodel_aliases=submodel_names,
     )
     assert_request_frames_named(graph)
-    assert_polars_parameters_bound(graph, raw_nodes)
+    graph = bind_parameters(graph, raw_nodes, explicit_connects)
 
     validate_pipeline_graph_shape_contracts(
         graph,

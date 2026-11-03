@@ -351,9 +351,9 @@ class TestKeywordOnlyParameterConservation:
     @pytest.mark.parametrize(
         ("signature", "refused"),
         [
-            pytest.param("df: pl.LazyFrame, *, obj", None, id="obj-hook"),
-            pytest.param("df: pl.LazyFrame, *, obj=None", "'obj'", id="obj-default"),
-            pytest.param("df: pl.LazyFrame, *, obj, extra=1", "'extra'", id="extra"),
+            pytest.param("source: pl.LazyFrame, *, obj", None, id="obj-hook"),
+            pytest.param("source: pl.LazyFrame, *, obj=None", "'obj'", id="obj-default"),
+            pytest.param("source: pl.LazyFrame, *, obj, extra=1", "'extra'", id="extra"),
         ],
     )
     def test_a_load_file_hook_takes_only_obj(
@@ -373,7 +373,7 @@ class TestKeywordOnlyParameterConservation:
             .replace('pipeline.connect("source", "scaled")', 'pipeline.connect("source", "loaded")')
             .replace(
                 'df = source.with_columns(y=pl.col("x") * factor, label=pl.lit(label))',
-                "df = df.head(1)",
+                "df = source.head(1)",
             ),
         )
         if refused is None:
@@ -1319,7 +1319,7 @@ class TestConservationGateRaisesOnEveryMismatch:
 
     def test_missing_positional_parameter_metadata_is_rejected(self) -> None:
         from haute._graph_builders import _build_edges
-        from haute._parser_bindings import assert_polars_parameters_bound
+        from haute._parser_bindings import bind_parameters
         from haute._types import NodeType
 
         graph = self._graph(["a"], [])
@@ -1327,7 +1327,7 @@ class TestConservationGateRaisesOnEveryMismatch:
         with pytest.raises(KeyError, match="edge_param_names"):
             _build_edges([raw], [])
         with pytest.raises(KeyError, match="edge_param_names"):
-            assert_polars_parameters_bound(graph, [raw])
+            bind_parameters(graph, [raw], [])
 
     def test_consistent_structure_is_accepted(self) -> None:
         from haute._parser_conservation import assert_parser_structure_conserved
@@ -1449,7 +1449,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_source(source, source_file="main.py")
 
@@ -1459,8 +1459,8 @@ class TestPolarsParameterBinding:
         assert exc_info.value.context["connected_inputs"] == ["a"]
         assert (
             exc_info.value.context["remediation"]
-            == "Name each parameter after the node or frame connected to it, "
-            "or declare inputMapping={logical: connected} on the decorator."
+            == "Name each parameter after the node or table connected to it, in the order of the "
+            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
         )
 
     def test_incoming_edge_not_matching_any_parameter_rejected(self) -> None:
@@ -1484,7 +1484,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_source(source, source_file="main.py")
 
@@ -1494,8 +1494,8 @@ class TestPolarsParameterBinding:
         assert exc_info.value.context["connected_inputs"] == ["a"]
         assert (
             exc_info.value.context["remediation"]
-            == "Name each parameter after the node or frame connected to it, "
-            "or declare inputMapping={logical: connected} on the decorator."
+            == "Name each parameter after the node or table connected to it, in the order of the "
+            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
         )
 
     def test_input_mapping_succeeds_executes_and_roundtrips(self) -> None:
@@ -1638,7 +1638,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_file(parent_invalid)
 
@@ -1691,7 +1691,7 @@ class TestPolarsParameterBinding:
             diagnostic.code == "node_parse_invalid"
             and diagnostic.scope == "node"
             and diagnostic.element_id == node_b.recovery_id
-            and "Pipeline function parameters do not match" in diagnostic.message
+            and "do not match its inputs" in diagnostic.message
             for diagnostic in b_diagnostics
         )
 
@@ -1830,7 +1830,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_file(parent_invalid)
 
@@ -1840,8 +1840,8 @@ class TestPolarsParameterBinding:
         assert exc_info.value.context["connected_inputs"] == ["source"]
         assert (
             exc_info.value.context["remediation"]
-            == "Name each parameter after the node or frame connected to it, "
-            "or declare inputMapping={logical: connected} on the decorator."
+            == "Name each parameter after the node or table connected to it, in the order of the "
+            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
         )
 
 

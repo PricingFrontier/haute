@@ -5,6 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
+| `src/haute/_node_bindings.py` | The one rule binding a node's parameters to its inputs (READ-01): `input_parameters` gives the parameters that name inputs and whether the decorator takes the first (a frame hook's `df`; a Data Input hook's `df` names none); `bind_node_inputs` returns the inputs in the order the parameters read them, or raises naming the node and the parameter. The parser (`src/haute/_parser_bindings.py`) and the standalone run (`src/haute/pipeline.py::_bind_edges`) both call it. |
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
 | `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join, an Explore or a transform, from the decorator kwargs and function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
@@ -772,12 +773,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `from modules import <module>` imported) and imports nothing itself;
   each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
   boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
-  `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
-  inputs: an input whose name (the input port's for an edge into an occurrence, otherwise
-  `_graph_utils.executable_input_name`'s, so a Quote Input frame by its frame handle) is a
-  positional parameter takes its place, the rest fill the open parameters in
-  order, and a node with more inputs than parameters, like the pipeline's own nodes, keeps
-  registration order. A definition module stays in `sys.modules` as any import does (a
+  `ExecutionError` listing the ports); and `_bind_edges` binds every node, the definitions'
+  and the pipeline's own, by the parser's rule: each input is named as its parameter must
+  name it (the input port's name for an edge into an occurrence, which the definition's file
+  states no `connect()` for; an occurrence's output as `_graph_utils.executable_input_name`
+  names it; a Quote Input frame by its frame handle), and the node receives its inputs in
+  its parameters' order. A definition module stays in `sys.modules` as any import does (a
   `dataclass` with string annotations in it resolves through that entry), and expanding the
   occurrences imports nothing.
 
@@ -794,17 +795,28 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `dangling_edges`; the document loads as non-ready with that diagnostic and Save is refused
   until the source is repaired. The live `Pipeline.connect()` rejects the same mistake
   immediately because live submodel children are not registered there.
-- A Polars node's positional parameters are exactly its connected inputs, by name: an
+- Every node's positional parameters bind its connected inputs by name, by the rule in
+  [high-level](high-level.md) (**Binding parameters to inputs**), which
+  `src/haute/_node_bindings.py::bind_node_inputs` implements for the parser and the
+  standalone run alike: an
   ordinary source contributes its sanitised node name, an API input its frame handle, and an
   occurrence its output's name (its sanitised public output port name from an owner; from an
   instance, the instance's name, or `<instance>_<port>` when the definition has several
   outputs);
   a declared `inputMapping={logical: connected}` lets the code keep another name. The
-  parser infers nothing else: a parameter that matches no connected input, a connected input
-  with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,
-  `unconsumed_inputs`, `connected_inputs`, `remediation`) from the binding gate; the document
-  loads as non-ready with that diagnostic and Save is refused, so a Save can never rewrite the
-  authored signature (F13). A submodel file's nodes are checked when that file is parsed, so
+  parser infers nothing else: a parameter that matches no connected input or a duplicate, a
+  connected input with no parameter that the decorator does not take, a parameter naming an
+  input no `connect()` states while a stated input goes unnamed, or stated inputs connected
+  in another order than the parameters read them raises `ParseError` (`node_id`,
+  `unbound_parameters`, `unconsumed_inputs`, `disagreeing_parameters`, `connected_inputs`,
+  `parameter_order`, `connect_order`, `remediation`) from the binding gate
+  (`src/haute/_parser_bindings.py::bind_parameters`); the document loads as non-ready with that
+  diagnostic and Save is refused, so a Save can never rewrite the authored signature (F13).
+  A node that binds has its incoming edges put in the order its parameters read them, the
+  order codegen writes its signature and `connect()` calls in and every run gives it its
+  frames. The standalone `run()`/`score()` first adds the edges parameters imply, inferred as
+  `_build_edges` infers them, then binds every node (`src/haute/pipeline.py::_bind_edges`),
+  refusing the same shapes as an `ExecutionError` before any node runs. A submodel file's nodes are checked when that file is parsed, so
   the failure is the submodel's own: the editor marks the node unavailable inside its
   definition, and the submodel's inspector lists it with Recover settings, which rebinds it. Because the parser also infers an edge from any parameter named
   like a node, an API input's frame handle must not equal another node's sanitised name: Save

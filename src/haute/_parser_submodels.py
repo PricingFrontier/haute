@@ -36,8 +36,8 @@ from haute._graph_builders import (
 from haute._graph_shape import definition_boundary_topology, validate_graph_shape_contracts
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._parser_bindings import (
-    assert_definition_parameters_bound,
     assert_request_frames_named,
+    bind_definition_parameters,
 )
 from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_paths import (
@@ -651,9 +651,10 @@ def parse_submodel_source(
         graph._parser_output_ports,
     ) = _extract_definition_contract(tree)
     assert_request_frames_named(graph, source_file=source_file)
-    if graph._parser_input_ports is not None and graph._parser_output_ports is not None:
+    input_ports, output_ports = graph._parser_input_ports, graph._parser_output_ports
+    if input_ports is not None and output_ports is not None:
         try:
-            check_submodel_interface(graph, graph._parser_input_ports, graph._parser_output_ports)
+            check_submodel_interface(graph, input_ports, output_ports)
         except ValueError as exc:
             # Refused here, the failure is this submodel's own; refused when the
             # definition is built, it would fail the whole document.
@@ -665,12 +666,10 @@ def parse_submodel_source(
                     "name used twice, or remove the submodel."
                 ),
             ) from exc
-        assert_definition_parameters_bound(
-            graph, graph._parser_input_ports, source_file=source_file
+        graph = bind_definition_parameters(
+            graph, input_ports, explicit_connects, source_file=source_file
         )
-        incoming, outgoing = definition_boundary_topology(
-            graph._parser_input_ports, graph._parser_output_ports
-        )
+        incoming, outgoing = definition_boundary_topology(input_ports, output_ports)
         try:
             validate_graph_shape_contracts(
                 graph,
