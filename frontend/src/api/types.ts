@@ -4,7 +4,6 @@ import type { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 
 // Re-export canonical types from their source locations
 import type {
-  NodeTypeValue,
   PipelineEdge,
   PipelineGraph,
 } from "../types/node"
@@ -26,6 +25,9 @@ import type {
   CreateSubmodelResponse as GeneratedCreateSubmodelResponse,
   DissolveSubmodelResponse as GeneratedDissolveSubmodelResponse,
   PreviewNodeResponse as GeneratedPreviewNodeResponse,
+  EditorIdentityRequestNode as GeneratedEditorIdentityRequestNode,
+  OptimiserApplyRequest as GeneratedOptimiserApplyRequest,
+  OptimiserQuoteFilters as GeneratedOptimiserQuoteFilters,
   SubmodelGraphResponse as GeneratedSubmodelGraphResponse,
   TraceResponse as GeneratedTraceResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
@@ -51,16 +53,8 @@ import type {
 export type { BackendNodeStatus, ColumnInfo, NodeStatus, PipelineGraph } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 
-export interface EditorIdentityRequestNode {
-  node_id: string
-  label: string
-  node_type: NodeTypeValue
-  source_handles: string[]
-  alias?: string
-  instance_of?: string
-  /** The submodel definition the node belongs to in the naming context; absent at the root. */
-  submodel?: string
-}
+/** A prospective node to name; the editor always sends its source handles. */
+export type EditorIdentityRequestNode = GeneratedEditorIdentityRequestNode & { source_handles: string[] }
 
 export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
@@ -141,12 +135,7 @@ export type {
 
 
 /** One generation a trace reads: an entry of the preview's `seed_plan`. */
-export interface TraceSeedPlanEntry {
-  node_id: string
-  port_label: null
-  identity_digest: string
-  generation_id: string
-}
+export type { TraceSeedPlanEntry } from "../generated/api-contracts.generated"
 
 // The save and the submodel actions are generated; a graph they answer with is the
 // editor's React Flow graph (`withPipelineGraph`).
@@ -294,17 +283,11 @@ export type {
 // Input-cache contracts (/api/input-cache)
 // ---------------------------------------------------------------------------
 
-export interface InputCacheSourceRequest {
-  schema_version: 1
-  /** A structured API Input acts on every emitting table of the node together. */
-  node_type?: "dataInput" | "apiInput"
-  config: Record<string, unknown>
-}
-
-/** Start or join a snapshot build; the server chooses how it is built. */
-export interface InputCacheBuildRequest extends InputCacheSourceRequest {
-  refresh: boolean
-}
+// The input-cache requests are generated, as the routes read them.
+export type {
+  InputCacheBuildRequest,
+  InputCacheSourceRequest,
+} from "../generated/api-contracts.generated"
 
 // The input-cache responses are generated.
 export type {
@@ -370,17 +353,10 @@ export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
 
 export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
 
-export interface MlflowSettingsUpdateRequest {
-  tracking_uri: string
-  folder: string
-}
-
-export interface MlflowTestConnectionRequest {
-  /** Empty destination probes the local folder. */
-  destination: "" | MlflowDestinationKey
-  tracking_uri?: string
-  folder?: string
-}
+export type {
+  MlflowSettingsUpdateRequest,
+  MlflowTestConnectionRequest,
+} from "../generated/api-contracts.generated"
 
 /** Why a training estimate cannot size its input: one reason from a closed set. */
 export type TrainEstimateUnavailable =
@@ -763,19 +739,10 @@ export type ExplorePivotMembersResponse = Omit<GeneratedExplorePivotMembersRespo
   members: ExplorePivotMemberOption[]
 }
 
-export interface ModelSaveDestinationRequest {
-  /** A bare filename saves under models/; paths are project-root-relative. */
-  output_path: string
-  algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm" | "tboost"
-}
-
-export interface SaveModelRequest {
-  job_id: string
-  /** A bare filename saves under models/; paths are project-root-relative. */
-  output_path: string
-  /** Replace an existing destination; without it the server answers 409. */
-  overwrite: boolean
-}
+export type {
+  ModelSaveDestinationRequest,
+  SaveModelRequest,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Optimiser types
@@ -817,55 +784,22 @@ export type {
 
 export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
-/** The Quotes explorer's filters (OPT-V12), combined with AND; unset ones are null, false or `{}`. */
-export interface OptimiserQuoteFilters {
-  scenario_value_min: number | null
-  scenario_value_max: number | null
-  at_range_edge: boolean
-  /** `{analysis column: value}`; `null` matches a missing value. */
-  analysis_equals: Record<string, string | number | boolean | null>
-  deployed_factor_differs: boolean
-}
+/** The Quotes explorer's filters (OPT-V12), combined with AND, as the apply route reads them. */
+export type OptimiserQuoteFilters = Required<GeneratedOptimiserQuoteFilters>
 
 /** A Quotes page's query beyond its target, always fully specified so one query has one cache key. */
-export interface OptimiserApplyQuery {
-  /** `null` keeps the apply frame's quote order; ties always break by quote id. */
-  sort_by: string | null
-  descending: boolean
-  quote_id_prefix: string | null
-  filters: OptimiserQuoteFilters
-  offset: number
-  limit: number
-}
+export type OptimiserApplyQuery = Required<
+  Omit<GeneratedOptimiserApplyRequest, "job_id" | "point_index" | "filters">
+> & { filters: OptimiserQuoteFilters }
 
 /** Omitting `point_index` pages the job's own solve; a number, that frontier point. */
-export interface ApplyOptimiserRequest extends OptimiserApplyQuery {
-  job_id: string
-  point_index?: number
-}
+export type ApplyOptimiserRequest = OptimiserApplyQuery
+  & Pick<GeneratedOptimiserApplyRequest, "job_id" | "point_index">
 
-/** Omitting `point_index` publishes the job's own solve; a number, that frontier point. */
-export interface SaveOptimiserRequest {
-  job_id: string
-  output_path: string
-  point_index?: number
-  /** Artifact version label; blank lets the server derive one. */
-  version?: string
-  /** Replace an existing file instead of refusing with `optimiser_result_exists`. */
-  overwrite?: boolean
-  /** The node config changed since the solve; recorded as `stale_at_publish`. */
-  stale?: boolean
-}
-
-export interface LogOptimiserToMlflowRequest {
-  job_id: string
-  experiment_name?: string | null
-  point_index?: number
-  /** `""` logs to the local folder. */
-  destination: "" | MlflowDestinationKey
-  /** The node config changed since the solve; recorded as `stale_at_publish`. */
-  stale?: boolean
-}
+export type {
+  OptimiserMlflowLogRequest as LogOptimiserToMlflowRequest,
+  OptimiserSaveRequest as SaveOptimiserRequest,
+} from "../generated/api-contracts.generated"
 
 /** A typed frontier row: price-contour's point, per-constraint columns as maps. */
 export type FrontierPoint = GeneratedOptimiserFrontierResponse["points"][number]

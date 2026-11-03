@@ -264,6 +264,17 @@ export function untypedAsUnknown(schema) {
   return Object.keys(typed).some((key) => TYPE_KEYWORDS.has(key)) ? typed : { ...typed, tsType: "unknown" };
 }
 
+// A reference with an annotation beside it (a field's default) would be declared as a
+// schema of its own, numbered apart from the definition it names (NodeType, NodeType1).
+function referencesWithoutAnnotations(value) {
+  if (Array.isArray(value)) return value.map(referencesWithoutAnnotations);
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value)
+    .filter(([key]) => !(typeof value.$ref === "string" && VALIDATION_ANNOTATION_KEYS.has(key)))
+    .map(([key, nested]) => [key, referencesWithoutAnnotations(nested)]);
+  return Object.fromEntries(entries);
+}
+
 // Every contract root compiles into one declaration module, so a nested
 // definition is declared once. Only definitions keep their titles: a property
 // title would become an alias that json-schema-to-typescript numbers apart
@@ -272,7 +283,10 @@ function typeDeclarationSchema(schema, definitionNames) {
   const definitions = Object.fromEntries(
     Object.entries(schema.$defs).map(([name, definition]) => [
       name,
-      { ...untypedAsUnknown(withoutNestedTitles(definition)), ...(definition.title ? { title: definition.title } : {}) },
+      {
+        ...untypedAsUnknown(withoutNestedTitles(referencesWithoutAnnotations(definition))),
+        ...(definition.title ? { title: definition.title } : {}),
+      },
     ]),
   );
   return compactNullableSchemas({

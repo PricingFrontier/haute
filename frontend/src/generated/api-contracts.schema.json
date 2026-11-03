@@ -3170,6 +3170,86 @@
       "title": "EditorIdentitiesResponse",
       "type": "object"
     },
+    "EditorIdentityRequestNode": {
+      "additionalProperties": false,
+      "description": "One bounded, side-effect-free editor identity resolution request.",
+      "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alias"
+        },
+        "instance_of": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instance Of"
+        },
+        "label": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_type": {
+          "$ref": "#/$defs/NodeType"
+        },
+        "source_handles": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "title": "Source Handles",
+          "type": "array"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "node_type"
+      ],
+      "title": "EditorIdentityRequestNode",
+      "type": "object"
+    },
     "EditorIdentityResponseNode": {
       "additionalProperties": false,
       "properties": {
@@ -10040,6 +10120,46 @@
       "title": "ImportWidget",
       "type": "object"
     },
+    "InputCacheBuildRequest": {
+      "additionalProperties": false,
+      "description": "Start or join a snapshot build; the server chooses how it is built.",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Config",
+          "type": "object"
+        },
+        "node_type": {
+          "default": "dataInput",
+          "enum": [
+            "dataInput",
+            "apiInput"
+          ],
+          "title": "Node Type",
+          "type": "string"
+        },
+        "refresh": {
+          "default": false,
+          "title": "Refresh",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "InputCacheBuildRequest",
+      "type": "object"
+    },
     "InputCacheBuildResponse": {
       "additionalProperties": false,
       "properties": {
@@ -10414,6 +10534,41 @@
         "tables"
       ],
       "title": "InputCacheSnapshotStatusResponse",
+      "type": "object"
+    },
+    "InputCacheSourceRequest": {
+      "additionalProperties": false,
+      "description": "One input node's source: a Data Input's config, or a structured API Input's.\n\nA structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``\nschema) is one snapshot per emitting table; its requests act on every\ntable of the node together. ``node_type`` says how the source is read, so a\nWorkbench Input's tables, read as a Quote Input's, are sent as ``apiInput``.",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Config",
+          "type": "object"
+        },
+        "node_type": {
+          "default": "dataInput",
+          "enum": [
+            "dataInput",
+            "apiInput"
+          ],
+          "title": "Node Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "InputCacheSourceRequest",
       "type": "object"
     },
     "InputCacheTableStatus": {
@@ -11435,6 +11590,62 @@
       "title": "MlflowSettingsResponse",
       "type": "object"
     },
+    "MlflowSettingsUpdateRequest": {
+      "properties": {
+        "folder": {
+          "default": "",
+          "maxLength": 4096,
+          "title": "Folder",
+          "type": "string"
+        },
+        "tracking_uri": {
+          "default": "",
+          "maxLength": 4096,
+          "title": "Tracking Uri",
+          "type": "string"
+        }
+      },
+      "title": "MlflowSettingsUpdateRequest",
+      "type": "object"
+    },
+    "MlflowTestConnectionRequest": {
+      "properties": {
+        "destination": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Destination",
+          "type": "string"
+        },
+        "folder": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Folder"
+        },
+        "tracking_uri": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tracking Uri"
+        }
+      },
+      "title": "MlflowTestConnectionRequest",
+      "type": "object"
+    },
     "MlflowTestConnectionResponse": {
       "properties": {
         "category": {
@@ -11610,6 +11821,34 @@
         "contract_path"
       ],
       "title": "ModelFileInspectionResponse",
+      "type": "object"
+    },
+    "ModelSaveDestinationRequest": {
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "catboost",
+            "glm",
+            "xgboost",
+            "lightgbm",
+            "ebm",
+            "tboost"
+          ],
+          "title": "Algorithm",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Output Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "output_path",
+        "algorithm"
+      ],
+      "title": "ModelSaveDestinationRequest",
       "type": "object"
     },
     "ModelSaveDestinationResponse": {
@@ -12608,6 +12847,84 @@
         "share_at_max"
       ],
       "title": "OptimiserAdjustmentWeighting",
+      "type": "object"
+    },
+    "OptimiserApplyRequest": {
+      "additionalProperties": false,
+      "description": "One page of the target's chosen scenarios (the Quotes explorer, OPT-V12).",
+      "properties": {
+        "descending": {
+          "default": false,
+          "title": "Descending",
+          "type": "boolean"
+        },
+        "filters": {
+          "$ref": "#/$defs/OptimiserQuoteFilters"
+        },
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "quote_id_prefix": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote Id Prefix"
+        },
+        "sort_by": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort By"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "OptimiserApplyRequest",
       "type": "object"
     },
     "OptimiserApplyResponse": {
@@ -13648,6 +13965,62 @@
       "title": "OptimiserInputSummary",
       "type": "object"
     },
+    "OptimiserMlflowLogRequest": {
+      "properties": {
+        "destination": {
+          "default": "",
+          "enum": [
+            "",
+            "databricks",
+            "server",
+            "local"
+          ],
+          "title": "Destination",
+          "type": "string"
+        },
+        "experiment_name": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Experiment Name"
+        },
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "stale": {
+          "default": false,
+          "title": "Stale",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "OptimiserMlflowLogRequest",
+      "type": "object"
+    },
     "OptimiserMlflowLogResponse": {
       "properties": {
         "backend": {
@@ -13906,6 +14279,76 @@
       "title": "OptimiserQuoteColumn",
       "type": "object"
     },
+    "OptimiserQuoteFilters": {
+      "additionalProperties": false,
+      "description": "The Quotes explorer's filters (OPT-V12), combined with AND; each is optional.",
+      "properties": {
+        "analysis_equals": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Analysis Equals",
+          "type": "object"
+        },
+        "at_range_edge": {
+          "default": false,
+          "title": "At Range Edge",
+          "type": "boolean"
+        },
+        "deployed_factor_differs": {
+          "default": false,
+          "title": "Deployed Factor Differs",
+          "type": "boolean"
+        },
+        "scenario_value_max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenario Value Max"
+        },
+        "scenario_value_min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenario Value Min"
+        }
+      },
+      "title": "OptimiserQuoteFilters",
+      "type": "object"
+    },
     "OptimiserRatebookCdTrace": {
       "additionalProperties": false,
       "description": "A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.\n\nHolds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``\nsays earlier ones were dropped.",
@@ -14057,6 +14500,55 @@
         "n_quotes_clamped_high"
       ],
       "title": "OptimiserRatebookFrontierPoint",
+      "type": "object"
+    },
+    "OptimiserSaveRequest": {
+      "properties": {
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "title": "Output Path",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "stale": {
+          "default": false,
+          "title": "Stale",
+          "type": "boolean"
+        },
+        "version": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "output_path"
+      ],
+      "title": "OptimiserSaveRequest",
       "type": "object"
     },
     "OptimiserSaveResponse": {
@@ -17917,6 +18409,32 @@
       "title": "SaveCapture",
       "type": "object"
     },
+    "SaveModelRequest": {
+      "properties": {
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Output Path",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id",
+        "output_path"
+      ],
+      "title": "SaveModelRequest",
+      "type": "object"
+    },
     "SaveModelResponse": {
       "properties": {
         "feature_contract_path": {
@@ -19907,6 +20425,40 @@
         "execution_origin"
       ],
       "title": "TraceResultResponse",
+      "type": "object"
+    },
+    "TraceSeedPlanEntry": {
+      "description": "One generation the preview a trace explains was computed from.",
+      "properties": {
+        "generation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "identity_digest": {
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 512,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "port_label": {
+          "default": null,
+          "title": "Port Label",
+          "type": "null"
+        }
+      },
+      "required": [
+        "node_id",
+        "identity_digest",
+        "generation_id"
+      ],
+      "title": "TraceSeedPlanEntry",
       "type": "object"
     },
     "TraceStepResponse": {
@@ -24169,6 +24721,9 @@
     "EditorIdentitiesResponse": {
       "$ref": "#/$defs/EditorIdentitiesResponse"
     },
+    "EditorIdentityRequestNode": {
+      "$ref": "#/$defs/EditorIdentityRequestNode"
+    },
     "ExecutionMetricsPayload": {
       "$ref": "#/$defs/ExecutionMetricsPayload"
     },
@@ -24265,6 +24820,9 @@
     "GitWorkingBranchesResponse": {
       "$ref": "#/$defs/GitWorkingBranchesResponse"
     },
+    "InputCacheBuildRequest": {
+      "$ref": "#/$defs/InputCacheBuildRequest"
+    },
     "InputCacheBuildResponse": {
       "$ref": "#/$defs/InputCacheBuildResponse"
     },
@@ -24276,6 +24834,9 @@
     },
     "InputCacheSnapshotStatusResponse": {
       "$ref": "#/$defs/InputCacheSnapshotStatusResponse"
+    },
+    "InputCacheSourceRequest": {
+      "$ref": "#/$defs/InputCacheSourceRequest"
     },
     "IoCapabilitiesResponse": {
       "$ref": "#/$defs/IoCapabilitiesResponse"
@@ -24304,11 +24865,20 @@
     "MlflowSettingsResponse": {
       "$ref": "#/$defs/MlflowSettingsResponse"
     },
+    "MlflowSettingsUpdateRequest": {
+      "$ref": "#/$defs/MlflowSettingsUpdateRequest"
+    },
+    "MlflowTestConnectionRequest": {
+      "$ref": "#/$defs/MlflowTestConnectionRequest"
+    },
     "MlflowTestConnectionResponse": {
       "$ref": "#/$defs/MlflowTestConnectionResponse"
     },
     "ModelFileInspectionResponse": {
       "$ref": "#/$defs/ModelFileInspectionResponse"
+    },
+    "ModelSaveDestinationRequest": {
+      "$ref": "#/$defs/ModelSaveDestinationRequest"
     },
     "ModelSaveDestinationResponse": {
       "$ref": "#/$defs/ModelSaveDestinationResponse"
@@ -24331,6 +24901,9 @@
     "NodeDataStatusResponse": {
       "$ref": "#/$defs/NodeDataStatusResponse"
     },
+    "OptimiserApplyRequest": {
+      "$ref": "#/$defs/OptimiserApplyRequest"
+    },
     "OptimiserApplyResponse": {
       "$ref": "#/$defs/OptimiserApplyResponse"
     },
@@ -24346,8 +24919,14 @@
     "OptimiserFrontierSelectResponse": {
       "$ref": "#/$defs/OptimiserFrontierSelectResponse"
     },
+    "OptimiserMlflowLogRequest": {
+      "$ref": "#/$defs/OptimiserMlflowLogRequest"
+    },
     "OptimiserMlflowLogResponse": {
       "$ref": "#/$defs/OptimiserMlflowLogResponse"
+    },
+    "OptimiserSaveRequest": {
+      "$ref": "#/$defs/OptimiserSaveRequest"
     },
     "OptimiserSaveResponse": {
       "$ref": "#/$defs/OptimiserSaveResponse"
@@ -24412,6 +24991,9 @@
     "SaveCapture": {
       "$ref": "#/$defs/SaveCapture"
     },
+    "SaveModelRequest": {
+      "$ref": "#/$defs/SaveModelRequest"
+    },
     "SaveModelResponse": {
       "$ref": "#/$defs/SaveModelResponse"
     },
@@ -24435,6 +25017,9 @@
     },
     "TraceResponse": {
       "$ref": "#/$defs/TraceResponse"
+    },
+    "TraceSeedPlanEntry": {
+      "$ref": "#/$defs/TraceSeedPlanEntry"
     },
     "TrainEstimateResponse": {
       "$ref": "#/$defs/TrainEstimateResponse"
@@ -24563,6 +25148,17 @@
   "required": [
     "execution_strategy_diagnostic",
     "explore_charts",
+    "EditorIdentityRequestNode",
+    "TraceSeedPlanEntry",
+    "InputCacheSourceRequest",
+    "InputCacheBuildRequest",
+    "MlflowSettingsUpdateRequest",
+    "MlflowTestConnectionRequest",
+    "ModelSaveDestinationRequest",
+    "SaveModelRequest",
+    "OptimiserApplyRequest",
+    "OptimiserSaveRequest",
+    "OptimiserMlflowLogRequest",
     "WorkbenchAppPriceRequest",
     "WorkbenchAppQuoteCreateRequest",
     "WorkbenchAppQuoteSaveRequest",
@@ -24712,6 +25308,27 @@
   "title": "HauteApiContractBundle",
   "type": "object",
   "x-haute-request-groups": {
+    "editor-requests": [
+      "EditorIdentityRequestNode",
+      "TraceSeedPlanEntry"
+    ],
+    "input-cache-requests": [
+      "InputCacheSourceRequest",
+      "InputCacheBuildRequest"
+    ],
+    "mlflow-requests": [
+      "MlflowSettingsUpdateRequest",
+      "MlflowTestConnectionRequest"
+    ],
+    "modelling-requests": [
+      "ModelSaveDestinationRequest",
+      "SaveModelRequest"
+    ],
+    "optimiser-requests": [
+      "OptimiserApplyRequest",
+      "OptimiserSaveRequest",
+      "OptimiserMlflowLogRequest"
+    ],
     "workbench-app-requests": [
       "WorkbenchAppPriceRequest",
       "WorkbenchAppQuoteCreateRequest",

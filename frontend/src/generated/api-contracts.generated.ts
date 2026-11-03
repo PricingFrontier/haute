@@ -4513,6 +4513,114 @@ export interface WorkbenchAppPeopleResponse {
   people: string[];
 }
 /**
+ * One bounded, side-effect-free editor identity resolution request.
+ */
+export interface EditorIdentityRequestNode {
+  alias?: string | null;
+  instance_of?: string | null;
+  label: string;
+  node_id: string;
+  node_type: NodeType;
+  /**
+   * @maxItems 1024
+   */
+  source_handles?: string[];
+  submodel?: string | null;
+}
+/**
+ * One generation the preview a trace explains was computed from.
+ */
+export interface TraceSeedPlanEntry {
+  generation_id: string;
+  identity_digest: string;
+  node_id: string;
+  port_label?: null;
+}
+/**
+ * One input node's source: a Data Input's config, or a structured API Input's.
+ *
+ * A structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``
+ * schema) is one snapshot per emitting table; its requests act on every
+ * table of the node together. ``node_type`` says how the source is read, so a
+ * Workbench Input's tables, read as a Quote Input's, are sent as ``apiInput``.
+ */
+export interface InputCacheSourceRequest {
+  config: {
+    [k: string]: unknown;
+  };
+  node_type?: 'dataInput' | 'apiInput';
+  schema_version?: 1;
+}
+/**
+ * Start or join a snapshot build; the server chooses how it is built.
+ */
+export interface InputCacheBuildRequest {
+  config: {
+    [k: string]: unknown;
+  };
+  node_type?: 'dataInput' | 'apiInput';
+  refresh?: boolean;
+  schema_version?: 1;
+}
+export interface MlflowSettingsUpdateRequest {
+  folder?: string;
+  tracking_uri?: string;
+}
+export interface MlflowTestConnectionRequest {
+  destination?: string;
+  folder?: string | null;
+  tracking_uri?: string | null;
+}
+export interface ModelSaveDestinationRequest {
+  algorithm: 'catboost' | 'glm' | 'xgboost' | 'lightgbm' | 'ebm' | 'tboost';
+  output_path: string;
+}
+export interface SaveModelRequest {
+  job_id: string;
+  output_path: string;
+  overwrite?: boolean;
+}
+/**
+ * One page of the target's chosen scenarios (the Quotes explorer, OPT-V12).
+ */
+export interface OptimiserApplyRequest {
+  descending?: boolean;
+  filters?: OptimiserQuoteFilters;
+  job_id: string;
+  limit?: number;
+  offset?: number;
+  point_index?: number | null;
+  quote_id_prefix?: string | null;
+  sort_by?: string | null;
+}
+/**
+ * The Quotes explorer's filters (OPT-V12), combined with AND; each is optional.
+ */
+export interface OptimiserQuoteFilters {
+  analysis_equals?: {
+    [k: string]: string | number | boolean | null;
+  };
+  at_range_edge?: boolean;
+  deployed_factor_differs?: boolean;
+  scenario_value_max?: number | null;
+  scenario_value_min?: number | null;
+}
+export interface OptimiserSaveRequest {
+  job_id: string;
+  output_path: string;
+  overwrite?: boolean;
+  point_index?: number | null;
+  stale?: boolean;
+  version?: string;
+}
+export interface OptimiserMlflowLogRequest {
+  destination?: '' | 'databricks' | 'server' | 'local';
+  experiment_name?: string | null;
+  job_id: string;
+  point_index?: number | null;
+  stale?: boolean;
+}
+/**
  * A quote typed into the app's sheets, with the form revision and the release the page
  * was drawn from.
  */

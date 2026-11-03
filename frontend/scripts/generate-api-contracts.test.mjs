@@ -108,7 +108,13 @@ test(
       const validators = await import(
         pathToFileURL(path.join(temporaryDirectory, module.validatorFilename)).href
       );
-      for (const { exportName } of module.validators) {
+      for (const { definitionName, exportName } of module.validators) {
+        // A request whose every field has a default (an MLflow settings update) may be empty.
+        const definition = schema.$defs[definitionName];
+        if (definition.type === "object" && (definition.required ?? []).length === 0) {
+          assert.equal(validators[exportName]({}), true, definitionName);
+          continue;
+        }
         assert.equal(validators[exportName]({}), false);
         const [error] = validators[exportName].errors ?? [];
         assert.ok(error);
@@ -140,10 +146,21 @@ test(
     );
 
     const declarations = await readFile(path.join(temporaryDirectory, GENERATED_TYPES_FILENAME), "utf8");
-    // Models are closed; only a field the server declares as an open mapping
-    // keeps an index signature, nested under that field.
-    assert.doesNotMatch(declarations, /^export interface \w+ \{\n(?:  [^\n]*\n)*?  \[k: string\]: unknown;/m);
+    // Models are closed; only a field the server declares as an open mapping keeps an
+    // index signature, nested under that field, and a model the server declares open
+    // (extra fields allowed, as a trace's correlation diagnostic) keeps its own.
+    const openModels = Object.entries(schema.$defs)
+      .filter(([, definition]) => definition.additionalProperties === true)
+      .map(([name]) => name);
+    const indexed = [...declarations.matchAll(/^export interface (\w+) \{\n(?:  [^\n]*\n)*?  \[k: string\]: unknown;/gm)]
+      .map(([, name]) => name);
+    assert.deepEqual(indexed.filter((name) => !openModels.includes(name)), []);
     assert.equal(declarations.includes("HauteApiContractRoots"), false);
+    // Each definition is declared once: a field's default beside a reference never
+    // declares it again under a numbered name (NodeType1).
+    const declared = new Set([...declarations.matchAll(/^export (?:type|interface) (\w+)/gm)].map(([, name]) => name));
+    const numbered = [...declared].filter((name) => /\d$/.test(name) && declared.has(name.replace(/\d+$/, "")));
+    assert.deepEqual(numbered, []);
     // Every serialized response field is required, defaults included.
     assert.match(
       declarations,
