@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._json_shred._cache import load_v2_api_source
+from haute._sandbox import set_project_root
 from tests.conftest import build_test_api_input_snapshots
 
 
@@ -32,8 +33,8 @@ def _built_frames(data_path: Path, config: dict[str, Any]) -> dict[str, Any]:
 
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.chdir(tmp_path)
+def client(tmp_path: Path) -> TestClient:
+    set_project_root(tmp_path)
     from haute.server import app
 
     return TestClient(app)

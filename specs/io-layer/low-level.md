@@ -240,8 +240,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    ready-but-stale generation with warning code `cap_unavailable_stale_reused`, and refuses
    with `cap_unavailable` before any provider access only when no generation exists.
    `allow_admitted_eager=True` is the hard-capped-worker-only opt-in for the admitted-eager build class — the explicit
-   admitted-eager build sets it inside the child, and the in-thread explicit path keeps
-   refusing that class outside `PREVIEW_EAGER`.
+   build sets it inside the child, and the in-process explicit build of a host without the
+   cap (below) only ever builds the bounded class.
 5. A per-process single-flight keyed by identity digest makes a concurrent execution wait
    for the in-flight build and re-read status instead of building again; a waiter inherits
    the owner's typed preparation failure instead of rebuilding. The wait is
@@ -271,8 +271,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    is the parent's and never reaches a caller's handling of a worker failure. A base
    exception is re-raised after the reconciliation, never turned into success. The caller
    retires a build that published, after deciding about any worker failure:
-   `run_supervised_data_input_build` (preparation's spawned build and the explicit
-   admitted-eager build) is settled by `published_data_input`, which retires, checks the
+   `run_supervised_data_input_build` (preparation's spawned build and every explicit Data
+   Input build) is settled by `published_data_input`, which retires, checks the
    outcome and describes the published generation, so a retirement failure propagates
    rather than being read as a successor; `run_supervised_api_input_build` (an API Input's
    tables, removing the build's scratch directory as it reconciles) raises the worker's
@@ -311,6 +311,41 @@ platforms, and on Windows with long paths on, nothing is renamed.
    uses `run_supervised_api_input_build`, which chooses and reconciles every table's
    generation and staging and removes the build's scratch directory. Remediation text
    names the API Input panel.
+
+### Explicit builds
+
+`POST /api/input-cache/build` ([server API](../server-api/low-level.md)) starts a job
+whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input itself:
+
+1. Admission: `create_admitted_execution_context(operation="input_snapshot_build",
+   profile=..., job_id=..., cancellation_token=...)` under `LAZY_SINK` for the `bounded`
+   class and `PREVIEW_EAGER` for `admitted_eager`. `LAZY_SINK` holds an in-flight
+   reservation, as an API Input's table build does, so a heavy job started while an Import
+   streams is refused `in_flight_memory_budget_exceeded` (and an Import started while one
+   holds the budget). The admission is released when the job ends.
+2. Both classes run through `run_supervised_data_input_build` with
+   `capped_worker_config(isolated_execution_budget(context), timeout_seconds=` the pipeline
+   time limit`, stop_reason=` the job's cancellation`)`, then `published_data_input`. A
+   worker failure maps onto the job lifecycle (`memory_limited`, `cancelled`, `timed_out`,
+   or `error` with `build_failed`/`path_too_long`), after `reconcile_unpublished` has
+   settled the build's parent-chosen generation and staging.
+3. Progress: `run_supervised_data_input_build(..., progress=)` hands the child a
+   `BuildProgressCounter`, two lock-free signed 64-bit slots in spawn-shared memory (rows,
+   batches). The child is the only writer (`build_input_snapshot(progress=counter.advance)`);
+   a lock would block the parent forever once a capped child was killed holding it. A
+   parent thread reads the slots every quarter second and passes the increase to the
+   caller's `progress(rows, batches)`, and once more after the worker returns, so the job's
+   counts reach the child's final ones. Only a builder that yields Arrow batches (database,
+   Databricks) advances them.
+4. A host without a native memory cap (`process_memory_caps_supported()` false: macOS)
+   runs a `bounded` build in this process instead, through `build_input_snapshot(...,
+   execution_context=context, progress=..., cancellation=..., deadline=...)`. The admitted
+   context's stages make it the current context, so `write_parts` and every batch
+   checkpoint compare the process's memory with the admitted limit
+   (`ExecutionMemoryLimitExceededError` → `memory_limited`). The job logs
+   `input_cache_build_uncapped`. An `admitted_eager` build is never run in process: on such
+   a host its worker refuses to start without the cap it requires, which the job reports
+   as `memory_limited`.
 
 ### Snapshot publication
 
@@ -1104,8 +1139,9 @@ failure sections above are the maintained answers.
   deduplication, unreadable files, retained resolver seams, and cross-platform path spelling.
 - `tests/test_input_cache_route.py` covers HTTP build/status/cancel/clear lifecycle and
   conflict/admission behaviour, a `read` configuration whose arguments are not an object
-  answered 400 `invalid_input_config`, and that an admitted-eager explicit build runs through the
-  worker entry point with its `memory_limited`, `cancelled`, `timed_out`, and
+  answered 400 `invalid_input_config`, and that an explicit build of either class is admitted
+  under its profile and runs through the worker entry point, never on the server thread, with
+  its `memory_limited`, `cancelled`, `timed_out`, and
   `completed` outcomes mapped onto the job lifecycle (a fake spawn receives the budget, the
   generation id, and the staging token; a memory-limited outcome reconciles both through
   `reconcile_unpublished(identity, generation_id, staging_token)`, removing
@@ -1113,7 +1149,12 @@ failure sections above are the maintained answers.
   pipeline in `rating/` and the data at the project root, the identity and freshness
   signature the route derives equal the ones execution derives from the same config after
   `canonical_dataframe_execution_graph()`, so a root-relative locator cannot build one
-  snapshot while the run reads another file.
+  snapshot while the run reads another file. With the process's current directory outside
+  the project, a relative locator is still resolved against the configured project root,
+  and a build publishes into that root's store. On a host without the cap a bounded build
+  runs in process under its admitted context, counting rows as it goes, and an
+  admitted-eager build still goes to the worker. A real spawned database build relays its
+  rows and batches to the parent while it runs.
 - `tests/test_input_preparation.py` covers automatic preparation: (1) parity — for CSV with
   a declared schema, CSV without one, NDJSON, plain JSON, and inline records the prepared
   generation's schema and rows equal a direct whole-file eager read; (2) mixed late types —

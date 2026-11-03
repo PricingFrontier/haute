@@ -16,7 +16,6 @@ traceback and answers the sanitized internal-error detail.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import orjson
@@ -26,8 +25,8 @@ from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
-from haute.routes._helpers import pipeline_dir
 from haute.routes._runtime_path_errors import runtime_path_http_exception
+from haute.routes.input_cache import input_pipeline_dir, input_project_root
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
@@ -49,9 +48,12 @@ def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
 
 
 def _resolve_data_path(path: str) -> str:
+    """Anchor *path* as the input-cache routes and execution do: to the project root."""
     try:
         return str(
-            resolve_node_input_path(path, pipeline_dir=pipeline_dir(), project_root=Path.cwd())
+            resolve_node_input_path(
+                path, pipeline_dir=input_pipeline_dir(), project_root=input_project_root()
+            )
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None

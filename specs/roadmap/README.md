@@ -27,7 +27,6 @@ records corrections to that audit's claims and proposed remedies.
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation, one worker primitive and failure family; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred); noncolliding relationship aliases and cached responses naming their consumer; pivot header format lookup by field name, fresh config reads after confirmation dialogs, and Explore error assistant action | `EDA-R01` |
-| [IO layer](io-layer.md) | Memory admission and isolated worker execution for explicit Data Input cache builds, project-root path anchoring, JSONL schema inference that walks its prefix once | `IO-R07` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM (deferred until RustyStats fits out of core), XGBoost through external memory when a job will not fit; evaluation planning that holds its memberships compactly | `MOD-R11` |
 | [Optimiser validation](optimiser-validation.md) | A calibrated solve-memory forecast in the Solve panel that warns and never refuses; per-point convergence traces from price_contour's frontier sweep; the optimiser result workspace's open robustness and CSV questions | `OPT-W02` |
@@ -106,7 +105,7 @@ with a systematic batch-by-batch pass over all 961 authored production source fi
 inventory ledger with `0` unread files remaining). It maps the verified findings to
 new component packages (`ASSIST-62`,
 `EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
-`GIT-R19`, `IO-R07`,
+`GIT-R19`,
 `API-R04`, `TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
 `DEP-R13` (delivered, with the deploy roadmap retired); findings whose packages were
 delivered have been removed.

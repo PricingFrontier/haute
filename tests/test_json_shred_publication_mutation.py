@@ -183,12 +183,14 @@ def test_parallel_inference_rejects_a_result_with_neither_state_nor_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source.jsonl"
-    source.write_text('{"id": 1}\n', encoding="utf-8")
+    source.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
+    # The prefix stops after the first record, so the second is a worker's.
+    monkeypatch.setattr(_inference._inference_filter, "_INITIAL_SAMPLE_RECORDS", 1)
     empty = _inference._InferenceChunkResult(index=0)
     shutdowns: list[tuple[bool, bool]] = []
     _install_static_process_pool(monkeypatch, [empty], shutdowns)
 
     with pytest.raises(RuntimeError, match="chunk 0 returned no state"):
-        _inference._infer_jsonl_in_parallel(source, [(0, 1)])
+        _inference._infer_jsonl_in_parallel(source, [(0, source.stat().st_size)])
 
     assert shutdowns == [(True, True)]
