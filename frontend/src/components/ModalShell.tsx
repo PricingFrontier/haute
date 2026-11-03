@@ -69,6 +69,8 @@ export default function ModalShell({
     const handler = (e: KeyboardEvent) => {
       const currentExtraCloseKeys = extraCloseKeysRef.current
       if (e.key === "Escape" || (currentExtraCloseKeys && currentExtraCloseKeys.includes(e.key))) {
+        // A field inside that consumed the key (a search box clearing) keeps the dialog open.
+        if (e.defaultPrevented) return
         e.preventDefault()
         onCloseRef.current()
         return

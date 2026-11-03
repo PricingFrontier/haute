@@ -6,11 +6,9 @@ import ast as _ast
 import importlib as _importlib
 import json as _json
 import math as _math
-import sys as _sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from importlib.machinery import PathFinder as _PathFinder
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -686,321 +684,22 @@ def checked_cache_input_values(
     return checked_cache_inputs(consumer, values).ordered_values
 
 
-@dataclass(frozen=True, slots=True)
-class CacheConfigFieldClassification:
-    """Logical cache treatment of one recognised node-config field."""
+_MODEL_PICKER_BROWSE_STATE = frozenset({"experiment_id", "experiment_name", "run_name"})
 
-    input_class: CacheInputClass | None = None
-    exclusion_reason: str = ""
-
-    def __post_init__(self) -> None:
-        if bool(self.input_class) == bool(self.exclusion_reason):
-            raise ValueError(
-                "config field classification must name an input class or exclusion rationale"
-            )
-        if self.exclusion_reason and not self.exclusion_reason.strip():
-            raise ValueError("config field classification rationale must be non-empty")
-
-
-_UNIVERSAL_CONFIG_FIELD_CLASSIFICATIONS: Mapping[str, CacheConfigFieldClassification] = (
-    MappingProxyType(
-        {
-            field_name: CacheConfigFieldClassification(CacheInputClass.NODE_CONFIG)
-            for field_name in (
-                "inputMapping",
-                "selected_columns",
-                "column_renames",
-                "contract",
-            )
-        }
-    )
-)
-
-
-def _classify_config_fields(
-    *,
-    node_config: tuple[str, ...] = (),
-    user_code: tuple[str, ...] = (),
-    source_selection: tuple[str, ...] = (),
-    row_limit: tuple[str, ...] = (),
-    runtime_files: tuple[str, ...] = (),
-    artifacts: tuple[str, ...] = (),
-    excluded: Mapping[str, str] | None = None,
-    include_universal: bool = True,
-) -> Mapping[str, CacheConfigFieldClassification]:
-    classifications = dict(_UNIVERSAL_CONFIG_FIELD_CLASSIFICATIONS) if include_universal else {}
-    groups = {
-        CacheInputClass.NODE_CONFIG: node_config,
-        CacheInputClass.USER_CODE: user_code,
-        CacheInputClass.SOURCE_SELECTION: source_selection,
-        CacheInputClass.ROW_LIMIT: row_limit,
-        CacheInputClass.RUNTIME_FILES: runtime_files,
-        CacheInputClass.ARTIFACTS: artifacts,
-    }
-    for input_class, field_names in groups.items():
-        for field_name in field_names:
-            if field_name in classifications:
-                raise ValueError(f"duplicate cache config classification for {field_name!r}")
-            classifications[field_name] = CacheConfigFieldClassification(input_class)
-    for field_name, rationale in (excluded or {}).items():
-        if field_name in classifications:
-            raise ValueError(f"duplicate cache config classification for {field_name!r}")
-        classifications[field_name] = CacheConfigFieldClassification(exclusion_reason=rationale)
-    return MappingProxyType(classifications)
-
-
-_UI_MODEL_SELECTION_RATIONALE = (
-    "Display metadata for reopening the model picker; runtime selection uses stable IDs."
-)
-
-CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
-    NodeType, Mapping[str, CacheConfigFieldClassification]
-] = MappingProxyType(
+# The persisted config fields no execution reads. An execution identity signs
+# a node's whole config but these, so a new setting is covered the moment it
+# is declared; the specification says why each one is left out.
+PRESENTATION_CONFIG_FIELDS: Mapping[NodeType, frozenset[str]] = MappingProxyType(
     {
-        NodeType.API_INPUT: _classify_config_fields(
-            node_config=("tables",),
-            runtime_files=("path",),
-        ),
-        NodeType.WORKBENCH_INPUT: _classify_config_fields(
-            node_config=("tables", "sample"),
-        ),
-        NodeType.DATA_INPUT: _classify_config_fields(
-            node_config=("arguments", "records"),
-            user_code=("code", "steps"),
-            source_selection=(
-                "connection",
-                "format",
-                "http_path",
-                "inputType",
-                "mode",
-                "query",
-                "table",
-                "uri",
-            ),
-            runtime_files=("path",),
-        ),
-        NodeType.DATA_OUTPUT: _classify_config_fields(
-            node_config=(
-                "arguments",
-                "connection",
-                "format",
-                "http_path",
-                "mode",
-                "outputType",
-                "path",
-                "table",
-                "uri",
-                "write_mode",
-            ),
-        ),
-        NodeType.POLARS: _classify_config_fields(user_code=("code", "steps")),
-        NodeType.EDGE_JOIN: _classify_config_fields(
-            node_config=(
-                "coalesce",
-                "how",
-                "leftOn",
-                "maintainOrder",
-                "on",
-                "rightOn",
-                "suffix",
-                "validate",
-            ),
-        ),
-        NodeType.MODEL_SCORE: _classify_config_fields(
-            node_config=("output_column", "task"),
-            user_code=("code", "steps"),
-            artifacts=(
-                "alias",
-                "artifact_path",
-                "feature_contract_path",
-                "mlflow_destination",
-                "model_path",
-                "registered_model",
-                "run_id",
-                "sourceType",
-                "version",
-            ),
-            excluded={
-                "experiment_id": _UI_MODEL_SELECTION_RATIONALE,
-                "experiment_name": _UI_MODEL_SELECTION_RATIONALE,
-                "run_name": _UI_MODEL_SELECTION_RATIONALE,
-            },
-        ),
-        NodeType.BANDING: _classify_config_fields(node_config=("factors",)),
-        NodeType.RATING_STEP: _classify_config_fields(
-            node_config=("combinedOutputs", "tables"),
-            user_code=("code", "steps"),
-        ),
-        NodeType.OUTPUT: _classify_config_fields(
-            node_config=("outputFormat", "outputMapping"),
-        ),
-        NodeType.WORKBENCH_OUTPUT: _classify_config_fields(node_config=("tables",)),
-        NodeType.EXPLORE: _classify_config_fields(
-            user_code=("code", "steps"),
-            excluded={
-                "overview": (
-                    "Overview-card visibility affects presentation, not the explored frame."
-                ),
-                "pivot_formulas": (
-                    "Pivot-formula definitions affect Pivot results, not the explored frame."
-                ),
-                "pivots": (
-                    "Pivot-card configuration affects presentation, not the explored frame."
-                ),
-                "charts": ("Chart-card visibility affects presentation, not the explored frame."),
-            },
-        ),
-        NodeType.EXTERNAL_FILE: _classify_config_fields(
-            node_config=("fileType",),
-            user_code=("code", "steps"),
-            artifacts=("path",),
-        ),
-        NodeType.LIVE_SWITCH: _classify_config_fields(
-            source_selection=("input_scenario_map", "inputs"),
-        ),
-        NodeType.MODELLING: _classify_config_fields(
-            node_config=(
-                "algorithm",
-                "alpha",
-                "cv_folds",
-                "cv_seed",
-                "cv_selection",
-                "device",
-                "family",
-                "feature_columns",
-                "feature_weights",
-                "fold_column",
-                "id_columns",
-                "interactions",
-                "intercept",
-                "l1_ratio",
-                "link",
-                "loss_function",
-                "max_iter",
-                "metrics",
-                "mlflow_destination",
-                "mlflow_experiment",
-                "model_export_path",
-                "monotone_constraints",
-                "name",
-                "offset",
-                "output_dir",
-                "params",
-                "positive_class",
-                "refit_on_development",
-                "regularization",
-                "robust_standard_errors",
-                "evaluation",
-                "target",
-                "task",
-                "terms",
-                "theta",
-                "tol",
-                "tuning",
-                "var_power",
-                "variance_power",
-                "weight",
-            ),
-            row_limit=("row_limit",),
-        ),
-        NodeType.OPTIMISER: _classify_config_fields(
-            node_config=(
-                "analysis_columns",
-                "cd_tolerance",
-                "constraints",
-                "factor_columns",
-                "frontier_ranges",
-                "frontier_steps",
-                "max_cd_iterations",
-                "max_iter",
-                "mlflow_destination",
-                "mlflow_experiment",
-                "mode",
-                "objective",
-                "quote_id",
-                "result_export_path",
-                "scenario_index",
-                "scenario_value",
-                "tolerance",
-            ),
-            source_selection=(
-                "analysis_input",
-                "banding_source",
-                "data_input",
-            ),
-        ),
-        NodeType.SCENARIO_EXPANDER: _classify_config_fields(
-            node_config=(
-                "column_name",
-                "max_value",
-                "min_value",
-                "quote_id",
-                "stepCount",
-                "step_column",
-            ),
-            user_code=("code", "steps"),
-        ),
-        NodeType.OPTIMISER_APPLY: _classify_config_fields(
-            node_config=(
-                "optimised_value_column",
-                "optimiser_mode",
-                "version_column",
-            ),
-            source_selection=("ratebook_input",),
-            artifacts=(
-                "alias",
-                "artifact_path",
-                "mlflow_destination",
-                "registered_model",
-                "run_id",
-                "sourceType",
-                "version",
-            ),
-            excluded={
-                "experiment_id": _UI_MODEL_SELECTION_RATIONALE,
-                "experiment_name": _UI_MODEL_SELECTION_RATIONALE,
-                "run_name": _UI_MODEL_SELECTION_RATIONALE,
-            },
-        ),
-        NodeType.CONSTANT: _classify_config_fields(node_config=("values",)),
-        NodeType.SUBMODEL: _classify_config_fields(
-            node_config=("alias", "definitionId", "instanceOf"),
-        ),
-        NodeType.SUBMODEL_PORT: _classify_config_fields(include_universal=False),
+        # The model picker writes the experiment it is browsing without changing
+        # the selected model, which execution finds by its stable ids.
+        NodeType.MODEL_SCORE: _MODEL_PICKER_BROWSE_STATE,
+        NodeType.OPTIMISER_APPLY: _MODEL_PICKER_BROWSE_STATE,
+        # Overview, Pivot and Chart cards present the explored frame; choosing
+        # one never changes it.
+        NodeType.EXPLORE: frozenset({"overview", "pivot_formulas", "pivots", "charts"}),
     }
 )
-
-
-def validate_cache_config_field_classifications(
-    valid_keys: Mapping[NodeType, frozenset[str]] | None = None,
-) -> None:
-    """Fail when the maintained config registry has an unclassified field."""
-
-    if valid_keys is None:
-        from haute._config_validation import VALID_KEYS
-
-        valid_keys = VALID_KEYS
-    registry_node_types = set(CACHE_CONFIG_FIELD_CLASSIFICATIONS)
-    if registry_node_types != set(NodeType):
-        missing_types = sorted(node_type.value for node_type in set(NodeType) - registry_node_types)
-        extra_types = sorted(node_type.value for node_type in registry_node_types - set(NodeType))
-        raise RuntimeError(
-            "cache config classification node types differ "
-            f"(missing={missing_types}, extra={extra_types})"
-        )
-    for node_type in NodeType:
-        expected = set(valid_keys.get(node_type, frozenset()))
-        actual = set(CACHE_CONFIG_FIELD_CLASSIFICATIONS[node_type])
-        missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
-        if missing or extra:
-            raise RuntimeError(
-                f"{node_type.value} cache config classification differs "
-                f"(missing={missing}, extra={extra})"
-            )
-
-
-validate_cache_config_field_classifications()
 
 
 @dataclass(frozen=True)
@@ -1020,9 +719,27 @@ class GraphFingerprintMemo:
     tool can preserve both size and mtime while changing bytes. Keep this memo
     scoped to one immutable request/operation and use fresh content hashes for
     independent calls.
+
+    Signing a lineage's nodes reads the same graph and inputs once per node, so
+    a memo also keeps, for the graphs and nodes it has seen, the canonical
+    execution graph and each node's runtime-input entry. Those read the
+    filesystem: a memo reads each once, and a caller that must see an input
+    change (after preparing inputs, or to prove one did not move) uses a fresh
+    memo.
     """
 
     utility_file_hashes: dict[_UtilityFileStatKey, str] = field(default_factory=dict)
+    # id(graph) -> (graph, its canonical execution graph); the graph is held so
+    # its id cannot be reused while the memo lives.
+    canonical_graphs: dict[int, tuple[PipelineGraph, PipelineGraph]] = field(default_factory=dict)
+    # node id -> (node, source file, runtime-input entry) for the node object it read.
+    runtime_input_entries: dict[str, tuple[GraphNode, str | None, Mapping[str, object]]] = field(
+        default_factory=dict
+    )
+    # The canonical graph_node and graph_edge records of the node and edge
+    # objects it has seen; an edge's also keeps its canonical JSON, its sort key.
+    graph_node_records: dict[str, tuple[GraphNode, Any]] = field(default_factory=dict)
+    graph_edge_records: dict[str, tuple[GraphEdge, Any, str]] = field(default_factory=dict)
 
 
 def canonical_json(value: Any) -> str:
@@ -1158,7 +875,10 @@ def _sort_key(value: Any) -> tuple[str, Any]:
     )
 
 
-def _graph_base_fingerprint(graph: PipelineGraph) -> str:
+def _graph_base_fingerprint(
+    graph: PipelineGraph,
+    memo: GraphFingerprintMemo | None = None,
+) -> str:
     """Compute the base structural digest of a graph (node configs + edges).
 
     The result is memoised once per :class:`PipelineGraph` instance via the
@@ -1168,37 +888,20 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     ``model_copy(update=...)`` idiom: ``model_copy`` produces a new instance
     and clears the memo (see ``PipelineGraph._HAUTE_CACHED_PROPERTY_NAMES``),
     so a structurally-different graph never serves a stale digest.
+
+    With *memo*, each node's and edge's record is canonicalised once for every
+    graph the memo fingerprints, as signing each node of a lineage needs.
     """
-    nodes: list[dict[str, object]] = []
-    for n in sorted(graph.nodes, key=lambda n: n.id):
-        nodes.append(
-            checked_cache_identity_record(
-                CacheIdentityRecord.GRAPH_NODE,
-                {
-                    "id": n.id,
-                    "label": n.data.label,
-                    "nodeType": str(n.data.nodeType),
-                    "config": _node_config_for_execution_fingerprint(n),
-                },
-            )
-        )
+    nodes = [_canonical_node_record(n, memo) for n in sorted(graph.nodes, key=lambda n: n.id)]
     # Handles select which frame/role reaches a consumer. Edge IDs are canvas
     # identity only, so endpoint/handle tuples define execution wiring.
-    edges = sorted(
-        (
-            checked_cache_identity_record(
-                CacheIdentityRecord.GRAPH_EDGE,
-                {
-                    "source": edge.source,
-                    "sourceHandle": edge.sourceHandle,
-                    "target": edge.target,
-                    "targetHandle": edge.targetHandle,
-                },
-            )
-            for edge in graph.edges
-        ),
-        key=canonical_json,
-    )
+    edges = [
+        record
+        for record, _text in sorted(
+            (_canonical_edge_record(edge, memo) for edge in graph.edges),
+            key=lambda item: item[1],
+        )
+    ]
     inputs = checked_cache_inputs(
         CacheConsumer.GRAPH_STRUCTURE,
         {
@@ -1206,21 +909,58 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
             "edges": edges,
         },
     )
-    return content_hash_bytes(inputs.canonical_bytes)
+    # Every record is already canonical, so the payload is not walked again.
+    return content_hash_bytes(_canonical_dumps(inputs.payload).encode("utf-8"))
+
+
+def _canonical_node_record(node: GraphNode, memo: GraphFingerprintMemo | None) -> Any:
+    if memo is not None:
+        known = memo.graph_node_records.get(node.id)
+        if known is not None and known[0] is node:
+            return known[1]
+    record = _canonicalise(
+        checked_cache_identity_record(
+            CacheIdentityRecord.GRAPH_NODE,
+            {
+                "id": node.id,
+                "label": node.data.label,
+                "nodeType": str(node.data.nodeType),
+                "config": _node_config_for_execution_fingerprint(node),
+            },
+        )
+    )
+    if memo is not None:
+        memo.graph_node_records[node.id] = (node, record)
+    return record
+
+
+def _canonical_edge_record(edge: GraphEdge, memo: GraphFingerprintMemo | None) -> tuple[Any, str]:
+    if memo is not None:
+        known = memo.graph_edge_records.get(edge.id)
+        if known is not None and known[0] is edge:
+            return known[1], known[2]
+    record = _canonicalise(
+        checked_cache_identity_record(
+            CacheIdentityRecord.GRAPH_EDGE,
+            {
+                "source": edge.source,
+                "sourceHandle": edge.sourceHandle,
+                "target": edge.target,
+                "targetHandle": edge.targetHandle,
+            },
+        )
+    )
+    text = _canonical_dumps(record)
+    if memo is not None:
+        memo.graph_edge_records[edge.id] = (edge, record, text)
+    return record, text
 
 
 def _node_config_for_execution_fingerprint(node: GraphNode) -> dict[str, Any]:
-    """Return the node config fields that affect executor/cache output."""
+    """Return the node's config without the fields only its editor presents."""
 
-    classifications = CACHE_CONFIG_FIELD_CLASSIFICATIONS[node.data.nodeType]
-    return {
-        key: value
-        for key, value in node.data.config.items()
-        if not (
-            (classification := classifications.get(key)) is not None
-            and classification.exclusion_reason
-        )
-    }
+    presentation = PRESENTATION_CONFIG_FIELDS.get(node.data.nodeType, frozenset())
+    return {key: value for key, value in node.data.config.items() if key not in presentation}
 
 
 # Preview lineage keys deliberately do not use ``graph_fingerprint``: a preview
@@ -1491,40 +1231,15 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:
     return path.resolve().parent
 
 
-def _utility_search_path(pipeline_dir: str | Path | None) -> list[str]:
-    """Return the search path the executor uses to resolve the ``utility`` import.
-
-    Mirrors :func:`haute.executor._prioritise_preamble_import_paths`: the
-    pipeline directory and the current working directory are searched first,
-    then the rest of ``sys.path``.  Hashing whatever *this* path resolves keeps
-    the fingerprint aligned with the module that actually executes — a two-dir
-    scan silently misses a ``utility`` resolved elsewhere on ``sys.path``.
-    """
-    prioritised: list[str] = []
-    if pipeline_dir is not None:
-        prioritised.append(str(Path(pipeline_dir).resolve()))
-    prioritised.append(str(Path.cwd().resolve()))
-
-    seen = set(prioritised)
-    ordered = list(prioritised)
-    for entry in _sys.path:
-        # Skip the empty string (means "cwd", already covered) and duplicates
-        # so the resolution order matches the executor exactly.
-        if not entry or entry in seen:
-            continue
-        seen.add(entry)
-        ordered.append(entry)
-    return ordered
-
-
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
     """Resolve the top-level ``utility`` module/package the preamble will import.
 
-    Uses :class:`importlib.machinery.PathFinder` against the same prioritised
-    search path the executor installs at exec time, so the bytes we hash are the
-    bytes that will run.  ``PathFinder.find_spec`` performs pure resolution — it
-    neither imports the module nor mutates ``sys.modules`` — and we invalidate
-    the finder caches first so a freshly created/edited ``utility`` is seen.
+    Resolves it as the import does (:func:`haute._project_imports.find_utility_spec`:
+    the project's directories, then the rest of the path for a project without one),
+    so the bytes we hash are the bytes that will run.  ``PathFinder.find_spec``
+    performs pure resolution — it neither imports the module nor mutates
+    ``sys.modules`` — and we invalidate the finder caches first so a freshly
+    created/edited ``utility`` is seen.
 
     Returns the filesystem location(s) to hash (a single file for a module, one
     or more directories for a package / namespace package), or ``None`` when
@@ -1532,7 +1247,9 @@ def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | 
     ``"missing"`` so a later creation still invalidates the digest).
     """
     _importlib.invalidate_caches()
-    spec = _PathFinder.find_spec("utility", _utility_search_path(pipeline_dir))
+    from haute._project_imports import find_utility_spec
+
+    spec = find_utility_spec(pipeline_dir)
     if spec is None:
         return None
     search_locations = spec.submodule_search_locations
@@ -1712,7 +1429,7 @@ def graph_fingerprint(
     The constant is read **dynamically** on every call so tests (and
     emergency cache-busts) can monkeypatch it without re-importing.
     """
-    base = graph._haute_base_fingerprint
+    base = graph._haute_base_fingerprint if memo is None else _graph_base_fingerprint(graph, memo)
     context_fingerprint = preamble_execution_fingerprint(
         graph.preamble,
         pipeline_dir=_pipeline_dir(graph),

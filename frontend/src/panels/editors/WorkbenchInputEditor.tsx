@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { Radio } from "lucide-react"
 import type { WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -109,11 +110,21 @@ export function WorkbenchTablesHeader({ empty }: { empty: boolean }) {
   )
 }
 
-/** The note a table without columns shows: it has no frame, so no port. */
-export const NO_COLUMNS_NOTE = "No columns yet, so no port."
-
-/** One of a workbench node's tables, read-only: its name, its rows per quote and its columns. */
-export function WorkbenchTableCard({ table, issue }: { table: WorkbenchTable; issue: string | null }) {
+/**
+ * One of a workbench node's tables, read-only: its name, its rows per quote and its
+ * columns, which `children` shows in place of the plain list where a node says more of
+ * them (the Workbench Output, each column's fill). A table without columns has no frame,
+ * so no port, and says so.
+ */
+export function WorkbenchTableCard({
+  table,
+  issue,
+  children,
+}: {
+  table: WorkbenchTable
+  issue: string | null
+  children?: ReactNode
+}) {
   return (
     <div
       data-testid={`workbench-table-${table.name}`}
@@ -133,9 +144,9 @@ export function WorkbenchTableCard({ table, issue }: { table: WorkbenchTable; is
       )}
       {table.columns.length === 0 ? (
         <p className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {NO_COLUMNS_NOTE}
+          No columns yet, so no port.
         </p>
-      ) : (
+      ) : children ?? (
         <ul className="mt-1 space-y-0.5">
           {table.columns.map((column) => (
             <li key={column.name} className="flex items-baseline justify-between gap-2">

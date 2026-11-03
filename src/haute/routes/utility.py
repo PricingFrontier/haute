@@ -159,11 +159,8 @@ def _validate_syntax(content: str) -> tuple[bool, str | None, int | None]:
 
 
 def _format_syntax_error(err_msg: str | None, err_line: int | None) -> str:
-    """Build a user-facing flat string describing a syntax error.
+    """Build a user-facing string describing a syntax error.
 
-    The line number is embedded in the string itself so the frontend can
-    extract it with a ``/line (\\d+)/`` regex — structured ``{error,
-    error_line}`` dict details are no longer part of the HTTP contract.
     ``str(SyntaxError)`` already contains ``" (<unknown>, line N)"`` so
     the result is de-duplicated on the first ``" (<unknown>, "`` marker.
     """
@@ -250,19 +247,20 @@ def _ensure_init(utility_dir: Path) -> list[Path]:
 def _write_response(
     project_root: Path, module: str, target: Path, written: list[Path]
 ) -> UtilityWriteResponse:
-    # The revision of the bytes this write published, read before the ledger capture:
-    # a change another editor makes meanwhile then refuses the next write (412)
-    # instead of being answered as this write's own.
-    revision = file_revision(target.stat())
     warnings: list[str] = []
     captured = capture_save_in_ledger(
         project_root, [_display(project_root, path) for path in written], warnings
     )
+    # Read after the capture, which runs the project's git hooks: a hook may rewrite the
+    # file, and the editor is handed what it left (the content with its revision), so
+    # nothing on disk is ever answered as this write's own without the editor seeing it.
+    revision = file_revision(target.stat())
     return UtilityWriteResponse(
         status="ok",
         name=f"{module}.py",
         module=module,
         import_line=f"from utility.{module} import *",
+        content=target.read_text(encoding="utf-8"),
         revision=revision,
         warnings=warnings,
         **captured._asdict(),
@@ -309,7 +307,10 @@ def _refuse_syntax_error(module: str, content: str) -> None:
         )
         raise HTTPException(
             status_code=400,
-            detail=_format_syntax_error(err_msg, err_line),
+            detail={
+                "line": err_line,
+                "message": _format_syntax_error(err_msg, err_line),
+            },
         )
 
 

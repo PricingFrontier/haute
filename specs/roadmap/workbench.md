@@ -27,15 +27,14 @@ Allowed field.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
-| WB-08 | Planned | P2 | A merge to `main` takes a workbench project's form, pipeline and app, tested together in CI, to staging and, after approval, to production on the project's host, Azure Container Apps first. |
+| WB-08 | Planned | P2 | A workbench project's CI tests the packaged app before any host sees it, and an export template's change starts the release. |
 | WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
-| WB-12 | Decision | P3 | Analysts keep test quotes and price them again as the pipeline changes, built again after the first version was taken out. |
+| WB-12 | Planned | P3 | An analyst saves the quote typed in Preview as a test quote in `tests/quotes`, prices every test quote again from Preview as the pipeline changes and accepts what moved, and CI reports the test quotes whose outputs moved. |
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` resolves `WORKBENCH_OUTPUT` inside submodels via `qualifiedRuntimeNodeId`, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
-| WB-45 | Planned | P2 | The schema pane compares the form with the tables a hosted environment's database holds, marking each difference, and writes the SQL that brings those tables to the form from what is there, for the analyst to run. |
 
 ## Planned improvements
 
@@ -80,97 +79,45 @@ host) and `::build_release` (the release and the image's build context);
 `src/haute/deploy/_container.py::prepare_build_directory` (the image's Dockerfile).
 
 ### WB-08 — The workbench project's CI/CD
-**Why:** `haute init --workbench` writes the `[workbench]` table and a blank form and
-generates the target's ordinary workflows: Validate (a dry-run deploy scoring the test
-quotes, which also holds the form the Workbench nodes take their tables from to the pipeline), Deploy →
-Staging, Smoke Test Staging (each test quote a request of its own, held to its expected
-output), Impact Analysis, approval, Deploy → Production, except that the workflows for Azure
-Container Apps, AWS ECS and GCP Cloud Run leave the smoke and impact out, since those
-targets build and push an image and update no service; the generic container target, which
-also only builds and pushes, keeps them. A push to `main` that changes the pipeline, its
-data, models or test quotes, `haute.toml`, the dependency files or, for a workbench project,
-the form starts the deploy. What a workbench project releases is not a scoring endpoint but
-the underwriter app, which `haute app build` writes and underwriters use by hand, and
-nothing in the workflows builds, tests or deploys it. Pricing analysts work on their own machines: Save writes the save branch,
-Commit makes a milestone, Push publishes it, a pull request to `main` is opened and merged
-on the provider, and the merge is the release. Against that flow: impact sends batches of a
-flat portfolio sample, which a pipeline reading one quote per request refuses for the batch
-and could not read for the shape, and its report compares top-level numeric columns, so a
-price inside a response table is never compared; production runs `haute deploy` again rather
-than promoting what staging tested, and the image is tagged with the commit's short hash,
-which a rebuild can point at other bytes; and the Azure Container Apps target pushes an
-image and rolls no service to it. A milestone Commit sweeps tracked files only, so a file
-the workbench adds, such as the test quotes of WB-12, needs tracking from the start.
+**Why:** A workbench project hosts no scoring API: its workflows validate the project and the
+app's release on every pull request and on a push to `main` that changes a release input;
+on that push they publish the app's image once, by digest, and roll the staging app to it,
+and by hand, after approval, roll production to the image staging ran for that commit, each
+rollout checked on the host and recorded on its Container App, and before production is
+approved `haute app impact` prices a sample of the quotes production saved on both apps and
+compares the fields the two releases share inside their response tables
+([workbench](../workbench/high-level.md)). What the release flow promised and still lacks:
+Nothing tests the packaged app before a host sees it: `haute app build` validates the
+pipeline and scores the committed test quotes, but no step starts the app the image holds,
+saves a quote through it or reopens one, against SQLite or against the server engine IT's
+instance runs. The export templates of WB-11, once they exist, start no release
+either. Pricing analysts work on their own machines: Save writes the save branch, Commit
+makes a milestone, Push publishes it, a pull request to `main` is opened and merged on the
+provider, and the merge is the release. A milestone Commit sweeps tracked files only, so a
+file the workbench adds, such as the test quotes of WB-12, needs tracking from the start.
 
-**Plan:** The fork is at `haute init --workbench`, which generates a workbench project's
-workflows; the behaviour lives in Haute's commands, which read the workbench settings, so
-the YAML stays thin and alike across providers, and a refresh command regenerates a
-project's workflows without rewriting its pipeline or form, as `haute init --force` would.
-The deploy triggers gain each release input as it arrives, where its specification puts it:
-the app's entry point and the export templates; the store's tables follow the form, which
-already starts the deploy. The app's delivery builds each release once. On every
-pull request, Validate and the packaged app tested in the CI runner before any host sees it,
-against SQLite and once against the server engine IT's instance runs (a service container),
-each a throwaway store of the branch's form made for the tests alone, since SQLite proves
-nothing of that engine's types; CI rehearses no migration, whose SQL the analysts write in
-the schema pane (WB-45) and run themselves:
-the test quotes of WB-12 re-priced one request each against their accepted outputs, a quote
-saved, reopened and, once WB-11's formats exist, exported through the app, and the sheets
-driven in a browser. On the
-merge to `main` alone, never on a push of the save branch: the merge commit built once, the
-packaged app's tests run again on that build, the image published to the registry and its
-digest recorded; the staging app rolled to that digest, never to a tag, with no step changing
-a database's tables, which the people who own them change in SQL; a hosted check
-that the expected release runs, that a request without sign-in is refused and that its quotes
-are open, the run failing naming what its tables lack when they do not fit its form; impact
-re-pricing a bounded sample of saved quotes from the store, through a read-only identity, on
-the candidate and the
-production app, comparing within each quote's response tables (a premium inside a table, a
-schedule's rows matched by key) and naming a quote whose shape no longer compares; for a
-first release, with no production app or no saved quotes, impact reports that there is no
-baseline and the candidate answers for the committed test quotes alone, while a production
-app that fails fails the check; approval; then production rolled to the same digest,
-checked the same way, and the release that runs recorded. Rollouts take a maintenance
-window: the old revision stops, the new revision starts, and no traffic is split; a new
-revision that fails to start or fails its check is replaced by the previous release and the
-run fails, except that one whose quotes are closed because its environment's tables do not
-fit it yet stays, the run failing naming what they lack, and opens its quotes once they are
-made to fit. The host step is small, and the project's IT team provides what it deploys
-onto (the Container App, the registry, the identities and the database): it publishes, rolls the environment to
-the release, waits until the release runs and reports it, and creates nothing. Azure Container
-Apps first; other hosts follow with the same commands.
+**Plan:** The behaviour lives in Haute's commands, as `haute app rollout` does, so the YAML
+stays thin and alike across providers. The release triggers gain each release input as it
+arrives, where its specification puts it: the export templates. On every pull request, and
+again on the merge's build before it is published, the packaged app is tested in the CI
+runner, against SQLite and once against the server engine IT's instance runs (a service
+container), each a throwaway store of the branch's form made for the tests alone, since
+SQLite proves nothing of that engine's types; CI rehearses no migration, whose SQL the
+analysts write in the schema pane ([workbench](../workbench/high-level.md)) and run
+themselves: the test quotes of WB-12 re-priced one request each against their accepted
+outputs, a quote saved, reopened and, once WB-11's formats exist, exported through the app,
+and the sheets driven in a browser.
 
-**Acceptance:** A project initialised by `haute init --workbench` for Azure Container Apps
-and merged to `main` runs its generated workflow to a staging app and, after approval, to
-production, with the digest CI tested deployed to both, a re-run of the workflow included, a
-maintenance window around each rollout and the release that runs recorded; a change confined
-to an export template starts the workflow; the packaged app passes the same tests against
-SQLite and the server engine before any host sees it, each test store made for the tests
-alone and no migration rehearsed; a push of the save branch releases nothing; no step of the workflow changes a
-hosted database's tables; a request to the hosted app without sign-in is refused; impact
-reports a change to a premium inside a response table; the first release, with no
-production app, reports that there is no baseline and still waits for approval; a release
-rolled out before its tables fit stays with its quotes closed, the run failed naming what
-they lack, and opens its quotes once the tables fit, with no new run; a candidate that fails
-otherwise leaves the previous release running and the run failed.
+**Acceptance:** A pull request whose packaged app cannot save and reopen a quote, against
+SQLite or the server engine, fails before any host sees it, each test store made for the
+tests alone and no migration rehearsed; a change confined to an export template starts the
+release; no step of the workflow changes a hosted database's tables or a saved quote.
 
-**Dependencies:** WB-11 (the export the app's tests make, once its formats are
-decided) and WB-12 (the test quotes). The Azure
-resources and identities, provided by the project's IT team. The generated deploy jobs
-already log in to the registry before a push; impact's input is the `[safety]` portfolio
-sample, or the test quotes without one.
+**Dependencies:** WB-11 (the export templates and the export the app's tests make, once
+their formats are decided) and WB-12 (the test quotes).
 
-**Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `::github_deploy_prod_yml`,
-`::gitlab_ci_yml`, `::azure_devops_yml` and `::_build_only_notice` (the generated workflows,
-their triggers, production's second deploy, and the smoke and impact left out for Azure
-Container Apps, AWS ECS and GCP Cloud Run); `src/haute/cli/_init_cmd.py::handle_init`
-(`--workbench` writes the table, the blank form and the form's deploy trigger, and nothing
-of an app); `src/haute/deploy/_impact.py::score_endpoint_batched` and `::build_report`
-(batches, and top-level numeric columns compared); `src/haute/cli/_impact.py::handle_impact`
-(a first deploy reported as such); `src/haute/_workbench_input.py::workbench_request_frames`
-(one quote per request); `src/haute/deploy/_validators.py::score_test_quotes` (each case a
-request of its own); `src/haute/deploy/_container.py::build_and_push_image` and
-`::deploy_to_platform_container` (a short-hash tag, built and pushed only);
+**Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (validate, publish, roll out and
+impact, no packaged-app test);
 `src/haute/_git_transactions.py::_residual_tracked_changes` (a milestone sweeps tracked
 files only).
 
@@ -209,7 +156,8 @@ response's JSON onto columns. Whether actions are declared alone (a statement or
 request with named parameters) or Python actions are allowed too. Where the pieces live:
 the Import's settings beside the schema in the form file, as they are, since they name
 tables and columns by id and version with the sheets; the connection its name stands
-for in `connections.toml`, the file of named connections WB-45 decides, with the names
+for in `connections.toml`, the file of named connections the editor and `haute app serve`
+already read ([workbench](../workbench/high-level.md)), with the names
 of its credential variables; the values in `.env`, never in a file the ledger pushes. Whether a press in Build writes the
 sample, which Save then writes to disk, or actions run in Preview alone. Then the
 slices: the connections of `connections.toml`, which an Import's connection names; a route
@@ -301,16 +249,112 @@ commits are `352823c4d`, `d4249d583`, `448aee189`, `42a7309b3` and `5ccc51fff`, 
 pricing went through the preview route, which answers at most 10,000 rows of a table, so a
 quote whose many-row table ran past that could not be kept.
 
-**Plan:** Decided with the owner before work starts: what a test quote is, where it is
-kept, how it is run and reviewed, and how CI uses it. A pricing that answers the Workbench
-Output's response whole, apart from the preview route's limits, keeps long quotes in full.
+**Plan:** Decided with the owner on 1 November 2026: test quotes are kept in the
+project's test-quote folder, `[test_quotes] dir`, `tests/quotes` unless it names another,
+where deploy's test quotes already live; each is saved from the quote typed in Preview; in a
+workbench project CI reports a test quote whose outputs moved and fails only one that does
+not price; an automated project's dry run and deploy keep failing on a moved output. The
+rest follows from those.
 
-**Acceptance:** Set with the plan.
+*The file.* One JSON file per test quote, `<name>.json`, holding the one-row array deploy's
+test quotes take, `[{"input": ..., "expected": ...}]`, so the dry run, deploy's check,
+`haute app build` and WB-08's packaged-app tests read one format. `input` is the effective
+request Preview prices: the request the sheets build (`quote_request`), with the identity
+Preview stands in for an unsaved quote (`quote_reference` `PREVIEW`, `quote_option` 1)
+written into its `quote_details`, so the file prices as it stands wherever it is read.
+`expected` is the Workbench Output's answer in the price route's shape: every table, one-row
+tables included, a list of rows by table name, values JSON-safe as the route sends them
+(dates as ISO text, a non-finite number as null, a document pruned as the route prunes it).
+Every pricing of a test quote, in Preview and in CI, renders its answer through that one
+normalisation before it compares. A name is letters, digits, spaces, hyphens and underscores,
+up to 100 characters; a name that matches an existing file's ignoring case is refused, and
+the file's whole path is checked as any project write's is (inside the folder, no link,
+junction or hard link). Saving under a new name refuses one that matches an existing file
+ignoring case; replacing a test quote targets the file the analyst picked from the list,
+under its own spelling, after asking. A file in the folder that holds anything else (several rows, an
+input-only smoke case, another Input's request) is not a Preview test quote: Preview lists
+it as one it cannot open, and CI prices it as deploy does today.
+
+*Replaying, not rebuilding.* A test quote is priced from its stored `input`, never rebuilt
+from the sheets, so Preview and CI price the same request and accepting new outputs keeps
+them with the request that produced them. Opening one onto the sheets is a view: each
+table's and column's value is put back by name as the sheets hold it, as the quote store
+puts a saved quote back (true and false as a ticked or empty box, a number as plain text, a
+date as ISO text), preset rows placed by the column's values; a value whose table
+or column the form no longer has, or that a column's type or options no longer take, is
+listed as not opened. Changing the sheets and saving under the same name replaces the test
+quote with the new request and its pricing, after asking.
+
+*Pricing whole.* A test quote is priced by a route of its own on the editor's server through
+the scorer the app prices with (`score_graph` on the project as saved, resolved as
+`haute app build` resolves it, the project saved first when it has unsaved changes), its
+response whole rather than cut at the preview route's 10,000
+rows; a quote past the request body limit, or one that runs out of memory or time, is a
+failure named as such, never a truncated answer. Pricing all runs one quote at a time and
+can be cancelled.
+
+*Moved.* One comparison, used by Preview and CI alike, compares `expected` with the new
+answer on the output tables of the form as it stands: a one-row table column by column; a
+many-row table's rows matched by the columns the form marks as its keys, else by position
+when the counts match; a number moved when it differs by more than a millionth of a percent
+of the expected value, or by more than the row's `tolerance_pct` when it gives one; a field
+only one side holds named as added or removed. The outcomes are unchanged, moved (each
+field and row named, the expected and new values), no longer compares (a key held twice or
+empty, counts by position that differ) and failed (it did not price). An automated project's
+dry run and deploy keep their strict comparison.
+
+*Saving, accepting, deleting.* Each is a project write as the editor's others are, serialised
+against saves and branch switches and refused on a branch other than the one the run was
+made on. Each names the revision (a digest of the whole file) it was decided on, checked
+inside the write: Save writes a new file atomically; replacing, Accept and Delete act only
+while the file is still that revision, Accept also only while the run's pipeline and form
+are those on disk, so an edit from another tab or outside the editor is never overwritten;
+Accept all accepts each quote that still matches and names any that did not. Each lands on the save ledger as a save does (captured for
+the milestone Commit, not merely staged), reporting a write that succeeded but was not
+captured, and asking for the git identity first, as Save does.
+
+*CI.* Pricing test quotes answers structured results, each quote ok, moved (with its
+differences), no longer compares, or failed, instead of the dry run's one error status.
+In a workbench project `haute app build` passes with moved and no-longer-comparing quotes,
+prints each with its fields, writes `test_quotes_report.md` in the working directory whatever
+the outcome, and fails when a quote failed to price or a file is not a test quote; a
+workbench project with no test quotes builds. The generated validate jobs keep the report
+as an artifact whether the job passes or fails, `haute ci update` writing them again, and
+WB-08's packaged-app tests apply the same rule. Workbench `haute init` writes no starter
+test quote; the folder appears with the first save.
+
+Not decided yet: opening a quote from a quote store's tables into Preview, which would then
+be saved as any typed quote is. A real quote carries customer data, the insured and broker in
+`quote_details` and whatever its input tables hold, into git once saved; whether it is
+blanked, which environments it is read from, or left to the analyst is the owner's to decide
+first.
+
+**Acceptance:** An analyst saves the quote typed in Preview as a test quote, and it appears
+in `tests/quotes` as `<name>.json`, one row in deploy's test-quote shape whose `input` prices
+as saved, captured on the save ledger; opening it puts its values back on the sheets and
+names any it cannot; after a change to the pipeline, pricing all of them again marks the one
+whose output moved and accepting it rewrites its `expected`, refused when the file changed
+since it was priced; a quote whose schedule runs past 10,000 rows is saved, priced again,
+compared and accepted whole; a workbench pull request whose test quote's output moved passes
+its validate job, the kept report naming the quote and the field, while one whose test
+quote fails to price fails it; an automated project's dry run still fails on a moved output.
 
 **Dependencies:** None.
 
-**Evidence:** The commits above; `src/haute/deploy/_validators.py::score_test_quotes` (the
-dry run's pricing of deploy's JSON test quotes, one request each).
+**Evidence:** The commits above (the first version); `src/haute/deploy/_validators.py`
+(`score_test_quotes`, deploy's test-quote rows `{"input", "expected", "tolerance_pct"}`
+and the expected-output comparison that fails the dry run);
+`src/haute/deploy/_config.py::test_quote_files` and `_test_quotes_dir` (`[test_quotes]
+dir`, `tests/quotes` by default); `src/haute/_workbench_app.py::build_release` (the release
+validated and its test quotes priced as a deploy does); `src/haute/_workbench_tables.py`
+(`quote_request`, the request the sheets build); `src/haute/_workbench_impact.py`
+(`compare_quote`, the comparison of two answers' tables);
+`src/haute/_workbench_input.py` (the stand-in identity Preview prices an unsaved quote
+with); `src/haute/_workbench_app.py` (`price_values`, the app's whole pricing through
+`score_graph`, `priced_tables` and `finite_document`); `src/haute/routes/_helpers.py` and
+`src/haute/routes/_save_pipeline.py` (project writes serialised against saves and branch
+switches, and the save ledger's capture); `src/haute/cli/_init_cmd.py` (the starter test
+quote `haute init` writes today).
 
 ### WB-13 — Managing quotes in the underwriter app
 **Why:** The underwriter app opens on its quotes ([workbench](../workbench/high-level.md)):
@@ -423,66 +467,3 @@ missing-folder rule.
 `frontend/src/workbench/priceSample.ts::priceSample`;
 `frontend/src/utils/submodelRuntimeTarget.ts::qualifiedRuntimeNodeId`;
 `specs/workbench/high-level.md`.
-
-### WB-45 — Comparing the form with an environment's tables
-**Why:** Analysts migrate a hosted quote store's tables themselves: Haute writes the SQL and
-they run it in their database (the owner's ruling, 31 October 2026); nothing in CI writes or
-runs it. Today the schema pane's SQL (`POST /api/workbench/store-sql`) writes the change from
-the form the default branch holds, read from git, or from none, so it takes the database to
-hold exactly that form's tables. It cannot see what the database really holds: a column
-someone added, retyped or dropped in SQL, one the form removed and the database kept, a script
-run part way, an environment behind or ahead of `main`, or which columns hold values a change
-would convert. The app's check (`_catalogue_differences`) finds each such difference, but only
-the started app reads it, and only to close its quotes. Nothing points the editor at a hosted
-database: a location and a sign-in are read from the host's variables, one environment per
-process.
-
-**Plan:** Decided with the owner (31 October 2026): the editor reaches each database through
-`connections.toml` at the project root, committed with the project and written by
-`haute init --workbench`, a table for each named connection holding its provider, server,
-database and SQL schema, and how the analyst signs in, by the names of the variables that
-hold the secrets (as a store environment names its sign-in's), whose values live in the
-clone's `.env`, which git ignores, and `.env.example` naming each. It holds no secret, so
-the team shares one set of connections; a value written into it is refused naming the
-variable it belongs in. It is the analyst's own sign-in, a password from `.env` or their
-Microsoft Entra ID sign-in, never the app's managed identity, and the editor reads under it
-alone. A hosted app and a release never read the file: a host still places the app's
-database through its own variables, so a pull request changing the file repoints no hosted
-app. A connection named as a declared environment is that environment's. Then, in the schema
-pane, an environment chosen among those declared that has a connection: Haute connects
-through the store's providers, reads the catalogue as the app's check
-does, with the quotes holding values in each column a change would touch, and changes nothing.
-Each table and column of the form is marked where it differs there (missing, of another kind,
-taking a null otherwise, keyed or referring otherwise, under another collation on SQL Server),
-each table or column the database holds that the form does not is listed, and a database that
-matches says so. Generate SQL writes the migration from the tables as they are to the form, as
-the SQL window writes it now: renames in two steps, a retype in place with its note and the
-quotes holding values it converts, a removal's DROP commented out, one transaction. A column
-the form has that the database lacks is paired with one the database has that the form lacks
-as a rename where the default branch's form names both by one id, or where the analyst pairs
-them in the pane. The analyst copies the SQL and runs it; Haute runs nothing and records
-nothing. The SQL from the default branch's form or from none stays for a database the editor
-cannot reach. No location, credential or value read is shown, logged or written to the
-project.
-
-**Acceptance:** With an environment reachable from the analyst's machine, the schema pane marks
-each table and column whose catalogue differs from the form, lists what the database holds
-beyond it and counts the quotes a change would convert; the SQL it writes, run on that
-database, leaves the app's check finding nothing, on SQL Server and on PostgreSQL; a pair the
-analyst marks is renamed, keeping its values; a database it cannot reach or sign in to is said
-naming the variables, never the server or the user; nothing is written to the database, the
-project or the logs. `haute init --workbench` writes `connections.toml` and names its
-variables in `.env.example`; a secret's value written into the file is refused naming the
-variable it belongs in; and a hosted app reads nothing of the file.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_store.py::_catalogue_differences` (the app's check and
-its differences); `src/haute/_quote_store/_migrate.py::counts`, `::offline_plan` and
-`::render_sql` (the quotes holding values, the plan between two structures and its SQL);
-`src/haute/routes/workbench.py::store_sql` and `src/haute/_workbench_folder.py::form_at_ref`
-(the SQL from the default branch's form); `src/haute/_quote_store/_environment.py::resolve_store`
-(a location and a sign-in from one process's variables); `frontend/src/workbench/SchemaPane.tsx`
-and `frontend/src/workbench/StoreSqlWindow.tsx` (where the SQL is shown now);
-`src/haute/deploy/_config.py` (`.env` read with python-dotenv) and `src/haute/_scaffold.py`
-(`.env.example` written by `haute init`).

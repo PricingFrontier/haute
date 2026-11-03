@@ -864,7 +864,6 @@ def make_output_config(fields: list[str], *, source_port: str = "in") -> dict:
             }
             for f in fields
         ],
-        "outputFormat": "json",
     }
 
 

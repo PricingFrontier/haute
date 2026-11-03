@@ -163,8 +163,14 @@ class LRUCache(Generic[K, V]):
         When capacity is exceeded, the least-recently-used *unpinned*
         entry is evicted.  If every live entry is pinned, the cache is
         allowed to exceed ``max_size`` so pinned entries are not silently
-        dropped.
+        dropped. A value larger than ``max_bytes`` is not cached, and it
+        evicts the entry it would have replaced, pinned or not; an entry
+        another put stored while this value was measured is left alone.
         """
+        replacing: object = _MISSING
+        if self._max_bytes is not None:
+            with self._lock:
+                replacing = self._data.get(key, _MISSING)
         size = self._measure(value)
         with self._lock:
             if self._max_bytes is not None and size > self._max_bytes:
@@ -178,6 +184,9 @@ class LRUCache(Generic[K, V]):
                         "replaced_existing": replaced_existing,
                     },
                 )
+                # The caller replaced this value, so the one it held is stale.
+                if replaced_existing and self._data[key] is replacing:
+                    self._remove_key(key)
                 return False
             if key in self._data:
                 self._data.move_to_end(key)

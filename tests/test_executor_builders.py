@@ -246,7 +246,6 @@ class TestBuildOutput:
                 }
                 for f in fields
             ],
-            "outputFormat": "json",
         }
 
     def test_flat_mapping_renders_array_of_rows(self) -> None:
@@ -860,7 +859,7 @@ class TestBuildApiInput:
                 required_output_columns=frozenset({"quote_id"}),
                 execution_profile=profile,
             )
-            frame = _apply_selected_columns(fn(), config)
+            frame = _apply_selected_columns(fn(), config, node_label="node")
             columns_by_profile[profile] = frame.collect_schema().names()
 
         assert columns_by_profile[ExecutionProfile.OPTIMISER_SOLVE.value] == ["quote_id"]
@@ -899,6 +898,41 @@ class TestBuildApiInput:
 # ---------------------------------------------------------------------------
 # dataInput selected_columns
 # ---------------------------------------------------------------------------
+
+
+class TestBuildDataInputWithCode:
+    """A Data Input with post-load code keeps its scan and its code apart (CACHE-S22)."""
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_its_function_opens_the_scan_and_runs_the_code_on_it(self, tmp_path: Path) -> None:
+        from haute._builders import SourceWithCode
+
+        data_file = tmp_path / "quotes.parquet"
+        pl.DataFrame({"premium": [100.0, 300.0]}).write_parquet(data_file)
+        _, fn, is_source = _build(
+            "dataInput",
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": str(data_file),
+                "code": "df = df.filter(pl.col('premium') > 200)",
+            },
+        )
+
+        assert is_source and isinstance(fn, SourceWithCode)
+        scan, frame = fn.opened()
+        assert scan is not None and scan.collect()["premium"].to_list() == [100.0, 300.0]
+        assert frame.collect()["premium"].to_list() == [300.0]
+        assert fn().collect()["premium"].to_list() == [300.0]
+
+    def test_an_unsaved_one_previews_empty_without_running_its_code(self) -> None:
+        _, fn, _ = _build("dataInput", {"code": "raise RuntimeError('ran')"})
+
+        scan, frame = fn.opened()
+
+        assert scan is None
+        assert frame.collect().shape == (0, 0)
 
 
 class TestBuildDataInputSelectedColumns:
@@ -965,7 +999,9 @@ class TestBuildDataInputSelectedColumns:
             frame = fn()
             builder_columns_by_profile[profile] = set(frame.collect_schema().names())
             selected_by_profile[profile] = (
-                _apply_selected_columns(frame, node.data.config).collect_schema().names()
+                _apply_selected_columns(frame, node.data.config, node_label="node")
+                .collect_schema()
+                .names()
             )
 
         assert builder_columns_by_profile[ExecutionProfile.TRAINING_PREP.value] == {

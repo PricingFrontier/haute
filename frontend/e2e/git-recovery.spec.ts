@@ -171,7 +171,11 @@ test.describe("files another program held open through a git action", () => {
   // still holds the other version, and the clone records the interruption.
   test.beforeEach(() => {
     resetE2eProject()
-    writeFileSync(pipelinePath, readFileSync(pipelinePath, "utf8") + "\n# the other version\n")
+    // A preamble comment: a version a save keeps, so the document stays ready to save.
+    const current = readFileSync(pipelinePath, "utf8")
+    const other = current.replace("\npipeline = haute.Pipeline(", "\n# the other version\npipeline = haute.Pipeline(")
+    if (other === current) throw new Error("rating/main.py has no pipeline constructor to mark")
+    writeFileSync(pipelinePath, other)
     writeFileSync(
       interruptedPath,
       JSON.stringify({

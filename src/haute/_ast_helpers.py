@@ -9,12 +9,15 @@ knowledge of node types, configs, or graphs — that logic lives in
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+import bisect
+import io
+import tokenize
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
-from haute._source_layout import lines_inside_literals, python_lines
+from haute._source_layout import WIRE_COMMENT, lines_inside_literals, python_lines
 from haute._submodel_paths import SUBMODEL_PACKAGE
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
@@ -987,6 +990,102 @@ def unkept_module_statements(
             continue
         spans.append((start, end))
     return spans
+
+
+def _comment_tokens(source: str) -> list[tuple[int, int, str]]:
+    """Each comment in *source*: one-based line, zero-based column, text without trailing space."""
+    return [
+        (token.start[0], token.start[1], token.string.rstrip())
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.COMMENT
+    ]
+
+
+def _header_end_line(lines: list[str], function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    """The line of the colon that closes *function*'s ``def`` header.
+
+    *lines* are the module's lines with their endings; only the function's are read.
+    """
+    text = "".join(lines[function.lineno - 1 : function.end_lineno or function.lineno])
+    depth = 0
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        if token.type != tokenize.OP:
+            continue
+        if token.string in "([{":
+            depth += 1
+        elif token.string in ")]}":
+            depth -= 1
+        elif token.string == ":" and depth == 0:
+            return function.lineno + token.start[0] - 1
+    raise ValueError(f"{function.name} has no header colon")  # pragma: no cover - parsed source
+
+
+def unkept_comments(
+    source: str,
+    tree: ast.Module | None = None,
+    *,
+    codes: Mapping[str, str],
+    receiver: str = "pipeline",
+    constructor_name: str = "Pipeline",
+) -> list[tuple[int, int]]:
+    """One-based line and zero-based column of each comment a save would drop.
+
+    Codegen rewrites the module around what it keeps verbatim: the preamble,
+    preserved blocks, and each node's extracted code (*codes*, by node function
+    name), whose comments it keeps in order. Any other comment (above the
+    imports, on a decorator or a signature, after a body's last statement,
+    between functions, on a connect call) is reported, apart from the wire
+    comment codegen writes itself. A comment inside a statement
+    ``unkept_module_statements`` reports is not: that statement is reported.
+    """
+    if tree is None:
+        tree = ast.parse(source)
+    lines = python_lines(source)
+    boundaries = _module_boundaries(
+        tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
+    )
+    if boundaries.generated_start_line > len(lines):
+        return []  # no constructor or node function: not a module codegen writes
+    covered: set[int] = {
+        line for first, last in _module_preserve_spans(lines) for line in range(first + 1, last + 2)
+    }
+    generated = _submodel_import_lines(tree) if receiver == "pipeline" else frozenset()
+    covered.update(
+        index + 1
+        for index in range(boundaries.last_standard_line, boundaries.generated_start_line - 1)
+        if index not in generated
+    )
+    for start, end in unkept_module_statements(
+        source, tree, receiver=receiver, constructor_name=constructor_name
+    ):
+        covered.update(range(start, end + 1))
+    comments = _comment_tokens(source)
+    kept = {(line, column) for line, column, _text in comments if line in covered}
+    lines_with_ends = python_lines(source, keepends=True)
+    comment_lines = [line for line, _column, _text in comments]
+    for statement in tree.body:
+        if not (
+            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(boundaries.is_node_decorator(item) for item in statement.decorator_list)
+        ):
+            continue
+        # The header is regenerated; the body keeps the comments its code keeps.
+        header_end = _header_end_line(lines_with_ends, statement)
+        body_end = statement.end_lineno or statement.lineno
+        code = codes.get(statement.name, "")
+        wanted = [text for _line, _column, text in _comment_tokens(code)] if "#" in code else []
+        first = bisect.bisect_right(comment_lines, header_end)
+        last = bisect.bisect_right(comment_lines, body_end)
+        for line, column, text in comments[first:last]:
+            if wanted and text == wanted[0]:
+                kept.add((line, column))
+                wanted.pop(0)
+    return [
+        (line, column)
+        for line, column, text in comments
+        if (line, column) not in kept
+        and not (text == WIRE_COMMENT and line >= boundaries.generated_start_line)
+    ]
 
 
 def _extract_preamble(

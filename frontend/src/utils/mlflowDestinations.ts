@@ -67,6 +67,25 @@ export function mlflowDestinationConfigValue(
   return key === "local" ? undefined : key
 }
 
+/**
+ * The config update for choosing another destination: a run id or a registered
+ * model's name means nothing at another backend, so the whole selection is
+ * dropped in the same update (the version back to `latest`, the alias removed).
+ */
+export function clearedMlflowSelection(next: MlflowDestinationKey): Record<string, unknown> {
+  return {
+    mlflow_destination: mlflowDestinationConfigValue(next),
+    run_id: "",
+    run_name: "",
+    experiment_id: "",
+    experiment_name: "",
+    artifact_path: "",
+    registered_model: "",
+    version: "latest",
+    alias: undefined,
+  }
+}
+
 export function mlflowDestinationEntry(
   destinations: MlflowDestinationEntry[],
   key: string,

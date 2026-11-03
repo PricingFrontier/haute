@@ -1355,3 +1355,62 @@ def test_pointer_and_retention_rollback_failure_preserve_existing_generation(tmp
     assert store.latest_generation(first).retention == "pinned"
     store.clear_slot(slot)
     assert _slot_generation_bytes(store, tmp_path) == 0
+
+
+def test_the_publication_lock_sweep_leaves_entries_it_cannot_judge(tmp_path: Path) -> None:
+    locks = tmp_path / ".haute_cache" / "inputs" / ".locks"
+    locks.mkdir(parents=True)
+    misnamed = locks / "publication-not-a-digest.lock"
+    misnamed.write_bytes(b"\0")
+    target = tmp_path / "elsewhere.lock"
+    target.write_bytes(b"\0")
+    linked = locks / f"publication-{'d' * 64}.lock"
+    linked.symlink_to(target)
+
+    NodeSnapshotStore(tmp_path)
+
+    assert misnamed.exists() and linked.is_symlink() and target.exists()
+
+
+def test_a_lease_marker_that_names_no_token_holds_nothing(tmp_path: Path) -> None:
+    """Clear retires a generation whose only marker cannot name a process."""
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    generation_id = _published_id(store, identity, pl.DataFrame({"a": [1]}))
+    generation_dir = store.inputs_root / identity.digest / "generations" / generation_id
+    (generation_dir / ".lease-not-a-token").touch()
+
+    store.clear_slot(slot)
+
+    assert _identity_bytes(store, identity) == 0
+
+
+def test_clear_reads_a_token_the_sweep_removes_mid_probe_as_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep that removes a dead token while retirement probes it fails nothing (CACHE-S17)."""
+    from haute._file_lock import _LockFileReplacedError
+
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    generation_id = _published_id(store, identity, pl.DataFrame({"a": [1]}))
+    token = "deadbeefdead"
+    generation_dir = store.inputs_root / identity.digest / "generations" / generation_id
+    (generation_dir / f".lease-{token}").touch()
+    token_file = tmp_path / ".haute_cache" / "inputs" / ".processes" / f"{token}.lock"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_bytes(b"\0")
+    probed: list[Path] = []
+
+    def swept_while_opening(path: Path) -> object:
+        probed.append(path)
+        raise _LockFileReplacedError("swept while the probe opened it")
+
+    monkeypatch.setattr(source_cache_module, "_open_lock_file", swept_while_opening)
+
+    store.clear_slot(slot)
+
+    assert probed == [token_file]
+    assert _identity_bytes(store, identity) == 0

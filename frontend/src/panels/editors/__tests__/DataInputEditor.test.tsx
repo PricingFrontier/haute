@@ -444,6 +444,66 @@ describe("DataInputEditor", () => {
     ).toBeInTheDocument()
   })
 
+  describe("a detected schema belongs to the file and reader settings it was read with", () => {
+    const csv = (path: string, args: Record<string, unknown> = {}) => ({
+      inputType: "file", format: "csv", mode: "scan", path, arguments: args, code: "",
+    })
+    const schemaOf = (path: string, column: string) => ({
+      path, columns: [{ name: column, dtype: "Int64" }], row_count: 1, column_count: 1, preview: [],
+    })
+    /** Schema replies the test completes by hand, by path. */
+    function controlledSchemas() {
+      const pending = new Map<string, (value: ReturnType<typeof schemaOf>) => void>()
+      vi.mocked(fetchSchema).mockImplementation((path: string) =>
+        new Promise((resolve) => { pending.set(path, resolve) }) as ReturnType<typeof fetchSchema>,
+      )
+      return (path: string, column: string) => pending.get(path)!(schemaOf(path, column))
+    }
+
+    it("offers nothing of A's schema while B's loads, and applies B's into B", async () => {
+      const answer = controlledSchemas()
+      const onUpdate = vi.fn(() => ({ ok: true as const }))
+      const { rerender } = renderEditor(csv("a.csv"), onUpdate)
+      await waitFor(() => expect(fetchSchema).toHaveBeenCalledWith("a.csv", expect.anything(), expect.anything()))
+      answer("a.csv", "a_only")
+      expect(await screen.findByRole("button", { name: "Use detected schema" })).toBeInTheDocument()
+
+      rerender(<DataInputEditor config={csv("b.csv")} onUpdate={onUpdate} onReplaceConfig={vi.fn()} accentColor="#123456" />)
+      expect(screen.queryByRole("button", { name: "Use detected schema" })).not.toBeInTheDocument()
+      expect(screen.queryByText("a_only")).not.toBeInTheDocument()
+
+      await waitFor(() => expect(fetchSchema).toHaveBeenCalledWith("b.csv", expect.anything(), expect.anything()))
+      answer("b.csv", "b_only")
+      fireEvent.click(await screen.findByRole("button", { name: "Use detected schema" }))
+      expect(onUpdate).toHaveBeenCalledWith("arguments", { schema: { b_only: "Int64" } })
+      expect(onUpdate).not.toHaveBeenCalledWith("arguments", { schema: { a_only: "Int64" } })
+    })
+
+    it("withholds a schema read with other reader settings", async () => {
+      const answer = controlledSchemas()
+      const { rerender } = renderEditor(csv("a.csv", { separator: "," }))
+      await waitFor(() => expect(fetchSchema).toHaveBeenCalledTimes(1))
+      answer("a.csv", "comma")
+      expect(await screen.findByRole("button", { name: "Use detected schema" })).toBeInTheDocument()
+
+      rerender(<DataInputEditor config={csv("a.csv", { separator: ";" })} onUpdate={vi.fn()} onReplaceConfig={vi.fn()} accentColor="#123456" />)
+      expect(screen.queryByRole("button", { name: "Use detected schema" })).not.toBeInTheDocument()
+      expect(screen.getByText("Loading schema...")).toBeInTheDocument()
+    })
+
+    it("drops the schema when the path is cleared", async () => {
+      const answer = controlledSchemas()
+      const { rerender } = renderEditor(csv("a.csv"))
+      await waitFor(() => expect(fetchSchema).toHaveBeenCalledTimes(1))
+      answer("a.csv", "a_only")
+      expect(await screen.findByRole("button", { name: "Use detected schema" })).toBeInTheDocument()
+
+      rerender(<DataInputEditor config={csv("")} onUpdate={vi.fn()} onReplaceConfig={vi.fn()} accentColor="#123456" />)
+      rerender(<DataInputEditor config={csv("a.csv")} onUpdate={vi.fn()} onReplaceConfig={vi.fn()} accentColor="#123456" />)
+      expect(screen.queryByRole("button", { name: "Use detected schema" })).not.toBeInTheDocument()
+    })
+  })
+
   it("uses backend group order and atomically removes inactive provider keys", async () => {
     const { onReplaceConfig } = renderEditor({
       code: "df",
@@ -530,8 +590,8 @@ describe("DataInputEditor", () => {
 
   it.each([
     ["a new node's empty step list", { inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
-    ["step editor state", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }], _steps_error: "Step 1: Add at least one condition." }],
-    ["a discarded step list on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "", _steps_discarded: "Steps were discarded because the body changed." }],
+    ["an incomplete step list", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }] }],
+    ["code on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "" }],
   ])("reports no configuration error for %s", async (_label, config) => {
     renderEditor(config)
     await screen.findByRole("radiogroup", { name: "Provider" })

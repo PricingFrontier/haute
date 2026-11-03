@@ -9,9 +9,16 @@ versioned beside the pipeline: a file for each table and each sheet
 ([The workbench's files](#the-workbenchs-files)).
 
 !!! note "Enabling it"
-    `haute init --workbench` switches it on: in a new project, or in one that has no
-    workbench yet, it adds the table to `haute.toml` and writes the blank workbench's
-    files.
+    Answer **Workbench** to `haute init`'s first question (or pass `--workbench`) when you
+    start the project. It then asks which database holds the saved quotes and how you sign in
+    to it, and writes the table to `haute.toml`, with where the app runs and the quote
+    store's `dev`, `staging` and `prod` on that database
+    ([The underwriter app](#the-underwriter-app)), the blank workbench's files,
+    `connections.toml`, and the workflows that check, publish and roll out the app, and
+    names your sign-in variables in `.env.example`. A workbench project hosts no API: what it releases is
+    the underwriter app. To give an automated project a workbench later, run `haute init`
+    again and answer **Workbench**: your pipeline is kept, and you replace its Quote Input
+    and Quote Response with a Workbench Input and a Workbench Output.
 
     ```toml
     [workbench]
@@ -637,6 +644,40 @@ no Workbench Output on the pipeline, a value that does not fit its column — th
 says why. An output table with nothing connected, or an output column the pipeline doesn't
 fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
 
+### Test quotes
+
+Test quotes are quotes you keep and price again as the pipeline changes, so a change to the
+pricing shows on quotes you know. **Test quotes** in the toolbar, in Preview, opens their
+panel beside the sheets. Each test quote is a file in `tests/quotes`, committed with the
+project, so a pull request shows a test quote you accepted as the lines of its answer that
+changed.
+
+Test quotes are priced on the project as saved, exactly as the build prices them in CI, so
+the panel saves the project first when it has unsaved changes.
+
+- **Save as test quote** keeps the quote typed on the sheets under the name you give it:
+  letters, digits, spaces, hyphens and underscores. Its answer, as the pipeline prices it
+  now, is what it is compared with from then on.
+- **Open** (the folder button beside a quote) puts its values on the sheets in place of what
+  you typed; **Undo** brings back what you had. Anything the sheets can no longer take, a
+  column you removed say, is listed. **Replace** saves what is on the sheets over the test
+  quote you opened last.
+- **Run all**, or **Run** with quotes ticked, prices each one again, one at a time, and
+  marks it **Unchanged**, **Moved**, **No longer compares** or **Failed**. Click a quote to
+  see what moved: each field, with the value it was accepted at beside the new one. A
+  schedule's rows are matched by the columns you mark as its keys. **Stop** ends a run after
+  the quote being priced.
+- **Accept** (the tick beside a quote), or **Accept all**, prices it again and keeps the new
+  answer as the one it is compared with. A quote changed since the run, or a pipeline
+  changed since, is not accepted until you run again.
+- **Delete** (the bin) removes a test quote's file.
+
+When you build the app (`haute app build`, which CI runs on every pull request), every test
+quote is priced the same way. One whose answer moved is listed and the build still passes:
+it is the change the pull request makes, for its reviewers to read in
+`test_quotes_report.md`, which CI keeps with the run. One that does not price fails the
+build.
+
 ## The underwriter app
 Underwriters use the sheets in an app of their own, apart from Haute: the sheets drawn as
 Preview draws them, priced by the pipeline packed into the same app, with nothing of the
@@ -646,22 +687,20 @@ builder on screen. With a quote store it is where they manage their quotes too.
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
   the Quotes page as underwriters will before you merge. Only your machine can reach it, at
   `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
-  quotes you save there are kept in `.haute/app/store.sqlite`, which a rebuild leaves as it
-  is: its tables are your schema's (see [Reading quotes with SQL](#reading-quotes-with-sql)),
-  brought to it as the app starts: a table or column you add or rename keeps every quote's
-  values, and one you remove, or change while it holds values, is dropped or built again, the
-  app naming each table or column whose values went. `haute app serve --reader` signs you in
-  as an underwriter who may only read quotes.
+  quotes you save there are kept in the `dev` environment's database (below), reached through
+  its connection in `connections.toml`; the app checks its tables as the hosted app checks
+  its own, so after a change to your schema its quotes stay closed, naming what differs,
+  until you run the schema's SQL on `dev`. `haute app serve --reader` signs you in as an
+  underwriter who may only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
-  as `haute deploy` does it (the test quotes included), with the sheets and an `app.py` that
-  serves them. Once the pipeline reads the workbench, each test quote in `tests/quotes` is a
-  quote of your form: its tables by name, with `quote_details` holding the quote's
-  `quote_reference` and `quote_option`. The example `haute init` wrote is not, so rewrite it;
-  until then the build names it and what to add. The release's id changes when anything
-  that prices a quote changes, and the app names it in its bar.
-- Say where the app runs in `haute.toml`. Azure Container Apps is the host so far; its
-  built-in authentication signs underwriters in, and the app refuses anyone it has not.
+  as `haute deploy` does it, with the sheets and an `app.py` that serves them, and its
+  [test quotes](#test-quotes) priced and compared, the results written to
+  `test_quotes_report.md`. The release's id changes when anything that prices a quote
+  changes, and the app names it in its bar.
+- Where the app runs is in `haute.toml`, as `haute init` wrote it. Azure Container Apps is
+  the host so far; its built-in authentication signs underwriters in, and the app refuses
+  anyone it has not.
   `edit_role`, if you set it, is the app role that may change quotes: everyone else the
   host signs in reads them. Ask your IT team to give the app role to the underwriters who
   quote, and to pass roles to the app; the app refuses a request whose roles it cannot
@@ -673,26 +712,87 @@ builder on screen. With a quote store it is where they manage their quotes too.
   edit_role = "Quotes.Edit"
   ```
 
-- To build the app's image, pin its base image as the container target does. The release is
-  then the image's build context, and `haute app build --image <tag>` builds it with Docker;
-  the image installs the scoring runtime and the quote store's packages, with the driver of
-  each database your environments name (below):
+- The app's image is built on the base image `haute init` pinned to your project's Python
+  in `[deploy.container]`, where you also name the registry it is published to. The release
+  is the image's build context: `haute app build --image <tag>` builds it with Docker, and
+  `haute app build --push` builds it, pushes it to the registry and prints the image by
+  digest, as the workflows do once a change merges
+  ([GitHub Actions](../deployment/ci/github-actions.md#workbench-projects)). The image installs
+  the scoring runtime and the quote store's packages, with the driver of each database your
+  environments name (below):
 
   ```toml
   [deploy.container]
+  registry = "pricingacr.azurecr.io/pricing"
+  port = 8080
   base_image = "python:3.11.9-slim"
   ```
 
-- The hosted app keeps quotes in the database of an environment you declare in
-  `haute.toml`, as your schema's tables. Declare each environment by name with its database's
-  provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and Azure SQL Managed
-  Instance), `postgresql` (PostgreSQL, Azure Database for PostgreSQL, Amazon RDS and Aurora,
-  Cloud SQL and Databricks Lakebase) or `sqlite` (a file). A server database also says how
-  the app signs in, `auth`, naming the environment variable that holds each thing it needs,
-  never the value; where the database is never goes in the file:
+- Each change merged to `main` is rolled out to the staging app on its own, and to
+  production when you ask for it, by the workflows `haute init` wrote
+  ([GitHub Actions](../deployment/ci/github-actions.md#workbench-projects)). Name the
+  Container App each environment's app runs as, which your IT team gives you:
 
   ```toml
-  [workbench.store.test]
+  [workbench.app.staging]
+  resource_group = "pricing-rg"
+  container_app = "motor-staging"
+
+  [workbench.app.prod]
+  resource_group = "pricing-rg"
+  container_app = "motor"
+  ```
+
+  A rollout stops the release the app runs before it starts the new one, so two releases
+  never take quotes at once, then checks the app: it answers, it signs no one in but through
+  Azure, and its quotes are open. A release that fails is replaced by the one before it. A
+  release whose quotes are closed because the environment's tables don't fit your schema yet
+  stays, and the run names each difference: once the database's owners run the schema's SQL,
+  its quotes open with no new run. Production takes the release staging runs for the commit
+  you promote, and is refused when staging runs another. Each app's Azure tags
+  `haute-image`, `haute-release` and `haute-commit` say what it runs.
+
+  Once staging is rolled out, the same run compares it with production on quotes your
+  underwriters saved (`haute app impact`), for whoever approves production. It prices up to
+  100 of production's final quotes, newest first, on both apps, changing nothing, and keeps
+  `impact_report.md` as the run's artifact:
+
+  - the output fields only one release has, listed once;
+  - for each output field both releases have, how many quotes it moved in, and its largest
+    rise and fall;
+  - each quote whose prices moved, with production's value, staging's and the change; a
+    schedule's rows are matched by the columns both releases mark as keys;
+  - the quotes that no longer compare, those the new release refuses, and those production
+    could not price.
+
+  A price that moves never fails the run. The run fails when staging fails on a quote
+  production prices, or when an app can't be reached. Before production's first release
+  there is nothing to compare against, and the report says so. The report names quotes by
+  reference and option and holds output values, never what was typed, but anyone who can
+  read the repository's runs can read it.
+
+  Your IT team sets up, once, for each app:
+
+  | What | Why |
+  |---|---|
+  | One service principal, its tenant, client ID, secret and subscription in the CI secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_SUBSCRIPTION_ID` | CI pushes the image, rolls the apps out and compares them as it |
+  | AcrPush on the registry, and Container Apps Contributor on both apps, for that service principal | to push the image, and to change and tag the apps |
+  | Single revision mode and a public address (external ingress) on each app | one release at a time, and an address the check can reach |
+  | Azure's built-in authentication with Microsoft Entra ID on each app, letting that service principal sign in | underwriters sign in through it, and so do the check and the comparison |
+
+- The app keeps quotes in the database of an environment you declare in `haute.toml`, as
+  your schema's tables: `dev` for `haute app serve`, and the hosted app's own, `staging` and
+  `prod`, all three on the database you chose when `haute init` made the project. Declare
+  each environment by name with
+  its database's provider: `sqlserver` (SQL Server 2019 and later, Azure SQL Database and
+  Azure SQL Managed Instance), `postgresql` (PostgreSQL, Azure Database for PostgreSQL,
+  Amazon RDS and Aurora, Cloud SQL and Databricks Lakebase) or `sqlite` (a file). A server
+  database also says how the hosted app signs in, `auth`, naming the environment variable
+  that holds each thing it needs, never the value; where the database is never goes in the
+  file:
+
+  ```toml
+  [workbench.store.staging]
   provider = "sqlserver"
   auth = "managed-identity"
 
@@ -721,18 +821,72 @@ builder on screen. With a quote store it is where they manage their quotes too.
   prod can share a database; for `sqlite`, `HAUTE_STORE_DATABASE` (the file's path) or
   `HAUTE_STORE_URL`. Install `haute[sqlserver]` or `haute[postgresql]` wherever you build
   the release, as the image installs the versions installed there.
-- Haute never changes a hosted database's tables: the people who own the database make and
-  change them in SQL, as they do any other table. To start them off, open **Schema** while
-  building and press **SQL**. For each environment you declare it shows the SQL that brings
-  that environment's tables to the schema you are building, in its database's own SQL,
-  starting from the schema your default branch holds, which is what test and prod run, or
-  from nothing, for a new database. It adds tables and columns, renames a table or column by
-  its id rather than dropping it and adding another, changes a column's type in place (a
-  value that does not convert stops it), and leaves a table or column you removed with its
-  DROP commented out, since the app does not need it gone. What it cannot write, such as a
-  table changing between one row and many rows per quote, it says in a comment. The SQL is
-  one transaction, so a statement that fails changes nothing, and Haute keeps no record of
-  it: copy it, have it reviewed and adapted, and run it in each environment in turn.
+
+  Your database's owners set up, once, for each hosted environment's database:
+
+  | What | Why |
+  |---|---|
+  | A database user for the app's sign-in, allowed to read, insert and change `quote_details`, to read, insert and delete in the form's other tables, and to read and insert in `haute_activity` | the app checks each as it starts, and keeps its quotes closed, naming each it lacks, until it has them |
+  | A way through from the app to the server: on Azure SQL, a private endpoint the Container Apps environment's network reaches, or a firewall rule for the environment's outbound address | the server refuses an address it has not been told of |
+
+  On Azure SQL, the user for a Container App's system-assigned managed identity takes the
+  app's name, and a Microsoft Entra ID administrator of the server makes it in each database:
+
+  ```sql
+  CREATE USER [motor-staging] FROM EXTERNAL PROVIDER;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO [motor-staging];
+  ```
+- On your machine, the editor and `haute app serve` reach each environment's database
+  through `connections.toml` at the project root, which `haute init` writes with the sign-in
+  you chose and
+  you commit, so your team shares it. Each connection is named as its environment is and
+  says where the database is and how **you** sign in, by the names of the variables that
+  hold your sign-in, whose values go in your `.env` (which git ignores; `.env.example` names
+  them). Fill in each server and database:
+
+  ```toml
+  [dev]
+  provider = "sqlserver"
+  server = "tcp:pricing-dev.database.windows.net,1433"
+  database = "pricing_dev"
+  auth = "password"
+  username_env = "HAUTE_DEV_USERNAME"
+  password_env = "HAUTE_DEV_PASSWORD"
+  ```
+
+  | `auth` | Signs in with | Names |
+  |---|---|---|
+  | `password` | A database login | `username_env` and `password_env` |
+  | `entra` | Your own Microsoft Entra ID account, in the browser the first time a connection is made | nothing on SQL Server; `username_env`, your role, on PostgreSQL |
+  | `service-principal` | A service principal, through Microsoft Entra ID | `tenant_id_env`, `client_id_env` and `client_secret_env` |
+
+  `schema`, optionally, is the SQL schema the tables are in. A `sqlite` connection names only
+  its `database`, the file's path from the project root. A password or a connection string
+  written into the file is refused, as is `managed-identity`, which is the hosted app's own.
+  The hosted app never reads `connections.toml`.
+- Haute never changes an environment's tables, `dev` included: the people who own the
+  database make and change them in SQL, as they do any other table. To see how a database
+  differs from the schema you are building, open **Schema** and choose an environment in
+  **Compare**: Haute reads that database through its connection (and again when you press
+  the refresh beside it) and marks each table and column that differs, such as **missing**,
+  **renamed** or **type**, the mark's tooltip saying how and how many quotes hold values
+  there. Above the tables it lists what the database holds that your schema does not, with
+  its quotes; pick **Rename to…** beside such a column to pair it with a column of yours the
+  database lacks, so the SQL renames it rather than adding one and leaving the other, and
+  undo a pairing under **Renamed**. When nothing differs it says the database matches.
+- To change the tables, press **SQL** while building. For each environment you declare it
+  shows the SQL that brings that environment's tables to the schema you are building, in its
+  database's own SQL, starting from the tables the database holds (on the tab of the
+  environment Compare shows), from the schema your default branch holds, which is what
+  staging and prod run, or from nothing, for a new database. It adds tables and columns,
+  renames a table or column (by its id, or as you paired it) rather than dropping it and
+  adding another, changes a column's type in place (a value that does not convert stops it),
+  and leaves a table or column your schema does not have with its DROP commented out, since
+  the app does not need it gone. What it cannot write, such as a table changing between one
+  row and many rows per quote, or a column taking no null, it says in a comment, with the
+  quotes holding values there. The SQL is one transaction, so a statement that fails changes
+  nothing, and Haute keeps no record of it: copy it, have it reviewed and adapted, and run it
+  in each environment in turn.
 - The app starts whatever its database holds. Until the tables fit its release it opens no
   quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
   table or column missing or of another type, a permission the app's identity lacks, a
@@ -775,8 +929,7 @@ save; **priced_release**, the release that priced it; **source_reference**,
 **source_option** and **source_relation**, the quote it was made from and how; and the
 handover note with who wrote it and when. The schema shows them under each table, locked.
 Beside yours sits `haute_activity`, a row for each thing done to a quote, who did it and
-when. The SQLite file `haute app serve` keeps also holds `haute_store`, Haute's record of
-that file's tables; a hosted database holds no such table.
+when.
 
 Names reach the database as the schema writes them, so the schema refuses a name the
 database could not keep: two columns of a table whose names differ only in case, a name

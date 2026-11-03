@@ -8,12 +8,19 @@
 import { useState, useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { RELATIVITY_ABOVE_COLOR, RELATIVITY_BELOW_COLOR, RelativityBars } from "../RelativityBars"
+import { ViewSwitch } from "../ViewSwitch"
 
 interface GLMRelativitiesTabProps {
   result: TrainResult
 }
 
 type SortMode = "name" | "relativity" | "deviation"
+
+const SORT_MODES: readonly { key: SortMode; label: string }[] = [
+  { key: "deviation", label: "By deviation" },
+  { key: "relativity", label: "By value" },
+  { key: "name", label: "A–Z" },
+]
 
 export function GLMRelativitiesTab({ result }: GLMRelativitiesTabProps) {
   const rows = result.glm_relativities
@@ -42,26 +49,7 @@ export function GLMRelativitiesTab({ result }: GLMRelativitiesTabProps) {
 
   return (
     <div className="space-y-2">
-      {/* Sort controls */}
-      <div className="flex gap-1">
-        {([
-          { key: "deviation", label: "By deviation" },
-          { key: "relativity", label: "By value" },
-          { key: "name", label: "A–Z" },
-        ] as const).map(s => (
-          <button
-            key={s.key}
-            onClick={() => setSortMode(s.key)}
-            className="px-2 py-0.5 rounded text-[10px] font-medium"
-            style={{
-              background: sortMode === s.key ? "var(--accent-soft)" : "var(--chrome-hover)",
-              color: sortMode === s.key ? "var(--accent)" : "var(--text-muted)",
-            }}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
+      <ViewSwitch label="Sort relativities" options={SORT_MODES} value={sortMode} onChange={setSortMode} />
 
       <RelativityBars
         ariaLabel="GLM relativities"

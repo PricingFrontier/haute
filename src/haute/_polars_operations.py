@@ -803,6 +803,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _fan_in_expr("count", "reduction over the whole column"),
     _fan_in_expr("len", "reduction over the whole column"),
     _fan_in_expr("quantile", "reduction over the whole column"),
+    _fan_in_expr(
+        "qcut",
+        "deprecated alias of bin_quantiles: bins by quantiles of the whole column, run on "
+        "Polars' in-memory engine only; its peak memory is not measured",
+    ),
     _fan_in_expr("arg_max", "reduction over the whole column"),
     _fan_in_expr("arg_min", "reduction over the whole column"),
     _expanding_expr("append"),
@@ -838,6 +843,11 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
         "and it may change the row count",
     ),
     _unproven_expr("bin_intervals", "per-row interval label from fixed breaks"),
+    _unproven_expr(
+        "cut",
+        "deprecated alias of bin_intervals: per-row interval label from fixed breaks, run on "
+        "Polars' in-memory engine only",
+    ),
     _unproven_expr("erf", "per-row error function"),
     _unproven_expr("erfc", "per-row complementary error function"),
     _op(
@@ -1111,6 +1121,7 @@ _RECOMPUTE_COST_DECLARATIONS: Mapping[tuple[OperationReceiver, str | None, str],
             (OperationReceiver.EXPR, None, "median"): True,
             (OperationReceiver.EXPR, None, "mode"): True,
             (OperationReceiver.EXPR, None, "quantile"): True,
+            (OperationReceiver.EXPR, None, "qcut"): True,
             (OperationReceiver.EXPR, None, "bin_quantiles"): True,
             (OperationReceiver.EXPR, None, "bin_ranks"): True,
             (OperationReceiver.FRAME, None, "agg"): True,

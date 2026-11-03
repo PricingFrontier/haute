@@ -6,6 +6,7 @@ import useUIStore from "../stores/useUIStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPricingStore, { usePricingContext } from "../stores/useWorkbenchPricingStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import useWorkbenchTestQuotesStore from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import { pricingBasis } from "../utils/workbenchForm"
 import PageTabs from "./PageTabs"
@@ -13,6 +14,7 @@ import { priceSample } from "./priceSample"
 import PropertiesPanel from "./PropertiesPanel"
 import SchemaPane from "./SchemaPane"
 import SheetCanvas from "./SheetCanvas"
+import TestQuotesPanel from "./TestQuotesPanel"
 import { dropAt, sectionDropAt } from "./sheetInteractions"
 import useWorkbenchShortcuts from "./useWorkbenchShortcuts"
 import { paletteKind } from "./widgetKinds"
@@ -72,11 +74,19 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const filesPlace = useUIStore((s) => s.filesPlace)
   const setFilesPlace = useUIStore((s) => s.setFilesPlace)
+  const testQuotesOpen = useWorkbenchTestQuotesStore((s) => s.open)
+  const setSaveProject = useWorkbenchTestQuotesStore((s) => s.setSaveProject)
 
   useEffect(() => {
     void useWorkbenchFormStore.getState().load()
   }, [])
   useWorkbenchShortcuts(onSaveShortcut)
+  // Test quotes are priced on the project as saved: the panel saves it first through the
+  // host's save while it has unsaved edits.
+  useEffect(() => {
+    setSaveProject(onSave)
+    return () => setSaveProject(null)
+  }, [onSave, setSaveProject])
   // The pricer prices on the document and the source as they are when it is called.
   useEffect(() => {
     setPricer((form, workbench) => priceSample(resolveGraph(), form, workbench, useSettingsStore.getState().activeSource))
@@ -158,6 +168,10 @@ export default function WorkbenchView({ onSave, onSaveShortcut, isInsideSubmodel
           <Suspense fallback={null}>
             <FilesPanel key={filesPlace} place={filesPlace} onClose={() => setFilesPlace(null)} />
           </Suspense>
+        </aside>
+      ) : status === "ready" && previewing && testQuotesOpen ? (
+        <aside aria-label="Test quotes">
+          <TestQuotesPanel />
         </aside>
       ) : status === "ready" && !previewing ? (
         <PropertiesPanel />

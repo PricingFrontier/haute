@@ -150,15 +150,13 @@ class TestUnrecognizedConfigKeys:
             == []
         )
 
-    def test_editor_state_and_body_code_are_not_config_keys(self):
-        """`_`-prefixed editor state and the `.py` body code are not persisted keys."""
-        assert (
-            unrecognized_config_keys(
-                NodeType.BANDING,
-                {"factors": [], "_columns": ["a"], "_nodeId": "n1", "code": "df = df"},
-            )
-            == []
-        )
+    def test_body_code_is_not_a_config_key_but_editor_state_is_undeclared(self):
+        """The `.py` body code is not a persisted key; editor state belongs beside the
+        config (`NodeData.editor`), so an `_`-prefixed key in it is undeclared."""
+        assert unrecognized_config_keys(NodeType.BANDING, {"factors": [], "code": "df = df"}) == []
+        assert unrecognized_config_keys(
+            NodeType.BANDING, {"factors": [], "_columns": ["a"], "_nodeId": "n1"}
+        ) == ["_columns", "_nodeId"]
 
     def test_the_removed_record_history_flag_is_undeclared(self):
         """Q5: every online solve records its history, so the flag is gone."""
@@ -268,6 +266,27 @@ class TestBuildNodeConfigProducesValidKeys:
                 "",
                 ["df"],
             )
+
+
+def _node_defaults() -> dict[str, dict[str, Any]]:
+    import json
+    from pathlib import Path
+
+    import haute
+
+    return json.loads((Path(haute.__file__).parent / "node_defaults.json").read_text())
+
+
+@pytest.mark.parametrize("node_type", sorted(_node_defaults()))
+def test_a_new_nodes_config_holds_only_keys_its_type_reads(node_type: str) -> None:
+    """The palette's starting config for each node type, which its editor then edits,
+    holds no key the type does not declare and none it has removed (such as a Quote
+    Response's ``outputFormat``)."""
+    from haute._config_validation import reject_removed_config_keys
+
+    config = _node_defaults()[node_type]
+    assert unrecognized_config_keys(NodeType(node_type), config) == []
+    reject_removed_config_keys(NodeType(node_type), config)
 
 
 # ---------------------------------------------------------------------------

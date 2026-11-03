@@ -24,8 +24,10 @@ owns the per-port transformation and each API-input table's identity and build.
 
 Graph fingerprints and preview/trace lineage keys include every execution-relevant graph,
 utility-file, runtime switch, upstream lineage, output port, and algorithm-version input
-defined by their checked consumer contract. Presentation-only fields are explicitly
-classified and excluded. `lineage_cache_key()` is the common preview/trace factory; callers
+defined by their checked consumer contract. A node's configuration is signed whole but for
+the few presentation fields no execution reads (an MLflow picker's browsing state and
+Explore's cards), so a newly declared setting needs no registration; editor state travels
+beside the config and is never signed. `lineage_cache_key()` is the common preview/trace factory; callers
 do not key directly from `graph_fingerprint()` alone.
 
 Every identity that covers a node's result signs the global constants that node's lineage
@@ -73,7 +75,8 @@ builds a snapshot or shreds JSON. The read holds its lease for the caller's whol
 final collection, and a spawned child reads exactly the generation its parent leased.
 
 `LRUCache` bounds entries, optionally bounds bytes/TTL, and supports pins. Rejecting an
-oversized value leaves an existing same-key entry intact. `StatGatedCache` is built on
+oversized value evicts an existing same-key entry, pinned or not, so the value it replaced is
+never served. `StatGatedCache` is built on
 `LRUCache`: it is bounded by an entry count, gates each entry on its file's freshness token,
 provides per-key single flight, and evicts least recently used entries.
 
@@ -205,7 +208,7 @@ keeps the stat fallback honest on filesystems without them.
 
 ## Failure model
 
-Unknown/missing checked inputs and unclassified config fields fail key construction.
+Unknown/missing checked inputs fail key construction.
 Stat/loader errors propagate and failed values are not cached; a gate that moves twice
 during load raises.
 

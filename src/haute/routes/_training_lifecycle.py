@@ -190,6 +190,11 @@ _EVALUATION_PREVIEW_HOLDERS = frozenset({"training_prep:training_evaluation_prev
 _EVALUATION_PREVIEW_WAIT_SECONDS = 30.0
 
 
+def _evaluation_preview_refusal(message: str) -> UnprocessableError:
+    """A failed evaluation preview, coded so the editor tells it from a failed memory estimate."""
+    return UnprocessableError({"error_code": "evaluation_preview_failed", "message": message})
+
+
 def _engine_module(config: Mapping[str, Any]) -> str:
     """The model library a fit imports, loaded before its worker's memory cap."""
     return algorithm_descriptor(str(config.get("algorithm", "catboost"))).engine_module
@@ -549,11 +554,11 @@ class TrainService:
             # First: a node config the builder rejects is also a ValueError.
             raise contract_error_refusal(exc) from None
         except (TypeError, ValueError) as exc:
-            raise UnprocessableError(f"Evaluation preview failed: {exc}") from exc
+            raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise _memory_limit_refusal(exc) from None
         except BoundedMemoryUnsupportedError as exc:
-            raise UnprocessableError(
+            raise _evaluation_preview_refusal(
                 f"Evaluation preview cannot run in bounded mode: {exc}"
             ) from exc
         except (
@@ -569,7 +574,7 @@ class TrainService:
             # Polars failure here comes from planning or collecting the
             # pipeline's own code and data — the preview shows the same
             # failure as a node error — so it is reported, never a 500.
-            raise UnprocessableError(f"Evaluation preview failed: {exc}") from exc
+            raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)
@@ -650,20 +655,23 @@ class TrainService:
                 if ram_limit_binds
                 else None
             )
+            stored_job = self._store.require_job(job_id)
+            # The VRAM check recorded its advisory before the run; the result carries
+            # it beside any downsampling warning, as the job does.
+            warning = (
+                "\n".join(part for part in (ram_warning, stored_job.get("gpu_warning")) if part)
+                or None
+            )
             if ram_warning:
-                gpu_warning = self._store.require_job(job_id).get("gpu_warning")
-                self._store.update_job(
-                    job_id,
-                    warning=f"{ram_warning}\n{gpu_warning}" if gpu_warning else ram_warning,
-                )
-            feature_selection = self._store.require_job(job_id).get("feature_selection")
+                self._store.update_job(job_id, warning=warning)
+            feature_selection = stored_job.get("feature_selection")
             self._launch_background(
                 job_id,
                 node_id,
                 config,
                 train_params,
                 tmp_parquet,
-                ram_warning,
+                warning,
                 total_source_rows,
                 feature_selection=feature_selection,
                 execution_context=execution_context,
@@ -1779,7 +1787,7 @@ class TrainService:
         config: dict[str, Any],
         train_params: dict[str, Any],
         tmp_parquet: str,
-        ram_warning: str | None,
+        warning: str | None,
         total_source_rows: int | None,
         *,
         execution_context: ExecutionContext,
@@ -2003,7 +2011,7 @@ class TrainService:
             response_fields = dict(raw_response)
             response_fields.update(
                 {
-                    "warning": ram_warning,
+                    "warning": warning,
                     "total_source_rows": total_source_rows,
                     "feature_selection": (
                         feature_selection.model_dump(mode="json")
@@ -2046,50 +2054,47 @@ class TrainService:
                         )
             staged_evaluation = cast(EvaluationReportPayload, staged_response.evaluation)
 
-            # The store owns the lifecycle claim around this callback. A
-            # cancellation that wins first suppresses publication; one that
-            # arrives afterwards observes the paired completed record.
+            # Every artifact file is read and checked here, outside the store's lock:
+            # the staged set is the run's own and no longer changes, and status polls
+            # must not wait on a large plan's validation.
+            published = _validate_training_artifacts(
+                result,
+                artifact_root=artifact_root,
+                expected_model_name=str(job_kwargs["name"]),
+                expected_evaluation=staged_evaluation,
+                expected_tuning=staged_response.tuning,
+            )
+            response_fields["model_path"] = str(published["model"])
+            evaluation_fields = staged_evaluation.model_dump(mode="json", exclude_none=True)
+            for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
+                evaluation_fields[response_field] = str(published[kind])
+            response_fields["evaluation"] = evaluation_fields
+            if staged_response.tuning is not None:
+                tuning_fields = staged_response.tuning.model_dump(mode="json", exclude_none=True)
+                for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
+                    tuning_fields[response_field] = str(published[kind])
+                response_fields["tuning"] = tuning_fields
+            response = TrainResponse.model_validate(response_fields)
+            _assert_json_finite(response)
+            completed_progress_fields: dict[str, Any] = {}
+            if response.tuning is not None:
+                completed_progress_fields = {
+                    "phase": "completed",
+                    "trial_index": None,
+                    "trial_count": response.tuning.trial_count,
+                    "fold_index": None,
+                    "fold_count": (response.tuning.trial_fit_count // response.tuning.trial_count),
+                    "completed_fits": response.tuning.total_fit_count,
+                    "total_fits": response.tuning.total_fit_count,
+                    "best_objective": response.tuning.winner_objective,
+                }
+            handle = training_artifacts_handle(artifact_root, published)
+
+            # The store owns the lifecycle claim around this callback, which only
+            # hands over the validated fields. A cancellation that wins first
+            # suppresses publication; one that arrives afterwards observes the paired
+            # completed record.
             def publish_completion_fields() -> Mapping[str, Any]:
-                published = _validate_training_artifacts(
-                    result,
-                    artifact_root=artifact_root,
-                    expected_model_name=str(job_kwargs["name"]),
-                    expected_evaluation=staged_evaluation,
-                    expected_tuning=staged_response.tuning,
-                )
-                response_fields["model_path"] = str(published["model"])
-                evaluation_fields = staged_evaluation.model_dump(
-                    mode="json",
-                    exclude_none=True,
-                )
-                for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
-                    evaluation_fields[response_field] = str(published[kind])
-                response_fields["evaluation"] = evaluation_fields
-                if staged_response.tuning is not None:
-                    tuning_fields = staged_response.tuning.model_dump(
-                        mode="json",
-                        exclude_none=True,
-                    )
-                    for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
-                        tuning_fields[response_field] = str(published[kind])
-                    response_fields["tuning"] = tuning_fields
-                response = TrainResponse.model_validate(response_fields)
-                _assert_json_finite(response)
-                completed_progress_fields: dict[str, Any] = {}
-                if response.tuning is not None:
-                    completed_progress_fields = {
-                        "phase": "completed",
-                        "trial_index": None,
-                        "trial_count": response.tuning.trial_count,
-                        "fold_index": None,
-                        "fold_count": (
-                            response.tuning.trial_fit_count // response.tuning.trial_count
-                        ),
-                        "completed_fits": response.tuning.total_fit_count,
-                        "total_fits": response.tuning.total_fit_count,
-                        "best_objective": response.tuning.winner_objective,
-                    }
-                handle = training_artifacts_handle(artifact_root, published)
                 # Ownership passes to the job record in this critical section;
                 # parent cleanup must no longer remove the directory.
                 artifact_publication_committed.set()
@@ -2163,7 +2168,7 @@ class TrainService:
         config: dict[str, Any],
         train_params: dict[str, Any],
         tmp_parquet: str,
-        ram_warning: str | None,
+        warning: str | None,
         total_source_rows: int | None,
         *,
         execution_context: ExecutionContext,
@@ -2176,7 +2181,7 @@ class TrainService:
             config,
             train_params,
             tmp_parquet,
-            ram_warning,
+            warning,
             total_source_rows,
             execution_context=execution_context,
             feature_selection=feature_selection,

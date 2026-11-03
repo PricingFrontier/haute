@@ -249,22 +249,33 @@ export default function CodeMirrorEditor({
   onChange,
   placeholder,
   errorLine,
+  errorRevision,
   availableColumns,
   onEditorView,
+  reportEachChange = false,
 }: {
   defaultValue: string
   onChange: (value: string) => void
   placeholder?: string
   errorLine?: number | null
+  /** Changes with each run's result (the result itself), so a repeat error on the same
+   *  line is marked again after an edit cleared the mark. */
+  errorRevision?: unknown
   /** Column names for in-string autocomplete */
   availableColumns?: string[]
   /** Callback to expose the EditorView for external operations (e.g. text insertion) */
   onEditorView?: (view: EditorView | null) => void
+  /**
+   * Report every change at once, not once typing pauses: for an owner whose `onChange` is
+   * cheap and must always hold the text as it is (one that saves only when asked).
+   */
+  reportEachChange?: boolean
 }) {
   const externalSyncAnnotation = useRef(Annotation.define<boolean>())
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
+  const reportEachChangeRef = useRef(reportEachChange)
   const onEditorViewRef = useRef(onEditorView)
   const notifiedEditorViewCallbackRef = useRef<((view: EditorView | null) => void) | undefined>(undefined)
   const diagnosticsClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -354,7 +365,12 @@ export default function CodeMirrorEditor({
         )
         if (isExternalSync) return
         const value = update.state.doc.toString()
-        localChange.schedule([value])
+        if (reportEachChangeRef.current) {
+          lastPropValueRef.current = value
+          onChangeRef.current(value)
+        } else {
+          localChange.schedule([value])
+        }
         // Clear diagnostics after the current CodeMirror transaction completes.
         if (diagnosticsClearRef.current) clearTimeout(diagnosticsClearRef.current)
         const view = update.view
@@ -475,7 +491,8 @@ export default function CodeMirrorEditor({
     })
   }, [availableColumns, constants])
 
-  // Push error diagnostics when errorLine changes
+  // Push error diagnostics with each run's result: a new error line, or the same
+  // line again after an edit cleared its mark.
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
@@ -493,7 +510,7 @@ export default function CodeMirrorEditor({
     } else {
       view.dispatch(setDiagnostics(view.state, []))
     }
-  }, [errorLine])
+  }, [errorLine, errorRevision])
 
   // Update placeholder if it changes
   useEffect(() => {

@@ -12,7 +12,6 @@ import graphlib
 import heapq
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 
 from haute._graph_utils import build_parents_of, upstream_node_ids
 from haute._types import GraphEdge
@@ -29,15 +28,6 @@ class CycleError(HauteError):
             f"Cycle detected in pipeline graph involving nodes: {names}. "
             f"Remove one of the edges to break the cycle."
         )
-
-
-@dataclass(frozen=True, slots=True)
-class FilteredTopology:
-    """The result of explicitly sorting only edges with known endpoints."""
-
-    order: list[str]
-    dropped_edges: tuple[GraphEdge, ...]
-    unknown_node_ids: tuple[str, ...]
 
 
 class UnknownEdgeEndpointError(HauteError):
@@ -110,16 +100,6 @@ def topo_sort_ids(node_ids: list[str], edges: list[GraphEdge]) -> list[str]:
     if dropped_edges:
         raise UnknownEdgeEndpointError(unknown_node_ids, dropped_edges)
     return _topo_sort_known_ids(node_ids, known_edges)
-
-
-def topo_sort_ids_filtered(node_ids: list[str], edges: list[GraphEdge]) -> FilteredTopology:
-    """Sort known edges while explicitly reporting edges that were excluded."""
-    known_edges, dropped_edges, unknown_node_ids = _partition_edges(node_ids, edges)
-    return FilteredTopology(
-        order=_topo_sort_known_ids(node_ids, known_edges),
-        dropped_edges=dropped_edges,
-        unknown_node_ids=unknown_node_ids,
-    )
 
 
 def _find_cycle_nodes(node_ids: list[str], edges: list[GraphEdge]) -> list[str]:

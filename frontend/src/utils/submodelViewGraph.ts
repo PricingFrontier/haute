@@ -68,6 +68,31 @@ export function restoreParentOutputState(
   }
 }
 
+/** How far a boundary card sits from the nearest child's position: a card's width and a gap. */
+const BOUNDARY_CARD_SPACING = 360
+
+/**
+ * Where the boundary cards go: the Input card left of the children and the Output card
+ * right of them, at their mean height. The children keep their authored positions, so
+ * an untouched visit leaves the definition's layout, and the document, as they were.
+ */
+function boundaryCardPositions(childNodes: readonly Node[]): Record<"input" | "output", Node["position"]> {
+  if (childNodes.length === 0) {
+    return { input: { x: 0, y: 0 }, output: { x: BOUNDARY_CARD_SPACING, y: 0 } }
+  }
+  for (const node of childNodes) {
+    if (!Number.isFinite(node.position?.x) || !Number.isFinite(node.position?.y)) {
+      throw new Error(`Submodel child ${node.id} has no canvas position`)
+    }
+  }
+  const xs = childNodes.map((node) => node.position.x)
+  const y = Math.round(childNodes.reduce((sum, node) => sum + node.position.y, 0) / childNodes.length)
+  return {
+    input: { x: Math.min(...xs) - BOUNDARY_CARD_SPACING, y },
+    output: { x: Math.max(...xs) + BOUNDARY_CARD_SPACING, y },
+  }
+}
+
 function buildCanonicalSubmodelViewGraph(
   input: SubmodelViewGraphInput,
 ): SubmodelViewGraph {
@@ -206,11 +231,13 @@ function buildCanonicalSubmodelViewGraph(
     })
   }
 
+  const cardPositions = boundaryCardPositions(childNodes)
   return {
     nodes: [
       ...childNodes,
       boundaryNode(
         inputId,
+        cardPositions.input,
         "input",
         inputPorts,
         inputExternalIds,
@@ -220,6 +247,7 @@ function buildCanonicalSubmodelViewGraph(
       ),
       boundaryNode(
         outputId,
+        cardPositions.output,
         "output",
         [],
         outputExternalIds,
@@ -238,6 +266,7 @@ function stableId(kind: string, values: readonly (string | null)[]): string { re
 function uniqueEdgeId(base: string, occupied: Set<string>): string { let candidate = base; let suffix = 1; while (occupied.has(candidate)) candidate = `${base}__${suffix++}`; occupied.add(candidate); return candidate }
 function boundaryNode(
   id: string,
+  position: Node["position"],
   direction: "input" | "output",
   ports: SubmodelPortData["ports"],
   externalNodeIds: string[],
@@ -249,7 +278,7 @@ function boundaryNode(
   return {
     id,
     type: NODE_TYPES.SUBMODEL_PORT,
-    position: { x: 0, y: 0 },
+    position,
     data: {
       label: direction === "input" ? "INPUT" : "OUTPUT",
       nodeType: NODE_TYPES.SUBMODEL_PORT,

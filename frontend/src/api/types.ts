@@ -27,7 +27,6 @@ import type {
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
-  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
   OptimiserSolveResponse as GeneratedOptimiserSolveResponse,
   OptimiserSolveResult as GeneratedOptimiserSolveResult,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
@@ -99,11 +98,6 @@ export interface ExecutionStageMetrics {
   rss_end_bytes: number | null
   rss_delta_bytes: number | null
   rss_peak_bytes: number | null
-  rows_in: number | null
-  rows_out: number | null
-  bytes_read: number | null
-  bytes_written: number | null
-  columns_scanned: number | null
   n_collects: number
   n_checkpoints: number
 }
@@ -201,18 +195,6 @@ export interface ExecutionColumnWidths {
   items: ExecutionColumnWidth[]
 }
 
-export interface ExecutionCacheProof {
-  hits: number
-  misses: number
-  direct_fallbacks: number
-  miss_reason_counts: {
-    metadata_source_mismatch: number
-    artifact_integrity_schema_failure: number
-    unreadable_artifact: number
-    proof_unavailable: number
-  }
-}
-
 export interface InputPreparationRecord {
   node_id: string
   identity_digest: string
@@ -302,8 +284,7 @@ export interface ExecutionMetrics {
   column_widths: ExecutionColumnWidths
   requested_column_width_total: number | null
   physically_scanned_column_width_total: number | null
-  cache_proof: ExecutionCacheProof
-  bytes_read: number | null
+  cache_direct_fallbacks: number
   bytes_written: number | null
   estimated_bytes: number | null
   raw_estimated_bytes: number | null
@@ -602,16 +583,32 @@ export type {
   WorkbenchAppQuotesResponse,
   WorkbenchAppRelatedQuote,
   WorkbenchAppReleaseResponse,
+  WorkbenchCatalogueColumn,
+  WorkbenchCatalogueTable,
   WorkbenchColumn,
   WorkbenchFormResponse,
   WorkbenchFormSaveResponse,
   WorkbenchParamFileResponse,
   WorkbenchStatusResponse,
+  WorkbenchStoreCatalogueResponse,
   WorkbenchStoreColumn,
+  WorkbenchStoreCompareResponse,
+  WorkbenchStoreDifference,
+  WorkbenchStoreExtra,
+  WorkbenchStoreRename,
   WorkbenchStoreSqlEnvironment,
   WorkbenchStoreSqlResponse,
   WorkbenchTable,
   WorkbenchTablesResponse,
+  WorkbenchTestQuoteMove,
+  WorkbenchTestQuoteOpenResponse,
+  WorkbenchTestQuoteRefusal,
+  WorkbenchTestQuoteRunResponse,
+  WorkbenchTestQuotesAcceptResponse,
+  WorkbenchTestQuotesResponse,
+  WorkbenchTestQuoteSummary,
+  WorkbenchTestQuoteTarget,
+  WorkbenchTestQuoteWriteResponse,
 } from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
@@ -1209,11 +1206,8 @@ export type FrontierPoint = GeneratedOptimiserFrontierResponse["points"][number]
 
 export type FrontierResponse = GeneratedOptimiserFrontierResponse
 
-/** A solve's frontier as the results store keeps it: always a computed
- *  frontier, so it always has its generation. */
-export type FrontierData = Omit<FrontierResponse, "status" | "job_id" | "frontier_generation"> & {
-  frontier_generation: number
-}
+/** A solve's frontier as the results store keeps it. */
+export type FrontierData = Omit<FrontierResponse, "status">
 
 export const JOB_STATUS_VALUES = [
   "running",
@@ -1241,14 +1235,6 @@ export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
   "completed",
   ...FAILED_JOB_STATUSES,
 ])
-
-export type FrontierStatusResponse = Omit<
-  GeneratedOptimiserFrontierStatusResponse,
-  "result" | "execution_metrics"
-> & {
-  result: FrontierResponse | null
-  execution_metrics: ExecutionMetrics | null
-}
 
 export type FrontierAutoRangeStatusResponse = Omit<
   GeneratedOptimiserFrontierAutoRangeStatusResponse,

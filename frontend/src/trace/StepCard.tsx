@@ -336,7 +336,7 @@ export function StepCard({
                 nodeName={step.node_name}
                 nodeType={step.node_type}
                 isSourceOrigin={isOriginStep}
-                waterfall={waterfallError ? undefined : waterfall}
+                waterfall={waterfall}
                 frame={false}
               />
             </div>

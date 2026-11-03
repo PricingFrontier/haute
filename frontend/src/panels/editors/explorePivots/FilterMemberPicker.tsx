@@ -5,6 +5,7 @@ import type { ExplorePivotMembersResponse } from "../../../api/types"
 import type { PivotFilterPlacement, PivotMember } from "../../explore/pivotConfig"
 import { INPUT_STYLE } from "../_shared"
 import { memberIdentity, type LoadPivotFilterMembers } from "./placements"
+import { apiErrorMessage } from "../../../api/errors"
 
 const FILTER_MEMBER_SEARCH_DEBOUNCE_MS = 250
 
@@ -56,7 +57,7 @@ export default function FilterMemberPicker({
           requestKey,
           identity: currentConfigHash,
           response: null,
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: apiErrorMessage(reason),
         })
       })
     const timer = search === ""

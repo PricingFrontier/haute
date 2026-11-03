@@ -102,7 +102,7 @@ claim. It retains structured evidence for all of these cases:
   that an input-size increase of at least 8× stays within the bounded incremental-
   RSS growth contract;
 - a fresh-process restart pair proving committed cache reuse, unchanged generation
-  identity, cache-proof telemetry, sanitized terminal telemetry, and process-owned
+  identity, the direct cache-fallback count, sanitized terminal telemetry, and process-owned
   snapshot cleanup; and
 - the configurable resilience soak (`ci`, `1m`, or `10m`): repeated warm-worker
   calls and forced replacements with RSS/handle-or-fd plateau gates, five cache-

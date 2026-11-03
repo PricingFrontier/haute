@@ -16,6 +16,7 @@ import {
   type OnConnectEnd,
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
+import { apiErrorMessage } from "../api/errors"
 import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "../types/node"
 import {
   NODE_TYPES,
@@ -44,6 +45,7 @@ import {
   type ConnectionValidationResult,
 } from "../utils/connectionValidation"
 import useToastStore from "../stores/useToastStore"
+import useUIStore from "../stores/useUIStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SimpleNode } from "../panels/editors/_shared"
@@ -266,10 +268,7 @@ export default function useEdgeHandlers({
         try {
           return attachEditorEdgeIdentities([edge], currentNodes)[0]
         } catch (error: unknown) {
-          addToast(
-            "error",
-            `Connection rejected: ${error instanceof Error ? error.message : String(error)}`,
-          )
+          addToast("error", `Connection rejected: ${apiErrorMessage(error)}`)
           return null
         }
       }
@@ -378,7 +377,7 @@ export default function useEdgeHandlers({
           clearTrace()
           cancelPreview()
         } catch (err: unknown) {
-          addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+          addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
         }
       }
 
@@ -556,7 +555,7 @@ export default function useEdgeHandlers({
         }
         apply(resolved.nodes[0], capturedGraph)
       } catch (err: unknown) {
-        addToast("error", `Create node failed: ${err instanceof Error ? err.message : String(err)}`)
+        addToast("error", `Create node failed: ${apiErrorMessage(err)}`)
       }
     })()
   }, [addToast, graphRef, resolveGraphIdentities])
@@ -631,7 +630,11 @@ export default function useEdgeHandlers({
 
   /** Opens a node's panel, refreshing its preview when it is a different node. */
   const openNode = useCallback((node: Node) => {
-    const previousNodeId = selectedNode?.id ?? lastSelectedNodeRef.current?.id
+    const previousNodeId = lastSelectedNodeRef.current
+      ? lastSelectedNodeRef.current.id
+      : selectedNode === node
+        ? selectedNode.id
+        : undefined
     const shouldRefreshPreview = previousNodeId !== node.id
     setSelectedNode(node)
     setLastSelectedId?.(node.id)
@@ -659,11 +662,31 @@ export default function useEdgeHandlers({
     setLastSelectedId,
   ])
 
-  /** Opens panel on a full click (mousedown+mouseup) — skipped for drags. */
+  /** Closes the side panes and opens the node's panel and preview, as a click does. */
+  const openFromCanvas = useCallback((node: Node) => {
+    useUIStore.getState().closeSidePanes()
+    openNode(node)
+  }, [openNode])
+
+  /**
+   * Opens panel on a full click (mousedown+mouseup) — skipped for drags. React Flow
+   * has already applied the click's selection, a Ctrl/Cmd-click's toggle included,
+   * so the click leaves selection alone.
+   */
   const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => openNode(node),
-    [openNode],
+    (_event: React.MouseEvent, node: Node) => openFromCanvas(node),
+    [openFromCanvas],
   )
+
+  /** Activates a node from outside the canvas as a click does, selecting it as a plain click would. */
+  const activateNode = useCallback((node: Node) => {
+    setNodesRaw((nds) => {
+      const target = nds.find((n) => n.id === node.id)
+      if (!target || target.selected) return nds
+      return selectOnlyNode(nds, node.id)
+    })
+    openFromCanvas(node)
+  }, [openFromCanvas, setNodesRaw])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
     if (deleteBoundaryEdge?.(edgeId)) return
@@ -717,7 +740,7 @@ export default function useEdgeHandlers({
         }
         config = parsed as Record<string, unknown>
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const message = apiErrorMessage(err)
         addToast("error", `Drop rejected: invalid node config JSON (${message})`)
         return
       }
@@ -757,6 +780,7 @@ export default function useEdgeHandlers({
     createNodeFromConnectionDrop,
     onSelectionChange,
     openNode,
+    activateNode,
     onNodeClick,
     handleDeleteEdge,
     onNodeContextMenu,

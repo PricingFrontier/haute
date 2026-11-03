@@ -81,8 +81,23 @@ def handle_deploy(config: DeployCliConfig) -> None:
     """
     import os
 
+    from haute._workbench_config import WorkbenchConfigError, read_workbench_config
     from haute.deploy._config import DeployConfig, resolve_config
     from haute.deploy._validators import validate_deploy
+
+    # 0. A workbench project hosts no scoring API: what it releases is the underwriter app.
+    try:
+        workbench = read_workbench_config(Path.cwd()).enabled
+    except WorkbenchConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+    if workbench:
+        click.echo(
+            "Error: this project prices in the workbench, which hosts no scoring API. "
+            "`haute app build` validates and builds the underwriter app it releases.",
+            err=True,
+        )
+        raise SystemExit(1)
 
     # 1. Load config — prefer haute.toml when present, else build from CLI.
     toml_path = Path.cwd() / "haute.toml"

@@ -305,6 +305,16 @@ class TestSettings:
         assert Path(body["folder"]) == custom
         assert Path(body["resolved_folder"]) == custom
 
+    def test_put_over_a_malformed_haute_toml_is_400_and_writes_nothing(
+        self, client, project_root: Path
+    ) -> None:
+        toml_path = project_root / "haute.toml"
+        toml_path.write_text("[project\n", encoding="utf-8")
+        resp = client.put("/api/mlflow/settings", json={"folder": "team-runs"})
+        assert resp.status_code == 400
+        assert "not valid TOML" in resp.json()["detail"]
+        assert toml_path.read_text(encoding="utf-8") == "[project\n"
+
     def test_malformed_section_is_reported_not_5xx(self, client, project_root: Path) -> None:
         _write_mlflow_section(project_root, 'mode = "local"\n')
         resp = client.get("/api/mlflow/settings")

@@ -22,8 +22,6 @@ export function isGlmFamily(value: unknown): value is GlmFamily {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(GLM_FAMILY_LINKS, value)
 }
 
-export const GLM_REGULARIZATIONS = ["ridge", "lasso", "elastic_net"] as const
-export const GLM_CV_SELECTIONS = ["min", "1se"] as const
 export const GLM_ROBUST_STANDARD_ERRORS = ["HC0", "HC1", "HC2", "HC3"] as const
 export const GLM_CV_FOLDS_RANGE = [2, 20] as const
 export const GLM_MAX_ITER_RANGE = [1, 10_000] as const

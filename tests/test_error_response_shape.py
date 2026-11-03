@@ -165,14 +165,6 @@ _ERROR_CASES = [
         400,
         id="trace-empty-graph",
     ),
-    # --- 400: python syntax error in utility create (the CANONICAL #76 violator) ---
-    pytest.param(
-        "post",
-        "/api/utility",
-        {"name": "broken", "content": "def foo(\n"},
-        400,
-        id="utility-syntax-error-on-create",
-    ),
     # --- 404: utility file not found ---
     pytest.param(
         "get",
@@ -225,11 +217,8 @@ _ERROR_CASES = [
 
 
 class TestStandardErrorShape:
-    """Every 4xx response across every route must have the same JSON
-    shape: ``{"detail": "<str>"}``.  This class parametrizes across a
-    deliberately diverse set of triggers so that a future regression
-    on any single route — e.g. someone re-introducing a dict detail —
-    fails one of the cases immediately.
+    """Every non-syntax-error 4xx response across routes must have the same JSON
+    shape: ``{"detail": "<str>"}``.
     """
 
     @pytest.mark.parametrize(("method", "url", "body", "expected_status"), _ERROR_CASES)
@@ -256,39 +245,35 @@ class TestStandardErrorShape:
 
 
 # ---------------------------------------------------------------------------
-# Focused: the utility syntax-error dict is the known-bad violator.
-# It deserves an explicit, named test so regressions are obvious.
+# Focused: utility syntax errors carry structured {line, message} detail so
+# the frontend never scrapes line numbers out of prose with a regex.
 # ---------------------------------------------------------------------------
 
 
-class TestUtilitySyntaxErrorDetailIsFlat:
-    """Before the fix, a Python SyntaxError in utility create/update gives
-    ``{"detail": {"error": "...", "error_line": N}}`` — a nested dict.
-
-    After the fix the detail must be a flat human-readable string.  The
-    frontend, which currently does ``typeof detail === "string" ? detail
-    : detail.error``, must be able to drop the branching and just render
-    ``detail`` directly.  ``error_line`` becomes a structured log field,
-    not a wire response field.
+class TestUtilitySyntaxErrorDetailShape:
+    """A Python SyntaxError in utility create/update returns
+    ``{"detail": {"line": <int | null>, "message": "<str>"}}`` so ``UtilityPanel``
+    and ``apiErrorMessage`` can read the line number and message directly without
+    regex scraping.
     """
 
-    def test_create_syntax_error_uses_flat_string_detail(self, isolated_client: TestClient) -> None:
+    def test_create_syntax_error_uses_line_and_message_detail(
+        self, isolated_client: TestClient
+    ) -> None:
         res = isolated_client.post(
             "/api/utility",
             json={"name": "broken_create", "content": "def foo(\n"},
         )
         assert res.status_code == 400
         body = res.json()
-        _assert_standard_error_shape(body, status=400, method="POST", url="/api/utility")
-        # A useful detail must mention what went wrong — the SyntaxError
-        # token or the word "syntax" — even though it's a plain string.
-        detail_lc = body["detail"].lower()
-        assert "syntax" in detail_lc or "parse" in detail_lc or "line" in detail_lc, (
-            f"#76: flat string detail should still tell the user it was a "
-            f"syntax error; got {body['detail']!r}"
-        )
+        assert set(body.keys()) == {"detail"}
+        detail = body["detail"]
+        assert isinstance(detail, dict)
+        assert set(detail.keys()) == {"line", "message"}
+        assert detail["line"] == 1
+        assert "syntax" in detail["message"].lower()
 
-    def test_update_syntax_error_uses_flat_string_detail(
+    def test_update_syntax_error_uses_line_and_message_detail(
         self, isolated_client: TestClient, tmp_path: Path
     ) -> None:
         # Create the file first so the update path reaches syntax validation.
@@ -302,7 +287,12 @@ class TestUtilitySyntaxErrorDetailIsFlat:
         )
         assert res.status_code == 400
         body = res.json()
-        _assert_standard_error_shape(body, status=400, method="PUT", url="/api/utility/helper")
+        assert set(body.keys()) == {"detail"}
+        detail = body["detail"]
+        assert isinstance(detail, dict)
+        assert set(detail.keys()) == {"line", "message"}
+        assert detail["line"] == 1
+        assert "syntax" in detail["message"].lower()
         # Original file must be unchanged (existing invariant).
         assert (util / "helper.py").read_text() == "x = 1\n"
 
@@ -398,18 +388,15 @@ class TestInternalErrorDetailNotRawException:
 
 
 # ---------------------------------------------------------------------------
-# Structural: no route module constructs HTTPException with a dict detail.
-# This is a grep-equivalent structural test so new PRs cannot sneak the
-# dict-detail pattern back in.
+# Structural: no route module constructs HTTPException with a dict detail,
+# except _refuse_syntax_error in utility.py which returns {line, message}.
 # ---------------------------------------------------------------------------
 
 
 class TestNoRouteConstructsDictDetail:
-    """Any ``HTTPException(status_code=..., detail={...})`` is the #76
-    violation.  This test scans every route module for that literal
-    pattern and fails if it appears.  This is grep-flavoured but it runs
-    in CI and fails the build on regression, whereas a code-review grep
-    does not.
+    """Only ``_refuse_syntax_error`` in ``src/haute/routes/utility.py`` is allowed
+    to construct a literal dict ``detail`` on ``HTTPException`` (carrying
+    ``{"line": ..., "message": ...}``).
     """
 
     @pytest.mark.meta
@@ -419,6 +406,7 @@ class TestNoRouteConstructsDictDetail:
         routes_pkg = Path("src/haute/routes")
         offenders: list[str] = []
         for py in source_files(routes_pkg):
+            rel = py.relative_to(routes_pkg.parent.parent.parent).as_posix()
             src = py.read_text(encoding="utf-8")
             tree = ast.parse(src, filename=str(py))
             for node in ast.walk(tree):
@@ -437,10 +425,19 @@ class TestNoRouteConstructsDictDetail:
                     continue
                 for kw in node.keywords:
                     if kw.arg == "detail" and isinstance(kw.value, (ast.Dict, ast.List, ast.Tuple)):
+                        if (
+                            rel == "src/haute/routes/utility.py"
+                            and isinstance(kw.value, ast.Dict)
+                            and [
+                                k.value
+                                for k in kw.value.keys
+                                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                            ]
+                            == ["line", "message"]
+                        ):
+                            continue
                         offenders.append(
-                            f"{py.relative_to(routes_pkg.parent.parent.parent)}"
-                            f":{node.lineno} — detail is "
-                            f"{type(kw.value).__name__}"
+                            f"{rel}:{node.lineno} — detail is {type(kw.value).__name__}"
                         )
         assert not offenders, (
             "#76: HTTPException must carry a plain string detail. Offenders:\n  "

@@ -20,7 +20,7 @@ describe("KeyboardShortcuts", () => {
     expect(screen.getByText("Keyboard Shortcuts").tagName).toBe("H2")
   })
 
-  it("renders all shortcut labels", () => {
+  it("renders all shortcut labels from KEYBOARD_SHORTCUT_BINDINGS", () => {
     render(<KeyboardShortcuts onClose={vi.fn()} />)
 
     const expectedLabels = [
@@ -29,9 +29,13 @@ describe("KeyboardShortcuts", () => {
       "Copy selected nodes",
       "Paste nodes",
       "Select all nodes",
+      "Group into submodel",
       "Save pipeline",
+      "Search nodes",
       "Fit view",
+      "Refresh the open preview",
       "Delete selected",
+      "Close panel / clear trace",
       "Show this help",
     ]
 

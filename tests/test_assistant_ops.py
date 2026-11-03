@@ -2579,7 +2579,7 @@ class TestSemanticPlans:
         verify_postconditions(saved, plan.postconditions)
 
         rated = _get(saved, "rated")
-        discarded = rated.with_config({"code": "df = df.head(3)", "_steps_discarded": "x"})
+        discarded = rated.with_config({"code": "df = df.head(3)"})
         saved.nodes[saved.nodes.index(rated)] = discarded
         with pytest.raises(AssistantOperationError) as excinfo:
             verify_postconditions(saved, plan.postconditions)

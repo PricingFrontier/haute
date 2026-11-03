@@ -38,10 +38,15 @@ def wait_for_process_exit(pid: int) -> None:
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
         kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
         handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
         if not handle:
             return
-        kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        try:
+            kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        finally:
+            kernel32.CloseHandle(handle)
         return
     if os.getppid() != pid:
         return
@@ -54,9 +59,12 @@ def wait_for_process_exit(pid: int) -> None:
         except OSError:
             fd = None
         if fd is not None:
-            poller = select.poll()
-            poller.register(fd, select.POLLIN)
-            poller.poll()
+            try:
+                poller = select.poll()
+                poller.register(fd, select.POLLIN)
+                poller.poll()
+            finally:
+                os.close(fd)
             return
     while os.getppid() == pid:
         time.sleep(_POLL_SECONDS)

@@ -277,7 +277,7 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction, errorAction }: DataPreviewProps) {
+function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction, errorAction }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
 
   // Frame labels for a multi-frame producer (a multi-table apiInput). The
@@ -676,3 +676,6 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
     </PreviewPanelFrame>
   )
 }
+
+export default memo(DataPreview)
+

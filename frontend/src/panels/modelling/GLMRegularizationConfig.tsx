@@ -1,8 +1,9 @@
 import { useId, useState, type ReactNode } from "react"
 import { ChevronRight } from "lucide-react"
 
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
+import { glmConflictIssues } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import {
@@ -12,13 +13,6 @@ import {
   GLM_ROBUST_STANDARD_ERRORS,
   glmCrossValidates,
 } from "./glmFamilies"
-import {
-  interactionEntryIssue,
-  monotoneConstraintTerms,
-  penalisedSmoothTerms,
-  type InteractionSpec,
-  type Terms,
-} from "./glmTerms"
 import { NumberField } from "./NumberField"
 
 const REGULARIZATION_TYPES = [
@@ -64,22 +58,10 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
   const crossValidated = glmCrossValidates(config)
   const robust = typeof config.robust_standard_errors === "string" ? config.robust_standard_errors : ""
 
-  const terms = (config.terms !== null && typeof config.terms === "object" && !Array.isArray(config.terms)
-    ? config.terms
-    : {}) as Terms
-  const interactions = (Array.isArray(config.interactions) ? config.interactions : [])
-    .filter((entry): entry is InteractionSpec => interactionEntryIssue(entry) === null)
-  const smooth = penalisedSmoothTerms(terms, interactions)
-  const monotone = monotoneConstraintTerms(terms)
-  const robustConflict = !robust
-    ? null
-    : isActive
-      ? "regularization"
-      : monotone.length > 0
-        ? `monotonicity constraints (${monotone.join(", ")})`
-        : smooth.length > 0
-          ? `automatically smoothed splines (${smooth.join(", ")})`
-          : null
+  // The Train guard's own conflicts, each shown beside the setting it involves.
+  const conflicts = glmConflictIssues(config)
+  const smoothConflict = conflicts.find((issue) => issue.code === "glm-smooth-regularization")
+  const robustConflict = conflicts.find((issue) => issue.code === "glm-robust-standard-errors")
 
   const chooseType = (value: string) => {
     if (value === "") {
@@ -116,12 +98,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
           ))}
         </div>
 
-        {isActive && smooth.length > 0 && (
-          <Conflict>
-            Regularization cannot be combined with automatically smoothed splines ({smooth.join(", ")}): set
-            Fixed df on those splines or turn regularization off.
-          </Conflict>
-        )}
+        {smoothConflict && <Conflict>{smoothConflict.message}</Conflict>}
 
         {isActive && (
           <>
@@ -234,12 +211,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
             <ChevronRight size={12} className={solverOpen ? "rotate-90" : ""} aria-hidden="true" />
             Solver
           </button>
-          {robustConflict && (
-            <Conflict>
-              Robust standard errors cannot be combined with {robustConflict}: RustyStats marks that inference as
-              not valid. Turn robust standard errors off or remove the conflict.
-            </Conflict>
-          )}
+          {robustConflict && <Conflict>{robustConflict.message}</Conflict>}
           <div id={solverId} hidden={!solverOpen} className="mt-1.5 space-y-2">
             <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>{SOLVER_HELP}</p>
             <div className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2">

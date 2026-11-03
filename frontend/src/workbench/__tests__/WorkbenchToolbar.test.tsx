@@ -14,6 +14,7 @@ import Toolbar from "../../components/Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchTestQuotesStore from "../../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchPricingStore from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { BLANK_THEME } from "../../utils/workbenchForm"
@@ -182,11 +183,25 @@ describe("WorkbenchToolbar", () => {
     expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled()
   })
 
+  it("has Test quotes, disabled while building, opening and closing the test quotes' panel in Preview", () => {
+    useWorkbenchTestQuotesStore.setState({ open: false })
+    renderToolbar()
+    expect(screen.getByRole("button", { name: "Test quotes" })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
+    expect(useWorkbenchTestQuotesStore.getState().open).toBe(true)
+    expect(screen.getByRole("button", { name: "Test quotes" })).toHaveAttribute("aria-pressed", "true")
+
+    fireEvent.click(screen.getByRole("button", { name: "Test quotes" }))
+    expect(useWorkbenchTestQuotesStore.getState().open).toBe(false)
+  })
+
   it("keeps the same controls in both modes, in the same places", () => {
     const controls = () => within(screen.getByTestId("workbench-toolbar-actions")).getAllByRole("button").map((button) => button.textContent)
     renderToolbar()
     const building = controls()
-    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display", "Reset"])
+    expect(building).toEqual(["Undo", "Redo", "Zoom In", "Zoom Out", "Build", "Preview", "Schema", "Display", "Reset", "Test quotes"])
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     expect(controls()).toEqual(building)

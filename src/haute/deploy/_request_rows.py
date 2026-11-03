@@ -27,11 +27,13 @@ import polars as pl
 from haute._api_input_schema import quote_input_reads_tables
 from haute._cardinality import normalise_join_validation
 from haute._column_lineage import (
+    SELECT_METHODS,
     LineageOperation,
     LineageOperationKind,
     _frame_chain_calls,
     _parse_program,
     _ParseFailure,
+    column_free_select_argument,
 )
 from haute._edge_join import build_edge_join_kwargs, resolve_edge_join_role_indices
 from haute._graph_utils import code_input_bindings, edge_input_name
@@ -273,7 +275,8 @@ _REQUEST_FACTS = _FrameFacts(_Rows.REQUEST, from_request=True, carried=False)
 _LOST = _FrameFacts(_Rows.OTHER, from_request=True, carried=False)
 
 # A code box's frame operations, by what they do to a request frame's rows. ``select``,
-# ``with_columns`` and ``fill_null`` keep the rows when every argument is row-local.
+# ``with_columns`` and ``fill_null`` keep the rows when every argument is row-local, and a
+# ``select`` only when it also reads a column (``column_free_select_argument``).
 _KEEPS_ROWS = frozenset({"rename", "drop", "cast"})
 _EXPRESSION_METHODS = frozenset({"select", "select_seq", "with_columns", "fill_null"})
 _EFFECT_BY_METHOD: Mapping[str, RowEffect] = {
@@ -800,6 +803,11 @@ class _Walk:
                 call, self.selector_aliases, skip={"strategy", "limit", "matches_supertype"}
             )
             if blocking is None:
+                if method in SELECT_METHODS:
+                    # A literal alone is one row however many quotes there are.
+                    free = column_free_select_argument(call, selector_aliases=self.selector_aliases)
+                    if free is not None:
+                        return f"{method}: {ast.unparse(free)} reads no column", "drops"
                 return None
             # An operation the registry knows reads other rows mixes quotes; anything
             # else the classifier cannot read (a helper's call, say) is not proven.

@@ -1703,6 +1703,107 @@ def test_an_explicit_build_and_its_captures_share_the_editor_chunk_size(
 
 
 @pytest.mark.usefixtures("in_process_worker")
+@pytest.mark.parametrize(
+    ("code", "strategy", "expected"),
+    [
+        # A filter in a Data Input's own code is written a slice of its source at
+        # a time, as the same filter in a Transform is (CACHE-S22).
+        (
+            "df = df.filter(pl.col('premium') > 200)",
+            "input_sliced",
+            lambda frame: frame.filter(pl.col("premium") > 200),
+        ),
+        # Code Polars slices through is written by slicing the output itself.
+        (
+            "df = df.with_columns(SaleFlag=pl.lit(1))",
+            "sliced",
+            lambda frame: frame.with_columns(SaleFlag=pl.lit(1)),
+        ),
+        # Code that is not chunk-local stays native, with the classifier's reason.
+        (
+            "df = df.filter(pl.col('premium') > 200).sort('premium', descending=True)",
+            "native",
+            lambda frame: frame.filter(pl.col("premium") > 200),
+        ),
+    ],
+    ids=["filter", "added_column", "sort"],
+)
+@pytest.mark.parametrize("source_format", ["parquet", "csv"])
+def test_explicit_build_of_a_data_input_with_code_is_chunked_where_its_code_allows(
+    client: TestClient,
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    strategy: str,
+    expected: Any,
+    source_format: str,
+) -> None:
+    recorded_writes: list[haute._chunked_writes.ChunkedWrite] = []
+    real_write_parts = haute._chunked_writes.write_parts
+
+    def _recording_write_parts(*args: Any, **kwargs: Any) -> Any:
+        written = real_write_parts(*args, **kwargs)
+        recorded_writes.append(written)
+        return written
+
+    monkeypatch.setattr(service_mod, "write_parts", _recording_write_parts, raising=False)
+    monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
+    monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
+    # A CSV is read from its input snapshot, whose parts the recipe slices.
+    pl.read_parquet(project / "quotes.parquet").write_csv(project / "quotes.csv")
+    graph = make_graph(
+        {
+            "source_file": str(project / "main.py"),
+            "preamble": "import polars as pl",
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "dataInput",
+                        "config": {
+                            "inputType": "file",
+                            "format": source_format,
+                            "mode": "scan",
+                            "path": str(project / f"quotes.{source_format}"),
+                            "arguments": {},
+                            "code": code,
+                        },
+                    },
+                },
+                {
+                    "id": "explore",
+                    "data": {"label": "explore", "nodeType": "explore", "config": {}},
+                },
+            ],
+            "edges": [make_edge("quotes", "explore").model_dump()],
+        }
+    ).model_dump()
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
+    set_streaming_chunk_size(200)
+
+    job = _cache(client, graph, "explore")
+
+    assert job["status"] == "completed"
+    assert [write.strategy for write in recorded_writes] == [strategy]
+    write = recorded_writes[0]
+    if strategy == "input_sliced":
+        assert write.input_slices == 5 and write.chunks == 5
+    if strategy == "native":
+        assert write.native_reason is not None and write.blocking_operator == "sort"
+    resolver = _resolver(project, graph)
+    identity = resolver.node_output_slot("quotes").identity(
+        resolver.node_output_signature("quotes")
+    )
+    gen = resolver.store.latest_generation(identity)
+    assert gen is not None
+    assert_frame_equal(
+        gen.generation.lazy_frame.collect().sort("policy_id"),
+        expected(pl.read_parquet(project / "quotes.parquet")).sort("policy_id"),
+    )
+
+
+@pytest.mark.usefixtures("in_process_worker")
 def test_explicit_build_of_a_chunk_local_filter_is_input_sliced_and_equals_native(
     client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

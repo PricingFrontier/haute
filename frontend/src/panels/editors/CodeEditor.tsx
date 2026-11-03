@@ -6,10 +6,15 @@ export type CodeEditorProps = {
   onChange: (value: string) => void
   placeholder?: string
   errorLine?: number | null
+  /** Changes with each run's result (the result itself), so a repeat error on the same
+   *  line is marked again after an edit cleared the mark. */
+  errorRevision?: unknown
   /** Column names for in-string autocomplete */
   availableColumns?: string[]
   /** Callback to expose the EditorView for external operations (e.g. text insertion) */
   onEditorView?: (view: EditorView | null) => void
+  /** Report every change at once, not once typing pauses (see `CodeMirrorEditor`). */
+  reportEachChange?: boolean
 }
 
 const LazyCodeMirrorEditor = lazy(() => import("./CodeMirrorEditor"))

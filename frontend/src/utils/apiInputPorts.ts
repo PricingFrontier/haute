@@ -42,6 +42,7 @@ import {
   type SubmodelDefinition,
   type SubmodelPortData,
 } from "../types/node"
+import { withEdgeIdentity } from "./edgeIds"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { workbenchNodePorts, workbenchNodeTables, type WorkbenchTables } from "./workbenchTables"
 
@@ -811,8 +812,7 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
     if (to === undefined) return edge
     rebound.push({ edge, from: handle, to })
     return {
-      ...edge,
-      sourceHandle: to,
+      ...withEdgeIdentity(edge, { sourceHandle: to }),
       data: { ...edge.data, _inputName: to },
     }
   })

@@ -340,6 +340,14 @@ def test_multi_port_with_null_source_handle_raises(isolated_root) -> None:
     # The error names the available ports so the user can pick.
     assert "policies" in error_msg or "drivers" in error_msg
 
+    # Trace reports the same refusal rather than correlating without the edge.
+    from haute.trace import execute_trace
+
+    with pytest.raises(
+        ValueError, match=r"no sourceHandle\. Expected one of: \['drivers', 'policies'\]"
+    ):
+        execute_trace(graph, row_index=0, target_node_id="downstream")
+
 
 # ─── 6. multi-port edge with unknown sourceHandle: loud error ─────
 
@@ -1200,6 +1208,23 @@ def test_port_label_selects_requested_frame_for_preview(isolated_root) -> None:
     assert all(set(row) <= {"driver_id", "age_band"} for row in api.preview)
     # frame_columns stays the complete per-frame map regardless of selection.
     assert set(api.frame_columns) == {"policies", "drivers"}
+
+
+def test_a_port_label_the_source_does_not_emit_fails_the_target_naming_its_tables(
+    isolated_root,
+) -> None:
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    api = execute_graph(graph, target_node_id="api", port_label="claims")["api"]
+
+    assert api.status == "error"
+    assert (
+        api.error == "api has no table 'claims' to preview; its tables are 'policies', 'drivers'."
+    )
 
 
 def test_distinct_port_labels_dont_collide_in_preview_cache(isolated_root) -> None:

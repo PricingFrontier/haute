@@ -76,6 +76,7 @@ describe("useNodeHandlers", () => {
       const navigation = useSubmodelNavigation({
         ...params, parentGraphRef: { current: null }, setActiveSubmodelIdentity: vi.fn(),
         submodelsRef: { current: {} }, setNodesRaw: vi.fn(), setEdgesRaw: vi.fn(),
+        cancelPreview: vi.fn(), clearTrace: vi.fn(),
         preambleRef: { current: "" }, sourceRevisionRef, preservedBlocksRef: { current: [] },
         descriptionRef: { current: "" }, sourceFileRef: { current: "pipeline.py" },
         pipelineNameRef: { current: "main" }, reservedApiInputFrameLabels: new Set(),
@@ -883,5 +884,180 @@ describe("useNodeHandlers", () => {
       await result.current.handleAutoLayout()
     })
     expect(params.setNodes).not.toHaveBeenCalled()
+  })
+
+  it("preserves node data and selection edits made while auto-layout is in flight and supports undo", async () => {
+    let resolveLayout!: (nodes: Node[]) => void
+    vi.mocked(getLayoutedElements).mockImplementationOnce(
+      (inputNodes: Node[]) =>
+        new Promise((resolve) => {
+          resolveLayout = (positions) =>
+            resolve(
+              inputNodes.map((node, idx) => ({
+                ...node,
+                position: positions[idx]?.position ?? node.position,
+              })),
+            )
+        }),
+    )
+
+    const n1 = makeNode("n1", "polars", {
+      position: { x: 0, y: 0 },
+      data: { label: "n1", nodeType: "polars", config: { code: "df = source.select('old')" } },
+    })
+    const n2 = makeNode("n2", "polars", {
+      position: { x: 10, y: 10 },
+      data: { label: "n2", nodeType: "polars", config: { code: "df = n1" } },
+    })
+    const edge: Edge = { id: "e_n1_n2", source: "n1", target: "n2" }
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [n1, n2],
+      edges: [edge],
+      submodels: {},
+      preamble: "",
+    })
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: useGraphStore.getState().nodes,
+      edges: useGraphStore.getState().edges,
+    }
+    params.setNodes = vi.fn((updater: (nds: Node[]) => Node[]) => {
+      useGraphStore.getState().setNodes(updater)
+      params.graphRef.current = {
+        nodes: useGraphStore.getState().nodes,
+        edges: useGraphStore.getState().edges,
+      }
+    })
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    let layoutPromise!: Promise<void>
+    await act(async () => {
+      layoutPromise = result.current.handleAutoLayout()
+    })
+
+    // Edit n1's code and selection while ELK is running
+    act(() => {
+      params.setNodes((nds: Node[]) =>
+        nds.map((node: Node) =>
+          node.id === "n1"
+            ? {
+                ...node,
+                selected: true,
+                data: {
+                  ...node.data,
+                  config: { code: "df = source.select('edited')" },
+                },
+              }
+            : node,
+        ),
+      )
+    })
+
+    await act(async () => {
+      resolveLayout([
+        { ...n1, position: { x: 120, y: 80 } },
+        { ...n2, position: { x: 420, y: 80 } },
+      ])
+      await layoutPromise
+    })
+
+    const finalNodes = useGraphStore.getState().nodes
+    expect(finalNodes).toHaveLength(2)
+    expect(finalNodes[0].position).toEqual({ x: 120, y: 80 })
+    expect(finalNodes[0].selected).toBe(true)
+    expect(finalNodes[0].data.config).toEqual({ code: "df = source.select('edited')" })
+    expect(finalNodes[1].position).toEqual({ x: 420, y: 80 })
+
+    // Undo reverts the layout positions while keeping the code edit
+    act(() => {
+      useGraphStore.getState().undo()
+    })
+    const afterUndo = useGraphStore.getState().nodes
+    expect(afterUndo[0].position).toEqual({ x: 0, y: 0 })
+    expect(afterUndo[0].data.config).toEqual({ code: "df = source.select('edited')" })
+  })
+
+  it("rejects an obsolete auto-layout when nodes or edges change while layout is in flight", async () => {
+    let resolveLayout!: (nodes: Node[]) => void
+    vi.mocked(getLayoutedElements).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLayout = resolve
+      }),
+    )
+
+    const n1 = makeNode("n1", "polars", { position: { x: 0, y: 0 } })
+    const n2 = makeNode("n2", "polars", { position: { x: 20, y: 20 } })
+    const n3 = makeNode("n3", "polars", { position: { x: 40, y: 40 } })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [n1, n2], edges: [] }
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    let layoutPromise!: Promise<void>
+    await act(async () => {
+      layoutPromise = result.current.handleAutoLayout()
+    })
+
+    // Delete n2 and add n3 while layout is in flight
+    params.graphRef.current = { nodes: [n1, n3], edges: [] }
+
+    await act(async () => {
+      resolveLayout([
+        { ...n1, position: { x: 100, y: 100 } },
+        { ...n2, position: { x: 300, y: 100 } },
+      ])
+      await layoutPromise
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.fitView).not.toHaveBeenCalled()
+    expect(params.graphRef.current.nodes.map((node) => node.id)).toEqual(["n1", "n3"])
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
+      /Auto-layout was not applied because the graph changed/,
+    )
+  })
+
+  it("rejects an obsolete auto-layout when the document changes while layout is in flight", async () => {
+    const { default: useDocumentStatusStore } = await import("../../stores/useDocumentStatusStore")
+    let resolveLayout!: (nodes: Node[]) => void
+    vi.mocked(getLayoutedElements).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLayout = resolve
+      }),
+    )
+
+    const n1 = makeNode("n1", "polars", { position: { x: 0, y: 0 } })
+    const otherDocNode = makeNode("n1", "polars", {
+      position: { x: 15, y: 25 },
+      data: { label: "other_doc", nodeType: "polars", config: { code: "df = other" } },
+    })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [n1], edges: [] }
+
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    let layoutPromise!: Promise<void>
+    await act(async () => {
+      layoutPromise = result.current.handleAutoLayout()
+    })
+
+    // Simulate switching/reloading the document (even with the same node id)
+    act(() => {
+      useDocumentStatusStore.getState().reset()
+      params.graphRef.current = { nodes: [otherDocNode], edges: [] }
+    })
+
+    await act(async () => {
+      resolveLayout([{ ...n1, position: { x: 250, y: 250 } }])
+      await layoutPromise
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.fitView).not.toHaveBeenCalled()
+    expect(params.graphRef.current.nodes[0]).toEqual(otherDocNode)
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
+      /Auto-layout was not applied because the graph changed/,
+    )
   })
 })

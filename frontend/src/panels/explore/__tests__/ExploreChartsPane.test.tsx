@@ -13,7 +13,7 @@ import useNodeResultsStore, {
 } from "../../../stores/useNodeResultsStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
 import useUIStore from "../../../stores/useUIStore"
-import type { SimpleNode } from "../../editors"
+import type { SimpleNode } from "../../editors/_shared"
 import ExploreChartsPane from "../ExploreChartsPane"
 import {
   createExploreChart,
@@ -59,7 +59,7 @@ function pivot(
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: `${id}_row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+    rows: [{ sort: "ascending", id: `${id}_row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     values: [
       {
         id: `${id}_paid`,
@@ -67,6 +67,8 @@ function pivot(
         aggregation: "sum",
         reference: "paid_sum",
         display_name: "Paid",
+        sort_rows: "none",
+        color_scale: "none",
         color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],
@@ -430,6 +432,8 @@ describe("ExploreChartsPane", () => {
           aggregation: "sum",
           reference: "paid_sum",
           display_name: "x".repeat(201),
+          sort_rows: "none",
+          color_scale: "none",
           color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],

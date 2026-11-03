@@ -11,7 +11,7 @@ const pivot: ExplorePivotConfig = {
   name: "Claims by region",
   enabled: true,
   filters: [],
-  rows: [{ id: "r1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+  rows: [{ sort: "ascending", id: "r1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
   columns: [{ id: "c1", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
   values: [
     {
@@ -20,6 +20,8 @@ const pivot: ExplorePivotConfig = {
       aggregation: "sum",
       reference: "paid_sum",
       display_name: "Paid claims",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null,
       number_format: "general",
       decimal_places: null,
@@ -31,6 +33,8 @@ const pivot: ExplorePivotConfig = {
       aggregation: "count",
       reference: "count_count",
       display_name: "Claim count",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null,
       number_format: "general",
       decimal_places: null,

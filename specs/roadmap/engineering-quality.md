@@ -29,19 +29,15 @@ states.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:
-`ensure_execution_context`, `_rating_table_materialises`, `_callable_owner`,
-and the git guard `_assert_not_protected` (the guard is enforced through
-`_is_protected` instead). Others are called only by tests: `_compute_schema_hash`, `validate_submodel_instances`,
+`ensure_execution_context`, `_rating_table_materialises` and `_callable_owner`. Others are called only by tests: `_compute_schema_hash`, `validate_submodel_instances`,
 `remove_config_file`, `find_config_by_func_name`, the `_ram_estimate` helpers
 `_parquet_metadata`, `_resolve_edge_join_column_names` and
 `_resolve_target_column_names`, `wrap_path_case_audit`, and the registry's
 `get_exec` and `get_codegen`. Twenty-five `*_for_tests`, `_reset_*` and `_clear_*` hooks live
 in production modules, and `routes/_train_service.py` is a compatibility
 facade that re-exports private names mainly for tests. In the frontend, knip
-reports 8 unused files (including the banding and rating editor barrels), the
-whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
-editors), 33 unused exports, 91 unused exported types and an unlisted
-`@lezer/highlight` dependency. The API client's `checkHauteSession` has no
+reports unused files (besides the node editors' barrels, since removed), 33
+unused exports and 91 unused exported types. The API client's `checkHauteSession` has no
 production caller left. The 25 October 2026 review added a parameter that is
 accepted and never read, `render_ave_feature_svg(is_categorical=...)`, which every
 caller computes and passes. `TrainService._join_preparation` says shutdown uses it, but only tests
@@ -65,7 +61,6 @@ is gone; tests import the owning modules.
 **Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
 `src/haute/_rating.py::_rating_table_materialises`;
 `src/haute/_polars_io_registry.py::_callable_owner`;
-`src/haute/_git_core.py::_assert_not_protected`;
 `src/haute/_model_scorer.py::_compute_schema_hash`;
 `src/haute/_submodel_instances.py::validate_submodel_instances`;
 `src/haute/_config_io.py::remove_config_file`;
@@ -75,9 +70,6 @@ is gone; tests import the owning modules.
 `src/haute/_ram_estimate.py::_resolve_target_column_names`;
 `src/haute/_path_case_audit.py::wrap_path_case_audit`;
 `src/haute/_registry.py::get_exec`; `src/haute/routes/_train_service.py`;
-`frontend/src/panels/editors/index.ts`;
-`frontend/src/panels/editors/banding/index.ts`;
-`frontend/src/panels/editors/rating/index.ts`;
 `frontend/src/api/client.ts::checkHauteSession`;
 `src/haute/modelling/_charts.py::render_ave_feature_svg`;
 `src/haute/routes/_training_lifecycle.py::TrainService._join_preparation`;

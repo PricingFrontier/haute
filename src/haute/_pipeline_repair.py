@@ -171,6 +171,27 @@ def _iter_recovery_nodes(
     return nodes
 
 
+def _config_sharers(
+    document: PipelineEditorDocument,
+    target: RecoveryPipelineNode,
+    config_path: Path,
+    *,
+    root_path: Path,
+    project_root: Path,
+) -> list[RecoveryPipelineNode]:
+    """The other nodes, in any graph of *document*, whose config resolves to *config_path*."""
+    return [
+        node
+        for node in _iter_recovery_nodes(document)
+        if node is not target
+        and node.config_reference is not None
+        and _resolve_config_reference(
+            root_path=root_path, project_root=project_root, reference=node.config_reference
+        )
+        == config_path
+    ]
+
+
 def _iter_unresolved_connections(
     graph: PipelineEditorDocument | RecoveryGraphSnapshot,
 ) -> list[RecoveryUnresolvedConnection]:
@@ -820,15 +841,9 @@ def build_remove_unavailable_node_plan(
                 )
             shared_references = [
                 node.recovery_id
-                for node in _iter_recovery_nodes(document)
-                if node is not target
-                and node.config_reference is not None
-                and _resolve_config_reference(
-                    root_path=root_path,
-                    project_root=root,
-                    reference=node.config_reference,
+                for node in _config_sharers(
+                    document, target, config_path, root_path=root_path, project_root=root
                 )
-                == config_path
             ]
             if shared_references:
                 raise PipelineRepairError(

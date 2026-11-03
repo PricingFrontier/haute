@@ -3,6 +3,9 @@ import { createElement } from "react"
 import { renderHook, render, screen, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
+import useGraphCanvasState from "../useGraphCanvasState"
+import useGraphStore, { resetGraphStoreForTests } from "../../stores/useGraphStore"
+import { appEdge } from "../../utils/flowElements"
 import ModalShell from "../../components/ModalShell"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
@@ -386,6 +389,25 @@ describe("useKeyboardShortcuts", () => {
     // Original node + 1 pasted (polars), singleton (apiInput) filtered out
     expect(result).toHaveLength(2)
     expect(result.some((n: Node) => n.data.label === "Transform copy")).toBe(true)
+  })
+
+  it("Ctrl+V pastes neither a submodel occurrence nor a boundary card, and says how to reuse a submodel", async () => {
+    params.clipboard.current = {
+      nodes: [
+        { id: "pricing", position: { x: 0, y: 0 }, type: "submodel", data: { label: "pricing", nodeType: "submodel", config: { definitionId: "pricing", alias: "pricing" } } } as unknown as Node,
+        { id: "input", position: { x: 0, y: 0 }, type: "submodelPort", data: { label: "INPUT", nodeType: "submodelPort", portDirection: "input", ports: [] } } as unknown as Node,
+        { id: "n2", position: { x: 0, y: 0 }, data: { label: "Transform", nodeType: "polars" }, type: "pipelineNode" } as unknown as Node,
+      ],
+      edges: [{ id: "e1", source: "pricing", target: "n2" }],
+    }
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    const [nodes, edges] = vi.mocked(params.setNodesAndEdges).mock.calls[0] as [Node[], Edge[]]
+    expect(nodes.map((n) => n.data.label)).toEqual(["Transform copy"])
+    expect(edges).toEqual([])
+    expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", text: "Use Create Instance to duplicate a reusable submodel" }),
+    ]))
   })
 
   it("Ctrl+V does nothing when all copied nodes are existing singletons", () => {
@@ -895,5 +917,170 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setEdges).not.toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
+  })
+
+  it("Delete on a mixed selection removes the selected node, its incident edges, and unrelated selected edges in one undoable step", async () => {
+    const { default: useGraphStore } = await import("../../stores/useGraphStore")
+    cleanup()
+    const nodeA = makeNode("a", "polars", { selected: true })
+    const nodeB = makeNode("b", "polars", { selected: false })
+    const nodeC = makeNode("c", "polars", { selected: false })
+    const nodeD = makeNode("d", "polars", { selected: false })
+    const incidentEdge: Edge = { id: "e_a_b", source: "a", target: "b", selected: false }
+    const selectedUnrelatedEdge: Edge = { id: "e_b_c", source: "b", target: "c", selected: true }
+    const unselectedUnrelatedEdge: Edge = { id: "e_c_d", source: "c", target: "d", selected: false }
+
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [nodeA, nodeB, nodeC, nodeD],
+      edges: [incidentEdge, selectedUnrelatedEdge, unselectedUnrelatedEdge],
+      preamble: "",
+      submodels: {},
+    })
+
+    const storeParams = makeParams({
+      graphRef: {
+        current: {
+          nodes: useGraphStore.getState().nodes,
+          edges: useGraphStore.getState().edges,
+        },
+      },
+      setNodesAndEdges: vi.fn((nextNodes, nextEdges) => {
+        useGraphStore.getState().setNodesAndEdges(nextNodes, nextEdges)
+        storeParams.graphRef.current = {
+          nodes: useGraphStore.getState().nodes,
+          edges: useGraphStore.getState().edges,
+        }
+      }),
+      setEdges: vi.fn((nextEdges) => {
+        useGraphStore.getState().setEdges(nextEdges)
+        storeParams.graphRef.current = {
+          nodes: useGraphStore.getState().nodes,
+          edges: useGraphStore.getState().edges,
+        }
+      }),
+    })
+    renderHook(() => useKeyboardShortcuts(storeParams))
+
+    act(() => {
+      fireKey("Delete")
+    })
+
+    expect(storeParams.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(storeParams.setEdges).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["b", "c", "d"])
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual(["e_c_d"])
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+
+    act(() => {
+      useGraphStore.getState().undo()
+    })
+
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["a", "b", "c", "d"])
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual([
+      "e_a_b",
+      "e_b_c",
+      "e_c_d",
+    ])
+  })
+
+  it("Delete on a mixed selection with a protected submodel owner spares the owner while deleting eligible nodes and selected edges", () => {
+    const owner = makeNode("owner", "submodel", {
+      selected: true,
+      data: {
+        label: "pricing",
+        nodeType: "submodel",
+        config: { definitionId: "def_pricing", alias: "pricing" },
+      },
+    })
+    const copy = makeNode("copy", "submodel", {
+      selected: true,
+      data: {
+        label: "pricing_2",
+        nodeType: "submodel",
+        config: { definitionId: "def_pricing", alias: "pricing_2", instanceOf: "owner" },
+      },
+    })
+    const nodeB = makeNode("b", "polars", { selected: false })
+    const nodeC = makeNode("c", "polars", { selected: false })
+    const ownerIncident: Edge = { id: "e_owner_b", source: "owner", target: "b", selected: false }
+    const copyIncident: Edge = { id: "e_copy_b", source: "copy", target: "b", selected: false }
+    const selectedUnrelated: Edge = { id: "e_b_c", source: "b", target: "c", selected: true }
+
+    params.graphRef.current = {
+      nodes: [owner, copy, nodeB, nodeC],
+      edges: [ownerIncident, copyIncident, selectedUnrelated],
+    }
+
+    fireKey("Delete")
+
+    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("Dissolve Submodel")
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const [remainingNodes, remainingEdges] = vi.mocked(params.setNodesAndEdges).mock.calls[0] as [
+      Node[],
+      Edge[],
+    ]
+    expect(remainingNodes.map((node) => node.id)).toEqual(["owner", "b", "c"])
+    expect(remainingEdges.map((edge) => edge.id)).toEqual(["e_owner_b"])
+  })
+})
+
+describe("useKeyboardShortcuts paste on the graph store", () => {
+  beforeEach(() => {
+    resetGraphStoreForTests()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
+
+  it("Ctrl+V keeps a two-frame Quote Input's parallel connections distinct through delete and undo", async () => {
+    const quote = makeNode("quote", "apiInput", {
+      data: {
+        label: "Quote Input",
+        config: { tables: [{ label: "policy", emit: true }, { label: "risks", emit: true }] },
+      },
+      selected: true,
+    })
+    const price = makeNode("price", "polars", { data: { label: "Price" }, selected: true })
+    // Mounted first: the canvas seeds the store with its initial graph.
+    const canvas = renderHook(() => useGraphCanvasState()).result
+    act(() => {
+      useGraphStore.getState().setNodesAndEdges([quote, price], [
+        appEdge({ source: "quote", target: "price", sourceHandle: "policy" }),
+        appEdge({ source: "quote", target: "price", sourceHandle: "risks" }),
+      ])
+    })
+    // The live graph, one object per store state, as the canvas hands it over.
+    let graph = { nodes: [] as Node[], edges: [] as Edge[] }
+    const graphRef = {
+      get current() {
+        const { nodes, edges } = useGraphStore.getState()
+        if (graph.nodes !== nodes || graph.edges !== edges) graph = { nodes, edges }
+        return graph
+      },
+    }
+    const params = makeParams({
+      graphRef: graphRef as unknown as ReturnType<typeof makeParams>["graphRef"],
+      setNodesAndEdges: canvas.current.setNodesAndEdges,
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+
+    fireKey("c", { ctrlKey: true })
+    act(() => { useGraphStore.getState().setNodesAndEdges([], []) })
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(useGraphStore.getState().edges).toHaveLength(2))
+
+    const pasted = useGraphStore.getState().edges
+    expect(pasted.map((edge) => edge.sourceHandle)).toEqual(["policy", "risks"])
+    expect(new Set(pasted.map((edge) => edge.id)).size).toBe(2)
+    const [policy, risks] = pasted
+
+    act(() => { canvas.current.onEdgesChange([{ type: "remove", id: policy.id }]) })
+    expect(useGraphStore.getState().edges).toEqual([risks])
+
+    act(() => { canvas.current.undo() })
+    expect(useGraphStore.getState().edges).toEqual([policy, risks])
   })
 })

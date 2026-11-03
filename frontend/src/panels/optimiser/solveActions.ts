@@ -24,7 +24,7 @@ import {
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { solveIdentityConfig } from "../../utils/modellingExportConfig"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 
 type Constraints = Record<string, Record<string, number>>
 
@@ -61,7 +61,7 @@ function solveFailureStatus(error: unknown, message: string): SolveProgress | un
   }
 }
 
-export type StartSolveArgs = {
+type StartSolveArgs = {
   nodeId: string
   /** The node's current config: what the job is keyed by and what it solves. */
   config: Record<string, unknown>

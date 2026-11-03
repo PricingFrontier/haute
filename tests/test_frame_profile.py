@@ -1119,6 +1119,34 @@ def test_partitioned_whole_row_distinct_is_exact(
         assert pl.read_parquet_schema(path) == frame.schema
 
 
+def test_partitioned_distinct_writes_a_bounded_number_of_partitions_on_little_memory(
+    tmp_path, monkeypatch, explore_execution_context
+):
+    """Little memory headroom shrinks the partitions only down to a floor of rows, so a
+    large frame is never split into a partition per row: the memory limit fails the job
+    instead."""
+    from haute import _frame_profile as module
+
+    monkeypatch.setattr(module, "_PROFILE_DISTINCT_PARTITION_ROWS", 500, raising=False)
+    monkeypatch.setattr(module, "_PROFILE_DISTINCT_PARTITION_MIN_ROWS", 200, raising=False)
+    monkeypatch.setattr(type(explore_execution_context), "remaining_memory_bytes", lambda _self: 1)
+    # No one column is unique, so the rows are counted as a whole.
+    frame = pl.DataFrame(
+        {"a": [i % 500 for i in range(1000)], "b": [i // 500 for i in range(1000)]}
+    )
+
+    result = module._build_frame_stats(
+        frame.lazy(),
+        frame.schema,
+        execution_context=explore_execution_context,
+        scratch_directory=tmp_path,
+    )
+
+    assert result.overview_summary.data_quality.duplicate_row_count == 0
+    buckets = {path.parent for path in tmp_path.rglob("*.parquet")}
+    assert 1 <= len(buckets) <= 5
+
+
 def test_partitioned_distinct_all_identical_and_disk_failure(
     tmp_path, monkeypatch, explore_execution_context
 ):

@@ -228,7 +228,8 @@ after ~3 seconds (enforced by `Toast.tsx`, not the store).
 **Chrome widgets.** `ErrorBoundary` wraps the root and each independently
 recoverable panel in `App.tsx`, so one feature's crash doesn't take down the
 whole editor. `ModalShell` is the shared dialog primitive — backdrop click,
-Escape-to-close, and a full focus trap (Tab wraps inside the dialog, focus
+Escape-to-close (except an Escape a field inside has consumed, such as a search
+box clearing its text), and a full focus trap (Tab wraps inside the dialog, focus
 returns to the triggering element on close) — used by `KeyboardShortcuts`
 and by every git dialog. The focus trap is installed for the modal lifetime;
 parent re-renders update callback refs without refocusing the dialog or
@@ -286,7 +287,11 @@ edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl
 `import haute` are always included, has no delete button and never goes through the utility
 file routes. The app applies every change with the graph store's raw preamble setter, so
 importing text immediately affects derived dirty state without making an undo entry per
-keystroke.
+keystroke. Module reads and `Imports` selection transitions are fenced by a monotonic
+selection generation so a late utility file response cannot steal a newer selection;
+before and after each utility module read, pending and in-flight autosaves are drained,
+and per-module unsaved drafts and rejected save errors are retained so typing while a
+read is pending never loses an unpersisted draft or replaces it with disk bytes.
 
 **Global constants pane.** The toolbar's Constants button, under Utility, opens the Global
 Constants pane in the right-hand panel; it edits the pipeline's
@@ -319,8 +324,13 @@ available. Save is refused while any constant is invalid.
 - When the constants file failed to load, the pane shows the load error and is read-only, and
   save sends no constants.
 
-Constants edits are not on the canvas undo stack, but they are in the dirty state, so an edit
-marks the pipeline unsaved. Every execution request (preview, training, the optimiser, Explore,
+Constants edits are on the canvas undo stack and in the dirty state. Adding, deleting, renaming,
+changing the type, switching the split and removing unknown-source values are one undo step
+each; a value edit is one step from its first keystroke until its cell loses focus, while every
+keystroke still reaches the store so the pane validates as the analyst types. Undo and Redo
+restore the constants together with the graph, and undoing back to the saved constants reports
+clean. Removing a pipeline source removes its constant values without an undo step, as the
+source removal itself has none. Every execution request (preview, training, the optimiser, Explore,
 Data Output and Output) carries the valid constants and the load error, and a save carries the
 constants.
 

@@ -9,6 +9,10 @@
  */
 import { create } from "zustand"
 import type { ProjectFilePlace } from "../api/types"
+import type { BandingFactor, BandingMode } from "../types/banding"
+
+/** The rules a Banding factor had under each type, set aside when its type was switched. */
+export type BandingRuleStash = Partial<Record<BandingMode, BandingFactor["rules"]>>
 
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
@@ -29,6 +33,25 @@ interface UIState {
   setPaletteOpen: (open: boolean) => void
   utilityOpen: boolean
   setUtilityOpen: (open: boolean) => void
+  /** The utility panel holds an edit it has not saved; the panel sets it. */
+  utilityUnsaved: boolean
+  setUtilityUnsaved: (unsaved: boolean) => void
+  /**
+   * A change that would hide the utility panel while it held an unsaved edit: closing it,
+   * or opening another panel in its place. It is held back until the panel saves the edit
+   * (`completeUtilityLeave` applies it) or a save is refused (`cancelUtilityLeave`).
+   */
+  utilityLeave: Partial<UIState> | null
+  /** Actions held with `utilityLeave`, run once it completes. */
+  utilityLeaveActions: Array<() => void>
+  /**
+   * Run *action* now, or, while the utility panel is open with an unsaved edit, hold it
+   * with `utilityLeave` until the panel saves the edit: an action outside this store that
+   * hides the panel (another view) waits as a panel change does.
+   */
+  afterUtilitySaved: (action: () => void) => void
+  completeUtilityLeave: () => void
+  cancelUtilityLeave: () => void
   constantsOpen: boolean
   setConstantsOpen: (open: boolean) => void
   assistantOpen: boolean
@@ -56,6 +79,8 @@ interface UIState {
   /** The place the Files panel shows, or null while it is closed. */
   filesPlace: ProjectFilePlace | null
   setFilesPlace: (place: ProjectFilePlace | null) => void
+  /** Close all five mutually exclusive side panes in one store update. */
+  closeSidePanes: () => void
   shortcutsOpen: boolean
   setShortcutsOpen: (open: boolean | ((prev: boolean) => boolean)) => void
   /** MLflow tracking-settings dialog — an overlay like shortcuts, outside
@@ -98,6 +123,13 @@ interface UIState {
   setModellingPane: (nodeId: string, pane: ModellingPane) => void
   optimiserPanes: Record<string, OptimiserPane>
   setOptimiserPane: (nodeId: string, pane: OptimiserPane) => void
+  /** Banding rules a type switch set aside, by node and factor position, until the pipeline reloads. */
+  bandingRuleStash: Record<string, Record<number, BandingRuleStash>>
+  setBandingRuleStash: (nodeId: string, factor: number, stash: BandingRuleStash) => void
+  /** Forget one node's stash: its factors were removed or reordered. */
+  forgetBandingRuleStash: (nodeId: string) => void
+  /** Forget every stash: a pipeline document was loaded. */
+  clearBandingRuleStash: () => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -125,23 +157,54 @@ interface UIState {
   setNodeSearchOpen: (open: boolean | ((prev: boolean) => boolean)) => void
 }
 
-const useUIStore = create<UIState>()((set) => ({
+/**
+ * *next* as the store applies it: while the utility panel is open with an unsaved edit, a
+ * change that would hide it is held back, merged into `utilityLeave`, for the panel to save
+ * the edit first.
+ */
+function leavingUtility(state: UIState, next: Partial<UIState>): Partial<UIState> {
+  if (state.utilityOpen && state.utilityUnsaved && next.utilityOpen === false) {
+    return { utilityLeave: { ...state.utilityLeave, ...next } }
+  }
+  return next
+}
+
+const useUIStore = create<UIState>()((set, get) => ({
   // Modals / panels
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   utilityOpen: false,
-  setUtilityOpen: (open) => set({ utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null }),
+  setUtilityOpen: (open) => set((s) => leavingUtility(s, { utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
+  utilityUnsaved: false,
+  setUtilityUnsaved: (unsaved) => set({ utilityUnsaved: unsaved }),
+  utilityLeave: null,
+  utilityLeaveActions: [],
+  afterUtilitySaved: (action) => {
+    const s = get()
+    if (!(s.utilityOpen && s.utilityUnsaved)) {
+      action()
+      return
+    }
+    set({ utilityLeave: s.utilityLeave ?? {}, utilityLeaveActions: [...s.utilityLeaveActions, action] })
+  },
+  completeUtilityLeave: () => {
+    const { utilityLeave, utilityLeaveActions } = get()
+    if (utilityLeave === null) return
+    set({ ...utilityLeave, utilityLeave: null, utilityLeaveActions: [], utilityUnsaved: false })
+    for (const action of utilityLeaveActions) action()
+  },
+  cancelUtilityLeave: () => set({ utilityLeave: null, utilityLeaveActions: [] }),
   constantsOpen: false,
-  setConstantsOpen: (open) => set({ constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null }),
+  setConstantsOpen: (open) => set((s) => leavingUtility(s, { constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
   assistantOpen: false,
-  setAssistantOpen: (open) => set({
+  setAssistantOpen: (open) => set((s) => leavingUtility(s, {
     assistantOpen: open,
     utilityOpen: false,
     constantsOpen: false,
     gitOpen: false,
     filesPlace: null,
     ...(open ? { assistantUnseenOutcome: false } : {}),
-  }),
+  })),
   assistantTurn: null,
   startAssistantTurn: (stop) => set({ assistantTurn: { stop } }),
   endAssistantTurn: () => set((s) => ({
@@ -150,7 +213,7 @@ const useUIStore = create<UIState>()((set) => ({
   })),
   assistantUnseenOutcome: false,
   assistantPreviewErrorNodeId: null,
-  askAssistantToFix: (nodeId) => set({
+  askAssistantToFix: (nodeId) => set((s) => leavingUtility(s, {
     assistantPreviewErrorNodeId: nodeId,
     assistantOpen: true,
     utilityOpen: false,
@@ -158,12 +221,13 @@ const useUIStore = create<UIState>()((set) => ({
     gitOpen: false,
     filesPlace: null,
     assistantUnseenOutcome: false,
-  }),
+  })),
   clearAssistantPreviewError: () => set({ assistantPreviewErrorNodeId: null }),
   gitOpen: false,
-  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false, filesPlace: null }),
+  setGitOpen: (open) => set((s) => leavingUtility(s, { gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false, filesPlace: null })),
   filesPlace: null,
-  setFilesPlace: (place) => set({ filesPlace: place, utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false }),
+  setFilesPlace: (place) => set((s) => leavingUtility(s, { filesPlace: place, utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false })),
+  closeSidePanes: () => set((s) => leavingUtility(s, { utilityOpen: false, constantsOpen: false, assistantOpen: false, gitOpen: false, filesPlace: null })),
   mlflowSettingsOpen: false,
   setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,
@@ -228,6 +292,19 @@ const useUIStore = create<UIState>()((set) => ({
   setOptimiserPane: (nodeId, pane) => set((state) => ({
     optimiserPanes: setNodeIdEntry(state.optimiserPanes, nodeId, pane),
   })),
+  bandingRuleStash: {},
+  setBandingRuleStash: (nodeId, factor, stash) => set((state) => ({
+    bandingRuleStash: setNodeIdEntry(state.bandingRuleStash, nodeId, {
+      ...state.bandingRuleStash[nodeId],
+      [factor]: stash,
+    }),
+  })),
+  forgetBandingRuleStash: (nodeId) => set((state) => {
+    const { [nodeId]: forgotten, ...rest } = state.bandingRuleStash
+    void forgotten
+    return { bandingRuleStash: rest }
+  }),
+  clearBandingRuleStash: () => set({ bandingRuleStash: {} }),
 
   // Hover highlight
   hoveredNodeId: null,

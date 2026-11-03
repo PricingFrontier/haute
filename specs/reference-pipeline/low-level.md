@@ -19,7 +19,7 @@ graph as the repository's default pipeline.
 - **Data Input sidecar**: `inputType` `file`, `format` `csv`, `mode` `scan`, a
   project-root-relative `path`, and empty `arguments`.
 - **Output sidecar**: `outputMapping` entries (`source_port`, `source_column`,
-  `output_path`, `enabled`) and `outputFormat` `json`.
+  `output_path`, `enabled`); the response document is JSON.
 - **Generated pipeline**: the decorators carry their sidecar paths (and a contract
   only where it adds information); the Data Input and Output nodes are declarations
   and the transform is plain Polars. When the file runs on its own, each decorator

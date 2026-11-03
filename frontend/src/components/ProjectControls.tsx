@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import { BookOpen, Bot, Bug, CircleHelp, FolderGit2, FolderOpen, Keyboard, Loader2 } from "lucide-react"
 import { SaveCommit, ToolbarButton, ToolbarColumn } from "../haute-ui"
 import useClickOutside from "../hooks/useClickOutside"
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 import useUIStore from "../stores/useUIStore"
 import { DOCUMENTATION_URL } from "../utils/documentation"
 import BranchIndicator from "./BranchIndicator"
@@ -48,14 +49,12 @@ export default function ProjectControls({
   const [helpOpen, setHelpOpen] = useState(false)
   const helpRef = useRef<HTMLDivElement>(null)
   const closeHelp = useCallback(() => setHelpOpen(false), [])
+  const dismissHelpWithFocus = useCallback(() => {
+    setHelpOpen(false)
+    helpRef.current?.querySelector<HTMLElement>('[data-testid="toolbar-help"]')?.focus()
+  }, [])
   useClickOutside(helpRef, closeHelp, helpOpen)
-  const helpItems = () =>
-    Array.from(helpRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
-  // Menu keyboard contract: focus lands on the first item when it opens, and
-  // the arrow keys move through the items.
-  useEffect(() => {
-    if (helpOpen) helpItems()[0]?.focus()
-  }, [helpOpen])
+  useMenuKeyboard(helpRef, dismissHelpWithFocus, helpOpen)
 
   return (
     <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
@@ -110,21 +109,6 @@ export default function ProjectControls({
         <div
           ref={helpRef}
           className="relative w-full"
-          onKeyDown={(e) => {
-            if (!helpOpen) return
-            if (e.key === "Escape") {
-              e.stopPropagation()
-              setHelpOpen(false)
-              helpRef.current?.querySelector<HTMLElement>('[data-testid="toolbar-help"]')?.focus()
-              return
-            }
-            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
-            e.preventDefault()
-            const items = helpItems()
-            const index = items.indexOf(document.activeElement as HTMLElement)
-            const step = e.key === "ArrowDown" ? 1 : -1
-            items[(index + step + items.length) % items.length]?.focus()
-          }}
         >
           <ToolbarButton
             icon={CircleHelp}

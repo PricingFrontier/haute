@@ -355,6 +355,21 @@ Out of scope (owned by neighbouring components):
   same check runs over every submodel file the pipeline's parse reads, and its diagnostics
   name that file and the submodel constructor.
 
+  Comments follow the same rule. Regeneration keeps a comment in the preamble, in a preserved
+  block, or in a node's code (the body lines its extraction keeps, from the comment lines
+  above its first statement to its last statement before the closing `return df`), and the
+  wire comment it writes above the connect calls. Every other comment is dropped: one above
+  the imports, on the constructor, between node functions, on a decorator or a signature,
+  on a docstring or `return df` line, after a body's last statement, inside a declaration
+  (whose body is regenerated), on a registration or a connect call, at the end of the file.
+  `_ast_helpers.unkept_comments` finds each one: outside node functions by those regions,
+  inside one by matching the body's comments, in order, with the comments of the node's
+  extracted code, so whatever extraction keeps is kept. The editor document reports each as
+  an `unkept_module_statement` diagnostic at its line and column, with the fixes (move it
+  into the preamble, into a node's code above its `return df`, or between preserve markers),
+  in line order with the dropped statements, which degrades the document as they do. A
+  comment inside a statement already reported is not reported again.
+
   A pipeline file's imports from `modules` are neither kept nor preamble: codegen writes them
   from the registrations (`_ast_helpers.is_submodel_import` recognises every spelling,
   including the relative and aliased ones the parser refuses). Preamble extraction leaves

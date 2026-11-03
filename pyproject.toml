@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "haute"
-version = "0.6.0"
+version = "0.7.1"
 description = "Haute - Open-source pricing engine for insurance teams"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -121,16 +121,26 @@ databricks = [
     "databricks-sql-connector>=4.2.5,<5",
 ]
 # The underwriter app's quote store on SQL Server, Azure SQL Database and Azure SQL
-# Managed Instance: pyodbc, through Microsoft ODBC Driver 18, which is installed apart
-# (a release's image installs it), and azure-identity for a Microsoft Entra ID sign-in.
+# Managed Instance: Microsoft's mssql-python, whose wheels carry ODBC Driver 18 within
+# them, so nothing is installed apart and no administrator is needed; SQLAlchemy 2.1, its
+# first with the mssql+mssqlpython dialect; and azure-identity for a Microsoft Entra ID
+# sign-in.
 sqlserver = [
-    "pyodbc>=5.2.0,<6",
+    "mssql-python>=1.16.0,<2",
+    "sqlalchemy>=2.1.0,<3",
     "azure-identity>=1.19.0,<2",
 ]
 # The quote store on PostgreSQL and its hosted forms: psycopg with its own libpq, and
 # azure-identity for an Entra ID sign-in to Azure Database for PostgreSQL.
 postgresql = [
     "psycopg[binary]>=3.2.0,<4",
+    "azure-identity>=1.19.0,<2",
+]
+# A workbench project's CI rolling its underwriter app out on Azure Container Apps
+# (haute app rollout): the management SDK it updates the Container App through, and
+# azure-identity for the CI service principal.
+azure = [
+    "azure-mgmt-appcontainers>=5.1.0,<6",
     "azure-identity>=1.19.0,<2",
 ]
 [dependency-groups]
@@ -157,7 +167,7 @@ dev = [
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.7",
     "haute[databricks]",
-    "haute[sqlserver,postgresql]",
+    "haute[sqlserver,postgresql,azure]",
     "types-psutil==7.2.2.20260906",
 ]
 

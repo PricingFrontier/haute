@@ -1920,6 +1920,29 @@ class TestLiveSwitch:
         assert results["switch"].status == "ok"
         assert results["switch"].row_count == 3
 
+    def test_a_broken_preamble_fails_code_nodes_alone_without_running_them(self, tmp_path):
+        """A preview whose preamble does not compile reports the preamble's error on every
+        node that runs code, never the NameError its code would raise with no preamble, and
+        a Source Switch, which runs none, still previews."""
+        graph = self._switch_graph(tmp_path)
+        graph.preamble = "RATE = 1 / 0\n\n\ndef add_ten(col):\n    return pl.col(col) + 10\n"
+        graph.nodes.append(
+            _transform_node("priced", code="df = live_src.with_columns(y=add_ten('x'))")
+        )
+        graph.nodes.append(_transform_node("after", code="df = priced"))
+        graph.edges.extend([_edge("live_src", "priced"), _edge("priced", "after")])
+
+        results = execute_graph(graph, source="live")
+
+        assert results["switch"].status == "ok", results["switch"].error
+        assert results["switch"].row_count == 3
+        priced = results["priced"]
+        assert priced.status == "error"
+        assert "Preamble" in (priced.error or ""), priced.error
+        assert "add_ten" not in (priced.error or "")
+        assert priced.error_line is None
+        assert results["after"].status == "error"
+
     def test_live_scenario_works_regardless_of_edge_order(self, tmp_path):
         """Edge order in the graph JSON is arbitrary — live must still pick the correct input."""
         graph = self._switch_graph(tmp_path, reverse_edges=True)
@@ -2556,13 +2579,14 @@ class TestResolveBatchScenario:
 
 
 class TestPreviewCachePartialHit:
-    """Verify the cache-extend (partial-hit) path in execute_graph."""
+    """An entry that lacks what a request needs is a miss, never extended."""
 
     @pytest.mark.parametrize("fresh_error", [False, True])
-    def test_partial_hit_extends_cache(self, tmp_path, monkeypatch, fresh_error):
-        """When a cached graph fingerprint exists but the target node is
-        not yet materialized, execute_graph should re-execute for the new
-        target and merge the results.
+    def test_a_partial_hit_executes_as_a_miss_and_replaces_the_entry(
+        self, tmp_path, monkeypatch, fresh_error
+    ):
+        """When a cached entry under the request's key lacks the target, the request
+        executes in full and its result replaces the entry, nothing merged from the old one.
 
         Real failure: clicking a deeper node after an initial preview
         returns 'No output' because the cache returned a hit without
@@ -2586,9 +2610,9 @@ class TestPreviewCachePartialHit:
             }
         )
 
-        # Force both target requests into one lineage slot so this test
-        # exercises the defensive cache-extension path rather than merely
-        # proving that target-specific fingerprints cause two cache misses.
+        # Force both target requests into one lineage slot, so the second finds an
+        # entry that lacks its target, rather than merely proving that
+        # target-specific fingerprints cause two cache misses.
         monkeypatch.setattr(
             "haute.executor.execution_facade.preview_lineage_cache_key",
             lambda *_args, **_kwargs: "partial-hit-regression",
@@ -2620,53 +2644,30 @@ class TestPreviewCachePartialHit:
             def eager_with_partial_error(*args, **kwargs):
                 result = list(real_eager(*args, **kwargs))
                 # A producer can return usable frame evidence alongside a node error.
-                # Cache extension must preserve that error instead of reviving an old success.
+                # The new entry keeps that error instead of reviving the old success.
                 result[2] = {**result[2], "mid": "partial result rejected"}
                 result[5] = {**result[5], "mid": 7}
                 return tuple(result)
 
             monkeypatch.setattr(executor_mod, "_eager_execute", eager_with_partial_error)
 
-        # Second call: same graph, but now requesting "leaf" — partial hit
+        # Second call: same graph, but now requesting "leaf": the entry lacks it
         results2 = execute_graph(graph, target_node_id="leaf")
         assert "leaf" in results2
         assert results2["leaf"].status == "ok"
         assert results2["leaf"].row_count == 3
-        # The merged cache should also still contain "mid" and "src"
         assert "mid" in results2
+        replaced = _preview_cache.get("partial-hit-regression")
+        assert replaced is not None and "leaf" in replaced["eager_outputs"]
         if fresh_error:
             assert results2["mid"].status == "error"
             assert results2["mid"].error == "partial result rejected"
             assert _preview_cache.get("partial-hit-regression")["error_lines"]["mid"] == 7
         else:
             assert results2["mid"].status == "ok"
-        assert plan_calls == 2, "a partial extension must plan against the current request"
+        assert plan_calls == 2, "the miss plans against the current request"
 
         _preview_cache.clear()
-
-    def test_projection_cache_suffix_signs_scope_columns_and_port(self):
-        from haute.executor import _preview_projection_cache_suffix
-
-        graph = _g({"nodes": [], "edges": []})
-
-        target_only = _preview_projection_cache_suffix(
-            graph,
-            "target",
-            None,
-            target_preview_only=True,
-            initial_column_limit=32,
-        )
-        projected_port = _preview_projection_cache_suffix(
-            graph,
-            "target",
-            ["premium"],
-            port_label="quotes",
-        )
-
-        assert "preview_target_only='target'" in target_only
-        assert "initial_col_limit=32" in target_only
-        assert "preview_cols=('premium',)" in projected_port
-        assert "preview_port='quotes'" in projected_port
 
     def test_full_cache_hit_reuses_producing_strategy_without_replanning(self, tmp_path):
         """When the target node is already in the cached outputs, no
@@ -3549,10 +3550,7 @@ df = src.with_columns(
             mock_execute.assert_not_called()
 
     def test_optimiser_apply_preview_alias_seed_preserves_default_name(self):
-        from haute.executor import (
-            _preview_projection_cache_suffix,
-            _preview_required_columns_by_node,
-        )
+        from haute.executor import _preview_required_columns_by_node
 
         node = _n(
             {
@@ -3571,11 +3569,6 @@ df = src.with_columns(
             "apply",
             ["optimal_scenario_value"],
         ) == {"apply": ["optimal_scenario_value", "custom_value"]}
-        assert _preview_projection_cache_suffix(
-            graph,
-            "apply",
-            ["optimal_scenario_value"],
-        ) != _preview_projection_cache_suffix(graph, "apply", ["custom_value"])
 
 
 # ---------------------------------------------------------------------------
@@ -3902,7 +3895,7 @@ class TestPreambleLockConcurrency:
         tmp_path,
         monkeypatch,
     ):
-        """A competing compile must not change sys.path during utility import."""
+        """A competing compile must not rebind the utility finder during another's import."""
         import threading
 
         import haute.executor as executor
@@ -3916,19 +3909,23 @@ class TestPreambleLockConcurrency:
             (util_dir / "__init__.py").write_text("", encoding="utf-8")
             (util_dir / "helpers.py").write_text(f"VALUE = {value!r}\n", encoding="utf-8")
 
-        original_evict = executor._evict_utility_import_state
+        original_evict = executor.evict_utility_modules
         a_waiting = threading.Event()
         b_started = threading.Event()
         release_a = threading.Event()
+        calls: list[None] = []
 
-        def delayed_evict(pipeline_dir_str):
-            original_evict(pipeline_dir_str)
-            if pipeline_dir_str == str(pipeline_a.resolve()):
+        def delayed_evict() -> None:
+            original_evict()
+            calls.append(None)
+            if len(calls) == 1:
+                # The first compile (A's) has bound the finder to its project and evicted
+                # utility; B must wait for A's import before it can rebind it.
                 a_waiting.set()
                 assert b_started.wait(2), "competing compile never started"
                 assert release_a.wait(2), "test did not release first compile"
 
-        monkeypatch.setattr(executor, "_evict_utility_import_state", delayed_evict)
+        monkeypatch.setattr(executor, "evict_utility_modules", delayed_evict)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
 
         source = "from utility.helpers import VALUE\n"
@@ -4068,32 +4065,17 @@ class TestPreambleLockConcurrency:
         for ns in results:
             assert ns["VALUE"] == 42
 
-    def test_sys_path_insert_is_idempotent(self, tmp_path, monkeypatch):
-        """Multiple _compile_preamble calls should not keep appending the
-        same cwd to sys.path.
-
-        Real failure: sys.path grows unboundedly on every preview click,
-        slowing down all subsequent imports.
-        """
+    def test_compiles_leave_sys_path_unchanged(self, tmp_path, monkeypatch):
+        """A compile never edits sys.path, so repeated preview clicks cannot grow it."""
         import sys
 
         monkeypatch.chdir(tmp_path)
-
-        cwd = str(tmp_path)
-        # Remove cwd from sys.path first to get a clean state
-        while cwd in sys.path:
-            sys.path.remove(cwd)
+        before = list(sys.path)
 
         _compile_preamble("X = 1\n")
-        count_after_first = sys.path.count(cwd)
-
         _compile_preamble("Y = 2\n")
-        count_after_second = sys.path.count(cwd)
 
-        # Should not have added cwd again (it was already there from first call)
-        assert count_after_second == count_after_first, (
-            f"sys.path.insert duplicated cwd: {count_after_first} -> {count_after_second}"
-        )
+        assert sys.path == before
 
 
 # ---------------------------------------------------------------------------
@@ -4485,7 +4467,7 @@ class TestConflictingBatchScenarios:
 
 
 class TestPreambleFailureIsolation:
-    """Verify preamble errors inject only into POLARS and LIVE_SWITCH nodes."""
+    """A preview whose preamble fails fails only the nodes that run code, with its error."""
 
     def test_broken_preamble_data_source_succeeds(self, tmp_path, monkeypatch):
         """Data source nodes should execute normally even when the preamble
@@ -4530,12 +4512,9 @@ class TestPreambleFailureIsolation:
 
         _preview_cache.clear()
 
-    def test_broken_preamble_live_switch_gets_error(self, tmp_path, monkeypatch):
-        """liveSwitch nodes should also receive the preamble error.
-
-        Real failure: liveSwitch nodes silently pass through with no
-        error, hiding the preamble failure from the user.
-        """
+    def test_broken_preamble_leaves_the_live_switch_alone(self, tmp_path, monkeypatch):
+        """A Source Switch runs no code, so a broken preamble does not fail it; the nodes
+        that run code report the preamble (TestLiveSwitch pins them beside a switch)."""
         monkeypatch.chdir(tmp_path)
 
         util_dir = tmp_path / "utility"
@@ -4584,9 +4563,8 @@ class TestPreambleFailureIsolation:
         results = execute_graph(graph, source="live")
         # Data sources should succeed
         assert results["live_src"].status == "ok"
-        # liveSwitch should get the preamble error
-        assert results["sw"].status == "error"
-        assert "undefined_name" in results["sw"].error
+        assert results["sw"].status == "ok", results["sw"].error
+        assert results["sw"].row_count == 1
 
         _preview_cache.clear()
 

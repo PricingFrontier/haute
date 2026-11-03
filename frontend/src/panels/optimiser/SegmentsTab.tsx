@@ -8,19 +8,17 @@
  * The keys are the result's `segment_keys`, listed unranked until the target's
  * index ranks them by adjustment spread. The selected key and the search are the
  * Rates tab's, lifted into the preview's review. Loaded breakdowns and indexes
- * belong to the review too (`results`), keyed by job, generation, target, key
- * and weighting, so returning to one makes no request. Each request has its own
- * AbortController: switching key, weighting or point aborts the one in flight
- * and drops its reply; a reply the server answered for another frontier
- * generation than the one shown (it recomputed first) is reported, not kept. A
- * 409 replaced by another point's apply is reissued; a 410 says the point is
- * gone, with no Retry; anything else offers Retry.
+ * belong to the review too (`results`), keyed by job, target, key and
+ * weighting, so returning to one makes no request. Each request goes through
+ * `useLatestRequest`: switching key, weighting or point aborts the one in
+ * flight and drops its reply; a 409 replaced by another point's apply is
+ * reissued; a 410 says the point is gone, with no Retry; anything else offers
+ * Retry.
  */
 
-import { useEffect, useId, useMemo, useRef, useState } from "react"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { useId, useMemo, useState } from "react"
+import { Loader2 } from "lucide-react"
 import { getOptimiserSegmentIndex, getOptimiserSegments } from "../../api/client"
-import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../../api/errors"
 import type {
   OptimiserSegmentIndexResponse,
   OptimiserSegmentKey,
@@ -39,12 +37,14 @@ import {
   RelativityBars,
   type RelativityBar,
 } from "../RelativityBars"
+import { ViewSwitch } from "../ViewSwitch"
 import { DEPLOYED_FACTOR_DIFFERS_LABEL, formatScenarioValue, formatShare } from "./adjustments"
-import { frontierGenerationMismatch } from "./optimiserHelpers"
 import { formatVsNeutral } from "./ratebookFactorTables"
+import RequestFailureNotice from "./RequestFailureNotice"
+import { useLatestRequest } from "./useLatestRequest"
 
 /** The key choice and search, shared with the Rates tab through the preview's review. */
-export type SegmentsKeySelection = Omit<SharedFeatureBrowser, "features">
+type SegmentsKeySelection = Omit<SharedFeatureBrowser, "features">
 
 /** Breakdowns and indexes loaded in this review, by `breakdownKey` and `indexKey`. */
 export type SegmentResults = {
@@ -52,10 +52,9 @@ export type SegmentResults = {
   indexes: Readonly<Record<string, OptimiserSegmentIndexResponse>>
 }
 
-export const NO_SEGMENT_KEYS = "Tick validation factors in the optimiser's Factors pane"
+const NO_SEGMENT_KEYS = "Tick validation factors in the optimiser's Factors pane"
 
 const QUOTES_WEIGHT = "quotes"
-const APPLY_REPLACED = "frontier_point_apply_replaced"
 const QUOTE_STRIP_WIDTH = 96
 const UNAVAILABLE = "—"
 
@@ -64,71 +63,17 @@ const RANKING_PENDING: FeatureRanking = {
   description: "Ranking the keys by adjustment spread; listed in configured order until then.",
 }
 
-type LoadFailure = { key: string; gone: boolean; message: string }
-
-/** A target's identity: point indices mean something only within one job and generation. */
-function indexKey(jobId: string, frontierGeneration: number, pointIndex: number | null): string {
-  return `${jobId}:${frontierGeneration}:${pointIndex ?? "solved"}`
+/** A target's identity: point indices mean something only within one job. */
+function indexKey(jobId: string, pointIndex: number | null): string {
+  return `${jobId}:${pointIndex ?? "solved"}`
 }
 
 function breakdownKey(target: string, key: string, weight: string): string {
   return JSON.stringify([target, key, weight])
 }
 
-/**
- * One request's lifecycle: aborted when its identity changes, a replaced 409
- * reissued. A reply the server answered for another frontier generation than
- * the one shown (it recomputed first) is reported, never kept.
- */
-function useLatestRequest<T extends { frontier_generation: number }>(
-  identity: string | null,
-  frontierGeneration: number,
-  load: (signal: AbortSignal) => Promise<T>,
-  onLoaded: (identity: string, value: T) => void,
-): { failure: LoadFailure | null; retry: () => void } {
-  const [failure, setFailure] = useState<LoadFailure | null>(null)
-  const [attempt, setAttempt] = useState(0)
-  const loadRef = useRef(load)
-  const onLoadedRef = useRef(onLoaded)
-  useEffect(() => {
-    loadRef.current = load
-    onLoadedRef.current = onLoaded
-  })
-  const failed = failure !== null && failure.key === identity
-  useEffect(() => {
-    if (identity === null || failed) return
-    const controller = new AbortController()
-    loadRef.current(controller.signal)
-      .then((value) => {
-        if (controller.signal.aborted) return
-        const mismatch = frontierGenerationMismatch(value.frontier_generation, frontierGeneration)
-        if (mismatch !== null) {
-          setFailure({ key: identity, gone: false, message: mismatch })
-          return
-        }
-        onLoadedRef.current(identity, value)
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return
-        if (apiErrorStatus(error) === 409 && apiErrorCode(error) === APPLY_REPLACED) {
-          setAttempt((current) => current + 1)
-          return
-        }
-        setFailure({
-          key: identity,
-          gone: apiErrorStatus(error) === 410,
-          message: apiErrorMessage(error, "The request failed."),
-        })
-      })
-    return () => controller.abort()
-  }, [identity, frontierGeneration, failed, attempt])
-  return { failure: failed ? failure : null, retry: () => setFailure(null) }
-}
-
 interface SegmentsTabProps {
   jobId: string
-  /** The solve's frontier generation: point indices are only meaningful within one. */
-  frontierGeneration: number
   /** The selected frontier point, or null for the solved result. */
   pointIndex: number | null
   /** The as-solved result: its segment keys, constraints and mode are every target's. */
@@ -143,7 +88,6 @@ type SegmentsKeyRow = { feature: string; key: OptimiserSegmentKey }
 
 export default function SegmentsTab({
   jobId,
-  frontierGeneration,
   pointIndex,
   solvedResult,
   selection,
@@ -152,13 +96,15 @@ export default function SegmentsTab({
   onIndex,
 }: SegmentsTabProps) {
   const catalogue = solvedResult.segment_keys
-  const target = indexKey(jobId, frontierGeneration, pointIndex)
+  const target = indexKey(jobId, pointIndex)
   const index = results.indexes[target]
   const indexRequest = useLatestRequest(
-    catalogue.length > 0 && index === undefined ? target : null,
-    frontierGeneration,
-    (signal) => getOptimiserSegmentIndex({ job_id: jobId, point_index: pointIndex }, { signal }),
-    onIndex,
+    catalogue.length > 0 && index === undefined ? { key: target, jobId, pointIndex } : null,
+    (request, signal) => getOptimiserSegmentIndex(
+      { job_id: request.jobId, point_index: request.pointIndex },
+      { signal },
+    ),
+    (request, response) => onIndex(request.key, response),
   )
   // The index may find a key the gate admitted unavailable; its verdict wins once loaded.
   const keys: OptimiserSegmentKey[] = index?.keys ?? catalogue
@@ -183,7 +129,7 @@ export default function SegmentsTab({
   return (
     <div className="space-y-2">
       {indexRequest.failure && (
-        <LoadFailureNotice
+        <RequestFailureNotice
           what="The keys could not be ranked"
           failure={indexRequest.failure}
           retryLabel="Retry ranking"
@@ -201,7 +147,6 @@ export default function SegmentsTab({
             key={row.feature}
             segmentKey={row.key}
             jobId={jobId}
-            frontierGeneration={frontierGeneration}
             pointIndex={pointIndex}
             target={target}
             solvedResult={solvedResult}
@@ -228,7 +173,6 @@ function weightOptions(result: OptimiserSolveResult): { key: string; label: stri
 function SegmentKeyPane({
   segmentKey,
   jobId,
-  frontierGeneration,
   pointIndex,
   target,
   solvedResult,
@@ -237,7 +181,6 @@ function SegmentKeyPane({
 }: {
   segmentKey: OptimiserSegmentKey
   jobId: string
-  frontierGeneration: number
   pointIndex: number | null
   target: string
   solvedResult: OptimiserSolveResult
@@ -249,13 +192,14 @@ function SegmentKeyPane({
   const identity = breakdownKey(target, segmentKey.key, weight)
   const response = results.breakdowns[identity]
   const request = useLatestRequest(
-    segmentKey.available && response === undefined ? identity : null,
-    frontierGeneration,
-    (signal) => getOptimiserSegments(
-      { job_id: jobId, point_index: pointIndex, key: segmentKey.key, weight },
+    segmentKey.available && response === undefined
+      ? { key: identity, jobId, pointIndex, segment: segmentKey.key, weight }
+      : null,
+    (wanted, signal) => getOptimiserSegments(
+      { job_id: wanted.jobId, point_index: wanted.pointIndex, key: wanted.segment, weight: wanted.weight },
       { signal },
     ),
-    onBreakdown,
+    (wanted, loaded) => onBreakdown(wanted.key, loaded),
   )
 
   if (!segmentKey.available) {
@@ -269,25 +213,12 @@ function SegmentKeyPane({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span id={weightById} style={{ color: "var(--text-secondary)" }}>Weight by</span>
-        <div role="group" aria-labelledby={weightById} className="flex flex-wrap gap-1">
-          {weightOptions(solvedResult).map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              aria-pressed={option.key === weight}
-              onClick={() => setWeight(option.key)}
-              className="validation-control"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <ViewSwitch labelledBy={weightById} options={weightOptions(solvedResult)} value={weight} onChange={setWeight} />
       </div>
       {request.failure ? (
-        <LoadFailureNotice
+        <RequestFailureNotice
           what="The segments could not be loaded"
           failure={request.failure}
-          retryLabel="Retry"
           onRetry={request.retry}
         />
       ) : response === undefined ? (
@@ -297,36 +228,6 @@ function SegmentKeyPane({
         </div>
       ) : (
         <SegmentsChart response={response} />
-      )}
-    </div>
-  )
-}
-
-function LoadFailureNotice({
-  what,
-  failure,
-  retryLabel,
-  onRetry,
-}: {
-  what: string
-  failure: LoadFailure
-  retryLabel: string
-  onRetry: () => void
-}) {
-  return (
-    <div role="alert" className="flex items-start gap-2 text-xs px-3 py-2 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-      <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      <span className="flex-1">{`${what}: ${failure.message}`}</span>
-      {!failure.gone && (
-        <button
-          type="button"
-          onClick={onRetry}
-          aria-label={retryLabel}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
-          style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
-        >
-          Retry
-        </button>
       )}
     </div>
   )

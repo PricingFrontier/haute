@@ -698,9 +698,6 @@ def test_direct_spill_cleanup_registration_failure_removes_bundle(
         def checkpoint(self, *, label: str) -> None:
             del label
 
-        def record_cache_proof_miss(self, reason: Any) -> None:
-            del reason
-
     monkeypatch.setattr(_runtime_storage, "_new_direct_spill_dir", _capture)
     monkeypatch.setattr(_writer, "current_execution_context", lambda: _FailingContext())
 
@@ -725,9 +722,6 @@ def test_direct_spill_managed_cleanup_and_unmanaged_fork_isolation(
 
         def checkpoint(self, *, label: str) -> None:
             del label
-
-        def record_cache_proof_miss(self, reason: Any) -> None:
-            del reason
 
         def record_cache_direct_fallback(self) -> None:
             pass

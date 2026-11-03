@@ -15,7 +15,6 @@ import {
 import type {
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
-  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
   OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
 } from "../generated/api-contracts.generated"
 import type {
@@ -31,7 +30,6 @@ import type {
   NodeInstanceCreateResponse,
   DissolveSubmodelResponse,
   ExecutionAdmission,
-  ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
   InputPreparationRecord,
   ExecutionWarning,
@@ -56,7 +54,6 @@ import type {
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
   FrontierAutoRangeStatusResponse,
-  FrontierStatusResponse,
   FrontierResponse,
   NodeDataStatusResponse,
   OptimiserStatusResponse,
@@ -506,11 +503,6 @@ function parseExecutionStageMetrics(
     rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
     rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
     rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
-    rows_in: optionalNullableNumber(parser, obj, "rows_in"),
-    rows_out: optionalNullableNumber(parser, obj, "rows_out"),
-    bytes_read: optionalNullableNumber(parser, obj, "bytes_read"),
-    bytes_written: optionalNullableNumber(parser, obj, "bytes_written"),
-    columns_scanned: optionalNullableNumber(parser, obj, "columns_scanned"),
     n_collects: optionalNumber(parser, obj, "n_collects"),
     n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
   }
@@ -771,8 +763,7 @@ function parseExecutionMetrics(
       : parseColumnWidths(obj.column_widths, `${field}.column_widths`),
     requested_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "requested_column_width_total", field),
     physically_scanned_column_width_total: parseOptionalNullableNonNegativeNumber(obj, "physically_scanned_column_width_total", field),
-    cache_proof: parseExecutionCacheProof(obj.cache_proof, `${field}.cache_proof`),
-    bytes_read: parseOptionalNullableNonNegativeNumber(obj, "bytes_read", field),
+    cache_direct_fallbacks: expectNonNegativeMetricNumber(obj.cache_direct_fallbacks, `${field}.cache_direct_fallbacks`),
     bytes_written: parseOptionalNullableNonNegativeNumber(obj, "bytes_written", field),
     estimated_bytes: estimatedBytes,
     raw_estimated_bytes: rawEstimatedBytes,
@@ -938,27 +929,6 @@ function parseColumnWidths(value: unknown, field: string): ExecutionColumnWidths
     if (compareUnicode(items[index - 1].node_id, items[index].node_id) >= 0) throw new Error(`execution metrics: ${field} must be sorted and unique`)
   }
   return { state, total_count: totalCount, items }
-}
-
-function parseExecutionCacheProof(value: unknown, field: string): ExecutionCacheProof {
-  const obj = expectPlainObject("execution metrics", value, field)
-  const reasons = expectPlainObject("execution metrics", obj.miss_reason_counts, `${field}.miss_reason_counts`)
-  const missReasonCounts = {
-    metadata_source_mismatch: expectNonNegativeMetricNumber(reasons.metadata_source_mismatch, `${field}.miss_reason_counts.metadata_source_mismatch`),
-    artifact_integrity_schema_failure: expectNonNegativeMetricNumber(reasons.artifact_integrity_schema_failure, `${field}.miss_reason_counts.artifact_integrity_schema_failure`),
-    unreadable_artifact: expectNonNegativeMetricNumber(reasons.unreadable_artifact, `${field}.miss_reason_counts.unreadable_artifact`),
-    proof_unavailable: expectNonNegativeMetricNumber(reasons.proof_unavailable, `${field}.miss_reason_counts.proof_unavailable`),
-  }
-  const misses = expectNonNegativeMetricNumber(obj.misses, `${field}.misses`)
-  if (misses !== Object.values(missReasonCounts).reduce((total, count) => total + count, 0)) {
-    throw new Error(`execution metrics: ${field}.misses does not equal its closed reason-count total`)
-  }
-  return {
-    hits: expectNonNegativeMetricNumber(obj.hits, `${field}.hits`),
-    misses,
-    direct_fallbacks: expectNonNegativeMetricNumber(obj.direct_fallbacks, `${field}.direct_fallbacks`),
-    miss_reason_counts: missReasonCounts,
-  }
 }
 
 const STRATEGY_STATUS = {
@@ -2194,19 +2164,6 @@ export function optimiserStatusFromContract(
     frontier: response.frontier === null ? null : frontierFromContract(response.frontier, "frontier"),
     execution_metrics: optionalExecutionMetrics(
       "parseOptimiserStatusResponse",
-      { execution_metrics: response.execution_metrics },
-    ),
-  }
-}
-
-export function frontierStatusFromContract(
-  response: GeneratedOptimiserFrontierStatusResponse,
-): FrontierStatusResponse {
-  return {
-    ...response,
-    result: response.result === null ? null : frontierFromContract(response.result, "result"),
-    execution_metrics: optionalExecutionMetrics(
-      "parseFrontierStatusResponse",
       { execution_metrics: response.execution_metrics },
     ),
   }

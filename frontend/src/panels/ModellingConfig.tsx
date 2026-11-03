@@ -11,9 +11,10 @@ import {
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
-import useNodeResultsStore, { type TrainProgress, type TrainResult } from "../stores/useNodeResultsStore"
-import {
+import useNodeResultsStore, { trainFailureResult, type TrainProgress } from "../stores/useNodeResultsStore"
+import useDocumentStatusStore, {
   captureDocumentExecutionFence,
+  documentExecutionKey,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -33,7 +34,7 @@ import {
   trainingIssuePane,
   type TrainingConfigurationIssue,
 } from "../utils/trainingObjective"
-import type { OnUpdateConfig } from "./editors"
+import type { OnUpdateConfig } from "./editors/_shared"
 import { useGraph } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
@@ -45,7 +46,7 @@ import {
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { EBMInteractionsConfig } from "./modelling/EBMInteractionsConfig"
 import { ExportPane } from "./modelling/ExportPane"
-import { XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
+import { GpuTrainingCheckbox, XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
@@ -66,11 +67,14 @@ import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
 import { TrainingRunSummary } from "./modelling/TrainingRunSummary"
 import { estimateAfterSupersededPreviews } from "./modelling/trainingEstimate"
+import { EVALUATION_PREVIEW_FAILED } from "./modelling/evaluationPreview"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
 import type { ReactElement } from "react"
 
 type Props = {
+  /** The node being configured: its training job, results and remembered pane. */
+  nodeId: string
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
@@ -180,6 +184,13 @@ function reservedParamsFor(algorithm: string): { keys: readonly string[]; help: 
     help: TREE_RESERVED_PARAM_HELP,
   }
 }
+// Issues a pane does not repeat above its body: the GLM Parameters pane shows its
+// conflicts beside the settings involved, and a missing L1 ratio only in Train's list.
+const PANE_BODY_ISSUE_CODES: ReadonlySet<TrainingConfigurationIssue["code"]> = new Set([
+  "glm-elastic-net-l1-ratio",
+  "glm-smooth-regularization",
+  "glm-robust-standard-errors",
+])
 const DEFAULT_EVALUATION: Record<string, unknown> = {
   schema_version: 1,
   strategy: "random",
@@ -311,20 +322,7 @@ function TrainPane({
     <>
       <TrainingRunSummary config={config} columns={columns} preview={estimate.estimate?.evaluation_preview ?? null} />
       {algorithm === "catboost" && (
-        <label className="flex cursor-pointer select-none items-center gap-2">
-          <input
-            type="checkbox"
-            checked={params.task_type === "GPU"}
-            onChange={(event) => toggleGpu(event.target.checked)}
-            className="accent-purple-500"
-          />
-          <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>
-            GPU training
-          </span>
-          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            (CUDA)
-          </span>
-        </label>
+        <GpuTrainingCheckbox checked={params.task_type === "GPU"} onToggle={toggleGpu} />
       )}
       {algorithmCapability(algorithm)?.gpu_device === true && (
         <XGBoostGpuToggle
@@ -347,6 +345,7 @@ function TrainPane({
         ramEstimate={estimate.estimate}
         ramEstimateLoading={estimate.loading}
         ramEstimateError={estimate.error}
+        ramEstimateErrorCode={estimate.errorCode}
         estimateWaiting={estimateWaiting}
         rowLimit={rowLimit}
         nodeLabel={nodeLabel}
@@ -366,6 +365,7 @@ function TrainPane({
 }
 
 export default function ModellingConfig({
+  nodeId,
   config,
   onUpdate,
   upstreamColumns = [],
@@ -373,7 +373,6 @@ export default function ModellingConfig({
   onPaneIssuesChange,
 }: Props) {
   const { allNodes, edges, submodels, preamble, openNode } = useGraph()
-  const nodeId = String(config._nodeId ?? "")
   const setModellingPane = useUIStore((state) => state.setModellingPane)
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
   const trainJob = useNodeResultsStore((state) => state.trainJobs[nodeId])
@@ -382,6 +381,7 @@ export default function ModellingConfig({
   const updateTrainProgress = useNodeResultsStore((state) => state.updateTrainProgress)
   const completeTrainJob = useNodeResultsStore((state) => state.completeTrainJob)
   const failTrainJob = useNodeResultsStore((state) => state.failTrainJob)
+  const failTrainStart = useNodeResultsStore((state) => state.failTrainStart)
   const addToast = useToastStore((state) => state.addToast)
   const activeSource = useSettingsStore((state) => state.activeSource)
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
@@ -545,24 +545,31 @@ export default function ModellingConfig({
     },
     [config.refit_on_development, onUpdate, validationFit],
   )
-  const onEstimateDispersion = useCallback(
-    (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
+  // A dispersion estimate reads the document, this node's training settings,
+  // the graph feeding it and the data source; a change to any stops it.
+  const documentKey = useDocumentStatusStore(documentExecutionKey)
+  // The estimate hook hashes the training identity in this same render.
+  const trainingHash = estimate.configHash
+  const dispersionEstimate = useMemo(() => ({
+    scope: JSON.stringify([documentKey, nodeId, activeSource, structuralVersion, trainingHash]),
+    run: (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
       graph: graph(),
       node_id: nodeId,
       param,
-      source: useSettingsStore.getState().activeSource,
+      source: activeSource,
     }, { signal }),
-    [graph, nodeId],
-  )
+  }), [activeSource, documentKey, graph, nodeId, structuralVersion, trainingHash])
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
     // The lineage is taken from the exact payload submitted, before awaiting, so
-    // an edit made while the request is pending never relabels this job.
+    // an edit made while the request is pending never relabels this job; the
+    // config hash is this render's training identity for the same reason.
     const submittedGraph = graph()
     const lineage = trainingLineage(submittedGraph)
+    const configHash = trainingHash
     try {
       const result = await trainModel({
         graph: submittedGraph,
@@ -575,71 +582,24 @@ export default function ModellingConfig({
           nodeId,
           result.job_id,
           allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training",
-          estimate.configHash,
+          configHash,
           activeSource,
           structuralVersion,
           lineage,
         )
+      } else if (result.status === "error") {
+        failTrainStart(nodeId, result)
       } else {
-        completeTrainJob(nodeId, result as unknown as TrainResult)
+        completeTrainJob(nodeId, result)
       }
     } catch (error) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = apiErrorMessage(error)
-      completeTrainJob(
-        nodeId,
-        {
-          status: "error",
-          job_id: null,
-          diagnostic_metrics: {},
-          final_test_metrics: {},
-          feature_importance: [],
-          model_path: "",
-          development_rows: 0,
-          final_test_rows: 0,
-          diagnostics_set: "development",
-          features: [],
-          cat_features: [],
-          error: message,
-          best_iteration: null,
-          loss_history: [],
-          loss_history_truncated: false,
-          validation_loss_history: [],
-          validation_loss_history_truncated: false,
-          double_lift: [],
-          shap_summary: [],
-          shap_beeswarm: [],
-          shap_curves: [],
-          shap_link: null,
-          feature_importance_loss: [],
-          ave_per_feature: [],
-          residuals_histogram: [],
-          residuals_stats: {},
-          actual_vs_predicted: [],
-          lorenz_curve: [],
-          lorenz_curve_perfect: [],
-          pdp_data: [],
-          warning: null,
-          total_source_rows: null,
-          glm_coefficients: [],
-          glm_relativities: [],
-          glm_fit_statistics: {},
-          glm_inference: null,
-          glm_smooth_terms: [],
-          glm_regularization: null,
-          ebm_terms: [],
-          tboost_tables: null,
-          diagnostics_errors: [],
-          feature_selection: null,
-          final_tree_count: null,
-          fit_evidence: null,
-        },
-        failureStatus(error, message),
-      )
+      failTrainStart(nodeId, trainFailureResult(message), failureStatus(error, message))
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, completeTrainJob, estimate.configHash, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion])
+  }, [activeSource, allNodes, completeTrainJob, failTrainStart, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
     const job = useNodeResultsStore.getState().trainJobs[nodeId]
     if (!job || cancelling) return
@@ -674,7 +634,7 @@ export default function ModellingConfig({
       publishesValidationFit={validationFit}
       tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
-      previewError={estimate.error?.startsWith("Evaluation preview failed:") ? estimate.error : null}
+      previewError={estimate.errorCode === EVALUATION_PREVIEW_FAILED ? estimate.error : null}
     />
   )
   const trainPane = (
@@ -745,6 +705,7 @@ export default function ModellingConfig({
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
           publishesValidationFit={validationFit}
+          refitOnDevelopment={config.refit_on_development !== false}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}
@@ -764,7 +725,7 @@ export default function ModellingConfig({
   } else if (algorithm === "glm" && pane === "target") {
     paneBody = (
       <>
-        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} onEstimateDispersion={onEstimateDispersion} />
+        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} dispersionEstimate={dispersionEstimate} />
       </>
     )
   } else if (algorithm === "glm" && pane === "params") {
@@ -780,7 +741,7 @@ export default function ModellingConfig({
 
   return (
     <div key={nodeId} id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
-      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && issue.code !== "glm-elastic-net-l1-ratio" && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
+      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && !PANE_BODY_ISSUE_CODES.has(issue.code) && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
         <p key={issue.code} role="alert" className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "var(--warning-border)", color: "var(--warning-strong)", background: "var(--warning-soft-subtle)" }}>{issue.message}</p>
       ))}
       {paneBody}

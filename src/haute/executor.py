@@ -12,18 +12,15 @@ can optimise the full plan end-to-end.
 
 from __future__ import annotations
 
-import ast as _ast
 import functools
 import gc
 import hashlib
-import importlib as _importlib
 import os
 import stat as stat_module
-import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -60,6 +57,7 @@ from haute._path_resolution import (
     runtime_project_root_scope,
 )
 from haute._pipeline_settings import project_pipeline_settings
+from haute._project_imports import bind_project_utility, evict_utility_modules
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     compile_project_code,
@@ -80,9 +78,9 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
-from haute._types import NodeData, SubmodelEndpoint
+from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
-from haute.errors import HauteError, PreambleError
+from haute.errors import ExecutionError, HauteError, PreambleError, mark_failing_node
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
@@ -131,11 +129,10 @@ PREVIEW_INITIAL_COLUMN_LIMIT = int_env(
 # inside importlib._bootstrap._load_unlocked.
 _preamble_lock = threading.Lock()
 
-# ``sys.path`` and ``sys.modules`` are process-global.  Utility-importing
-# preambles hold ``_preamble_lock`` for the full eviction/import/exec window.
-# Non-utility preambles still take the same lock for their short path
-# reprioritisation so they cannot change import precedence while a utility
-# preamble is paused between path setup and ``exec``.
+# ``sys.modules`` and the ``utility`` finder's binding are process-global.  A
+# compile holds ``_preamble_lock`` for the full bind/eviction/import/exec window,
+# so no other compile rebinds the finder or evicts ``utility`` while a preamble is
+# paused between them.
 #
 # Hot cache hits must NOT pass through this lock (pinned by
 # ``test_hot_cache_hit_does_not_wait_for_import_lock``): a slow preamble exec
@@ -263,71 +260,6 @@ _IS_WINDOWS = os.name == "nt"
 _WINDOWS_OUTPUT_SYNC_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
 
-def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:  # pragma: no mutate
-    bases: list[Path] = []
-    if pipeline_dir_str is not None:
-        bases.append(Path(pipeline_dir_str))
-    bases.append(Path.cwd().resolve())
-
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    for base in bases:
-        for candidate in (base / "utility.py", base / "utility"):
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            candidates.append(resolved)
-    return candidates
-
-
-def _evict_utility_import_state(pipeline_dir_str: str | None) -> None:  # pragma: no mutate
-    """Discard utility import state before compiling a changed preamble key."""
-    _importlib.invalidate_caches()
-
-    for mod_name in [k for k in sys.modules if k == "utility" or k.startswith("utility.")]:
-        del sys.modules[mod_name]
-
-    for candidate in _utility_module_candidates(pipeline_dir_str):
-        if candidate.is_file():
-            pycache_dir = candidate.parent / "__pycache__"
-            if pycache_dir.is_dir():
-                for pyc in pycache_dir.glob(f"{candidate.stem}.*.pyc"):
-                    pyc.unlink()
-        elif candidate.is_dir():
-            for pycache_dir in candidate.rglob("__pycache__"):
-                if pycache_dir.is_dir():
-                    for pyc in pycache_dir.glob("*.pyc"):
-                        pyc.unlink()
-
-
-def _prioritise_preamble_import_paths(
-    cwd: str,
-    pipeline_dir_str: str | None,  # pragma: no mutate
-) -> None:
-    """Keep import resolution aligned with preamble dependency fingerprints."""
-    desired = [cwd]
-    if pipeline_dir_str is not None:
-        desired.insert(0, pipeline_dir_str)
-
-    for path in reversed(desired):
-        sys.path[:] = [existing for existing in sys.path if existing != path]
-        sys.path.insert(0, path)
-
-
-def _preamble_has_imports(preamble: str) -> bool:
-    """Return whether preamble execution can consult import resolution state.
-
-    Kept as a small diagnostic/test helper. The hot compile path deliberately
-    does not call this before the ``lru_cache`` lookup.
-    """
-    try:
-        tree = _ast.parse(preamble)
-    except SyntaxError:
-        return True
-    return any(isinstance(node, (_ast.Import, _ast.ImportFrom)) for node in _ast.walk(tree))
-
-
 def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     ns = safe_globals(pl=pl)
     base_keys = set(ns.keys())
@@ -440,19 +372,17 @@ def _compile_preamble_into_cell(
 ) -> dict[str, Any]:
     """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
 
-    The lock covers the entire path-prioritisation/import/exec window. Even
-    preambles without literal import statements execute with the ordinary
-    ``__import__`` and can consult process-global import state.
+    The lock covers the entire bind/eviction/import/exec window. Even preambles
+    without literal import statements execute with the ordinary ``__import__``
+    and can consult process-global import state.
     """
     validate_user_code(preamble)
-    imports_utility = preamble_imports_utility(preamble)
-    _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
-    if imports_utility:
-        # Evict cached utility modules so digest-keyed cache misses pick up
-        # GUI edits. Clearing matching pyc files prevents same-size,
-        # same-mtime edits from being hidden by timestamp-based bytecode
-        # validation.
-        _evict_utility_import_state(pipeline_dir_str)
+    rebound = bind_project_utility(pipeline_dir_str, working_dir=cwd)
+    if rebound or preamble_imports_utility(preamble):
+        # A cache miss for a utility-importing preamble (a changed digest) or a
+        # newly bound project: the next import loads utility's source again, which
+        # the finder's loader always compiles, so no stale bytecode can stand in.
+        evict_utility_modules()
     return _exec_preamble_namespace(preamble)
 
 
@@ -495,13 +425,9 @@ def _compile_preamble(
     if not preamble or not preamble.strip():
         return {}
 
-    # Ensure project root is importable so `from utility.xxx import …` works
-    # even when the server process was spawned by uvicorn reload.  We add
-    # both cwd and the pipeline's parent directory because the ``utility/``
-    # folder may live next to the pipeline file (e.g. inside a ``rating/``
-    # subfolder) rather than at the project root.  These inserts are
-    # idempotent (gated on ``not in sys.path``) so the list doesn't grow
-    # on every call.
+    # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
+    # subfolder), then in the working directory (``haute._project_imports``); both
+    # are part of the cache key, as two projects can share a preamble's text.
     import os
 
     cwd = os.getcwd()
@@ -536,8 +462,8 @@ def _compile_preamble(
         return ns
 
     # Single-flight population: first caller compiles under ``_preamble_lock``
-    # (which also serialises the process-global sys.path / sys.modules
-    # mutation); concurrent first-callers block, re-check, and return the
+    # (which also serialises the process-global finder binding and sys.modules
+    # eviction); concurrent first-callers block, re-check, and return the
     # SAME dict the winner stored — never a second exec producing a
     # semantically-equal-but-distinct namespace.
     with _preamble_lock:
@@ -753,35 +679,6 @@ def _preview_required_columns_by_node(
     if not columns:
         return None
     return {target_node_id: columns}
-
-
-def _preview_projection_cache_suffix(
-    graph: PipelineGraph,
-    target_node_id: str | None,  # pragma: no mutate
-    requested_preview_columns: list[str] | None,  # pragma: no mutate
-    *,  # pragma: no mutate
-    target_preview_only: bool = False,
-    initial_column_limit: int | None = None,  # pragma: no mutate
-    port_label: str | None = None,  # pragma: no mutate
-) -> str:
-    """Cache-key suffix for projected preview materialisations.
-
-    ``port_label`` selects which frame of a multi-frame producer the flat
-    ``columns`` / ``preview`` reflect. It changes the serialised result, not
-    the underlying ``eager_outputs`` (which always holds every frame), so it
-    enters the cache key.
-    """
-    parts: list[str] = []
-    if target_preview_only and target_node_id is not None:
-        parts.append(f":preview_target_only={target_node_id!r}")
-        if requested_preview_columns is None:
-            parts.append(f":initial_col_limit={initial_column_limit!r}")
-    if target_node_id is not None and requested_preview_columns is not None:
-        parts.append(f":preview_target={target_node_id!r}")
-        parts.append(f":preview_cols={tuple(requested_preview_columns)!r}")
-    if target_node_id is not None and port_label is not None:
-        parts.append(f":preview_port={port_label!r}")
-    return "".join(parts)
 
 
 def _cache_has_required_materialization(
@@ -1392,7 +1289,8 @@ def _execute_graph_core(
                 snapshot_plan=snapshot_plan,
             )
 
-    # Check if we can extend the cache (same graph, new target is a superset)
+    # A hit serves the cached entry; anything else (a miss, or an entry that lacks a
+    # node or column this request needs) executes the request and replaces it.
     with execution_context.stage("preview_cache_lookup"):
         cached = _preview_cache.get(fp)
         if (
@@ -1425,10 +1323,6 @@ def _execute_graph_core(
                 cached_output_columns=cached["output_columns"],
             )
         )
-        if not cache_satisfies_request and captures_planned:
-            # A partial hit under captures executes as a miss: extending it
-            # would store outputs computed before those captures existed.
-            cached = None
     if cached is not None and cache_satisfies_request:
         # Full cache hit — all required nodes already materialised
         with execution_context.stage("preview_cache_hit"):
@@ -1455,85 +1349,13 @@ def _execute_graph_core(
             read_generations = tuple(
                 replace(generation, kind="seeded") for generation in cached.get("seed_plan", ())
             )
-    elif cached is not None:
-        # Partial hit — extend with newly-needed nodes
-        logger.debug(
-            "preview_cache_extend",
-            fingerprint=fp[:8],
-            target=target_node_id,
-            cached_nodes=len(prev_outputs),
-        )
-        (
-            raw_outputs,
-            order,
-            errors,
-            timings,
-            memory_bytes,
-            error_lines,
-            avail_cols,
-            output_cols,
-            frame_cols,
-        ) = _execute("preview_cache_extend")
-        eager_outputs = {k: v for k, v in raw_outputs.items() if v is not None}
-        if snapshot_plan is not None:
-            read_generations = snapshot_plan.read_generations(order)
-        # Fresh eager outputs win over prev_outputs for any overlap:
-        # the prev_outputs may contain stale entries for nodes that were
-        # re-executed (e.g. delete-then-re-add with same id) and serving
-        # the stale DataFrame would hide legitimate config changes from
-        # the caller.  The extend-path only needs prev_outputs for nodes
-        # the current execution did NOT recompute.
-        merged = {**prev_outputs, **eager_outputs}
-        merged_errors = {**cached["errors"], **errors}
-        merged_timings = {**cached["timings"], **timings}
-        merged_memory = {**cached["memory_bytes"], **memory_bytes}
-        merged_error_lines = {**cached["error_lines"], **error_lines}
-        merged_avail = {**cached["available_columns"], **avail_cols}
-        merged_output_cols = {**cached["output_columns"], **output_cols}
-        merged_frame_cols = {**cached["frame_columns"], **frame_cols}
-        # A node scored again says what it priced now, not what it priced before.
-        merged_notes = {
-            nid: notes for nid, notes in cached["notes"].items() if nid not in eager_outputs
-        } | execution_context.provenance.full_term_notes()
-        merged_order = list(dict.fromkeys(cached["order"] + order))
-        # A node that re-executed successfully in the extend path must
-        # clear any stale cached error from an earlier transient failure.
-        for nid in eager_outputs:
-            if nid not in errors:
-                merged_errors.pop(nid, None)
-                merged_error_lines.pop(nid, None)
-        _store_entry(
-            {
-                "eager_outputs": merged,
-                "errors": merged_errors,
-                "order": merged_order,
-                "timings": merged_timings,
-                "memory_bytes": merged_memory,
-                "error_lines": merged_error_lines,
-                "available_columns": merged_avail,
-                "output_columns": merged_output_cols,
-                "frame_columns": merged_frame_cols,
-                "notes": merged_notes,
-                "execution_strategy": _current_execution_strategy(),
-            }
-        )
-        eager_outputs = merged
-        node_notes = merged_notes
-        errors = merged_errors
-        timings = merged_timings
-        memory_bytes = merged_memory
-        error_lines = merged_error_lines
-        avail_cols = merged_avail
-        output_cols = merged_output_cols
-        frame_cols = merged_frame_cols
-        order = merged_order
     else:
-        # Complete cache miss — execute from scratch
         logger.debug(
             "preview_cache_miss",
             fingerprint=fp[:8],
             target=target_node_id,
             prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
+            partial=cached is not None,
         )
         (
             raw_outputs,
@@ -1666,17 +1488,25 @@ def _execute_graph_core(
             # Each frame asked for, previewed from this run's bundle as a preview of it
             # alone would be.
             port_previews: dict[str, PortPreview] = {}
+            bundle = df if is_frame_bundle else {}
+            asked = [
+                *(port_labels or ()),
+                *((port_label,) if is_multi_frame_output and port_label is not None else ()),
+            ]
+            unknown = next((label for label in asked if label not in bundle), None)
+            if nid == target_node_id and unknown is not None:
+                tables = ", ".join(repr(label) for label in bundle) or "none"
+                results[nid] = NodeResult(
+                    status="error",
+                    error=(
+                        f"{node_map[nid].data.label} has no table '{unknown}' to preview; "
+                        f"its tables are {tables}."
+                    ),
+                    timing_ms=timings.get(nid, 0),
+                    memory_bytes=memory_bytes.get(nid, 0),
+                )
+                continue
             if nid == target_node_id and port_labels is not None:
-                bundle = df if is_frame_bundle else {}
-                unknown = next((label for label in port_labels if label not in bundle), None)
-                if unknown is not None:
-                    results[nid] = NodeResult(
-                        status="error",
-                        error=f"{node_map[nid].data.label} has no table '{unknown}' to preview.",
-                        timing_ms=timings.get(nid, 0),
-                        memory_bytes=memory_bytes.get(nid, 0),
-                    )
-                    continue
                 for label in port_labels:
                     frame = bundle[label]
                     frame_preview, _, frame_row_limit = _frame_preview(
@@ -1823,7 +1653,8 @@ def _eager_execute(
     for multi-frame emitters, populated whether or not the producer was
     materialised (a lazy ancestor's schema comes from ``collect_schema()``).
     """
-    preamble_error: str | None = None  # pragma: no mutate
+    build_node_fn: Callable[..., tuple[str, Callable[..., Any], bool]] = _build_node_fn
+    refused: set[str] = set()
     try:
         preamble_ns = _compile_preamble(
             graph.preamble or "",
@@ -1838,16 +1669,16 @@ def _eager_execute(
         )
         if active_profile != ExecutionProfile.PREVIEW_EAGER:
             raise
-        # Don't abort — let non-preamble nodes (data sources, model scoring,
-        # etc.) execute normally.  The error will surface on transform /
-        # source-switch nodes that actually need the preamble bindings.
+        # A preview still shows the nodes that run no code (sources, model
+        # scoring, Source Switches); every node that runs code fails with the
+        # preamble's error instead of running without its bindings.
         logger.warning("preamble_failed", error=str(exc))
         preamble_ns = {}
-        preamble_error = str(exc)
+        build_node_fn = _refusing_code_without_preamble(exc, refused)
 
     result = walk_graph(
         graph,
-        _build_node_fn,
+        build_node_fn,
         policy=CollectPolicy.display(
             collect=materialize_node_ids,
             row_limit=row_limit,
@@ -1862,20 +1693,13 @@ def _eager_execute(
         execution_context=execution_context,
         snapshot_plan=snapshot_plan,
     )
-    errors = result.errors
-    if preamble_error:
-        # Inject the preamble error only into nodes whose builders use it
-        # (transforms and live-switch nodes), not data sources / model scores.
-        preamble_types = {NodeType.POLARS, NodeType.LIVE_SWITCH}
-        node_map = {n.id: n for n in graph.nodes}
-        for nid in result.run_order:
-            nd = node_map.get(nid)
-            if nd and nd.data.nodeType in preamble_types and nid not in errors:
-                errors[nid] = preamble_error
+    for nid in refused:
+        # The preamble's line is not a line of the node's code.
+        result.error_lines.pop(nid, None)
     return (
         result.collected,
         result.run_order,
-        errors,
+        result.errors,
         result.timings,
         result.memory_bytes,
         result.error_lines,
@@ -1883,6 +1707,31 @@ def _eager_execute(
         result.output_columns,
         result.frame_columns,
     )
+
+
+def _refusing_code_without_preamble(
+    failure: PreambleError, refused: set[str]
+) -> Callable[..., tuple[str, Callable[..., Any], bool]]:
+    """A node builder for a preview whose preamble failed.
+
+    A node that runs code (a Polars node, or any node with code of its own)
+    could read a preamble binding, so it fails with the preamble's error
+    instead of running without them; its id goes into *refused*. Every other
+    node builds as usual.
+    """
+
+    def build(node: GraphNode, **kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        name, fn, is_source = _build_node_fn(node, **kwargs)
+        if node.data.nodeType != NodeType.POLARS and not str(node.data.config.get("code") or ""):
+            return name, fn, is_source
+        refused.add(node.id)
+
+        def refuse(*_frames: Any, **_kwargs: Any) -> Any:
+            raise ExecutionError(str(failure))
+
+        return name, refuse, is_source
+
+    return build
 
 
 def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no mutate
@@ -2405,12 +2254,21 @@ def prepare_data_output(
                 node_id=output_node_id,
             )
 
-        if execution_context is not None:
-            execution_context.checkpoint(label="before_output_write", node_id=output_node_id)
-            with execution_context.stage("output_write", node_id=output_node_id):
+        execution_context.checkpoint(label="before_output_write", node_id=output_node_id)
+        with execution_context.stage("output_write", node_id=output_node_id):
+            try:
                 _write(lf)
-        else:
-            _write(lf)
+            except pl.exceptions.PolarsError as exc:
+                # A data-dependent failure (a cast, say) surfaces only when the
+                # write collects the plan, after every node has been built, so
+                # no node was running: the write names the node it was writing.
+                label = graph.node_map[output_node_id].data.label
+                failure = ExecutionError(
+                    f"Writing Data Output {label!r} failed while computing its rows: {exc}",
+                    node_id=output_node_id,
+                )
+                mark_failing_node(failure, output_node_id)
+                raise failure from exc
         del lf
         gc.collect()
         _malloc_trim()
@@ -2465,12 +2323,8 @@ def prepare_data_output(
             row_count=row_count,
             path=path,
             format=str(config.get("format") or config["outputType"]),
-            execution_metrics=(
-                ExecutionMetricsPayload.model_validate(
-                    execution_context.metrics_payload(status="completed")
-                )
-                if execution_context is not None
-                else None
+            execution_metrics=ExecutionMetricsPayload.model_validate(
+                execution_context.metrics_payload(status="completed")
             ),
         )
         prepared = PreparedDataOutput(

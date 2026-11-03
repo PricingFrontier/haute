@@ -38,6 +38,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from haute._file_ops import atomic_write_text
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute.errors import FeatureMismatchError
 
@@ -55,15 +56,19 @@ _FIELDS: tuple[str, ...] = (
     "task",
     "offset_column",
     "offset_link",
+    "offset_type",
 )
 _ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash", "contract_version", "model"))
-#: The fields live data can disagree with; the offset link, like the model
-#: identity, declares how the model applies its offset and is checked against
-#: the loaded model instead.
-_LIVE_FIELDS: tuple[str, ...] = tuple(field for field in _FIELDS if field != "offset_link")
+#: The fields live data can disagree with; the offset link and dtype, like the
+#: model identity, declare how the model was trained with its offset (scoring
+#: casts any numeric offset to Float64), and the link is checked against the
+#: loaded model instead.
+_LIVE_FIELDS: tuple[str, ...] = tuple(
+    field for field in _FIELDS if field not in {"offset_link", "offset_type"}
+)
 
 #: The only contract format this release reads or writes.
-CONTRACT_VERSION = 4
+CONTRACT_VERSION = 5
 _LINKS = frozenset({"identity", "log", "logit"})
 #: How an offset column can enter a model's raw score.
 OFFSET_LINKS = frozenset({"identity", "log"})
@@ -192,6 +197,10 @@ class FeatureContract:
     #: How the offset enters the raw score (``log`` or ``identity``). ``None``
     #: without an offset, or beside one for a model that applies its own.
     offset_link: str | None = None
+    #: The offset column's dtype as the model was trained on it, which a logged
+    #: model's signature declares. ``None`` without an offset, or beside one in a
+    #: contract rebuilt from live data or supplied with a generic MLflow model.
+    offset_type: str | None = None
     #: The trained model this schema belongs to; ``None`` for a contract
     #: supplied with a generic MLflow model or rebuilt from live data.
     model: ModelIdentity | None = None
@@ -208,6 +217,7 @@ def _canonical_payload(
     offset_column: str | None = None,
     offset_link: str | None = None,
     model: ModelIdentity | None = None,
+    offset_type: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "contract_version": CONTRACT_VERSION,
@@ -220,6 +230,7 @@ def _canonical_payload(
         "task": task,
         "offset_column": offset_column,
         "offset_link": offset_link,
+        "offset_type": offset_type,
     }
     return payload
 
@@ -239,6 +250,7 @@ def build_contract(
     offset_column: str | None = None,
     model: ModelIdentity | None = None,
     offset_link: str | None = None,
+    offset_type: str | None = None,
 ) -> FeatureContract:
     """Construct a contract and compute its content hash.
 
@@ -247,6 +259,7 @@ def build_contract(
     canonical-JSON representation of every field except itself.
     """
     _check_offset_link(offset_column or None, offset_link, "<memory>")
+    _check_offset_type(offset_column or None, offset_type, "<memory>")
     if offset_column and offset_column in features:
         raise FeatureMismatchError(
             "offset_column shadows a feature name; the offset is a separate "
@@ -264,6 +277,7 @@ def build_contract(
         offset_column or None,
         offset_link,
         model,
+        offset_type,
     )
     return FeatureContract(
         features=list(features),
@@ -275,8 +289,29 @@ def build_contract(
         contract_hash=_hash_payload(payload),
         offset_column=offset_column or None,
         offset_link=offset_link,
+        offset_type=offset_type,
         model=model,
     )
+
+
+def _check_offset_type(offset_column: str | None, offset_type: Any, path: Path | str) -> None:
+    """Refuse an offset dtype that is not a dtype name or names no column."""
+    if offset_type is None:
+        return
+    if not isinstance(offset_type, str) or not offset_type:
+        raise FeatureMismatchError(
+            "contract offset_type must be a dtype name or null",
+            path=str(path),
+            field="offset_type",
+        )
+    if offset_column is None:
+        raise FeatureMismatchError(
+            "contract offset_type is set but offset_column is null; an offset dtype "
+            "describes an offset column",
+            path=str(path),
+            field="offset_type",
+            offset_type=offset_type,
+        )
 
 
 def _check_offset_link(offset_column: str | None, offset_link: Any, path: Path | str) -> None:
@@ -313,13 +348,12 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
         "offset_link": contract.offset_link,
+        "offset_type": contract.offset_type,
         "contract_version": contract.contract_version,
         "model": contract.model.to_plain_data() if contract.model is not None else None,
     }
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
 
 
 def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContract:
@@ -373,6 +407,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     if raw["offset_column"] is not None:
         _check_type(raw, "offset_column", str, path)
     _check_offset_link(raw["offset_column"], raw["offset_link"], path)
+    _check_offset_type(raw["offset_column"], raw["offset_type"], path)
 
     model = (
         ModelIdentity.from_plain_data(raw["model"], path=path) if raw["model"] is not None else None
@@ -390,6 +425,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
                 raw["offset_column"],
                 raw["offset_link"],
                 model,
+                raw["offset_type"],
             )
         )
         stored = raw["contract_hash"]
@@ -411,6 +447,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         contract_hash=raw["contract_hash"],
         offset_column=raw["offset_column"],
         offset_link=raw["offset_link"],
+        offset_type=raw["offset_type"],
         model=model,
     )
 

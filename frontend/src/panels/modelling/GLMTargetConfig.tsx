@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
@@ -47,24 +47,51 @@ const THETA_HELP =
   "accept or adjust."
 
 
-export type GLMTargetConfigProps = {
-  config: Record<string, unknown>
-  onUpdate: OnUpdateConfig
-  columns: Column[]
+export type DispersionEstimate = {
+  /** What an estimate reads (document, node, source, graph structure and the
+   *  node's training settings) as one key: a change stops an estimate in flight. */
+  scope: string
   /** Run a profile-likelihood dispersion estimate on the node's training
    *  data and resolve with the value. The estimate is an explicit user
    *  action — the resolved value is filled into the config field for the
    *  user to accept or adjust, never applied silently. The signal aborts
-   *  when this panel unmounts. */
-  onEstimateDispersion?: (param: DispersionParam, signal: AbortSignal) => Promise<number>
+   *  when this panel unmounts or the scope changes. */
+  run: (param: DispersionParam, signal: AbortSignal) => Promise<number>
 }
 
-export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersion }: GLMTargetConfigProps) {
-  const [estimating, setEstimating] = useState<DispersionParam | null>(null)
-  const [estimateError, setEstimateError] = useState<string | null>(null)
+export type GLMTargetConfigProps = {
+  config: Record<string, unknown>
+  onUpdate: OnUpdateConfig
+  columns: Column[]
+  dispersionEstimate?: DispersionEstimate
+}
+
+type RunningEstimate = { param: DispersionParam; scope: string; controller: AbortController }
+type EstimateOutcome = { kind: "failed"; message: string } | { kind: "stopped" }
+
+export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate }: GLMTargetConfigProps) {
+  const [running, setRunning] = useState<RunningEstimate | null>(null)
+  const [estimateOutcome, setEstimateOutcome] = useState<EstimateOutcome | null>(null)
+  const scope = dispersionEstimate?.scope ?? null
+  const scopeRef = useRef(scope)
+  const estimateRef = useRef<RunningEstimate | null>(null)
+  const mountedRef = useRef(true)
   // A closed panel has nowhere to show the estimate, so it cancels it.
-  const estimateRef = useRef<AbortController | null>(null)
-  useEffect(() => () => estimateRef.current?.abort(), [])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      estimateRef.current?.controller.abort()
+    }
+  }, [])
+  // An estimate belongs to the settings it read: once they change, its value
+  // would land on a draft it was not computed for, so it stops.
+  useEffect(() => {
+    scopeRef.current = scope
+    const current = estimateRef.current
+    if (current && current.scope !== scope) current.controller.abort()
+  }, [scope])
+  const estimating = running !== null && running.scope === scope ? running.param : null
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   // No display default: an unselected family must LOOK unselected — the
@@ -84,14 +111,15 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const { targetColumns, weightColumns, offsetColumns } = modelColumnChoices(columns, { target, weight, offset })
 
   const handleEstimate = async (param: DispersionParam) => {
-    if (!onEstimateDispersion || estimating) return
-    const estimate = new AbortController()
+    if (!dispersionEstimate || estimating) return
+    const estimate: RunningEstimate = { param, scope: dispersionEstimate.scope, controller: new AbortController() }
+    const { signal } = estimate.controller
     estimateRef.current = estimate
-    setEstimating(param)
-    setEstimateError(null)
+    setRunning(estimate)
+    setEstimateOutcome(null)
     try {
-      const value = await onEstimateDispersion(param, estimate.signal)
-      if (estimate.signal.aborted) return
+      const value = await dispersionEstimate.run(param, signal)
+      if (signal.aborted || scopeRef.current !== estimate.scope) return
       // Filled in, not applied silently: the value lands in the visible,
       // editable field and the user keeps the final say.
       onUpdate(param, value)
@@ -99,23 +127,27 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
       // Prefer the backend's actionable detail ("GLM config has no factors…")
       // over the generic "HTTP 400" message.
       const message = apiErrorMessage(e)
-      if (estimate.signal.aborted) {
-        // The panel has closed, so only a cancellation that failed is news: the
-        // estimate may still be running, and a toast outlives the panel.
+      if (signal.aborted) {
+        // Only a cancellation that failed is news: the estimate may still be
+        // running, and a toast outlives a closed panel.
         if ((e as { name?: unknown } | null)?.name !== "AbortError") {
           useToastStore.getState().addToast("error", `Cancelling the dispersion estimate failed: ${message}`)
         }
+        // A newer estimate owns the note once one has started.
+        if (mountedRef.current && estimateRef.current === estimate) setEstimateOutcome({ kind: "stopped" })
         return
       }
-      setEstimateError(message)
+      if (estimateRef.current === estimate && scopeRef.current === estimate.scope) {
+        setEstimateOutcome({ kind: "failed", message })
+      }
     } finally {
       if (estimateRef.current === estimate) estimateRef.current = null
-      if (!estimate.signal.aborted) setEstimating(null)
+      if (mountedRef.current) setRunning((current) => (current === estimate ? null : current))
     }
   }
 
   const estimateButton = (param: DispersionParam) =>
-    onEstimateDispersion && (
+    dispersionEstimate && (
       <button
         onClick={() => handleEstimate(param)}
         disabled={estimating !== null}
@@ -236,11 +268,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                 </div>
               </>
             )}
-            {estimateError && estimating === null && (
-              <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
-                Estimation failed: {estimateError}
-              </div>
-            )}
+            {estimating === null && <EstimateOutcomeNote outcome={estimateOutcome} />}
           </div>
         )}
 
@@ -276,11 +304,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
                 Theta must be greater than 0.
               </p>
             )}
-            {estimateError && estimating === null && (
-              <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
-                Estimation failed: {estimateError}
-              </div>
-            )}
+            {estimating === null && <EstimateOutcomeNote outcome={estimateOutcome} />}
           </div>
         )}
 
@@ -340,6 +364,19 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function EstimateOutcomeNote({ outcome }: { outcome: EstimateOutcome | null }) {
+  if (outcome === null) return null
+  return outcome.kind === "failed" ? (
+    <div className="mt-1 text-[11px]" style={{ color: "var(--warning)" }}>
+      Estimation failed: {outcome.message}
+    </div>
+  ) : (
+    <div role="status" className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+      Estimate stopped: the training settings changed while it ran.
     </div>
   )
 }

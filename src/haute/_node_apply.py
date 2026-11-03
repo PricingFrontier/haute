@@ -437,16 +437,21 @@ def expand_scenarios_bounded(
 
 
 def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
-    """Anchor a relative optimiser artifact path to *base_dir* when given.
+    """Resolve a file-backed optimiser artifact path by the one anchoring rule.
 
-    Called from generated code with ``base_dir=Path(__file__).parent`` so a
-    saved pipeline finds a project-relative artifact regardless of the
-    working directory.  Executor callers pass ``base_dir=None`` — leaving the
-    path untouched, exactly as the in-process executor resolved it before.
+    A relative path names the project-root file first, then the one under
+    *base_dir* (the pipeline directory: generated code passes
+    ``Path(__file__).parent``), and no path may leave the runtime project root
+    (``RuntimePathOutsideProjectError``), as for every other node input. The
+    executor passes the canonical graph's already-resolved absolute path.
     """
-    if base_dir and path and not Path(path).is_absolute():
-        return str(Path(base_dir) / path)
-    return path
+    from haute._path_resolution import current_runtime_project_root, resolve_node_input_path
+
+    return str(
+        resolve_node_input_path(
+            path, pipeline_dir=base_dir, project_root=current_runtime_project_root()
+        )
+    )
 
 
 def load_configured_optimiser_artifact(
@@ -497,6 +502,7 @@ def apply_optimiser_apply_from_config(
     config: dict[str, Any] | str | PathLike[str],
     base_dir: str | Path | None = None,
     source_names: list[str] | None = None,
+    schema_only: bool = False,
 ) -> _Frame:
     """Apply a saved optimiser artifact to the selected input frame.
 
@@ -509,7 +515,7 @@ def apply_optimiser_apply_from_config(
     executor's unconfigured branch.
 
     *dfs* are the incoming frames in declared order and *source_names* are
-    their executable incoming-edge names.
+    their executable incoming-edge names. A *schema_only* walk reads no rows.
     """
     cfg = _resolve_node_config(config, base_dir)
     artifact = load_configured_optimiser_artifact(cfg, base_dir)
@@ -526,7 +532,9 @@ def apply_optimiser_apply_from_config(
     from haute._builders import _dispatch_apply, _select_optimiser_apply_input
 
     input_lf = _select_optimiser_apply_input(dfs, artifact, ratebook_input, names)
-    return _dispatch_apply(input_lf, artifact, version_col, optimised_value_col)
+    return _dispatch_apply(
+        input_lf, artifact, version_col, optimised_value_col, schema_only=schema_only
+    )
 
 
 # ---------------------------------------------------------------------------

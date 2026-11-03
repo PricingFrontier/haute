@@ -2,14 +2,13 @@
 database is and how the app signs in to it, read from the host's variables with nothing of
 either shown; each connection signed in as the release declares, an Entra ID token asked for
 as it is made; the store's types pinned on each engine; names past an engine's limit refused
-in the plan; dev's empty column's type changed in place where the engine can; the image's
-drivers; and, on each server the environment names (tests/_store_servers.py), tables in a SQL
+in the plan; the image's drivers; and, on each server the environment names
+(tests/_store_servers.py), tables in a SQL
 schema of their own made and changed by the SQL Haute writes, the app's check of collations
 and privileges, and a release started apart from its project signing in as it declares."""
 
 from __future__ import annotations
 
-import io
 import struct
 import uuid
 from collections.abc import Iterator
@@ -20,32 +19,32 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import mssql, postgresql
+from sqlalchemy.dialects.mssql.mssqlpython import MSDialect_mssqlpython
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.schema import CreateTable
 
+import haute._quote_store._providers as providers_module
 from haute._credential_security import validate_credential_free_uri
 from haute._quote_store import (
+    HOST_VARIABLES,
     QuoteStoreEnvironmentError,
     QuoteStoreMismatchError,
     QuoteStoreUnreachableError,
     SignIn,
-    _migrate,
     open_book,
     resolve_store,
 )
-from haute._quote_store._migrate import _emit, plan
+from haute._quote_store._migrate import plan
 from haute._quote_store._providers import (
     PROVIDERS,
     SQL_COPT_SS_ACCESS_TOKEN,
     connect_hook,
     make_server_engine,
     missing_privileges,
-    retypes_in_place,
+    server_url,
 )
 from haute._quote_store._schema import store_schema, structure
 from haute._quote_store._store import make_engine, reaching
@@ -131,10 +130,13 @@ def test_a_server_location_is_made_from_its_parts_holding_no_sign_in() -> None:
 
     store = resolve_store(declared, "prod", environ)
 
-    # The server as SQL Server's own clients take it, the driver, encryption, and no sign-in.
-    assert make_url(store.url).query["odbc_connect"] == (
-        "Driver={ODBC Driver 18 for SQL Server};"
-        "Server=tcp:hidden-sql.database.windows.net,1433;Database=hidden-quotes;Encrypt=yes"
+    # The server as SQL Server's own clients take it, encryption, and no sign-in, as the
+    # connection string mssql-python is handed.
+    parsed = make_url(store.url)
+    assert parsed.drivername == "mssql+mssqlpython"
+    assert MSDialect_mssqlpython().create_connect_args(parsed) == (
+        ("Server=hidden-sql.database.windows.net,1433;Database=hidden-quotes;Encrypt=yes",),
+        {},
     )
     assert validate_credential_free_uri(store.url) == store.url
     assert store.sql_schema == "hidden_pricing"
@@ -156,6 +158,23 @@ def test_a_server_location_is_made_from_its_parts_holding_no_sign_in() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("server", "says"),
+    [
+        ("tcp:pricing.database.windows.net,1433", "Server=pricing.database.windows.net,1433"),
+        ("TCP: pricing.database.windows.net , 1433", "Server=pricing.database.windows.net,1433"),
+        ("pricing.database.windows.net", "Server=pricing.database.windows.net"),
+        ("localhost,14330", "Server=localhost,14330"),
+    ],
+)
+def test_a_sqlserver_server_is_taken_as_its_own_clients_write_it(server: str, says: str) -> None:
+    url = make_url(server_url(PROVIDERS["sqlserver"], server, "quotes"))
+
+    (connection_string,), _ = MSDialect_mssqlpython().create_connect_args(url)
+
+    assert connection_string == f"{says};Database=quotes;Encrypt=yes"
+
+
 def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
     system = resolve_store(
         (StoreEnvironment("prod", "sqlserver", "managed-identity"),),
@@ -172,7 +191,7 @@ def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
     signed = resolve_store(
         (principal,),
         "prod",
-        {"HAUTE_STORE_URL": "mssql+pyodbc://s/d?driver=x", "T": "t", "C": "c", "S": "s3"},
+        {"HAUTE_STORE_URL": "mssql+mssqlpython://s/d", "T": "t", "C": "c", "S": "s3"},
     )
     assert signed.sign_in == SignIn("service-principal", client_id="c", tenant_id="t", secret="s3")
 
@@ -183,20 +202,36 @@ def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
         ("sqlserver", {"HAUTE_STORE_SERVER": "hidden-a"}, "set HAUTE_STORE_SERVER and"),
         (
             "sqlserver",
-            {"HAUTE_STORE_URL": "mssql+pyodbc://hidden-u:hidden-p@hidden-a/hidden-b"},
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-u:hidden-p@hidden-a/hidden-b"},
             "holds a sign-in",
         ),
         (
             "sqlserver",
-            {"HAUTE_STORE_URL": "mssql+pyodbc://hidden-a/hidden-b?Password=hidden-p"},
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-a/hidden-b?Password=hidden-p"},
             "holds a sign-in",
         ),
         (
             "sqlserver",
-            {"HAUTE_STORE_URL": "mssql+pyodbc:///?odbc_connect=Server%3Dhidden-a%3BUID%3Dhidden"},
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-a/hidden-b?UID=hidden"},
             "holds a sign-in (UID)",
         ),
-        ("sqlserver", {"HAUTE_STORE_URL": "mssql+pymssql://hidden-a/hidden-b"}, "through pyodbc"),
+        (
+            "sqlserver",
+            {"HAUTE_STORE_URL": "mssql+mssqlpython://hidden-a/b?Authentication=hidden"},
+            "holds a sign-in",
+        ),
+        (
+            "sqlserver",
+            {
+                "HAUTE_STORE_URL": "mssql+mssqlpython:///?odbc_connect=Server%3Dhidden-a%3BUID%3Dhidden"
+            },
+            "holds a sign-in (UID)",
+        ),
+        (
+            "sqlserver",
+            {"HAUTE_STORE_URL": "mssql+pyodbc://hidden-a/hidden-b"},
+            "through mssqlpython",
+        ),
         ("sqlserver", {"HAUTE_STORE_URL": "postgresql+psycopg://hidden-a/b"}, "not a sqlserver"),
         ("postgresql", {"HAUTE_STORE_URL": "oracle://hidden-a/hidden-b"}, "does not run on"),
     ],
@@ -204,6 +239,8 @@ def test_an_entra_sign_in_reads_only_what_its_identity_needs() -> None:
         "no database",
         "user in the URL",
         "password asked of the URL",
+        "user attribute",
+        "authentication attribute",
         "ODBC user",
         "driver",
         "provider",
@@ -241,17 +278,28 @@ def test_a_url_that_does_not_parse_is_refused_without_repeating_it() -> None:
 
 
 def test_a_connection_the_server_refuses_is_said_without_the_drivers_words() -> None:
-    # psycopg's and pyodbc's own text names the server, its port and who signs in.
+    # psycopg's and mssql-python's own text names the server, its port and who signs in.
     said = 'connection to server at "hidden-host", port 5432 failed: for user "hidden-user"'
     url = "postgresql+psycopg://hidden-host/quotes"
 
     with pytest.raises(QuoteStoreEnvironmentError) as refused, reaching(url, "prod"):
         raise OperationalError(None, None, Exception(said))
 
-    assert "The prod quote store's database could not be reached" in str(refused.value)
+    # Named by what places the database and signs in to it: the host's variables, unless a
+    # connection names it.
+    assert str(refused.value) == (
+        "The prod quote store's database could not be reached, or it refused the sign-in: "
+        f"check {HOST_VARIABLES}."
+    )
     assert "hidden" not in str(refused.value)
     assert refused.value.__suppress_context__ and refused.value.__cause__ is None
-    # A statement's failure, and anything on dev's SQLite file, is the store's own to say.
+    with (
+        pytest.raises(QuoteStoreEnvironmentError) as connected,
+        reaching(url, "dev", "connections.toml [dev]"),
+    ):
+        raise OperationalError(None, None, Exception(said))
+    assert str(connected.value).endswith("refused the sign-in: check connections.toml [dev].")
+    # A statement's failure, and anything on a SQLite file, is the store's own to say.
     statement = OperationalError("SELECT 1", {}, Exception("deadlock"))
     with pytest.raises(OperationalError), reaching(url, "prod"):
         raise statement
@@ -265,12 +313,12 @@ def test_a_connection_the_server_refuses_is_said_without_the_drivers_words() -> 
 def test_a_sqlserver_connection_takes_a_fresh_entra_token_and_no_integrated_sign_in() -> None:
     credential = Credential()
     hook = connect_hook(PROVIDERS["sqlserver"], SignIn("managed-identity"), credential)
-    first: list[Any] = ["Driver={ODBC Driver 18 for SQL Server};Server=s;Trusted_Connection=Yes"]
+    first: list[Any] = ["Server=s;Database=d;Encrypt=yes;Authentication=ActiveDirectoryIntegrated"]
     params: dict[str, Any] = {}
 
     hook(None, None, first, params)
 
-    assert first == ["Driver={ODBC Driver 18 for SQL Server};Server=s"]
+    assert first == ["Server=s;Database=d;Encrypt=yes"]
     assert params == {"attrs_before": {SQL_COPT_SS_ACCESS_TOKEN: _packed("token-1")}}
     assert credential.asked == [("https://database.windows.net/.default",)]
     # The next connection asks again, so a token past its life is never handed on.
@@ -346,7 +394,7 @@ def test_the_store_types_are_pinned_on_sql_server_the_identity_exact_in_every_ta
     assert "GENERATED BY DEFAULT AS IDENTITY" in ddl(schema.activity, postgresql.dialect())
 
 
-# ── Names, retypes and drivers ─────────────────────────────────────────────
+# ── Names and drivers ──────────────────────────────────────────────────────
 
 
 def test_a_name_too_long_for_postgresql_is_refused_in_the_plan() -> None:
@@ -355,49 +403,12 @@ def test_a_name_too_long_for_postgresql_is_refused_in_the_plan() -> None:
     # Past the form's own 63-character rule, as a structure made elsewhere could be.
     wanted["tables"][-1]["columns"][0]["name"] = long
 
-    refused = plan(wanted, None, None, "script", provider=PROVIDERS["postgresql"])
+    refused = plan(wanted, None, provider=PROVIDERS["postgresql"])
 
     assert refused.refusals == (
         f"the name {long} is 64 bytes long, past the 63 postgresql keeps whole: shorten it",
     )
-    assert plan(wanted, None, None, "script", provider=PROVIDERS["sqlserver"]).refusals == ()
-
-
-def test_an_empty_column_changes_type_in_place_where_the_engine_converts_the_pair() -> None:
-    sqlserver, pg, sqlite = (PROVIDERS[name] for name in ("sqlserver", "postgresql", "sqlite"))
-    assert retypes_in_place(sqlserver, "float", "int")
-    assert retypes_in_place(sqlserver, "str", "date")
-    assert not retypes_in_place(sqlserver, "date", "int")
-    assert not retypes_in_place(sqlserver, "bool", "date")
-    assert retypes_in_place(pg, "date", "int")
-    assert not retypes_in_place(sqlite, "float", "int")
-
-    base = form(POLICY)
-    retyped = form(
-        table(
-            "policy",
-            column("region"),
-            column("value", "int"),
-            column("start", "int"),
-            column("telematics", "bool"),
-            column("drivers", "int"),
-        )
-    )
-    before, after = structure(base), structure(retyped)
-    # Dev's plan for columns holding no value.
-    zero = dict.fromkeys(_migrate.wanted_counts(after, before), 0)
-    made = plan(after, before, zero, "dev", provider=sqlserver)
-    buffer = io.StringIO()
-    context = MigrationContext.configure(
-        dialect_name="mssql", opts={"as_sql": True, "output_buffer": buffer}
-    )
-    _emit(Operations(context), made, store_schema(retyped, sql_schema="pricing"))
-    ddl = buffer.getvalue()
-
-    # A float SQL Server converts in place; a date it cannot, so the empty column is replaced.
-    assert "ALTER TABLE pricing.policy ALTER COLUMN value BIGINT NULL" in ddl
-    assert "ALTER TABLE pricing.policy DROP COLUMN start" in ddl
-    assert "EXEC sp_rename 'pricing.policy.haute_tmp_" in ddl
+    assert plan(wanted, None, provider=PROVIDERS["sqlserver"]).refusals == ()
 
 
 def test_a_release_image_takes_each_declared_providers_driver() -> None:
@@ -407,7 +418,7 @@ def test_a_release_image_takes_each_declared_providers_driver() -> None:
             StoreEnvironment("prod", "sqlserver", "managed-identity"),
             StoreEnvironment("dev2", "sqlite"),
         )
-    ) == ("sqlalchemy", "alembic", "pyodbc", "azure-identity")
+    ) == ("sqlalchemy", "alembic", "mssql-python", "azure-identity")
     assert store_dependencies((StoreEnvironment("prod", "postgresql", "password", PASSWORD),)) == (
         "sqlalchemy",
         "alembic",
@@ -416,21 +427,33 @@ def test_a_release_image_takes_each_declared_providers_driver() -> None:
     )
 
 
-def test_a_started_app_names_each_privilege_its_sign_in_lacks() -> None:
-    schema = store_schema(form(POLICY), sql_schema="pri]cing", record=False)
-    asked: list[dict[str, str]] = []
+def test_a_started_app_names_each_privilege_its_sign_in_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = store_schema(form(POLICY), sql_schema="pri]cing")
+    asked: list[list[tuple[str, str]]] = []
 
     def execute(_statement: Any, params: dict[str, str]) -> Any:
-        asked.append(params)
-        held = (params["name"], params["kind"]) != ("[pri]]cing].[policy]", "DELETE")
-        return SimpleNamespace(scalar=lambda: 1 if held else 0)
+        pairs = [(params[f"n{at}"], params[f"k{at}"]) for at in range(len(params) // 2)]
+        asked.append(pairs)
+        held = [pair != ("[pri]]cing].[policy]", "DELETE") for pair in pairs]
+        return SimpleNamespace(one=lambda: tuple(1 if each else 0 for each in held))
 
     connection = SimpleNamespace(dialect=SimpleNamespace(name="mssql"), execute=execute)
     assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
-    kinds = {(each["name"], each["kind"]) for each in asked}
+    # Every privilege asked in one statement, a round trip to the server.
+    assert len(asked) == 1
+    asked_at_once = asked[0]
+    kinds = set(asked_at_once)
     assert ("[pri]]cing].[quote_details]", "UPDATE") in kinds
     assert ("[pri]]cing].[haute_activity]", "INSERT") in kinds
-    assert not any(name.endswith("[haute_store]") for name, _ in kinds)
+    # More than a statement may bind are asked a few to a statement, answering the same.
+    monkeypatch.setattr(providers_module, "_ASKED_AT_ONCE", 2)
+    asked.clear()
+    assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
+    assert len(asked) > 1
+    assert all(len(each) <= 2 for each in asked)
+    assert [pair for each in asked for pair in each] == asked_at_once
     sqlite = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
     assert missing_privileges(sqlite, schema) == []  # type: ignore[arg-type]
 
@@ -481,9 +504,7 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         )
     )
     server.script(server.sql(base, sql_schema="pricing"))
-    with open_book(
-        server.url, base, project=PROJECT, environment=TEST, haute_version="1", **where
-    ) as book:
+    with open_book(server.url, base, environment=TEST, haute_version="1", **where) as book:
         book.create(
             operation="operation-0001",
             actor="ana",
@@ -536,9 +557,7 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         else {"code": "bigint", "drivers": "float"}
     )
     # The started app opens the tables as they are, in their schema.
-    with open_book(
-        server.url, changed, project=PROJECT, environment=TEST, haute_version="1", **where
-    ) as book:
+    with open_book(server.url, changed, environment=TEST, haute_version="1", **where) as book:
         assert book.read("A-1", 1).values["t_policy"][0]["c_code"] == "42"
 
 
@@ -571,7 +590,7 @@ def _script_run(server: Target, script: str) -> Iterator[tuple[Any, BaseExceptio
         try:
             cursor.execute(script)
             if server.backend == "sqlserver":
-                # pyodbc raises a statement's error once its result is reached.
+                # The driver raises a statement's error once its result is reached.
                 while cursor.nextset():
                     pass
         except Exception as exc:  # noqa: BLE001 - the driver's own error is the evidence
@@ -603,9 +622,7 @@ def test_a_script_runs_on_the_server_whole_or_not_at_all(server: Target) -> None
     where = {"sql_schema": "pricing", "sign_in": server.sign_in}
     base = form(table("policy", column("region"), column("code")))
     server.script(server.sql(base, sql_schema="pricing"))
-    with open_book(
-        server.url, base, project=PROJECT, environment=TEST, haute_version="1", **where
-    ) as book:
+    with open_book(server.url, base, environment=TEST, haute_version="1", **where) as book:
         book.create(
             operation="operation-0001",
             actor="ana",
@@ -647,9 +664,7 @@ def test_a_script_runs_on_the_server_whole_or_not_at_all(server: Target) -> None
     # Run whole, the tables fit the form: the app opens them, the value converted.
     with _script_run(server, script) as (raw, raised):
         assert raised is None and not _left_open(server, raw)
-    with open_book(
-        server.url, changed, project=PROJECT, environment=TEST, haute_version="1", **where
-    ) as book:
+    with open_book(server.url, changed, environment=TEST, haute_version="1", **where) as book:
         assert book.read("A-1", 1).values["t_policy"][0]["c_code"] == "7"
 
 
@@ -664,7 +679,6 @@ def test_a_sign_in_the_server_refuses_closes_the_quotes_naming_no_server_or_user
         return open_book(
             server.url,
             form(POLICY),
-            project=PROJECT,
             environment=TEST,
             haute_version="1",
             sign_in=wrong,
@@ -673,7 +687,7 @@ def test_a_sign_in_the_server_refuses_closes_the_quotes_naming_no_server_or_user
     with pytest.raises(QuoteStoreUnreachableError) as starting:
         opened()
     said = str(starting.value)
-    assert "could not be reached, or it refused the app's sign-in" in said
+    assert "could not be reached, or it refused the sign-in" in said
     assert host not in said and "haute_nobody" not in said
     # A started app keeps its quotes closed as unreachable, saying the same.
     state = StoreGate(opened).state()
@@ -701,7 +715,6 @@ def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Targe
         return open_book(
             server.url,
             form(POLICY),
-            project=PROJECT,
             environment=TEST,
             haute_version="1",
             sign_in=SignIn("password", username=reader, secret=secret),
@@ -717,7 +730,7 @@ def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Targe
     finally:
         if server.backend == "sqlserver":
             server.run(f"DROP USER {reader}")
-            # The ODBC driver manager may pool the refused app's connection: end it first,
+            # The driver may pool the refused app's connection: end it first,
             # outside a transaction, which KILL takes no part in.
             engine = make_engine(server.url, sign_in=server.sign_in)
             try:
@@ -747,7 +760,6 @@ def test_an_exact_text_under_another_collation_closes_the_quotes(sqlserver: Targ
         open_book(
             server.url,
             form(POLICY),
-            project=PROJECT,
             environment=TEST,
             haute_version="1",
             sign_in=server.sign_in,

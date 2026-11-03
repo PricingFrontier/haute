@@ -22,9 +22,9 @@ export interface OutputMappingEntryV2 {
   enabled: boolean
 }
 
+/** The response document is always JSON, so the config holds only the mapping. */
 export interface OutputConfigV2 {
   outputMapping: OutputMappingEntryV2[]
-  outputFormat: string // "json" only for now (jsonl/jsonseq later)
 }
 
 /** Tagged-union classification of a raw OUTPUT config. */
@@ -53,19 +53,11 @@ export function readV2(config: Record<string, unknown>): OutputConfigV2 {
   const outputMapping = Array.isArray((config as { outputMapping?: unknown }).outputMapping)
     ? (config.outputMapping as OutputMappingEntryV2[])
     : []
-  const fmt = (config as { outputFormat?: unknown }).outputFormat
-  return {
-    outputMapping,
-    // Preserve the recorded format verbatim; do NOT default to "json" — an
-    // unset format surfaces the "-- select output format --" placeholder so the
-    // editor never bakes in a format choice (non-opinionated; jsonl/jsonseq
-    // arrive later). The backend is lenient (assembler only does JSON today).
-    outputFormat: typeof fmt === "string" ? fmt : "",
-  }
+  return { outputMapping }
 }
 
 /** Serialise a v2 config back to the raw shape persisted to disk. Emits ONLY
- * the four entry fields + outputFormat — never the editor-only row status. */
+ * the four entry fields — never the editor-only row status. */
 export function writeV2(v2: OutputConfigV2): Record<string, unknown> {
   return {
     outputMapping: v2.outputMapping.map((e) => ({
@@ -74,17 +66,12 @@ export function writeV2(v2: OutputConfigV2): Record<string, unknown> {
       output_path: e.output_path,
       enabled: e.enabled,
     })),
-    // Written verbatim — "" when the user hasn't picked a format yet (the
-    // backend tolerates a missing/empty format; only JSON is built today).
-    outputFormat: v2.outputFormat ?? "",
   }
 }
 
-/** Empty v2 config — used when the editor opens against a brand-new OUTPUT. The
- * format starts UNSET so the dropdown shows "-- select output format --" rather
- * than silently choosing JSON (non-opinionated). */
+/** Empty v2 config — used when the editor opens against a brand-new OUTPUT. */
 export function emptyV2(): OutputConfigV2 {
-  return { outputMapping: [], outputFormat: "" }
+  return { outputMapping: [] }
 }
 
 /**
@@ -114,8 +101,6 @@ export function emptyV2(): OutputConfigV2 {
  * `[1:2]`, filters `[?(...)]`, wildcards `[*]` / `.*`, descendant `..`, the bare
  * `*`.
  */
-const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*/
-
 export function validateOutputPath(path: string): string | null {
   // Delegate the accept/reject decision to the shared grammar core; re-skin its
   // backend-style messages as OUTPUT's existing user-facing strings so the
@@ -137,7 +122,3 @@ export function validateOutputPath(path: string): string | null {
   }
   return "Malformed output path."
 }
-
-// `NAME_RE` is retained for callers/tests that want to validate a bare
-// column-name segment; not used internally above.
-export { NAME_RE }

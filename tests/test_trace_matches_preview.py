@@ -840,6 +840,71 @@ class TestLimitedPreviewTrace:
         assert steps["policies"] == {"id": 1, "x": 1}
         assert steps["factors"] == {"x": 1, "f": 9}
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "df = policies.select('id').join(rates, on='id')",
+            "df = policies.drop('premium').join(rates, on='id')",
+            "df = policies.select(pl.exclude('premium')).join(rates, on='id')",
+        ],
+        ids=["select", "drop", "exclude"],
+    )
+    def test_a_column_the_root_input_dropped_does_not_identify_its_row(self, tmp_path, code):
+        frames = {
+            "policies": pl.DataFrame({"id": [2, 1], "premium": [10, 30]}),
+            "rates": pl.DataFrame({"id": [1, 2], "premium": [20, 30]}),
+        }
+        nodes = []
+        for name, frame in frames.items():
+            path = tmp_path / f"{name}.parquet"
+            frame.write_parquet(path)
+            nodes.append(_source_node(name, str(path)))
+        graph = _g(
+            {
+                "nodes": [*nodes, _transform_node("priced", code)],
+                "edges": [_edge(name, "priced") for name in frames],
+            }
+        )
+        preview = [self._limited_preview_row(graph, "priced", index, 5) for index in (0, 1)]
+        row_index = next(index for index, row in enumerate(preview) if row["id"] == 1)
+
+        row, result = self._trace(graph, "priced", row_index, row_limit=5, column="premium")
+
+        # The output ``premium`` is the rates value; policy 1's own premium is
+        # 30, so matching ``policies`` on the output's 20 would find no row.
+        assert row == {"id": 1, "premium": 20}
+        steps = {step.node_id: step.output_values for step in result.steps}
+        assert steps["policies"] == {"id": 1, "premium": 30}
+        assert steps["rates"] == {"id": 1, "premium": 20}
+
+    def test_a_column_a_later_join_brings_in_identifies_the_joined_row(self, tmp_path):
+        frames = {
+            "policies": pl.DataFrame({"id": [1], "region": ["n"]}),
+            "rates": pl.DataFrame({"id": [1, 1], "rate": [7, 8]}),
+        }
+        nodes = []
+        for name, frame in frames.items():
+            path = tmp_path / f"{name}.parquet"
+            frame.write_parquet(path)
+            nodes.append(_source_node(name, str(path)))
+        code = "df = policies.select('id').join(rates, on='id')"
+        graph = _g(
+            {
+                "nodes": [*nodes, _transform_node("priced", code)],
+                "edges": [_edge(name, "priced") for name in frames],
+            }
+        )
+        preview = [self._limited_preview_row(graph, "priced", index, 5) for index in (0, 1)]
+        row_index = next(index for index, row in enumerate(preview) if row["rate"] == 7)
+
+        row, result = self._trace(graph, "priced", row_index, row_limit=5, column=None)
+
+        # The select narrows only policies' columns; ``rate`` picks the rates row.
+        assert row == {"id": 1, "rate": 7}
+        steps = {step.node_id: step.output_values for step in result.steps}
+        assert steps["rates"] == {"id": 1, "rate": 7}
+        assert steps["policies"] == {"id": 1, "region": "n"}
+
     @staticmethod
     def _premium_join_graph(tmp_path, code: str):
         from haute._types import GraphNode, NodeData, NodeType
@@ -1318,6 +1383,44 @@ class TestLimitedPreviewTrace:
         # The rewritten value is left out of the match, not relaxed around.
         assert looked_up == []
 
+    def test_a_proven_parent_row_outside_the_head_frame_is_not_relaxed_onto_another(
+        self, tmp_path, monkeypatch
+    ):
+        from haute._trace_correlation import RowScopeResolver
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {"id": list(range(20)), "region": [f"r{i % 3}" for i in range(20)]}
+        ).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(path)),
+                    _transform_node("flagged", "df = src.with_columns(flag=pl.lit(1))"),
+                ],
+                "edges": [_edge("src", "flagged")],
+            }
+        )
+        real_head_frame = RowScopeResolver._head_frame
+
+        def head_frame_without_policy_4(self, parent_id, source_handle):
+            # A parent whose order differs between runs: its head frame no
+            # longer holds the row the child's head row came from.
+            frame = real_head_frame(self, parent_id, source_handle)
+            if parent_id != "src" or frame is None:
+                return frame
+            return frame.filter(pl.col("id") != 4)
+
+        monkeypatch.setattr(RowScopeResolver, "_head_frame", head_frame_without_policy_4)
+
+        row, result = self._trace(graph, "flagged", 4, row_limit=5, column=None)
+
+        # The one remaining head row sharing policy 4's region is policy 1.
+        assert row == {"id": 4, "region": "r1", "flag": 1}
+        assert "src" not in {step.node_id for step in result.steps}
+        codes = {diagnostic.get("code") for diagnostic in result.correlation_diagnostics}
+        assert "low_confidence_relaxed_match" not in codes
+
     def test_a_grouped_row_reports_the_rows_it_aggregates(self, tmp_path):
         path = tmp_path / "claims.parquet"
         pl.DataFrame({"quote_id": ["a", "a", "b"], "amount": [1.0, 2.0, 5.0]}).write_parquet(path)
@@ -1344,6 +1447,34 @@ class TestLimitedPreviewTrace:
         _row, single = self._trace(graph, "claims", 1, row_limit=5, column=None)
         assert single.omissions == []
         assert _step_by_id(single, "src").output_values == {"quote_id": "b", "amount": 5.0}
+
+    def test_an_explore_grouping_reports_the_rows_it_aggregates(self, tmp_path):
+        from haute._types import GraphNode, NodeData
+
+        path = tmp_path / "claims.parquet"
+        pl.DataFrame({"id": [1, 1], "amount": [0, 10]}).write_parquet(path)
+        explore = GraphNode(
+            id="claims",
+            data=NodeData(
+                label="claims",
+                nodeType="explore",
+                config={"code": "df = df.group_by('id').agg(pl.col('amount').sum())"},
+            ),
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(path)), explore],
+                "edges": [_edge("src", "claims")],
+            }
+        )
+
+        row, result = self._trace(graph, "claims", 0, row_limit=5, column=None)
+
+        # The total 10 also equals the second row's amount; it is not that row.
+        assert row == {"id": 1, "amount": 10}
+        assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+            ("src", "aggregated_rows")
+        ]
 
     @pytest.mark.parametrize(
         "code",

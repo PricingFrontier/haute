@@ -23,10 +23,13 @@ describe("SearchField", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear search fields" }))
     expect(onChange).toHaveBeenLastCalledWith("")
 
+    const heard = vi.fn()
+    document.addEventListener("keydown", heard)
     const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
     screen.getByRole("textbox", { name: "Search fields" }).dispatchEvent(escape)
     expect(onChange).toHaveBeenCalledTimes(2)
     expect(escape.defaultPrevented).toBe(true)
+    expect(heard).not.toHaveBeenCalled()
 
     // Empty, Escape is left to whatever else hears it.
     rerender(<SearchField value="" onChange={onChange} label="Search fields" />)
@@ -34,5 +37,7 @@ describe("SearchField", () => {
     screen.getByRole("textbox", { name: "Search fields" }).dispatchEvent(empty)
     expect(onChange).toHaveBeenCalledTimes(2)
     expect(empty.defaultPrevented).toBe(false)
+    expect(heard).toHaveBeenCalledOnce()
+    document.removeEventListener("keydown", heard)
   })
 })

@@ -478,6 +478,14 @@ class _EstimateGraphIndex:
             )
         return self.port_metadata[key]
 
+    def loaded_source_metadata(self) -> tuple[_DetailedSourceMetadata, ...]:
+        """Every source's metadata this index has read so far."""
+        return tuple(
+            meta
+            for meta in (*self.metadata_by_node.values(), *self.port_metadata.values())
+            if meta is not None
+        )
+
     def parent_ports(self, child_id: str) -> tuple[tuple[str, str | None], ...]:
         """Return each (parent id, source handle) feeding one node."""
 
@@ -1030,6 +1038,39 @@ def _safe_edge_input_name(edge: GraphEdge, index: _EstimateGraphIndex) -> str | 
         return None
 
 
+# Nodes whose optional code bounds their rows, with the reason a node with no input is unbounded.
+_NO_INPUT_REASON_BY_CODE_TYPE = {
+    NodeType.MODEL_SCORE: "input_cardinality_unavailable",
+    NodeType.EXTERNAL_FILE: "external_object_row_cardinality_unknown",
+}
+
+
+def _code_cardinality(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: tuple[tuple[GraphEdge, _ResolvedRowCardinality], ...],
+    parents: tuple[_ResolvedRowCardinality, ...],
+    *,
+    selector_aliases: frozenset[str],
+    alias_first_as_df: bool = False,
+) -> _ResolvedRowCardinality:
+    """Bound a code node's output rows from its code and its named inputs' bounds."""
+    bindings = _named_cardinality_inputs(
+        index, node, edge_results, alias_first_as_df=alias_first_as_df
+    )
+    if not bindings:
+        return _ResolvedRowCardinality.unavailable(node.id, "invalid_input_name_binding")
+    code = node.data.config.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return _ResolvedRowCardinality.unavailable(node.id, "empty_code")
+    analysis = analyze_polars_cardinality(
+        code,
+        {name: cast(int, result.output_rows) for name, result in bindings.items()},
+        selector_aliases=selector_aliases,
+    )
+    return _cardinality_from_analysis(node.id, analysis, parents)
+
+
 def _resolve_row_cardinality_from_index(
     index: _EstimateGraphIndex,
     target_node_id: str,
@@ -1120,21 +1161,9 @@ def _resolve_row_cardinality_from_index(
         )
 
     if node_type is NodeType.POLARS:
-        bindings = _named_cardinality_inputs(index, node, edge_results)
-        if not bindings:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "invalid_input_name_binding",
-            )
-        code = node.data.config.get("code")
-        if not isinstance(code, str) or not code.strip():
-            return _ResolvedRowCardinality.unavailable(target_node_id, "empty_code")
-        analysis = analyze_polars_cardinality(
-            code,
-            {name: cast(int, result.output_rows) for name, result in bindings.items()},
-            selector_aliases=selector_aliases,
+        return _code_cardinality(
+            index, node, edge_results, parents, selector_aliases=selector_aliases
         )
-        return _cardinality_from_analysis(target_node_id, analysis, parents)
 
     if node_type is NodeType.SCENARIO_EXPANDER:
         if len(parents) != 1:
@@ -1184,31 +1213,22 @@ def _resolve_row_cardinality_from_index(
             return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
 
-    if node_type is NodeType.MODEL_SCORE:
+    if node_type in _NO_INPUT_REASON_BY_CODE_TYPE:
         if not parents:
             return _ResolvedRowCardinality.unavailable(
                 target_node_id,
-                "input_cardinality_unavailable",
+                _NO_INPUT_REASON_BY_CODE_TYPE[node_type],
             )
         code = node.data.config.get("code")
         if isinstance(code, str) and code.strip():
-            bindings = _named_cardinality_inputs(
+            return _code_cardinality(
                 index,
                 node,
                 edge_results,
+                parents,
+                selector_aliases=selector_aliases,
                 alias_first_as_df=True,
             )
-            if not bindings:
-                return _ResolvedRowCardinality.unavailable(
-                    target_node_id,
-                    "invalid_input_name_binding",
-                )
-            analysis = analyze_polars_cardinality(
-                code,
-                {name: cast(int, result.output_rows) for name, result in bindings.items()},
-                selector_aliases=selector_aliases,
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, parents)
         return _passthrough_cardinality(target_node_id, parents)
 
     if node_type is NodeType.OPTIMISER:
@@ -1263,33 +1283,6 @@ def _resolve_row_cardinality_from_index(
             ),
             many_to_many_join_node_ids=_inherited_many_to_many(parents),
         )
-
-    if node_type is NodeType.EXTERNAL_FILE:
-        if not parents:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "external_object_row_cardinality_unknown",
-            )
-        code = node.data.config.get("code")
-        if isinstance(code, str) and code.strip():
-            bindings = _named_cardinality_inputs(
-                index,
-                node,
-                edge_results,
-                alias_first_as_df=True,
-            )
-            if not bindings:
-                return _ResolvedRowCardinality.unavailable(
-                    target_node_id,
-                    "invalid_input_name_binding",
-                )
-            analysis = analyze_polars_cardinality(
-                code,
-                {name: cast(int, result.output_rows) for name, result in bindings.items()},
-                selector_aliases=selector_aliases,
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, parents)
-        return _passthrough_cardinality(target_node_id, parents)
 
     if node_type in {
         NodeType.BANDING,
@@ -1670,6 +1663,13 @@ def _resolve_target_columns_from_index(
         if _has_selected_columns(node.data.config) and selected_columns is None:
             return None
 
+        if node.data.nodeType == NodeType.POLARS and _node_code(node):
+            code_columns = _resolve_code_node_columns(index, node)
+            if code_columns is not None:
+                if selected_columns is not None:
+                    return _filter_resolved_columns(code_columns, selected_columns)
+                return code_columns
+
         if node.data.nodeType == NodeType.EDGE_JOIN:
             edge_join_columns = _resolve_edge_join_columns_from_index(node, index)
             if edge_join_columns is not None:
@@ -1696,6 +1696,108 @@ def _resolve_target_columns_from_index(
         queue.extend(sorted(index.parent_ports(nid)))
 
     return None
+
+
+def _node_code(node: GraphNode) -> str:
+    code = node.data.config.get("code")
+    return code if isinstance(code, str) and code.strip() else ""
+
+
+#: The width key of a column a node computes from nothing it reads: no source holds it,
+#: so it is sized as one fixed-width value.
+_COMPUTED_WIDTH_KEY = "\0computed\0{}"
+
+
+def _resolve_code_node_columns(
+    index: _EstimateGraphIndex, node: GraphNode
+) -> _ResolvedTargetColumns | None:
+    """A Polars node's output columns, from its own lineage over its inputs' columns.
+
+    A column the node outputs under an input column's name is sized as that column,
+    and any other (a join's suffixed column, a computed one) as the widest input
+    column it reads, found by asking the lineage what that column alone demands. The
+    lineage does not tell a carried column from one the code recomputed, which can be
+    wider than what it reads (a one-byte column cast to eight bytes), so neither is
+    charged less than one fixed-width value. When the lineage
+    cannot follow the code, a node with several inputs is sized as all of them (a
+    join or concatenation holds every input's columns), and None leaves a node with
+    one input to its input's columns, as the walk to its source finds them.
+    """
+    from haute._contracts import Contract
+    from haute.projection import _analyse_polars_node_lineage
+
+    edges = tuple(
+        edge
+        for edge in index.pruned_edges
+        if edge.target == node.id and edge.source in index.node_map
+    )
+    if not edges:
+        return None
+    inputs: dict[ProjectionEdgeKey, _ResolvedTargetColumns] = {}
+    for edge in edges:
+        resolved = index.resolve_columns(edge.source, edge.sourceHandle)
+        if resolved is None:
+            return None
+        inputs[ProjectionEdgeKey.from_edge(edge)] = resolved
+    widths = _source_column_base_widths(index.loaded_source_metadata())
+
+    def widest(width_keys: Iterable[str], column: str) -> str:
+        # The computed key is one fixed-width value: the floor for any output column.
+        keys = [*width_keys, _COMPUTED_WIDTH_KEY.format(column)]
+        return max(keys, key=lambda key: widths.get(key, float(_BYTES_PER_COL)))
+
+    def lineage(demanded: set[str] | None) -> Any:
+        return _analyse_polars_node_lineage(
+            node,
+            edges,
+            index.node_map,
+            {},
+            demanded,
+            Contract.opaque(),
+            submodels=index.graph.submodels,
+            selector_aliases=preamble_selector_aliases(index.graph.preamble or ""),
+            known_port_columns={
+                (edge.source, edge.sourceHandle): frozenset(
+                    inputs[ProjectionEdgeKey.from_edge(edge)].columns
+                )
+                for edge in edges
+            },
+        )
+
+    analysed = lineage(None)
+    if analysed is None or not analysed[0].supported or analysed[0].exact_output_columns is None:
+        if len(inputs) < 2:
+            return None
+        return _dedupe_resolved_columns(
+            (column, resolved.width_columns.get(column, column))
+            for resolved in inputs.values()
+            for column in resolved.columns
+        )
+    result, bindings = analysed
+    by_name = {binding.name: inputs[binding.key] for binding in bindings}
+    pairs: list[tuple[str, str]] = []
+    for column in sorted(result.exact_output_columns):
+        kept = [
+            resolved.width_columns.get(column, column)
+            for resolved in by_name.values()
+            if column in resolved.columns
+        ]
+        if kept:
+            pairs.append((column, widest(kept, column)))
+            continue
+        alone = lineage({column})
+        read = (
+            [
+                by_name[name].width_columns.get(read_column, read_column)
+                for name, read_columns in alone[0].demands_by_input.items()
+                if name in by_name
+                for read_column in read_columns
+            ]
+            if alone is not None and alone[0].supported
+            else []
+        )
+        pairs.append((column, widest(read, column)))
+    return _dedupe_resolved_columns(pairs)
 
 
 def _resolve_target_column_names(
@@ -1764,9 +1866,52 @@ def _tree_model_training_columns(config: Mapping[str, Any]) -> frozenset[str] | 
     return frozenset(selected_feature_columns(config)) | frozenset(role_column_reasons(config))
 
 
+#: Bytes per value of each fixed-width type, by its Arrow name (Parquet metadata) or its
+#: Polars name (an injected frame). A type named here holds one fixed-size value per row;
+#: any other (text, binary, a dictionary, every nested type) is variable width and is
+#: measured from the source.
+_FIXED_WIDTH_BYTES: Mapping[str, int] = MappingProxyType(
+    {
+        **dict.fromkeys(("bool", "boolean", "int8", "uint8", "null"), 1),
+        **dict.fromkeys(("int16", "uint16", "halffloat", "float16"), 2),
+        **dict.fromkeys(("int32", "uint32", "float", "float32", "date", "date32"), 4),
+        **dict.fromkeys(
+            (
+                "int64",
+                "uint64",
+                "double",
+                "float64",
+                "date64",
+                "timestamp",
+                "datetime",
+                "duration",
+                "time",
+                "time32",
+                "time64",
+            ),
+            8,
+        ),
+        **dict.fromkeys(("int128", "uint128", "decimal", "decimal128"), 16),
+        "decimal256": 32,
+    }
+)
+
+
+def _fixed_width_bytes(type_name: str) -> int | None:
+    """Bytes per value of a fixed-width type, or None for a variable-width one.
+
+    The type's own name decides, before any parameters (``timestamp[us, UTC]``,
+    ``Datetime(time_unit='us')``, ``decimal128(10, 2)``); a nested type's parameters
+    name its children, which never make it fixed width.
+    """
+    head = type_name.strip().lower()
+    for separator in ("[", "(", "<"):
+        head = head.split(separator, 1)[0]
+    return _FIXED_WIDTH_BYTES.get(head.strip())
+
+
 def _is_variable_width_arrow_type(arrow_type: str) -> bool:
-    normalised = arrow_type.lower()
-    return any(token in normalised for token in ("string", "utf8", "binary"))
+    return _fixed_width_bytes(arrow_type) is None
 
 
 def _source_column_base_widths(
@@ -1775,8 +1920,9 @@ def _source_column_base_widths(
     widths: dict[str, float] = {}
     for meta in sources:
         for column, arrow_type in meta.columns.items():
-            width = float(_BYTES_PER_COL)
-            if meta.row_count > 0 and _is_variable_width_arrow_type(arrow_type):
+            fixed = _fixed_width_bytes(arrow_type)
+            width = float(_BYTES_PER_COL if fixed is None else fixed)
+            if meta.row_count > 0 and fixed is None:
                 uncompressed_size = meta.column_uncompressed_size_bytes.get(column)
                 if uncompressed_size is None and meta.column_count > 0:
                     uncompressed_size = int(meta.uncompressed_size_bytes / meta.column_count)

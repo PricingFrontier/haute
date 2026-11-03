@@ -946,9 +946,10 @@ def test_projection_explain_handles_empty_node_and_edge_collections() -> None:
             {"value"},
             True,
         ),
+        # The run refuses a selection none of whose columns exist, so its schema is unknown.
         (
             {"selected_columns": ["missing"], "column_renames": {"missing": "value"}},
-            {"a", "sort_key", "unused"},
+            None,
             True,
         ),
         ({"column_renames": {"a": "sort_key", "sort_key": "a"}}, {"a", "sort_key", "unused"}, True),

@@ -114,3 +114,26 @@ def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> 
         assert log_error.call_args.kwargs["path"] == handle["path"]
     finally:
         _cleanup_apply_result_artifact(handle)
+
+
+def test_a_corrupt_ratebook_factor_artifact_is_the_stable_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPT-R01: a corrupt parquet fails only when its schema is read, so the
+    scan reads it inside the corrupt-artifact handler."""
+    import polars as pl
+
+    from haute.errors import ServiceFailedError
+    from haute.routes import _optimiser_artifacts
+    from haute.routes._optimiser_artifacts import (
+        _persist_ratebook_factors_lazy_artifact,
+        _scan_ratebook_factors_artifact,
+    )
+
+    root = tmp_path / "factors"
+    monkeypatch.setattr(_optimiser_artifacts, "_ratebook_factors_artifact_root", lambda: root)
+    handle = _persist_ratebook_factors_lazy_artifact(pl.DataFrame({"region": ["North"]}).lazy())
+    (root / Path(handle["directory"]).name / "factors.parquet").write_bytes(b"not parquet")
+
+    with pytest.raises(ServiceFailedError, match="ratebook factor artifact is corrupt"):
+        _scan_ratebook_factors_artifact(handle)

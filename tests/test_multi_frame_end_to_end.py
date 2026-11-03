@@ -112,7 +112,7 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
                 "data": {
                     "label": "out",
                     "nodeType": NodeType.OUTPUT.value,
-                    "config": {"outputMapping": _output_mapping(), "outputFormat": "json"},
+                    "config": {"outputMapping": _output_mapping()},
                 },
             },
         ],

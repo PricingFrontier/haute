@@ -14,6 +14,7 @@ const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
+const save = process.platform === "darwin" ? "Meta+s" : "Control+s"
 
 /** Open the Utility pane on its fixed Imports entry, which edits the preamble. */
 async function openImports(page: Page): Promise<void> {
@@ -23,12 +24,29 @@ async function openImports(page: Page): Promise<void> {
   await expect(page.getByTestId("utility-imports")).toBeVisible()
 }
 
+async function onScreen(page: Page, locator: Locator): Promise<boolean> {
+  const box = await locator.boundingBox()
+  const viewport = page.viewportSize()
+  return box !== null && viewport !== null
+    && box.x >= 0 && box.y >= 0
+    && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height
+}
+
 async function connectHandles(page: Page, source: Locator, target: Locator): Promise<void> {
   const collapsePalette = page.getByTitle("Collapse palette")
   if (await collapsePalette.isVisible()) await collapsePalette.click()
   await page.getByTestId("toolbar-centre").click()
+  // Zoom in for larger handles, but never past where either endpoint leaves the
+  // screen: a wide graph (a drilled submodel's cards beside its children) fits less.
   const zoomIn = page.getByRole("button", { name: "Zoom in", exact: true })
-  for (let step = 0; step < 4; step += 1) await zoomIn.click()
+  const zoomOut = page.getByRole("button", { name: "Zoom out", exact: true })
+  for (let step = 0; step < 4; step += 1) {
+    await zoomIn.click()
+    if (!(await onScreen(page, source)) || !(await onScreen(page, target))) {
+      await zoomOut.click()
+      break
+    }
+  }
   await expect(source).toBeVisible()
   await expect(target).toBeVisible()
   // Locator actions wait for fit-view animation to settle before resolving
@@ -406,6 +424,8 @@ test.describe("core browser flows", () => {
         "    return value * 3",
       ].join("\n"),
     )
+    // The panel saves an edit when it closes, another file opens, or on Ctrl+S.
+    await page.keyboard.press(save)
 
     await expect
       .poll(() => readFileSync(utilityModulePath, "utf8"))
@@ -688,6 +708,9 @@ test.describe("core browser flows", () => {
     const childInputHandle = page.getByTestId("input-connector[0]:browser_mixed_banding")
     await expect(drilledInputHandle).toBeVisible()
     await expect(childInputHandle).toBeVisible()
+    // The drilled view fits itself just after it opens; drag once it has.
+    await expect(drilledInputHandle).toBeInViewport()
+    await expect(childInputHandle).toBeInViewport()
     await connectHandles(page, drilledInputHandle, childInputHandle)
 
     await page.getByRole("button", { name: "main", exact: true }).click()

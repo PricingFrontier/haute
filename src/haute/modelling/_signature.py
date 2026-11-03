@@ -43,7 +43,7 @@ def build_signature(
     target_type: str,
     task: Literal["classification", "regression"] = "regression",
     offset_name: str | None = None,
-    offset_type: str = "Float64",
+    offset_type: str | None = None,
     offset_link: str | None = None,
 ) -> ModelSignature:
     """Build an MLflow ModelSignature for a haute training run.
@@ -56,14 +56,17 @@ def build_signature(
             categorical. Names not in ``features`` raise.
         target_name: Name of the target column (kept for symmetry; not
             embedded in the output schema column names).
-        target_type: Polars dtype string for the target column.
-        task: ``"regression"`` (single ``pred`` output) or ``"classification"``
-            (``pred_label`` + ``pred_proba`` outputs).
+        target_type: Polars dtype string for the target column; it types a
+            classifier's ``pred_label`` and is validated for every task.
+        task: ``"regression"`` (single ``double`` ``pred`` output, whatever the
+            target's dtype) or ``"classification"`` (``pred_label`` +
+            ``pred_proba`` outputs).
         offset_name: Optional offset/exposure column the model was trained
             with. Declared as a required input so scoring payloads must carry
             it — the offset is part of every served prediction, never an
             optional extra. Must not shadow a feature name.
-        offset_type: Polars dtype string for the offset column.
+        offset_type: Polars dtype string the offset column was trained with (the
+            feature contract's ``offset_type``); required with ``offset_name``.
 
     Returns:
         A ``mlflow.models.ModelSignature`` whose input schema preserves the
@@ -96,6 +99,11 @@ def build_signature(
         ColSpec(type=_map_dtype(feature_types[f]), name=f) for f in features
     ]
     if offset_name is not None:
+        if not offset_type:
+            raise HauteValidationError(
+                f"offset column {offset_name!r} has no dtype; the signature declares the "
+                "offset as the model was trained on it, and never guesses one"
+            )
         # An exposure (log link) is optional: a request without it is priced for a
         # full policy term. An additive offset is a base premium and required.
         input_specs.append(
@@ -103,9 +111,13 @@ def build_signature(
         )
     inputs = Schema(input_specs)
 
+    # The outputs describe what the shared native pyfunc returns, not the target's
+    # storage: every family predicts a Float64 regression value (an integer target's
+    # predictions are not integers), and a classifier returns the original label and
+    # the positive-class probability.
     target_dtype = _map_dtype(target_type)
     if task == "regression":
-        outputs = Schema([ColSpec(type=target_dtype, name="pred")])
+        outputs = Schema([ColSpec(type=DataType.double, name="pred")])
     else:
         outputs = Schema(
             [

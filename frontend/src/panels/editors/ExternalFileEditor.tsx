@@ -18,7 +18,6 @@ export default function ExternalFileEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
-  errorLine?: number | null
   accentColor: string
 }) {
   const fileType = configField(config, "fileType", "pickle")

@@ -19,13 +19,8 @@ const INPUT_COMMON_KEYS = [
   "steps",
 ] as const
 
-// Editor state the step machinery writes beside `steps`; never persisted, so
-// never retained across a provider change, but never a configuration error.
-const STEP_EDITOR_STATE_KEYS = ["_steps_error", "_steps_discarded"] as const
-
 const DATABRICKS_KEYS = new Set([
   ...INPUT_COMMON_KEYS,
-  ...STEP_EDITOR_STATE_KEYS,
   "inputType",
   "http_path",
   "table",
@@ -105,7 +100,6 @@ export default function DataInputEditor({
   onUpdate: OnUpdateConfig
   onReplaceConfig: OnReplaceConfig
   accentColor: string
-  errorLine?: number | null
 }) {
   const { capabilities, error } = useIoCapabilities()
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)

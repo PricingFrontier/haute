@@ -18,7 +18,6 @@ from haute.schemas import (
     Graph,
     JsonCacheInferRequest,
     OptimiserApplyRequest,
-    OptimiserFrontierRequest,
     OptimiserFrontierSelectRequest,
     OptimiserSaveRequest,
     OptimiserSolveRequest,
@@ -531,17 +530,6 @@ class TestIntegerOverflow:
         req = TraceRequest(graph=Graph(), row_index=2**32, seed_plan=[])
         assert req.row_index == 2**32
 
-    def test_frontier_points_large(self):
-        """n_points_per_dim=2^31 should be rejected by Pydantic (le=100 constraint)."""
-        import pydantic
-
-        with pytest.raises(pydantic.ValidationError):
-            OptimiserFrontierRequest(
-                job_id="fake",
-                threshold_ranges={"vol": [0.9, 1.1]},
-                n_points_per_dim=2**31,
-            )
-
     def test_scenario_expander_steps_overflow(self):
         """stepCount=2^32 in scenarioExpander config should parse fine in Pydantic."""
         node = GraphNode(
@@ -1033,10 +1021,6 @@ class TestRequiredFieldValidation:
     def test_optimiser_save_requires_fields(self):
         with pytest.raises(ValidationError):
             OptimiserSaveRequest()
-
-    def test_optimiser_frontier_requires_fields(self):
-        with pytest.raises(ValidationError):
-            OptimiserFrontierRequest()
 
     def test_frontier_select_requires_fields(self):
         with pytest.raises(ValidationError):

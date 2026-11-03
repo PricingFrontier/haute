@@ -300,6 +300,7 @@ class MockWebSocket {
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import { edgeId } from "../utils/edgeIds"
 import { appEdge } from "../utils/flowElements"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
@@ -1066,7 +1067,8 @@ describe("App integration - load a pipeline with nodes", () => {
     }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [producer, stepped],
-      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null }],
+      // The server names the executable input of the edge it sends.
+      edges: [{ id: "e1", source: "prod", target: "t", sourceHandle: "output_1", targetHandle: null, data: { _inputName: "Model" } }],
       source_revision: "revision-test",
     }))
     render(<App />)
@@ -2158,9 +2160,10 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_live", sourceHandle: "driver_risk" }),
-        expect.objectContaining({ id: "e_api_original", sourceHandle: "driver_risk" }),
-        expect.objectContaining({ id: "e_api_instance", sourceHandle: "driver_risk" }),
+        // A renamed frame's connections are named by their new handle.
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "live_1", sourceHandle: "driver_risk" }), sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "original_1", sourceHandle: "driver_risk" }), sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "instance_value", sourceHandle: "driver_risk" }), sourceHandle: "driver_risk" }),
       ])
     })
     expect(configFor("api_0")).toEqual(
@@ -2386,7 +2389,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     const assertIdentityPayload = (graphValue: unknown, expectedName: "drivers" | "driver_risk") => {
       const graphState = graphValue as {
         nodes: Array<{ id: string; data: { config: Record<string, unknown> } }>
-        edges: Array<{ id: string; sourceHandle?: string | null }>
+        edges: Array<{ id: string; source: string; sourceHandle?: string | null }>
         submodels: {
           definition_pricing: {
             graph: { nodes: Array<{ id: string; data: { config: Record<string, unknown> } }> }
@@ -2399,7 +2402,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       expect(apiConfig.tables[1].label).toBe(expectedName)
       expect(
         graphState.edges
-          .filter((edge) => edge.id === "e_api_router" || edge.id === "e_api_value_instance")
+          .filter((edge) => edge.source === "api_0")
           .map((edge) => edge.sourceHandle),
       ).toEqual([expectedName, expectedName])
 
@@ -2432,8 +2435,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_router", sourceHandle: "driver_risk" }),
-        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "driver_risk", targetHandle: "in__router_input" }), sourceHandle: "driver_risk" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "driver_risk", targetHandle: "in__value_input" }), sourceHandle: "driver_risk" }),
       ])
     })
     assertIdentityPayload(storePayload(), "driver_risk")
@@ -2470,8 +2473,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_router", sourceHandle: "collision_name" }),
-        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__router_input" }), sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__value_input" }), sourceHandle: "collision_name" }),
       ])
     })
     expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
@@ -2493,8 +2496,8 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 
     await waitFor(() => {
       expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
-        expect.objectContaining({ id: "e_api_router", sourceHandle: "collision_name" }),
-        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__router_input" }), sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: edgeId({ source: "api_0", target: "pricing", sourceHandle: "collision_name", targetHandle: "in__value_input" }), sourceHandle: "collision_name" }),
       ])
     })
     expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
@@ -2622,7 +2625,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     await waitFor(() => {
       expect(useGraphStore.getState().edges).toEqual([
         expect.objectContaining({
-          id: "e_api_policy_data",
+          id: edgeId({ source: "api_0", target: "pricing_secondary", sourceHandle: "driver_risk", targetHandle: "in__policy_data" }),
           sourceHandle: "driver_risk",
         }),
       ])
@@ -3260,7 +3263,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   }
 
   it("shows the workbench over the hidden, inert pipeline editor with its own toolbar and shortcuts, and switches back", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     render(<App />)
     await waitForAppReady()
 
@@ -3304,7 +3307,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Commit in the workbench's toolbar saves the form's edits, fetches the tables afresh and removes a connection to one the form no longer has, then saves the pipeline and opens the milestone modal", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3347,7 +3350,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Commit is refused, saving no pipeline, when the workbench's tables cannot be fetched after the form's save", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3373,7 +3376,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Save in the pipeline toolbar saves the form's unsaved edits first, fetches the tables afresh, then saves the pipeline, keeping a connection to a table the form still has, as Commit does", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3407,7 +3410,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Save is refused before the form is saved while the pipeline document cannot be saved, so the form is never saved ahead of the pipeline", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [input],
@@ -3438,7 +3441,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("two Saves pressed while the first waits on its fetch of the tables are saved in turn, the pipeline by both", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3482,7 +3485,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("Ctrl+S during the assistant's turn is refused before the form is saved, as Save is disabled then", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3511,7 +3514,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   })
 
   it("an assistant turn that starts while a Save waits on the form's save refuses the rest of it, so the pipeline is never saved ahead of its fence", async () => {
-    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench" })
+    vi.mocked(workbenchApi.fetchWorkbenchStatus).mockResolvedValueOnce({ enabled: true, form: "rating/workbench", environments: [] })
     withWorkbenchInput()
     render(<App />)
     await waitForAppReady()
@@ -3548,3 +3551,120 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     }
   })
 })
+
+describe("App integration - selection activation and Ctrl+Enter target guards (FGC-R01)", () => {
+  it("selecting a node from Node Search in Automatic calculation fetches its preview and closes side panes", async () => {
+    const node = makeNode("polars_1", "Feature Cleanup", "polars")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [node],
+      edges: [],
+      source_revision: "revision-search",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    act(() => {
+      useUIStore.getState().setConstantsOpen(true)
+    })
+    expect(useUIStore.getState().constantsOpen).toBe(true)
+    vi.mocked(api.previewNode).mockClear()
+
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true })
+    const searchDialog = await screen.findByTestId("node-search-dialog", {}, { timeout: 10_000 })
+    const searchInput = within(searchDialog).getByRole("combobox", { name: "Search nodes" })
+    fireEvent.keyDown(searchInput, { key: "Enter" })
+
+    await waitFor(() => {
+      expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeId: "polars_1" }),
+      )
+    })
+    expect(useUIStore.getState().constantsOpen).toBe(false)
+  })
+
+  it("selecting a ready node from the recovery banner in Automatic calculation fetches its recovery preview", async () => {
+    const readyNode = makeNode("ready_1", "Ready Transform", "polars")
+    const brokenNode = makeNode("broken_1", "Broken Node", "polars")
+    brokenNode.data._loadAvailability = "unavailable"
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      load_status: "degraded",
+      source_file: "rating/main.py",
+      source_revision: "revision-degraded",
+      nodes: [readyNode, brokenNode],
+      edges: [],
+      capabilities: { can_preview: true },
+      diagnostics: [{
+        diagnostic_id: "diag_ready",
+        code: "node_warning",
+        severity: "warning",
+        scope: "node",
+        message: "Inspect Ready Transform",
+        element_id: "ready_1",
+        source_file: "rating/main.py",
+        source_span: { start_line: 12, start_column: 1, end_line: 12, end_column: 10 },
+        remediation: null,
+        incident_id: null,
+      }],
+    }))
+    vi.mocked(api.previewRecoveryNode).mockClear()
+
+    render(<App />)
+    await waitForAppReady()
+
+    const banner = await screen.findByTestId("pipeline-recovery-banner")
+    fireEvent.click(within(banner).getByRole("button", { name: /Inspect Ready Transform/i }))
+
+    await waitFor(() => {
+      expect(vi.mocked(api.previewRecoveryNode)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceFile: "rating/main.py",
+          sourceRevision: "revision-degraded",
+          targetRecoveryId: "ready_1",
+        }),
+      )
+    })
+  })
+
+  it("Ctrl+Enter ignores a focused select or open modal dialog, while a focused checkbox still refreshes", async () => {
+    const node = makeNode("polars_1", "Feature Cleanup", "polars")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [node],
+      edges: [],
+      source_revision: "revision-refresh",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("rf__node-polars_1"))
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
+    vi.mocked(api.previewNode).mockClear()
+
+    const selectEl = document.createElement("select")
+    const checkboxEl = document.createElement("input")
+    checkboxEl.type = "checkbox"
+    const dialogEl = document.createElement("div")
+    dialogEl.setAttribute("role", "dialog")
+    dialogEl.setAttribute("aria-modal", "true")
+    const dialogButton = document.createElement("button")
+    dialogEl.appendChild(dialogButton)
+    document.body.append(selectEl, checkboxEl, dialogEl)
+
+    try {
+      selectEl.focus()
+      fireEvent.keyDown(selectEl, { key: "Enter", ctrlKey: true })
+      dialogButton.focus()
+      fireEvent.keyDown(dialogButton, { key: "Enter", ctrlKey: true })
+      await act(() => new Promise<void>((resolve) => { setTimeout(resolve, 50) }))
+      expect(vi.mocked(api.previewNode)).not.toHaveBeenCalled()
+
+      checkboxEl.focus()
+      fireEvent.keyDown(checkboxEl, { key: "Enter", ctrlKey: true })
+      await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
+    } finally {
+      selectEl.remove()
+      checkboxEl.remove()
+      dialogEl.remove()
+    }
+  })
+})
+

@@ -11,17 +11,20 @@ other facts, versioned and reviewed with them::
     host = "azure-container-apps"   # optional; where the underwriter app runs
     edit_role = "Quotes.Edit"        # optional; who may change quotes in it
 
-    [workbench.store.test]          # optional; a hosted environment of the quote store
-    provider = "sqlite"
+    [workbench.store.dev]           # optional; an environment of the quote store
+    provider = "sqlserver"
+    auth = "managed-identity"
 
 Without the table the project has no workbench. With it, ``enabled`` is required; ``app``,
 when given, holds ``host``, one of ``APP_HOSTS``, and ``edit_role``, the role the host signs
 in with which an underwriter may change quotes, every other one reading them. ``store``
-declares the hosted environments of the underwriter app's quote store, each a table under
-its name with its database's ``provider``, one of ``STORE_PROVIDERS``, and, for a database
-that takes one, how the app signs in to it (``auth``, one of ``STORE_SIGN_INS``, with the
-names of the variables holding what it needs). Where each environment's database is, and
-every secret, comes from the host's own environment, never from the file. The form is
+declares the environments of the underwriter app's quote store (``dev``, ``staging`` and
+``prod`` in a new project), each a table under its name with its database's ``provider``,
+one of ``STORE_PROVIDERS``, and, for a database that takes one, how a hosted app signs in to
+it (``auth``, one of ``STORE_SIGN_INS``, with the names of the variables holding what it
+needs). Where each environment's database is, and every secret, comes from the host's own
+environment, or on the analyst's machine from ``connections.toml`` (:mod:`haute._connections`),
+never from this file. The form is
 the pipeline folder's ``workbench/`` folder, the pipeline folder being the folder of the
 project's pipeline file, and is never configured. The table is read from disk whenever a
 workbench route needs it, so an edit reaches the next request.
@@ -44,7 +47,7 @@ from haute.errors import ConfigError, HauteError, PathOutsideProjectError
 WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "app", "store"})
 #: Where the underwriter app can run: the host whose sign-in fronts it.
 APP_HOSTS: frozenset[str] = frozenset({"azure-container-apps"})
-#: The databases a hosted environment's quote store can be on.
+#: The databases an environment's quote store can be on.
 STORE_PROVIDERS: frozenset[str] = frozenset({"sqlite", "sqlserver", "postgresql"})
 #: The providers whose database is a file, which takes no sign-in.
 FILE_PROVIDERS: frozenset[str] = frozenset({"sqlite"})
@@ -60,10 +63,7 @@ STORE_SIGN_INS: Mapping[str, tuple[str, ...]] = {
 _OPTIONAL_SIGN_IN_KEYS: Mapping[str, tuple[str, ...]] = {"managed-identity": ("client_id_env",)}
 #: The providers on which a Microsoft Entra ID sign-in also names the role it takes, with
 #: ``username_env``: PostgreSQL's, whose role an Entra identity is mapped to by name.
-_ROLE_NAMED: frozenset[str] = frozenset({"postgresql"})
-#: The environment ``haute app serve`` keeps its quotes in, on the analyst's laptop, which no
-#: project declares.
-DEV_ENVIRONMENT = "dev"
+ROLE_NAMED: frozenset[str] = frozenset({"postgresql"})
 #: The variable a host or a CI job names the environment it runs in with.
 ENVIRONMENT_ENV = "HAUTE_ENVIRONMENT"
 #: The variables the host's environment says where the store's database is with: a server, a
@@ -72,14 +72,16 @@ STORE_SERVER_ENV = "HAUTE_STORE_SERVER"
 STORE_DATABASE_ENV = "HAUTE_STORE_DATABASE"
 STORE_SCHEMA_ENV = "HAUTE_STORE_SCHEMA"
 STORE_URL_ENV = "HAUTE_STORE_URL"
+#: The keys of a hosted environment's ``[workbench.app.<name>]``: where the host runs its app.
+APP_ENVIRONMENT_KEYS: tuple[str, ...] = ("resource_group", "container_app")
 #: The form folder's name in the pipeline folder.
 FORM_FOLDER = "workbench"
 
 _TABLE = "workbench"
 #: A hosted environment's name: lower-case letters, digits, dashes and underscores.
-_ENVIRONMENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+ENVIRONMENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 #: An environment variable's name.
-_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: Keys that would put where a database is in the file, and the variable each belongs in.
 _LOCATION_KEYS: Mapping[str, str] = {
     "server": STORE_SERVER_ENV,
@@ -88,7 +90,7 @@ _LOCATION_KEYS: Mapping[str, str] = {
     "url": STORE_URL_ENV,
 }
 #: Keys that would put a secret's value in the file, and the key naming its variable instead.
-_SECRET_KEYS: Mapping[str, str] = {
+SECRET_KEYS: Mapping[str, str] = {
     "password": "password_env",
     "username": "username_env",
     "user": "username_env",
@@ -120,9 +122,9 @@ class WorkbenchConfigError(WorkbenchError, ConfigError):
 
 @dataclass(frozen=True, slots=True)
 class StoreEnvironment:
-    """A hosted environment of the quote store, as a project declares it: its name, its
-    database's provider and how the app signs in to it, by the names of the variables holding
-    what that needs, never their values."""
+    """An environment of the quote store, as a project declares it: its name, its database's
+    provider and how a hosted app signs in to it, by the names of the variables holding what
+    that needs, never their values."""
 
     name: str
     provider: str
@@ -142,6 +144,17 @@ class StoreEnvironment:
 
 
 @dataclass(frozen=True, slots=True)
+class AppEnvironment:
+    """A hosted environment's app as ``[workbench.app.<name>]`` names it: the resource group
+    and the Container App the host runs it as, each empty while the project leaves it so,
+    which ``haute app rollout`` refuses."""
+
+    name: str
+    resource_group: str = ""
+    container_app: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class WorkbenchConfig:
     """The table as read: whether the workbench is enabled, and where its form folder is."""
 
@@ -156,9 +169,11 @@ class WorkbenchConfig:
     #: The role that may change quotes in the app (``[workbench.app] edit_role``); None lets
     #: everyone signed in change them.
     app_edit_role: str | None = None
-    #: The hosted environments of the app's quote store (``[workbench.store.<name>]``), in the
-    #: file's order.
+    #: The environments of the app's quote store (``[workbench.store.<name>]``), in the file's
+    #: order.
     store: tuple[StoreEnvironment, ...] = ()
+    #: Each hosted environment's app (``[workbench.app.<name>]``), in the file's order.
+    app_environments: tuple[AppEnvironment, ...] = ()
 
     @property
     def form_folder(self) -> Path:
@@ -166,6 +181,16 @@ class WorkbenchConfig:
         if not self.enabled:
             raise WorkbenchConfigError("This project's workbench is not enabled.")
         return self.project_root / self.form
+
+
+def store_sign_in_keys(provider: str, auth: str) -> tuple[str, ...]:
+    """The keys a server environment on *provider* signed in to with *auth*, one of
+    ``STORE_SIGN_INS``, names, each the variable that holds what the sign-in needs."""
+    keys = STORE_SIGN_INS[auth]
+    if provider in ROLE_NAMED and "username_env" not in keys:
+        # The role a PostgreSQL server maps the Entra identity to, by name.
+        keys = (*keys, "username_env")
+    return keys
 
 
 def read_workbench_config(project_root: Path) -> WorkbenchConfig:
@@ -212,11 +237,13 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     enabled = table.get("enabled")
     if not isinstance(enabled, bool):
         raise WorkbenchConfigError("[workbench].enabled must be true or false", path=str(toml_path))
-    app_host, app_edit_role = _app_settings(table.get("app"), toml_path)
     try:
         store = store_environments(table.get("store", {}), "[workbench.store]")
     except ValueError as exc:
         raise WorkbenchConfigError(str(exc), path=str(toml_path)) from exc
+    app_host, app_edit_role, app_environments = _app_settings(
+        table.get("app"), toml_path, {environment.name for environment in store}
+    )
     if not enabled:
         return WorkbenchConfig(
             enabled=False,
@@ -224,6 +251,7 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
             app_host=app_host,
             app_edit_role=app_edit_role,
             store=store,
+            app_environments=app_environments,
         )
     return WorkbenchConfig(
         enabled=True,
@@ -232,11 +260,12 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
         app_host=app_host,
         app_edit_role=app_edit_role,
         store=store,
+        app_environments=app_environments,
     )
 
 
 def store_environments(raw: object, where: str) -> tuple[StoreEnvironment, ...]:
-    """The hosted environments *raw* declares, a table of tables by name, as *where* (the
+    """The environments *raw* declares, a table of tables by name, as *where* (the
     file's table, or a release) holds them; :class:`ValueError` naming what is wrong. A
     location or a secret's value is refused, naming the variable it belongs in, so no file a
     project versions says where a database is or holds a credential."""
@@ -245,15 +274,10 @@ def store_environments(raw: object, where: str) -> tuple[StoreEnvironment, ...]:
     environments: list[StoreEnvironment] = []
     for name, settings in raw.items():
         at = f"{where[:-1]}.{name}]" if where.endswith("]") else f"{where}.{name}"
-        if not isinstance(name, str) or not _ENVIRONMENT_NAME.fullmatch(name):
+        if not isinstance(name, str) or not ENVIRONMENT_NAME.fullmatch(name):
             raise ValueError(
                 f"{at}: an environment's name is up to 32 lower-case letters, digits, dashes "
                 "and underscores, starting with a letter"
-            )
-        if name == DEV_ENVIRONMENT:
-            raise ValueError(
-                f"{at}: dev is the analyst's laptop, which haute app serve keeps; a hosted "
-                "environment takes another name"
             )
         if not isinstance(settings, dict):
             raise ValueError(f"{at} must be a table")
@@ -268,10 +292,10 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
                 f"{at}.{key}: where an environment's database is comes from the host's "
                 f"environment ({_LOCATION_KEYS[key]}), never from a file"
             )
-        if key in _SECRET_KEYS:
+        if key in SECRET_KEYS:
             raise ValueError(
                 f"{at}.{key} would hold a secret's value: name the variable that holds it "
-                f"({_SECRET_KEYS[key]}) instead"
+                f"({SECRET_KEYS[key]}) instead"
             )
     provider = settings.get("provider")
     if not isinstance(provider, str) or provider not in STORE_PROVIDERS:
@@ -287,10 +311,7 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
     else:
         if not isinstance(auth, str) or auth not in STORE_SIGN_INS:
             raise ValueError(f"{at}.auth must be one of {', '.join(STORE_SIGN_INS)}; got {auth!r}")
-        keys = STORE_SIGN_INS[auth]
-        if provider in _ROLE_NAMED and "username_env" not in keys:
-            # The role a PostgreSQL server maps the Entra identity to, by name.
-            keys = (*keys, "username_env")
+        keys = store_sign_in_keys(provider, auth)
         optional = _OPTIONAL_SIGN_IN_KEYS.get(auth, ())
     known = {"provider", "auth", *keys, *optional}
     unknown = sorted(set(settings) - known)
@@ -304,9 +325,10 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
         variable = settings.get(key)
         if variable is None and key in optional:
             continue
-        if not isinstance(variable, str) or not _VARIABLE_NAME.fullmatch(variable):
+        if not isinstance(variable, str) or not VARIABLE_NAME.fullmatch(variable):
             raise ValueError(
-                f"{at}.{key} must name the environment variable that holds it; got {variable!r}"
+                f"{at}.{key} must name the environment variable that holds it, letters, "
+                "digits and underscores"
             )
         variables[key] = variable
     return StoreEnvironment(
@@ -314,18 +336,31 @@ def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnviro
     )
 
 
-def _app_settings(raw: object, toml_path: Path) -> tuple[str | None, str | None]:
-    """``[workbench.app]``'s ``host``, one of ``APP_HOSTS``, and ``edit_role``, a role's
-    name; each None when unsaid, both without the table."""
+def _app_settings(
+    raw: object, toml_path: Path, declared: set[str]
+) -> tuple[str | None, str | None, tuple[AppEnvironment, ...]]:
+    """``[workbench.app]``'s ``host``, one of ``APP_HOSTS``, its ``edit_role``, a role's name,
+    each None when unsaid, and a hosted environment's app for each table under it, named as
+    one of the store's environments, *declared*; none of them without the table."""
     if raw is None:
-        return None, None
+        return None, None, ()
     if not isinstance(raw, dict):
         raise WorkbenchConfigError("[workbench.app] must be a TOML table", path=str(toml_path))
-    unknown = sorted(set(raw) - {"host", "edit_role"})
+    settings_keys = {"host", "edit_role"}
+    environments = tuple(
+        _app_environment(name, settings, toml_path, declared)
+        for name, settings in raw.items()
+        if name not in settings_keys and isinstance(settings, dict)
+    )
+    unknown = sorted(
+        key
+        for key, value in raw.items()
+        if key not in settings_keys and not isinstance(value, dict)
+    )
     if unknown:
         raise WorkbenchConfigError(
             f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the keys are host and "
-            "edit_role",
+            "edit_role, beside a table for each hosted environment",
             path=str(toml_path),
         )
     host = raw.get("host")
@@ -341,7 +376,35 @@ def _app_settings(raw: object, toml_path: Path) -> tuple[str | None, str | None]
             f"in with; got {edit_role!r}",
             path=str(toml_path),
         )
-    return str(host), None if edit_role is None else edit_role.strip()
+    return str(host), None if edit_role is None else edit_role.strip(), environments
+
+
+def _app_environment(
+    name: str, settings: dict[str, object], toml_path: Path, declared: set[str]
+) -> AppEnvironment:
+    """``[workbench.app.<name>]``: the Container App the host runs environment *name*'s app
+    as, *name* one of the store's environments, *declared*."""
+    at = f"[workbench.app.{name}]"
+    if name not in declared:
+        raise WorkbenchConfigError(
+            f"{at} names no environment [workbench.store] declares; declare "
+            f"[workbench.store.{name}], whose database its app keeps its quotes in",
+            path=str(toml_path),
+        )
+    unknown = sorted(set(settings) - set(APP_ENVIRONMENT_KEYS))
+    if unknown:
+        raise WorkbenchConfigError(
+            f"{at} has unknown key(s): {', '.join(unknown)}; the keys are "
+            + " and ".join(APP_ENVIRONMENT_KEYS),
+            path=str(toml_path),
+        )
+    values: dict[str, str] = {}
+    for key in APP_ENVIRONMENT_KEYS:
+        value = settings.get(key, "")
+        if not isinstance(value, str):
+            raise WorkbenchConfigError(f"{at}.{key} must be text", path=str(toml_path))
+        values[key] = value.strip()
+    return AppEnvironment(name=name, **values)
 
 
 def _form_folder(project_root: Path, toml_path: Path) -> str:

@@ -172,6 +172,54 @@ def test_classifier_rejects_namespace_method_with_expression_argument() -> None:
     assert decision.line == 1
 
 
+@pytest.mark.parametrize(
+    ("code", "blocking"),
+    [
+        pytest.param(
+            "df = df.select(pl.lit(1).alias('one'))", "pl.lit(1).alias('one')", id="literal-only"
+        ),
+        pytest.param("df = df.select(one=pl.lit(1))", "pl.lit(1)", id="named-literal"),
+        pytest.param(
+            "df = df.select(pl.all(), pl.lit(1).alias('one'))",
+            "pl.lit(1).alias('one')",
+            id="selector-beside-literal",
+        ),
+        pytest.param(
+            "df = df.select(pl.col('^a.*$'), pl.lit(1).alias('one'))",
+            "pl.lit(1).alias('one')",
+            id="regex-beside-literal",
+        ),
+    ],
+)
+def test_a_select_that_reads_no_named_column_is_not_row_local(code: str, blocking: str) -> None:
+    """A literal emits one row whatever the input height, so written a slice at a time
+    it would give one row per part; a selector can match no column and leave it alone."""
+    decision = _classify(code)
+    assert not decision.eligible
+    assert decision.reason == "column_free_select"
+    assert decision.blocking_operator == blocking
+    assert decision.line == 1
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param("df = df.select(pl.col('a'))", id="column"),
+        pytest.param("df = df.select('a', 'b')", id="strings"),
+        pytest.param("df = df.select(['a', 'b'])", id="string-list"),
+        pytest.param("df = df.select(x='a', one=pl.lit(1))", id="named-string-is-a-column"),
+        pytest.param("df = df.select(pl.sum_horizontal('a', 'b'), r=pl.lit(1))", id="horizontal"),
+        pytest.param("df = df.select(pl.col('a'), pl.lit(1).alias('one'))", id="column-and-lit"),
+        pytest.param("df = df.select((pl.lit(1) + pl.col('a')).alias('x'))", id="lit-plus-col"),
+        pytest.param("df = df.select(pl.all())", id="selector"),
+        pytest.param("df = df.select(pl.exclude('a'), pl.col('^b.*$') * 2)", id="selectors"),
+        pytest.param("df = df.with_columns(pl.lit(1).alias('one'))", id="with-columns-literal"),
+    ],
+)
+def test_a_select_reading_an_input_column_stays_row_local(code: str) -> None:
+    assert _classify(code).eligible
+
+
 def test_classifier_rejects_map_elements_with_a_location() -> None:
     decision = _classify("df = df.with_columns(pl.col('a').map_elements(lambda v: v))")
     assert not decision.eligible

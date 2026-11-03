@@ -24,7 +24,11 @@ _TRAINED_AT = datetime(2026, 9, 13, 8, 30, 45, tzinfo=UTC)
 
 
 def _artifacts(
-    directory: Path, *, feature_types: dict[str, str] | None = None
+    directory: Path,
+    *,
+    feature_types: dict[str, str] | None = None,
+    offset: bool = False,
+    offset_type: str | None = None,
 ) -> CandidateArtifacts:
     model = directory / "freq.cbm"
     model.write_bytes(b"model")
@@ -39,6 +43,9 @@ def _artifacts(
             target_name="claims",
             target_type="Float64",
             task="regression",
+            offset_column="exposure" if offset else None,
+            offset_link="log" if offset else None,
+            offset_type=offset_type,
         ),
         contract,
     )
@@ -212,6 +219,17 @@ class TestBuildCandidateRun:
         with pytest.raises(HauteValidationError, match="evaluation_report"):
             _build(tmp_path, artifacts=artifacts)
 
+    @pytest.mark.parametrize("offset_type", ["Int64", None])
+    def test_the_offset_is_signed_with_the_dtype_the_contract_records(
+        self, tmp_path: Path, offset_type: str | None
+    ) -> None:
+        artifacts = _artifacts(tmp_path, offset=True, offset_type=offset_type)
+        if offset_type is None:
+            with pytest.raises(HauteValidationError, match="offset column's dtype; retrain"):
+                _build(tmp_path, artifacts=artifacts)
+            return
+        assert _build(tmp_path, artifacts=artifacts).metadata.offset_type == "Int64"
+
     def test_a_contract_without_complete_feature_types_is_rejected(self, tmp_path: Path) -> None:
         artifacts = _artifacts(tmp_path, feature_types={"age": "Float64"})
         with pytest.raises(HauteValidationError, match="Missing types: region"):
@@ -236,6 +254,47 @@ class TestTrainingIdentity:
     def test_identity_rejects_values_without_a_canonical_form(self) -> None:
         with pytest.raises(TypeError, match="no canonical JSON form"):
             training_identity_sha256({"params": {"depth": object()}})
+
+    @pytest.mark.parametrize(
+        "evaluation",
+        [
+            {"strategy": "random", "seed": 1, "validation": {"method": "single", "size": 0.25}},
+            {
+                "strategy": "group",
+                "seed": 1,
+                "group_column": "policy",
+                "validation": {"method": "single", "size": 0.25},
+            },
+            {
+                "strategy": "temporal",
+                "date_column": "period",
+                "validation": {"method": "single", "start": "2024-01-01"},
+            },
+        ],
+        ids=["random", "group", "temporal"],
+    )
+    def test_config_and_job_agree_and_the_final_refit_is_part_of_it(
+        self, evaluation: dict[str, object]
+    ) -> None:
+        from haute.modelling._train_config import build_training_job_kwargs
+        from haute.modelling._training_job import TrainingJob
+
+        identities = []
+        for refit in (True, False):
+            config = {
+                "target": "y",
+                "feature_columns": ["x"],
+                "loss_function": "RMSE",
+                "params": {"iterations": 5},
+                "evaluation": {"schema_version": 1, **evaluation},
+                "refit_on_development": refit,
+            }
+            kwargs = build_training_job_kwargs(config, data="d.parquet")
+            job = TrainingJob(**kwargs)
+            assert job.id_columns == []
+            assert job.training_identity_sha256 == training_identity_sha256(kwargs)
+            identities.append(job.training_identity_sha256)
+        assert identities[0] != identities[1]
 
 
 class TestProvenance:

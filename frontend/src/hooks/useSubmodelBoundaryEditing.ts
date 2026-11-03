@@ -125,6 +125,10 @@ export default function useSubmodelBoundaryEditing({
 }: UseSubmodelBoundaryEditingParams) {
   const addToast = useToastStore((store) => store.addToast)
   const identityRequestSerialRef = useRef(0)
+  const liveSliceRef = useRef({ nodes, edges, submodels })
+  useEffect(() => {
+    liveSliceRef.current = { nodes, edges, submodels }
+  }, [nodes, edges, submodels])
   const activeBoundaryIdentityRef = useRef({
     submodelName: activeSubmodelName,
     instanceId: activeSubmodelInstanceId,
@@ -154,10 +158,11 @@ export default function useSubmodelBoundaryEditing({
   }, [addToast])
   const state = useCallback((): SubmodelBoundaryEditState | null => {
     if (!activeSubmodelName || !parentGraphRef.current) return null
+    const { nodes: currentNodes, edges: currentEdges, submodels: currentSubmodels } = liveSliceRef.current
     // Without both composite cards the visible graph is not a drilled
     // projection (e.g. history restored a pre-drill snapshot); reconciling it
     // would rewrite the submodel metadata from the parent canvas.
-    if (!hasBoundaryCard(nodes, "input") || !hasBoundaryCard(nodes, "output")) return null
+    if (!hasBoundaryCard(currentNodes, "input") || !hasBoundaryCard(currentNodes, "output")) return null
     if (
       typeof activeSubmodelInstanceId !== "string"
       || activeSubmodelInstanceId.length === 0
@@ -179,25 +184,22 @@ export default function useSubmodelBoundaryEditing({
       && pending.instanceId === activeSubmodelInstanceId
       && pending.definitionId === activeSubmodelDefinitionId
     ) {
-      return mergeViewPresentation(pending.result, nodes)
+      return mergeViewPresentation(pending.result, currentNodes)
     }
     return {
       submodelName: activeSubmodelName,
       instanceId: activeSubmodelInstanceId,
       definitionId: activeSubmodelDefinitionId,
-      viewNodes: nodes,
-      viewEdges: edges,
+      viewNodes: currentNodes,
+      viewEdges: currentEdges,
       parentNodes: parentGraphRef.current.nodes,
       parentEdges: parentGraphRef.current.edges,
-      submodels,
+      submodels: currentSubmodels,
     }
   }, [
     activeSubmodelName,
     activeSubmodelInstanceId,
     activeSubmodelDefinitionId,
-    nodes,
-    edges,
-    submodels,
     parentGraphRef,
     graphRef,
     submodelsRef,
@@ -330,7 +332,7 @@ export default function useSubmodelBoundaryEditing({
       submodels: result.submodels,
     }
     submodelsRef.current = result.submodels
-  }, [reconcileActiveSubmodel, parentGraphRef, submodelsRef])
+  }, [reconcileActiveSubmodel, nodes, edges, submodels, parentGraphRef, submodelsRef])
 
   const commitBoundaryConnection = useCallback((connection: Connection): boolean => {
     try {
@@ -352,8 +354,8 @@ export default function useSubmodelBoundaryEditing({
         )
         return true
       }
-      const source = nodes.find((node) => node.id === connection.source)
-      const target = nodes.find((node) => node.id === connection.target)
+      const source = current.viewNodes.find((node) => node.id === connection.source)
+      const target = current.viewNodes.find((node) => node.id === connection.target)
       if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
       const result = applySubmodelBoundaryConnection(current, connection)
       if (result) commitWithParentIdentities(result)
@@ -364,7 +366,6 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [
     state,
-    nodes,
     commitWithParentIdentities,
     graphRef,
     parentGraphRef,
@@ -377,7 +378,7 @@ export default function useSubmodelBoundaryEditing({
     try {
       const current = state()
       if (!current) return false
-      const edge = edges.find((candidate) => candidate.id === id)
+      const edge = current.viewEdges.find((candidate) => candidate.id === id)
       if (!edge || !isBoundaryEdge(edge)) return false
       const result = removeSubmodelBoundaryEdges(current, [id])
       if (result) commitWithParentIdentities(result)
@@ -386,7 +387,7 @@ export default function useSubmodelBoundaryEditing({
       reportBoundaryError(error)
       return true
     }
-  }, [state, edges, commitWithParentIdentities, reportBoundaryError])
+  }, [state, commitWithParentIdentities, reportBoundaryError])
 
   const deleteBoundaryInputPort = useCallback((portName: string): boolean => {
     try {
@@ -403,11 +404,12 @@ export default function useSubmodelBoundaryEditing({
   }, [state, commitWithParentIdentities, reportBoundaryError])
 
   const onBoundaryEdgesChange = useCallback((changes: EdgeChange[]): boolean => {
+    const currentEdges = liveSliceRef.current.edges
     const removedBoundaryIds = changes
       .filter((change): change is Extract<EdgeChange, { type: "remove" }> =>
         change.type === "remove")
       .filter((change) =>
-        edges.some((edge) => edge.id === change.id && isBoundaryEdge(edge)))
+        currentEdges.some((edge) => edge.id === change.id && isBoundaryEdge(edge)))
       .map((change) => change.id)
     if (removedBoundaryIds.length === 0) return false
     try {
@@ -429,7 +431,7 @@ export default function useSubmodelBoundaryEditing({
       reportBoundaryError(error)
       return true
     }
-  }, [state, edges, commitWithParentIdentities, reportBoundaryError])
+  }, [state, commitWithParentIdentities, reportBoundaryError])
 
   const commitSharedNodeDeletion = useCallback((
     nodeIds: ReadonlySet<string>,

@@ -1,3 +1,4 @@
+import type { NodeEditorState } from "../../types/node"
 import SteppedCodePane from "./shared/SteppedCodePane"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
 
@@ -14,12 +15,16 @@ export default function ExploreCodeEditor(props: {
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns?: { name: string; dtype: string }[]
   nodeId: string
   /** The node's own columns as its last preview recorded them. */
   nodeColumns?: { name: string; dtype: string }[]
+  /** The server's editor state for the node, beside its config. */
+  editor?: NodeEditorState
 }) {
   return <SteppedCodePane {...props} inputNames={[]} start="frame" codeHint="assign to df" />
 }

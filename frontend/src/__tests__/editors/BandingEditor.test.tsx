@@ -16,6 +16,7 @@ import type { ProjectFolderResponse } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
 import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
+import useUIStore from "../../stores/useUIStore"
 
 /**
  * The editor reads the data its node is banding, so it needs the graph the
@@ -30,7 +31,10 @@ function renderEditor(ui: ReactElement) {
   )
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  useUIStore.getState().clearBandingRuleStash()
+})
 
 /** How the histogram's formatter, if the editor gives it one, shows the data's ends. */
 function endLabels(props: Record<string, unknown>): string[] | null {
@@ -649,26 +653,28 @@ describe("BandingEditor", () => {
     const config = {
       factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: existingRules }],
     }
-    const { rerender } = renderEditor(
-      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
+    const { unmount } = renderEditor(
+      <BandingEditor nodeId="band_1" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
     // Switch to categorical — should stash the breakpoints
     fireEvent.click(screen.getByText("Categorical"))
     const switched = (onUpdate.mock.lastCall![1] as Record<string, unknown>[])[0]
     expect(switched.banding).toBe("categorical")
-    expect((switched._prevRules as Record<string, unknown>).breakpoints).toEqual(existingRules)
     expect(switched.rules).toEqual([])
+    // The stash is editor state beside the config: the factor written carries none.
+    expect(Object.keys(switched).filter((key) => key.startsWith("_"))).toEqual([])
 
-    // Switching back restores them.
-    rerender(
-      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
-        <BandingEditor config={{ factors: [switched] }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
-      </GraphProvider>,
+    // Selecting another node unmounts the editor; coming back and switching
+    // back still restores the rules.
+    unmount()
+    renderEditor(
+      <BandingEditor nodeId="band_1" config={{ factors: [switched] }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
     fireEvent.click(screen.getByText("Numeric"))
     const restored = (onUpdate.mock.lastCall![1] as Record<string, unknown>[])[0]
     expect(restored.banding).toBe("breakpoints")
     expect(restored.rules).toEqual(existingRules)
+    // Loading a document forgets the stash: usePipelineAPI and useWebSocketSync suites.
   })
 
   // ─── Feature 4: Breakpoints mode rendering ────────────────────
@@ -813,7 +819,7 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByText('Duplicate value "London" in rules 1, 3')).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: 'Rule 3 repeats the value "London" of rule 1.' })).toBeInTheDocument()
   })
 
 
@@ -925,6 +931,63 @@ describe("BandingEditor", () => {
     expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual([
       { value: "London" },
       { value: "Manchester" },
+    ])
+  })
+
+  it.each([
+    { dtype: "Int64", rows: [{ band: 2 }, { band: 1 }], values: ["1", "2"] },
+    { dtype: "Boolean", rows: [{ band: true }, { band: false }], values: ["false", "true"] },
+    { dtype: "Categorical", rows: [{ band: "B" }, { band: "A" }], values: ["A", "B"] },
+  ])("offers a $dtype column's preview values as the text execution matches on", ({ dtype, rows, values }) => {
+    const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+    renderEditor(
+      <BandingEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#22d3ee"
+        previewRows={rows}
+        upstreamColumns={[{ name: "band", dtype }]}
+      />,
+    )
+    expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual(
+      values.map((value) => ({ value })),
+    )
+  })
+
+  it.each(["Float64", "Decimal(precision=10, scale=2)", "Date", "Datetime(time_unit='us', time_zone=None)"])(
+    "offers no preview values for a %s column, whose text the preview cannot give",
+    (dtype) => {
+      // A Float64 1.0 arrives in the preview as the number 1, while execution matches
+      // the text Polars casts it to, "1.0": a chip written from the preview never matches.
+      const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+      renderEditor(
+        <BandingEditor
+          config={config}
+          onUpdate={vi.fn()}
+          inputSources={[]}
+          accentColor="#22d3ee"
+          previewRows={[{ band: 1 }, { band: 2.5 }]}
+          upstreamColumns={[{ name: "band", dtype }]}
+        />,
+      )
+      expect(screen.queryByTestId("categorical-value-picker")).toBeNull()
+    },
+  )
+
+  it("offers only the text values of a column whose type is not known", () => {
+    const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+    renderEditor(
+      <BandingEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#22d3ee"
+        previewRows={[{ band: "A" }, { band: 1 }]}
+      />,
+    )
+    expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual([
+      { value: "A" },
     ])
   })
 

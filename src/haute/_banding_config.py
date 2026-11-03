@@ -209,7 +209,7 @@ def _compact_rule_rows(
             key = str(raw_key)
         if raw_value is None or raw_value == "":
             raise ConfigSettingError(
-                f"{duplicate_label} rule {key!r} requires {value_field}",
+                f"{duplicate_label} rule {key!r} requires {value_field} (rules[{index}])",
                 setting="factors",
                 values=(key,),
             )
@@ -228,9 +228,9 @@ def _compact_rule_rows(
 
 
 def _compact_banding_factor_for_sidecar(factor: dict[str, Any]) -> dict[str, Any]:
-    # Factors and expanded rule rows have editor properties (_prevRules and
-    # _id). A compact rules dictionary instead has user category keys, which
-    # must survive even when named exactly like one of those properties.
+    # Expanded rule rows carry the editor's _id; underscore-prefixed properties
+    # of factor and rule records are never settings. A compact rules dictionary
+    # instead has user category keys, which must survive even when named so.
     result = {key: deepcopy(value) for key, value in factor.items() if not key.startswith("_")}
     if isinstance(result.get("rules"), list):
         result["rules"] = [

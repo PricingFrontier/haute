@@ -4045,6 +4045,7 @@ _ONLINE_APPLY_ARTIFACT = {
 }
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
 @pytest.mark.parametrize(
     "required", [{"quote_id", "optimal_scenario_value"}, {"quote_id"}, {"optimal_volume"}]
 )
@@ -4159,7 +4160,7 @@ def test_a_model_score_whose_model_is_refused_fails_planning_as_its_setting_erro
     assert raised.value.to_payload() == {
         "error_code": "node_config_invalid",
         "message": "Model Score 'child' cannot load its model: contract file is not a "
-        "version-4 feature contract; retrain the model to write a current contract",
+        "version-5 feature contract; retrain the model to write a current contract",
         "setting": "model",
     }
     assert isinstance(raised.value.__cause__, FeatureMismatchError)

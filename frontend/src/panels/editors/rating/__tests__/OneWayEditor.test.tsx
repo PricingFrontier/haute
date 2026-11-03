@@ -84,6 +84,37 @@ describe("OneWayEditor", () => {
     ]))
   })
 
+  it.each(["1,5", "abc", "1.2.3"])("refuses a typed relativity %j that is not a number, marking the cell", (typed) => {
+    const onUpdateEntries = vi.fn()
+    render(
+      <OneWayEditor table={makeTable()} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
+    )
+    const cell = screen.getByLabelText("Relativity for age_band young")
+    fireEvent.change(cell, { target: { value: typed } })
+    fireEvent.blur(cell)
+
+    expect(onUpdateEntries).not.toHaveBeenCalled()
+    expect(cell).toHaveValue(typed)
+    expect(cell).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByRole("img", { name: "Enter a number, such as 1.25." })).toBeInTheDocument()
+  })
+
+  it("commits a typed number exactly and a cleared cell as the table default", () => {
+    const onUpdateEntries = vi.fn()
+    render(
+      <OneWayEditor table={makeTable({ defaultValue: "1.0" })} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
+    )
+    const young = screen.getByLabelText("Relativity for age_band young")
+    fireEvent.change(young, { target: { value: " 1.5 " } })
+    fireEvent.blur(young)
+    expect(onUpdateEntries).toHaveBeenLastCalledWith(expect.arrayContaining([{ age_band: "young", value: 1.5 }]))
+
+    const old = screen.getByLabelText("Relativity for age_band old")
+    fireEvent.change(old, { target: { value: "" } })
+    fireEvent.blur(old)
+    expect(onUpdateEntries).toHaveBeenLastCalledWith(expect.arrayContaining([{ age_band: "old", value: 1 }]))
+  })
+
   it("styles editable values as neutral Excel-style cells", () => {
     render(
       <OneWayEditor

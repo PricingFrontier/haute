@@ -119,6 +119,20 @@ def test_a_workbench_node_inside_a_submodel_takes_the_form_too(project: Path) ->
     assert graph.submodels["pricing"].graph.nodes[0].data.config == {}
 
 
+def test_a_browser_graph_takes_the_tables_of_the_configured_project_not_the_cwd(
+    project: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._flatten import flatten_executable_graph
+
+    # The server's working directory is not its project (a serve started elsewhere).
+    monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+
+    given = flatten_executable_graph(_editor_graph())
+
+    request = next(node for node in given.nodes if node.id == "request")
+    assert request.data.config["sample"]["policy"] == {"state": "NY", "limit": 1000}
+
+
 def test_a_graph_without_a_workbench_node_reads_no_form(tmp_path: Path) -> None:
     graph = PipelineGraph(nodes=[_node("rates", NodeType.CONSTANT, {"values": []})])
 

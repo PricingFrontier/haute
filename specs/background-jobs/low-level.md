@@ -45,7 +45,7 @@
   specifically to reject two "equal" callables from different registration sites —
   see `TestJobStoreTTL::test_distinct_equal_artifact_cleaners_are_rejected`).
 - **Heavy-object keys** — `_DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result",
-  "quote_grid")` and `_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df",
+  "quote_grid")` and `_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS,
   "ratebook_factor_contexts", "solver_session")`. A heavy value may own a process (the
   optimiser's `SolverSession`); such a value implements `HeavyResource.release()`. Every
   path that removes a heavy value — the heavy TTL timer and lazy sweep,
@@ -157,7 +157,9 @@
 ### `_artifact_housekeeping.py`
 
 - **Ownership marker** — `.haute-artifact.json` with `schema_version=1`, non-empty
-  owner, and finite non-negative creation time.
+  owner, finite non-negative creation time, and the creating process (`pid` and its
+  `process_started_at`). A marker written before creators were recorded has neither and is
+  judged by age alone; one with only one of them, or malformed ones, is invalid.
 - **`create_owned_artifact_directory` / `reap_stale_artifact_directories`** —
   create marked direct children and reap only stale, valid, expected-owner children
   under an explicit root. Results report bounded counts and reclaimed bytes.
@@ -203,7 +205,9 @@ swap. A cancellation or timeout therefore wins wholly before publication, or wai
 and observes the completed record after publication; no reader can observe durable
 artifacts paired with a still-running or cancelled in-memory result. The caller-supplied
 publisher must not mutate its own job record (raises `RuntimeError`) and must return
-a mapping (raises `ValueError`). Publisher exceptions propagate and leave the job record
+a mapping (raises `ValueError`). A publisher does no slow work under the lock: training
+reads and validates its artifacts before it claims, and its publisher only hands over the
+validated fields. Publisher exceptions propagate and leave the job record
 unchanged. Filesystem transaction and rollback semantics remain owned by the job-specific
 publisher.
 
@@ -311,7 +315,7 @@ A new lease can never be taken on a handle already detached, because taking one 
 handle to be attached. Cleanup of an unleased handle runs as before.
 `release_detached_artifact_handles(job_id, handles)` is the same deferred cleanup for handles a
 caller has already removed from `artifact_handles` through its own `atomic_update` (the optimiser's
-eviction of the oldest frontier-point artifact and its invalidation on recompute): an unleased
+eviction of the oldest frontier-point artifact): an unleased
 handle is cleaned at once, a leased one when its last lease is released.
 
 `has_job_with_status` validates its status and runs TTL eviction before querying.
@@ -430,7 +434,10 @@ joins the child before cleanup.
 single-component prefix and writes the ownership marker before returning the child.
 `reap_stale_artifact_directories` enumerates direct children only and removes a child
 only after non-following metadata, marker schema/owner/age, and inclusive stale-cutoff
-checks pass. Per-child access/cleanup failures are counted and logged without widening
+checks pass and its creating process is no longer running: a live `pid` whose start time
+matches the recorded one (within a second, so a reused `pid` is not mistaken for the
+creator), or one whose start time cannot be read, keeps the directory at any age, so a second
+server's startup never removes a running server's files. Per-child access/cleanup failures are counted and logged without widening
 the sweep; symlinks, reparse points, unmarked/malformed/wrong-owner/fresh children and
 the root itself are never removed.
 

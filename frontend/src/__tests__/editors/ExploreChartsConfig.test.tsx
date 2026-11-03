@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExplorePivotResult } from "../../api/types"
 import ExploreChartsConfig from "../../panels/editors/ExploreChartsConfig"
 import { GraphProvider } from "../../panels/GraphContext"
-import type { SimpleNode } from "../../panels/editors"
+import type { SimpleNode } from "../../panels/editors/_shared"
 
 const mockRunExplorePivot = vi.fn()
 const mockCancelExplorePivot = vi.fn()
@@ -55,6 +55,8 @@ function pivot(
       aggregation: "sum",
       reference: "paid_sum",
       display_name: "Paid",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
@@ -63,6 +65,8 @@ function pivot(
       aggregation: "count",
       reference: "claim_id_count",
       display_name: "Claims",
+      sort_rows: "none",
+      color_scale: "none",
       color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
   ]
@@ -74,7 +78,7 @@ function pivot(
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+    rows: [{ sort: "ascending", id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     values,
     formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
@@ -843,6 +847,8 @@ describe("ExploreChartsConfig", () => {
           aggregation: "average",
           reference: "rate_mean",
           display_name: "Rate",
+          sort_rows: "none",
+          color_scale: "none",
           color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
@@ -911,6 +917,8 @@ describe("ExploreChartsConfig", () => {
           aggregation: "average",
           reference: "paid_mean",
           display_name: "Average paid",
+          sort_rows: "none",
+          color_scale: "none",
           color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
@@ -1010,6 +1018,58 @@ describe("ExploreChartsConfig", () => {
     })
   })
 
+  it("commits a typed axis title once, at blur", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    const onCommittedUpdate = vi.fn()
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+        onCommittedUpdate={onCommittedUpdate}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: `Configure ${configured.name}` }))
+
+    const title = screen.getByRole("textbox", { name: "Primary axis title" })
+    for (const typed of ["C", "Cl", "Cla", "Claims"]) {
+      fireEvent.change(title, { target: { value: typed } })
+    }
+    expect(onCommittedUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(title)
+    expect(onCommittedUpdate).toHaveBeenCalledTimes(1)
+    const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.charts[0].axes.primary.title).toBe("Claims")
+  })
+
+  it("shows the axis bound an undo leaves, committing nothing at blur", () => {
+    const sourcePivot = pivot("source")
+    const withMaximum = (maximum: number | null) => {
+      const base = chart(sourcePivot)
+      return { ...base, axes: { ...base.axes, primary: { ...base.axes.primary, maximum } } }
+    }
+    const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
+    const view = (config: Record<string, unknown>) => (
+      <GraphProvider
+        allNodes={[{ id: "explore_1", type: "explore", data: { label: "Explore Claims", description: "", nodeType: "explore", config } }]}
+        edges={[]}
+        submodels={{}}
+        preamble=""
+      >
+        <ExploreChartsConfig config={config} onUpdate={onUpdate} nodeId="explore_1" currentConfigHash={DATA_IDENTITY} />
+      </GraphProvider>
+    )
+    const before = withMaximum(10)
+    const { rerender } = render(view({ charts: [before], pivots: [sourcePivot] }))
+    fireEvent.click(screen.getByRole("button", { name: `Configure ${before.name}` }))
+    expect(screen.getByRole("textbox", { name: "Primary maximum" })).toHaveValue("10")
+
+    rerender(view({ charts: [withMaximum(20)], pivots: [sourcePivot] }))
+    const maximum = screen.getByRole("textbox", { name: "Primary maximum" })
+    expect(maximum).toHaveValue("20")
+    fireEvent.blur(maximum)
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
   it("validates manual bounds and colours before committing complete values", () => {
     const sourcePivot = pivot("source")
     const configured = chart(sourcePivot, {
@@ -1038,10 +1098,10 @@ describe("ExploreChartsConfig", () => {
       screen.getByRole("button", { name: `Configure ${configured.name}` }),
     )
 
-    const minimum = screen.getByRole("spinbutton", { name: "Primary minimum" })
+    const minimum = screen.getByRole("textbox", { name: "Primary minimum" })
     fireEvent.change(minimum, { target: { value: "12" } })
     fireEvent.blur(minimum)
-    expect(screen.getByRole("alert")).toHaveTextContent(/minimum must be less/i)
+    expect(screen.getByTestId("chart-axis-primary-minimum-error")).toHaveTextContent(/minimum must be less/i)
     let persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
@@ -1281,7 +1341,7 @@ describe("ExploreChartsConfig", () => {
     })
     fireEvent.change(groupInput, { target: { value: "other" } })
     fireEvent.blur(groupInput)
-    expect(screen.getByRole("alert")).toHaveTextContent(/merge only/i)
+    expect(screen.getByTestId("chart-stack-group-Paid-error")).toHaveTextContent(/merge only/i)
     let persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )

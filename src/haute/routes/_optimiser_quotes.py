@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from haute.errors import ConflictError, InvalidRequestError, RequestRefusedError, ServiceFailedError
+from haute.errors import InvalidRequestError, RequestRefusedError, ServiceFailedError
 from haute.routes._optimiser_limits import APPLY_PREVIEW_ROW_LIMIT, QUOTE_PAGE_DEPTH_LIMIT
 from haute.routes._optimiser_outcomes import (
     CHOICE_QUOTE_ID,
@@ -426,13 +426,8 @@ class QuoteQueries:
         """The requested page of the target, with its totals, typed columns and counts.
 
         A frontier point is materialised if need be and recorded as the job's
-        selected point; its rows must come from the generation it was selected in.
+        selected point.
         """
-        from haute.routes._optimiser_frontier import (
-            _FRONTIER_CHANGED_DETAIL,
-            _frontier_generation_or_raise,
-        )
-
         job = self._store.require_completed_job(body.job_id)
         target = ChoiceTarget(body.point_index)
         if body.point_index is None:
@@ -443,25 +438,18 @@ class QuoteQueries:
                 body.job_id, target, reducer, cancellation_token=token
             )
             from_artifact = True
-            generation = _frontier_generation_or_raise(job)
         else:
             # Refused before the point is materialised or selected.
             spec, reducer = _validated_page(job, body)
             ticket = self._frontier.request_point_apply(body.job_id, body.point_index)
             ticket.wait(token)
-            selected = self._frontier.select_applied_point(
-                body.job_id, body.point_index, ticket.generation
-            )
+            selected = self._frontier.select_applied_point(body.job_id, body.point_index)
             result = self._choices.choice_query(
                 body.job_id, target, reducer, cancellation_token=token
             )
-            latest = self._store.require_completed_job(body.job_id)
-            if _frontier_generation_or_raise(latest) != ticket.generation:
-                raise ConflictError(_FRONTIER_CHANGED_DETAIL)
             total_objective = float(selected["total_objective"])
             constraints = selected["constraints"]
             from_artifact = ticket.from_artifact
-            generation = ticket.generation
         rows = result.rows.to_dicts()
         return OptimiserApplyResponse(
             status="ok",
@@ -475,5 +463,4 @@ class QuoteQueries:
             offset=body.offset,
             preview_row_count=len(rows),
             preview_row_limit=body.limit,
-            frontier_generation=generation,
         )

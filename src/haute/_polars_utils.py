@@ -81,12 +81,17 @@ def streaming_collect(
     lf: pl.LazyFrame,
     *,
     execution_context: ExecutionContext | None = None,
+    optimizations: pl.QueryOptFlags | None = None,
 ) -> pl.DataFrame:
-    """Collect once through streaming, with polling when a context is active."""
+    """Collect once through streaming, with polling when a context is active.
+
+    *optimizations* replaces Polars' default optimisation flags for this one query.
+    """
     return execution_collect(
         lf,
         execution_context=execution_context,
         engine="streaming",
+        optimizations=optimizations,
     )
 
 
@@ -96,6 +101,7 @@ def _cancellable_collect(
     execution_context: ExecutionContext,
     engine: CollectEngine,
     poll_seconds: float = 0.01,
+    optimizations: pl.QueryOptFlags | None = None,
 ) -> pl.DataFrame:
     """Collect in the background while propagating request cancellation."""
 
@@ -115,7 +121,12 @@ def _cancellable_collect(
     poll_label = "streaming_collect_poll" if engine == "streaming" else "in_memory_collect_poll"
     execution_context.checkpoint(label=checkpoint_label)
     execution_context.record_collect()
-    query = lf.collect(engine=engine, background=True)
+    # Polars' own defaults stand unless a caller replaces them for this query.
+    query = (
+        lf.collect(engine=engine, background=True)
+        if optimizations is None
+        else lf.collect(engine=engine, background=True, optimizations=optimizations)
+    )
     while True:
         result = query.fetch()
         if result is not None:
@@ -156,6 +167,7 @@ def execution_collect(
     engine: CollectEngine,
     execution_context: ExecutionContext | None = None,
     poll_seconds: float = 0.01,
+    optimizations: pl.QueryOptFlags | None = None,
 ) -> pl.DataFrame:
     """Collect on *engine* with native cancellation whenever an execution context is active.
 
@@ -166,12 +178,15 @@ def execution_collect(
         raise ValueError("engine must be 'streaming' or 'in-memory'")
     context = execution_context or current_execution_context()
     if context is None:
-        return lf.collect(engine=engine)
+        if optimizations is None:
+            return lf.collect(engine=engine)
+        return lf.collect(engine=engine, optimizations=optimizations)
     return _cancellable_collect(
         lf,
         execution_context=context,
         engine=engine,
         poll_seconds=poll_seconds,
+        optimizations=optimizations,
     )
 
 
@@ -263,6 +278,47 @@ def bounded_collect_batches(
             shutil.rmtree(staging, ignore_errors=True)
 
 
+def _validate_scan_declarations(
+    input_lf: pl.LazyFrame,
+    *,
+    schema: pl.Schema,
+    generated_columns: Collection[str],
+    required_input_columns: Collection[str] | None,
+    input_schema: pl.Schema | None,
+) -> tuple[frozenset[str], list[str], frozenset[str]]:
+    """Check a Python scan's declared columns against its input and output schemas.
+
+    Returns the generated columns, the input's column names, and the input
+    columns the transform reads (every input column when undeclared).
+    """
+    generated = frozenset(generated_columns)
+    if input_schema is None:
+        input_schema = input_lf.collect_schema()
+    mismatched_carried = sorted(
+        name
+        for name, dtype in schema.items()
+        if name not in generated and input_schema.get(name) != dtype
+    )
+    if mismatched_carried:
+        raise ValueError(
+            f"non-generated scan columns must be input columns of the same dtype: "
+            f"{mismatched_carried}"
+        )
+    unknown_generated = generated - set(schema.names())
+    if unknown_generated:
+        raise ValueError(
+            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
+        )
+    input_names = input_schema.names()
+    required = frozenset(input_names if required_input_columns is None else required_input_columns)
+    unknown_required = required - set(input_names)
+    if unknown_required:
+        raise ValueError(
+            f"required input columns are absent from the input: {sorted(unknown_required)}"
+        )
+    return generated, input_names, required
+
+
 def row_local_python_scan(
     input_lf: pl.LazyFrame,
     transform: Callable[[pl.DataFrame], pl.DataFrame],
@@ -309,31 +365,13 @@ def row_local_python_scan(
     """
     context = execution_context or current_execution_context()
     caller_context = contextvars.copy_context()
-    generated = frozenset(generated_columns)
-    if input_schema is None:
-        input_schema = input_lf.collect_schema()
-    mismatched_carried = sorted(
-        name
-        for name, dtype in schema.items()
-        if name not in generated and input_schema.get(name) != dtype
+    generated, input_names, required = _validate_scan_declarations(
+        input_lf,
+        schema=schema,
+        generated_columns=generated_columns,
+        required_input_columns=required_input_columns,
+        input_schema=input_schema,
     )
-    if mismatched_carried:
-        raise ValueError(
-            f"non-generated scan columns must be input columns of the same dtype: "
-            f"{mismatched_carried}"
-        )
-    unknown_generated = generated - set(schema.names())
-    if unknown_generated:
-        raise ValueError(
-            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
-        )
-    input_names = input_schema.names()
-    required = frozenset(input_names if required_input_columns is None else required_input_columns)
-    unknown_required = required - set(input_names)
-    if unknown_required:
-        raise ValueError(
-            f"required input columns are absent from the input: {sorted(unknown_required)}"
-        )
 
     def frames(
         with_columns: list[str] | None,
@@ -419,31 +457,13 @@ def fanout_python_scan(
         raise ValueError(f"fanout must be a positive integer, got {fanout!r}")
     context = execution_context or current_execution_context()
     caller_context = contextvars.copy_context()
-    generated = frozenset(generated_columns)
-    if input_schema is None:
-        input_schema = input_lf.collect_schema()
-    mismatched_carried = sorted(
-        name
-        for name, dtype in schema.items()
-        if name not in generated and input_schema.get(name) != dtype
+    generated, input_names, required = _validate_scan_declarations(
+        input_lf,
+        schema=schema,
+        generated_columns=generated_columns,
+        required_input_columns=required_input_columns,
+        input_schema=input_schema,
     )
-    if mismatched_carried:
-        raise ValueError(
-            f"non-generated scan columns must be input columns of the same dtype: "
-            f"{mismatched_carried}"
-        )
-    unknown_generated = generated - set(schema.names())
-    if unknown_generated:
-        raise ValueError(
-            f"generated columns are absent from the scan schema: {sorted(unknown_generated)}"
-        )
-    input_names = input_schema.names()
-    required = frozenset(input_names if required_input_columns is None else required_input_columns)
-    unknown_required = required - set(input_names)
-    if unknown_required:
-        raise ValueError(
-            f"required input columns are absent from the input: {sorted(unknown_required)}"
-        )
 
     def frames(
         with_columns: list[str] | None,

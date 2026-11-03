@@ -126,6 +126,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Reviewed references. Every entry asserts: the module reads/writes/mentions
 # the NAME but never surfaces the VALUE through the API or logs.
 _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
+    # The workbench's rollout signs in to Azure as the CI service principal: the secret is read
+    # only into azure-identity's ClientSecretCredential, and the missing-credentials refusal
+    # lists variable names, never values (haute._workbench_rollout.credentials).
+    ("_workbench_rollout.py", "AZURE_CLIENT_SECRET"),
     # Credential resolution seams (values flow only into client connections).
     # The shared resolver's dataclass hides secret fields from repr, and its
     # missing-configuration error lists only names.

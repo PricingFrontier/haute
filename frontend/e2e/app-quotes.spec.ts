@@ -12,7 +12,7 @@ import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { expect, test } from "@playwright/test"
 
-import { buildAppPage, readStore, startAppServe, type AppServe } from "./appServe"
+import { buildAppPage, makeDevStore, readStore, runOnStore, startAppServe, type AppServe } from "./appServe"
 import { e2eGit, e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 import { buildWorkbenchPipeline, enableWorkbench, FORM_FILES, readFormFile, writeFormFiles } from "./workbenchProject"
 
@@ -91,7 +91,7 @@ test.describe("the underwriter app's quotes", () => {
     }
   })
 
-  test("a quote saved in haute app serve is read from dev's SQLite file, marked final, amended and saved again, and a form change reaches dev's tables", async ({ page }, testInfo) => {
+  test("a quote saved in haute app serve is read from dev's database, marked final, amended and saved again, and a form change closes dev's quotes until the SQL the schema pane writes from dev's tables runs there", async ({ page }, testInfo) => {
     // The app's page is built, and the app builds the project's release twice.
     test.setTimeout(5 * 60_000)
     const staticDir = testInfo.outputPath("app-page")
@@ -100,6 +100,7 @@ test.describe("the underwriter app's quotes", () => {
 
     const app = await test.step("the journeys' project made a workbench project, whose release haute app serve builds and serves", async () => {
       enableWorkbench({ ...FORM_FILES, ...SHEET_FILES })
+      makeDevStore()
       writeTestQuotes()
       await Promise.all([
         buildAppPage(staticDir),
@@ -138,7 +139,7 @@ test.describe("the underwriter app's quotes", () => {
       await expect(page.getByTestId("quote-line")).toContainText("Priced on this release")
     })
 
-    await test.step("its rows read from dev's SQLite file: the values typed and the price, under its reference and option", async () => {
+    await test.step("its rows read from dev's database: the values typed and the price, under its reference and option", async () => {
       const saved = quoteRows()
       expect(saved.details).toEqual([
         { quote_reference: REFERENCE, quote_option: 1, stage: "draft", saved_by: principal, priced_release: app.release },
@@ -183,16 +184,38 @@ test.describe("the underwriter app's quotes", () => {
       ])
     })
 
-    await test.step("a column added to the form reaches dev's table as the app starts again, and the quote opens", async () => {
+    const restarted = await test.step("a column added to the form closes dev's quotes as the app starts again, its table left as it was", async () => {
       const policy = readFormFile("schema/policy.json")
       writeFormFiles({ "schema/policy.json": { ...policy, columns: [...policy.columns, { id: "c_excess", name: "excess", type: "int" }] } })
       await app.stop()
-      const restarted = await serve(staticDir)
+      const again = await serve(staticDir)
+
+      await page.goto(again.url)
+      await expect(page.getByTestId("notice-quotes-closed")).toContainText("excess")
+      const { columns } = readStore({ columns: { sql: "SELECT name FROM pragma_table_info('policy')" } })
+      expect(columns.map((column) => column.name)).not.toContain("excess")
+      return again
+    })
+
+    await test.step("the schema pane compares the form with dev's tables, marking the column, and its SQL run on dev opens the quotes", async () => {
+      await page.goto("/")
+      await page.getByTestId("view-switcher-workbench").click()
+      await page.getByRole("button", { name: "Schema" }).click()
+      await page.getByRole("combobox", { name: "Compare with" }).selectOption("dev")
+      await expect(page.getByTestId("database-mark-t_policy-c_excess")).toHaveText("missing")
+
+      await page.getByRole("button", { name: "SQL" }).click()
+      const window = page.getByTestId("store-sql-window")
+      await expect(window.getByRole("combobox")).toHaveValue("database")
+      const sql = window.getByTestId("store-sql")
+      await expect(sql).toContainText("ADD COLUMN excess")
+      runOnStore(await sql.innerText())
 
       const { columns } = readStore({ columns: { sql: "SELECT name FROM pragma_table_info('policy')" } })
       expect(columns.map((column) => column.name)).toContain("excess")
+      // The app checks its closed store again on its own bound, with no restart.
       await page.goto(`${restarted.url}/quotes/${REFERENCE}/1`)
-      await expect(page.getByTestId("quote-reference")).toHaveText(LABEL)
+      await expect(page.getByTestId("quote-reference")).toHaveText(LABEL, { timeout: 60_000 })
       await expect(page.getByRole("main", { name: "Sheets" })).toBeVisible()
     })
   })

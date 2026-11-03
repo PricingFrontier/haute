@@ -206,7 +206,23 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // The quote store's tables changed in SQL (WB-44): the schema pane's SQL window and its
 // contract, and the underwriter app's closed quotes, bring it to 1,760.7 KiB; 1,762 KiB
 // restores about 1.3 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1762
+// The schema pane's Compare (WB-45): its controls, marks and store, and the catalogue
+// and comparison contracts, bring it to 1,763.9 KiB; 1,765 KiB restores about 1.1 KiB.
+// The test quotes in Preview (WB-12): their panel, store and client, and the test-quote
+// contracts in the workbench validators, bring it to 1,769.5 KiB; 1,771 KiB restores about
+// 1.5 KiB.
+// The frontend graph canvas roadmap (FGC-R01 to R12: submodel view history, Global
+// Constants on Undo/Redo, the shared shell mechanisms) grows the editor's index past the
+// initial budget (300.3 KiB), so the optimiser's scenario preview loads on first display,
+// as its result preview already does: the initial bundle falls to 295.4 KiB, and the
+// split chunk's own compression brings the complete bundle to 1,771.1 KiB; 1,772 KiB.
+// The name-collisions roadmap (NAME-09, NAME-10): the identity-response validator's
+// violation binding, the inline input-binding violations and the shared edge-id
+// encoding bring it to 1,772.7 KiB; 1,773 KiB.
+// The frontend node editors roadmap (FNED-R01 to FNED-R07): the shared params-files and
+// row-key hooks, now chunks of their own, the inline grid-issue marks and the source-bound
+// inference bring it to 1,773.8 KiB; 1,774 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1774
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

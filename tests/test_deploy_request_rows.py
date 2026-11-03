@@ -56,7 +56,6 @@ def _output(fields: list[str], port: str) -> dict[str, Any]:
             {"source_port": port, "source_column": f, "output_path": f"$[:].{f}", "enabled": True}
             for f in fields
         ],
-        "outputFormat": "json",
     }
 
 
@@ -1053,6 +1052,43 @@ def test_nodes_that_cannot_keep_each_quote_s_row(node_type, config, operation, e
     )
 
 
+def test_a_select_reading_no_quote_column_answers_each_quote_alone():
+    """A literal alone is one row however many quotes there are, so the proof refuses it
+    (EXEC-R09) and each quote is priced in a request of its own."""
+    code = "df = quotes.select(pl.lit(100).alias('premium'))"
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                _node("quotes", "apiInput", {"path": ""}),
+                _node("calc", "polars", {"code": code}),
+                _node("out", "output", _output(["premium"], "calc")),
+            ],
+            "edges": [_quotes_edge("calc"), _edge("calc", "out")],
+        }
+    )
+    rows = request_rows(graph, ["quotes"], "out", {})
+
+    assert rows == RequestRows(
+        "quote_by_quote",
+        (
+            RowRefusal(
+                "calc", "calc", "select: pl.lit(100).alias('premium') reads no column", "drops"
+            ),
+        ),
+    )
+    answer = _score(graph, {}, rows, QUOTES.head(3))
+    assert answer["premium"].to_list() == [100, 100, 100]
+
+
+def test_a_select_reading_a_quote_column_keeps_each_quote():
+    for selection in ("pl.col('quote_id'), pl.lit(100).alias('premium')", "'quote_id', 'age'"):
+        code = f"df = quotes.select({selection})"
+        assert _verdict(_single(_node("calc", "polars", {"code": code}))) == (
+            "in_request_order",
+            [],
+        )
+
+
 def test_a_fill_with_a_value_or_a_row_local_strategy_keeps_each_quote():
     for code in ("df = quotes.fill_null(0)", "df = quotes.fill_null(strategy='zero')"):
         assert _verdict(_single(_node("filled", "polars", {"code": code}))) == (
@@ -1183,7 +1219,7 @@ def _response_graph(mapping: list[dict[str, Any]], remap: dict[str, str]) -> Pip
             "nodes": [
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("rates", remap["rates__rates.parquet"]),
-                _node("out", "output", {"outputMapping": mapping, "outputFormat": "json"}),
+                _node("out", "output", {"outputMapping": mapping}),
             ],
             "edges": [_quotes_edge("out"), _edge("rates", "out")],
         }

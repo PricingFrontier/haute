@@ -30,8 +30,6 @@ from pydantic import (
 from haute._execution_schemas import (
     DiagnosticCollectionState,  # noqa: F401
     ExecutionAdmissionPayload,  # noqa: F401
-    ExecutionCacheProofMissReasonCountsPayload,  # noqa: F401
-    ExecutionCacheProofPayload,  # noqa: F401
     ExecutionColumnWidthsCollectionPayload,  # noqa: F401
     ExecutionColumnWidthsPayload,  # noqa: F401
     ExecutionMemoryLimitErrorPayload,  # noqa: F401
@@ -55,7 +53,7 @@ from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
-from haute._types import REQUEST_INPUT_NODE_TYPES, NodeType
+from haute._types import REQUEST_INPUT_NODE_TYPES, NodeEditorState, NodeType
 from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
@@ -138,9 +136,8 @@ PipelineDiagnosticScope = Literal["pipeline", "node", "edge", "submodel"]
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
     """Validate one ``(min, max)`` frontier-range value.
 
-    Single source of truth for both the request-body schema layer and the
-    config-side path in ``_optimiser_service``.  Accepts either a dict
-    ``{"min": ..., "max": ...}`` or a 2-element list/tuple.
+    The config-side check behind ``swept_frontier_ranges``. Accepts either a
+    dict ``{"min": ..., "max": ...}`` or a 2-element list/tuple.
     """
     if isinstance(value, dict):
         raw_min = value.get("min")
@@ -206,6 +203,8 @@ class WorkbenchStatusResponse(BaseModel):
     # The form folder's path from the project root (``rating/workbench`` in a new project);
     # null while the workbench is not enabled.
     form: str | None = None
+    # The quote store's environments haute.toml declares, by name, in its order.
+    environments: list[str] = []
 
 
 class WorkbenchStoreColumn(BaseModel):
@@ -232,7 +231,7 @@ class WorkbenchTablesResponse(BaseModel):
 
 
 class WorkbenchStoreSqlRequest(BaseModel):
-    """A form the Workbench view holds, saved or not, and where the SQL that brings a hosted
+    """A form the Workbench view holds, saved or not, and where the SQL that brings an
     environment's tables to it starts: the form as the project's default branch holds it, or
     none, for a database that holds no store yet."""
 
@@ -241,7 +240,7 @@ class WorkbenchStoreSqlRequest(BaseModel):
 
 
 class WorkbenchStoreSqlEnvironment(BaseModel):
-    """One hosted environment the project declares, its engine and the SQL for it."""
+    """One environment the project declares, its engine and the SQL for it."""
 
     name: str
     provider: str
@@ -249,11 +248,110 @@ class WorkbenchStoreSqlEnvironment(BaseModel):
 
 
 class WorkbenchStoreSqlResponse(BaseModel):
-    """The SQL for each hosted environment the project declares, and the default branch
-    whose form it starts from: null when it starts from none."""
+    """The SQL for each environment the project declares, and the default branch whose form
+    it starts from: null when it starts from none."""
 
     branch: str | None
     environments: list[WorkbenchStoreSqlEnvironment]
+
+
+class WorkbenchCatalogueColumn(BaseModel):
+    """A column as an environment's database holds it: its name, its kind (``boolean``,
+    ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
+    the database names it, whether it takes a null, its collation where it has one, and the
+    quotes holding a value in it, None when the table lacks a quote identity column."""
+
+    name: BoundedName
+    kind: BoundedName
+    type: BoundedName
+    nullable: bool
+    collation: BoundedName | None = None
+    quotes: int | None = None
+
+
+class WorkbenchCatalogueTable(BaseModel):
+    """A table of the store's as an environment's database holds it: its columns, its primary
+    key's columns, whether it refers by the identity to its quote's quote_details row, and
+    the quotes holding a row in it, None when the table lacks a quote identity column."""
+
+    name: BoundedName
+    columns: list[WorkbenchCatalogueColumn] = Field(max_length=MAX_REQUEST_ITEMS)
+    primary_key: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
+    refers: bool
+    quotes: int | None = None
+
+
+class WorkbenchStoreCatalogueRequest(BaseModel):
+    """The environment whose database's tables to read, one ``haute.toml`` declares."""
+
+    environment: BoundedName
+
+
+class WorkbenchStoreCatalogueResponse(BaseModel):
+    """The tables an environment's database holds, read through its connection: each table
+    holding the quote's identity, ``haute_activity`` among them. Names, kinds and counts
+    alone, never a value, a location or a sign-in."""
+
+    environment: str
+    tables: list[WorkbenchCatalogueTable]
+
+
+class WorkbenchStoreRename(BaseModel):
+    """A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+    holds as ``was``: the analyst's pairing of the two as a rename."""
+
+    table: BoundedName
+    column: BoundedName
+    was: BoundedName
+
+
+class WorkbenchStoreCompareRequest(BaseModel):
+    """A form the Workbench view holds, saved or not, compared with the tables an
+    environment's database holds, as ``POST /api/workbench/store-catalogue`` read them, with
+    the columns the analyst paired as renames."""
+
+    form: FormSpec
+    environment: BoundedName
+    tables: list[WorkbenchCatalogueTable] = Field(max_length=MAX_REQUEST_ITEMS)
+    renames: list[WorkbenchStoreRename] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
+
+
+class WorkbenchStoreDifference(BaseModel):
+    """A way the database differs from the form: the form's table and column by id (no table
+    for Haute's own haute_activity), its kind and what it is."""
+
+    table: str | None
+    column: str | None
+    kind: Literal[
+        "missing", "renamed", "type", "rows", "null", "key", "refers", "collation", "store"
+    ]
+    message: str
+
+
+class WorkbenchStoreExtra(BaseModel):
+    """A table of the store's, or a column of one of the form's tables, that the database
+    holds and the form does not: its table's and its name there, the form's table's id when
+    the table is the form's, and the quotes holding values in it, None when the table lacks a
+    quote identity column."""
+
+    table: str
+    column: str | None
+    table_id: str | None
+    quotes: int | None = None
+
+
+class WorkbenchStoreCompareResponse(BaseModel):
+    """The form compared with an environment's tables: each difference, each extra, the
+    pairings taken, whether the database matches the form, the SQL that brings its tables to
+    the form, from what they hold, and the default branch whose form named renames, null
+    when none did."""
+
+    differences: list[WorkbenchStoreDifference]
+    extras: list[WorkbenchStoreExtra]
+    renames: list[WorkbenchStoreRename]
+    matches: bool
+    sql: str
+    branch: str | None
 
 
 class WorkbenchFormFile(BaseModel):
@@ -324,6 +422,112 @@ RequestWorkbenchPricedTables = dict[
         Field(max_length=MAX_REQUEST_ITEMS),
     ],
 ]
+
+
+class WorkbenchTestQuoteSummary(BaseModel):
+    """A file of the test-quote folder: its name, its file's name, its revision (a digest of
+    its bytes) and, for one the panel cannot open, why."""
+
+    name: str
+    file: str
+    revision: str
+    problem: str | None = None
+
+
+class WorkbenchTestQuotesResponse(BaseModel):
+    """The test-quote folder's files by name, and the branch they were read on."""
+
+    branch: str
+    quotes: list[WorkbenchTestQuoteSummary]
+
+
+class WorkbenchTestQuoteTarget(BaseModel):
+    """A test quote's file, with the revision a decision about it was made on."""
+
+    file: BoundedName
+    revision: BoundedName
+
+
+class WorkbenchTestQuoteSaveRequest(BaseModel):
+    """Save the sample as saved: under a new ``name``, or over the test quote ``replace``
+    names; with the branch and the form folder's revision the panel saved."""
+
+    name: BoundedName | None = None
+    replace: WorkbenchTestQuoteTarget | None = None
+    branch: BoundedName
+    form_revision: BoundedName
+
+
+class WorkbenchTestQuoteWriteResponse(SaveCapture):
+    """A test quote written or deleted: the file as it now stands (None once deleted), and
+    the write's capture on the save ledger."""
+
+    quote: WorkbenchTestQuoteSummary | None = None
+
+
+class WorkbenchTestQuoteOpenRequest(BaseModel):
+    """The form the view holds, which a test quote is opened onto."""
+
+    form: FormSpec
+
+
+class WorkbenchTestQuoteOpenResponse(BaseModel):
+    """A test quote's values as the sheets hold them, and each value it could not place."""
+
+    values: WorkbenchValues
+    not_opened: list[str]
+
+
+class WorkbenchTestQuoteMove(BaseModel):
+    """A field of a test quote that moved: its table, its row (key values or position; null
+    in a one-row table), its column (null for a row only one side holds, ``before`` and
+    ``after`` then saying which), the expected value and the new."""
+
+    table: str
+    row: str | None
+    column: str | None
+    before: Any
+    after: Any
+
+
+class WorkbenchTestQuoteRunResponse(BaseModel):
+    """A test quote priced and compared: its outcome (``unchanged``, ``moved``,
+    ``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected
+    answer holds that the form no longer has, why, the file's revision it read, the basis it
+    priced on and the branch."""
+
+    name: str
+    file: str
+    outcome: Literal["unchanged", "moved", "no_longer_compares", "failed"]
+    moves: list[WorkbenchTestQuoteMove] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    why: str | None = None
+    revision: str
+    basis: str | None
+    branch: str
+
+
+class WorkbenchTestQuotesAcceptRequest(BaseModel):
+    """Accept the new answers of these test quotes, each at the revision its run read, on
+    the basis the run priced on and the branch it was made on."""
+
+    branch: BoundedName
+    basis: BoundedName
+    quotes: list[WorkbenchTestQuoteTarget] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
+
+
+class WorkbenchTestQuoteRefusal(BaseModel):
+    """A test quote not accepted, and why."""
+
+    file: str
+    why: str
+
+
+class WorkbenchTestQuotesAcceptResponse(SaveCapture):
+    """The test quotes accepted, as they now stand, those not, with why, and the capture."""
+
+    accepted: list[WorkbenchTestQuoteSummary]
+    refused: list[WorkbenchTestQuoteRefusal]
 
 
 class WorkbenchAppQuoteStore(BaseModel):
@@ -1105,6 +1309,8 @@ class RecoveryPipelineNode(BaseModel):
     availability: PipelineElementAvailability
     display_position: dict[str, float]
     config: dict[str, Any] | None = None
+    # Beside the config, never in it (``NodeData.editor``).
+    editor: NodeEditorState = Field(default_factory=NodeEditorState)
     config_reference: str | None = None
     function_name: Annotated[str, Field(min_length=1)]
     default_input_name: Annotated[str, Field(min_length=1)] | None
@@ -1209,12 +1415,44 @@ class PipelineNameViolationParty(BaseModel):
     submodel: str | None = None
 
 
+class PipelineNameViolationFrameBinding(BaseModel):
+    """A request input's frame, which names the input its consumers receive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["frame"]
+    # The request input, its frame's source handle, and the definition it sits in, if any.
+    node_id: str = Field(min_length=1)
+    handle: str = Field(min_length=1)
+    submodel: str | None
+
+
+class PipelineNameViolationPortBinding(BaseModel):
+    """A submodel's public input port, which names the input its targets receive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["submodel_input"]
+    # The definition the port belongs to, and the port's name.
+    submodel: str = Field(min_length=1)
+    port: str = Field(min_length=1)
+
+
+PipelineNameViolationBinding = Annotated[
+    PipelineNameViolationFrameBinding | PipelineNameViolationPortBinding,
+    Field(discriminator="kind"),
+]
+
+
 class PipelineNameViolation(BaseModel):
     """One name violation (codegen's naming rule, or support code's), with its message.
 
     A support-code violation that involves no node (two helpers binding one
     name, a statement the inventory cannot read) has no parties, and an
-    unreadable statement has no name.
+    unreadable statement has no name. A ``reserved_input`` or ``support_input``
+    violation whose input a frame or a public input port names carries that
+    ``binding``, so the editor that set it can show the violation; any other
+    violation's is ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1234,6 +1472,7 @@ class PipelineNameViolation(BaseModel):
     name: str
     message: str = Field(min_length=1)
     parties: list[PipelineNameViolationParty]
+    binding: PipelineNameViolationBinding | None
 
 
 class PipelineEditorDocument(BaseModel):
@@ -2122,7 +2361,6 @@ class OutputAssembleDryRunRequest(BaseModel):
     node_id: BoundedName
     #: The in-progress (volatile, unsaved) outputMapping to preview.
     output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
-    output_format: BoundedName = "json"
     #: Cap upstream source rows so the preview stays cheap.
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: BoundedName = "live"
@@ -3144,6 +3382,8 @@ class UtilityWriteResponse(SaveCapture):
     name: str = ""
     module: str = ""
     import_line: str = ""  # e.g. "from utility.features import *"
+    # The file as the save left it, a project hook's rewrite included, and its revision.
+    content: str
     revision: str
 
 
@@ -4349,30 +4589,6 @@ class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class OptimiserFrontierRequest(BaseModel):
-    job_id: BoundedName
-    threshold_ranges: dict[
-        BoundedName, Annotated[list[float], Field(max_length=MAX_REQUEST_ITEMS)]
-    ] = Field(default_factory=dict, max_length=MAX_REQUEST_ITEMS)
-    n_points_per_dim: int = Field(default=5, ge=1, le=100)
-
-    @field_validator("threshold_ranges", mode="after")
-    @classmethod
-    def _validate_threshold_ranges(
-        cls,
-        value: dict[str, list[float]],
-    ) -> dict[str, list[float]]:
-        for name, range_value in value.items():
-            # Re-use the canonical validator so request-body and config-side
-            # error messages match.  We discard the normalised tuple — the
-            # field type stays as ``list[float]`` for JSON-payload simplicity.
-            _normalise_frontier_range_pair(
-                range_value,
-                field=f"threshold_ranges.{name}",
-            )
-        return value
-
-
 class OptimiserFrontierResponse(BaseModel):
     status: str
     points: list[OptimiserFrontierPoint] = Field(default_factory=list)
@@ -4387,21 +4603,6 @@ class OptimiserFrontierResponse(BaseModel):
     """The constraints the sweep varied (a subset of ``constraint_names``)."""
     points_limit: int | None = None
     points_truncated: bool = False
-    frontier_generation: int | None = Field(default=None, ge=0)
-    """The solve job's frontier generation this frontier belongs to: ``0`` for the
-    solve-time frontier, incremented by every recompute. Every computed frontier
-    carries it; only the ``status == "started"`` handle has none."""
-    job_id: str | None = None
-    """Pollable frontier job handle when ``status == "started"``."""
-
-    @model_validator(mode="after")
-    def _generation_iff_computed(self) -> OptimiserFrontierResponse:
-        started = self.status == "started"
-        if started and self.frontier_generation is not None:
-            raise ValueError("A started frontier handle has no frontier_generation")
-        if not started and self.frontier_generation is None:
-            raise ValueError("A computed frontier requires frontier_generation")
-        return self
 
     @model_validator(mode="after")
     def _points_cover_the_constraints(self) -> OptimiserFrontierResponse:
@@ -4412,7 +4613,7 @@ class OptimiserFrontierResponse(BaseModel):
             raise ValueError(f"swept_axes {unknown_axes} are not in constraint_names {names}")
         if len({point.mode for point in self.points}) > 1:
             raise ValueError("Frontier points must all be of one mode")
-        if self.status != "started" and len(self.point_summaries) != len(self.points):
+        if len(self.point_summaries) != len(self.points):
             raise ValueError(
                 f"A computed frontier needs one summary per point: {len(self.point_summaries)} "
                 f"summaries for {len(self.points)} points"
@@ -4422,19 +4623,6 @@ class OptimiserFrontierResponse(BaseModel):
         for index, summary in enumerate(self.point_summaries):
             _require_constraint_names(summary.constraints, names, field=f"point_summaries[{index}]")
         return self
-
-
-class OptimiserFrontierStatusResponse(BaseModel):
-    status: JobStatus
-    progress: float = 0.0
-    message: str = ""
-    elapsed_seconds: float = 0.0
-    result: OptimiserFrontierResponse | None = None
-    terminal_reason: str | None = None
-    error_code: str | None = None
-    http_status_code: int | None = None
-    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
-    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 def _require_constraint_names(keys: Mapping[str, Any], names: list[str], *, field: str) -> None:
@@ -4845,8 +5033,6 @@ class OptimiserSegmentsResponse(BaseModel):
     weight: str
     weight_label: str
     point_index: int | None = Field(ge=0)
-    # The frontier generation the point index refers to.
-    frontier_generation: int = Field(ge=0)
     n_quotes: int = Field(gt=0)
     # Bins, or the distinct non-missing values before truncation to the top 15.
     n_levels: int = Field(ge=0)
@@ -4890,7 +5076,6 @@ class OptimiserSegmentIndexResponse(BaseModel):
     model_config = _STRICT_ROW
 
     point_index: int | None = Field(ge=0)
-    frontier_generation: int = Field(ge=0)
     statistic: OptimiserSegmentIndexStatistic
     keys: list[OptimiserSegmentIndexKey]
 
@@ -5015,8 +5200,6 @@ class OptimiserSolveResult(BaseModel):
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
-    # The job's frontier generation (0 until a recompute); see OptimiserFrontierResponse.
-    frontier_generation: int = Field(ge=0)
     # What the solve ran on: the job's input provenance and solver settings.
     input_summary: OptimiserInputSummary
     # Diagnostics that could not be produced (the frontier's failure among them).
@@ -5137,9 +5320,6 @@ class OptimiserApplyResponse(BaseModel):
     offset: int = Field(ge=0)
     preview_row_count: int = Field(ge=0)
     preview_row_limit: int = Field(ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
-    # The frontier generation the page was answered for, so a client can refuse
-    # a page from a frontier recomputed after its request.
-    frontier_generation: int = Field(ge=0)
     error: str | None = None
 
     @model_validator(mode="after")
@@ -5194,8 +5374,6 @@ class OptimiserFrontierSelectResponse(BaseModel):
     clamp_rate: float | None = None
     # Ratebook only: the solve's collar, shared by every frontier point.
     combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
-    # The frontier generation the point index refers to.
-    frontier_generation: int = Field(ge=0)
     # The selected point's (always empty) or, with no point, the solve's.
     diagnostics_errors: list[OptimiserDiagnosticError]
     error: str | None = None
@@ -5614,7 +5792,6 @@ class GitLedgerSavesResponse(BaseModel):
 
 class GitBranchItem(BaseModel):
     name: str
-    is_yours: bool
     is_current: bool
     is_archived: bool
     last_commit_time: str = ""
@@ -5925,5 +6102,4 @@ class IoCapabilitiesResponse(_StrictIoCapabilitiesModel):
 # threads completing it at once can leave the class without a validator. Build
 # them at import instead.
 OptimiserFrontierResponse.model_rebuild()
-OptimiserFrontierStatusResponse.model_rebuild()
 GitMilestoneFork.model_rebuild()

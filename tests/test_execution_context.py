@@ -21,7 +21,6 @@ from haute._execution_admission import (
 )
 from haute._execution_context import (
     ExecutionAdmission,
-    ExecutionCacheProofMissReason,
     ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
@@ -1574,7 +1573,6 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
         telemetry_enabled=True,
         telemetry_sink=events.append,
     )
-    context.record_bytes_read(1_024)
     context.record_bytes_written(512)
     context.record_chunk()
     context.record_column_widths(
@@ -1582,7 +1580,6 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
         requested_width=2,
         physically_scanned_width=3,
     )
-    context.record_cache_proof_miss(ExecutionCacheProofMissReason.PROOF_UNAVAILABLE)
     context.record_cache_direct_fallback()
 
     terminal_reason = "bounded_reason_" + ("x" * 256)
@@ -1598,7 +1595,8 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
         not isinstance(value, str) or len(value) <= 128 for value in event.attributes.values()
     )
     assert event.attributes["profile"] == "training_prep"
-    assert event.attributes["bytes_read"] == 1_024
+    # Nothing records bytes read or cache proofs, so no attribute claims a count of them.
+    assert not {"bytes_read", "cache_proof_hits", "cache_proof_misses"} & set(event.attributes)
     assert event.attributes["bytes_written"] == 512
     assert event.attributes["chunk_count"] == 1
     assert "rss_start_bytes" in event.attributes
@@ -1607,8 +1605,6 @@ def test_execution_telemetry_is_bounded_redacted_and_emitted_once_per_terminal_s
     assert "column_widths_state" in event.attributes
     assert event.attributes["requested_column_width_total"] == 2
     assert event.attributes["physically_scanned_column_width_total"] == 3
-    assert event.attributes["cache_proof_misses"] == 1
-    assert event.attributes["cache_miss_proof_unavailable"] == 1
     assert event.attributes["cache_direct_fallbacks"] == 1
     serialised = json.dumps(event.to_dict())
     assert "secret-operation" not in serialised
@@ -2275,7 +2271,7 @@ def test_execution_metrics_payload_bounds_width_evidence_and_keeps_unavailable_c
 
     payload = context.metrics_payload(status="completed")
 
-    assert payload["bytes_read"] is None
+    assert "bytes_read" not in payload
     assert payload["bytes_written"] == 4096
     assert payload["estimated_bytes"] is None
     assert payload["checkpoint_count"] == 1
@@ -2290,7 +2286,7 @@ def test_execution_metrics_payload_bounds_width_evidence_and_keeps_unavailable_c
     ExecutionMetricsPayload.model_validate(payload)
 
 
-def test_execution_efficiency_evidence_uses_closed_cache_reasons_and_aggregate_widths() -> None:
+def test_execution_efficiency_evidence_counts_direct_fallbacks_and_aggregate_widths() -> None:
     context = ExecutionContext(
         operation="preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -2305,26 +2301,14 @@ def test_execution_efficiency_evidence_uses_closed_cache_reasons_and_aggregate_w
         requested_width=5,
         physically_scanned_width=8,
     )
-    context.record_cache_proof_hit()
-    context.record_cache_proof_miss(ExecutionCacheProofMissReason.METADATA_SOURCE_MISMATCH)
-    context.record_cache_proof_miss(ExecutionCacheProofMissReason.PROOF_UNAVAILABLE)
     context.record_cache_direct_fallback()
 
     payload = context.metrics_payload(status="completed")
 
     assert payload["requested_column_width_total"] == 7
     assert payload["physically_scanned_column_width_total"] == 11
-    assert payload["cache_proof"] == {
-        "hits": 1,
-        "misses": 2,
-        "direct_fallbacks": 1,
-        "miss_reason_counts": {
-            "artifact_integrity_schema_failure": 0,
-            "metadata_source_mismatch": 1,
-            "proof_unavailable": 1,
-            "unreadable_artifact": 0,
-        },
-    }
+    assert payload["cache_direct_fallbacks"] == 1
+    assert "cache_proof" not in payload
     assert ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json") == payload
 
 
@@ -2348,16 +2332,6 @@ def test_execution_efficiency_width_totals_fail_closed_on_partial_evidence() -> 
 
     assert payload["requested_column_width_total"] is None
     assert payload["physically_scanned_column_width_total"] == 8
-
-
-def test_execution_efficiency_evidence_rejects_unknown_cache_reason() -> None:
-    context = ExecutionContext(
-        operation="preview",
-        profile=ExecutionProfile.PREVIEW_EAGER,
-    )
-
-    with pytest.raises(TypeError, match="ExecutionCacheProofMissReason"):
-        context.record_cache_proof_miss("new_reason")  # type: ignore[arg-type]
 
 
 def test_projection_strategy_summary_is_bounded() -> None:
@@ -4814,7 +4788,6 @@ def test_optimiser_auto_range_start_admits_nothing_in_the_request_thread(monkeyp
         raise AssertionError("auto-range start admitted in the request thread")
 
     monkeypatch.setattr("haute.routes._optimiser_service.admit_growth_grant", refuse)
-    monkeypatch.setattr("haute.routes._optimiser_service.create_admitted_execution_context", refuse)
     graph = make_graph(
         {
             "nodes": [
@@ -5431,7 +5404,9 @@ def test_optimiser_start_maps_admission_failure_to_http_507(
     assert job["error_detail"]["error_code"] == "memory_limit"
     assert job["error_detail"]["profile"] == "optimiser_solve"
     assert job["error_detail"]["reason"] == "process_rss_limit_exceeded"
-    assert "process_rss_limit_exceeded" in job["message"]
+    # The job's message is the curated one the refusal carries, naming the operation.
+    assert job["message"] == job["error_detail"]["message"]
+    assert job["message"].startswith("Optimiser setup was not started")
 
 
 def test_optimiser_start_maps_runtime_memory_failure_to_http_507(

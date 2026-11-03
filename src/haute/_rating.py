@@ -24,6 +24,7 @@ import polars as pl
 
 from haute._banding_config import (
     banding_factor_is_active,
+    compact_banding_config_for_sidecar,
     normalise_banding_factors,
     normalise_banding_rules,
     require_distinct_banding_outputs,
@@ -581,50 +582,41 @@ def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
 def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate and return canonical banding factors.
 
-    Every factor names a banding type, draft or not. A factor without a column,
-    output column, or rules remains a supported draft no-op; once all three are
-    configured, the rule shape must be executable rather than being silently
-    skipped at runtime.
+    Every factor names a banding type, draft or not, and every rule row is one the
+    sidecar writer can write (:func:`compact_banding_config_for_sidecar`): a value or
+    boundary, what it maps to, no value twice. A factor without a column, output
+    column, or rules remains a supported draft no-op; once configured, its breakpoints
+    must make intervals at least one of which bands rows.
     """
 
     factors = normalise_banding_factors(config)
     for index, factor in enumerate(factors):
-        banding_type = str(factor.get("banding", "") or "").strip()
-        require_banding_type(banding_type, subject=f"Banding factor {index}")
-        column = str(factor.get("column", "") or "").strip()
+        require_banding_type(
+            str(factor.get("banding", "") or "").strip(), subject=f"Banding factor {index}"
+        )
+    # Every rule row the sidecar writer would refuse (a blank band name, value or
+    # mapping, a repeated value), in a draft factor too, is refused here, before a
+    # save writes anything.
+    compact_banding_config_for_sidecar(config)
+    for factor in factors:
         output_column = str(factor.get("outputColumn", "") or "").strip()
         configured_rules = factor.get("rules", []) or []
-
-        if not column or not output_column or not configured_rules:
+        if not str(factor.get("column", "") or "").strip() or not output_column:
             continue
-        rules = normalise_banding_rules(banding_type, configured_rules)
-        if not rules:
-            continue
-
-        if banding_type == "categorical":
-            usable = any(
-                rule.get("value") not in (None, "") and rule.get("assignment") not in (None, "")
-                for rule in rules
+        if factor.get("banding") == "breakpoints" and configured_rules:
+            # The boundaries must make intervals (a lone open-ended band makes none),
+            # and one must band rows: a falsy label such as 0 reads as no band name.
+            intervals = _breakpoints_to_rules(
+                normalise_banding_rules("breakpoints", configured_rules),
+                right_closed=bool(factor.get("rightClosed", True)),
             )
-            if not usable:
+            if not any(
+                _banding_rule_comparators(rule) and rule.get("assignment") not in (None, "")
+                for rule in intervals
+            ):
                 raise ConfigSettingError(
-                    f"Banding output {output_column!r} has no usable categorical rule",
-                    setting="factors",
+                    _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
                 )
-            continue
-
-        intervals = _breakpoints_to_rules(
-            rules,
-            right_closed=bool(factor.get("rightClosed", True)),
-        )
-        usable = any(
-            _banding_rule_comparators(rule) and rule.get("assignment") not in (None, "")
-            for rule in intervals
-        )
-        if not usable:
-            raise ConfigSettingError(
-                _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
-            )
     require_distinct_banding_outputs(factors)
     return factors
 

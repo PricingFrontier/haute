@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react"
 import { fetchIoCapabilities } from "../../api/client"
 import type { IoCapabilitiesResponse } from "../../api/types"
+import { apiErrorMessage } from "../../api/errors"
 
 // Coalesce consumers that mount while the same request is still pending. A
 // later mount starts a fresh request so backend capability changes are visible
@@ -48,7 +49,7 @@ export function useIoCapabilities(): { capabilities: IoCapabilitiesResponse | nu
         if (!cancelled) setCapabilities(result)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load formats")
+        if (!cancelled) setError(apiErrorMessage(e, "Failed to load formats"))
       })
     return () => { cancelled = true }
   }, [])

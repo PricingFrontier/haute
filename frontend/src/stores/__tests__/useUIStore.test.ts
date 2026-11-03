@@ -23,6 +23,7 @@ function reset() {
     exploreConfiguredPivotIds: {},
     modellingPanes: {},
     optimiserPanes: {},
+    bandingRuleStash: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -86,6 +87,36 @@ describe("useUIStore", () => {
       expect(useUIStore.getState().exploreConfiguredChartIds.a).toBeNull()
       expect(useUIStore.getState().exploreConfiguredChartIds.b).toBe("chart_9")
       expect(useUIStore.getState().exploreConfiguredPivotIds.a).toBe("pivot_2")
+    })
+  })
+
+  describe("Banding rule stash", () => {
+    const young = [{ boundary: "25", label: "young" }]
+    const grouped = [{ value: "A", assignment: "a" }]
+
+    it("keeps each node's factors apart and adds to a factor's stash", () => {
+      const state = useUIStore.getState()
+      state.setBandingRuleStash("band", 0, { breakpoints: young })
+      state.setBandingRuleStash("band", 1, { categorical: grouped })
+      state.setBandingRuleStash("other", 0, { categorical: grouped })
+      state.setBandingRuleStash("band", 0, { breakpoints: young, categorical: grouped })
+
+      expect(useUIStore.getState().bandingRuleStash).toEqual({
+        band: { 0: { breakpoints: young, categorical: grouped }, 1: { categorical: grouped } },
+        other: { 0: { categorical: grouped } },
+      })
+    })
+
+    it("forgets one node's stash, and every stash on reload", () => {
+      const state = useUIStore.getState()
+      state.setBandingRuleStash("band", 0, { breakpoints: young })
+      state.setBandingRuleStash("other", 0, { categorical: grouped })
+
+      state.forgetBandingRuleStash("band")
+      expect(useUIStore.getState().bandingRuleStash).toEqual({ other: { 0: { categorical: grouped } } })
+
+      state.clearBandingRuleStash()
+      expect(useUIStore.getState().bandingRuleStash).toEqual({})
     })
   })
 

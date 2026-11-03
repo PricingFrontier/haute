@@ -306,8 +306,8 @@ tests = [
   "tests/test_cli.py::TestVersion::test_version_flag",
   "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_creates_haute_toml",
   "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_creates_rating_directory",
-  "tests/test_cli_init.py::TestInitCreatesProjectStructure::test_haute_toml_already_exists_exits_with_error",
-  "tests/test_cli_init.py::TestInitForceReinit::test_force_reinit_prunes_stale_github_ci_files",
+  "tests/test_cli_init.py::TestInitAgain::test_the_project_is_left_and_haute_toml_written_afresh",
+  "tests/test_cli_init.py::TestInitAgain::test_a_re_run_prunes_stale_github_ci_files",
   "tests/test_starter_pipeline_e2e.py::test_scaffolded_starter_test_passes_for_blank_pipeline",
   "tests/test_cli_serve.py::TestServe::test_plain_serve_uses_localhost_for_bind_and_browser",
   "tests/test_cli_serve.py::TestServe::test_dev_mode_starts_vite_and_uvicorn",
@@ -333,9 +333,9 @@ tests = [
 invariant = "A fresh install answers through both entry points; init scaffolds a complete project and refuses to overwrite one without --force; serve binds localhost, refuses an occupied port, states its defaults in help, and its registered signal handlers terminate the child and exit; run reports missing files, parse errors and node failures with exit code 1; a missing optional dependency names the exact install command; and the hosted bootstrap seeds a volatile project only when unbound, never reseeds a restored or present project, and gates the boot when the restore fails. The real start/readiness/stop lifecycle is exercised by scripts/init_smoke.py in the init-smoke CI lane."
 
 [scenarios.evidence]
-commit = "f8af18c67"
+commit = "86bca15c2"
 command = 'uv run pytest tests/test_cli.py tests/test_cli_init.py tests/test_cli_serve.py tests/test_cli_fail_loudly.py tests/test_starter_pipeline_e2e.py tests/test_optional_dependency_matrix.py tests/test_hatch_build.py tests/test_hosted.py tests/test_databricks_routes_auth.py -q -n 4'
-result = "281 passed, 4 skipped in 22.30s"
+result = "340 passed, 4 skipped in 30.38s"
 
 [[scenarios]]
 id = "W01-S02"
@@ -945,7 +945,7 @@ tests = [
   "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand",
   "tests/test_optimiser_routes.py::TestSolveOnlineUnit::test_solve_online_initializes_solver_and_records_history",
   "tests/test_optimiser_routes.py::TestRatebookSolve::test_ratebook_solve_completes",
-  "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_after_solve",
+  "tests/test_optimiser_routes_real_library.py::TestEffectiveBoundsContract::test_unswept_constraint_survives_the_solve_time_frontier_and_select",
   "tests/test_optimiser_frontier_materialisation.py::test_select_frontier_point_uses_stored_summary_without_solver",
   "tests/test_optimiser_routes.py::TestSaveResultUnit::test_save_completed_job_writes_json",
   "tests/test_optimiser_routes.py::TestMlflowLogExtended::test_mlflow_log_success_with_frontier",
@@ -976,7 +976,7 @@ invariant = "Estimate, solve, frontier, select, save, apply and trace agree in b
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -n 4'
+command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes_real_library.py::TestEffectiveBoundsContract" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -n 4'
 result = "538 passed in 16.54s; auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
 
 [[scenarios]]
@@ -1311,8 +1311,6 @@ tests = [
   "tests/test_optimiser_routes.py::TestSolveBackgroundErrors::test_solve_generic_exception",
   "tests/test_optimiser_routes.py::TestSolveStatusTimeout::test_cancel_solve_marks_job_cancelled",
   "tests/test_optimiser_routes.py::TestSolveStatusTimeout::test_timeout_sets_error_with_elapsed",
-  "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_cancel_stops_late_parent_publication",
-  "tests/test_optimiser_routes.py::TestFrontierRoute::test_frontier_timeout_stops_late_parent_publication",
   "tests/test_optimiser_routes.py::TestEstimateRoute::test_frontier_auto_range_cancel_marks_job_terminal",
   "tests/test_optimiser_routes.py::TestEstimateRoute::test_frontier_auto_range_status_returns_canonical_job_status",
   "tests/test_optimiser_routes.py::TestLaunchBackground::test_late_completion_does_not_overwrite_timeout",
@@ -1332,11 +1330,11 @@ tests = [
   "tests/test_artifact_housekeeping.py::test_reaper_removes_only_marked_owned_stale_direct_child",
   "tests/test_optimiser_routes.py::TestSaveArtifactGate::test_save_failure_then_retry_succeeds_without_resolve",
 ]
-invariant = "Every job family that owns a background lifecycle (training, dispersion, optimiser solve/frontier/auto-range, node-data build and profile, input-cache build) reaches its running, completed, error, cancelled and timed-out terminal states through the shared lifecycle; a late completion or progress report never revives a terminal job; single-flight keys, child processes, cache admission and marker-owned artifacts release exactly once; and a retry after a failure succeeds."
+invariant = "Every job family that owns a background lifecycle (training, dispersion, optimiser solve and auto-range, node-data build and profile, input-cache build) reaches its running, completed, error, cancelled and timed-out terminal states through the shared lifecycle; a late completion or progress report never revives a terminal job; single-flight keys, child processes, cache admission and marker-owned artifacts release exactly once; and a retry after a failure succeeds."
 
 [scenarios.evidence]
 commit = "f8af18c67"
-command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_routes.py::TestTrainStatusTimeout" "tests/test_modelling_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_routes.py::TestFrontierRoute" "tests/test_optimiser_routes.py::TestLaunchBackground" "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build" "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing" "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing" -q -n 4'
+command = 'uv run pytest tests/test_job_lifecycle.py tests/test_job_store.py tests/test_worker_protocol.py tests/test_artifact_housekeeping.py tests/test_input_cache_route.py "tests/test_modelling_routes.py::TestTrainStatusTimeout" "tests/test_modelling_routes.py::TestDispersionErrorPaths" "tests/test_optimiser_routes.py::TestSolveStatusTimeout" "tests/test_optimiser_routes.py::TestLaunchBackground" "tests/test_node_data_routes.py::test_a_different_signature_supersedes_the_running_build" "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing" "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing" -q -n 4'
 result = "447 passed in 27.08s"
 
 [[scenarios]]

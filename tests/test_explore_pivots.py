@@ -77,8 +77,13 @@ def _pivot(**updates: object) -> dict[str, object]:
             placement.setdefault("number_format", "general")
             placement.setdefault("decimal_places", None)
             placement.setdefault("use_grouping", True)
+    for row in pivot["rows"] if isinstance(pivot["rows"], list) else []:
+        if isinstance(row, dict):
+            row.setdefault("sort", "ascending")
     for value in pivot["values"] if isinstance(pivot["values"], list) else []:
         if isinstance(value, dict):
+            value.setdefault("sort_rows", "none")
+            value.setdefault("color_scale", "none")
             value.setdefault("color_scale_split_by", None)
     if ("values" in updates or "formulas" in updates) and "value_order" not in updates:
         pivot["value_order"] = [
@@ -158,6 +163,10 @@ def test_validate_explore_pivots_rejects_an_unknown_field_at_every_level(
         (("columns", 0, "use_grouping"), "grouping preference is required"),
         (("rows", 0, "number_format"), "number format is required"),
         (("values", 0, "color_scale_split_by"), "colour scale split is required"),
+        # Required like their siblings, not completed with a default.
+        (("rows", 0, "sort"), "row sort is required"),
+        (("values", 0, "sort_rows"), "value row sort is required"),
+        (("values", 0, "color_scale"), "value colour scale is required"),
     ],
 )
 def test_validate_explore_pivots_rejects_missing_current_v1_fields(

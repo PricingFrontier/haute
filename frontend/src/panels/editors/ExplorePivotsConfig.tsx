@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowLeft } from "lucide-react"
 
-import { EditorLabel } from "../../components/form"
+import { EditorLabel, ValidatedTextField } from "../../components/form"
 import useUIStore from "../../stores/useUIStore"
 import { confirmed } from "../../stores/useQuestionStore"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
@@ -77,8 +77,6 @@ function PivotEditor({
   loadFilterMembers,
   currentConfigHash,
 }: PivotEditorProps) {
-  const [nameDraft, setNameDraft] = useState(pivot.name)
-  const [nameError, setNameError] = useState<string | null>(null)
   const [formulaFieldInserter, setFormulaFieldInserter] = useState<
     ((field: string) => void) | null
   >(null)
@@ -114,23 +112,13 @@ function PivotEditor({
     isNumericProducingValue,
   )
 
-  const commitName = () => {
-    const name = nameDraft.trim()
-    if (!name) {
-      setNameError("Pivot name cannot be blank.")
-      return
-    }
+  const nameError = (candidate: string): string | null => {
+    const name = candidate.trim()
+    if (!name) return "Pivot name cannot be blank."
     const duplicate = pivots.some(
-      (candidate) =>
-        candidate.id !== pivot.id &&
-        candidate.name.trim().toLowerCase() === name.toLowerCase(),
+      (other) => other.id !== pivot.id && other.name.trim().toLowerCase() === name.toLowerCase(),
     )
-    if (duplicate) {
-      setNameError("Pivot name must be unique.")
-      return
-    }
-    setNameError(null)
-    if (name !== pivot.name) persistPivot({ ...pivot, name })
+    return duplicate ? "Pivot name must be unique." : null
   }
 
   return (
@@ -146,30 +134,25 @@ function PivotEditor({
 
       <div>
         <label
+          htmlFor={`pivot-name-${pivot.id}`}
           className="block text-[11px] font-semibold"
           style={{ color: "var(--text-secondary)" }}
         >
           Pivot name
-          <input
-            aria-label="Pivot name"
-            value={nameDraft}
-            onChange={(event) => setNameDraft(event.target.value)}
-            onBlur={commitName}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                commitName()
-              }
-            }}
-            className="mt-1 block w-full rounded-md px-2 py-1.5 text-xs"
-            style={INPUT_STYLE}
-          />
         </label>
-        {nameError && (
-          <div role="alert" className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
-            {nameError}
-          </div>
-        )}
+        <ValidatedTextField
+          id={`pivot-name-${pivot.id}`}
+          dataTestId="pivot-name"
+          value={pivot.name}
+          validate={nameError}
+          onCommit={(next) => {
+            const name = next.trim()
+            if (name !== pivot.name) persistPivot({ ...pivot, name })
+          }}
+          containerClassName="mt-1"
+          className="block w-full rounded-md px-2 py-1.5 text-xs"
+          style={INPUT_STYLE}
+        />
       </div>
 
       <PivotFieldWell

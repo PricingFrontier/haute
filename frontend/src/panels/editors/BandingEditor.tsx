@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Plus, AlertTriangle } from "lucide-react"
+import { Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
@@ -9,7 +9,6 @@ import {
   inferBandingType,
   isNumericDtype,
   suggestOutputColumn,
-  detectDuplicateCategorical,
   bandingOutputCollisions,
   bandingOutputCollisionMessage,
   categoricalRuleCounts,
@@ -20,12 +19,13 @@ import {
   dayNumberToDate,
   calendarSettingsFromBreakpoints,
 } from "./banding/bandingUtils"
-import { isTemporalDtype } from "../../utils/polarsDtypes"
+import { castFamily, isTemporalDtype, type CastFamily } from "../../utils/polarsDtypes"
 import { BandingRulesGrid } from "./banding/BandingRulesGrid"
 import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
 import { useGraph } from "../useGraph"
+import useUIStore from "../../stores/useUIStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { ImportParamValues } from "./banding/ImportParamValues"
@@ -35,6 +35,16 @@ import SearchableItemList from "./shared/SearchableItemList"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 
 const EMPTY_CATEGORICAL: CategoricalRule = { value: "", assignment: "" }
+
+/** The column types whose preview values read as the text a categorical rule
+ * matches (`cast(pl.Utf8)`): a float's `1.0` arrives in the preview as `1`, and a
+ * date or decimal in another form, so those wait for the whole dataset's values. */
+const PREVIEW_TEXT_FAMILIES: ReadonlySet<CastFamily | null> = new Set<CastFamily>([
+  "text",
+  "category",
+  "integer",
+  "boolean",
+])
 
 export default function BandingEditor({
   config,
@@ -59,6 +69,13 @@ export default function BandingEditor({
 }) {
   const factors = normaliseBandingFactors(config)
   const [activeIdx, setActiveIdx] = useState(0)
+  // The rules a factor had under each banding type, by factor position, so
+  // switching the type back restores them until the pipeline reloads. Editor
+  // state, never config: it lives in the UI store under the node's id, and a
+  // removal or reorder forgets it. An editor bound to no node keeps none.
+  const ruleStash = useUIStore((state) => (nodeId ? state.bandingRuleStash[nodeId] : undefined))
+  const setBandingRuleStash = useUIStore((state) => state.setBandingRuleStash)
+  const forgetBandingRuleStash = useUIStore((state) => state.forgetBandingRuleStash)
   const safeIdx = Math.max(0, Math.min(activeIdx, factors.length - 1))
   const factor = factors[safeIdx]
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
@@ -106,13 +123,9 @@ export default function BandingEditor({
 
   const switchBandingType = (newType: BandingMode) => {
     const current = factors[safeIdx]
-    const prevRules = { ...(current._prevRules || {}), [current.banding]: current.rules }
-    const restoredRules = prevRules[newType] || []
-    updateFactor(safeIdx, {
-      banding: newType,
-      rules: restoredRules,
-      _prevRules: prevRules,
-    })
+    const stash = { ...ruleStash?.[safeIdx], [current.banding]: current.rules }
+    if (nodeId) setBandingRuleStash(nodeId, safeIdx, stash)
+    updateFactor(safeIdx, { banding: newType, rules: stash[newType] ?? [] })
   }
 
   // A new factor is Numeric; choosing a column that is not numeric makes it
@@ -128,6 +141,7 @@ export default function BandingEditor({
   const removeFactor = (idx: number) => {
     if (factors.length <= 1) return
     const next = factors.filter((_, i) => i !== idx)
+    if (nodeId) forgetBandingRuleStash(nodeId)
     commitFactors(next)
     if (safeIdx >= next.length) setActiveIdx(next.length - 1)
   }
@@ -139,6 +153,7 @@ export default function BandingEditor({
     const next = [...factors]
     const [moved] = next.splice(from, 1)
     next.splice(to, 0, moved)
+    if (nodeId) forgetBandingRuleStash(nodeId)
     commitFactors(next)
     const current = safeIdx
     setActiveIdx(
@@ -234,14 +249,6 @@ export default function BandingEditor({
     (statsCurrent ? stats?.unmatched_count : null) ??
     (knownCounts ? Math.max(totalRows - knownCounts.reduce((a, b) => a + b, 0), 0) : null)
 
-  // ─── Validation warnings ──────────────────────────────────────
-  const warnings =
-    factor.banding === "categorical"
-      ? detectDuplicateCategorical((factor.rules || []) as CategoricalRule[]).map(
-          (d) => `Duplicate value "${d.value}" in rules ${d.indices.map(i => i + 1).join(", ")}`,
-        )
-      : []
-
   // ─── Histogram data ───────────────────────────────────────────
   const histogramData = (() => {
     if (factor.banding !== "breakpoints") return null
@@ -265,11 +272,16 @@ export default function BandingEditor({
     // Every value in the data, as the text execution matches on, when the point
     // is cached: a rare category is missing from a sample by definition.
     if (stats) return stats.values.map(({ value, count }) => ({ value, count }))
-    // Until then the preview's values help write rules, but without counts.
+    // Until then the preview's values help write rules, but without counts, and
+    // only where the preview gives the text execution matches on.
     if (!previewRows?.length) return null
+    const family = columnDtype === undefined ? undefined : castFamily(columnDtype)
+    if (family !== undefined && !PREVIEW_TEXT_FAMILIES.has(family)) return null
     const values = new Set<string>()
     for (const row of previewRows) {
       const raw = row[factor.column]
+      // A column of unknown type may be a float's 1 that execution reads as "1.0".
+      if (family === undefined && typeof raw !== "string") continue
       if (raw === null || raw === undefined) continue
       const value = String(raw)
       if (value) values.add(value)
@@ -641,19 +653,6 @@ export default function BandingEditor({
             matchCounts={matchCounts}
             onAddRule={handleAddRule}
           />
-        </div>
-      )}
-
-      {/* Validation warnings */}
-      {warnings.length > 0 && (
-        <div className="space-y-1">
-          {warnings.map((w, i) => (
-            <div key={i} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[11px]"
-              style={{ background: 'var(--warning-soft-strong)', border: '1px solid var(--warning-border-emphasis)', color: 'var(--warning-strong)' }}>
-              <AlertTriangle size={12} />
-              <span>{w}</span>
-            </div>
-          ))}
         </div>
       )}
 

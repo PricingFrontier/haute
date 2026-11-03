@@ -409,7 +409,6 @@ def test_structured_contract_is_accepted() -> None:
                         "enabled": True,
                     }
                 ],
-                "outputFormat": "json",
             },
             None,
         ),

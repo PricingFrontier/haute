@@ -195,6 +195,9 @@
 
 ## Error handling
 
+A backend waterfall error renders once, as `StepCard`'s `WaterfallErrorAlert`; the card passes
+the error through to `CalculationHero`, which then builds no breakdown of its own, so no
+breakdown appears under an alert saying none could be built.
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
 typed omissions other than the notes (`join_no_match`, `aggregated_rows`, and the snapshot reasons), request failures, and
 banding/model-score/optimiser/scenario/live-switch errors render persistent `role="alert"` UI. When the document lacks execution capability or the graph is

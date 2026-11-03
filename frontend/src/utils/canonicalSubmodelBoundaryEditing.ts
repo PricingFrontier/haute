@@ -20,6 +20,7 @@ import {
   edgeInputName,
   UNRESOLVED_INPUT_NAME,
 } from "./apiInputPorts"
+import { withEdgeIdentity } from "./edgeIds"
 import { appEdge } from "./flowElements"
 import { buildSubmodelViewGraph, restoreParentOutputState } from "./submodelViewGraph"
 import type {
@@ -562,7 +563,7 @@ export function retargetSubmodelInput(
   return {
     ...state,
     edges: state.edges.filter((edge) => edge.id === edgeId || edge.target !== occurrenceId || edge.targetHandle !== handle)
-      .map((edge) => edge.id === edgeId ? { ...edge, targetHandle: handle } : edge),
+      .map((edge) => edge.id === edgeId ? withEdgeIdentity(edge, { targetHandle: handle }) : edge),
   }
 }
 

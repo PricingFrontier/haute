@@ -111,10 +111,13 @@ describe("submodelBoundaryEditing", () => {
       { id: "rates", source: "b", target: "pricing_2", targetHandle: "in__rates" },
     ] }
     const moved = retargetSubmodelInput(root, "pricing_2", "policy", "rates")
-    expect(moved.edges).toEqual([{ ...root.edges[1], targetHandle: "in__policy" }])
+    // The moved connection is named by its new handle.
+    expect(moved.edges).toEqual([{ ...root.edges[1], id: "e-b-pricing_2--in__policy", targetHandle: "in__policy" }])
     expect(moved.submodels).toBe(root.submodels)
     expect(root.edges).toHaveLength(2)
     expect(retargetSubmodelInput(moved, "pricing_2", "policy", null).edges).toEqual([])
+    expect(retargetSubmodelInput(root, "pricing_2", "rates", "policy").edges)
+      .toEqual([{ ...root.edges[0], id: "e-a-pricing_2--in__rates", targetHandle: "in__rates" }])
     expect(() => retargetSubmodelInput(root, "pricing_2", "missing", "rates")).toThrow(/missing/)
   })
   it("creates the first named public input from a parent connection", () => {

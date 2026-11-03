@@ -6,7 +6,7 @@ import path from "node:path"
 import { render, screen, cleanup } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
-import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors"
+import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors/_shared"
 import useUIStore from "../../stores/useUIStore"
 
 // ─── Editor mocks ─────────────────────────────────────────────────

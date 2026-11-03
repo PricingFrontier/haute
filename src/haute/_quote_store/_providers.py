@@ -1,8 +1,9 @@
 """The engines the quote store runs on (specs/workbench).
 
-``sqlite`` is dev's, a file on the analyst's laptop. ``sqlserver`` is SQL Server 2019 and
-later, Azure SQL Database and Azure SQL Managed Instance, through pyodbc and Microsoft ODBC
-Driver 18 (:data:`SQLSERVER_DRIVER`); ``postgresql`` is PostgreSQL and its hosted forms (Azure
+``sqlite`` is a file the store's process reads. ``sqlserver`` is SQL Server 2019 and
+later, Azure SQL Database and Azure SQL Managed Instance, through Microsoft's mssql-python,
+whose wheels carry ODBC Driver 18, so nothing is installed apart from the package;
+``postgresql`` is PostgreSQL and its hosted forms (Azure
 Database for PostgreSQL, Amazon RDS and Aurora, Cloud SQL, Databricks Lakebase), through
 psycopg. Each enforces keys, runs a transaction across tables and runs DDL inside one, so a
 migrate that fails part way changes nothing.
@@ -10,8 +11,7 @@ migrate that fails part way changes nothing.
 A :class:`Provider` is what the store needs of one family past SQLAlchemy Core: the URL it
 makes from the server and database a host names (:func:`server_url`), how an app signs in to
 it (:class:`SignIn`, through :func:`make_server_engine`'s connect hook), the longest name it
-keeps whole (:func:`name_problems`), whether it changes the type of a column holding no value
-in place (:func:`retypes_in_place`), and the privileges a started app checks it holds
+keeps whole (:func:`name_problems`), and the privileges a started app checks it holds
 (:func:`missing_privileges`). The store's types on each engine are pinned where its tables are
 derived (:mod:`._schema`), so the SQL a plan prints is the SQL the connected engine runs. A
 sign-in's secret or token is handed to each connection as it is made: it is never in a URL,
@@ -23,6 +23,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import cache
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy import Connection, Engine, create_engine, event, text
@@ -31,14 +32,16 @@ from sqlalchemy.engine import URL, make_url
 if TYPE_CHECKING:
     from haute._quote_store._schema import StoreSchema
 
-#: The ODBC driver ``sqlserver`` connects through, which a release's image installs.
-SQLSERVER_DRIVER = "ODBC Driver 18 for SQL Server"
-#: The pyodbc connection attribute an Entra ID access token is handed in.
+#: The connection attribute an Entra ID access token is handed to SQL Server's driver in.
 SQL_COPT_SS_ACCESS_TOKEN = 1256
-#: The sign-ins that go through Microsoft Entra ID.
-ENTRA_SIGN_INS = frozenset({"managed-identity", "service-principal"})
+#: The sign-ins that go through Microsoft Entra ID: a hosted app's managed identity, a
+#: service principal, and the analyst's own sign-in, ``entra``, made in the browser.
+ENTRA_SIGN_INS = frozenset({"managed-identity", "service-principal", "entra"})
 #: The package an Entra ID sign-in needs besides the driver.
 ENTRA_PACKAGE = "azure-identity"
+#: The most privileges one statement asks of the server: each binds its table's name and the
+#: privilege, and SQL Server binds at most 2,100 values to a statement.
+_ASKED_AT_ONCE = 500
 
 
 class TokenCredential(Protocol):
@@ -47,12 +50,22 @@ class TokenCredential(Protocol):
     def get_token(self, *scopes: str) -> Any: ...
 
 
+@cache
+def _analyst_credential() -> TokenCredential:
+    """The analyst's own Entra ID sign-in, made in the browser as a token is first asked
+    for, and kept for the process, so the editor and ``haute app serve`` ask once."""
+    from azure.identity import InteractiveBrowserCredential
+
+    return InteractiveBrowserCredential()
+
+
 @dataclass(frozen=True, slots=True)
 class SignIn:
-    """How an app signs in to a server database, as its environment declares it and its
-    host's variables hold what it needs: ``managed-identity`` (a user-assigned identity's
-    *client_id*, or none for the system-assigned one), ``service-principal`` (*tenant_id*,
-    *client_id* and its *secret*) or ``password`` (*username* and its *secret*). *username*
+    """How a process signs in to a server database, as its environment or connection says and
+    the variables it names hold what it needs: ``managed-identity`` (a hosted app's; a
+    user-assigned identity's *client_id*, or none for the system-assigned one),
+    ``service-principal`` (*tenant_id*, *client_id* and its *secret*), ``password``
+    (*username* and its *secret*) or ``entra`` (the analyst's own, in the browser). *username*
     is also the role an Entra ID sign-in takes on PostgreSQL. The secret is never shown."""
 
     auth: str
@@ -74,6 +87,8 @@ class SignIn:
                 f"Signing in with {self.auth} needs the {ENTRA_PACKAGE} package: install "
                 "haute[sqlserver] or haute[postgresql]."
             ) from exc
+        if self.auth == "entra":
+            return _analyst_credential()
         if self.auth == "service-principal":
             return ClientSecretCredential(
                 str(self.tenant_id), str(self.client_id), str(self.secret)
@@ -105,11 +120,11 @@ PROVIDERS: Mapping[str, Provider] = {
     "sqlserver": Provider(
         "sqlserver",
         "mssql",
-        "pyodbc",
+        "mssqlpython",
         128,
         False,
         "https://database.windows.net/.default",
-        ("pyodbc",),
+        ("mssql-python",),
     ),
     "postgresql": Provider(
         "postgresql",
@@ -123,11 +138,6 @@ PROVIDERS: Mapping[str, Provider] = {
 }
 #: Each provider by the SQLAlchemy dialect its URLs name.
 _BY_DIALECT: Mapping[str, Provider] = {each.dialect: each for each in PROVIDERS.values()}
-
-
-def dialect_provider(dialect: str) -> Provider:
-    """The provider whose engines speak the SQLAlchemy dialect *dialect*."""
-    return _BY_DIALECT[dialect]
 
 
 def provider_of(url: str) -> Provider:
@@ -157,20 +167,32 @@ def _odbc_value(value: str) -> str:
     return value
 
 
+def _sqlserver_address(server: str) -> tuple[str, int | None]:
+    """*server* as SQL Server's own clients take it, ``tcp:name,1433``, as its host and port,
+    None where it names none: the protocol is left out, TCP being the only one a server on
+    another machine is reached over."""
+    address = server.strip()
+    if address[:4].casefold() == "tcp:":
+        address = address[4:].strip()
+    host, comma, number = address.rpartition(",")
+    if comma and number.strip().isdigit():
+        return host.strip(), int(number)
+    return address, None
+
+
 def server_url(provider: Provider, server: str, database: str) -> str:
     """The URL of *provider*'s database *database* on *server*, as a host names them: the
     server as the engine's own clients take it (``tcp:name,1433`` on SQL Server, ``host:port``
-    on PostgreSQL), with no sign-in in it."""
+    on PostgreSQL), with no sign-in in it, and on SQL Server encrypted."""
     if provider.name == "sqlserver":
-        odbc = ";".join(
-            [
-                f"Driver={{{SQLSERVER_DRIVER}}}",
-                f"Server={_odbc_value(server)}",
-                f"Database={_odbc_value(database)}",
-                "Encrypt=yes",
-            ]
+        host, port = _sqlserver_address(server)
+        url = URL.create(
+            "mssql+mssqlpython",
+            host=host,
+            port=port,
+            database=database,
+            query={"Encrypt": "yes"},
         )
-        url = URL.create("mssql+pyodbc", query={"odbc_connect": odbc})
     else:
         host, port = server, None
         name, _, number = server.partition(":")
@@ -201,8 +223,9 @@ def connect_hook(
     """SQLAlchemy's ``do_connect`` hook signing each new connection to *provider*'s database
     in as *sign_in* says: an Entra ID token asked of *credential* (the sign-in's own unless
     given) as the connection is made, which the credential renews as it nears its end, or the
-    password. On SQL Server the token goes in the driver's access-token attribute, and the
-    integrated sign-in SQLAlchemy asks for when a URL names no user is taken out."""
+    password. On SQL Server the token goes in the driver's access-token attribute, and any
+    other sign-in the connection string holds (an integrated one, a user, a password or an
+    authentication method) is taken out."""
     if sign_in.entra and credential is None:
         credential = sign_in.credential()
     scope = str(provider.token_scope)
@@ -255,26 +278,10 @@ def name_problems(provider: Provider, names: Iterable[str]) -> list[str]:
     return problems
 
 
-#: The column types SQL Server cannot convert a date to or from, even with no value.
-_NOT_FROM_DATE = frozenset({"int", "float", "bool"})
-
-
-def retypes_in_place(provider: Provider, was: str, now: str) -> bool:
-    """Whether *provider* changes a column holding no value from the type *was* to *now* in
-    place: PostgreSQL always, taking every value as null; SQL Server where it converts the
-    pair, never between a date and a number or True/false; SQLite never, its column replaced."""
-    if provider.name == "postgresql":
-        return True
-    if provider.name == "sqlserver":
-        return not ({was, now} & {"date"} and {was, now} & _NOT_FROM_DATE)
-    return False
-
-
 def _privileges(schema: StoreSchema) -> list[tuple[str, str]]:
     """Each table of *schema* with each privilege a started app needs on it: quote_details read,
     written and changed, every other table of the form's read, written and emptied, and the
-    activity read and written. A server database holds no haute_store, which only dev's
-    SQLite file keeps."""
+    activity read and written."""
     needed: list[tuple[str, str]] = []
     for stored in schema.tables:
         kinds = (
@@ -297,22 +304,38 @@ def _quoted(name: str, open_: str, close: str) -> str:
 
 def missing_privileges(connection: Connection, schema: StoreSchema) -> list[str]:
     """Each privilege the sign-in on *connection* lacks that a started app needs on *schema*'s
-    tables, as ``SELECT on policy``; none on SQLite, a file whose reader may do anything."""
+    tables, as ``SELECT on policy``; none on SQLite, a file whose reader may do anything. The
+    privileges are asked together, a statement for as many as one may bind
+    (``_ASKED_AT_ONCE``), each statement a round trip to the server."""
     dialect = connection.dialect.name
     if dialect not in ("mssql", "postgresql"):
         return []
     open_, close = ("[", "]") if dialect == "mssql" else ('"', '"')
-    probe = text(
-        "SELECT HAS_PERMS_BY_NAME(:name, 'OBJECT', :kind)"
+    probe = (
+        "HAS_PERMS_BY_NAME(:n{at}, 'OBJECT', :k{at})"
         if dialect == "mssql"
-        else "SELECT has_table_privilege(:name, :kind)"
+        else "has_table_privilege(:n{at}, :k{at})"
     )
     owner = schema.metadata.schema
-    lacking: list[str] = []
+    asked: list[tuple[str, str, str]] = []
     for table, kind in _privileges(schema):
         name = _quoted(table, open_, close)
         if owner:
             name = _quoted(owner, open_, close) + "." + name
-        if not connection.execute(probe, {"name": name, "kind": kind}).scalar():
-            lacking.append(f"{kind} on {table}")
+        asked.append((table, kind, name))
+    lacking: list[str] = []
+    for start in range(0, len(asked), _ASKED_AT_ONCE):
+        batch = asked[start : start + _ASKED_AT_ONCE]
+        statement = text("SELECT " + ", ".join(probe.format(at=at) for at in range(len(batch))))
+        params = {
+            key: value
+            for at, (_, kind, name) in enumerate(batch)
+            for key, value in ((f"n{at}", name), (f"k{at}", kind))
+        }
+        held = connection.execute(statement, params).one()
+        lacking.extend(
+            f"{kind} on {table}"
+            for (table, kind, _), has in zip(batch, held, strict=True)
+            if not has
+        )
     return lacking

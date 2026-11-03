@@ -10,7 +10,8 @@ interface SearchFieldProps {
 
 /**
  * A search box: a magnifier, the text and, while it holds any, Clear. Escape in it
- * empties it too, its default prevented so nothing else hears it.
+ * empties it too, its default prevented and its propagation stopped so nothing else
+ * (an enclosing dialog's Escape, say) hears it.
  */
 export default function SearchField({ value, onChange, label, className = "" }: SearchFieldProps) {
   return (
@@ -28,6 +29,7 @@ export default function SearchField({ value, onChange, label, className = "" }: 
         onKeyDown={(event) => {
           if (event.key !== "Escape" || value === "") return
           event.preventDefault()
+          event.stopPropagation()
           onChange("")
         }}
         className="min-w-0 flex-1 bg-transparent text-xs outline-none"

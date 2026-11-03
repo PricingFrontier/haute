@@ -7,8 +7,7 @@
     "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input or Workbench Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port on the owner and, on an instance, by the instance's name, or `<instance>_<port>` when its submodel has several outputs.",
     "outputMapping[].source_column": "The column on that input.",
     "outputMapping[].output_path": "Where the value goes in the response. Always starts with \"$[:]\" (one response object per row), then \".name\" keys: \"$[:].premium\", or \"$[:].pricing.premium\" for a nested object. A bare \"premium\" or \"$.premium\" is refused.",
-    "outputMapping[].enabled": "true to include the row; false keeps it listed but leaves it out of the response.",
-    "outputFormat": "\"json\", the only response format."
+    "outputMapping[].enabled": "true to include the row; false keeps it listed but leaves it out of the response."
   },
   "inputs": [
     {
@@ -28,8 +27,7 @@
         "outputMapping": [
           {"source_port": "priced", "source_column": "quote_id", "output_path": "$[:].quote_id", "enabled": true},
           {"source_port": "priced", "source_column": "premium", "output_path": "$[:].premium", "enabled": true}
-        ],
-        "outputFormat": "json"
+        ]
       },
       "produces": ["quote_id", "premium"]
     },
@@ -41,8 +39,7 @@
           {"source_port": "priced", "source_column": "quote_id", "output_path": "$[:].quote_id", "enabled": true},
           {"source_port": "priced", "source_column": "premium", "output_path": "$[:].pricing.premium", "enabled": true},
           {"source_port": "priced", "source_column": "age_band", "output_path": "$[:].pricing.age_band", "enabled": true}
-        ],
-        "outputFormat": "json"
+        ]
       },
       "produces": ["quote_id"]
     }

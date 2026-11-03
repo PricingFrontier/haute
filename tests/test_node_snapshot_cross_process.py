@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+import pytest
 
 import haute._node_snapshots as node_snapshots
 from haute._execution_context import ExecutionProfile
+from haute._file_lock import FileLock
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
@@ -319,3 +322,127 @@ def test_a_writer_missing_a_concurrently_widened_generations_columns_keeps_its_a
     assert latest.columns == NodeSnapshotColumns.of(["a", "b", "c"])
     assert wide.exitcode == 0
     assert narrow.exitcode == 0
+
+
+_OLD = time.time() - 3600
+
+
+def _take_token(root: str, tokens: Any, release: Any, *, aged: bool) -> None:
+    store = NodeSnapshotStore(root)
+    token = store._own_token()
+    if aged:
+        # The owner ages its own file: Windows may refuse another process's
+        # change to a file this one holds open.
+        os.utime(store._processes_dir / f"{token}.lock", (_OLD, _OLD))
+    tokens.put(token)
+    if release is not None and not release.wait(_TIMEOUT):
+        raise TimeoutError("test did not release the token holder")
+
+
+def _hold_publication_lock(root: str, digest: str, held: Any, release: Any) -> None:
+    with FileLock(Path(root) / ".haute_cache" / "inputs" / ".locks" / f"publication-{digest}.lock"):
+        held.put(digest)
+        if not release.wait(_TIMEOUT):
+            raise TimeoutError("test did not release the publication lock")
+
+
+def test_the_once_per_process_sweep_removes_dead_tokens_and_orphaned_publication_locks(
+    tmp_path: Path,
+) -> None:
+    """Housekeeping (CACHE-S17): what has gone is removed, what is live or held is kept."""
+    ctx = mp.get_context("spawn")
+    root = str(tmp_path)
+    tokens, held = ctx.Queue(), ctx.Queue()
+    release = ctx.Event()
+    inputs = tmp_path / ".haute_cache" / "inputs"
+    locks = inputs / ".locks"
+    orphan, held_orphan, existing = "a" * 64, "b" * 64, "c" * 64
+    dead = ctx.Process(target=_take_token, args=(root, tokens, None), kwargs={"aged": True})
+    young_dead = ctx.Process(target=_take_token, args=(root, tokens, None), kwargs={"aged": False})
+    live = ctx.Process(target=_take_token, args=(root, tokens, release), kwargs={"aged": True})
+    holder = ctx.Process(target=_hold_publication_lock, args=(root, held_orphan, held, release))
+    try:
+        # Every child's first store sweeps too, so the dead token's owner runs
+        # last: no other child is left to sweep it before this process does.
+        young_dead.start()
+        young_token = tokens.get(timeout=_TIMEOUT)
+        young_dead.join(timeout=_TIMEOUT)
+        live.start()
+        live_token = tokens.get(timeout=_TIMEOUT)
+        dead.start()
+        dead_token = tokens.get(timeout=_TIMEOUT)
+        dead.join(timeout=_TIMEOUT)
+        # Each child's first store has swept already; these are for this process's.
+        locks.mkdir(parents=True, exist_ok=True)
+        for digest in (orphan, held_orphan, existing):
+            (locks / f"publication-{digest}.lock").write_bytes(b"\0")
+        (inputs / existing).mkdir()
+        holder.start()
+        assert held.get(timeout=_TIMEOUT) == held_orphan
+        processes = inputs / ".processes"
+
+        # This process's first store sweeps.
+        NodeSnapshotStore(tmp_path)
+
+        assert not (processes / f"{dead_token}.lock").exists()
+        # A token as young as one still being created, and a live process's, stay.
+        assert (processes / f"{young_token}.lock").exists()
+        assert (processes / f"{live_token}.lock").exists()
+        assert not (locks / f"publication-{orphan}.lock").exists()
+        assert (locks / f"publication-{held_orphan}.lock").exists()
+        assert (locks / f"publication-{existing}.lock").exists()
+    finally:
+        for process in (live, holder):
+            if process.pid is not None:
+                _stop(process, release)
+    assert (dead.exitcode, young_dead.exitcode, live.exitcode, holder.exitcode) == (0, 0, 0, 0)
+
+
+def _publish_after_sweep(root: str, opened: Any, published: Any, release: Any) -> None:
+    import haute._file_lock as file_lock
+
+    real_acquire = file_lock._acquire_file_lock
+    attempts: list[int] = []
+
+    def reporting(handle: Any, **kwargs: Any) -> bool:
+        attempts.append(os.fstat(handle.fileno()).st_ino)
+        if len(attempts) == 1:
+            opened.put(attempts[0])
+        return real_acquire(handle, **kwargs)
+
+    store = NodeSnapshotStore(root)
+    identity = _slot(root, "join").identity("s1")
+    file_lock._acquire_file_lock = reporting  # type: ignore[assignment]
+    with store._publication_lock(identity):
+        published.put(len(attempts))
+        if not release.wait(_TIMEOUT):
+            raise TimeoutError("test did not release the publisher")
+
+
+def test_a_publisher_racing_the_sweep_still_excludes_a_second_publisher(tmp_path: Path) -> None:
+    """The sweep removes the publication lock file a waiting publisher opened."""
+    if os.name == "nt":
+        pytest.skip("Windows refuses to delete a lock file a process has open")
+    ctx = mp.get_context("spawn")
+    root = str(tmp_path)
+    opened, published = ctx.Queue(), ctx.Queue()
+    release = ctx.Event()
+    store = NodeSnapshotStore(tmp_path)
+    identity = _slot(root, "join").identity("s1")
+    lock_path = store._locks_dir / f"publication-{identity.digest}.lock"
+    sweeper = FileLock(lock_path)
+    sweeper.acquire()
+    swept_inode = lock_path.stat().st_ino
+    publisher = ctx.Process(target=_publish_after_sweep, args=(root, opened, published, release))
+    try:
+        publisher.start()
+        # The publisher has opened the lock file the sweep removes, and locks it next.
+        assert opened.get(timeout=_TIMEOUT) == swept_inode
+        lock_path.unlink()
+        sweeper.release()
+        # It locked the removed file, then the one the path names.
+        assert published.get(timeout=_TIMEOUT) == 2
+        assert FileLock(lock_path).acquire(blocking=False) is False
+    finally:
+        _stop(publisher, release)
+    assert publisher.exitcode == 0

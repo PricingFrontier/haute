@@ -35,6 +35,7 @@ _TRAINING_IDENTITY_KEYS = (
     "params",
     "evaluation",
     "tuning",
+    "refit_on_development",
     "metrics",
     "loss_function",
     "variance_power",
@@ -59,6 +60,34 @@ _TUNING_PARAMS = (
     "final_tree_count",
 )
 _GLM_METRICS = ("aic", "bic", "deviance", "null_deviance")
+
+
+def candidate_final_params(
+    algorithm: str,
+    params: Mapping[str, Any],
+    *,
+    tuned_final_params: Mapping[str, Any] | None,
+    final_tree_count: int | None,
+    refit_on_development: bool,
+) -> dict[str, Any]:
+    """The parameters a candidate run records for its final model.
+
+    A tuned run's winner; for a family that refits a validation-weighted round
+    count, the configured parameters projected to the refit's tree count; else the
+    configured parameters. The scripted and the canvas log paths both take them here.
+    """
+    from haute.modelling._descriptors import algorithm_descriptor, project_refit_params
+
+    if tuned_final_params is not None:
+        return dict(tuned_final_params)
+    descriptor = algorithm_descriptor(algorithm)
+    if (
+        final_tree_count is not None
+        and refit_on_development
+        and descriptor.refit_policy == "validation_weighted_rounds"
+    ):
+        return project_refit_params(descriptor, dict(params), final_tree_count)
+    return dict(params)
 
 
 def _canonical(value: Any) -> Any:
@@ -279,6 +308,11 @@ def build_candidate_run(
             "The model's feature contract has no complete feature types; retrain the model."
             + (f" Missing types: {', '.join(missing_types)}." if missing_types else "")
         )
+    if contract.offset_column and contract.offset_type is None:
+        raise HauteValidationError(
+            "The model's feature contract does not record its offset column's dtype; "
+            "retrain the model."
+        )
     if final_test_metrics and development_metrics:
         raise HauteValidationError(
             "A run with a final test must not publish development diagnostics as metrics"
@@ -297,7 +331,7 @@ def build_candidate_run(
         target_name=contract.target_name,
         target_type=contract.target_type,
         offset_name=contract.offset_column or "",
-        offset_type="Float64" if contract.offset_column else "",
+        offset_type=contract.offset_type or "",
         offset_link=contract.offset_link or "",
     )
 

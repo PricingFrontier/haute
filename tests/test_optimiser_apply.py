@@ -352,6 +352,17 @@ class TestExecutorPassthrough:
         assert len(result) == 2
         assert "optimal_scenario_value" in result.columns
 
+    def test_a_missing_named_input_is_refused_never_shifted(self, write_artifact):
+        """OPT-R05: an apply called by input name with a declared source missing
+        raises, as the Optimiser does, rather than pricing whichever frame lands
+        at the missing one's position."""
+        path = write_artifact(_make_online_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored", "side"])
+
+        with pytest.raises(ValueError, match="did not receive every declared connected input"):
+            fn(side=_scored_df().lazy())
+
     def test_missing_source_type_with_path_raises(self, write_artifact):
         from haute.errors import ConfigError
 
@@ -440,6 +451,40 @@ class TestExecutorOnline:
 
         assert applied.equals(fn(scored.lazy()).collect())
         assert applied.height == 2
+
+    def test_a_schema_only_ratio_apply_reads_no_rows(self, write_artifact):
+        """A ratio constraint linearises against the whole frame, so its apply collects
+        it; a schema-only walk must not, and gets the apply's exact schema instead."""
+        artifact = {
+            **_make_online_artifact(),
+            "lambdas": {"loss_ratio": 0.2, "predicted_volume": 0.5},
+            "constraints": {
+                "predicted_volume": {"min": 0.9},
+                "loss_ratio": {"max": 0.6, "numerator": "claims", "denominator": "premium"},
+            },
+        }
+        node = _make_node({"sourceType": "file", "artifact_path": write_artifact(artifact)})
+        scored = _scored_df().with_columns(
+            claims=pl.col("predicted_income") * 0.6, premium=pl.lit(100.0)
+        )
+        read: list[int] = []
+
+        def counted(batch: pl.DataFrame) -> pl.DataFrame:
+            read.append(batch.height)
+            return batch
+
+        _, schema_fn, _ = _build_node_fn(node, source_names=["scored"], schema_only=True)
+        planned = schema_fn(
+            scored.lazy().map_batches(counted, schema=scored.schema)
+        ).collect_schema()
+        assert read == []
+
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        built = fn(scored.lazy().map_batches(counted, schema=scored.schema))
+        assert planned == built.collect_schema()
+        assert read, "the full apply reads its rows when it is built"
+        with pytest.raises(pl.exceptions.ColumnNotFoundError, match="claims"):
+            schema_fn(scored.drop("claims").lazy())
 
     def test_a_preview_of_the_apply_reads_past_a_column_it_does_not_read(self, haute_scratch):
         # A display walk does not narrow the apply's input to its planned demand.
@@ -1497,3 +1542,132 @@ class TestLimitedOnlineApply:
 
         assert streaming_collect(eager).schema == declared
         assert streaming_collect(scan).equals(streaming_collect(eager))
+
+
+# ---------------------------------------------------------------------------
+# OPT-R06: a file artifact resolves by the one anchoring rule
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactPathAnchoring:
+    """``load_configured_optimiser_artifact`` resolves a file artifact as every
+    other node input does: project root first, then the pipeline directory
+    (``base_dir``, as generated code passes it), never outside the root."""
+
+    @staticmethod
+    def _project(tmp_path: Path) -> tuple[Path, Path]:
+        from haute._sandbox import set_project_root
+
+        project = tmp_path / "project"
+        pipelines = project / "pipelines"
+        pipelines.mkdir(parents=True)
+        set_project_root(project)
+        return project, pipelines
+
+    @staticmethod
+    def _write(path: Path, version: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"version": version, "mode": "online", "lambdas": {}}), encoding="utf-8"
+        )
+
+    def _load(self, artifact_path: str, base_dir: Path) -> dict:
+        from haute._node_apply import load_configured_optimiser_artifact
+
+        artifact = load_configured_optimiser_artifact(
+            {"sourceType": "file", "artifact_path": artifact_path}, base_dir=base_dir
+        )
+        assert artifact is not None
+        return artifact
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_a_project_root_relative_path_names_the_project_root_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project, pipelines = self._project(tmp_path)
+        self._write(project / "artifacts" / "opt.json", "root")
+        monkeypatch.chdir(tmp_path)
+
+        assert self._load("artifacts/opt.json", pipelines)["version"] == "root"
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_a_pipeline_relative_path_falls_back_to_the_pipeline_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _project, pipelines = self._project(tmp_path)
+        self._write(pipelines / "opt.json", "pipeline")
+        monkeypatch.chdir(tmp_path)
+
+        assert self._load("opt.json", pipelines)["version"] == "pipeline"
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    @pytest.mark.parametrize("escape", ["relative", "absolute"])
+    def test_a_path_outside_the_project_is_refused(self, tmp_path: Path, escape: str) -> None:
+        from haute._path_resolution import RuntimePathOutsideProjectError
+
+        _project, pipelines = self._project(tmp_path)
+        outside = tmp_path / "outside.json"
+        self._write(outside, "outside")
+        raw = "../../outside.json" if escape == "relative" else str(outside)
+
+        with pytest.raises(RuntimePathOutsideProjectError):
+            self._load(raw, pipelines)
+
+
+@pytest.mark.parametrize("working_directory", ["project_parent", "elsewhere"])
+def test_a_standalone_run_finds_the_projects_artifact_from_any_working_directory(
+    tmp_path: Path, working_directory: str
+) -> None:
+    """OPT-R06: a saved pipeline run in a fresh process anchors its
+    project-relative artifact (the path the save returns) to the Haute project
+    holding it, whatever the working directory; nothing sets the root first."""
+    import subprocess
+    import sys
+
+    project = tmp_path / "project"
+    pipeline_root = project / "rating"
+    (project / ".git").mkdir(parents=True)
+    (project / "haute.toml").write_text('[project]\nname = "nested"\n', encoding="utf-8")
+    (project / "data").mkdir()
+    _scored_df().write_parquet(project / "data" / "scored.parquet")
+    (project / "artifacts").mkdir()
+    (project / "artifacts" / "opt.json").write_text(
+        json.dumps(_make_online_artifact()), encoding="utf-8"
+    )
+    for folder, name, config in (
+        (
+            "data_input",
+            "scored",
+            {"inputType": "file", "format": "parquet", "path": "data/scored.parquet"},
+        ),
+        (
+            "apply_optimisation",
+            "apply",
+            {"sourceType": "file", "artifact_path": "artifacts/opt.json"},
+        ),
+    ):
+        config_dir = pipeline_root / "config" / folder
+        config_dir.mkdir(parents=True)
+        (config_dir / f"{name}.json").write_text(json.dumps(config), encoding="utf-8")
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("nested")\n\n\n'
+        '@pipeline.data_input(config="config/data_input/scored.json")\n'
+        "def scored(): ...\n\n\n"
+        '@pipeline.optimiser_apply(config="config/apply_optimisation/apply.json")\n'
+        "def apply(scored): ...\n\n\n"
+        'pipeline.connect("scored", "apply")\n\n'
+        'frame = pipeline.run(source="batch").lazy().collect().sort("quote_id")\n'
+        'print(frame["quote_id"].to_list(), "optimal_scenario_value" in frame.columns)\n'
+    )
+    main = pipeline_root / "main.py"
+    main.write_text(source, encoding="utf-8")
+    cwd = tmp_path if working_directory == "project_parent" else tmp_path / "elsewhere"
+    cwd.mkdir(exist_ok=True)
+
+    completed = subprocess.run(
+        [sys.executable, str(main)], cwd=cwd, capture_output=True, text=True, check=False
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().splitlines()[-1] == "['q1', 'q2'] True"

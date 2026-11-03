@@ -34,7 +34,6 @@ import type {
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierSelectResponse,
-  FrontierStatusResponse,
   OptimiserSegmentIndexResponse,
   OptimiserSegmentsResponse,
   GitArchiveResponse,
@@ -134,7 +133,6 @@ import {
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   frontierAutoRangeStatusFromContract,
-  frontierStatusFromContract,
   optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
@@ -1025,7 +1023,6 @@ export interface OutputAssembleDryRunArgs {
    * swaps this into the OUTPUT node's config, overriding whatever is on disk —
    * so the preview reflects the editor's CURRENT mapping, not the saved file. */
   outputMapping: Array<Record<string, unknown>>
-  outputFormat?: string
   rowLimit?: number
   source?: string
   signal?: AbortSignal
@@ -1050,7 +1047,6 @@ export function outputAssembleDryRun(
     graph,
     nodeId,
     outputMapping,
-    outputFormat,
     rowLimit,
     source,
     signal,
@@ -1062,7 +1058,6 @@ export function outputAssembleDryRun(
       graph,
       node_id: nodeId,
       output_mapping: outputMapping,
-      output_format: outputFormat ?? "json",
       ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       source: source ?? "live",
     },
@@ -1736,18 +1731,6 @@ export function logOptimiserToMlflow(
   return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(async (data) => expectGeneratedContract("OptimiserMlflowLogResponse", (await optimiserValidators()).validateOptimiserMlflowLogResponse, data))
 }
 
-export function getFrontierStatus(
-  jobId: string,
-  options?: { signal?: AbortSignal },
-): Promise<FrontierStatusResponse> {
-  return request<unknown>(
-    `/api/optimiser/frontier/status/${encodeURIComponent(jobId)}`,
-    options,
-  ).then(async (data) => frontierStatusFromContract(
-    expectGeneratedContract("OptimiserFrontierStatusResponse", (await optimiserValidators()).validateOptimiserFrontierStatusResponse, data),
-  ))
-}
-
 export interface StartOptimiserFrontierAutoRangeArgs {
   graph: GraphPayload
   node_id: string
@@ -2355,9 +2338,10 @@ export async function parseGitMilestoneFork(detail: unknown): Promise<GitMilesto
   return expectGeneratedContract("GitMilestoneFork", (await gitValidators()).validateGitMilestoneFork, detail)
 }
 
-// The server bounds each step of a Push and of Set from .env (git's, gh's and Databricks'
-// own timeouts), and a first publication runs several: a browser deadline would report
-// a failure while the push or the secrets still land.
+// The server bounds each step of a Push, Set from .env, Catch up and Spin off (git's, gh's
+// and Databricks' own timeouts; a fetch may wait out a credential helper's sign-in for up
+// to 60 seconds), and a first publication runs several: a browser deadline would report a
+// failure while the push, the secrets or the moved branches still land.
 const UNBOUNDED_BY_THE_BROWSER = { timeout: null }
 
 /** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */
@@ -2383,7 +2367,7 @@ export function gitFastForward(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitFastForwardResponse> {
-  return post<unknown>("/api/git/fast-forward", { remote }, options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
+  return post<unknown>("/api/git/fast-forward", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
 }
 
 /** Set the local fork aside under a dated name and adopt the remote (P7 M3) —
@@ -2392,7 +2376,7 @@ export function gitBranchAway(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitBranchAwayResponse> {
-  return post<unknown>("/api/git/branch-away", { remote }, options).then(async (data) => expectGeneratedContract("GitBranchAwayResponse", (await gitValidators()).validateGitBranchAwayResponse, data))
+  return post<unknown>("/api/git/branch-away", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitBranchAwayResponse", (await gitValidators()).validateGitBranchAwayResponse, data))
 }
 
 /**

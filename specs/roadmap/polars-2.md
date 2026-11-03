@@ -31,6 +31,22 @@ measurements at the monthly `10m` scale still need verification. Polars 2
 changed size accounting: a frame with a literal column measured 84 bytes where
 1.44 gave 120, so the existing calibration cannot be assumed to transfer.
 
+**Training overhead evidence (2 November 2026):**
+`tests/performance/test_training_family_memory_perf.py` measured a canonical Haute
+training job per family (30 numeric and 5 categorical features, 296 bytes per row by the
+estimator's own width, a 20% holdout, 8 threads, Polars 2) at 100k, 400k and 1.6M rows.
+The single 3.0 multiplier under-admits every family at every size: at 1.6M rows the peak
+was 1.45 (EBM) to 4.65 (GLM) times the estimate, and 5.4 to 9.6 times at 100k because the
+estimate has no fixed term. The least-squares slope of peak memory against the estimated
+width, the quantity the multiplier stands for, was GLM 13.5, CatBoost 8.2, t-boost 6.0,
+LightGBM 4.3, XGBoost 4.2 and EBM 3.6, with a fixed per-job cost of 223 MB (GLM) to
+620 MB (CatBoost). The GLM's growth follows its one-hot design width rather than the frame
+width, and CatBoost's figure carries five categoricals (the existing comment's 10M x 101
+numeric calibration implies about 3), so a per-family multiplier needs a numeric-only
+CatBoost run and a design-width GLM basis before its values are fixed. The estimate keeps
+its single multiplier until then (decided 2 November 2026); `MOD-M02` engages XGBoost's
+external memory from this estimate, so calibrating it moves that point too.
+
 **Plan:** Measure the RAM estimator's overhead multiplier and width-calibration
 seeds against Polars 2's `estimated_size`, and run the operator certification
 lane at `10m` on the reference runner. Record peak RSS, estimated bytes and
@@ -50,6 +66,7 @@ spilling and allocator decisions remain in the execution-engine specification.
 
 **Evidence:** `src/haute/_ram_estimate.py::_OVERHEAD_MULTIPLIER` and its width
 probes; `tests/test_ram_estimate.py`;
+`tests/performance/test_training_family_memory_perf.py`;
 `src/haute/_polars_operations.py::MEMORY_EVIDENCE_POLARS`;
 `tests/performance/_operation_memory_probe.py`;
 `tests/performance/test_execution_engine_certification.py`;
@@ -58,7 +75,7 @@ probes; `tests/test_ram_estimate.py`;
 ### PL2-18 — Worker caps start from a Polars 2 baseline
 **Why:** Under `RLIMIT_AS` a worker starts both Polars engines' thread pools
 before it measures the cap's baseline, so the cap counts only what the job
-allocates (`_start_polars_thread_pools`). Polars 2.0 starts its out-of-core
+allocates (`start_polars_thread_pools`). Polars 2.0 starts its out-of-core
 cleaner thread lazily, on the first spill, and dropped memory-mapping from
 Parquet scans, so the address space a worker reserves after its baseline may
 differ, and a thread that cannot start under the cap is a memory-limit
@@ -75,7 +92,7 @@ on every CI platform.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_native_memory_limit.py::_start_polars_thread_pools`;
+**Evidence:** `src/haute/_native_memory_limit.py::start_polars_thread_pools`;
 `tests/test_native_memory_limit.py`; `tests/test_worker_isolation.py`.
 
 ### PL2-21 — Structured inputs and Data Inputs can carry a JSON object as a Map column

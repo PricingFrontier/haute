@@ -4,7 +4,7 @@ import type { Mock } from "vitest"
 import type { Node } from "@xyflow/react"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
-import type { OnUpdateConfigResult } from "../../panels/editors"
+import type { OnUpdateConfigResult } from "../../panels/editors/_shared"
 import type { HauteNodeData } from "../../types/node"
 import type { PipelineEditorDocument, RecoveryNode } from "../../types/pipelineDocument"
 import { useScopedNodeSave } from "../useScopedNodeSave"
@@ -28,6 +28,7 @@ function recoveryNode(id: string, config: Record<string, unknown>): RecoveryNode
     availability: "ready",
     display_position: { x: 0, y: 0 },
     config: structuredClone(config) as RecoveryNode["config"],
+    editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
     config_reference: null,
     function_name: NODE_LABELS[id],
     default_input_name: NODE_LABELS[id],

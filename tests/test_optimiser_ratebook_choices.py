@@ -32,7 +32,6 @@ from haute.routes._optimiser_outcomes import (
     histogram_of_frame,
 )
 from haute.routes.optimiser import _store
-from tests.optimiser_fixtures import run_frontier_and_wait
 from tests.test_optimiser_routes_real_library import (
     _poll_until_done,
     _ratebook_fixture_paths,
@@ -290,25 +289,31 @@ class TestPerModeSchemas:
 # ---------------------------------------------------------------------------
 
 
+# The frontier the frontier-point tests solve with: volume swept over [8.0, 11.2].
+_VOLUME_FRONTIER = {"frontier_ranges": {"volume": {"min": 8.0, "max": 11.2}}, "frontier_steps": 3}
+
+
 def _solve(
-    client: Any, tmp_path: Path, factor_columns: list[list[str]], **paths: Any
+    client: Any,
+    tmp_path: Path,
+    factor_columns: list[list[str]],
+    *,
+    frontier: bool = False,
+    **paths: Any,
 ) -> tuple[str, dict[str, Any], str, str]:
     scored_path, banding_path = _ratebook_fixture_paths(tmp_path, with_age=True, **paths)
-    job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path, factor_columns))
+    graph = _ratebook_graph(
+        scored_path, banding_path, factor_columns, config=_VOLUME_FRONTIER if frontier else None
+    )
+    job_id = _solve_completed(client, graph)
     return job_id, _poll_until_done(client, job_id), scored_path, banding_path
 
 
-def _frontier(client: Any, job_id: str, n_points: int = 3) -> list[dict[str, Any]]:
-    status = run_frontier_and_wait(
-        client,
-        {
-            "job_id": job_id,
-            "threshold_ranges": {"volume": [8.0, 11.2]},
-            "n_points_per_dim": n_points,
-        },
-    )
-    assert status["status"] == "completed", status.get("message", "")
-    return list(status["result"]["points"])
+def _frontier(client: Any, job_id: str) -> list[dict[str, Any]]:
+    """The points of the frontier the solve computed."""
+    frontier = _poll_until_done(client, job_id)["frontier"]
+    assert frontier is not None
+    return list(frontier["points"])
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
@@ -495,7 +500,9 @@ class TestAsSolvedRatebookChoices:
 class TestRatebookFrontierPointChoices:
     def test_a_points_frame_agrees_per_quote_and_in_aggregate(self, client, tmp_path):
         factor_columns = [["region"], ["age"]]
-        job_id, _status, scored_path, banding_path = _solve(client, tmp_path, factor_columns)
+        job_id, _status, scored_path, banding_path = _solve(
+            client, tmp_path, factor_columns, frontier=True
+        )
         points = _frontier(client, job_id)
 
         for index, point in enumerate(points):
@@ -513,8 +520,9 @@ class TestRatebookFrontierPointChoices:
         assert _store.require_job(job_id).get("selected_frontier_point") is None
 
     def test_a_points_report_is_answered_by_frontier_select(self, client, tmp_path):
-        job_id, _status, _scored, _banding = _solve(client, tmp_path, [["region"], ["age"]])
-        _frontier(client, job_id)
+        job_id, _status, _scored, _banding = _solve(
+            client, tmp_path, [["region"], ["age"]], frontier=True
+        )
 
         response = client.post(
             "/api/optimiser/frontier/select",
@@ -534,7 +542,9 @@ class TestRatebookFrontierPointChoices:
     def test_apply_serves_a_ratebook_points_detail_and_selects_it_with_its_tables(
         self, client, tmp_path
     ):
-        job_id, _status, _scored, _banding = _solve(client, tmp_path, [["region"], ["age"]])
+        job_id, _status, _scored, _banding = _solve(
+            client, tmp_path, [["region"], ["age"]], frontier=True
+        )
         points = _frontier(client, job_id)
 
         first = client.post("/api/optimiser/apply", json={"job_id": job_id, "point_index": 2})
@@ -554,8 +564,9 @@ class TestRatebookFrontierPointChoices:
     def test_an_unmaterialised_point_is_the_named_410_once_the_grid_has_gone(
         self, client, tmp_path, clean_job_store
     ):
-        job_id, _status, _scored, _banding = _solve(client, tmp_path, [["region"], ["age"]])
-        _frontier(client, job_id)
+        job_id, _status, _scored, _banding = _solve(
+            client, tmp_path, [["region"], ["age"]], frontier=True
+        )
         retained = _choices(job_id, ScenarioHistogram(), point_index=0)
 
         clean_job_store.clear_result_data(job_id)
@@ -575,7 +586,9 @@ class TestRatebookFrontierPointChoices:
     ):
         from tests.job_store_support import replace_job
 
-        job_id, _status, _scored, _banding = _solve(client, tmp_path, [["region"], ["age"]])
+        job_id, _status, _scored, _banding = _solve(
+            client, tmp_path, [["region"], ["age"]], frontier=True
+        )
         points = _frontier(client, job_id)
         other = next(
             index

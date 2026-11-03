@@ -51,7 +51,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
-| `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
+| `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry; `NativeModel`, the base of the four native wrappers (their `haute` record, scoring-facing feature names, offset baseline, served labels and class probabilities, and `record_fields`, which checks a stored record field by field), and `inverse_link`. |
 | `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
 | `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
@@ -75,10 +75,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
 | `src/haute/modelling/_native_pyfunc.py` | The MLflow pyfunc for every Haute-trained native model: `package_native_model` copies the model file and its feature contract into one package, and `_load_pyfunc` returns `NativePyfuncModel`, which checks the model against the contract identity and scores through haute's own `load_local_model` + `score_frame` path, returning the label and positive-class probability for classification. |
 | `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
-| `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
+| `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. It is titled with the model's name and heads a family's own importance with the importance method its descriptor names (`src/haute/modelling/_descriptors.py::AlgorithmDescriptor`): CatBoost's PredictionValuesChange, a GLM's absolute coefficient, XGBoost's and LightGBM's total gain, EBM's mean absolute term score, t-boost's variance share. |
 | `src/haute/modelling/_mlflow_log.py` | Destination-aware tracking-backend resolution wrappers over `_mlflow_settings.py` (every wrapper takes `destination`, `""` = the local folder), `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
 | `src/haute/modelling/_mlflow_settings.py` | The `[mlflow]` destination inventory in `haute.toml` (tracking_uri, folder): load/validate/save (tomlkit round-trip), tracking-URI form classification via `classify_tracking_uri()`, `validate_destination_key()`, the per-key resolver `resolve_destination()` (raising the `MlflowDestinationUnconfigured` marker for a merely unconfigured key), the three-entry inventory `list_destinations()`, draft resolution for the connection test (`candidate_tracking_config()`), and `node_destination_key()` — the local folder for a node or request that names no destination, so a configured remote is never chosen for it. |
-| `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation. |
+| `src/haute/modelling/_result_types.py` | `ModelDiagnostics` and `ModelCardMetadata` bundles shared by training, MLflow logging, and model-card generation; `ModelDiagnostics.from_result` builds the bundle from a scripted or a canvas training result. |
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/modelling/_model_export.py` | `MODEL_FILE_SUFFIXES` and `resolve_model_export_destination()`: the Export pane's model-file destination rules (see Save-model-after-the-fact). |
 | `src/haute/routes/_export_receipts.py` | Export receipts on training jobs: `record_receipt` (append an MLflow or model-file receipt, keeping the newest `MAX_RECEIPTS_PER_KIND`), `export_receipts` (the wire shape the status route returns), `mlflow_receipt_for_operation` (idempotent retries) and `single_flight_mlflow_log` (one MLflow log per job at a time, else a `409` in-progress refusal). |
@@ -112,6 +112,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
+  `best_iteration` is the zero-based early-stopping round; a GLM, which has no early
+  stopping, returns `None` (its IRLS iteration count is a fit statistic), so a GLM candidate
+  logs no `best_iteration`. A GPU CatBoost fit, which runs no callback, builds its loss
+  history from `evals_result_` (`_loss_history_from_evals`), with or without a validation
+  set, numbered from one with the CPU callback's `train_`/`eval_` keys.
 - **`IterationCallback`** (`_algorithm_base.py`) — `(iteration, total, metrics,
   history_row)`, called after each iteration. `metrics` is the progress readout: the
   training metric under its native name and an evaluation set's as `<dataset>_<metric>`.
@@ -161,15 +166,22 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
   `feature_types`, `categorical_features`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
-  other field), `offset_column: str | None`, `offset_link: str | None`. Serialized
+  other field), `offset_column: str | None`, `offset_link: str | None`,
+  `offset_type: str | None` (`CONTRACT_VERSION` 5). Serialized
   contracts always contain every one of those fields, including a nullable
-  `offset_column` and `offset_link`. A contract holds no list of category values.
+  `offset_column`, `offset_link` and `offset_type`. `offset_type` is the contract dtype name
+  the offset column was trained with (`TrainingJob._offset_dtype_for_contract`, from data
+  preparation, never guessed); `build_candidate_run` refuses a contract with an offset column
+  but no `offset_type`, and `build_signature` declares the offset input with that dtype (it
+  has no default). Like `offset_link` it is not compared against live data: every scoring
+  path casts the offset to `Float64`. A contract holds no list of category values.
   `offset_link` (`log` or `identity`) says how the offset enters the model's raw score.
   It is null when `offset_column` is null, and may be null beside a named column only
   for a model that applies its own offset (a pyfunc, or a family whose file records
   the link); binding refuses it for a model whose offset only the contract declares.
   `build_contract` and `load_contract` refuse a link without a column and a link
-  outside `log`/`identity`. `CONTRACT_FILENAME = "feature_contract.json"`;
+  outside `log`/`identity`. `save_contract` creates the file's folder and replaces the
+  file in one rename (`atomic_write_text`). `CONTRACT_FILENAME = "feature_contract.json"`;
   per-model files are named via `_training_job.model_contract_filename(name)` →
   `"{name}.feature_contract.json"`.
   Feature types are named by `_polars_dtypes.contract_dtype_name`, the
@@ -294,7 +306,12 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   consumed by the next inside `TrainingJob.run()`.
 - **`ModelDiagnostics` / `ModelCardMetadata`** (`_result_types.py`) — shared bundling
   dataclasses consumed by both `_model_card.generate_model_card` and
-  `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site.
+  `_mlflow_log.log_experiment`, avoiding 25+ positional parameters at either call site. Both
+  log paths (scripted `TrainingJob._log_to_mlflow` and the canvas log route) build the bundle
+  with `ModelDiagnostics.from_result` and the final parameters with
+  `src/haute/modelling/_candidate_run.py::candidate_final_params` (a tuned run's winner; a
+  validation-weighted round family's parameters projected to the refit's tree count; else the
+  configured parameters).
 - **`MLflowLogResult`** (`_mlflow_log.py`) — `backend` (`"databricks"|"server"|"local"`),
   `experiment_name`, `run_id`, `tracking_uri`, `run_url: str | None`.
 - **`GLMInference`** (`_rustystats.py`, frozen dataclass) — `status` (RustyStats'
@@ -526,15 +543,19 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    artifacts, and—when enabled—three tuning artifacts. It returns progress events and
    a validated result manifest containing a bounded `TrainResponse` payload. In the
    parent, the supervisor strictly reloads and cross-checks the complete staged set in
-   place (`_validate_training_artifacts`), rewrites all artifact paths to their absolute
-   locations inside the job's artifact directory, and transitions the job to `"completed"`
+   place (`_validate_training_artifacts`) before it takes the job store's lock, so no file
+   is read while status polls wait on it: the staged set is the run's own and no longer
+   changes. It rewrites all artifact paths to their absolute
+   locations inside the job's artifact directory, and the publish callback, which only hands
+   over those validated fields, transitions the job to `"completed"`
    with final `elapsed_seconds` and `artifact_handles["training_artifacts"]` (kind
    `modelling_training_artifacts`, version 1, the directory and each artifact kind's file
    name). No file is moved or replaced: the validated directory is the published,
    immutable artifact set, and ownership passes from parent cleanup to the job record in the
-   same job-store critical section as the transition. Cancellation that wins first prevents
-   publication, and parent cleanup removes the directory; publication that wins first
-   prevents a late cancellation from relabelling the model. Once that job completes, the
+   same job-store critical section as the transition. Cancellation that wins first (which
+   includes one requested while the artifacts are being validated) prevents publication, and
+   parent cleanup removes the directory; publication that wins first prevents a late
+   cancellation from relabelling the model. Once that job completes, the
    store detaches and cleans the artifact handles of earlier completed training jobs for the
    same pipeline source and node (`node_id` and `pipeline_source` are recorded when the job
    is created), skipping any job whose artifacts are currently held by an export; a skipped
@@ -549,7 +570,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 5. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
    configured/default timeout; an overdue job requests child termination and atomically
    transitioned to `timed_out` before the response is assembled. It then returns
-   progress/loss history/result. On the first read of a completed result,
+   progress/loss history/result through `_train_status_response`, the one projection of a
+   job record that `POST /train/cancel/{job_id}` answers with too: it carries every stored
+   tuning progress field (`phase`, `trial_index`, `trial_count`, `fold_index`, `fold_count`,
+   `completed_fits`, `total_fits`, `best_objective`) as recorded, zero as zero and a field
+   not yet known as `None`, and the export receipts. On the first read of a completed result,
    `_assert_json_finite` re-validates it and the outcome
    is cached on the job (`_result_finite_validated`) via `atomic_update` so later polls
    skip the recursive walk; a validation failure instead flips the job to `"error"`
@@ -678,7 +703,9 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 
 ### Script export
 
-`POST /api/modelling/export` → `_export.generate_training_script(config, data_path)` →
+`POST /api/modelling/export` prepares the graph as `/train` does (`_prepare_runtime_graph`), so
+a node inside a submodel is found by its flattened id, then →
+`_export.generate_training_script(config, data_path)` →
 `build_training_job_kwargs` (identical builder to live training) → renders a
 `TrainingJob(...)` constructor call as source text, omitting any kwarg equal to
 `TrainingJob`'s own default (so the script stays readable), plus a `__main__` block
@@ -741,7 +768,9 @@ experiment logs nothing.
    (`method="bounded"`) maximising `rs.glm_dict(**builder_kwargs).fit().llf()` over the
    parameter — `theta` searched in log-space over `_DISPERSION_BOUNDS`. Each candidate
    fit that raises is treated as `-inf` log-likelihood rather than aborting the search;
-   only a search where every candidate fails raises `ValueError`. An `on_fit` callback
+   only a search where every candidate fails raises `ValueError`. A candidate that raises
+   `MemoryError` is not a bad candidate: it stops the search, and the job ends
+   `memory_limited`. An `on_fit` callback
    fires before each candidate fit, checks the child execution budget, and emits a
    bounded progress event (capped visually at fit 30); the parent event handler updates
    `job_id`'s `progress`/`message`.
@@ -950,7 +979,9 @@ would produce.
 `load_mlflow_settings()` reads the stored section (tomllib);
 `save_mlflow_settings()` validates the same rules and rewrites only the
 `[mlflow]` table via tomlkit, preserving every other section, comment, and
-layout byte-for-byte. `tracking_uri` and `folder` are saved independently:
+layout byte-for-byte, and replaces the file in one rename (`atomic_write_text`). A
+`haute.toml` that is not valid TOML is refused with `MlflowConfigError` (the route's 400)
+and left as it is. `tracking_uri` and `folder` are saved independently:
 an empty `tracking_uri` clears the server key, and an empty `folder`
 persists the currently *resolved* local folder (a stored folder keeps its
 spelling, an env-derived folder is persisted as its absolute path, else the
@@ -1138,10 +1169,14 @@ optional node id, project-relative pipeline, git commit and dirty flag) is captu
 completes: the canvas lifecycle captures it outside the store lock just before publishing
 completion and stores its plain data on the job record as `provenance`; `TrainingJob` captures it
 when it logs. `training_identity_sha256(kwargs)` is the SHA-256 of the canonical JSON of the
-TrainingJob training inputs (target, weight, exclusions and feature selection, algorithm, task,
-params, evaluation, tuning, metrics, loss, variance power, offset, monotone constraints, feature
-weights, categorical levels) — the same kwargs the canvas worker and a script pass to
-`TrainingJob` — and raises on values with no canonical JSON form. Git state comes from the project
+TrainingJob training inputs (target, weight, exclusions and feature selection, identifier
+columns, algorithm, task, params, evaluation, tuning, whether the final model is refit on the
+development rows, metrics, loss, variance power, offset, monotone constraints, feature weights,
+positive class, device) — the same kwargs the canvas worker and a script pass to `TrainingJob`
+— and raises on values with no canonical JSON form. `TrainingJob.training_identity_sha256`
+hashes the job's own values of those inputs and equals `training_identity_sha256` of the kwargs
+built for it: the job keeps its configured `id_columns` as given, and orders rows by them plus
+the group or temporal evaluation key in a separate internal list. Git state comes from the project
 root and is omitted (never guessed) outside a repository. `build_candidate_run` loads the feature
 contract from the artifact set; it is the only source of the signature metadata (features, types,
 categorical features, target, task, offset column) and a contract without complete feature types
@@ -1150,8 +1185,10 @@ evaluation-set-namespaced metrics, all as pure data.
 
 `log_experiment(*, experiment_name, candidate, destination="", check_cancelled=None)` first
 requires every candidate artifact file to exist, then configures tracking, sets the experiment,
-and starts the run with the candidate's name and tags. It logs params (truncated to MLflow's 500
-characters, batched by 100) and metrics, the model with its signature, the feature contract at
+and starts the run with the candidate's name and tags. It logs params (text as it is, a
+structured value as compact sorted JSON; a value longer than MLflow's `MAX_PARAM_VAL_LENGTH`,
+6,000 characters, is logged cut at that length and whole as `params/<key>.json`; batched by 100)
+and metrics, the model with its signature, the feature contract at
 the run root, the diagnostics JSON, and the evaluation/tuning evidence. Every native model (`.cbm` or `.rsglm`) is
 packaged with its feature contract and logged through the shared pyfunc
 (`loader_module="haute.modelling._native_pyfunc"`) as the LoggedModel named `model` (MLflow
@@ -1191,6 +1228,14 @@ timezone-aware pandas dtypes, the production pyfunc scoring boundary converts
 zoned temporal columns to UTC and then removes the zone before prediction.
 Naive temporal values are left unchanged; other flavors retain their existing
 input preparation.
+
+The output schema describes what the shared native pyfunc predicts, not how the target is
+stored: a regression declares one `double` `pred` whatever the target's dtype (the scorer
+returns `Float64` for every family, so an integer target's predictions are not integers),
+and a classifier declares `pred_label` with the target's dtype beside a `double`
+`pred_proba`. `tests/test_mlflow_signature.py` trains and logs an integer-target and a
+floating-target regression and an integer-label classifier through `TrainingJob`, then
+compares the stored signature's outputs with what the reloaded pyfunc predicts.
 
 ### Save-model-after-the-fact
 
@@ -1293,9 +1338,20 @@ potentially large copy on its threadpool.
   keeps equal dates together, requires a single-validation boundary before the
   final-test boundary, and gives every expanding-window fit strictly earlier training
   dates than validation dates.
-- Random classification planning is target-stratified. It reports class counts and
-  the minimum required rows when a requested partition/fold cannot contain every
-  class; random regression remains seeded but unstratified.
+- Random classification planning is target-stratified; random regression remains seeded
+  but unstratified. `_development_reserve` gives the rows of every class the development
+  set keeps for what follows the test: `fold_count` for cross-validation, 2 for a single
+  holdout, 1 with no validation. A class with fewer than that (plus one for a final test)
+  is refused before any sampling, naming the class counts, the minimum and the
+  partitions it serves. `_stratified_sample` takes exactly the requested rows: each class
+  starts at its proportional share bounded below by one and above by its rows less the
+  reserve; the classes furthest below their share take the rows still missing and those
+  furthest above it give up rows past the total, ties by label. A size outside one row
+  per class to the classes' rows less their reserves is refused naming the counts and
+  the range. The test is drawn with the development reserve, the single holdout from the
+  development rows with a reserve of one, and cross-validation folds deal each class's
+  shuffled rows round-robin (`_stratified_parts`), so every fold's validation and
+  training rows hold every class.
 - Random planning shuffles the source's positions in canonical order, and
   stratification takes its classes in label order (`_stratified_parts`,
   `_stratified_sample`), so a permutation of the source's rows selects the same rows.
@@ -1378,7 +1434,11 @@ potentially large copy on its threadpool.
   its deciles, over that order; `compute_pdp` takes its `max_sample` rows through the
   diagnostics rows' canonical order; a categorical PDP grid keeps its 30 most frequent
   levels with equal counts ordered by level, and AvE's category fold its largest levels
-  with equal exposure ordered by level.
+  with equal exposure ordered by level. A numeric PDP grid is labelled with the values the
+  model scored: the percentile grid over the feature's physical values (a date's days, a
+  datetime's ticks; nearest-rank for an integer or temporal feature, so its points are
+  observed values) is cast to that physical dtype and deduplicated, and each point is cast
+  back to the feature's dtype to be predicted.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.
@@ -1517,7 +1577,9 @@ rows/features) and retry.
   importance` before constructing its pool/calling `feature_importance_typed`.
   Both progress callbacks run outside the optional-diagnostic exception guards,
   so cancellation between stages propagates rather than being recorded as an
-  optional diagnostic failure. Loss importance stays full-partition. Targeted tests
+  optional diagnostic failure. Loss importance stays full-partition, and its pool
+  carries the job's weight (and offset), so a weight- or exposure-trained model's
+  `LossFunctionChange` is measured under the loss it was fitted with. Targeted tests
   pin stage order, the absence of a SHAP stage for algorithms without it, and
   cancellation before loss importance.
 - SHAP is computed once per run, on `shap_sample(diag_df, row_order)`: numpy's
@@ -1677,6 +1739,14 @@ rows/features) and retry.
   Fortran-versus-C CatBoost handoff evidence and enforces layout, allocation, and
   result-equivalence facts; it is opt-in under the `perf` marker.
 - `tests/performance/test_training_scoring_wide_perf.py` covers wide training/scoring performance.
+- `tests/performance/test_training_family_memory_perf.py` (with
+  `tests/performance/_training_family_memory_probe.py`) records, marked `perf` and
+  `perf_evidence`, the peak resident memory of a canonical Haute training job per family
+  (CatBoost, XGBoost, LightGBM, EBM, t-boost, GLM) in fresh processes at three row counts,
+  against what the training RAM estimate predicts for the same source, and XGBoost's
+  iterator-fed and external-memory matrices against its in-memory fit (peak memory, time,
+  predictions and objective history). It asserts none of its figures; the MOD-M02 and
+  PL2-17 roadmap entries record the results.
 - `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
@@ -1967,7 +2037,9 @@ The implementation seams are:
   count: only when the RAM limit, not the user's `row_limit`, was binding and the file holds
   that many rows does the job record the downsampling warning, which names the joins for an
   unproven bound instead of claiming a source row count (a frame of exactly the limit's rows
-  is indistinguishable and is reported as sampled).
+  is indistinguishable and is reported as sampled). The job's `warning` is that warning and
+  the pre-launch VRAM check's `gpu_warning`, one per line, and the completed
+  `TrainResponse.warning` carries the same text.
 
 Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
@@ -2002,7 +2074,8 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   with a remove action once the columns are known.
 - `trainingObjective.ts` shares evaluation issue detection between Split, tab readiness
   and Train. Fraction sums at or above one are invalid for non-temporal single
-  validation. CatBoost Tweedie power is a finite number in the open interval (1, 2),
+  validation and are their own `evaluation-fraction-sum` issue, which Split picks by that
+  code to show beside the validation settings. CatBoost Tweedie power is a finite number in the open interval (1, 2),
   mirrored by `_train_config.py`; `src/haute/modelling/_evaluation.py` rejects impossible fraction sums.
 - `SplitAndMetricsConfig` starts with a Row limit section, before allocation and split
   settings. `ModellingConfig` passes the persisted `row_limit` and its update callback
@@ -2031,15 +2104,19 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   editor, with no individual parameter inputs or advanced disclosure. JSON edits
   preserve arbitrary keys and merge reserved settings from their owning controls;
   omitted parameters remain library-managed rather than gaining display-only defaults.
-- Tuning changes only tuning configuration. It reports final-test presence with a
-  Split navigation action and shows trial count times validation fits plus one final
-  fit. Invalid local parameter/search-space drafts remain visible across pane changes.
-- Both algorithms expose Parameters. GLM regularization describes penalty-selection
+- Choosing tuning writes the tuning configuration and turns on `refit_on_development`
+  (t-boost, which is never refit, excepted); it never changes the evaluation. The tuning
+  note reports final-test presence with a Split navigation action and states the fit
+  budget in the Train run summary's words, and its search space is labelled with the
+  selected family's name. Invalid local parameter/search-space drafts remain visible across
+  pane changes.
+- Every family exposes Parameters. GLM regularization describes penalty-selection
   CV separately from evaluation CV. Readiness issues map to panes, and Train links to
   their controls. The run summary reflects effective feature selection and evaluation.
-- Estimate failures show the server's detail. Evaluation-preview failures are shown
-  with Split feedback; other estimate failures are labelled memory-estimate failures,
-  without asserting training success. An unavailable estimate is not a failure: Train
+- Estimate failures show the server's detail. A failure the server codes
+  `evaluation_preview_failed` is an evaluation-preview failure, shown in Split and in the
+  Train estimate's place in the server's words; any other estimate failure is labelled a
+  memory-estimate failure, without asserting training success. An unavailable estimate is not a failure: Train
   shows "Memory estimate unavailable" with its reason in place of the missing figures
   (naming the blocking node by its canvas label for `row_count_unprovable`), the source
   rows when known, and the available RAM. It never shows a fits-in-memory or downsample
@@ -2102,8 +2179,9 @@ used for staged input.
   and `engine_module`. `DESCRIPTORS` holds CatBoost and the GLM under the same keys as
   `ALGORITHM_REGISTRY`; `MODEL_FILE_SUFFIXES` derives from them, and saving a model whose
   algorithm has no suffix raises. `capability_fixture()` serialises the frontend's
-  `algorithmCapabilities.json` (including each family's round-key aliases and validation-only
-  parameters, which the frontend's tuning-report check uses to mirror the refit projection),
+  `algorithmCapabilities.json` (including each family's round key, from which the Summary
+  tab's `tuningFamilyCapability` names a study's tuned family, its round-key aliases and its
+  validation-only parameters),
   and
   `tests/test_algorithm_descriptors.py::test_frontend_capability_fixture_matches_the_descriptors`
   fails when they differ.
@@ -2158,6 +2236,21 @@ used for staged input.
   `save`, and `shap_values` when the family has SHAP) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
   `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
   subclass them without importing `_algorithms` (which registers every adapter).
+- The four native wrappers (`XGBoostModel`, `LightGBMModel`, `EBMModel`, `TBoostModel`) are
+  keyword-only dataclasses over `NativeModel` in the same module, which holds the record every
+  family stores (`features`, `categorical_levels`, `task`, `link`, `offset_column`,
+  `offset_link`, `class_labels`; `record()` writes it), `feature_names_`, `cat_feature_names`,
+  `baseline` (the transformed offset, named by the family), `predict` (original labels for a
+  classifier by the `> 0.5` rule) and `predict_proba`; a wrapper supplies
+  `predict_response`. `inverse_link` turns a margin into a response for LightGBM, t-boost and
+  the explanation check. `NativeModel.record_fields` (and `parse_record` for JSON text) is the
+  one check of a stored record: exactly the seven keys; a non-empty list of distinct feature
+  names; categorical levels only for those features, each a list of strings or `None`; a known
+  task; a link that is `logit` exactly for classification; an offset link among `identity`,
+  `log`, `logit` exactly when an offset column is named; two class labels exactly for
+  classification. A record that is not JSON or not an object, lacks or adds a key, or breaks a
+  rule raises `ConfigError` naming the file and the field (`GET /api/model-file` answers 400),
+  never a `KeyError` or `TypeError`.
 - `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:
   `fit_categorical_levels` takes the training frame's sorted distinct non-null values,
   with `None` appended when nulls occur; the model file records them, never the feature
@@ -2285,8 +2378,11 @@ used for staged input.
   version; `features`; `categorical_features`; `task`; `link`; `offset_column`;
   `offset_link`; `class_labels`), then `joblib.dump` of the estimator. `load(path)` reads that
   line (at most `_RECORD_LIMIT` bytes) before anything is unpickled and refuses a file without
-  it (`ConfigError`, retrain it in Haute) or whose `engine_version` is not the installed
-  `interpret-core` version (`ArtifactVersionMismatchError`), unpickles the rest with
+  it (`ConfigError`, retrain it in Haute), a record whose `engine_version` is missing or not a
+  string, whose shared fields fail `NativeModel.record_fields` or whose
+  `categorical_features` is not a list of its features (`ConfigError` naming the field), or
+  whose `engine_version` is not the installed `interpret-core` version
+  (`ArtifactVersionMismatchError`), unpickles the rest with
   `restricted_joblib_load(path, offset=)`, and `validate` checks the exact class for the task,
   `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and intercept, and
   0/1 classes against the record. A feature contract, when the model has one, binds it like
@@ -2379,12 +2475,9 @@ used for staged input.
   an estimator whose kind is not the record's task or whose `feature_names_in_` differ from the
   record's features, and turns a t-boost `SerializationError` (including a document from an
   earlier t-boost envelope) into a `ConfigError` naming the installed t-boost version.
-  t-boost never reads its metadata, so `load` validates the record (`_validated_record`):
-  exactly the seven keys; a non-empty list of distinct feature names; categorical levels only
-  for those features, each a list of strings or `None`; a known task; a link that is `logit`
-  exactly for classification; an offset only as a non-empty column whose offset link equals
-  the model's link, never under the logit link; and two class labels exactly for
-  classification. `validate_native` then refuses a
+  t-boost never reads its metadata, so `load` validates the record with
+  `NativeModel.record_fields` and adds t-boost's own rule: an offset's link equals the model's
+  link, and never under the logit link. `validate_native` then refuses a
   document whose `kind` is not `single` (a multiclass classifier) or whose estimator is not the
   task's, `feature_names_in_` that differ from the record's features, an objective whose
   descriptor link is not the record's link, a classifier whose classes are not `[0, 1]`, and a

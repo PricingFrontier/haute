@@ -1046,6 +1046,11 @@ class TestPipelineEdgeCases:
         with pytest.raises(ValueError, match="no nodes"):
             p.run(source="batch")
 
+    def test_empty_pipeline_score_raises(self):
+        p = Pipeline("empty", global_constants="config/global_constants.json")
+        with pytest.raises(ValueError, match="Pipeline has no nodes"):
+            p.score(pl.DataFrame({"x": [1]}))
+
     def test_no_edges_multiple_nodes_raises(self):
         p = Pipeline("no_edges")
 

@@ -35,7 +35,7 @@ short interval per process or keep running totals updated by publish and retire.
 **Acceptance:** The lock is held for no part read during a build (a test with a slow
 part reader); a repeated usage call within the interval reads no generation.
 
-**Dependencies:** `CACHE-S17` owns the staging glob per store construction.
+**Dependencies:** None. The staging glob a store construction runs is already limited to once per interval per process.
 
 **Evidence:** `src/haute/_source_cache.py::SourceCacheStore` (the validation inside
 `with self._lease_lock`); `src/haute/_node_snapshots.py` (publication after the lock);

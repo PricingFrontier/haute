@@ -7,7 +7,7 @@ import useNodeResultsStore, {
 } from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import ComboChart from "./ComboChart"
 import {
   ExploreResultEmptyState,

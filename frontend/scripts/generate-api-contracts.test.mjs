@@ -133,7 +133,7 @@ test(
     );
     assert.equal(
       utilityValidators.validateUtilityWriteResponse({
-        status: "ok", name: "helpers", module: "helpers", import_line: "", revision: "1-1",
+        status: "ok", name: "helpers", module: "helpers", import_line: "", content: "", revision: "1-1",
         warnings: [], git_sha: null, identity_required: false, uncaptured: [],
       }),
       true,
@@ -147,7 +147,7 @@ test(
     // Every serialized response field is required, defaults included.
     assert.match(
       declarations,
-      /export interface UtilityWriteResponse \{\n  git_sha: string \| null;\n  identity_required: boolean;\n  import_line: string;\n  module: string;\n  name: string;\n  revision: string;\n  status: string;\n  uncaptured: string\[\];\n  warnings: string\[\];\n\}/,
+      /export interface UtilityWriteResponse \{\n  content: string;\n  git_sha: string \| null;\n  identity_required: boolean;\n  import_line: string;\n  module: string;\n  name: string;\n  revision: string;\n  status: string;\n  uncaptured: string\[\];\n  warnings: string\[\];\n\}/,
     );
 
     const artifacts = [

@@ -5,10 +5,19 @@ interface ToggleButtonGroupProps<T extends string> {
   value: T
   onChange: (value: T) => void
   /** A disabled option is greyed and cannot be chosen; its reason is its tooltip. */
-  options: { key: T; label: string; icon?: React.ReactNode; disabled?: boolean; disabledReason?: string }[]
+  options: {
+    key: T
+    label: string
+    hint?: string
+    testId?: string
+    icon?: React.ReactNode
+    disabled?: boolean
+    disabledReason?: string
+  }[]
   accentColor: string
   ariaLabel?: string
   ariaLabelledBy?: string
+  testId?: string
 }
 
 export default function ToggleButtonGroup<T extends string>({
@@ -18,6 +27,7 @@ export default function ToggleButtonGroup<T extends string>({
   accentColor,
   ariaLabel,
   ariaLabelledBy,
+  testId,
 }: ToggleButtonGroupProps<T>) {
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
   const enabled = options.flatMap((opt, idx) => (opt.disabled ? [] : [idx]))
@@ -25,6 +35,7 @@ export default function ToggleButtonGroup<T extends string>({
   // A disabled button cannot take focus, so the tab stop moves to the first
   // enabled option when the selected one is disabled.
   const tabStop = enabled.includes(activeIdx) ? activeIdx : enabled[0]
+  const activeBg = accentColor.startsWith("var(") ? "var(--accent-soft)" : withAlpha(accentColor, 0.1)
 
   const handleKeyDown = (e: React.KeyboardEvent, currentIdx: number) => {
     const position = enabled.indexOf(currentIdx)
@@ -52,30 +63,59 @@ export default function ToggleButtonGroup<T extends string>({
   }
 
   return (
-    <div className="flex gap-1.5" role="radiogroup" aria-label={ariaLabel} aria-labelledby={ariaLabelledBy}>
+    <div
+      className="flex gap-1.5"
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+      data-testid={testId}
+    >
       {options.map((opt, idx) => {
         const active = value === opt.key
+        const hasHint = opt.hint !== undefined
         return (
           <button
             key={opt.key}
             ref={(el) => { buttonRefs.current[idx] = el }}
+            type="button"
             role="radio"
             aria-checked={active}
+            data-testid={opt.testId}
             disabled={opt.disabled}
             title={opt.disabled ? opt.disabledReason : undefined}
             tabIndex={idx === tabStop ? 0 : -1}
             onClick={() => onChange(opt.key)}
             onKeyDown={(e) => handleKeyDown(e, idx)}
-            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed"
+            className={
+              hasHint
+                ? "flex-1 flex flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed"
+                : "flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed"
+            }
             style={{
-              background: active ? withAlpha(accentColor, 0.1) : "var(--bg-input)",
-              border: active ? `1px solid ${accentColor}` : "1px solid var(--border)",
+              background: active ? activeBg : hasHint ? "var(--chrome-hover)" : "var(--bg-input)",
+              border: active ? `1px solid ${accentColor}` : hasHint ? "1px solid var(--chrome-border)" : "1px solid var(--border)",
               color: active ? accentColor : "var(--text-secondary)",
               opacity: opt.disabled ? 0.5 : undefined,
             }}
           >
-            {opt.icon}
-            {opt.label}
+            {hasHint ? (
+              <>
+                <span
+                  className="text-[11px] font-semibold"
+                  style={{ color: active ? accentColor : "var(--text-primary)" }}
+                >
+                  {opt.label}
+                </span>
+                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  {opt.hint}
+                </span>
+              </>
+            ) : (
+              <>
+                {opt.icon}
+                {opt.label}
+              </>
+            )}
           </button>
         )
       })}

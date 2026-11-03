@@ -11,8 +11,7 @@
 import { useId, useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react"
 import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
-import { apiErrorMessage } from "../api/errors"
-import { formatNumber } from "../utils/formatValue"
+import { formatNumber, fractionToPercent } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -28,10 +27,11 @@ import type {
   OptimiserSolveResult,
 } from "../api/types"
 import type { PreviewData } from "./DataPreview"
-import type { SimpleEdge, SimpleNode } from "./editors"
+import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
+import { constraintBoundKind, isPercentBound } from "./optimiser/constraintBounds"
 import {
   assessFrontierPoint,
   asSolvedOnSlice,
@@ -45,12 +45,13 @@ import {
 import { effectiveConstraintBounds } from "../stores/useNodeResultsStore"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
-import { frontierGenerationMismatch } from "./optimiser/optimiserHelpers"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import QuotesTab from "./optimiser/QuotesTab"
 import AdjustmentsTab, { type PointAdjustmentReports } from "./optimiser/AdjustmentsTab"
+import RequestFailureNotice from "./optimiser/RequestFailureNotice"
 import SegmentsTab, { type SegmentResults } from "./optimiser/SegmentsTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
+import { useLatestRequest, type RequestFailure } from "./optimiser/useLatestRequest"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import {
   OPTIMISER_VIEW_LABELS,
@@ -67,8 +68,7 @@ import {
   useOptimiserScenarioData,
 } from "./optimiser/useOptimiserScenarioData"
 
-// ─── Types (shared with OptimiserConfig) ─────────────────────────
-export type { FrontierData }
+// ─── Types ───────────────────────────────────────────────────────
 
 export type OptimiserPreviewData = {
   /** The displayed result: the selected frontier point's, else the solve's. */
@@ -94,11 +94,6 @@ interface OptimiserPreviewProps {
   /** The node's preview rows, which the Curves and Statistics panes chart; null while unavailable. */
   scenarioData?: PreviewData | null
 }
-
-type RatesDetailState =
-  | { status: "idle" }
-  | { status: "loading"; key: string }
-  | { status: "error"; key: string; error: string }
 
 /** What one review of one node's solve job remembers across tabs and point steps. */
 type OptimiserReview = {
@@ -129,8 +124,6 @@ const NO_SCENARIO_DATA: PreviewData = {
   preview: [],
   error: null,
 }
-
-const REQUEST_FAILED = "The request failed."
 
 const OPTIMISER_ACCENT = {
   color: OPTIMISER_COLORS.accent,
@@ -338,15 +331,6 @@ export default function OptimiserPreview({
     }
   }, [allNodes, edges, nodeConfig, nodeId, rerunReadiness.canSolve, submodels])
 
-  const [ratesDetail, setRatesDetail] = useState<RatesDetailState>({ status: "idle" })
-  // Retry reissues a failed materialisation: the failed key is already released.
-  const [ratesAttempt, setRatesAttempt] = useState(0)
-  const retryRates = useCallback(() => {
-    setRatesDetail({ status: "idle" })
-    setRatesAttempt((current) => current + 1)
-  }, [])
-  const requestedRatesRef = useRef<Map<string, number>>(new Map())
-  const ratesRequestSeqRef = useRef(0)
   const factorLevelOrder = useMemo(
     () => bandingLevelOrderForOptimiser(nodeId, allNodes, edges),
     [nodeId, allNodes, edges],
@@ -355,19 +339,6 @@ export default function OptimiserPreview({
   // ── Frontier point selection ──
   const frontier = displayData.frontier
   const selectedIdx = displayData.selectedPointIndex
-
-  // A recompute keeps the job and reuses point indices for different points,
-  // so a rates request is identified by job, frontier generation and point.
-  const frontierGeneration = solvedResult.frontier_generation
-
-  // The rates effect's cleanup already releases its in-flight key when its
-  // identity changes or on unmount; the whole map is also cleared when the
-  // job or generation changes, so keys for a solve the node no longer shows
-  // do not accumulate across long-lived sessions.
-  useEffect(() => {
-    requestedRatesRef.current.clear()
-    setRatesDetail({ status: "idle" })
-  }, [jobId, frontierGeneration])
 
   const selectedRatebookRatesMissing = (
     result.mode === "ratebook"
@@ -380,62 +351,25 @@ export default function OptimiserPreview({
     // Rates draws them; Summary, and the Frontier pane that carries it, plots them.
     && (tab === "rates" || tab === "summary" || tab === "frontier")
   )
-  useEffect(() => {
-    if (!shouldMaterialiseSelectedRates || selectedIdx == null) return
-    const key = `${jobId}:${frontierGeneration}:${selectedIdx}`
-    const requestedRates = requestedRatesRef.current
-    if (requestedRates.has(key)) return
-    const requestId = ratesRequestSeqRef.current + 1
-    ratesRequestSeqRef.current = requestId
-    requestedRates.set(key, requestId)
-
-    const controller = new AbortController()
-    setRatesDetail({ status: "loading", key })
-    selectFrontierPointApi(
-      {
-        job_id: jobId,
-        point_index: selectedIdx,
-        include_ratebook_tables: true,
-      },
-      { signal: controller.signal },
-    )
-      .then((res) => {
-        if (requestedRates.get(key) !== requestId) return
-        // The server may have recomputed the frontier since the request; its
-        // point then is not the one this result shows, so nothing is stored.
-        const mismatch = frontierGenerationMismatch(res.frontier_generation, frontierGeneration)
-        if (mismatch !== null) {
-          requestedRates.delete(key)
-          setRatesDetail({ status: "error", key, error: mismatch })
-          return
-        }
-        storeUpdateAfterSelect(nodeId, jobId, selectedIdx, res)
-        requestedRates.delete(key)
-        setRatesDetail((current) => {
-          if (current.status !== "loading" || current.key !== key) return current
-          return hasFactorTables(res.factor_tables)
-            ? { status: "idle" }
-            : {
-                status: "error",
-                key,
-                error: "No rate tables were returned for this selected point.",
-              }
-        })
-      })
-      .catch((e) => {
-        if (requestedRates.get(key) !== requestId) return
-        requestedRates.delete(key)
-        if (controller.signal.aborted) return
-        setRatesDetail({ status: "error", key, error: apiErrorMessage(e, REQUEST_FAILED) })
-      })
-
-    return () => {
-      if (requestedRates.get(key) === requestId) {
-        requestedRates.delete(key)
+  // A request's identity is (job, point); a reply the view moved past is aborted and dropped.
+  const ratesRequest = useLatestRequest(
+    shouldMaterialiseSelectedRates && selectedIdx != null
+      ? { key: `${jobId}:${selectedIdx}`, nodeId, jobId, pointIndex: selectedIdx }
+      : null,
+    (wanted, signal) => selectFrontierPointApi(
+      { job_id: wanted.jobId, point_index: wanted.pointIndex, include_ratebook_tables: true },
+      { signal },
+    ),
+    (wanted, response) => {
+      storeUpdateAfterSelect(wanted.nodeId, wanted.jobId, wanted.pointIndex, response)
+      if (!hasFactorTables(response.factor_tables)) {
+        throw new Error("No rate tables were returned for this selected point.")
       }
-      controller.abort()
-    }
-  }, [shouldMaterialiseSelectedRates, selectedIdx, jobId, frontierGeneration, nodeId, storeUpdateAfterSelect, ratesAttempt])
+    },
+  )
+  const ratesDetail = ratesRequest.failure
+    ? { status: "error" as const, error: ratesRequest.failure.message }
+    : { status: "loading" as const }
 
   // A click selects a point as the publish target; the selected point stays
   // selected (the Export pane's target choice returns to the solved result).
@@ -475,15 +409,14 @@ export default function OptimiserPreview({
     : { previous: null, next: null }
   const handleSliceChange = useCallback(
     (key: string) => {
-      if (!slicing || !frontierWithPoints) return
+      if (!slicing) return
       setSliceChoice({
         xName: slicing.xName,
-        generation: frontierWithPoints.frontier_generation,
         key,
         selection: selectedIdx,
       })
     },
-    [slicing, frontierWithPoints, selectedIdx, setSliceChoice],
+    [slicing, selectedIdx, setSliceChoice],
   )
   // The y axis names the objective column only while the node's config is the
   // one the result was solved with; a stale result's column is not known.
@@ -608,14 +541,10 @@ export default function OptimiserPreview({
             xConstraintIdx={xConstraintIdx}
             onXConstraintChange={setXConstraintIdx}
             slicing={slicing}
-            slicePosition={displayedSlicePosition(
-              slicing,
-              selectedIdx,
-              sliceChoice,
-              frontierWithPoints.frontier_generation,
-            )}
+            slicePosition={displayedSlicePosition(slicing, selectedIdx, sliceChoice)}
             onSliceChange={handleSliceChange}
             objectiveName={objectiveName}
+            solvedConstraints={data.constraints}
             onPointClick={handlePointClick}
           />
           <div className="optimiser-frontier-summary">
@@ -653,14 +582,13 @@ export default function OptimiserPreview({
             }}
           />
         ) : (
-          <RatebookRatesPending detail={ratesDetail} onRetry={retryRates} />
+          <RatebookRatesPending failure={ratesRequest.failure} onRetry={ratesRequest.retry} />
         )
       )}
 
       {activeTab === "adjustments" && (
         <AdjustmentsTab
           jobId={jobId}
-          frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
           solvedResult={solvedResult}
           pointReports={adjustmentReports}
@@ -671,7 +599,6 @@ export default function OptimiserPreview({
       {activeTab === "segments" && (
         <SegmentsTab
           jobId={jobId}
-          frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
           solvedResult={solvedResult}
           selection={{
@@ -702,7 +629,6 @@ export default function OptimiserPreview({
           nodeId={nodeId}
           jobId={jobId}
           mode={result.mode}
-          frontierGeneration={solvedResult.frontier_generation}
           pointIndex={selectedIdx}
         />
       )}
@@ -726,6 +652,8 @@ interface FrontierTabProps {
   onSliceChange: (key: string) => void
   /** The y axis name: the objective column, or "Objective" when it is not known. */
   objectiveName: string
+  /** The constraints the solve was configured with, which say whether a held threshold is a percentage. */
+  solvedConstraints: Record<string, Record<string, number>>
   onPointClick: (index: number) => void
 }
 
@@ -739,6 +667,14 @@ function formatFrontierValue(value: number): string {
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
 }
 
+/** A held threshold in its unit: a percentage constraint's fraction reads as a percentage of its baseline. */
+function formatHeldThreshold(value: number, spec: Record<string, number> | undefined): string {
+  const kind = constraintBoundKind(spec)
+  return kind !== null && isPercentBound(kind)
+    ? `${formatFrontierValue(fractionToPercent(value))}% of baseline`
+    : formatFrontierValue(value)
+}
+
 function FrontierTab({
   frontier,
   solvedResult,
@@ -749,6 +685,7 @@ function FrontierTab({
   slicePosition,
   onSliceChange,
   objectiveName,
+  solvedConstraints,
   onPointClick,
 }: FrontierTabProps) {
   const xPickerId = useId()
@@ -832,7 +769,7 @@ function FrontierTab({
                 >
                   {slicing.slices.map((option, i) => (
                     <option key={option.key} value={i}>
-                      {slicing.heldNames.map((name) => formatFrontierValue(option.held[name])).join(", ")}
+                      {slicing.heldNames.map((name) => formatHeldThreshold(option.held[name], solvedConstraints[name])).join(", ")}
                     </option>
                   ))}
                 </select>
@@ -911,26 +848,9 @@ function FrontierTab({
   )
 }
 
-function RatebookRatesPending({ detail, onRetry }: { detail: RatesDetailState; onRetry: () => void }) {
-  if (detail.status === "error") {
-    return (
-      <div
-        role="alert"
-        className="flex items-start gap-2 text-xs px-3 py-2 rounded"
-        style={{ background: "var(--danger-soft)", color: "var(--danger)" }}
-      >
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-        <span className="flex-1">Rate table load failed: {detail.error}</span>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
-          style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
-        >
-          Retry
-        </button>
-      </div>
-    )
+function RatebookRatesPending({ failure, onRetry }: { failure: RequestFailure | null; onRetry: () => void }) {
+  if (failure) {
+    return <RequestFailureNotice what="Rate table load failed" failure={failure} onRetry={onRetry} />
   }
 
   return (

@@ -688,7 +688,22 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
+        written = {
+            touched_file.target: _artifact_digest(touched_file.target) for touched_file in touched
+        }
         captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
+        # The capture runs the project's git hooks, which may rewrite what the save wrote
+        # (a formatter's pre-commit hook), whether or not they then let the commit through:
+        # hand back the document they left, so the editor's next save is made against the
+        # revision on disk.
+        if any(_artifact_digest(target) != digest for target, digest in written.items()):
+            committed_document = _helpers.load_pipeline_editor_document(
+                py_path, project_root=self._root
+            )
+            source_revision = committed_document.source_revision
+            if not source_revision:
+                raise RuntimeError("The project's git hooks left the saved pipeline unreadable.")
+            committed_payload = committed_document.model_dump(mode="json", by_alias=True)
 
         self.committed = CommittedDocument(
             py_path,
@@ -1140,6 +1155,7 @@ class SavePipelineService:
             NodeType.BANDING,
             NodeType.SCENARIO_EXPANDER,
             NodeType.MODELLING,
+            NodeType.POLARS,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
@@ -1733,13 +1749,13 @@ class SavePipelineService:
 
     @staticmethod
     def _discarded_sidecars_recursive(graph: PipelineGraph) -> list[str]:
-        """Relative sidecar paths recorded as ``_discarded_sidecar`` by the parser."""
+        """Relative sidecar paths the parser found discarded (``editor.discarded_sidecar``)."""
         found: list[str] = []
         scoped = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped:
             for node in scoped_graph.nodes:
-                rel = node.data.config.get("_discarded_sidecar")
-                if isinstance(rel, str) and rel:
+                rel = node.data.editor.discarded_sidecar
+                if rel:
                     found.append(rel.replace("\\", "/"))
         return found
 

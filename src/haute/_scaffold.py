@@ -7,7 +7,7 @@ project name, deploy target, and CI provider.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 
 from haute._project_python import DEFAULT_PYTHON, container_base_image
@@ -433,15 +433,12 @@ def haute_toml(
     name: str,
     target: str,
     ci: str,
-    workbench: bool = False,
     python_version: str = DEFAULT_PYTHON,
 ) -> str:
-    """Generate ``haute.toml`` with only the relevant target section.
+    """Generate an automated project's ``haute.toml`` with only the relevant target section.
 
-    A container target's base image runs *python_version*, the project's Python.
-
-    With *workbench* the ``[workbench]`` table switches the project's workbench on
-    (specs/workbench); without it the project has no workbench.
+    A container target's base image runs *python_version*, the project's Python. A workbench
+    project's is :func:`workbench_haute_toml`.
     """
     min_approvers = 2
 
@@ -479,14 +476,136 @@ provider = "{ci}"
 endpoint_suffix = "{DEFAULT_STAGING_ENDPOINT_SUFFIX}"
 {_service_addresses(name, target)}""",
     ]
-    if workbench:
-        sections.append(
-            """\
+    return "\n".join(sections)
+
+
+def workbench_haute_toml(
+    name: str,
+    ci: str,
+    *,
+    host: str,
+    store: str,
+    python_version: str = DEFAULT_PYTHON,
+) -> str:
+    """A workbench project's ``haute.toml``: it hosts no scoring API, so ``[deploy]`` holds the
+    underwriter app's image alone, ``[deploy.container]`` with its base image on
+    *python_version*, and no endpoint settings, beside the ``[workbench]`` table for the app's
+    *host* and the quote store on *store* (specs/workbench)."""
+    return f"""\
+[project]
+name = "{name}"
+pipeline = "{PIPELINE_FILE}"
+
+# The underwriter app's image: what it is built on, the registry the workbench's CI pushes
+# it to (required there) and the port it serves on.
+[deploy.container]
+registry = ""
+port = 8080
+base_image = "{container_base_image(python_version)}"
+
+[test_quotes]
+dir = "tests/quotes"
+
+[ci]
+provider = "{ci}"
+
+{workbench_table(host, store)}"""
+
+
+# ── The workbench's table and its connections ─────────────────────────
+
+#: The quote store's environments a new workbench declares: ``dev`` for ``haute app serve``,
+#: ``staging`` and ``prod`` for the hosted app.
+WORKBENCH_ENVIRONMENTS = ("dev", "staging", "prod")
+#: The environments whose app the host runs, which the workbench's CI rolls out.
+HOSTED_ENVIRONMENTS = ("staging", "prod")
+#: The databases a new workbench's quote store can be on, the servers of
+#: ``haute._workbench_config.STORE_PROVIDERS``: all three environments are on one.
+WORKBENCH_STORES = ("sqlserver", "postgresql")
+#: The prefix of the variables a hosted environment's sign-in names (``HAUTE_STORE_USERNAME``,
+#: the role PostgreSQL maps the app's managed identity to), beside the host's
+#: ``HAUTE_STORE_*`` location.
+_STORE_VARIABLE_PREFIX = "HAUTE_STORE"
+
+
+def _sign_in_variables(prefix: str, keys: Sequence[str]) -> str:
+    """Each of a sign-in's *keys* as a TOML line naming its variable, ``username_env`` as
+    ``<prefix>_USERNAME``."""
+    return "".join(f'{key} = "{prefix}_{key.removesuffix("_env").upper()}"\n' for key in keys)
+
+
+def workbench_table(host: str, store: str) -> str:
+    """``haute.toml``'s ``[workbench]`` table as a workbench ``haute init`` writes it: the
+    workbench enabled, the underwriter app run on *host*, each hosted environment's Container
+    App left for IT to name, and the quote store's environments declared, each on *store* and
+    signed in to by the hosted app's managed identity (specs/workbench)."""
+    from haute._workbench_config import APP_HOSTS, store_sign_in_keys
+
+    if host not in APP_HOSTS:
+        raise ValueError(f"Unknown app host: {host}")
+    if store not in WORKBENCH_STORES:
+        raise ValueError(f"Unknown quote store: {store}")
+    sign_in = _sign_in_variables(
+        _STORE_VARIABLE_PREFIX, store_sign_in_keys(store, "managed-identity")
+    )
+    environments = "\n".join(
+        f'[workbench.store.{name}]\nprovider = "{store}"\nauth = "managed-identity"\n{sign_in}'
+        for name in WORKBENCH_ENVIRONMENTS
+    )
+    apps = "\n".join(
+        f'[workbench.app.{name}]\nresource_group = ""\ncontainer_app = ""\n'
+        for name in HOSTED_ENVIRONMENTS
+    )
+    return f"""\
 [workbench]
 enabled = true
-"""
-        )
-    return "\n".join(sections)
+
+[workbench.app]
+host = "{host}"
+
+# The Container App each hosted environment's app runs as, which haute app rollout rolls out:
+# your IT team fills them in.
+{apps}
+# The quote store's environments. A hosted app finds its database through the host's
+# HAUTE_STORE_* variables; the editor and haute app serve through connections.toml.
+{environments}"""
+
+
+def connections_toml(store: str, sign_in: str) -> str:
+    """``connections.toml`` as a workbench ``haute init`` writes it: a connection for each of
+    the quote store's environments, on *store*, its server and database left for the analyst
+    to fill in, signed in with *sign_in*, one of ``CONNECTION_SIGN_INS``, whose variables,
+    ``HAUTE_<ENVIRONMENT>_<KEY>``, ``.env`` holds."""
+    from haute._connections import CONNECTION_SIGN_INS, connection_sign_in_keys
+
+    if store not in WORKBENCH_STORES:
+        raise ValueError(f"Unknown quote store: {store}")
+    if sign_in not in CONNECTION_SIGN_INS:
+        raise ValueError(f"Unknown sign-in: {sign_in}")
+    keys = connection_sign_in_keys(store, sign_in)
+    connections = "\n".join(
+        f'[{name}]\nprovider = "{store}"\nserver = ""\ndatabase = ""\nauth = "{sign_in}"\n'
+        + _sign_in_variables(f"HAUTE_{name.upper()}", keys)
+        for name in WORKBENCH_ENVIRONMENTS
+    )
+    return f"""\
+# Where each of the quote store's databases is, for the editor and haute app serve.
+# The values of the variables a sign-in names are read from .env, never from this file.
+
+{connections}"""
+
+
+def connection_variables(project_root: Path) -> list[str]:
+    """The variables the connections of *project_root*'s ``connections.toml`` read their
+    sign-ins from, in the file's order; none without the file."""
+    from haute._connections import read_connections
+
+    named = (
+        variable
+        for connection in read_connections(project_root).values()
+        for variable in connection.variables.values()
+    )
+    return list(dict.fromkeys(named))
 
 
 def _service_addresses(name: str, target: str) -> str:
@@ -527,15 +646,34 @@ _ENV_EXAMPLE_HEADER = """\
 """
 
 
-def env_example(target: str) -> str:
-    """Generate ``.env.example`` with only the credentials for the chosen target."""
-    cfg = _get_target(target)
+def env_example(target: str, connection_variables: Sequence[str] = ()) -> str:
+    """Generate an automated project's ``.env.example`` with only the credentials for the
+    chosen target, and the variables ``connections.toml``'s sign-ins read,
+    *connection_variables*, when it names any."""
+    return _env_example_text(target, _build_only_notice(target), connection_variables)
+
+
+def app_env_example(host: str, connection_variables: Sequence[str] = ()) -> str:
+    """A workbench project's ``.env.example``: the credentials its CI publishes the underwriter
+    app's image to *host*'s registry with, and the variables ``connections.toml``'s sign-ins
+    read, *connection_variables*."""
+    return _env_example_text(host, "", connection_variables)
+
+
+def _env_example_text(key: str, notice: str, connection_variables: Sequence[str]) -> str:
+    """``.env.example`` with *key*'s credentials, :data:`TARGETS`' entry, under *notice*."""
+    cfg = _get_target(key)
     label = cfg["label"]
     assert isinstance(label, str)
     env_body = cfg["env_body"]
     assert isinstance(env_body, str)
-    notice = _build_only_notice(target)
-    return _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
+    text = _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
+    if connection_variables:
+        named = "".join(f"{variable}=\n" for variable in connection_variables)
+        text += (
+            f"\n# The sign-ins connections.toml names, for the editor and haute app serve\n{named}"
+        )
+    return text
 
 
 # What marks a value in ``.env.example`` as a stand-in for the real one: the token
@@ -568,10 +706,31 @@ def env_example_placeholders(target: str) -> dict[str, str]:
 
 def ci_secret_names(target: str) -> list[str]:
     """The CI secrets *target*'s generated deploy, registry login, smoke, impact and tag
-    steps read."""
+    steps read, or, for an app host, its publish job's registry login."""
     secrets = _get_target(target)["secrets"]
     assert isinstance(secrets, list)
     return list(secrets)
+
+
+def ci_credentials(project_root: Path, target: str) -> str:
+    """The :data:`TARGETS` key whose credentials *project_root*'s generated CI reads: a
+    workbench project's ``[workbench.app] host``, since it publishes the underwriter app and
+    deploys no endpoint, else *target*, its ``[deploy] target``.
+
+    Raises :class:`~haute._workbench_config.WorkbenchConfigError` for a ``[workbench]`` table
+    that cannot be read, and for a workbench project naming no host.
+    """
+    from haute._workbench_config import APP_HOSTS, WorkbenchConfigError, read_workbench_config
+
+    config = read_workbench_config(project_root)
+    if not config.enabled:
+        return target
+    if config.app_host is None:
+        raise WorkbenchConfigError(
+            "haute.toml's [workbench.app] names no host: the workbench's CI publishes the "
+            f"app with its host's credentials, so set host ({', '.join(sorted(APP_HOSTS))})."
+        )
+    return config.app_host
 
 
 def _format_secrets(target: str, indent: str, fmt: str) -> str:
@@ -641,14 +800,58 @@ def _github_login_step(target: str, secrets_env: str) -> str:
 # ── GitHub Actions: ci.yml ────────────────────────────────────────────
 
 
+# The step that ends each validate job: an automated project's dry-run deploy, which scores
+# the test quotes, or a workbench project's release build, which scores them as a deploy does
+# and holds the form to the pipeline. Each is a display name and the command it runs.
+_DRY_RUN_CHECK = ("Dry-run deploy (score test quotes)", "uv run haute deploy --dry-run")
+_APP_BUILD_CHECK = ("Build the app's release (score test quotes)", "uv run haute app build")
+#: The report a workbench project's ``haute app build`` writes of its test quotes
+#: (``haute._workbench_test_quotes.REPORT_FILE``), which its validate jobs keep.
+_TEST_QUOTES_REPORT = "test_quotes_report.md"
+_GITHUB_TEST_QUOTES_UPLOAD = f"""\
+      - name: Upload test quotes report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-quotes-report
+          path: {_TEST_QUOTES_REPORT}
+"""
+#: What a workbench project's publish job runs once logged in to the registry.
+_APP_PUBLISH = "uv run haute app build --push"
+#: What rolls a hosted environment out (specs/workbench, Control flow 35).
+_APP_ROLLOUT = "uv run haute app rollout"
+#: What a workbench project's production job runs: the release staging runs, promoted.
+_APP_PROMOTE = "uv run haute app rollout prod --from staging"
+#: What compares staging's release with production's on production's saved quotes once staging
+#: is rolled out (specs/workbench, Control flow 36), writing ``impact_report.md``.
+_APP_IMPACT = "uv run haute app impact"
+# Minutes a workbench project's publish job may run: it builds and pushes one image, rolls
+# staging out, a recovery included, and prices the impact's sample; and the production job, a
+# rollout and a recovery.
+_PUBLISH_TIMEOUT_MINUTES = 60
+_PRODUCTION_TIMEOUT_MINUTES = 45
+# The groups each environment's rollouts are serialised in, one at a time.
+_STAGING_GROUP = "haute-app-staging"
+_PRODUCTION_GROUP = "haute-app-prod"
+
+
 def github_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
     """:func:`_github_ci_yml` with every job's Python pinned to *python_version*."""
-    return _pin_ci_python(_github_ci_yml(), python_version)
+    return _pin_ci_python(_github_ci_yml(_DRY_RUN_CHECK), python_version)
 
 
-def _github_ci_yml() -> str:
-    """PR checks workflow for GitHub Actions."""
-    return """\
+def github_app_ci_yml(*, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """A workbench project's PR checks: :func:`_github_ci_yml` ending in the app's release
+    build, every job's Python pinned to *python_version*."""
+    return _pin_ci_python(_github_ci_yml(_APP_BUILD_CHECK, report=True), python_version)
+
+
+def _github_ci_yml(check: tuple[str, str], *, report: bool = False) -> str:
+    """PR checks workflow for GitHub Actions, its pipeline validation ending in *check*, and
+    with *report* keeping the test quotes' report whether it passes or fails."""
+    check_name, check_run = check
+    upload = _GITHUB_TEST_QUOTES_UPLOAD if report else ""
+    return f"""\
 name: CI
 
 on:
@@ -713,9 +916,9 @@ jobs:
       - run: uv sync --frozen
       - name: Lint pipeline
         run: uv run haute lint
-      - name: Dry-run deploy (score test quotes)
-        run: uv run haute deploy --dry-run
-"""
+      - name: {check_name}
+        run: {check_run}
+{upload}"""
 
 
 def github_deploy_yml(
@@ -986,6 +1189,50 @@ def _gitlab_docker_job(target: str) -> str:
 """
 
 
+def _gitlab_head(stages: Sequence[str], check: str, *, report: bool = False) -> str:
+    """The head every GitLab pipeline Haute generates opens with: its *stages*, uv's cache and
+    the default job, then the validate job, run on a merge request and on the default branch,
+    ending in *check*, and with *report* keeping the test quotes' report whether it passes or
+    fails."""
+    stage_lines = "".join(f"  - {stage}\n" for stage in stages)
+    artifacts = (
+        f"  artifacts:\n    when: always\n    paths:\n      - {_TEST_QUOTES_REPORT}\n"
+        if report
+        else ""
+    )
+    return f"""\
+stages:
+{stage_lines}
+variables:
+  # uv keeps its package cache in ~/.cache/uv unless told otherwise; this points it
+  # at the folder the cache below keeps between runs.
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/{_GITLAB_UV_CACHE}"
+
+default:
+  image: python:3.11
+  cache:
+    key: uv-$CI_COMMIT_REF_SLUG
+    paths:
+      - {_GITLAB_UV_CACHE}
+  before_script:
+    - {_GITLAB_UV_SYNC}
+
+# ── Validate ──────────────────────────────────────────────────
+lint:
+  stage: validate
+  timeout: 10 minutes
+  script:
+    - uv run ruff check .
+    - uv run mypy .
+    - uv run pytest -v
+    - uv run haute lint
+    - {check}
+{artifacts}  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+"""
+
+
 def gitlab_ci_yml(
     target: str,
     *,
@@ -1015,7 +1262,8 @@ def _gitlab_ci_yml(target: str, environment: str) -> str:
     environment_line = f'  environment: "{environment}"\n' if environment else ""
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     verify_suffix = _verification_suffix_option(target)
-    verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
+    verification_stages = ["smoke-test", "impact-analysis"] if verify else []
+    stages = ["validate", "deploy-staging", *verification_stages, "deploy-production"]
     logs_in = target in _CONTAINER_BASED_TARGETS
     extends_docker = "  extends: .docker\n" if logs_in else ""
     login_entry = f"    - |\n{_registry_login_script(target, ' ' * 6)}\n" if logs_in else ""
@@ -1055,39 +1303,8 @@ impact-analysis:
 
     return (
         _build_only_notice(target)
+        + _gitlab_head(stages, _DRY_RUN_CHECK[1])
         + f"""\
-stages:
-  - validate
-  - deploy-staging
-{verification_stages}  - deploy-production
-
-variables:
-  # uv keeps its package cache in ~/.cache/uv unless told otherwise; this points it
-  # at the folder the cache below keeps between runs.
-  UV_CACHE_DIR: "$CI_PROJECT_DIR/{_GITLAB_UV_CACHE}"
-
-default:
-  image: python:3.11
-  cache:
-    key: uv-$CI_COMMIT_REF_SLUG
-    paths:
-      - {_GITLAB_UV_CACHE}
-  before_script:
-    - {_GITLAB_UV_SYNC}
-
-# ── Validate ──────────────────────────────────────────────────
-lint:
-  stage: validate
-  timeout: 10 minutes
-  script:
-    - uv run ruff check .
-    - uv run mypy .
-    - uv run pytest -v
-    - uv run haute lint
-    - uv run haute deploy --dry-run
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 {_gitlab_docker_job(target)}# ── Staging ───────────────────────────────────────────────────
 deploy-staging:
 {extends_docker}  stage: deploy-staging
@@ -1120,6 +1337,118 @@ deploy-production:
 
 
 # ── Azure DevOps ─────────────────────────────────────────────────────
+
+
+# The step that ends Azure DevOps' Validate stage: its script and display name.
+_AZURE_DRY_RUN_CHECK = ("uv run haute deploy --dry-run", "Dry-run deploy")
+_AZURE_APP_BUILD_CHECK = ("uv run haute app build", "Build the app's release")
+
+
+def _azure_devops_head(
+    check: tuple[str, str], *, sequential: bool = False, report: bool = False
+) -> str:
+    """The head every Azure DevOps pipeline Haute generates opens with: its triggers and the
+    Validate stage, run on a pull request and on a push to main, its pipeline validation
+    ending in *check*, with *report* keeping the test quotes' report whether it passes or
+    fails; *sequential* runs one deployment of an environment at a time, under the exclusive
+    lock IT sets on it."""
+    check_script, check_name = check
+    publish = (
+        f"          - publish: {_TEST_QUOTES_REPORT}\n"
+        "            artifact: test-quotes-report\n"
+        "            condition: succeededOrFailed()\n"
+        if report
+        else ""
+    )
+    lock = (
+        "\n# One rollout of an environment at a time, with an exclusive lock on it.\n"
+        "lockBehavior: sequential\n"
+        if sequential
+        else ""
+    )
+    return f"""\
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include:
+{_azure_devops_trigger_paths()}
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  CI: "true"
+{lock}
+stages:
+  # ── Validate (runs on PR and push to main) ───────────────────
+  - stage: Validate
+    jobs:
+      - job: lint
+        displayName: Lint & Format
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run ruff check .
+            displayName: Ruff check
+          - script: uv run ruff format --check .
+            displayName: Ruff format check
+
+      - job: typecheck
+        displayName: Type Check
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run mypy .
+            displayName: Mypy
+
+      - job: test
+        displayName: Test
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run pytest -v
+            displayName: Pytest
+
+      - job: pipeline_validate
+        displayName: Pipeline Validation
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run haute lint
+            displayName: Lint pipeline
+          - script: {check_script}
+            displayName: {check_name}
+{publish}"""
 
 
 def azure_devops_yml(
@@ -1239,88 +1568,8 @@ def _azure_devops_yml(target: str, *, environment: str) -> str:
 
     return (
         _build_only_notice(target)
+        + _azure_devops_head(_AZURE_DRY_RUN_CHECK)
         + f"""\
-trigger:
-  branches:
-    include: [main]
-  paths:
-    include:
-{_azure_devops_trigger_paths()}
-
-pr:
-  branches:
-    include: [main]
-
-variables:
-  CI: "true"
-
-stages:
-  # ── Validate (runs on PR and push to main) ───────────────────
-  - stage: Validate
-    jobs:
-      - job: lint
-        displayName: Lint & Format
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run ruff check .
-            displayName: Ruff check
-          - script: uv run ruff format --check .
-            displayName: Ruff format check
-
-      - job: typecheck
-        displayName: Type Check
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run mypy .
-            displayName: Mypy
-
-      - job: test
-        displayName: Test
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run pytest -v
-            displayName: Pytest
-
-      - job: pipeline_validate
-        displayName: Pipeline Validation
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run haute lint
-            displayName: Lint pipeline
-          - script: uv run haute deploy --dry-run
-            displayName: Dry-run deploy
   # ── Deploy to staging (only on push to main) ─────────────────
   - stage: DeployStaging
     displayName: Deploy → Staging
@@ -1439,14 +1688,367 @@ def ci_files(
     raise ValueError(f"Unknown CI provider: {ci}")
 
 
+# ── A workbench project's CI/CD ───────────────────────────────────────
+
+
+def _app_publish_notice(host: str) -> str:
+    """The comment that heads a workbench project's release workflow: it publishes the app's
+    image, rolls staging out to it, compares staging with production on saved quotes, and
+    production follows by hand."""
+    return (
+        "# On a push to main this builds the underwriter app's image once, pushes it to the\n"
+        "# registry [deploy.container] names and rolls the staging app on\n"
+        f"# {_get_target(host)['label']} out to it (haute app rollout), then prices a sample\n"
+        "# of production's saved quotes on both apps (haute app impact, its report kept as\n"
+        "# impact_report.md). Production is rolled out by hand to the release staging runs.\n"
+        "# [workbench.app.staging] and [workbench.app.prod] in haute.toml name the Container\n"
+        "# Apps.\n"
+    )
+
+
+def _publish_and_stage_script(indent: str) -> str:
+    """Shell lines, indented, that publish the app's image and roll staging out to the image by
+    digest the publish prints last, its output shown as it runs and kept in ``publish.log``."""
+    lines = [
+        "set -eo pipefail",
+        f"{_APP_PUBLISH} | tee publish.log",
+        'image="$(tail -n 1 publish.log)"',
+        f'{_APP_ROLLOUT} staging --image "$image"',
+    ]
+    return "\n".join(indent + line for line in lines)
+
+
+def github_release_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_github_release_yml` on *python_version*."""
+    return _pin_ci_python(_github_release_yml(host), python_version)
+
+
+def _github_release_yml(host: str) -> str:
+    """A workbench project's merge-to-main workflow for GitHub Actions: validate, then publish
+    the underwriter app's image once and roll staging out to it, logged in with *host*'s
+    credentials, one staging rollout at a time."""
+    secrets_env = _github_secrets_env(host)
+    check_name, check_run = _APP_BUILD_CHECK
+    return (
+        _app_publish_notice(host)
+        + f"""\
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+{_github_trigger_paths()}
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy .
+      - name: Test
+        run: uv run pytest -v
+      - name: Pipeline lint
+        run: uv run haute lint
+      - name: {check_name}
+        run: {check_run}
+{_GITHUB_TEST_QUOTES_UPLOAD}
+  publish:
+    name: Publish → Staging
+    needs: validate
+    # A manual run may pick any branch: only main's commits are published.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: {_PUBLISH_TIMEOUT_MINUTES}
+    # One staging rollout at a time.
+    concurrency:
+      group: {_STAGING_GROUP}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+{_github_login_step(host, secrets_env)}      - name: Publish the app's image and roll staging out
+        env:
+{secrets_env}
+        run: |
+{_publish_and_stage_script(" " * 10)}
+      - name: Compare staging with production on saved quotes
+        env:
+{secrets_env}
+        run: {_APP_IMPACT}
+      - name: Upload impact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-report
+          path: impact_report.md
+"""
+    )
+
+
+def github_release_production_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_github_release_production_yml` on *python_version*."""
+    return _pin_ci_python(_github_release_production_yml(host), python_version)
+
+
+def _github_release_production_yml(host: str) -> str:
+    """A workbench project's production rollout for GitHub Actions, run by hand from the
+    Actions tab: production rolled out to the release staging runs for the commit chosen,
+    main's head unless another is given, one production rollout at a time."""
+    secrets_env = _github_secrets_env(host)
+    return f"""\
+# Run by hand from the Actions tab: rolls production out to the release staging runs,
+# refusing when staging runs another commit than the one given (main's head when blank).
+name: Release → Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: >
+          The commit staging runs, which production is rolled out to.
+          Leave blank for the head of main.
+        required: false
+        type: string
+
+concurrency:
+  group: {_PRODUCTION_GROUP}
+  cancel-in-progress: false
+
+jobs:
+  production:
+    name: Staging → Production
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: {_PRODUCTION_TIMEOUT_MINUTES}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{{{ inputs.commit || github.sha }}}}
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Roll production out to the release staging runs
+        env:
+{secrets_env}
+        run: {_APP_PROMOTE}
+"""
+
+
+def gitlab_app_ci_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_gitlab_app_ci_yml` on *python_version*."""
+    return _pin_ci_python(_gitlab_app_ci_yml(host), python_version)
+
+
+def _gitlab_app_ci_yml(host: str) -> str:
+    """A workbench project's pipeline for GitLab CI/CD: validate on a merge request and on the
+    default branch; on the default branch publish the underwriter app's image once and roll
+    staging out to it, and roll production out by hand, logged in with *host*'s credentials,
+    each environment's rollouts one at a time."""
+    secrets_env = _gitlab_secrets_env(host)
+    return (
+        _app_publish_notice(host)
+        + _gitlab_head(["validate", "publish", "production"], _APP_BUILD_CHECK[1], report=True)
+        + f"""\
+{_gitlab_docker_job(host)}# ── Publish → Staging ─────────────────────────────────────────
+publish:
+  extends: .docker
+  stage: publish
+  timeout: {_PUBLISH_TIMEOUT_MINUTES} minutes
+  resource_group: {_STAGING_GROUP}
+  variables:
+{secrets_env}
+  script:
+    - |
+{_registry_login_script(host, " " * 6)}
+    - |
+{_publish_and_stage_script(" " * 6)}
+    - {_APP_IMPACT}
+  artifacts:
+    when: always
+    paths:
+      - impact_report.md
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ── Staging → Production (by hand) ────────────────────────────
+deploy-production:
+  stage: production
+  timeout: {_PRODUCTION_TIMEOUT_MINUTES} minutes
+  resource_group: {_PRODUCTION_GROUP}
+  variables:
+{secrets_env}
+  script:
+    - {_APP_PROMOTE}
+  when: manual
+  allow_failure: false
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+"""
+    )
+
+
+def azure_devops_app_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+    """:func:`_azure_devops_app_yml` on *python_version*."""
+    return _pin_ci_python(_azure_devops_app_yml(host), python_version)
+
+
+def _azure_devops_app_yml(host: str) -> str:
+    """A workbench project's pipeline for Azure DevOps: validate on a pull request and on a push
+    to main; on main publish the underwriter app's image once and roll staging out to it, and
+    roll production out by hand (``trigger: manual``), logged in with *host*'s credentials from
+    the ``haute-credentials`` variable group, each a deployment under its environment, whose
+    exclusive lock keeps its rollouts one at a time."""
+    secrets_env = _azure_devops_secrets_env(host, indent=" " * 20)
+    head = _azure_devops_head(_AZURE_APP_BUILD_CHECK, sequential=True, report=True)
+    return (
+        _app_publish_notice(host)
+        + head
+        + f"""\
+  # ── Publish → Staging (only on push to main) ─────────────────
+  - stage: Publish
+    displayName: Publish → Staging
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: haute-credentials
+    jobs:
+      - deployment: publish
+        displayName: Publish the app's image and roll staging out
+        timeoutInMinutes: {_PUBLISH_TIMEOUT_MINUTES}
+        pool:
+          vmImage: ubuntu-latest
+        environment: "staging"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "3.11"
+                - script: pip install "uv>=0.5,<1" && uv sync --frozen
+                  displayName: Install dependencies
+                - script: |
+{_registry_login_script(host, " " * 20)}
+                  displayName: Log in to the registry
+                  env:
+{secrets_env}
+                - script: |
+{_publish_and_stage_script(" " * 20)}
+                  displayName: Publish the app's image and roll staging out
+                  env:
+{secrets_env}
+                - script: {_APP_IMPACT}
+                  displayName: Compare staging with production on saved quotes
+                  env:
+{secrets_env}
+                - publish: impact_report.md
+                  artifact: impact-report
+                  condition: succeededOrFailed()
+
+  # ── Staging → Production (by hand) ───────────────────────────
+  - stage: DeployProduction
+    displayName: Staging → Production
+    dependsOn: Publish
+    trigger: manual
+    variables:
+      - group: haute-credentials
+    jobs:
+      - deployment: production
+        displayName: Roll production out to the release staging runs
+        timeoutInMinutes: {_PRODUCTION_TIMEOUT_MINUTES}
+        pool:
+          vmImage: ubuntu-latest
+        environment: "{_AZURE_PRODUCTION_ENVIRONMENT}"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "3.11"
+                - script: pip install "uv>=0.5,<1" && uv sync --frozen
+                  displayName: Install dependencies
+                - script: {_APP_PROMOTE}
+                  displayName: Roll production out
+                  env:
+{secrets_env}
+"""
+    )
+
+
+def workbench_ci_files(
+    host: str,
+    ci: str,
+    *,
+    python_version: str = DEFAULT_CI_PYTHON,
+) -> dict[str, str]:
+    """The CI files a workbench ``haute init`` and ``haute ci update`` write for *ci*: path ->
+    content, in the order they are reported; ``"none"`` has none. They validate the project and
+    the app's release on every change; on the default branch they publish the underwriter
+    app's image, roll staging out to it and compare it with production on saved quotes, and
+    roll production out by hand, logged in with *host*'s credentials; none deploys an
+    endpoint. Every job runs *python_version*, the
+    project's Python."""
+    from haute._workbench_config import APP_HOSTS
+
+    if host not in APP_HOSTS:
+        raise ValueError(f"Unknown app host: {host}")
+    if ci == "github":
+        return {
+            ".github/workflows/ci.yml": github_app_ci_yml(python_version=python_version),
+            ".github/workflows/release.yml": github_release_yml(
+                host, python_version=python_version
+            ),
+            ".github/workflows/release-production.yml": github_release_production_yml(
+                host, python_version=python_version
+            ),
+        }
+    if ci == "gitlab":
+        return {".gitlab-ci.yml": gitlab_app_ci_yml(host, python_version=python_version)}
+    if ci == "azure-devops":
+        return {"azure-pipelines.yml": azure_devops_app_yml(host, python_version=python_version)}
+    if ci == "none":
+        return {}
+    raise ValueError(f"Unknown CI provider: {ci}")
+
+
 # ── Pre-commit hook ───────────────────────────────────────────────────
+
+
+#: The comment that marks a git pre-commit hook as Haute's, which ``haute init`` replaces; a
+#: hook without it is the team's own, which it leaves as it is.
+PRE_COMMIT_HOOK_MARK = "# Haute pre-commit hook"
 
 
 def pre_commit_hook() -> str:
     """Generate a Git pre-commit hook that auto-formats with ruff."""
-    return """\
+    return f"""\
 #!/bin/sh
-# Haute pre-commit hook - auto-format staged Python files with ruff.
+{PRE_COMMIT_HOOK_MARK} - auto-format staged Python files with ruff.
 # Installed by `haute init`. To reinstall: cp .githooks/pre-commit .git/hooks/
 
 FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.py')

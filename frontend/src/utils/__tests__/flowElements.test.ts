@@ -4,7 +4,6 @@ import {
   appEdge,
   appNode,
   deselectNodes,
-  edgeId,
   nodeLabel,
   selectOnlyNode,
 } from "../flowElements"
@@ -41,13 +40,12 @@ describe("flowElements", () => {
     expect(() => nodeLabel("unknown" as never, "mystery")).toThrow("Unknown node type")
   })
 
-  it("creates deterministic edge ids and normalized edge handle fields", () => {
-    expect(edgeId("source", "target", "in", "out")).toBe("e_source_target_in_out")
-    expect(appEdge({ source: "source", target: "target" })).toEqual({
-      id: "e_source_target_default_default",
-      source: "source",
-      target: "target",
-      sourceHandle: null,
+  it("mints each edge's id from its identity and normalizes absent handles", () => {
+    expect(appEdge({ source: "quote", target: "price", sourceHandle: "policy" })).toEqual({
+      id: "e-quote-price-policy",
+      source: "quote",
+      target: "price",
+      sourceHandle: "policy",
       targetHandle: null,
     })
   })

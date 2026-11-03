@@ -12,6 +12,7 @@ import type {
 } from "../../api/types"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
+  documentExecutionKey,
   isDocumentExecutionFenceCurrent,
   type DocumentExecutionFence,
 } from "../../stores/useDocumentStatusStore"
@@ -24,7 +25,7 @@ import {
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { apiErrorMessage } from "../../api/errors"
-import type { OnUpdateConfigResult } from "../editors"
+import type { OnUpdateConfigResult } from "../editors/_shared"
 
 const POLL_INTERVAL_MS = 1_000
 
@@ -196,16 +197,11 @@ export type UseOptimiserAutoRangeOptions = {
   writeRanges: (ranges: Record<string, FrontierRange>) => OnUpdateConfigResult
 }
 
-function documentScopeKey(state: ReturnType<typeof useDocumentStatusStore.getState>): string {
-  return JSON.stringify([
-    state.sourceFile,
-    state.sourceRevision,
-    state.loadStatus,
-    state.capabilities?.can_execute === true,
-    state.graphSynchronized,
-  ])
-}
-
+/**
+ * A run's scope, as the solve's fence: the node, the structural version and
+ * the document's execution identity. A save, which advances only the source
+ * revision, never retires a run.
+ */
 function autoRangeScopeKey(
   nodeId: string,
   graphVersion: number,
@@ -226,7 +222,7 @@ export function useOptimiserAutoRange({
 }: UseOptimiserAutoRangeOptions) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const graphVersion = useGraphStore((current) => current.structuralVersion)
-  const currentDocumentKey = useDocumentStatusStore(documentScopeKey)
+  const currentDocumentKey = useDocumentStatusStore(documentExecutionKey)
   const scopeKey = autoRangeScopeKey(nodeId, graphVersion, currentDocumentKey)
   const generationRef = useRef(0)
   const activeRef = useRef<ActiveRun | null>(null)
@@ -330,7 +326,7 @@ export function useOptimiserAutoRange({
       const publishedScopeKey = autoRangeScopeKey(
         nodeId,
         useGraphStore.getState().structuralVersion,
-        documentScopeKey(useDocumentStatusStore.getState()),
+        documentExecutionKey(useDocumentStatusStore.getState()),
       )
       dispatch({
         type: "completed",

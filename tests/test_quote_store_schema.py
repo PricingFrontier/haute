@@ -1,7 +1,7 @@
 """The quote store's tables, derived from the form (specs/workbench): each schema table a SQL
 table of its name and its columns' types, keyed by the quote's identity and, in a many-row
-table, by ``quote_row``, with the store's own columns on ``quote_details`` and Haute's two
-tables beside them."""
+table, by ``quote_row``, with the store's own columns on ``quote_details`` and Haute's
+activity beside them."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from haute._quote_store._schema import (
     ACTIVITY_TABLE,
     STORE_COLUMN_NAMES,
     STORE_COLUMNS,
-    STORE_TABLE,
     store_columns,
     store_schema,
     structure,
@@ -119,7 +118,15 @@ def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> N
             "quote_details.quote_reference",
             "quote_details.quote_option",
         ]
-    assert schema.store.name == STORE_TABLE and schema.activity.name == ACTIVITY_TABLE
+    # Beside the form's tables, Haute's activity alone: nothing records the tables' shape.
+    assert schema.activity.name == ACTIVITY_TABLE
+    assert set(schema.metadata.tables) == {
+        "quote_details",
+        "policy",
+        "vehicles",
+        "premium",
+        ACTIVITY_TABLE,
+    }
 
 
 def test_quote_details_holds_the_forms_columns_then_the_stores_own() -> None:

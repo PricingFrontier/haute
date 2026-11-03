@@ -11,9 +11,16 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from haute._scaffold import (
+    app_env_example,
+    connection_variables,
+    pre_commit_hook,
+    workbench_ci_files,
+)
 from haute._workbench_form import blank_form
 from haute.cli import cli
 from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
+from tests._git_helpers import git_run
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -40,14 +47,27 @@ class TestInitCreatesProjectStructure:
         content = (tmp_path / "haute.toml").read_text()
         assert "[project]" in content
 
-    def test_haute_toml_already_exists_exits_with_error(
+    def test_a_new_project_keeps_the_starter_files_already_there(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        # A folder with no haute.toml is a new project, but a pipeline or test already in it
+        # is the team's: never a blank starter in its place.
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text('[project]\nname = "existing"\n')
-        result = runner.invoke(cli, ["init"])
-        assert result.exit_code == 1
-        assert "already" in result.output.lower()
+        pipeline = tmp_path / "rating" / "main.py"
+        pipeline.parent.mkdir()
+        pipeline.write_bytes(b"import haute\n\npipeline = haute.Pipeline('mine')\n")
+        test = tmp_path / "tests" / "test_pipeline.py"
+        test.parent.mkdir()
+        test.write_bytes(b"def test_mine():\n    pass\n")
+
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert pipeline.read_bytes() == b"import haute\n\npipeline = haute.Pipeline('mine')\n"
+        assert test.read_bytes() == b"def test_mine():\n    pass\n"
+        assert (tmp_path / "rating" / "utility" / "features.py").is_file()
+        assert (tmp_path / "tests" / "quotes" / "example.json").is_file()
+        assert "Already there, so kept: rating/main.py, tests/test_pipeline.py" in result.output
 
     def test_creates_data_directory(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -161,6 +181,19 @@ class TestInitCreatesProjectStructure:
         # quotes parse before the analyst replaces them.
         assert load_test_quote_file(quote_file) == [{"id": 1, "field_a": "value", "field_b": 42}]
 
+    def test_a_workbench_project_starts_with_no_test_quotes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A workbench's test quotes are saved from Preview, the folder made by the first."""
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(
+            cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / "tests" / "quotes").exists()
+        assert (tmp_path / "tests" / "test_pipeline.py").is_file()
+
     def test_creates_env_example(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -241,6 +274,36 @@ class TestInitCreatesProjectStructure:
         assert installed.exists()
         assert "ruff format" in installed.read_text()
 
+    def test_a_git_hook_of_the_teams_own_is_kept_and_named(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        hooks = tmp_path / ".git" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "pre-commit").write_bytes(b"#!/bin/sh\nnpx lint-staged\n")
+
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert (hooks / "pre-commit").read_bytes() == b"#!/bin/sh\nnpx lint-staged\n"
+        assert ".git/hooks/pre-commit is not Haute's" in result.output
+        assert "(installed)" not in result.output
+        assert (tmp_path / ".githooks" / "pre-commit").read_text() == pre_commit_hook()
+
+    def test_an_older_haute_hook_is_replaced(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        hooks = tmp_path / ".git" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "pre-commit").write_text("#!/bin/sh\n# Haute pre-commit hook - black\nblack .\n")
+
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert (hooks / "pre-commit").read_text() == pre_commit_hook()
+        assert "not Haute's" not in result.output
+
     def test_no_git_hooks_install_without_git_dir(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -253,7 +316,7 @@ class TestInitCreatesProjectStructure:
     ):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "main.py").write_text("print('hello from uv init')\n")
-        result = runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / "main.py").exists()
         assert "removed root main.py" in result.output.lower()
         assert (tmp_path / "rating" / "main.py").exists()
@@ -530,6 +593,68 @@ class TestEnsureHauteDependency:
         content = pyproject.read_text()
         assert content.count('"haute"') == 1
 
+    @pytest.mark.parametrize(
+        "pyproject_text",
+        [
+            None,
+            '[project]\nname = "foo"\ndependencies = [\n    "polars",\n]\n',
+            '[project]\nname = "foo"\n',
+            'project.dependencies = ["polars"]\n',
+            "[tool.ruff]\nline-length = 100\n",
+        ],
+        ids=["no-file", "dependencies", "no-dependencies-key", "dotted", "no-project-table"],
+    )
+    def test_adds_the_requirement_it_is_given(self, tmp_path: Path, pyproject_text: str | None):
+        # A workbench project's haute comes with its quote store's driver.
+        pyproject = tmp_path / "pyproject.toml"
+        if pyproject_text is not None:
+            pyproject.write_text(pyproject_text)
+        _ensure_haute_dependency(pyproject, "foo", "haute[postgresql]")
+        with open(pyproject, "rb") as fh:
+            dependencies = tomllib.load(fh)["project"]["dependencies"]
+        assert dependencies[0] == "haute[postgresql]"
+        assert dependencies.count("haute[postgresql]") == 1
+
+    @pytest.mark.parametrize(
+        ("listed", "gains"),
+        [
+            ("haute>=1", "haute[azure,sqlserver]>=1"),
+            (
+                "haute[databricks]>=1; python_version >= '3.11'",
+                'haute[azure,databricks,sqlserver]>=1; python_version >= "3.11"',
+            ),
+            ("haute[postgresql,azure]", "haute[azure,postgresql,sqlserver]"),
+        ],
+        ids=["version", "other-extra-and-marker", "the-other-database"],
+    )
+    @pytest.mark.parametrize(
+        "layout",
+        ['[project]\nname = "foo"\ndependencies = [{deps}]\n', "project.dependencies = [{deps}]\n"],
+        ids=["table", "dotted"],
+    )
+    def test_gives_a_haute_requirement_already_there_the_extras_it_lacks(
+        self, tmp_path: Path, layout: str, listed: str, gains: str
+    ):
+        # A project set up again as a workbench: its haute keeps its version, marker and other
+        # extras, and none is taken away.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(layout.format(deps=f'"polars", {_toml_basic_string(listed)}'))
+        assert _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
+        with open(pyproject, "rb") as fh:
+            assert tomllib.load(fh)["project"]["dependencies"] == ["polars", gains]
+
+    def test_a_haute_requirement_with_the_extras_leaves_the_file_as_it_was(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        text = (
+            '[project]\nname = "foo"\ndependencies = ["polars", "haute[sqlserver, azure] >= 1"]\n'
+            "\n[dependency-groups]\ndev = []\n\n[tool.mypy]\nstrict = true\n"
+        )
+        pyproject.write_bytes(text.encode("utf-8"))
+        assert not _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
+        # An automated project's plain haute takes no extra away either.
+        assert not _ensure_haute_dependency(pyproject, "foo")
+        assert pyproject.read_bytes() == text.encode("utf-8")
+
     def test_adds_dependency_groups_dev_section(self, tmp_path: Path):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nname = "foo"\nversion = "0.1.0"\ndependencies = []\n')
@@ -763,39 +888,208 @@ class TestEnsureHauteDependencyTomlSafety:
         with pytest.raises(ValueError, match="array-of-tables"):
             _ensure_haute_dependency(pyproject, "foo")
 
+    def test_haute_where_its_extras_cannot_be_added_raises_naming_them(self, tmp_path: Path):
+        # An inline [project] table has no array to rewrite: the extras are named for the
+        # analyst to add, and the file is left as it was.
+        pyproject = tmp_path / "pyproject.toml"
+        text = 'project = { name = "foo", dependencies = ["haute>=1"] }\n'
+        pyproject.write_text(text, encoding="utf-8")
+        with pytest.raises(ValueError, match="add the azure, sqlserver extras to it yourself"):
+            _ensure_haute_dependency(pyproject, "foo", "haute[sqlserver,azure]")
+        assert pyproject.read_text(encoding="utf-8") == text
 
-class TestInitForceReinit:
-    def test_force_reinit_prunes_stale_github_ci_files(
+
+def _own_files(project_dir: Path) -> dict[Path, bytes]:
+    """The project's own files, which a re-run never writes: rating/ (but the workbench's
+    form folder) and tests/."""
+    return {
+        path: path.read_bytes()
+        for folder in ("rating", "tests")
+        for path in (project_dir / folder).rglob("*")
+        if path.is_file() and "workbench" not in path.relative_to(project_dir).parts
+    }
+
+
+class TestInitAgain:
+    """``haute init`` in a project that already has a haute.toml sets it up again: its current
+    answers the defaults, haute.toml written afresh, the workflows, .env.example and the hook
+    again, and nothing written in rating/ or tests/ (specs/cli)."""
+
+    def test_the_project_is_left_and_haute_toml_written_afresh(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        # F228: switching CI provider on --force must remove the previously
+        monkeypatch.chdir(tmp_path)
+        first = runner.invoke(cli, ["init", "--target", "container"], catch_exceptions=False)
+        assert first.exit_code == 0, first.output
+        # The analyst's work: an edited pipeline, a utility module and the example quote taken
+        # out, a quote of their own.
+        (tmp_path / "rating" / "main.py").write_text(
+            "import haute\n\npipeline = haute.Pipeline('x')\n"
+        )
+        (tmp_path / "rating" / "utility" / "features.py").unlink()
+        (tmp_path / "tests" / "quotes" / "example.json").unlink()
+        (tmp_path / "tests" / "quotes" / "renewal.json").write_text("{}\n")
+        own = _own_files(tmp_path)
+        # haute.toml as the team has it: the name its endpoint has, a registry, and the app's
+        # MLflow settings.
+        toml = tmp_path / "haute.toml"
+        edited = re.sub(r'(?m)^name = ".*"$', 'name = "motor_pricing"', toml.read_text(), count=1)
+        edited = edited.replace('registry = ""', 'registry = "acr.example.io/pricing"')
+        toml.write_text(edited + '\n[mlflow]\ntracking_uri = "databricks"\n')
+
+        result = runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert _own_files(tmp_path) == own
+        with open(toml, "rb") as fh:
+            doc = tomllib.load(fh)
+        # Afresh from the answers, the target the project's own: what was set by hand is gone,
+        # the name kept.
+        assert doc["project"]["name"] == doc["deploy"]["endpoint_name"] == "motor_pricing"
+        assert (doc["deploy"]["target"], doc["ci"]["provider"]) == ("container", "gitlab")
+        assert doc["deploy"]["container"]["registry"] == ""
+        assert "mlflow" not in doc
+        # The previous provider's workflows pruned.
+        assert (tmp_path / ".gitlab-ci.yml").is_file()
+        assert not (tmp_path / ".github").exists()
+        for reported in (
+            "Set up Haute project 'motor_pricing' again (container + gitlab)",
+            "  written    haute.toml",
+            "  unchanged  pyproject.toml",
+            "  unchanged  .env.example",
+            "  written    .gitlab-ci.yml",
+            "  removed    .github/workflows/ci.yml",
+            "rating/ and tests/ are left as they are.",
+            "git diff haute.toml",
+            "[mlflow]",
+        ):
+            assert reported in result.output
+        assert "Replace the pipeline's" not in result.output
+
+    def test_at_a_terminal_enter_keeps_the_projects_answers(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.cli._init_cmd
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--target", "aws-ecs", "--ci", "azure-devops"])
+        monkeypatch.setattr(haute.cli._init_cmd, "_at_terminal", lambda: True)
+
+        result = runner.invoke(cli, ["init"], input="\n\n\n", catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        # Azure DevOps is the third repository and AWS ECS the fourth target.
+        assert "  4. None\nChoose [3]:" in result.output
+        assert "  5. GCP Cloud Run (build and push only)\nChoose [4]:" in result.output
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            doc = tomllib.load(fh)
+        assert (doc["deploy"]["target"], doc["ci"]["provider"]) == ("aws-ecs", "azure-devops")
+
+    @pytest.mark.parametrize(
+        "toml_text",
+        [
+            '[project]\nname = "x"\n\n[deploy]\ntarget = "container"\n',
+            '[project]\nname = "x"\n\n[deploy]\ntarget = "container"\n\n'
+            '[ci]\nprovider = "bitbucket"\n',
+        ],
+        ids=["none", "one-not-offered"],
+    )
+    def test_without_a_terminal_a_question_the_project_holds_no_answer_to_is_refused(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml_text: str
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text(toml_text)
+        before = _files(tmp_path)
+
+        refused = runner.invoke(cli, ["init"])
+
+        assert refused.exit_code == 2
+        assert "--ci" in refused.output
+        assert _files(tmp_path) == before
+        # Given the provider, the rest is the project's own: its target kept.
+        result = runner.invoke(cli, ["init", "--ci", "none"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            assert tomllib.load(fh)["deploy"]["target"] == "container"
+
+    def test_a_re_run_prunes_stale_github_ci_files(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # F228: switching CI provider on a re-run must remove the previously
         # generated provider's CI artifacts.
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
         assert (tmp_path / ".github" / "workflows" / "ci.yml").exists()
 
-        result = runner.invoke(cli, ["init", "--ci", "gitlab", "--force"], catch_exceptions=False)
+        result = runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".gitlab-ci.yml").exists()
         assert not (tmp_path / ".github").exists()
 
-    def test_force_reinit_prunes_stale_gitlab_and_azure_files(
+    def test_a_re_run_records_the_new_files_it_writes_for_the_next_commit(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Commit takes a new file only in the pipeline folder: a workflow the re-run adds
+        # would otherwise never reach version history.
+        from haute._git_setup import set_working_branch
+
+        monkeypatch.chdir(tmp_path)
+        assert runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False).exit_code == 0
+        git_run(tmp_path, "init", "-b", "main")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-m", "The project")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        result = runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert ".gitlab-ci.yml" in saved.splitlines()
+        # haute.toml, rewritten, is left for review against the previous version.
+        assert "haute.toml" not in saved.splitlines()
+        assert git_run(tmp_path, "status", "--porcelain", "--", "haute.toml") == "M haute.toml"
+        assert "Recorded in version history: .gitlab-ci.yml" in result.output
+
+    def test_a_re_run_prunes_stale_gitlab_and_azure_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
-        runner.invoke(cli, ["init", "--ci", "azure-devops", "--force"], catch_exceptions=False)
+        runner.invoke(cli, ["init", "--ci", "azure-devops"], catch_exceptions=False)
         assert (tmp_path / "azure-pipelines.yml").exists()
         assert not (tmp_path / ".gitlab-ci.yml").exists()
 
-        runner.invoke(cli, ["init", "--ci", "none", "--force"], catch_exceptions=False)
+        runner.invoke(cli, ["init", "--ci", "none"], catch_exceptions=False)
         assert not (tmp_path / "azure-pipelines.yml").exists()
         assert not (tmp_path / ".gitlab-ci.yml").exists()
         assert not (tmp_path / ".github").exists()
 
+    def test_a_new_project_prunes_no_workflow_of_the_teams(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A first init in a repository that already runs GitLab CI: the file is the team's.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitlab-ci.yml").write_bytes(b"test:\n  script: make test\n")
+
+        result = runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".gitlab-ci.yml").read_bytes() == b"test:\n  script: make test\n"
+
+
+#: The flags that answer a workbench project's questions without a terminal.
+WORKBENCH = ["--workbench", "--store", "sqlserver", "--sign-in", "password"]
+
+
+def _files(project_dir: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in project_dir.rglob("*") if path.is_file()}
+
 
 class TestInitWorkbench:
-    """``haute init --workbench`` switches the project's workbench on (specs/workbench)."""
+    """A workbench ``haute init`` makes a project that hosts no scoring API: its haute.toml,
+    form, connections and workflows serve the underwriter app (specs/workbench)."""
 
     def _form(self, project_dir: Path) -> Any:
         from haute._workbench_config import read_workbench_config
@@ -803,18 +1097,87 @@ class TestInitWorkbench:
 
         return read_form_document(read_workbench_config(project_dir))
 
-    def test_writes_the_table_and_a_blank_form_folder_and_reports_both(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("store", "sign_in", "variables"),
+        [
+            ("sqlserver", "password", ["USERNAME", "PASSWORD"]),
+            ("sqlserver", "entra", []),
+            ("postgresql", "entra", ["USERNAME"]),
+            (
+                "postgresql",
+                "service-principal",
+                ["TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "USERNAME"],
+            ),
+        ],
+    )
+    def test_writes_the_workbench_project_and_reports_it(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        store: str,
+        sign_in: str,
+        variables: list[str],
     ):
+        from haute._connections import read_connections
+        from haute._workbench_config import read_workbench_config
+        from haute.deploy._config import DeployConfig
+
         project_dir = tmp_path / "motor"
         project_dir.mkdir()
         monkeypatch.chdir(project_dir)
-        result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        result = runner.invoke(
+            cli,
+            ["init", "--workbench", "--store", store, "--sign-in", sign_in],
+            catch_exceptions=False,
+        )
         assert result.exit_code == 0, result.output
 
         with open(project_dir / "haute.toml", "rb") as fh:
             doc = tomllib.load(fh)
-        assert doc["workbench"] == {"enabled": True}
+        # No scoring API: [deploy] holds the app's image alone, and no endpoint's checks.
+        assert set(doc["deploy"]) == {"container"}
+        assert set(doc["deploy"]["container"]) == {"registry", "port", "base_image"}
+        assert "safety" not in doc and "staging" not in doc["ci"]
+        # The workbench as its own reader reads it: the host, and dev, staging and prod on the
+        # one database, each signed in to by the app's managed identity.
+        config = read_workbench_config(project_dir)
+        assert config.enabled and config.app_host == "azure-container-apps"
+        # Each hosted environment's Container App, left for IT to name.
+        assert [
+            (each.name, each.resource_group, each.container_app) for each in config.app_environments
+        ] == [
+            ("staging", "", ""),
+            ("prod", "", ""),
+        ]
+        assert [(env.name, env.provider, env.auth) for env in config.store] == [
+            (name, store, "managed-identity") for name in ("dev", "staging", "prod")
+        ]
+        role = {"username_env": "HAUTE_STORE_USERNAME"} if store == "postgresql" else {}
+        assert all(dict(env.variables) == role for env in config.store)
+        DeployConfig.from_toml(project_dir / "haute.toml")
+        # The analyst's sign-in in connections.toml, each environment naming its own variables,
+        # which .env.example names beside the host's credentials.
+        connections = read_connections(project_dir)
+        assert list(connections) == ["dev", "staging", "prod"]
+        for name, connection in connections.items():
+            assert (connection.provider, connection.auth) == (store, sign_in)
+            assert sorted(connection.variables.values()) == sorted(
+                f"HAUTE_{name.upper()}_{key}" for key in variables
+            )
+        env = (project_dir / ".env.example").read_text(encoding="utf-8")
+        assert env == app_env_example("azure-container-apps", connection_variables(project_dir))
+        assert "AZURE_CLIENT_SECRET=" in env and "DATABRICKS" not in env
+        # The release installs the store's driver: haute comes with its extra.
+        with open(project_dir / "pyproject.toml", "rb") as fh:
+            assert tomllib.load(fh)["project"]["dependencies"] == [f"haute[{store},azure]"]
+        # The workbench's workflows, and no endpoint's.
+        workflows = project_dir / ".github" / "workflows"
+        assert sorted(path.name for path in workflows.iterdir()) == [
+            "ci.yml",
+            "release-production.yml",
+            "release.yml",
+        ]
         folder = project_dir / "rating" / "workbench"
         assert sorted(
             path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()
@@ -827,17 +1190,49 @@ class TestInitWorkbench:
         # Written as the folder's own saves write them: LF, so a first save rewrites nothing.
         assert b"\r\n" not in (folder / "form.json").read_bytes()
         assert self._form(project_dir).spec == blank_form("motor")
-        assert "rating/workbench/" in result.output
-        assert "workbench config" in result.output
+        for reported in (
+            "rating/workbench/",
+            "connections.toml",
+            "workbench config",
+            "release.yml",
+        ):
+            assert reported in result.output
+        assert "workbench on azure-container-apps + github" in result.output
+        assert "Before the first release, github needs these CI secrets" in result.output
+
+    @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
+    def test_the_workflows_publish_the_app_and_deploy_no_endpoint(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ci: str
+    ):
+        import yaml
+
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init", *WORKBENCH, "--ci", ci], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+        generated = workbench_ci_files("azure-container-apps", ci, python_version="3.11")
+        text = ""
+        for relative, content in generated.items():
+            written = (tmp_path / relative).read_text(encoding="utf-8")
+            assert written == content
+            yaml.safe_load(written)
+            text += written
+        assert "uv run haute app build\n" in text
+        assert "uv run haute app build --push" in text
+        assert "haute ci registry-host" in text and "$AZURE_CLIENT_SECRET" in text
+        for endpoint in ("haute deploy", "haute smoke", "haute impact"):
+            assert endpoint not in text
+        assert "uv run haute app rollout staging --image" in text
+        assert "uv run haute app rollout prod --from staging" in text
 
     @pytest.mark.parametrize(
         ("ci", "workflow", "entry"),
         [
-            ("github", ".github/workflows/deploy-staging.yml", '- "rating/**"'),
+            ("github", ".github/workflows/release.yml", '- "rating/**"'),
             ("azure-devops", "azure-pipelines.yml", "- rating/"),
         ],
     )
-    def test_a_form_change_starts_the_generated_deploy_through_the_pipeline_folder(
+    def test_a_form_change_starts_the_release_through_the_pipeline_folder(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -848,12 +1243,12 @@ class TestInitWorkbench:
     ):
         # The form folder is in the pipeline folder, whose trigger the workflow always has.
         monkeypatch.chdir(tmp_path)
-        runner.invoke(cli, ["init", "--workbench", "--ci", ci], catch_exceptions=False)
+        runner.invoke(cli, ["init", *WORKBENCH, "--ci", ci], catch_exceptions=False)
         text = (tmp_path / workflow).read_text(encoding="utf-8")
         assert entry in text
         assert "forms" not in text
 
-    def test_a_plain_init_writes_neither(
+    def test_a_plain_init_writes_none_of_it(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
@@ -864,107 +1259,207 @@ class TestInitWorkbench:
             assert "workbench" not in tomllib.load(fh)
         assert not (tmp_path / "rating" / "workbench").exists()
         assert "rating/workbench/" not in result.output
+        assert not (tmp_path / "connections.toml").exists()
+        assert not (tmp_path / ".github" / "workflows" / "release.yml").exists()
+        assert "HAUTE_DEV_" not in (tmp_path / ".env.example").read_text(encoding="utf-8")
 
-    def test_force_reinit_keeps_the_table_only_when_asked_again_and_the_form_always(
+    def test_a_re_run_switches_the_kind_of_project_keeping_the_form_and_connections(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
-        runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+        workflows = tmp_path / ".github" / "workflows"
+        runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+        pipeline = tmp_path / "rating" / "main.py"
+        pipeline.write_text("import haute\n\npipeline = haute.Pipeline('x')\n# priced\n")
+        own = _own_files(tmp_path)
         index = tmp_path / "rating" / "workbench" / "form.json"
         index.write_bytes(index.read_bytes().replace(b'"name": "', b'"name": "edited '))
         edited = index.read_bytes()
+        # The team's connections, filled in and one of them signing in another way.
+        connections = tmp_path / "connections.toml"
+        connections.write_text(
+            '[dev]\nprovider = "sqlserver"\nserver = "tcp:dev.example.net,1433"\n'
+            'database = "pricing_dev"\nauth = "password"\nusername_env = "DEV_USER"\n'
+            'password_env = "DEV_PASSWORD"\n',
+            encoding="utf-8",
+        )
+        filled = connections.read_bytes()
 
-        # haute.toml is rewritten wholesale, so the table goes unless --workbench is repeated;
-        # the form folder is the analyst's form and is never replaced by a blank one.
-        runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
+        # Set up again as an automated project: haute.toml and the workflows are its, while
+        # the form folder is the analyst's form and connections.toml the team's, and neither
+        # is ever replaced by a blank one: .env.example names what the connections read.
+        # The workbench has no deploy target: the other kind of project's question has no
+        # default, so it is answered.
+        automated = runner.invoke(
+            cli, ["init", "--automated", "--target", "databricks"], catch_exceptions=False
+        )
+        assert automated.exit_code == 0, automated.output
+        assert "Replace the pipeline's Workbench Input and Workbench Output" in automated.output
+        assert _own_files(tmp_path) == own
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert "workbench" not in tomllib.load(fh)
+        # The workbench's extras stay: none is taken away.
+        with open(tmp_path / "pyproject.toml", "rb") as fh:
+            assert tomllib.load(fh)["project"]["dependencies"] == ["haute[sqlserver,azure]"]
+        assert sorted(path.name for path in workflows.iterdir()) == [
+            "ci.yml",
+            "deploy-production.yml",
+            "deploy-staging.yml",
+        ]
         assert index.read_bytes() == edited
+        assert connections.read_bytes() == filled
+        env = (tmp_path / ".env.example").read_text(encoding="utf-8")
+        assert "DEV_USER=\nDEV_PASSWORD=\n" in env and "HAUTE_DEV_USERNAME" not in env
 
-        runner.invoke(cli, ["init", "--force", "--workbench"], catch_exceptions=False)
+        # And as a workbench project again: the endpoint's workflows go.
+        again = runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+        assert "Replace the pipeline's Quote Input and Quote Response" in again.output
+        assert _own_files(tmp_path) == own
         with open(tmp_path / "haute.toml", "rb") as fh:
             assert tomllib.load(fh)["workbench"]["enabled"] is True
+        assert sorted(path.name for path in workflows.iterdir()) == [
+            "ci.yml",
+            "release-production.yml",
+            "release.yml",
+        ]
+        assert "haute app build" in (workflows / "ci.yml").read_text(encoding="utf-8")
         assert index.read_bytes() == edited
+        assert connections.read_bytes() == filled
 
-    def _existing(self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """A project initialised without a workbench, its haute.toml as init wrote it."""
-        tmp_path.mkdir(exist_ok=True)
+    def test_an_automated_project_set_up_again_as_a_workbench_keeps_its_pipeline(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute._connections import read_connections
+        from haute._workbench_config import read_workbench_config
+
         monkeypatch.chdir(tmp_path)
-        result = runner.invoke(cli, ["init"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-        return tmp_path
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "motor"\nversion = "0.1.0"\n'
+            'dependencies = [\n    "haute>=0.7",\n    "polars",\n]\n'
+        )
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        (tmp_path / "rating" / "main.py").write_text(
+            "import haute\n\npipeline = haute.Pipeline('motor')\n# priced\n"
+        )
+        own = _own_files(tmp_path)
 
-    def test_workbench_in_an_existing_project_adds_the_table_and_the_folder_alone(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        project_dir = self._existing(runner, tmp_path, monkeypatch)
-        toml_before = (project_dir / "haute.toml").read_bytes()
-        others = {
-            path: path.read_bytes()
-            for path in project_dir.rglob("*")
-            if path.is_file() and path.name != "haute.toml"
+        result = runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert _own_files(tmp_path) == own
+        assert read_workbench_config(tmp_path).enabled
+        assert self._form(tmp_path).spec == blank_form("motor")
+        assert {(c.provider, c.auth) for c in read_connections(tmp_path).values()} == {
+            ("sqlserver", "password")
         }
+        # Its haute gains the workbench's extras, keeping its version.
+        with open(pyproject, "rb") as fh:
+            assert tomllib.load(fh)["project"]["dependencies"] == [
+                "haute[azure,sqlserver]>=0.7",
+                "polars",
+            ]
+        for reported in (
+            "  updated    pyproject.toml",
+            "  updated    .github/workflows/ci.yml",
+            "  written    .github/workflows/release.yml",
+            "  removed    .github/workflows/deploy-staging.yml",
+            "  written    rating/workbench/ (the blank form)",
+            "  written    connections.toml",
+            "Replace the pipeline's Quote Input and Quote Response, if it has them, by a "
+            "Workbench Input and a Workbench Output.",
+            "uv sync",
+        ):
+            assert reported in result.output
 
-        result = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
+    def test_a_re_run_on_the_other_database_writes_connections_afresh(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from haute._connections import read_connections
+        from haute._workbench_config import read_workbench_config
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+
+        # Without a terminal the sign-in is the project's own: password.
+        result = runner.invoke(cli, ["init", "--store", "postgresql"], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
-        toml_after = (project_dir / "haute.toml").read_bytes()
-        assert toml_after.startswith(toml_before.rstrip())
-        assert tomllib.loads(toml_after.decode("utf-8"))["workbench"] == {"enabled": True}
-        assert self._form(project_dir).revision
-        # Nothing else of the project was touched.
+        assert {(c.provider, c.auth) for c in read_connections(tmp_path).values()} == {
+            ("postgresql", "password")
+        }
+        assert {env.provider for env in read_workbench_config(tmp_path).store} == {"postgresql"}
+        assert "  written    connections.toml" in result.output
+        env = (tmp_path / ".env.example").read_text(encoding="utf-8")
+        assert env == app_env_example("azure-container-apps", connection_variables(tmp_path))
+
+    def test_a_re_run_from_sqlite_writes_connections_afresh_asking_the_sign_in(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.cli._init_cmd
+        from haute._connections import read_connections
+
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+        # A workbench whose quote store is a SQLite file, which haute init does not offer: the
+        # new haute.toml puts dev on PostgreSQL, whose store refuses a SQLite dev connection.
+        toml = tmp_path / "haute.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace(
+                'provider = "sqlserver"', 'provider = "sqlite"'
+            ),
+            encoding="utf-8",
+        )
+        connections = tmp_path / "connections.toml"
+        connections.write_text(
+            '[dev]\nprovider = "sqlite"\ndatabase = "data/quotes.db"\n', encoding="utf-8"
+        )
+        before = _files(tmp_path)
+
+        # No server connection to take the sign-in from: without a terminal it is named.
+        refused = runner.invoke(cli, ["init", "--store", "postgresql"])
+        assert refused.exit_code == 2
+        assert "--sign-in" in refused.output
+        assert _files(tmp_path) == before
+
+        monkeypatch.setattr(haute.cli._init_cmd, "_at_terminal", lambda: True)
+        # A workbench, GitHub and the one host by Enter; Microsoft Entra ID picked.
+        result = runner.invoke(
+            cli, ["init", "--store", "postgresql"], input="\n\n\n2\n", catch_exceptions=False
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "How do you sign in to it?" in result.output
         assert {
-            path: path.read_bytes()
-            for path in project_dir.rglob("*")
-            if path.is_file()
-            and path.name != "haute.toml"
-            and "workbench" not in path.relative_to(project_dir).parts
-        } == others
+            (name, each.provider, each.auth) for name, each in read_connections(tmp_path).items()
+        } == {(name, "postgresql", "entra") for name in ("dev", "staging", "prod")}
+        assert "  written    connections.toml" in result.output
 
-        again = runner.invoke(cli, ["init", "--workbench"])
-        assert again.exit_code == 1
-        assert "already has a [workbench] table" in again.output
-
-    def test_workbench_in_an_existing_project_refuses_a_folder_already_there(
+    def test_at_a_terminal_a_re_run_on_the_same_database_keeps_connections_unasked(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        project_dir = self._existing(runner, tmp_path, monkeypatch)
-        (project_dir / "rating" / "workbench").mkdir()
-        toml_before = (project_dir / "haute.toml").read_bytes()
+        import haute.cli._init_cmd
 
-        refused = runner.invoke(cli, ["init", "--workbench"])
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", *WORKBENCH], catch_exceptions=False)
+        connections = tmp_path / "connections.toml"
+        connections.write_bytes(
+            connections.read_bytes().replace(b'server = ""', b'server = "tcp:dev.example.net"', 1)
+        )
+        filled = connections.read_bytes()
+        monkeypatch.setattr(haute.cli._init_cmd, "_at_terminal", lambda: True)
 
-        assert refused.exit_code == 1
-        assert "rating/workbench is already there" in refused.output
-        assert (project_dir / "haute.toml").read_bytes() == toml_before
-        assert list((project_dir / "rating" / "workbench").iterdir()) == []
+        # Enter on each: a workbench, on GitHub, the one host, SQL Server.
+        result = runner.invoke(cli, ["init"], input="\n\n\n\n", catch_exceptions=False)
 
-    def test_workbench_in_an_existing_project_refuses_a_pipeline_folder_outside_it(
-        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        import os
+        assert result.exit_code == 0, result.output
+        assert "Workbench: an app underwriters price quotes in\nChoose [2]:" in result.output
+        assert "  2. PostgreSQL\nChoose [1]:" in result.output
+        assert "How do you sign in to it?" not in result.output
+        assert connections.read_bytes() == filled
+        assert "written    connections.toml" not in result.output
 
-        project_dir = self._existing(runner, tmp_path / "p", monkeypatch)
-        # The pipeline folder reached through a junction to somewhere outside the project:
-        # its form folder would be outside it too.
-        outside = tmp_path / "outside"
-        (project_dir / "rating").rename(outside)
-        if os.name == "nt":
-            import _winapi
-
-            _winapi.CreateJunction(str(outside), str(project_dir / "rating"))
-        else:
-            os.symlink(outside, project_dir / "rating", target_is_directory=True)
-        toml_before = (project_dir / "haute.toml").read_bytes()
-
-        refused = runner.invoke(cli, ["init", "--workbench"])
-
-        assert refused.exit_code == 1
-        assert "[project].pipeline must name a file inside the project" in refused.output
-        assert (project_dir / "haute.toml").read_bytes() == toml_before
-        assert not (outside / "workbench").exists()
-
-    def test_workbench_in_a_new_project_refuses_a_pipeline_folder_outside_it_writing_nothing(
+    def test_a_pipeline_folder_outside_the_project_is_refused_writing_nothing(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import os
@@ -983,7 +1478,7 @@ class TestInitWorkbench:
             os.symlink(outside, project_dir / "rating", target_is_directory=True)
         monkeypatch.chdir(project_dir)
 
-        refused = runner.invoke(cli, ["init", "--workbench"])
+        refused = runner.invoke(cli, ["init", *WORKBENCH])
 
         assert refused.exit_code == 1
         assert "rating/workbench/form.json is reached through a link or junction" in refused.output
@@ -991,32 +1486,210 @@ class TestInitWorkbench:
         assert [path.name for path in project_dir.iterdir()] == ["rating"]
         assert list(outside.iterdir()) == []
 
-    def test_workbench_in_an_existing_project_undoes_what_it_made_when_it_fails(
+    def test_a_connections_toml_link_is_refused_writing_nothing(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        import haute._file_ops
+        import os
 
-        project_dir = self._existing(runner, tmp_path, monkeypatch)
-        toml_before = (project_dir / "haute.toml").read_bytes()
+        project_dir = tmp_path / "p"
+        project_dir.mkdir()
+        # connections.toml a link to somewhere outside the project that is not there.
+        outside = tmp_path / "outside"
+        if os.name == "nt":
+            import _winapi
 
-        def failing_write(path: Path, data: bytes) -> None:
-            raise PermissionError(f"[Errno 13] Permission denied: {path.name}")
-
-        # The folder is written first; haute.toml, last, cannot be.
-        monkeypatch.setattr(haute._file_ops, "atomic_write_bytes", failing_write)
-        failed = runner.invoke(cli, ["init", "--workbench"])
-        monkeypatch.undo()
+            outside.mkdir()
+            _winapi.CreateJunction(str(outside), str(project_dir / "connections.toml"))
+            outside.rmdir()
+        else:
+            os.symlink(outside, project_dir / "connections.toml")
         monkeypatch.chdir(project_dir)
 
-        assert failed.exit_code == 1
-        assert "the workbench could not be added" in failed.output
-        assert (project_dir / "haute.toml").read_bytes() == toml_before
+        refused = runner.invoke(cli, ["init", *WORKBENCH])
+
+        assert refused.exit_code == 1
+        assert "connections.toml is reached through a link or junction" in refused.output
+        assert not outside.exists()
+        assert not (project_dir / "haute.toml").exists()
         assert not (project_dir / "rating" / "workbench").exists()
 
-        # A second run starts from where the first did.
-        retried = runner.invoke(cli, ["init", "--workbench"], catch_exceptions=False)
-        assert retried.exit_code == 0, retried.output
-        assert self._form(project_dir).revision
+    @pytest.mark.parametrize("flags", [WORKBENCH, []], ids=["workbench", "automated"])
+    def test_a_connections_toml_that_does_not_read_is_refused_writing_nothing(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]
+    ):
+        # The team's connections, whose variables .env.example names: never replaced or
+        # passed over when they do not read.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "connections.toml").write_text('[dev]\nprovider = "oracle"\n')
+        before = _files(tmp_path)
+
+        refused = runner.invoke(cli, ["init", *flags])
+
+        assert refused.exit_code == 1
+        assert "connections.toml [dev].provider must be one of" in refused.output
+        assert _files(tmp_path) == before
+
+
+class TestInitQuestions:
+    """At a terminal ``haute init`` asks what its flags leave out, each question a numbered
+    list; without one a question takes its default, and a workbench project's database and
+    sign-in, which have none, must be given (specs/cli)."""
+
+    @pytest.fixture
+    def at_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import haute.cli._init_cmd
+
+        monkeypatch.setattr(haute.cli._init_cmd, "_at_terminal", lambda: True)
+
+    def test_a_terminal_asks_each_question_in_turn_for_a_workbench_project(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, at_terminal: None
+    ):
+        monkeypatch.chdir(tmp_path)
+        # Workbench, Azure DevOps, the one host (Enter), then Enter on the database, which has
+        # no default and so is asked again, PostgreSQL, and Microsoft Entra ID.
+        result = runner.invoke(cli, ["init"], input="2\n3\n\n\n2\n2\n", catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        asked = [
+            "How will this project price quotes?",
+            "Where is the repository?",
+            "Where will the app run?",
+            "Which database holds the saved quotes?",
+            "How do you sign in to it?",
+        ]
+        positions = [result.output.index(question) for question in asked]
+        assert positions == sorted(positions)
+        assert "  1. Azure Container Apps\nChoose [1]:" in result.output
+        assert "Where will the API run?" not in result.output
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            doc = tomllib.load(fh)
+        assert doc["ci"]["provider"] == "azure-devops"
+        assert doc["workbench"]["app"]["host"] == "azure-container-apps"
+        assert {env["provider"] for env in doc["workbench"]["store"].values()} == {"postgresql"}
+        assert 'auth = "entra"' in (tmp_path / "connections.toml").read_text(encoding="utf-8")
+        assert (tmp_path / "azure-pipelines.yml").exists()
+
+    def test_enter_takes_each_default_for_an_automated_project(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, at_terminal: None
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init"], input="\n\n\n", catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert "Where will the API run?" in result.output
+        assert "Which database" not in result.output
+        with open(tmp_path / "haute.toml", "rb") as fh:
+            doc = tomllib.load(fh)
+        assert (doc["deploy"]["target"], doc["ci"]["provider"]) == ("databricks", "github")
+        assert "workbench" not in doc
+
+    def test_the_flags_answer_their_questions_and_the_rest_are_asked(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, at_terminal: None
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(
+            cli,
+            ["init", "--workbench", "--store", "sqlserver", "--ci", "gitlab"],
+            input="\n3\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        for answered in ("How will this project", "Where is the repository", "Which database"):
+            assert answered not in result.output
+        assert "Where will the app run?" in result.output
+        assert "How do you sign in to it?" in result.output
+        assert 'auth = "service-principal"' in (tmp_path / "connections.toml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_malformed_haute_toml_is_refused_before_any_question(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, at_terminal: None
+    ):
+        # A re-run takes the project's current answers from haute.toml: one that does not
+        # read is refused, naming the error, rather than replaced.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text('[project\nname = "x"\n', encoding="utf-8")
+        before = _files(tmp_path)
+
+        refused = runner.invoke(cli, ["init"], input="2\n")
+
+        assert refused.exit_code == 1
+        assert "haute.toml is not valid TOML" in refused.output
+        assert "How will this project" not in refused.output
+        assert _files(tmp_path) == before
+
+    def test_without_a_terminal_nothing_is_asked_and_the_defaults_are_taken(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert "How will this project" not in result.output
+        assert "(databricks + github)" in result.output
+
+    @pytest.mark.parametrize(
+        ("flags", "named"),
+        [
+            (["--workbench"], "--store"),
+            (["--workbench", "--sign-in", "entra"], "--store"),
+            (["--workbench", "--store", "postgresql"], "--sign-in"),
+            ([*WORKBENCH, "--target", "container"], "--target"),
+            (["--store", "sqlserver"], "--store"),
+            (["--automated", "--host", "azure-container-apps"], "--host"),
+            (["--target", "container", "--sign-in", "entra"], "--sign-in"),
+        ],
+        ids=[
+            "no-database",
+            "sign-in-but-no-database",
+            "no-sign-in",
+            "target-with-workbench",
+            "store-with-automated",
+            "host-with-automated",
+            "sign-in-with-automated",
+        ],
+    )
+    def test_without_a_terminal_a_missing_or_misplaced_answer_is_refused_writing_nothing(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        flags: list[str],
+        named: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        refused = runner.invoke(cli, ["init", *flags])
+
+        assert refused.exit_code == 2
+        assert named in refused.output
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_choices_are_what_the_settings_accept(self):
+        from haute._connections import CONNECTION_SIGN_INS
+        from haute._scaffold import TARGETS, WORKBENCH_STORES
+        from haute._workbench_config import APP_HOSTS, STORE_PROVIDERS
+        from haute.cli._init_cmd import (
+            _HOST_LABELS,
+            _SIGN_IN_LABELS,
+            _STORE_LABELS,
+            _TARGET_LABELS,
+            HOST_CHOICES,
+            SIGN_IN_CHOICES,
+            STORE_CHOICES,
+            TARGET_CHOICES,
+        )
+
+        assert HOST_CHOICES == tuple(sorted(APP_HOSTS)) == tuple(_HOST_LABELS)
+        # Each host's credentials are a target's, which its CI reads to publish.
+        assert set(HOST_CHOICES) <= set(TARGETS)
+        assert STORE_CHOICES == WORKBENCH_STORES == tuple(_STORE_LABELS)
+        assert set(STORE_CHOICES) <= STORE_PROVIDERS
+        assert set(SIGN_IN_CHOICES) == set(CONNECTION_SIGN_INS) == set(_SIGN_IN_LABELS)
+        # The question lists them in this order.
+        assert SIGN_IN_CHOICES == ("password", "entra", "service-principal")
+        assert TARGET_CHOICES == tuple(TARGETS) == tuple(_TARGET_LABELS)
 
 
 class TestInitCiRunsTheProjectsPython:
@@ -1046,6 +1719,7 @@ class TestInitCiRunsTheProjectsPython:
         ids=["no-pyproject", "floor", "compatible", "below-haute", "python-version-file"],
     )
     @pytest.mark.parametrize("ci_option", ["github", "gitlab", "azure-devops"])
+    @pytest.mark.parametrize("workbench", [False, True], ids=["automated", "workbench"])
     def test_every_job_pins_the_projects_python(
         self,
         runner: CliRunner,
@@ -1054,16 +1728,19 @@ class TestInitCiRunsTheProjectsPython:
         files: dict[str, str],
         expected: str,
         ci_option: str,
+        workbench: bool,
     ):
         monkeypatch.chdir(tmp_path)
         for name, content in files.items():
             (tmp_path / name).write_text(content, encoding="utf-8")
 
-        result = runner.invoke(cli, ["init", "--ci", ci_option], catch_exceptions=False)
+        kind = WORKBENCH if workbench else []
+        result = runner.invoke(cli, ["init", *kind, "--ci", ci_option], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
+        released = "release.yml" if workbench else "deploy-staging.yml"
         generated = {
-            "github": [".github/workflows/ci.yml", ".github/workflows/deploy-staging.yml"],
+            "github": [".github/workflows/ci.yml", f".github/workflows/{released}"],
             "gitlab": [".gitlab-ci.yml"],
             "azure-devops": ["azure-pipelines.yml"],
         }[ci_option]

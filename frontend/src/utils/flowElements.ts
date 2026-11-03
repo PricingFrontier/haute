@@ -1,4 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
+import { edgeId } from "./edgeIds"
 import { NODE_TYPE_META, type NodeTypeValue } from "./nodeTypes"
 
 type AppNodeParams = {
@@ -56,7 +57,7 @@ export function appEdge({
   targetHandle = null,
 }: AppEdgeParams): Edge {
   return {
-    id: edgeId(source, target, targetHandle, sourceHandle),
+    id: edgeId({ source, target, sourceHandle, targetHandle }),
     source,
     target,
     sourceHandle,
@@ -71,21 +72,6 @@ export function nodeLabel(type: NodeTypeValue, id: string): string {
   }
   const match = id.match(/(\d+)$/)
   return `${meta.name} ${match ? match[1] : id}`
-}
-
-export function edgeId(
-  source: string,
-  target: string,
-  targetHandle?: string | null,
-  sourceHandle?: string | null,
-): string {
-  return [
-    "e",
-    source,
-    target,
-    targetHandle || "default",
-    sourceHandle || "default",
-  ].join("_")
 }
 
 export function deselectNodes<T extends { selected?: boolean }>(nodes: T[]): T[] {

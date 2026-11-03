@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import SubmodelPortEditor from "../../panels/editors/SubmodelPortEditor"
-import type { SimpleNode } from "../../panels/editors"
+import type { SimpleNode } from "../../panels/editors/_shared"
+import type { PipelineNameViolation } from "../../types/pipelineDocument"
 
 afterEach(cleanup)
 
@@ -27,6 +28,34 @@ function inputBoundary(ports = [
 }
 
 describe("SubmodelPortEditor", () => {
+  it("shows the name violation each public input names, and only its definition's", () => {
+    const violation = (submodel: string, port: string): PipelineNameViolation => ({
+      kind: "support_input",
+      name: port,
+      message: `Node 'child' (submodel '${submodel}') receives an input named \`${port}\`, which \`${port}\` from \`utility.bands\` binds.`,
+      parties: [{ node_id: "child", label: "child", submodel }],
+      binding: { kind: "submodel_input", submodel, port },
+    })
+    const ports = [
+      { id: "policy", label: "policy", parentEdges: [] },
+      { id: "claims", label: "claims", parentEdges: [] },
+    ]
+    render(
+      <SubmodelPortEditor
+        node={inputBoundary(ports)}
+        inputBindingViolations={[
+          violation("definition_pricing", "claims"),
+          violation("other_definition", "policy"),
+        ]}
+      />,
+    )
+
+    expect(screen.getByTestId("submodel-port-claims-violation")).toHaveTextContent(
+      "receives an input named `claims`",
+    )
+    expect(screen.queryByTestId("submodel-port-policy-violation")).toBeNull()
+  })
+
   it("uses the standard Inputs chips to remove a public input by port id", () => {
     const onDeleteInputPort = vi.fn()
     render(

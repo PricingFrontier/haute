@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import EdgeJoinEditor from "../../panels/editors/EdgeJoinEditor"
 import { GraphProvider } from "../../panels/GraphContext"
-import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "../../panels/editors"
+import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "../../panels/editors/_shared"
 
 afterEach(cleanup)
 

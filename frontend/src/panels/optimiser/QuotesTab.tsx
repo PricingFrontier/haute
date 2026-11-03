@@ -5,18 +5,18 @@
  *
  * Sorting, the quote-id search and the filters run on the server over every
  * quote; the tab only holds the query. Each page is read through the result
- * store's `/apply` cache under its full request identity (job, frontier
- * generation, target and the canonical query), so reopening the tab or
- * returning to a page already seen makes no request, while a new job or a
- * recomputed frontier loads afresh. A response that arrives after the query or
- * target moved on is dropped. Viewing detail never consumes the result: saving
- * and logging still work.
+ * store's `/apply` cache under its full request identity (job, target and the
+ * canonical query), so reopening the tab or returning to a page already seen
+ * makes no request, while a new job loads afresh. A page is requested through
+ * `useLatestRequest`: one the query or target moved past is aborted and its
+ * reply dropped; a 409 replaced by another point's apply is reissued; a 410
+ * says the result is gone, with no Retry; anything else offers Retry. Viewing
+ * detail never consumes the result: saving and logging still work.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from "react"
-import { AlertCircle, Loader2, X } from "lucide-react"
+import { useEffect, useState, type ReactNode } from "react"
+import { Loader2, X } from "lucide-react"
 import { applyOptimiser } from "../../api/client"
-import { apiErrorMessage, apiErrorStatus } from "../../api/errors"
 import type {
   ApplyOptimiserResponse,
   OptimiserQuoteColumn,
@@ -28,13 +28,14 @@ import useNodeResultsStore, {
   type OptimiserApplyQuery,
 } from "../../stores/useNodeResultsStore"
 import { formatValue } from "../../utils/formatValue"
-import { frontierGenerationMismatch } from "./optimiserHelpers"
 import {
   SortableValuesTable,
   ValuesTableSearch,
   type SortableValuesColumn,
 } from "../SortableValuesTable"
 import { nextSort, type SortState } from "../valuesSort"
+import RequestFailureNotice from "./RequestFailureNotice"
+import { useLatestRequest, type RequestFailure } from "./useLatestRequest"
 
 /** The most rows one page holds, and the deepest row any page reaches (the server's limits). */
 const PAGE_LIMIT = 100
@@ -152,18 +153,16 @@ interface QuotesTabProps {
   nodeId: string
   jobId: string
   mode: "online" | "ratebook"
-  /** The solve's frontier generation: point indices are only meaningful within one. */
-  frontierGeneration: number
   /** The publish target: a frontier point, or null for the solved result. */
   pointIndex: number | null
 }
 
-export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, pointIndex }: QuotesTabProps) {
+export default function QuotesTab({ nodeId, jobId, mode, pointIndex }: QuotesTabProps) {
   const [query, setQuery] = useState<OptimiserApplyQuery>(DEFAULT_QUERY)
   const [searchText, setSearchText] = useState("")
   const target = pointIndex ?? "solved"
   // A new target starts at its first page (adjusted during render, so no stale page is requested).
-  const targetKey = `${jobId}:${frontierGeneration}:${target}`
+  const targetKey = `${jobId}:${target}`
   const [shownTarget, setShownTarget] = useState(targetKey)
   if (shownTarget !== targetKey) {
     setShownTarget(targetKey)
@@ -180,59 +179,29 @@ export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, poi
     return () => clearTimeout(timer)
   }, [searchText, query.quote_id_prefix])
 
-  const identity = useMemo<OptimiserApplyIdentity>(
-    () => ({ jobId, frontierGeneration, target, query }),
-    [jobId, frontierGeneration, target, query],
-  )
+  const identity: OptimiserApplyIdentity = { jobId, target, query }
   const key = optimiserApplyKey(identity)
   const cached = useNodeResultsStore((s) => s.optimiserApplyCache.find((entry) => entry.key === key))
   const recordApply = useNodeResultsStore((s) => s.recordOptimiserApply)
   const touchApply = useNodeResultsStore((s) => s.touchOptimiserApply)
-  const [failure, setFailure] = useState<{ key: string; error: string; gone: boolean } | null>(null)
   const hasCached = cached !== undefined
-  const failed = failure !== null && failure.key === key
 
   useEffect(() => {
-    if (hasCached) {
-      touchApply(key)
-      return
-    }
-    // A failed request is reissued only by Retry, which clears the failure.
-    if (failed) return
-    const controller = new AbortController()
-    applyOptimiser(
+    if (hasCached) touchApply(key)
+  }, [hasCached, key, touchApply])
+  // The store also refuses a reply whose job or target is no longer the node's.
+  const request = useLatestRequest(
+    hasCached ? null : { key, identity },
+    (wanted, signal) => applyOptimiser(
       {
-        job_id: identity.jobId,
-        ...(identity.target !== "solved" ? { point_index: identity.target } : {}),
-        ...identity.query,
+        job_id: wanted.identity.jobId,
+        ...(wanted.identity.target !== "solved" ? { point_index: wanted.identity.target } : {}),
+        ...wanted.identity.query,
       },
-      { signal: controller.signal },
-    )
-      .then((response) => {
-        // Aborted means this tab's identity (its query included) moved on; the
-        // store also refuses an identity whose job, generation or target did.
-        if (controller.signal.aborted) return
-        // The server may have recomputed the frontier after this request.
-        const mismatch = frontierGenerationMismatch(
-          response.frontier_generation,
-          identity.frontierGeneration,
-        )
-        if (mismatch) {
-          setFailure({ key, error: mismatch, gone: false })
-          return
-        }
-        recordApply(nodeId, identity, response)
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return
-        setFailure({
-          key,
-          error: apiErrorMessage(error, "The request failed."),
-          gone: apiErrorStatus(error) === 410,
-        })
-      })
-    return () => controller.abort()
-  }, [failed, hasCached, identity, key, nodeId, recordApply, touchApply])
+      { signal },
+    ),
+    (wanted, response) => recordApply(nodeId, wanted.identity, response),
+  )
 
   const applyPreset = (preset: Preset) => setQuery((current) => ({
     ...current,
@@ -302,8 +271,8 @@ export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, poi
         </div>
       )}
       <QuotesBody
-        failed={failed ? failure : null}
-        onRetry={() => setFailure(null)}
+        failure={request.failure}
+        onRetry={request.retry}
         response={cached?.response ?? null}
         targetName={targetName}
         sort={sort}
@@ -316,7 +285,7 @@ export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, poi
 }
 
 interface QuotesBodyProps {
-  failed: { error: string; gone: boolean } | null
+  failure: RequestFailure | null
   onRetry: () => void
   response: ApplyOptimiserResponse | null
   targetName: string
@@ -326,24 +295,9 @@ interface QuotesBodyProps {
   onPage: (offset: number) => void
 }
 
-function QuotesBody({ failed, onRetry, response, targetName, sort, onSort, onFilter, onPage }: QuotesBodyProps) {
-  if (failed) {
-    return (
-      <div role="alert" className="flex items-start gap-2 text-xs px-3 py-2 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-        <span className="flex-1">Per-quote detail could not be loaded: {failed.error}</span>
-        {!failed.gone && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="shrink-0 rounded px-2 py-0.5 text-[11px] font-medium"
-            style={{ border: "1px solid var(--danger-border-strong)", color: "var(--danger)" }}
-          >
-            Retry
-          </button>
-        )}
-      </div>
-    )
+function QuotesBody({ failure, onRetry, response, targetName, sort, onSort, onFilter, onPage }: QuotesBodyProps) {
+  if (failure) {
+    return <RequestFailureNotice what="Per-quote detail could not be loaded" failure={failure} onRetry={onRetry} />
   }
   if (!response) {
     return (

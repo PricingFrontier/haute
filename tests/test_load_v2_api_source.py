@@ -101,10 +101,7 @@ def test_a_standalone_shred_is_recorded_on_the_active_execution(tmp_path: Path) 
     with context.stage("load_json"):
         assert load_v2_api_source(str(data), cfg)["root"].collect().height == 2
 
-    evidence = context.metrics_payload(status="completed")["cache_proof"]
-    assert evidence["hits"] == 0
-    assert evidence["misses"] == 0
-    assert evidence["direct_fallbacks"] == 1
+    assert context.metrics_payload(status="completed")["cache_direct_fallbacks"] == 1
 
 
 def test_a_snapshot_read_is_not_a_direct_shred(tmp_path: Path) -> None:
@@ -116,7 +113,7 @@ def test_a_snapshot_read_is_not_a_direct_shred(tmp_path: Path) -> None:
     with context.stage("load_json"):
         assert _read(data, cfg)["root"].collect().height == 2
 
-    assert context.metrics_payload(status="completed")["cache_proof"]["direct_fallbacks"] == 0
+    assert context.metrics_payload(status="completed")["cache_direct_fallbacks"] == 0
 
 
 def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:

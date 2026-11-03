@@ -623,6 +623,59 @@ def test_selector_expression_recompute_facts(
     assert facts.reason == expected_reason
 
 
+@pytest.mark.parametrize(
+    ("code", "blocker"),
+    [
+        ("df = df.group_by('k').agg(pl.col('x').sum())", "group_by"),
+        ("df = df.unique()", "unique"),
+        ("df = df.with_columns(pl.col('x').sum().over('k'))", "over"),
+        ("df = df.map_batches(score)", "map_batches"),
+        ("df = df.with_columns(pl.col('x').map_elements(score))", "map_elements"),
+        # An elementwise function passes the slice (measured: 5 of 5M rows seen).
+        ("df = df.with_columns(pl.col('x').map_batches(score, is_elementwise=True))", None),
+        # A join in the same code: the analyser cannot tell which side the
+        # aggregation feeds, and the limit reaches the probe side.
+        ("df = df.join(claims.group_by('k').agg(pl.len()), on='k', how='left')", None),
+        # A limit turns a sort into a top-k and streams a join's probe side.
+        ("df = df.sort('x')", None),
+        ("df = df.join(claims, on='k', how='left')", None),
+        ("df = df.with_columns(y=pl.col('x') * 2).filter(pl.col('y') > 0)", None),
+        # What the analyser cannot classify is never a reason to share a frame.
+        ("df = helper(df)", None),
+        ("df = df.custom_method()", None),
+        ("df = (", None),
+        ("", None),
+    ],
+)
+def test_the_limit_blocker_is_a_registered_operation_a_row_limit_cannot_reach(
+    code: str, blocker: str | None
+) -> None:
+    facts = code_recompute_facts(code, frozenset({"df", "claims"}))
+    assert facts.limit_blocker == blocker
+
+
+def test_a_costly_builder_blocks_a_row_limit_only_through_its_code() -> None:
+    def model_score(node_id: str, code: str | None) -> GraphNode:
+        return GraphNode(
+            id=node_id,
+            data=NodeData(
+                label=node_id,
+                nodeType=NodeType.MODEL_SCORE,
+                config={} if code is None else {"code": code},
+            ),
+        )
+
+    nodes = {
+        "plain": model_score("plain", None),
+        "grouped": model_score("grouped", "df = df.group_by('k').agg(pl.len())"),
+    }
+    facts = recompute_facts_by_node(["plain", "grouped"], nodes, relevant_edges=())
+
+    # Scoring takes a row limit through its scan, so the model alone blocks nothing.
+    assert facts["plain"].limit_blocker is None
+    assert facts["grouped"].limit_blocker == "group_by"
+
+
 def test_costly_builder_keeps_code_full_input_work() -> None:
     nodes = {
         "ms_with_code": GraphNode(

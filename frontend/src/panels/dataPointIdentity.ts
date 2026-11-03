@@ -1,5 +1,6 @@
+import type { GlobalConstantDraft } from "../utils/globalConstants"
 import { authoredPolarsConfig } from "../utils/polarsStepInputs"
-import type { SimpleEdge, SimpleNode } from "./editors"
+import type { SimpleEdge, SimpleNode } from "./editors/_shared"
 
 type NodeDataCacheIdentityInput = {
   node: SimpleNode
@@ -7,6 +8,7 @@ type NodeDataCacheIdentityInput = {
   edges: SimpleEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
+  globalConstants?: readonly GlobalConstantDraft[]
 }
 
 function isExploreNode(node: SimpleNode): boolean {
@@ -93,7 +95,9 @@ function dataAffectingNodeIds(
  * The identity that decides when a consumer must re-ask the backend about the
  * data it reads: its upstream subgraph, its own data-affecting configuration
  * (which sets its column demand; for Banding and Rating Step, only that
- * demand), the submodels, and the preamble.
+ * demand), the submodels, the preamble, and the Global Constants. Every
+ * constant counts, not only those the subgraph reads, because the backend's
+ * signature covers the ones it reads and the browser does not work them out.
  *
  * Presentation-only Explore configuration is excluded, so choosing a pivot or
  * chart never re-asks. The backend's `point` response stays authoritative: this
@@ -106,6 +110,7 @@ export function buildNodeDataCacheIdentity({
   edges,
   submodels,
   preamble,
+  globalConstants,
 }: NodeDataCacheIdentityInput): Record<string, unknown> {
   const nodesById = new Map(allNodes.map((graphNode) => [graphNode.id, graphNode]))
   nodesById.set(node.id, node)
@@ -143,5 +148,6 @@ export function buildNodeDataCacheIdentity({
     edges: graphEdges,
     submodels: submodels ?? {},
     preamble: preamble ?? "",
+    globalConstants: globalConstants ?? [],
   }
 }

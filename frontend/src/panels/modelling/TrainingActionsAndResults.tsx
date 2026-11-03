@@ -6,6 +6,7 @@ import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import type { ExecutionMetrics } from "../../api/types"
+import { EVALUATION_PREVIEW_FAILED } from "./evaluationPreview"
 
 // The backend's bytes_per_row already includes full phase-model overhead
 // (evaluation partitions, pools, CatBoost internals, diagnostics, tuning).
@@ -44,6 +45,8 @@ export type TrainingActionsAndResultsProps = {
   ramEstimate: TrainEstimate | null
   ramEstimateLoading: boolean
   ramEstimateError?: string | null
+  /** The `error_code` the estimate was refused with, which tells a failed evaluation preview from a failed memory estimate. */
+  ramEstimateErrorCode?: string | null
   /** The estimate is waiting for the pipeline's input-snapshot build to release the budget. */
   estimateWaiting?: boolean
   rowLimit: number | null
@@ -76,6 +79,7 @@ export function TrainingActionsAndResults({
   ramEstimate,
   ramEstimateLoading,
   ramEstimateError = null,
+  ramEstimateErrorCode = null,
   estimateWaiting = false,
   rowLimit,
   nodeLabel,
@@ -175,8 +179,15 @@ export function TrainingActionsAndResults({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
           <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
           <div style={{ color: "var(--warning)" }}>
-            <p className="font-medium">{ramEstimateError.startsWith("Evaluation preview failed:") ? "Evaluation preview failed" : "Memory estimate failed"}</p>
-            <p className="mt-1 break-words">{ramEstimateError.replace(/^Evaluation preview failed:\s*/, "")}</p>
+            {ramEstimateErrorCode === EVALUATION_PREVIEW_FAILED ? (
+              // The server's message names the failed preview.
+              <p className="break-words">{ramEstimateError}</p>
+            ) : (
+              <>
+                <p className="font-medium">Memory estimate failed</p>
+                <p className="mt-1 break-words">{ramEstimateError}</p>
+              </>
+            )}
           </div>
         </div>
       )}

@@ -36,12 +36,10 @@
 // Acceptance grammar: the identifier charset and dotted-name object selector.
 // The array selector `[:]` and root are matched literally below.
 //
-// These mirror `_jsonpath.py` `_NAME` / `_DOT_NAME` exactly.
-// They are anchored (`^…`) here because they are matched against a tail slice
-// (`raw.slice(i)`) rather than via Python's `re.match(raw, i)` positional match.
+// This mirrors `_jsonpath.py` `_DOT_NAME` exactly. It is anchored (`^…`) here
+// because it is matched against a tail slice (`raw.slice(i)`) rather than via
+// Python's `re.match(raw, i)` positional match.
 
-/** Identifier charset — object key. Mirror of backend `_NAME`. */
-export const NAME = /[A-Za-z_][A-Za-z0-9_]*/
 /** Object comprehension — mirror of backend `_DOT_NAME`. */
 const DOT_NAME = /^\.([A-Za-z_][A-Za-z0-9_]*)/
 

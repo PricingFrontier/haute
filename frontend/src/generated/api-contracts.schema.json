@@ -2775,68 +2775,6 @@
       "title": "ExecutionAdmissionPayload",
       "type": "object"
     },
-    "ExecutionCacheProofMissReasonCountsPayload": {
-      "properties": {
-        "artifact_integrity_schema_failure": {
-          "minimum": 0,
-          "title": "Artifact Integrity Schema Failure",
-          "type": "integer"
-        },
-        "metadata_source_mismatch": {
-          "minimum": 0,
-          "title": "Metadata Source Mismatch",
-          "type": "integer"
-        },
-        "proof_unavailable": {
-          "minimum": 0,
-          "title": "Proof Unavailable",
-          "type": "integer"
-        },
-        "unreadable_artifact": {
-          "minimum": 0,
-          "title": "Unreadable Artifact",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "metadata_source_mismatch",
-        "artifact_integrity_schema_failure",
-        "unreadable_artifact",
-        "proof_unavailable"
-      ],
-      "title": "ExecutionCacheProofMissReasonCountsPayload",
-      "type": "object"
-    },
-    "ExecutionCacheProofPayload": {
-      "properties": {
-        "direct_fallbacks": {
-          "minimum": 0,
-          "title": "Direct Fallbacks",
-          "type": "integer"
-        },
-        "hits": {
-          "minimum": 0,
-          "title": "Hits",
-          "type": "integer"
-        },
-        "miss_reason_counts": {
-          "$ref": "#/$defs/ExecutionCacheProofMissReasonCountsPayload"
-        },
-        "misses": {
-          "minimum": 0,
-          "title": "Misses",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "hits",
-        "misses",
-        "direct_fallbacks",
-        "miss_reason_counts"
-      ],
-      "title": "ExecutionCacheProofPayload",
-      "type": "object"
-    },
     "ExecutionColumnWidthsCollectionPayload": {
       "properties": {
         "items": {
@@ -3320,19 +3258,6 @@
           ],
           "default": null
         },
-        "bytes_read": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Bytes Read"
-        },
         "bytes_written": {
           "anyOf": [
             {
@@ -3346,8 +3271,10 @@
           "default": null,
           "title": "Bytes Written"
         },
-        "cache_proof": {
-          "$ref": "#/$defs/ExecutionCacheProofPayload"
+        "cache_direct_fallbacks": {
+          "minimum": 0,
+          "title": "Cache Direct Fallbacks",
+          "type": "integer"
         },
         "cancellation_latency_ms": {
           "anyOf": [
@@ -3904,8 +3831,7 @@
         "column_widths",
         "requested_column_width_total",
         "physically_scanned_column_width_total",
-        "cache_proof",
-        "bytes_read",
+        "cache_direct_fallbacks",
         "bytes_written",
         "estimated_bytes",
         "raw_estimated_bytes",
@@ -3934,42 +3860,6 @@
     },
     "ExecutionStageMetricsPayload": {
       "properties": {
-        "bytes_read": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Bytes Read"
-        },
-        "bytes_written": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Bytes Written"
-        },
-        "columns_scanned": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Columns Scanned"
-        },
         "elapsed_ms": {
           "default": 0.0,
           "title": "Elapsed Ms",
@@ -4023,30 +3913,6 @@
           "default": "",
           "title": "Profile",
           "type": "string"
-        },
-        "rows_in": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rows In"
-        },
-        "rows_out": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rows Out"
         },
         "rss_delta_bytes": {
           "anyOf": [
@@ -4114,11 +3980,6 @@
         "rss_end_bytes",
         "rss_delta_bytes",
         "rss_peak_bytes",
-        "rows_in",
-        "rows_out",
-        "bytes_read",
-        "bytes_written",
-        "columns_scanned",
         "n_collects",
         "n_checkpoints"
       ],
@@ -11352,11 +11213,6 @@
           "title": "From Artifact",
           "type": "boolean"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "matched_row_count": {
           "minimum": 0,
           "title": "Matched Row Count",
@@ -11412,7 +11268,6 @@
         "offset",
         "preview_row_count",
         "preview_row_limit",
-        "frontier_generation",
         "error"
       ],
       "title": "OptimiserApplyResponse",
@@ -11987,31 +11842,6 @@
           "title": "Constraint Names",
           "type": "array"
         },
-        "frontier_generation": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Frontier Generation"
-        },
-        "job_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Job Id"
-        },
         "n_points": {
           "default": 0,
           "title": "N Points",
@@ -12081,9 +11911,7 @@
         "constraint_names",
         "swept_axes",
         "points_limit",
-        "points_truncated",
-        "frontier_generation",
-        "job_id"
+        "points_truncated"
       ],
       "title": "OptimiserFrontierResponse",
       "type": "object"
@@ -12194,11 +12022,6 @@
           "title": "Factor Tables",
           "type": "object"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "history": {
           "anyOf": [
             {
@@ -12296,135 +12119,10 @@
         "adjustments",
         "clamp_rate",
         "combined_factor_bounds",
-        "frontier_generation",
         "diagnostics_errors",
         "error"
       ],
       "title": "OptimiserFrontierSelectResponse",
-      "type": "object"
-    },
-    "OptimiserFrontierStatusResponse": {
-      "properties": {
-        "elapsed_seconds": {
-          "default": 0.0,
-          "title": "Elapsed Seconds",
-          "type": "number"
-        },
-        "error_code": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error Code"
-        },
-        "error_detail": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ExecutionMemoryLimitErrorPayload"
-            },
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error Detail"
-        },
-        "execution_metrics": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ExecutionMetricsPayload"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "http_status_code": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Http Status Code"
-        },
-        "message": {
-          "default": "",
-          "title": "Message",
-          "type": "string"
-        },
-        "progress": {
-          "default": 0.0,
-          "title": "Progress",
-          "type": "number"
-        },
-        "result": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/OptimiserFrontierResponse"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "status": {
-          "enum": [
-            "running",
-            "completed",
-            "error",
-            "cancelled",
-            "superseded",
-            "timed_out",
-            "memory_limited",
-            "contract_error"
-          ],
-          "title": "Status",
-          "type": "string"
-        },
-        "terminal_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Terminal Reason"
-        }
-      },
-      "required": [
-        "status",
-        "progress",
-        "message",
-        "elapsed_seconds",
-        "result",
-        "terminal_reason",
-        "error_code",
-        "http_status_code",
-        "error_detail",
-        "execution_metrics"
-      ],
-      "title": "OptimiserFrontierStatusResponse",
       "type": "object"
     },
     "OptimiserHistoryEntry": {
@@ -13093,11 +12791,6 @@
       "additionalProperties": false,
       "description": "The keys of one target ranked by their adjustment spread (OPT-V11).",
       "properties": {
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "keys": {
           "items": {
             "$ref": "#/$defs/OptimiserSegmentIndexKey"
@@ -13123,7 +12816,6 @@
       },
       "required": [
         "point_index",
-        "frontier_generation",
         "statistic",
         "keys"
       ],
@@ -13330,11 +13022,6 @@
           "title": "Diagnostics Errors",
           "type": "array"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "key": {
           "title": "Key",
           "type": "string"
@@ -13408,7 +13095,6 @@
         "weight",
         "weight_label",
         "point_index",
-        "frontier_generation",
         "n_quotes",
         "n_levels",
         "mean_scenario_value",
@@ -13579,11 +13265,6 @@
           "default": null,
           "title": "Frontier Error"
         },
-        "frontier_generation": {
-          "minimum": 0,
-          "title": "Frontier Generation",
-          "type": "integer"
-        },
         "history": {
           "anyOf": [
             {
@@ -13731,7 +13412,6 @@
         "frontier",
         "frontier_error",
         "selected_frontier_point",
-        "frontier_generation",
         "input_summary",
         "diagnostics_errors",
         "scenario_grid",
@@ -13993,8 +13673,26 @@
     },
     "PipelineNameViolation": {
       "additionalProperties": false,
-      "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name.",
+      "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name. A ``reserved_input`` or ``support_input``\nviolation whose input a frame or a public input port names carries that\n``binding``, so the editor that set it can show the violation; any other\nviolation's is ``None``.",
       "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/PipelineNameViolationFrameBinding"
+                },
+                {
+                  "$ref": "#/$defs/PipelineNameViolationPortBinding"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Binding"
+        },
         "kind": {
           "enum": [
             "duplicate",
@@ -14032,9 +13730,50 @@
         "kind",
         "name",
         "message",
-        "parties"
+        "parties",
+        "binding"
       ],
       "title": "PipelineNameViolation",
+      "type": "object"
+    },
+    "PipelineNameViolationFrameBinding": {
+      "additionalProperties": false,
+      "description": "A request input's frame, which names the input its consumers receive.",
+      "properties": {
+        "handle": {
+          "minLength": 1,
+          "title": "Handle",
+          "type": "string"
+        },
+        "kind": {
+          "const": "frame",
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "kind",
+        "node_id",
+        "handle",
+        "submodel"
+      ],
+      "title": "PipelineNameViolationFrameBinding",
       "type": "object"
     },
     "PipelineNameViolationParty": {
@@ -14069,6 +13808,34 @@
         "submodel"
       ],
       "title": "PipelineNameViolationParty",
+      "type": "object"
+    },
+    "PipelineNameViolationPortBinding": {
+      "additionalProperties": false,
+      "description": "A submodel's public input port, which names the input its targets receive.",
+      "properties": {
+        "kind": {
+          "const": "submodel_input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "port": {
+          "minLength": 1,
+          "title": "Port",
+          "type": "string"
+        },
+        "submodel": {
+          "minLength": 1,
+          "title": "Submodel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "submodel",
+        "port"
+      ],
+      "title": "PipelineNameViolationPortBinding",
       "type": "object"
     },
     "PipelineSettingsAutomatic": {
@@ -17800,6 +17567,10 @@
     "UtilityWriteResponse": {
       "description": "A written utility file, with its new revision and its save-ledger capture.",
       "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
         "git_sha": {
           "anyOf": [
             {
@@ -17865,6 +17636,7 @@
         "name",
         "module",
         "import_line",
+        "content",
         "revision"
       ],
       "title": "UtilityWriteResponse",
@@ -18986,6 +18758,117 @@
       "title": "WorkbenchAppReleaseResponse",
       "type": "object"
     },
+    "WorkbenchCatalogueColumn": {
+      "description": "A column as an environment's database holds it: its name, its kind (``boolean``,\n``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as\nthe database names it, whether it takes a null, its collation where it has one, and the\nquotes holding a value in it, None when the table lacks a quote identity column.",
+      "properties": {
+        "collation": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collation"
+        },
+        "kind": {
+          "maxLength": 512,
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 512,
+          "title": "Name",
+          "type": "string"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "type": {
+          "maxLength": 512,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "type",
+        "nullable",
+        "collation",
+        "quotes"
+      ],
+      "title": "WorkbenchCatalogueColumn",
+      "type": "object"
+    },
+    "WorkbenchCatalogueTable": {
+      "description": "A table of the store's as an environment's database holds it: its columns, its primary\nkey's columns, whether it refers by the identity to its quote's quote_details row, and\nthe quotes holding a row in it, None when the table lacks a quote identity column.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchCatalogueColumn"
+          },
+          "maxItems": 10000,
+          "title": "Columns",
+          "type": "array"
+        },
+        "name": {
+          "maxLength": 512,
+          "title": "Name",
+          "type": "string"
+        },
+        "primary_key": {
+          "items": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Primary Key",
+          "type": "array"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "refers": {
+          "title": "Refers",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "primary_key",
+        "refers",
+        "quotes"
+      ],
+      "title": "WorkbenchCatalogueTable",
+      "type": "object"
+    },
     "WorkbenchColumn": {
       "additionalProperties": false,
       "description": "A column of a table: its name in the frame and its type.",
@@ -19125,6 +19008,14 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "environments": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Environments",
+          "type": "array"
+        },
         "form": {
           "anyOf": [
             {
@@ -19140,9 +19031,32 @@
       },
       "required": [
         "enabled",
-        "form"
+        "form",
+        "environments"
       ],
       "title": "WorkbenchStatusResponse",
+      "type": "object"
+    },
+    "WorkbenchStoreCatalogueResponse": {
+      "description": "The tables an environment's database holds, read through its connection: each table\nholding the quote's identity, ``haute_activity`` among them. Names, kinds and counts\nalone, never a value, a location or a sign-in.",
+      "properties": {
+        "environment": {
+          "title": "Environment",
+          "type": "string"
+        },
+        "tables": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchCatalogueTable"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "environment",
+        "tables"
+      ],
+      "title": "WorkbenchStoreCatalogueResponse",
       "type": "object"
     },
     "WorkbenchStoreColumn": {
@@ -19169,8 +19083,195 @@
       "title": "WorkbenchStoreColumn",
       "type": "object"
     },
+    "WorkbenchStoreCompareResponse": {
+      "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, the SQL that brings its tables to\nthe form, from what they hold, and the default branch whose form named renames, null\nwhen none did.",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Branch"
+        },
+        "differences": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreDifference"
+          },
+          "title": "Differences",
+          "type": "array"
+        },
+        "extras": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreExtra"
+          },
+          "title": "Extras",
+          "type": "array"
+        },
+        "matches": {
+          "title": "Matches",
+          "type": "boolean"
+        },
+        "renames": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreRename"
+          },
+          "title": "Renames",
+          "type": "array"
+        },
+        "sql": {
+          "title": "Sql",
+          "type": "string"
+        }
+      },
+      "required": [
+        "differences",
+        "extras",
+        "renames",
+        "matches",
+        "sql",
+        "branch"
+      ],
+      "title": "WorkbenchStoreCompareResponse",
+      "type": "object"
+    },
+    "WorkbenchStoreDifference": {
+      "description": "A way the database differs from the form: the form's table and column by id (no table\nfor Haute's own haute_activity), its kind and what it is.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "kind": {
+          "enum": [
+            "missing",
+            "renamed",
+            "type",
+            "rows",
+            "null",
+            "key",
+            "refers",
+            "collation",
+            "store"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Table"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "kind",
+        "message"
+      ],
+      "title": "WorkbenchStoreDifference",
+      "type": "object"
+    },
+    "WorkbenchStoreExtra": {
+      "description": "A table of the store's, or a column of one of the form's tables, that the database\nholds and the form does not: its table's and its name there, the form's table's id when\nthe table is the form's, and the quotes holding values in it, None when the table lacks a\nquote identity column.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quotes"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "table_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Table Id"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "table_id",
+        "quotes"
+      ],
+      "title": "WorkbenchStoreExtra",
+      "type": "object"
+    },
+    "WorkbenchStoreRename": {
+      "description": "A column of the form's table ``table`` (by id), ``column`` (by id), that the database\nholds as ``was``: the analyst's pairing of the two as a rename.",
+      "properties": {
+        "column": {
+          "maxLength": 512,
+          "title": "Column",
+          "type": "string"
+        },
+        "table": {
+          "maxLength": 512,
+          "title": "Table",
+          "type": "string"
+        },
+        "was": {
+          "maxLength": 512,
+          "title": "Was",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "was"
+      ],
+      "title": "WorkbenchStoreRename",
+      "type": "object"
+    },
     "WorkbenchStoreSqlEnvironment": {
-      "description": "One hosted environment the project declares, its engine and the SQL for it.",
+      "description": "One environment the project declares, its engine and the SQL for it.",
       "properties": {
         "name": {
           "title": "Name",
@@ -19194,7 +19295,7 @@
       "type": "object"
     },
     "WorkbenchStoreSqlResponse": {
-      "description": "The SQL for each hosted environment the project declares, and the default branch\nwhose form it starts from: null when it starts from none.",
+      "description": "The SQL for each environment the project declares, and the default branch whose form\nit starts from: null when it starts from none.",
       "properties": {
         "branch": {
           "anyOf": [
@@ -19294,6 +19395,462 @@
         "store_columns"
       ],
       "title": "WorkbenchTablesResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteMove": {
+      "description": "A field of a test quote that moved: its table, its row (key values or position; null\nin a one-row table), its column (null for a row only one side holds, ``before`` and\n``after`` then saying which), the expected value and the new.",
+      "properties": {
+        "after": {
+          "title": "After"
+        },
+        "before": {
+          "title": "Before"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "row": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Row"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "row",
+        "column",
+        "before",
+        "after"
+      ],
+      "title": "WorkbenchTestQuoteMove",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteOpenResponse": {
+      "description": "A test quote's values as the sheets hold them, and each value it could not place.",
+      "properties": {
+        "not_opened": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Opened",
+          "type": "array"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "values",
+        "not_opened"
+      ],
+      "title": "WorkbenchTestQuoteOpenResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteRefusal": {
+      "description": "A test quote not accepted, and why.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "why": {
+          "title": "Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "why"
+      ],
+      "title": "WorkbenchTestQuoteRefusal",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteRunResponse": {
+      "description": "A test quote priced and compared: its outcome (``unchanged``, ``moved``,\n``no_longer_compares`` or ``failed``), its moves, the tables and columns its expected\nanswer holds that the form no longer has, why, the file's revision it read, the basis it\npriced on and the branch.",
+      "properties": {
+        "basis": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Basis"
+        },
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "moves": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteMove"
+          },
+          "title": "Moves",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "unchanged",
+            "moved",
+            "no_longer_compares",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "removed": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Removed",
+          "type": "array"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "why": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Why"
+        }
+      },
+      "required": [
+        "name",
+        "file",
+        "outcome",
+        "moves",
+        "removed",
+        "why",
+        "revision",
+        "basis",
+        "branch"
+      ],
+      "title": "WorkbenchTestQuoteRunResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteSaveRequest": {
+      "description": "Save the sample as saved: under a new ``name``, or over the test quote ``replace``\nnames; with the branch and the form folder's revision the panel saved.",
+      "properties": {
+        "branch": {
+          "maxLength": 512,
+          "title": "Branch",
+          "type": "string"
+        },
+        "form_revision": {
+          "maxLength": 512,
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "replace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchTestQuoteTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "branch",
+        "form_revision"
+      ],
+      "title": "WorkbenchTestQuoteSaveRequest",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteSummary": {
+      "description": "A file of the test-quote folder: its name, its file's name, its revision (a digest of\nits bytes) and, for one the panel cannot open, why.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Problem"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "file",
+        "revision",
+        "problem"
+      ],
+      "title": "WorkbenchTestQuoteSummary",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteTarget": {
+      "description": "A test quote's file, with the revision a decision about it was made on.",
+      "properties": {
+        "file": {
+          "maxLength": 512,
+          "title": "File",
+          "type": "string"
+        },
+        "revision": {
+          "maxLength": 512,
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "revision"
+      ],
+      "title": "WorkbenchTestQuoteTarget",
+      "type": "object"
+    },
+    "WorkbenchTestQuoteWriteResponse": {
+      "description": "A test quote written or deleted: the file as it now stands (None once deleted), and\nthe write's capture on the save ledger.",
+      "properties": {
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
+        "quote"
+      ],
+      "title": "WorkbenchTestQuoteWriteResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesAcceptRequest": {
+      "description": "Accept the new answers of these test quotes, each at the revision its run read, on\nthe basis the run priced on and the branch it was made on.",
+      "properties": {
+        "basis": {
+          "maxLength": 512,
+          "title": "Basis",
+          "type": "string"
+        },
+        "branch": {
+          "maxLength": 512,
+          "title": "Branch",
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteTarget"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "title": "Quotes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch",
+        "basis",
+        "quotes"
+      ],
+      "title": "WorkbenchTestQuotesAcceptRequest",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesAcceptResponse": {
+      "description": "The test quotes accepted, as they now stand, those not, with why, and the capture.",
+      "properties": {
+        "accepted": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+          },
+          "title": "Accepted",
+          "type": "array"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "refused": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteRefusal"
+          },
+          "title": "Refused",
+          "type": "array"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
+        "accepted",
+        "refused"
+      ],
+      "title": "WorkbenchTestQuotesAcceptResponse",
+      "type": "object"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "description": "The test-quote folder's files by name, and the branch they were read on.",
+      "properties": {
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchTestQuoteSummary"
+          },
+          "title": "Quotes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch",
+        "quotes"
+      ],
+      "title": "WorkbenchTestQuotesResponse",
       "type": "object"
     },
     "WriteOutputResponse": {
@@ -19554,9 +20111,6 @@
     "OptimiserFrontierSelectResponse": {
       "$ref": "#/$defs/OptimiserFrontierSelectResponse"
     },
-    "OptimiserFrontierStatusResponse": {
-      "$ref": "#/$defs/OptimiserFrontierStatusResponse"
-    },
     "OptimiserMlflowLogResponse": {
       "$ref": "#/$defs/OptimiserMlflowLogResponse"
     },
@@ -19698,11 +20252,38 @@
     "WorkbenchStatusResponse": {
       "$ref": "#/$defs/WorkbenchStatusResponse"
     },
+    "WorkbenchStoreCatalogueResponse": {
+      "$ref": "#/$defs/WorkbenchStoreCatalogueResponse"
+    },
+    "WorkbenchStoreCompareResponse": {
+      "$ref": "#/$defs/WorkbenchStoreCompareResponse"
+    },
     "WorkbenchStoreSqlResponse": {
       "$ref": "#/$defs/WorkbenchStoreSqlResponse"
     },
     "WorkbenchTablesResponse": {
       "$ref": "#/$defs/WorkbenchTablesResponse"
+    },
+    "WorkbenchTestQuoteOpenResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteOpenResponse"
+    },
+    "WorkbenchTestQuoteRunResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteRunResponse"
+    },
+    "WorkbenchTestQuoteSaveRequest": {
+      "$ref": "#/$defs/WorkbenchTestQuoteSaveRequest"
+    },
+    "WorkbenchTestQuoteWriteResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuoteWriteResponse"
+    },
+    "WorkbenchTestQuotesAcceptRequest": {
+      "$ref": "#/$defs/WorkbenchTestQuotesAcceptRequest"
+    },
+    "WorkbenchTestQuotesAcceptResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesAcceptResponse"
+    },
+    "WorkbenchTestQuotesResponse": {
+      "$ref": "#/$defs/WorkbenchTestQuotesResponse"
     },
     "WriteOutputResponse": {
       "$ref": "#/$defs/WriteOutputResponse"
@@ -19724,6 +20305,8 @@
     "WorkbenchAppQuoteAssign",
     "WorkbenchAppQuoteAmend",
     "WorkbenchAppQuoteNote",
+    "WorkbenchTestQuoteSaveRequest",
+    "WorkbenchTestQuotesAcceptRequest",
     "UtilityListResponse",
     "UtilityReadResponse",
     "UtilityWriteResponse",
@@ -19806,6 +20389,13 @@
     "WorkbenchFormSaveResponse",
     "WorkbenchParamFileResponse",
     "WorkbenchStoreSqlResponse",
+    "WorkbenchStoreCatalogueResponse",
+    "WorkbenchStoreCompareResponse",
+    "WorkbenchTestQuotesResponse",
+    "WorkbenchTestQuoteWriteResponse",
+    "WorkbenchTestQuoteOpenResponse",
+    "WorkbenchTestQuoteRunResponse",
+    "WorkbenchTestQuotesAcceptResponse",
     "WorkbenchAppReleaseResponse",
     "WorkbenchAppFormResponse",
     "WorkbenchAppPriceResponse",
@@ -19830,7 +20420,6 @@
     "OptimiserApplyResponse",
     "OptimiserSaveResponse",
     "OptimiserMlflowLogResponse",
-    "OptimiserFrontierStatusResponse",
     "OptimiserFrontierAutoRangeStartResponse",
     "OptimiserFrontierAutoRangeStatusResponse",
     "OptimiserFrontierSelectResponse",
@@ -19848,6 +20437,10 @@
       "WorkbenchAppQuoteAssign",
       "WorkbenchAppQuoteAmend",
       "WorkbenchAppQuoteNote"
+    ],
+    "workbench-requests": [
+      "WorkbenchTestQuoteSaveRequest",
+      "WorkbenchTestQuotesAcceptRequest"
     ]
   },
   "x-haute-response-groups": {
@@ -19951,7 +20544,6 @@
       "OptimiserApplyResponse",
       "OptimiserSaveResponse",
       "OptimiserMlflowLogResponse",
-      "OptimiserFrontierStatusResponse",
       "OptimiserFrontierAutoRangeStartResponse",
       "OptimiserFrontierAutoRangeStatusResponse",
       "OptimiserFrontierSelectResponse",
@@ -19987,7 +20579,14 @@
       "WorkbenchFormResponse",
       "WorkbenchFormSaveResponse",
       "WorkbenchParamFileResponse",
-      "WorkbenchStoreSqlResponse"
+      "WorkbenchStoreSqlResponse",
+      "WorkbenchStoreCatalogueResponse",
+      "WorkbenchStoreCompareResponse",
+      "WorkbenchTestQuotesResponse",
+      "WorkbenchTestQuoteWriteResponse",
+      "WorkbenchTestQuoteOpenResponse",
+      "WorkbenchTestQuoteRunResponse",
+      "WorkbenchTestQuotesAcceptResponse"
     ],
     "workbench-app": [
       "WorkbenchAppReleaseResponse",

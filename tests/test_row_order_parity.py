@@ -113,7 +113,6 @@ def _graph(root: Path) -> PipelineGraph:
                             }
                             for column in COLUMNS
                         ],
-                        "outputFormat": "json",
                     },
                 ),
             ],

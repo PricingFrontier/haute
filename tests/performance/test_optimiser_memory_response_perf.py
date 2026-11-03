@@ -18,7 +18,6 @@ from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import (
     library_frontier_frame,
     make_online_frontier_job,
-    poll_frontier_until_done,
 )
 
 pytestmark = pytest.mark.perf
@@ -27,7 +26,8 @@ _LARGE_FRONTIER_POINT_COUNT = FRONTIER_POINT_LIMIT * 25
 # Each returned point is a strict typed point (thresholds, bounds, totals and
 # lambdas per constraint, the sv_* statistics and the solver path): about 850
 # bytes for these rows. The capped response grows with the returned points
-# only, never with the full frontier, which is 25 times larger.
+# only, never with the full frontier, which is 25 times larger. The solve status
+# carries the frontier twice (the result's and its own), hence twice the cap.
 _MAX_CAPPED_FRONTIER_RESPONSE_BYTES = FRONTIER_POINT_LIMIT * 1_000
 
 
@@ -77,29 +77,6 @@ class _FullFrontierFrame:
         raise AssertionError("large frontier frame must be sliced before serialization")
 
 
-class _FrontierSolver:
-    def __init__(self, points: _FullFrontierFrame) -> None:
-        self._points = points
-        self.calls: list[dict[str, Any]] = []
-
-    def frontier(
-        self,
-        quote_grid: object,
-        *,
-        threshold_ranges: dict[str, tuple[float, float]],
-        n_points_per_dim: int,
-        initial_lambdas: dict[str, float],
-    ) -> SimpleNamespace:
-        self.calls.append(
-            {
-                "quote_grid": quote_grid,
-                "threshold_ranges": threshold_ranges,
-                "n_points_per_dim": n_points_per_dim,
-            }
-        )
-        return SimpleNamespace(points=self._points)
-
-
 class _ManualTimer:
     def __init__(self, delay: float, callback: Callable[[], None]) -> None:
         self.delay = delay
@@ -136,60 +113,44 @@ class _HeavyPayload:
         self.label = label
 
 
-def test_frontier_route_caps_response_before_serialising_large_point_frame(
+def test_solve_status_caps_the_frontier_before_serialising_a_large_point_frame(
     client: Any,
     clean_optimiser_job_store: Any,
 ) -> None:
+    from haute.routes._frontier_point_summary import constraint_kinds
+    from haute.routes._optimiser_limits import limited_frontier_payload
+
     points = _FullFrontierFrame(_LARGE_FRONTIER_POINT_COUNT)
-    quote_grid = object()
-    solver = _FrontierSolver(points)
-    seed_job(
-        clean_optimiser_job_store,
-        "large-frontier",
-        make_online_frontier_job(
-            solver=solver,
-            quote_grid=quote_grid,
-            config={
-                "mode": "online",
-                "objective": "income",
-                "constraints": {"loss_ratio": {"max": 0.95}},
-                "quote_id": "quote_id",
-                "scenario_index": "scenario_index",
-                "scenario_value": "scenario_value",
-            },
-        ),
+    config = {
+        "mode": "online",
+        "objective": "income",
+        "constraints": {"loss_ratio": {"max": 0.95}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+    }
+    payload = limited_frontier_payload(
+        points,
+        mode="online",
+        constraint_kinds=constraint_kinds(config["constraints"]),
+        swept_axes=["loss_ratio"],
     )
+    job = make_online_frontier_job(config=config)
+    job["frontier_data"] = payload
+    job["result"]["frontier"] = payload
+    seed_job(clean_optimiser_job_store, "large-frontier", job)
 
-    start = client.post(
-        "/api/optimiser/frontier",
-        json={
-            "job_id": "large-frontier",
-            "threshold_ranges": {"loss_ratio": [0.80, 0.95]},
-            "n_points_per_dim": 100,
-        },
-    )
-    assert start.status_code == 200, start.text
-    frontier_job_id = start.json()["job_id"]
-    status_payload = poll_frontier_until_done(client, frontier_job_id)
-    assert status_payload["status"] == "completed", status_payload.get("message", "")
-    payload = status_payload["result"]
-    assert payload["n_points"] == _LARGE_FRONTIER_POINT_COUNT
-    assert payload["points_returned"] == FRONTIER_POINT_LIMIT
-    assert payload["points_limit"] == FRONTIER_POINT_LIMIT
-    assert payload["points_truncated"] is True
-    assert len(payload["points"]) == FRONTIER_POINT_LIMIT
-    assert payload["constraint_names"] == ["loss_ratio"]
-    response = client.get(f"/api/optimiser/frontier/status/{frontier_job_id}")
+    response = client.get("/api/optimiser/solve/status/large-frontier")
+
     assert response.status_code == 200, response.text
-    assert len(response.content) < _MAX_CAPPED_FRONTIER_RESPONSE_BYTES
-
-    assert solver.calls == [
-        {
-            "quote_grid": quote_grid,
-            "threshold_ranges": {"loss_ratio": (0.8, 0.95)},
-            "n_points_per_dim": 100,
-        }
-    ]
+    frontier = response.json()["frontier"]
+    assert frontier["n_points"] == _LARGE_FRONTIER_POINT_COUNT
+    assert frontier["points_returned"] == FRONTIER_POINT_LIMIT
+    assert frontier["points_limit"] == FRONTIER_POINT_LIMIT
+    assert frontier["points_truncated"] is True
+    assert len(frontier["points"]) == FRONTIER_POINT_LIMIT
+    assert frontier["constraint_names"] == ["loss_ratio"]
+    assert len(response.content) < 2 * _MAX_CAPPED_FRONTIER_RESPONSE_BYTES
     assert points.head_limits == [FRONTIER_POINT_LIMIT]
     assert points.full_to_dicts_calls == 0
     assert points.serialized_rows == FRONTIER_POINT_LIMIT

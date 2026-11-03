@@ -327,6 +327,8 @@ def test_file_lock_object_tracks_owner_depth_and_remaining_deadline(
         "_acquire_file_lock",
         lambda _handle, **kwargs: observed.append(kwargs) or True,
     )
+    # A faked handle names no file on disk.
+    monkeypatch.setattr(_file_lock, "_path_names_handle", lambda _path, _handle: True)
     monkeypatch.setattr(threading, "get_ident", lambda: 101)
     ticks = iter((10.0, 10.25, 10.25, 10.25, 10.25))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
@@ -405,6 +407,8 @@ def test_file_lock_object_initialises_only_empty_lock_files(
     monkeypatch.setattr(_file_lock, "_open_lock_file", lambda _path: handle)
     monkeypatch.setattr(_file_lock, "_acquire_file_lock", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(_file_lock, "_release_file_lock", lambda _handle: None)
+    # A faked handle names no file on disk.
+    monkeypatch.setattr(_file_lock, "_path_names_handle", lambda _path, _handle: True)
 
     assert lock.acquire()
     assert writes == expected_writes
@@ -595,6 +599,8 @@ def test_a_failed_release_is_raised_or_noted_on_the_primary_error(
 ) -> None:
     monkeypatch.setattr(_file_lock, "_open_lock_file", lambda _path: _Handle())
     monkeypatch.setattr(_file_lock, "_acquire_file_lock", lambda *_args, **_kwargs: True)
+    # A faked handle names no file on disk.
+    monkeypatch.setattr(_file_lock, "_path_names_handle", lambda _path, _handle: True)
     monkeypatch.setattr(
         _file_lock,
         "_release_file_lock",
@@ -623,3 +629,255 @@ def test_a_lock_that_lost_its_handle_says_so(tmp_path: Path) -> None:
     finally:
         _file_lock._release_file_lock(handle)
         handle.close()
+
+
+def test_a_lock_whose_path_named_another_file_locks_the_path_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep that removed the file a lock opened leaves it locking the file the path names."""
+    lock_path = tmp_path / "publication.lock"
+    real_check = _file_lock._path_names_handle
+    checks: list[bool] = []
+
+    def swept_once(path: Path, handle: Any) -> bool:
+        named = bool(checks) and real_check(path, handle)
+        checks.append(named)
+        return named
+
+    monkeypatch.setattr(_file_lock, "_path_names_handle", swept_once)
+    lock = _file_lock.FileLock(lock_path)
+
+    assert lock.acquire() is True
+    try:
+        assert checks == [False, True]
+        assert _file_lock.FileLock(lock_path).acquire(blocking=False) is False
+    finally:
+        lock.release()
+
+
+def test_a_lock_file_replaced_while_it_was_opened_is_opened_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "publication.lock"
+    real_open = _file_lock._open_lock_file
+    opens: list[Path] = []
+
+    def replaced_once(path: Path) -> Any:
+        opens.append(path)
+        if len(opens) == 1:
+            raise _file_lock._LockFileReplacedError("swept while opening")
+        return real_open(path)
+
+    monkeypatch.setattr(_file_lock, "_open_lock_file", replaced_once)
+    lock = _file_lock.FileLock(lock_path)
+
+    assert lock.acquire() is True
+    lock.release()
+    assert opens == [lock_path, lock_path]
+
+
+def test_a_lock_file_removed_after_it_was_opened_reads_as_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "publication.lock"
+    real_lstat = Path.lstat
+    calls: list[Path] = []
+
+    def removed_after_open(path: Path) -> os.stat_result:
+        calls.append(path)
+        if path == lock_path and len(calls) == 2:
+            raise FileNotFoundError(path)
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", removed_after_open)
+
+    with pytest.raises(_file_lock._LockFileReplacedError, match="changed while it was being"):
+        _file_lock._open_lock_file(lock_path)
+
+
+def test_an_unheld_lock_file_is_removed_and_a_held_one_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unheld = tmp_path / "unheld.lock"
+    unheld.write_bytes(b"\0")
+    held = tmp_path / "held.lock"
+    real_unlink = Path.unlink
+    held_while_removed: list[bool] = []
+
+    def observed_unlink(path: Path, missing_ok: bool = False) -> None:
+        if os.name != "nt":
+            # POSIX removes the file only while this process holds its lock.
+            held_while_removed.append(_file_lock.FileLock(path).acquire(blocking=False) is False)
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", observed_unlink)
+
+    assert _file_lock.remove_unheld_lock_file(unheld) is True
+    assert not unheld.exists()
+    assert held_while_removed == ([] if os.name == "nt" else [True])
+    assert _file_lock.remove_unheld_lock_file(tmp_path / "absent.lock") is False
+    with _file_lock.FileLock(held):
+        # Another open file holds it, as another process would.
+        assert _file_lock.remove_unheld_lock_file(held) is False
+        assert held.exists()
+
+
+def _as_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Take the lock helper's Windows branches while paths stay this platform's."""
+    platform_os = SimpleNamespace(
+        **{name: getattr(os, name) for name in dir(os) if not name.startswith("__")}
+    )
+    platform_os.name = "nt"
+    monkeypatch.setattr(_file_lock, "os", platform_os)
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_a_lock_file_behind_a_link_is_never_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    if windows:
+        _as_windows(monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "publication.lock"
+    target.write_bytes(b"\0")
+    cache = tmp_path / "project" / ".haute_cache" / "inputs"
+    cache.mkdir(parents=True)
+    (cache / ".locks").symlink_to(outside, target_is_directory=True)
+    linked_leaf = cache / "leaf.lock"
+    linked_leaf.symlink_to(target)
+
+    with pytest.raises(_file_lock.UnsafeCachePathError):
+        _file_lock.remove_unheld_lock_file(cache / ".locks" / "publication.lock")
+    with pytest.raises(_file_lock.UnsafeCachePathError):
+        _file_lock.remove_unheld_lock_file(linked_leaf)
+
+    assert target.exists() and linked_leaf.is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("unlink_error", "removed"),
+    [(None, True), (PermissionError("in use"), False), (FileNotFoundError("gone"), False)],
+)
+def test_windows_removes_a_lock_file_only_when_no_process_has_it_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unlink_error: OSError | None,
+    removed: bool,
+) -> None:
+    lock_path = tmp_path / "publication.lock"
+    lock_path.write_bytes(b"\0")
+    unlinked: list[Path] = []
+
+    def windows_unlink(path: Path, missing_ok: bool = False) -> None:
+        unlinked.append(path)
+        if unlink_error is not None:
+            raise unlink_error
+
+    _as_windows(monkeypatch)
+    monkeypatch.setattr(Path, "unlink", windows_unlink)
+    monkeypatch.setattr(
+        _file_lock.FileLock, "acquire", lambda *_args, **_kwargs: pytest.fail("locked on Windows")
+    )
+
+    assert _file_lock.remove_unheld_lock_file(lock_path) is removed
+    assert unlinked == [lock_path]
+
+
+def _report_opened_files(opened: Any) -> list[int]:
+    """Report each lock file this process opens, by inode, before it locks it."""
+    real_acquire = _file_lock._acquire_file_lock
+    attempts: list[int] = []
+
+    def reporting(handle: Any, **kwargs: Any) -> bool:
+        attempts.append(os.fstat(handle.fileno()).st_ino)
+        if len(attempts) == 1:
+            opened.put(attempts[0])
+        return real_acquire(handle, **kwargs)
+
+    _file_lock._acquire_file_lock = reporting  # type: ignore[assignment]
+    return attempts
+
+
+def _wait_on_lock(lock_path: str, opened: Any, acquired: Any, release: Any) -> None:
+    attempts = _report_opened_files(opened)
+    with _file_lock.FileLock(Path(lock_path)):
+        acquired.put(len(attempts))
+        if not release.wait(30):
+            raise TimeoutError("test did not release the lock")
+
+
+def test_a_process_waiting_on_a_swept_lock_file_still_excludes_the_next(
+    tmp_path: Path,
+) -> None:
+    """The sweep's protocol across processes: never two holders for one lock path."""
+    if os.name == "nt":
+        pytest.skip("Windows refuses to delete a lock file a process has open")
+    ctx = mp.get_context("spawn")
+    opened, acquired = ctx.Queue(), ctx.Queue()
+    release = ctx.Event()
+    lock_path = tmp_path / "publication.lock"
+    sweeper = _file_lock.FileLock(lock_path)
+    sweeper.acquire()
+    waiter = ctx.Process(target=_wait_on_lock, args=(str(lock_path), opened, acquired, release))
+    swept_inode = lock_path.stat().st_ino
+    try:
+        waiter.start()
+        # The waiter has opened the file the sweep removes, and locks it next.
+        assert opened.get(timeout=30) == swept_inode
+        lock_path.unlink()
+        sweeper.release()
+        # It locked the removed file, found the path no longer names it, and
+        # locked the file that does.
+        assert acquired.get(timeout=30) == 2
+        assert lock_path.exists()
+        assert _file_lock.FileLock(lock_path).acquire(blocking=False) is False
+    finally:
+        _finish(waiter, release)
+    assert waiter.exitcode == 0
+
+
+def test_a_path_names_the_open_file_only_while_it_is_that_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "publication.lock"
+    lock_path.write_bytes(b"\0")
+    other = tmp_path / "other.lock"
+    other.write_bytes(b"\0")
+    with lock_path.open("rb") as handle:
+        assert _file_lock._path_names_handle(lock_path, handle) is True
+        assert _file_lock._path_names_handle(other, handle) is False
+        assert _file_lock._path_names_handle(tmp_path / "missing.lock", handle) is False
+        # Without inode numbers to compare, a path that exists is taken to name it.
+        real_fstat = os.fstat
+        monkeypatch.setattr(
+            _file_lock.os,
+            "fstat",
+            lambda descriptor: SimpleNamespace(st_ino=0, st_dev=real_fstat(descriptor).st_dev),
+        )
+        assert _file_lock._path_names_handle(other, handle) is True
+
+
+def test_a_lock_path_that_keeps_naming_another_file_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A filesystem whose path never names the locked file raises rather than spinning."""
+    lock_path = tmp_path / "publication.lock"
+    checks: list[Path] = []
+
+    def never_names(path: Path, _handle: Any) -> bool:
+        checks.append(path)
+        return False
+
+    monkeypatch.setattr(_file_lock, "_path_names_handle", never_names)
+    lock = _file_lock.FileLock(lock_path)
+
+    with pytest.raises(_file_lock.UnsafeCachePathError, match="kept naming another file"):
+        lock.acquire()
+
+    assert len(checks) == _file_lock._RELOCK_ATTEMPTS
+    assert lock._depth == 0 and lock._handle is None
+    # Every attempt let its lock go: another holder can take the path.
+    monkeypatch.undo()
+    with _file_lock.FileLock(lock_path):
+        pass

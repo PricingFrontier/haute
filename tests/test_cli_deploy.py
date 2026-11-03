@@ -68,6 +68,33 @@ def _databricks_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestDeploy:
+    @pytest.mark.parametrize("args", [["deploy"], ["deploy", "--dry-run"]])
+    def test_a_workbench_project_hosts_no_scoring_api(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+    ) -> None:
+        """A workbench project releases the underwriter app: deploy refuses before it reads
+        or resolves anything, a dry run included, in CI or not (specs/cli)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        _make_toml(tmp_path)
+        toml = tmp_path / "haute.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8") + "[workbench]\nenabled = true\n", encoding="utf-8"
+        )
+
+        with patch("haute.deploy._config.resolve_config") as resolve:
+            result = runner.invoke(cli, args)
+
+        assert result.exit_code == 1
+        assert "prices in the workbench, which hosts no scoring API" in result.output
+        assert "haute app build" in result.output
+        assert "Loaded config" not in result.output
+        resolve.assert_not_called()
+
     def test_non_ci_non_dry_run_blocked(
         self,
         runner: CliRunner,

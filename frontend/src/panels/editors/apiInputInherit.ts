@@ -25,6 +25,7 @@ import {
   parseColumnPathFull,
   segmentPrefix,
 } from "./jsonpath"
+import { apiErrorMessage } from "../../api/errors"
 
 /** One key in the path inventory: its source path, the name it should carry
  * (reused across frames so the same field reads identically everywhere), its
@@ -121,6 +122,18 @@ export function buildInheritGroups(
   } catch {
     return []
   }
+  return groupKeysByLevel(inventory, (locating) => segmentPrefix(locating, target, { proper: true }))
+}
+
+/**
+ * The inventory's keys grouped by their locating level, keeping the levels
+ * `include` accepts, in lexical level order. A key whose path does not parse
+ * belongs to no level.
+ */
+function groupKeysByLevel(
+  inventory: ReadonlyMap<string, InventoryKey>,
+  include: (locating: Seg[]) => boolean,
+): InheritGroup[] {
   const groups = new Map<string, InheritGroup>()
   for (const key of inventory.values()) {
     let locating: Seg[]
@@ -129,7 +142,7 @@ export function buildInheritGroups(
     } catch {
       continue
     }
-    if (!segmentPrefix(locating, target, { proper: true })) continue
+    if (!include(locating)) continue
     const ancestorPath = makeOutputPath(locating)
     let group = groups.get(ancestorPath)
     if (!group) {
@@ -209,25 +222,7 @@ function collapseToNameChars(s: string): string {
 export function buildAllKeyGroups(
   inventory: ReadonlyMap<string, InventoryKey>,
 ): InheritGroup[] {
-  const groups = new Map<string, InheritGroup>()
-  for (const key of inventory.values()) {
-    let locating: Seg[]
-    try {
-      locating = parseColumnPathFull(key.path).locating
-    } catch {
-      continue
-    }
-    const ancestorPath = makeOutputPath(locating)
-    let group = groups.get(ancestorPath)
-    if (!group) {
-      group = { ancestorPath, ancestorLabel: levelLabel(locating), candidates: [] }
-      groups.set(ancestorPath, group)
-    }
-    group.candidates.push(key)
-  }
-  return [...groups.values()].sort((a, b) =>
-    a.ancestorPath < b.ancestorPath ? -1 : a.ancestorPath > b.ancestorPath ? 1 : 0,
-  )
+  return groupKeysByLevel(inventory, () => true)
 }
 
 /**
@@ -259,13 +254,13 @@ export function validateColumnPathAgainstFrame(
   try {
     parsed = parseColumnPathFull(columnPath)
   } catch (e) {
-    return e instanceof Error ? e.message : "invalid column path"
+    return apiErrorMessage(e, "invalid column path")
   }
   let frame: Seg[]
   try {
     frame = frameSegments(framePath)
   } catch (e) {
-    return e instanceof Error ? e.message : "invalid frame path"
+    return apiErrorMessage(e, "invalid frame path")
   }
   const prefixOrEqual = segmentPrefix(parsed.locating, frame)
   if (parsed.leaf === RESERVED_LEAF) {

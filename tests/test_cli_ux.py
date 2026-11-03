@@ -6,10 +6,6 @@ Covers codebase-review items:
   text differently. Introduce a shared ``ENDPOINT_SUFFIX_HELP`` constant in
   :mod:`haute.cli._helpers` and point every command at it so the text can
   never drift again.
-- **#108** ``haute init --force`` — today ``haute init`` exits non-zero with
-  an "already exists" message when a ``haute.toml`` is present, but it
-  offers no escape hatch. Add a ``--force`` flag that overwrites the
-  existing scaffold.
 - **#109** ``_train.py`` progress bar flush — ``click.echo(..., nl=False)``
   keeps the line buffered on many terminals so the bar appears to hang.
   Add an explicit ``sys.stdout.flush()`` after each update.
@@ -192,21 +188,13 @@ class TestEndpointSuffixHelpSharedConstant:
 
 
 # ---------------------------------------------------------------------------
-# #108 — ``haute init --force``
+# ``haute init`` in an empty folder and its .gitignore
 # ---------------------------------------------------------------------------
 
 
-class TestInitForceFlag:
-    """Pin the contract for ``haute init`` idempotency and ``--force``.
-
-    - Empty directory: ``haute init`` succeeds and scaffolds the project.
-    - Existing ``haute.toml``: ``haute init`` exits non-zero with a
-      stderr message that mentions ``--force`` so users know the escape
-      hatch.
-    - Existing ``haute.toml`` + ``--force``: succeeds and overwrites the
-      existing scaffold files.
-    - ``haute init --help`` documents the flag.
-    """
+class TestInitScaffold:
+    """``haute init`` scaffolds an empty folder and appends .gitignore's guard entries by
+    exact line; setting an existing project up again is pinned in test_cli_init."""
 
     def test_init_succeeds_in_empty_directory(
         self,
@@ -214,112 +202,11 @@ class TestInitForceFlag:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Baseline: ``haute init`` in an empty dir creates ``haute.toml``.
-
-        Guards against regressions in the existing happy path while
-        ``--force`` is added.
-        """
+        """Baseline: ``haute init`` in an empty dir creates ``haute.toml``."""
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert (tmp_path / "haute.toml").exists()
-
-    def test_init_without_force_fails_when_haute_toml_exists(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Without ``--force``, re-running ``init`` on an existing project
-        exits non-zero and the stderr mentions both "already exists" and
-        ``--force`` so the user is pointed at the override.
-        """
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text('[project]\nname = "existing"\n')
-        result = runner.invoke(cli, ["init"])
-        assert result.exit_code != 0, (
-            f"Expected non-zero exit when haute.toml exists; got {result.exit_code}.\n"
-            f"Output: {result.output!r}"
-        )
-        combined = (result.output or "") + (result.stderr or "")
-        lower = combined.lower()
-        assert "already exists" in lower, (
-            f"Error message should say 'already exists'; got: {combined!r}"
-        )
-        assert "--force" in combined, (
-            f"Error message should mention --force escape hatch; got: {combined!r}"
-        )
-
-    def test_init_force_overwrites_existing_haute_toml(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """``haute init --force`` succeeds in a populated dir and rewrites
-        the ``haute.toml`` with fresh scaffold content.
-
-        The discriminator: the old file's sentinel name ``"stale-project"``
-        is overwritten with content generated from the current directory
-        name.
-        """
-        project_dir = tmp_path / "fresh_project"
-        project_dir.mkdir()
-        monkeypatch.chdir(project_dir)
-
-        stale_toml = '[project]\nname = "stale-project"\npipeline = "old.py"\n'
-        (project_dir / "haute.toml").write_text(stale_toml, encoding="utf-8")
-
-        result = runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-
-        new_contents = (project_dir / "haute.toml").read_text(encoding="utf-8")
-        assert "stale-project" not in new_contents, (
-            "Expected --force to overwrite the old haute.toml, but the "
-            f"stale sentinel is still present:\n{new_contents}"
-        )
-        # Fresh scaffold must reference the new project name.
-        assert "fresh_project" in new_contents
-
-    def test_init_force_overwrites_starter_pipeline(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """``--force`` also overwrites other scaffold files, not just
-        ``haute.toml``. The starter pipeline is the second most important
-        file to keep in sync — pin it too.
-        """
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "haute.toml").write_text('[project]\nname = "x"\n')
-        rating_dir = tmp_path / "rating"
-        rating_dir.mkdir()
-        (rating_dir / "main.py").write_text(
-            "# STALE STARTER — must be replaced by --force\n",
-            encoding="utf-8",
-        )
-
-        result = runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
-        assert result.exit_code == 0, result.output
-
-        fresh = (rating_dir / "main.py").read_text(encoding="utf-8")
-        assert "STALE STARTER" not in fresh, (
-            f"--force did not regenerate rating/main.py; got: {fresh!r}"
-        )
-        assert "haute.Pipeline" in fresh, (
-            "Regenerated starter pipeline should instantiate haute.Pipeline."
-        )
-
-    def test_init_help_documents_force_flag(self, runner: CliRunner) -> None:
-        """``haute init --help`` must list the new ``--force`` flag so
-        users can discover it without reading the source.
-        """
-        result = runner.invoke(cli, ["init", "--help"])
-        assert result.exit_code == 0
-        assert "--force" in result.output, (
-            f"'--force' missing from 'haute init --help'. Got:\n{result.output}"
-        )
 
     def test_init_gitignore_appends_missing_entries_by_exact_line(
         self,

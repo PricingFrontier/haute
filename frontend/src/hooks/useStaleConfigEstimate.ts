@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef } from "react"
+import { apiErrorCode } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
 import { hashConfig } from "../stores/useNodeResultsStore"
 import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
@@ -9,6 +10,8 @@ export interface UseStaleConfigEstimateResult<TEstimate> {
   estimate: TEstimate | null
   loading: boolean
   error: string | null
+  /** The `error_code` the server refused the estimate with, so a caller can tell failures apart. */
+  errorCode: string | null
 }
 
 export type ConfigEstimateEndpoint<TEstimate> = (
@@ -57,12 +60,13 @@ interface EstimateState<TEstimate> {
   estimate: TEstimate | null
   loading: boolean
   error: string | null
+  errorCode: string | null
 }
 
 type EstimateAction<TEstimate> =
   | { type: "start" }
   | { type: "resolve"; estimate: TEstimate }
-  | { type: "reject"; message: string }
+  | { type: "reject"; message: string; code: string | null }
 
 function estimateReducer<TEstimate>(
   _state: EstimateState<TEstimate>,
@@ -70,15 +74,15 @@ function estimateReducer<TEstimate>(
 ): EstimateState<TEstimate> {
   switch (action.type) {
     case "start":
-      return { estimate: null, loading: true, error: null }
+      return { estimate: null, loading: true, error: null, errorCode: null }
     case "resolve":
-      return { estimate: action.estimate, loading: false, error: null }
+      return { estimate: action.estimate, loading: false, error: null, errorCode: null }
     case "reject":
-      return { estimate: null, loading: false, error: action.message }
+      return { estimate: null, loading: false, error: action.message, errorCode: action.code }
   }
 }
 
-const INITIAL_STATE = { estimate: null, loading: false, error: null }
+const INITIAL_STATE = { estimate: null, loading: false, error: null, errorCode: null }
 
 export function useStaleConfigEstimate<TEstimate>(
   nodeId: string,
@@ -133,7 +137,7 @@ export function useStaleConfigEstimate<TEstimate>(
           return
         }
         const msg = executionErrorDetailMessage(err) ?? (err instanceof Error ? err.message : String(err))
-        dispatch({ type: "reject", message: msg })
+        dispatch({ type: "reject", message: msg, code: apiErrorCode(err) })
         useToastStore
           .getState()
           .addToast("warning", `${toastLabelRef.current}: ${msg}`)

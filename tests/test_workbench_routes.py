@@ -150,10 +150,12 @@ def _link_directory(target: Path, link: Path) -> None:
 
 
 def test_a_project_without_the_table_has_no_workbench(project: Path) -> None:
-    assert client().get("/api/workbench").json() == {"enabled": False, "form": None}
+    disabled = {"enabled": False, "form": None, "environments": []}
+    assert client().get("/api/workbench").json() == disabled
 
-    enable(project, "[workbench]\nenabled = false\n")
-    assert client().get("/api/workbench").json() == {"enabled": False, "form": None}
+    # A disabled workbench lists none of the environments its table declares.
+    enable(project, "[workbench]\nenabled = false\n[workbench.store.dev]\nprovider = 'sqlite'\n")
+    assert client().get("/api/workbench").json() == disabled
 
     tables = client().get("/api/workbench/tables")
     assert tables.status_code == 404
@@ -168,7 +170,11 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
         project, form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "$1,000"}]})
     )
 
-    assert client().get("/api/workbench").json() == {"enabled": True, "form": FORM}
+    assert client().get("/api/workbench").json() == {
+        "enabled": True,
+        "form": FORM,
+        "environments": [],
+    }
     response = client().get("/api/workbench/tables")
     assert response.status_code == 200, response.text
     body = response.json()
@@ -1103,6 +1109,8 @@ def test_the_tables_sql_starts_from_none_when_asked_or_when_the_branch_holds_no_
 ) -> None:
     enable(project, "[workbench]\nenabled = true\n" + STORES)
     write_form(project, form(POLICY))
+    # The status names the environments the project declares, in its order.
+    assert client().get("/api/workbench").json()["environments"] == ["test", "prod"]
 
     # No repository at all: the SQL makes every table.
     outside = _store_sql(form(POLICY)).json()
@@ -1110,7 +1118,6 @@ def test_the_tables_sql_starts_from_none_when_asked_or_when_the_branch_holds_no_
     for each in outside["environments"]:
         assert "CREATE TABLE quote_details" in each["sql"]
         assert "CREATE TABLE haute_activity" in each["sql"]
-        assert "haute_store" not in each["sql"]
 
     _committed_on_main(project)
     fresh = _store_sql(form(POLICY), start="none").json()
@@ -1145,3 +1152,161 @@ def test_the_tables_sql_refuses_a_body_that_is_not_a_form_and_a_disabled_workben
 
     enable(project, "")
     assert _store_sql(form(POLICY)).status_code == 404
+
+
+# ── Comparing the form with an environment's tables ───────────────────────
+
+#: dev on a SQLite file, which its connection places, and prod declared with no connection.
+DEV_STORES = (
+    '\n[workbench.store.dev]\nprovider = "sqlite"\n'
+    '\n[workbench.store.prod]\nprovider = "sqlserver"\nauth = "managed-identity"\n'
+)
+
+
+def _dev_database(project: Path, spec: dict[str, Any]) -> Path:
+    """dev's connection to a SQLite file of the project's, its tables made from the SQL Haute
+    writes for *spec* from none, as their owner makes them."""
+    from haute._quote_store import store_url
+    from haute._workbench_form import FormSpec, with_quote_details
+    from tests._store_servers import Target
+
+    (project / "connections.toml").write_bytes(
+        b'[dev]\nprovider = "sqlite"\ndatabase = "dev.sqlite"\n'
+    )
+    database = project / "dev.sqlite"
+    Target("sqlite", store_url(database)).make(with_quote_details(FormSpec.model_validate(spec)))
+    return database
+
+
+def _catalogue(environment: str = "dev") -> Any:
+    return client().post("/api/workbench/store-catalogue", json={"environment": environment})
+
+
+def _compare(spec: dict[str, Any], tables: Any, renames: Any = ()) -> Any:
+    return client().post(
+        "/api/workbench/store-compare",
+        json={"form": spec, "environment": "dev", "tables": tables, "renames": list(renames)},
+    )
+
+
+def test_the_catalogue_is_read_through_the_environment_s_connection_changing_nothing(
+    project: Path,
+) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    database = _dev_database(project, form(POLICY))
+    before = database.read_bytes()
+
+    answered = _catalogue()
+
+    assert answered.status_code == 200, answered.text
+    body = answered.json()
+    assert body["environment"] == "dev"
+    tables = {each["name"]: each for each in body["tables"]}
+    assert set(tables) == {"quote_details", "policy_details", "haute_activity"}
+    assert {each["name"] for each in tables["policy_details"]["columns"]} >= {
+        "quote_reference",
+        "quote_option",
+        "exposure",
+    }
+    assert tables["policy_details"]["quotes"] == 0
+    assert database.read_bytes() == before
+
+
+def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_match(
+    project: Path,
+) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    database = _dev_database(project, form(POLICY))
+    tables = _catalogue().json()["tables"]
+    # The form's exposure is renamed: with no default branch, the analyst pairs the two.
+    renamed = form(_exposure_named("value"))
+
+    unpaired = _compare(renamed, tables).json()
+    assert {"table": POLICY["id"], "column": "c_exposure", "kind": "missing"}.items() <= next(
+        each for each in unpaired["differences"] if each["column"] == "c_exposure"
+    ).items()
+    assert {
+        "table": "policy_details",
+        "column": "exposure",
+        "table_id": POLICY["id"],
+        "quotes": 0,
+    } in (unpaired["extras"])
+    assert not unpaired["matches"]
+
+    pairing = {"table": POLICY["id"], "column": "c_exposure", "was": "exposure"}
+    paired = _compare(renamed, tables, [pairing])
+    assert paired.status_code == 200, paired.text
+    body = paired.json()
+    assert body["renames"] == [pairing]
+    assert body["extras"] == []
+    assert "RENAME COLUMN exposure TO haute_tmp_" in body["sql"]
+
+    import sqlite3
+
+    raw = sqlite3.connect(database)
+    try:
+        raw.executescript(body["sql"])
+    finally:
+        raw.close()
+    again = _compare(renamed, _catalogue().json()["tables"]).json()
+    assert again["matches"], again["differences"]
+    assert again["sql"] == "-- The tables already fit the form: nothing to change.\n"
+
+
+def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+
+    undeclared = _catalogue("staging")
+    assert undeclared.status_code == 409
+    assert "haute.toml declares no staging environment" in undeclared.text
+    assert "it declares dev, prod" in undeclared.text
+    unconnected = _catalogue("prod")
+    assert unconnected.status_code == 409
+    assert "connections.toml has no [prod] connection" in unconnected.text
+    # A server no name resolves to: said naming the connection and its variables, never the
+    # server, the user or the password.
+    enable(
+        project,
+        "[workbench]\nenabled = true\n"
+        '\n[workbench.store.dev]\nprovider = "postgresql"\nauth = "managed-identity"\n'
+        'username_env = "DEV_ROLE"\n',
+    )
+    (project / "connections.toml").write_bytes(
+        b'[dev]\nprovider = "postgresql"\nserver = "hidden-host.invalid:5432"\n'
+        b'database = "quotes"\n'
+        b'auth = "password"\nusername_env = "DEV_USER"\npassword_env = "DEV_PASSWORD"\n'
+    )
+    (project / ".env").write_bytes(b"DEV_USER=hidden-user\nDEV_PASSWORD=hidden-password\n")
+    monkeypatch.delenv("DEV_USER", raising=False)
+    monkeypatch.delenv("DEV_PASSWORD", raising=False)
+
+    unreached = _catalogue()
+
+    assert unreached.status_code == 409, unreached.text
+    assert (
+        "check connections.toml [dev] and the variables its sign-in reads (DEV_USER, DEV_PASSWORD)"
+    ) in unreached.text
+    assert "A database that pauses when idle refuses the first connection" in unreached.text
+    assert "hidden" not in unreached.text
+    # A secret put where its variable's name goes, or in auth or provider, is neither answered
+    # nor logged.
+    import structlog.testing
+
+    for bad in (
+        b'auth = "password"\nusername_env = "DEV_USER"\npassword_env = "s3cret!pa55"\n',
+        b'auth = { password = "s3cret!pa55" }\n',
+    ):
+        (project / "connections.toml").write_bytes(
+            b'[dev]\nprovider = "postgresql"\nserver = "hidden-host.invalid:5432"\n'
+            b'database = "quotes"\n' + bad
+        )
+        with structlog.testing.capture_logs() as logs:
+            refused = _catalogue()
+        assert refused.status_code == 409
+        assert "s3cret!pa55" not in refused.text
+        assert "s3cret!pa55" not in repr(logs)

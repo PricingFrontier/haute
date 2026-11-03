@@ -126,7 +126,7 @@ afterEach(() => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("GLMTargetConfig", () => {
-  const baseConfig = { _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }
+  const baseConfig = { algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }
   const onUpdate = vi.fn()
 
   beforeEach(() => onUpdate.mockReset())
@@ -260,12 +260,40 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
     expect(onEstimateDispersion).toHaveBeenCalledWith("theta", expect.any(AbortSignal))
     await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("theta", 2.4487))
+  })
+
+  it("stops an estimate whose scope changed, applies no late value and says so", async () => {
+    let finish: ((value: number) => void) | undefined
+    let signal: AbortSignal | undefined
+    const onEstimateDispersion = vi.fn((_param: string, estimateSignal: AbortSignal) => {
+      signal = estimateSignal
+      return new Promise<number>((resolve, reject) => {
+        finish = resolve
+        estimateSignal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true })
+      })
+    })
+    const config = { ...baseConfig, family: "negbinomial" }
+    const { rerender } = render(
+      <GLMTargetConfig config={config} onUpdate={onUpdate} columns={defaultColumns} dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }} />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+    expect(screen.getByRole("button", { name: "Estimating…" })).toBeDisabled()
+
+    rerender(
+      <GLMTargetConfig config={{ ...config, theta: 7 }} onUpdate={onUpdate} columns={defaultColumns} dispersionEstimate={{ scope: "scope-2", run: onEstimateDispersion }} />,
+    )
+    expect(signal?.aborted).toBe(true)
+    finish?.(3)
+    expect(await screen.findByRole("status")).toHaveTextContent("Estimate stopped: the training settings changed while it ran.")
+    expect(screen.getByRole("button", { name: "Estimate from data" })).toBeEnabled()
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("unmounting mid-estimate aborts it and never applies a late value", async () => {
@@ -280,7 +308,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -304,7 +332,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -328,7 +356,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -347,7 +375,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "negbinomial" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -367,7 +395,7 @@ describe("GLMTargetConfig", () => {
         config={{ ...baseConfig, family: "tweedie" }}
         onUpdate={onUpdate}
         columns={defaultColumns}
-        onEstimateDispersion={onEstimateDispersion}
+        dispersionEstimate={{ scope: "scope-1", run: onEstimateDispersion }}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
@@ -732,12 +760,14 @@ describe("GLMRelativitiesTab", () => {
     expect(screen.getByText("region_C")).toBeTruthy()
   })
 
-  it("shows sort mode buttons", () => {
+  it("shows the sort modes as one switch that marks the current one", () => {
     const result = makeTrainResult({ glm_relativities: makeGlmRelativities() })
     render(<GLMRelativitiesTab result={result} />)
-    expect(screen.getByRole("button", { name: "By deviation" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "By value" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "A–Z" })).toBeTruthy()
+    const sort = screen.getByRole("group", { name: "Sort relativities" })
+    expect(within(sort).getByRole("button", { name: "By deviation" })).toHaveAttribute("aria-pressed", "true")
+    expect(within(sort).getByRole("button", { name: "By value" })).toHaveAttribute("aria-pressed", "false")
+    fireEvent.click(within(sort).getByRole("button", { name: "A–Z" }))
+    expect(within(sort).getByRole("button", { name: "A–Z" })).toHaveAttribute("aria-pressed", "true")
   })
 
   it("default sort is by deviation (largest first)", () => {
@@ -866,7 +896,8 @@ describe("ModellingConfig (GLM routing)", () => {
     render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
-          config={{ _nodeId: "n1" }}
+          nodeId="n1"
+          config={{}}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
         />
@@ -881,7 +912,8 @@ describe("ModellingConfig (GLM routing)", () => {
     render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
-          config={{ _nodeId: "n1" }}
+          nodeId="n1"
+          config={{}}
           onUpdate={onUpdate}
           upstreamColumns={defaultColumns}
         />
@@ -900,7 +932,6 @@ describe("ModellingConfig (GLM routing)", () => {
   it("a malformed interaction override renders a removable error card instead of failing the editor", () => {
     const onUpdate = vi.fn()
     const config = {
-      _nodeId: "n1",
       algorithm: "glm",
       target: "claim_count",
       family: "poisson",
@@ -910,7 +941,7 @@ describe("ModellingConfig (GLM routing)", () => {
     }
     const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
-        <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
+        <ModellingConfig nodeId="n1" config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane="features" />
       </GraphProvider>,
     )
     const card = screen.getByRole("group", { name: "Interaction 1" })
@@ -921,7 +952,7 @@ describe("ModellingConfig (GLM routing)", () => {
     for (const pane of ["target", "train"] as const) {
       rerender(
         <GraphProvider allNodes={[]} edges={[]}>
-          <ModellingConfig config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
+          <ModellingConfig nodeId="n1" config={config} onUpdate={onUpdate} upstreamColumns={defaultColumns} activePane={pane} />
         </GraphProvider>,
       )
       expect(screen.getByRole("tabpanel")).toBeTruthy()
@@ -930,7 +961,6 @@ describe("ModellingConfig (GLM routing)", () => {
 
   it("GLM config separates target, parameters and feature settings", () => {
     const config = {
-      _nodeId: "n1",
       algorithm: "glm",
       target: "claim_count",
       weight: "exposure",
@@ -939,6 +969,7 @@ describe("ModellingConfig (GLM routing)", () => {
     const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
@@ -952,7 +983,7 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.queryByText("Regularization")).toBeNull()
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
-        <ModellingConfig config={config} onUpdate={vi.fn()} upstreamColumns={defaultColumns} activePane="params" />
+        <ModellingConfig nodeId="n1" config={config} onUpdate={vi.fn()} upstreamColumns={defaultColumns} activePane="params" />
       </GraphProvider>,
     )
     expect(screen.getByText("Regularization")).toBeTruthy()
@@ -962,6 +993,7 @@ describe("ModellingConfig (GLM routing)", () => {
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
@@ -981,7 +1013,6 @@ describe("ModellingConfig (GLM routing)", () => {
 
   it("GLM config routes the shared split and train sections", () => {
     const config = {
-      _nodeId: "n1",
       algorithm: "glm",
       target: "claim_count",
       weight: "exposure",
@@ -991,6 +1022,7 @@ describe("ModellingConfig (GLM routing)", () => {
     const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
@@ -1004,6 +1036,7 @@ describe("ModellingConfig (GLM routing)", () => {
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
+          nodeId="n1"
           config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}

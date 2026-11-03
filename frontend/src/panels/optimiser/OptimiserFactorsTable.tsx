@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react"
 import { Search } from "lucide-react"
-import type { OnUpdateConfig } from "../editors"
+import type { OnUpdateConfig } from "../editors/_shared"
 import { getDtypeColor } from "../../utils/dtypeColors"
 import { MAX_ANALYSIS_COLUMNS, type OptimiserInputs } from "./solveReadiness"
 
@@ -30,10 +30,6 @@ const GRID = "grid grid-cols-[minmax(0,1fr)_4.5rem_4rem_4rem] items-center gap-2
 const VALIDATION_HELP =
   "Validation factors break the results down by segment after the solve; the solver never sees them. " +
   "Each must hold one value per quote."
-
-function columnsFingerprint(columns: readonly Column[]): string {
-  return columns.map((column) => column.name).join("\u0001")
-}
 
 /**
  * The Factors pane's factor list: one row per rating factor or validation
@@ -70,22 +66,21 @@ export default function OptimiserFactorsTable({
     : "Objectives & Constraints input"
 
   // Columns the newly chosen frame lacks are removed once, in response to the
-  // user's switch and only when that frame's columns have arrived. Loading a
-  // node never rewrites its configuration.
-  const pendingPrune = useRef<{ input: string; staleColumns: string } | null>(null)
-  const frameFingerprint = columnsFingerprint(frameColumns)
+  // user's switch and only when that frame's columns are known (the frame's
+  // columns are always the chosen input's, never the previous one's, so a
+  // frame identical to the last settles the switch too). Loading a node never
+  // rewrites its configuration.
+  const pendingPrune = useRef<string | null>(null)
   useEffect(() => {
-    const pending = pendingPrune.current
-    if (!pending || pending.input !== analysisInput) return
-    if (frameColumns.length === 0 || frameFingerprint === pending.staleColumns) return
+    if (pendingPrune.current !== analysisInput || frameColumns.length === 0) return
     pendingPrune.current = null
     const available = new Set(frameColumns.map((column) => column.name))
     const kept = analysisColumns.filter((column) => available.has(column))
     if (kept.length !== analysisColumns.length) onUpdate("analysis_columns", kept)
-  }, [analysisInput, analysisColumns, frameColumns, frameFingerprint, onUpdate])
+  }, [analysisInput, analysisColumns, frameColumns, onUpdate])
 
   const chooseInput = (name: string) => {
-    pendingPrune.current = { input: name, staleColumns: frameFingerprint }
+    pendingPrune.current = name
     onUpdate("analysis_input", name || undefined)
   }
   const toggleValidation = (name: string) => {

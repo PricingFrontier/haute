@@ -189,28 +189,31 @@ class TestPreamblePipelineDir:
                 pipeline_dir=None,
             )
 
-    def test_pipeline_dir_added_to_sys_path(self, tmp_path, monkeypatch):
-        """pipeline_dir should be added to sys.path during preamble compilation."""
+    def test_utility_beside_the_pipeline_imports_without_editing_sys_path(
+        self, tmp_path, monkeypatch
+    ):
+        """The utility finder reads the pipeline's folder; sys.path never gains it."""
         import sys
+
+        from haute._project_imports import evict_utility_modules
 
         pipeline_dir = tmp_path / "sub"
         pipeline_dir.mkdir()
-        util_dir = pipeline_dir / "mymod"
+        util_dir = pipeline_dir / "utility"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text("VAL = 99\n")
-
         monkeypatch.chdir(tmp_path)
+        evict_utility_modules()
+        before = list(sys.path)
 
-        pdir_str = str(pipeline_dir.resolve())
-        # Remove from sys.path if already there
-        if pdir_str in sys.path:
-            sys.path.remove(pdir_str)
-
-        _compile_preamble(
-            "from mymod import VAL\n",
+        ns = _compile_preamble(
+            "from utility import VAL\n",
             pipeline_dir=str(pipeline_dir),
         )
-        assert pdir_str in sys.path
+
+        assert ns["VAL"] == 99
+        assert sys.path == before
+        evict_utility_modules()
 
 
 # ---------------------------------------------------------------------------

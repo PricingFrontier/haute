@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { SimpleEdge, SimpleNode } from "../editors"
+import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import { buildNodeDataCacheIdentity } from "../dataPointIdentity"
 
 const source: SimpleNode = {
@@ -43,7 +43,7 @@ describe("buildExploreCacheIdentity", () => {
     const target = (node: SimpleNode) => (which === "explore" ? node : explore)
 
     // The render endpoint filling in the generated code is not a data change.
-    const rendered = stepped({ steps, code: "df = df.head(2)", _steps_error: "" })
+    const rendered = stepped({ steps, code: "df = df.head(2)" })
     expect(identity(target(rendered), nodes(rendered))).toEqual(
       identity(target(authored), nodes(authored)),
     )
@@ -91,6 +91,16 @@ describe("buildExploreCacheIdentity", () => {
     expect(identity(explore, [changedSource, explore, downstream])).not.toEqual(identity())
     expect(identity(explore, [source, explore, downstream], "import pandas as pd")).not.toEqual(identity())
   })
+
+  it("changes when a Global Constant changes", () => {
+    const constant = { name: "base_rate", type: "float" as const, split: false, value: "1.2", bySource: {} }
+    const withConstants = (globalConstants: (typeof constant)[]) =>
+      buildNodeDataCacheIdentity({ node: explore, allNodes: [source, explore, downstream], edges, globalConstants })
+
+    expect(withConstants([constant])).not.toEqual(withConstants([]))
+    expect(withConstants([{ ...constant, value: "1.3" }])).not.toEqual(withConstants([constant]))
+    expect(withConstants([constant])).toEqual(withConstants([{ ...constant }]))
+  })
 })
 
 describe("buildNodeDataCacheIdentity for a consumer that reads its input", () => {
@@ -120,6 +130,36 @@ describe("buildNodeDataCacheIdentity for a consumer that reads its input", () =>
 
     const otherColumn = withConfig(banding, { factors: [{ ...factor, column: "region", rules: [] }] })
     expect(consumerIdentity(otherColumn)).not.toEqual(base)
+  })
+
+  it("reads a consumer not yet configured as demanding no columns", () => {
+    const unconfigured: SimpleNode = { ...banding, data: { label: "Banding", description: "", nodeType: "banding" } }
+    const noFactors = consumerIdentity(withConfig(banding, { factors: [] }))
+    expect(consumerIdentity(unconfigured)).toEqual(noFactors)
+    // A factors value that is not a list, as a half-written config holds, demands nothing either.
+    expect(consumerIdentity(withConfig(banding, { factors: null }))).toEqual(noFactors)
+  })
+
+  it("reads a Rating Step table with no factor list as demanding none", () => {
+    const rating: SimpleNode = {
+      id: "rating_1", type: "ratingStep",
+      data: { label: "Rating", description: "", nodeType: "ratingStep", config: {} },
+    }
+    expect(consumerIdentity(withConfig(rating, { tables: [{ outputColumn: "rate", entries: [] }] })))
+      .toEqual(consumerIdentity(withConfig(rating, { tables: [{ factors: [], outputColumn: "rate", entries: [] }] })))
+  })
+
+  it("hashes an upstream node not yet configured as one with an empty configuration", () => {
+    const bare: SimpleNode = { ...source, data: { label: "Source", description: "", nodeType: "dataInput" } }
+    const empty: SimpleNode = { ...source, data: { ...source.data, config: {} } }
+    const consumer = withConfig(banding, { factors: [] })
+    const at = (upstream: SimpleNode) => buildNodeDataCacheIdentity({
+      node: consumer,
+      allNodes: [upstream, consumer],
+      edges: [{ id: "source-consumer", source: "source_1", target: consumer.id }],
+    })
+    expect(at(bare)).toEqual(at(empty))
+    expect(at(bare)).not.toEqual(at(source))
   })
 
   it("keeps a Rating Step node's identity through edits to its entries, but not its factors", () => {

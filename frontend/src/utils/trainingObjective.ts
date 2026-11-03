@@ -48,6 +48,7 @@ export type TrainingConfigurationIssueCode =
   | "tboost-n-trees"
   | "tboost-prune-main-effects"
   | "evaluation-config"
+  | "evaluation-fraction-sum"
   | "final-refit"
   | "validation-fit"
   | "tuning-config"
@@ -186,17 +187,69 @@ export function evaluationConfigurationIssues(rawEvaluation: unknown): TrainingC
       )
     )
   )
-  if (!validEvaluation) {
+  if (invalidFractionSum) {
+    // Its own code: the Split pane shows it beside the validation size.
+    issues.push({
+      code: "evaluation-fraction-sum",
+      message: "Validation and test must total below 100% so training retains some rows.",
+    })
+  } else if (!validEvaluation) {
     issues.push({
       code: "evaluation-config",
-      message: invalidFractionSum
-        ? "Validation and test must total below 100% so training retains some rows."
-        : !validTemporalBoundaryOrder
-          ? "Validation must start before the test set."
-          : "Complete the split settings: split strategy, validation strategy, and required group/date fields.",
+      message: !validTemporalBoundaryOrder
+        ? "Validation must start before the test set."
+        : "Complete the split settings: split strategy, validation strategy, and required group/date fields.",
     })
   }
 
+  return issues
+}
+
+/**
+ * The GLM settings RustyStats refuses together: regularization with
+ * automatically smoothed splines (`glm-smooth-regularization`), and robust
+ * standard errors with regularization, monotonicity or those splines
+ * (`glm-robust-standard-errors`). The Train guard lists them and the
+ * Parameters pane shows each beside its control.
+ */
+export function glmConflictIssues(config: Record<string, unknown>): TrainingConfigurationIssue[] {
+  const issues: TrainingConfigurationIssue[] = []
+  const terms = (
+    config.terms !== null && typeof config.terms === "object" && !Array.isArray(config.terms)
+  )
+    ? config.terms as Terms
+    : {}
+  const interactions = (Array.isArray(config.interactions) ? config.interactions : [])
+    .filter((entry): entry is InteractionSpec => interactionEntryIssue(entry) === null)
+  const smooth = penalisedSmoothTerms(terms, interactions)
+  const regularized = typeof config.regularization === "string" && config.regularization !== ""
+  if (regularized && smooth.length > 0) {
+    issues.push({
+      code: "glm-smooth-regularization",
+      message:
+        `Regularization cannot be combined with automatically smoothed splines (${smooth.join(", ")}): ` +
+        "set Fixed df on those splines or turn regularization off.",
+    })
+  }
+  const robust = config.robust_standard_errors
+  if (typeof robust === "string" && robust !== "") {
+    const monotone = monotoneConstraintTerms(terms)
+    const conflict = regularized
+      ? "regularization"
+      : monotone.length > 0
+        ? `monotonicity constraints (${monotone.join(", ")})`
+        : smooth.length > 0
+          ? `automatically smoothed splines (${smooth.join(", ")})`
+          : null
+    if (conflict !== null) {
+      issues.push({
+        code: "glm-robust-standard-errors",
+        message:
+          `Robust standard errors cannot be combined with ${conflict}: RustyStats marks that ` +
+          "inference as not valid. Turn robust standard errors off or remove the conflict.",
+      })
+    }
+  }
   return issues
 }
 
@@ -417,38 +470,7 @@ export function trainingConfigurationIssues(
       }
     }
 
-    const glmTerms: Terms = hasTerms ? terms as Terms : {}
-    const glmInteractions = (Array.isArray(config.interactions) ? config.interactions : [])
-      .filter((entry): entry is InteractionSpec => interactionEntryIssue(entry) === null)
-    const smooth = penalisedSmoothTerms(glmTerms, glmInteractions)
-    const regularized = typeof config.regularization === "string" && config.regularization !== ""
-    if (regularized && smooth.length > 0) {
-      issues.push({
-        code: "glm-smooth-regularization",
-        message:
-          `Regularization cannot be combined with automatically smoothed splines (${smooth.join(", ")}): ` +
-          "set Fixed df on those splines or turn regularization off.",
-      })
-    }
-    const robust = config.robust_standard_errors
-    if (typeof robust === "string" && robust !== "") {
-      const monotone = monotoneConstraintTerms(glmTerms)
-      const conflict = regularized
-        ? "regularization"
-        : monotone.length > 0
-          ? `monotonicity constraints (${monotone.join(", ")})`
-          : smooth.length > 0
-            ? `automatically smoothed splines (${smooth.join(", ")})`
-            : null
-      if (conflict !== null) {
-        issues.push({
-          code: "glm-robust-standard-errors",
-          message:
-            `Robust standard errors cannot be combined with ${conflict}: RustyStats marks that ` +
-            "inference as not valid. Turn robust standard errors off or remove the conflict.",
-        })
-      }
-    }
+    issues.push(...glmConflictIssues(config))
     return issues
   }
 
@@ -630,7 +652,8 @@ function hasNonZeroMonotoneConstraints(config: Record<string, unknown>): boolean
 /** Destination of a readiness issue, shared by tabs and the Train summary. */
 export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" | "features" | "params" | "split" {
   switch (issue.code) {
-    case "evaluation-config": return "split"
+    case "evaluation-config":
+    case "evaluation-fraction-sum":
     case "final-refit":
     case "validation-fit": return "split"
     case "catboost-params":

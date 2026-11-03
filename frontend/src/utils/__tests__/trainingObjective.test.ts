@@ -49,7 +49,11 @@ describe("trainingConfigurationIssues", () => {
     const issues = trainingConfigurationIssues({ algorithm: "catboost", target: "y", feature_columns: ["age"], loss_function: "RMSE",
       evaluation: { ...evaluation, validation: { method: "single", size }, test: { size: 0.5 } },
     })
-    expect(issues).toEqual([expect.objectContaining({ code: "evaluation-config", message: expect.stringMatching(/below 100%/) })])
+    expect(issues).toEqual([{
+      code: "evaluation-fraction-sum",
+      message: "Validation and test must total below 100% so training retains some rows.",
+    }])
+    expect(trainingIssuePane(issues[0])).toBe("split")
   })
 
   it("refuses LightGBM monotonicity under MAE on the Features pane (MOD-F03)", () => {
@@ -373,18 +377,19 @@ describe("trainingConfigurationIssues", () => {
   })
 
   it.each([
-    {
-      ...evaluation,
-      test: { size: 1 },
-    },
-    {
-      schema_version: 1,
-      strategy: "temporal",
-      date_column: "accident_date",
-      validation: { method: "single", start: "2025-01-01" },
-      test: { start: "" },
-    },
-  ])("reports an incomplete or invalid configured final test", (invalidEvaluation) => {
+    // A whole-data test set leaves validation no rows: the fraction-sum issue says so.
+    [{ ...evaluation, test: { size: 1 } }, "evaluation-fraction-sum"],
+    [
+      {
+        schema_version: 1,
+        strategy: "temporal",
+        date_column: "accident_date",
+        validation: { method: "single", start: "2025-01-01" },
+        test: { start: "" },
+      },
+      "evaluation-config",
+    ],
+  ])("reports an incomplete or invalid configured final test", (invalidEvaluation, code) => {
     expect(
       trainingConfigurationIssues({
         algorithm: "catboost",
@@ -393,7 +398,7 @@ describe("trainingConfigurationIssues", () => {
         loss_function: "RMSE",
         evaluation: invalidEvaluation,
       }).map((issue) => issue.code),
-    ).toEqual(["evaluation-config"])
+    ).toEqual([code])
   })
 
   it.each([

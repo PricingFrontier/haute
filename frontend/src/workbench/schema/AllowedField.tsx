@@ -2,16 +2,13 @@
 import { RefreshCw } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../../api/errors"
-import { listProjectFiles } from "../../api/projectFiles"
 import type { SchemaColumn } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
 import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
+import { useParamsFiles } from "../../hooks/useParamsFiles"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { latest } from "../../utils/latest"
 import { IconButton } from "./IconButton"
-
-/** Whether a file in the params folder is a CSV, whatever the case of its extension. */
-const isCsv = (name: string): boolean => name.toLowerCase().endsWith(".csv")
 
 /** The Allowed choice standing for values typed in, as an older form holds them: never a CSV's name. */
 const TYPED_IN = ":typed"
@@ -27,18 +24,10 @@ const TYPED_IN = ":typed"
 export function AllowedField({ tableId, column, set }: { tableId: string; column: SchemaColumn; set: (patch: Partial<SchemaColumn>) => void }) {
   const source = column.options_source
   const typedIn = source === null && column.options.length > 0
-  // The CSV files in the params folder, read as the details open.
-  const [files, setFiles] = useState<readonly string[]>([])
-  // Each file's header as read, its columns to pick from.
-  const [headers, setHeaders] = useState<Readonly<Record<string, readonly string[]>>>({})
   // A file chosen whose column is still to be picked: the form changes once it is.
   const [pendingFile, setPendingFile] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
-  // Why the params folder could not be listed (a project with no pipeline folder says so),
-  // and the listing asked for again by Retry.
-  const [unlisted, setUnlisted] = useState<string | null>(null)
-  const [listing, setListing] = useState(0)
-  // A read answers while the details are open, and a read of values only while it is the latest.
+  // A read of values answers while the details are open and it is the latest.
   const mounted = useRef(false)
   const [reads] = useState(latest)
   useEffect(() => {
@@ -47,31 +36,11 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
       mounted.current = false
     }
   }, [])
-  useEffect(() => {
-    let current = true
-    void listProjectFiles("pipeline", "params")
-      .then((folder) => {
-        if (current) setFiles(folder.entries.filter((entry) => entry.kind === "file" && isCsv(entry.name)).map((entry) => entry.name))
-      })
-      .catch((error: unknown) => {
-        if (current) setUnlisted(apiErrorMessage(error, "The params files could not be listed."))
-      })
-    return () => {
-      current = false
-    }
-  }, [listing])
   const file = pendingFile ?? source?.file ?? ""
-  const header = headers[file]
-  useEffect(() => {
-    if (file === "" || header !== undefined) return
-    void fetchParamFile(file)
-      .then(({ columns }) => {
-        if (mounted.current) setHeaders((read) => ({ ...read, [file]: columns }))
-      })
-      .catch((error: unknown) => {
-        if (mounted.current) setProblem(apiErrorMessage(error))
-      })
-  }, [file, header])
+  // The CSV files in the params folder, listed as the details open (a project with no
+  // pipeline folder says why it could not be), and `file`'s header.
+  const { files, unlisted, retry, header, keepHeader } = useParamsFiles(file, setProblem)
+  const listed = files ?? []
 
   // The column as the form holds it now, which an undo, a redo or a sync may have changed
   // while a read was under way.
@@ -90,7 +59,7 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
     void fetchParamFile(from, name)
       .then(({ columns, values }) => {
         if (!current()) return
-        setHeaders((read) => ({ ...read, [from]: columns }))
+        keepHeader(from, columns)
         then(values)
       })
       .catch((error: unknown) => {
@@ -120,7 +89,7 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
     })
   }
 
-  const fileChoices = file === "" || files.includes(file) ? files : [...files, file]
+  const fileChoices = file === "" || listed.includes(file) ? listed : [...listed, file]
   // The column the values came from stays offered when the file no longer has it.
   const columnChoices =
     pendingFile === null && source !== null && !(header ?? []).includes(source.column) ? [...(header ?? []), source.column] : (header ?? [])
@@ -186,10 +155,7 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
           <button
             type="button"
             className="underline"
-            onClick={() => {
-              setUnlisted(null)
-              setListing((count) => count + 1)
-            }}
+            onClick={retry}
           >
             Retry
           </button>

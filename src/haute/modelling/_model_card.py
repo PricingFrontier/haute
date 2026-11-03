@@ -26,6 +26,7 @@ from haute.modelling._charts import (
     render_residuals_svg,
     render_scatter_svg,
 )
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 # ---------------------------------------------------------------------------
@@ -85,17 +86,14 @@ def generate_model_card(
     )
 
     # --- Training summary ---
-    development_rows = meta.development_rows or meta.train_rows + meta.validation_rows
-    final_test_rows = meta.final_test_rows or meta.holdout_rows
-    evaluation_config = meta.evaluation_config or meta.split_config
     evaluation_strategy = (
-        evaluation_config.get("strategy", "random") if evaluation_config else "random"
+        meta.evaluation_config.get("strategy", "random") if meta.evaluation_config else "random"
     )
     summary_rows = [
-        ["Development rows", f"{development_rows:,}"],
+        ["Development rows", f"{meta.development_rows:,}"],
     ]
-    if final_test_rows:
-        summary_rows.append(["Final test rows", f"{final_test_rows:,}"])
+    if meta.final_test_rows:
+        summary_rows.append(["Final test rows", f"{meta.final_test_rows:,}"])
     summary_rows += [
         ["Features", f"{len(meta.features):,}" if meta.features else "—"],
         ["Evaluation strategy", evaluation_strategy],
@@ -114,23 +112,23 @@ def generate_model_card(
         sections.append(_html_table(["Metric", "Value"], metric_rows, ["left", "right"]))
 
     # --- Final-test metrics (when present but diagnostics came from development) ---
-    final_test_metrics = diag.final_test_metrics or diag.holdout_metrics
-    if final_test_metrics and diag.diagnostics_set != "final_test":
+    if diag.final_test_metrics and diag.diagnostics_set != "final_test":
         ho_rows = [
-            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in final_test_metrics.items()
+            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"]
+            for k, v in diag.final_test_metrics.items()
         ]
         sections.append("<h2>Final Test Metrics</h2>")
         sections.append(_html_table(["Metric", "Value"], ho_rows, ["left", "right"]))
 
     if diag.selection_metrics:
         selection_rows = []
-        for name, raw_summary in diag.selection_metrics.items():
+        for metric, raw_summary in diag.selection_metrics.items():
             if not isinstance(raw_summary, dict):
                 continue
             mean = raw_summary.get("mean")
             stddev = raw_summary.get("stddev")
             if isinstance(mean, int | float) and isinstance(stddev, int | float):
-                selection_rows.append([name, f"{float(mean):.4f}", f"{float(stddev):.4f}"])
+                selection_rows.append([metric, f"{float(mean):.4f}", f"{float(stddev):.4f}"])
         if selection_rows:
             sections.append("<h2>Validation Selection Metrics</h2>")
             sections.append(
@@ -241,14 +239,15 @@ def generate_model_card(
             stat_rows = [[k.title(), f"{v:.6f}"] for k, v in diag.residuals_stats.items()]
             sections.append(_html_table(["Statistic", "Value"], stat_rows, ["left", "right"]))
 
-    # --- Feature Importance (PredictionValuesChange) ---
+    # --- Feature Importance (the family's own measure) ---
     if diag.feature_importance:
-        sections.append("<h2>Feature Importance (PredictionValuesChange)</h2>")
+        method = algorithm_descriptor(meta.algorithm).importance_method
+        sections.append(f"<h2>Feature Importance ({html.escape(method)})</h2>")
         svg = render_horizontal_bars_svg(
             diag.feature_importance,
             "feature",
             "importance",
-            title="PredictionValuesChange",
+            title=method,
             color=COLOR_IMPORTANCE,
         )
         sections.append(f'<div class="chart">{svg}</div>')

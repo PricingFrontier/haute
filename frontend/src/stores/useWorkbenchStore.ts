@@ -24,6 +24,8 @@ export type EditorView = "pipeline" | "workbench"
 interface WorkbenchState {
   /** Whether the project's workbench is enabled in haute.toml; false until the status says so. */
   enabled: boolean
+  /** The quote store's environments haute.toml declares, in its order; none until the status says. */
+  environments: string[]
   /** The form's path as haute.toml names it; null until the status says the workbench is enabled. */
   formPath: string | null
   /** Fetch the status. A failure shows one error toast and leaves the workbench not enabled. */
@@ -84,6 +86,7 @@ let settling: Promise<boolean> = Promise.resolve(true)
 
 const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   enabled: false,
+  environments: [],
   formPath: null,
   load: async () => {
     const status = await fetchWorkbenchStatus().catch((error: unknown) => {
@@ -92,7 +95,7 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     })
     // While the workbench is not enabled the store stays as it started, so the editor
     // never re-renders on its account.
-    if (status?.enabled) set({ enabled: true, formPath: status.form })
+    if (status?.enabled) set({ enabled: true, formPath: status.form, environments: status.environments })
   },
   activeView: "pipeline",
   showView: (view) => {

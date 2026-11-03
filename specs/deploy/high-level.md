@@ -44,6 +44,12 @@ In scope:
 - Post-deploy impact analysis: comparing staging vs production predictions over a sample
   dataset.
 
+A workbench project hosts no scoring API: what it releases is the underwriter app, whose
+release `haute app build` bundles through this component's resolution and validation, so
+`haute deploy` refuses in one, a dry run included, naming `haute app build`
+([workbench](../workbench/high-level.md)). A Workbench Input's deployment, below, is the
+bundle the app prices with.
+
 Out of scope (owned elsewhere):
 - Parsing the pipeline `.py` file into a `PipelineGraph` — see
   [pipeline-config](../pipeline-config/high-level.md).
@@ -174,7 +180,11 @@ test-quote row wraps its request as `input`, with an optional `expected` output 
 `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
 top-level key, is refused naming the row, and any row whose actual output falls outside
 tolerance fails the deploy. The starter JSON quote `haute init` writes takes the row shape,
-so a new project's test quotes parse before the analyst replaces them. All failures — structural,
+so a new project's test quotes parse before the analyst replaces them. A workbench
+project, which `haute deploy` refuses, checks its test quotes in `haute app build`:
+the test quotes saved from Preview by the workbench's comparison, a moved output
+reported rather than failed, and any other file in the folder as here
+([workbench](../workbench/high-level.md), Test quotes). All failures — structural,
 form and test-quote — are collected and raised together as one `DeployError` so an
 operator sees the whole picture in one pass, not a fix-rerun-fix cycle.
 
@@ -306,8 +316,8 @@ bundle. The container copies it beside `app.py`, and the Databricks model logs i
 MLflow code path, so the served preamble imports the files that were validated. Any
 other static absolute import, in the preamble or in a bundled `utility` file, that
 resolves from the pipeline directory or the working directory is project code the bundle
-does not carry. `validate_deploy` refuses it, naming the module and the file that imports
-it. Imports that resolve from installed packages are for the serving environment to
+does not carry, and Haute does not import it in the editor either. Resolving the deploy refuses it,
+naming the module and the file that imports it. Imports that resolve from installed packages are for the serving environment to
 provide. The served preamble's names reach every code box, as in the editor: a bundled
 External File's code sees them beside `obj`, and a Model Score's code beside `model`.
 A pipeline's submodel modules are never bundled, and need not be: deploy serves the
@@ -547,8 +557,8 @@ most: a silent wrong answer here mis-prices real policies.
   alone, it is answered with every row it gives. A deployment answering a batch as one
   frame whose answer has another row count fails that request with both counts (HTTP 500
   `deploy_internal_error` from a container).
-- **Pre-deploy validation failures** (structural checks, project-local imports the bundle
-  does not carry, and test-quote scoring/expected-output mismatches) are all collected
+- **Pre-deploy validation failures** (structural checks and test-quote
+  scoring/expected-output mismatches) are all collected
   and raised together as a single `DeployError`
   listing every failure, rather than surfaced one at a time across repeated deploy
   attempts.
@@ -578,7 +588,7 @@ most: a silent wrong answer here mis-prices real policies.
   image tag so the operator can update the service. A failed build or push fails the deploy.
 - **Known unsupported deploy inputs** fail rather than being made self-contained: plain
   JSON static sources are not batch-deployable; a project-local import other than the
-  `utility` package is refused at validation; bundled local `modelScore` serving supports
+  `utility` package is refused when the deploy is resolved; bundled local `modelScore` serving supports
   every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
   `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
   directory cannot currently be bundled and served by this path.

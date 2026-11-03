@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import polars as pl
@@ -27,6 +27,7 @@ from haute.modelling._algorithm_base import (
     Contributions,
     FitResult,
     IterationCallback,
+    NativeModel,
 )
 from haute.modelling._native_encoding import (
     encode_frame,
@@ -44,18 +45,13 @@ _DEFAULT_ROUNDS = 1000
 _DEFAULT_EARLY_STOPPING = 50
 
 
-@dataclass
-class XGBoostModel:
+@dataclass(kw_only=True)
+class XGBoostModel(NativeModel):
     """A booster plus the record every prediction path needs."""
 
+    family: ClassVar[str] = "XGBoost"
+
     booster: Any
-    features: list[str]
-    categorical_levels: dict[str, list[str | None]]
-    task: str
-    link: str
-    offset_column: str | None = None
-    offset_link: str | None = None
-    class_labels: tuple[Any, Any] | None = None
     threads: int | None = field(default=None, compare=False)
     #: A booster trained outside Haute: the category values XGBoost recorded
     #: where they are not strings, and its feature types where a categorical
@@ -67,14 +63,6 @@ class XGBoostModel:
     offset_declared: bool = field(default=True, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
-    @property
-    def feature_names_(self) -> list[str]:
-        return list(self.features)
-
-    @property
-    def cat_feature_names(self) -> frozenset[str]:
-        return frozenset(self.categorical_levels)
-
     def matrix(
         self,
         frame: pl.DataFrame,
@@ -85,25 +73,15 @@ class XGBoostModel:
         """A ``DMatrix`` with contract-order category codes and the offset margin."""
         import xgboost as xgb
 
-        from haute.modelling._algorithms import _extract_offset_baseline
-
         encoded = restore_native_categories(
             encode_frame(frame, self.features, self.categorical_levels, unseen="missing"),
             self.native_levels,
         )
-        margin = None
-        if self.offset_column is not None:
-            margin = _extract_offset_baseline(
-                frame,
-                self.offset_column,
-                link=str(self.offset_link),
-                context="XGBoost",
-            )
         return xgb.DMatrix(
             encoded,
             label=label,
             weight=weight,
-            base_margin=margin,
+            base_margin=self.baseline(frame),
             feature_types=self.feature_types,
             enable_categorical=True,
             nthread=self.threads or -1,
@@ -117,23 +95,6 @@ class XGBoostModel:
         """Response-scale predictions; the positive-class probability for classifiers."""
         return np.asarray(self.booster.predict(self.matrix(frame)), dtype=np.float64)
 
-    def predict(self, frame: pl.DataFrame) -> np.ndarray:
-        """Served predictions: responses, or original labels for classifiers."""
-        response = self.predict_response(frame)
-        if self.task != "classification":
-            return response
-        from haute._mlflow_io import binary_labels
-
-        if self.class_labels is None:
-            raise HauteValidationError("XGBoost classifier has no recorded class labels")
-        return binary_labels(response, self.class_labels)
-
-    def predict_proba(self, frame: pl.DataFrame) -> np.ndarray:
-        if self.task != "classification":
-            raise HauteValidationError("XGBoost regression models have no class probabilities")
-        positive = self.predict_response(frame)
-        return np.column_stack([1.0 - positive, positive])
-
     def contributions(self, frame: pl.DataFrame) -> Contributions:
         """Native ``pred_contribs``; the bias column already carries the offset."""
         raw = np.asarray(self.booster.predict(self.matrix(frame), pred_contribs=True))
@@ -144,20 +105,9 @@ class XGBoostModel:
         )
 
     # -- persistence ------------------------------------------------------
-    def metadata(self) -> dict[str, Any]:
-        return {
-            "features": list(self.features),
-            "categorical_levels": {k: list(v) for k, v in self.categorical_levels.items()},
-            "task": self.task,
-            "link": self.link,
-            "offset_column": self.offset_column,
-            "offset_link": self.offset_link,
-            "class_labels": list(self.class_labels) if self.class_labels is not None else None,
-        }
-
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.booster.set_attr(**{_META_ATTRIBUTE: json.dumps(self.metadata())})
+        self.booster.set_attr(**{_META_ATTRIBUTE: json.dumps(self.record())})
         self.booster.save_model(str(path))
 
     @classmethod
@@ -171,18 +121,7 @@ class XGBoostModel:
         raw = booster.attr(_META_ATTRIBUTE)
         if not raw:
             return cls._native_record(booster, Path(path).name)
-        meta = json.loads(raw)
-        labels = meta.get("class_labels")
-        return cls(
-            booster=booster,
-            features=list(meta["features"]),
-            categorical_levels={k: list(v) for k, v in meta["categorical_levels"].items()},
-            task=str(meta["task"]),
-            link=str(meta["link"]),
-            offset_column=meta.get("offset_column"),
-            offset_link=meta.get("offset_link"),
-            class_labels=(labels[0], labels[1]) if labels is not None else None,
-        )
+        return cls(booster=booster, **cls.parse_record(raw, Path(path).name))
 
     @classmethod
     def _native_record(cls, booster: Any, name: str) -> XGBoostModel:

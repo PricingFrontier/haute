@@ -25,6 +25,7 @@ import polars as pl
 
 from haute._cardinality import join_cardinality_upper_bound, normalise_join_validation
 from haute._edge_join import narrow_join_parent_demand
+from haute._polars_call_shapes import is_literal_collection, is_literal_scalar
 from haute._polars_operations import unbounded_expansion_expression_methods
 from haute._polars_selectors import (
     LiteralSelector,
@@ -221,7 +222,7 @@ _JOIN_ASOF_KEYWORDS = frozenset(
         "check_sortedness",
     }
 )
-_SELECT_METHODS = frozenset({"select", "select_seq"})
+SELECT_METHODS = frozenset({"select", "select_seq"})
 _SUPPORTED_JOIN_HOW = frozenset({"inner", "left", "semi", "anti"})
 _CARDINALITY_JOIN_HOW = frozenset({"inner", "left", "right", "full", "semi", "anti", "cross"})
 _SCHEMA_DEPENDENT_PL_CALLS = frozenset(
@@ -869,6 +870,104 @@ def _is_frame_length_range(call: ast.Call) -> bool:
     return end[0] - start[0] == 1 and end[1] - start[1] <= 0
 
 
+def _reads_a_named_column(argument: ast.expr, *, positional: bool) -> bool:
+    """Whether a selection argument reads one column by its literal name.
+
+    A bare string is a column name in a selection, positionally or as a named
+    expression, and so is each string of a positional list. Inside an expression,
+    the column-lineage walk names the columns ``pl.col`` and the helpers that read
+    strings as columns refer to. ``*`` and ``^...$`` are selector syntax, not names.
+    """
+    if _literal_column_name(argument) is not None:
+        return True
+    if positional and isinstance(argument, ast.List | ast.Tuple):
+        return any(_literal_column_name(element) is not None for element in argument.elts)
+    return bool(_referenced_columns(argument))
+
+
+def column_free_select_argument(
+    call: ast.Call, *, selector_aliases: frozenset[str] = frozenset()
+) -> ast.expr | None:
+    """The first argument that stops a selection keeping its input's rows, or None.
+
+    The caller has already proven every argument row-local. A selection then emits
+    one row per input row when one argument reads a column by name: that column has
+    the frame's height (or the read fails) and every other argument broadcasts to it.
+    Without one, a selection keeps the rows only when every argument starts from a
+    selector, which expands to columns of the frame's height or to no column at all.
+    A literal emits one row whatever the input height, so beside nothing but
+    selectors (which may match nothing) or alone it is the blocker: written a slice at
+    a time it would give one row per slice, and a deployed batch one row in all.
+    """
+    arguments = [
+        *((argument, True) for argument in call.args),
+        *((keyword.value, False) for keyword in call.keywords),
+    ]
+    if any(
+        _reads_a_named_column(argument, positional=positional) for argument, positional in arguments
+    ):
+        return None
+    for argument, _positional in arguments:
+        if (
+            literal_selector(argument, aliases=selector_aliases) is None
+            and selector_root(argument, aliases=selector_aliases) is None
+        ):
+            return argument
+    return None
+
+
+def _keeps_the_frame_height(
+    argument: ast.expr, *, positional: bool, aliases: frozenset[str]
+) -> bool:
+    """Whether a selection argument is a column of the frame's height.
+
+    A column read by name is, and so is a row-local expression of named columns.
+    An aggregate of a column is one row, and a selector may match no column.
+    """
+    if _literal_column_name(argument) is not None:
+        return True
+    if positional and isinstance(argument, ast.List | ast.Tuple):
+        return any(_literal_column_name(element) is not None for element in argument.elts)
+    if not _referenced_columns(argument):
+        return False
+    from haute.chunking import classify_row_local_expression
+
+    return classify_row_local_expression(ast.unparse(argument), selector_aliases=aliases).eligible
+
+
+def _selects_a_lit_of_unknown_length(call: ast.Call, aliases: frozenset[str]) -> bool:
+    """Whether a selection holds ``pl.lit`` of a value that is not a literal, with
+    nothing holding it to the frame's height.
+
+    ``pl.lit`` of a Series is a column of the Series' length. Beside a column of the
+    frame's height it must match that height (or be one row); beside nothing but
+    one-row values (literals, aggregates) or selectors that may match nothing, the
+    selection takes its length, which can outgrow the frame. A literal scalar or a
+    literal list is one row.
+    """
+    arguments = [
+        *((argument, True) for argument in call.args),
+        *((keyword.value, False) for keyword in call.keywords),
+    ]
+    if any(
+        _keeps_the_frame_height(argument, positional=positional, aliases=aliases)
+        for argument, positional in arguments
+    ):
+        return False
+    for argument, _positional in arguments:
+        for child in ast.walk(argument):
+            if not isinstance(child, ast.Call) or _polars_call_name(child) != "lit":
+                continue
+            value = (
+                child.args[0]
+                if child.args
+                else next((kw.value for kw in child.keywords if kw.arg == "value"), None)
+            )
+            if value is not None and not (is_literal_scalar(value) or is_literal_collection(value)):
+                return True
+    return False
+
+
 def _expression_has_unbounded_row_effect(node: ast.AST) -> bool:
     """Reject expression syntax whose successful result may outgrow the frame.
 
@@ -1432,13 +1531,7 @@ def _parse_group_by_agg(
 
     expressions: list[tuple[str, frozenset[str]]] = []
     aggregate_items: list[SelectorItem] = []
-    positional: list[ast.AST] = []
-    for expression in aggregate_call.args:
-        if isinstance(expression, (ast.List, ast.Tuple)):
-            positional.extend(expression.elts)
-        else:
-            positional.append(expression)
-    for positional_expression in positional:
+    for positional_expression in _spread_expressions(aggregate_call.args):
         aggregate_item = _selector_expression_item(
             positional_expression, selector_aliases, method="aggregate"
         )
@@ -2005,13 +2098,16 @@ def _parse_call_sequence(
             continue
         if method == "agg":
             return [], _ParseFailure("orphan_aggregate", method)
-        if method in _SELECT_METHODS:
-            if cardinality_only and any(
-                _expression_has_unbounded_row_effect(expression)
-                for expression in [
-                    *call.args,
-                    *(keyword.value for keyword in call.keywords),
-                ]
+        if method in SELECT_METHODS:
+            if cardinality_only and (
+                any(
+                    _expression_has_unbounded_row_effect(expression)
+                    for expression in [
+                        *call.args,
+                        *(keyword.value for keyword in call.keywords),
+                    ]
+                )
+                or _selects_a_lit_of_unknown_length(call, selector_aliases)
             ):
                 return [], _ParseFailure("row_expansion_unbounded", method)
             normalised = _normalise_expression_outputs(
@@ -3174,22 +3270,46 @@ class CarriedColumnProof:
     another input's columns collide. ``assigned`` are output columns the program
     may rewrite, ``join_keys`` maps each joined input to the literal same-name
     ``on`` keys of the join that brought it in (an output key column holds that
-    input's matching value), and ``carried_only`` (when set) is the only set of
-    columns carried at all — a grouping carries just its keys.
+    input's matching value). A restriction applies to the inputs in the frame
+    when it runs, not to one a later join brings in: ``restricted_to`` maps an
+    input to the only columns of it still carried (a grouping carries just its
+    keys, a ``select`` the columns it keeps unchanged), and ``dropped_from`` to
+    the columns a ``drop`` or ``pl.exclude`` removed from it, so an output column
+    of that name came from elsewhere.
     """
 
     root_input: str
     assigned: frozenset[str]
     join_keys: Mapping[str, frozenset[str]]
-    carried_only: frozenset[str] | None = None
+    restricted_to: Mapping[str, frozenset[str]] = field(default_factory=dict)
     whole_groups: bool = False
     """The program's one grouping reads every root-input row: each output row
     aggregates exactly the input rows sharing all its keys."""
+    dropped_from: Mapping[str, frozenset[str]] = field(default_factory=dict)
+
+    @property
+    def carried_only(self) -> frozenset[str] | None:
+        """The root input's restriction: its only columns still carried, if any."""
+        return self.restricted_to.get(self.root_input)
+
+    @property
+    def dropped(self) -> frozenset[str]:
+        """The root input's columns a ``drop`` or ``pl.exclude`` removed."""
+        return self.dropped_from.get(self.root_input, frozenset())
+
+    def carries(self, column: str, input_name: str) -> bool:
+        """Whether an output column of this name holds *input_name*'s unchanged value."""
+        restriction = self.restricted_to.get(input_name)
+        return (
+            column not in self.assigned
+            and column not in self.dropped_from.get(input_name, frozenset())
+            and (restriction is None or column in restriction)
+        )
 
 
-# Frame methods that never change a surviving row's values.
+# Frame methods that never change a surviving row's values or remove a column.
 _VALUE_PRESERVING_FRAME_METHODS = frozenset(
-    {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop", "drop_nulls", "lazy"}
+    {"filter", "sort", "head", "tail", "limit", "slice", "unique", "drop_nulls", "lazy"}
 )
 _ASSIGNING_FRAME_METHODS = frozenset({"with_columns", "with_columns_seq"})
 # Frame methods that may drop, duplicate, or reshape rows: a grouping after one
@@ -3314,6 +3434,33 @@ def _literal_names(node: ast.AST) -> list[str] | None:
         if len(names) == len(node.elts) and all(isinstance(name, str) for name in names):
             return [str(name) for name in names]
     return None
+
+
+def _excluded_names(node: ast.AST) -> list[str]:
+    """Return the names a ``pl.exclude(<names>)`` selection leaves out (none for ``pl.all()``)."""
+    if not _is_polars_call(node, "exclude"):
+        return []
+    assert isinstance(node, ast.Call)
+    return [name for argument in node.args for name in _literal_names(argument) or ()]
+
+
+def _dropped_columns(call: ast.Call) -> frozenset[str] | None:
+    """Return the literal columns a ``drop`` removes; ``None`` for a selector or dynamic drop."""
+    parsed = _parse_drop(call)
+    if isinstance(parsed, _ParseFailure) or parsed.selector_items:
+        return None
+    return parsed.subset_columns
+
+
+def _spread_expressions(arguments: Iterable[ast.expr]) -> list[ast.expr]:
+    """Positional expression arguments with a literal list or tuple spread into its items."""
+    items: list[ast.expr] = []
+    for argument in arguments:
+        if isinstance(argument, (ast.List, ast.Tuple)):
+            items.extend(argument.elts)
+        else:
+            items.append(argument)
+    return items
 
 
 def _literal_frame_columns(node: ast.AST) -> list[str] | None:
@@ -3511,7 +3658,22 @@ def carried_column_proof(
     root_input: str | None = None
     assigned: set[str] = set()
     join_keys: dict[str, frozenset[str]] = {}
-    carried_only: set[str] | None = None
+    # The inputs in the frame so far: a restriction applies to these only.
+    present: list[str] = []
+    # A grouping wrote an aggregate whose output name the syntax does not fix.
+    unnamed_outputs = False
+    restricted_to: dict[str, frozenset[str]] = {}
+    dropped_from: dict[str, frozenset[str]] = {}
+
+    def restrict(kept: set[str]) -> None:
+        for name in present:
+            earlier = restricted_to.get(name)
+            restricted_to[name] = frozenset(kept if earlier is None else earlier & kept)
+
+    def drop(removed: Iterable[str]) -> None:
+        for name in present:
+            dropped_from[name] = dropped_from.get(name, frozenset()) | frozenset(removed)
+
     superset: set[str] | None = (
         None
         if input_columns is None
@@ -3539,13 +3701,16 @@ def carried_column_proof(
         if root is None:
             return None
         if root == "df" and root_input is None:
+            # Code reading its one input as ``df`` (Explore, builder post-code).
             if len(input_set) != 1:
                 return None
-            root = next(iter(input_set))
-        if root != "df":
+            root_input = next(iter(input_set))
+            present.append(root_input)
+        elif root != "df":
             if root not in names or root_input is not None:
                 return None
             root_input = aliases.get(root, root)
+            present.append(root_input)
         calls = _frame_chain_calls(statement.value) if isinstance(statement.value, ast.Call) else []
         index = 0
         while index < len(calls):
@@ -3556,10 +3721,36 @@ def carried_column_proof(
                 rows_intact = False
             if method in _VALUE_PRESERVING_FRAME_METHODS:
                 pass
+            elif method == "drop":
+                removed = _dropped_columns(call)
+                if removed is None:
+                    return None
+                drop(removed)
             elif method in _ASSIGNING_FRAME_METHODS or method == "select":
+                selecting = method == "select"
                 outputs: list[tuple[str, bool]] = []
+                # A ``select`` keeps only its unchanged pass-through columns, or
+                # every column but the excluded ones when it selects them all.
+                keeps_all = False
+                excluded: set[str] = set()
                 for argument in call.args:
                     if _selects_unchanged_columns(argument):
+                        listed_names = (
+                            _literal_names(argument) or []
+                            if isinstance(argument, (ast.List, ast.Tuple))
+                            else _excluded_names(argument)
+                        )
+                        if "*" in listed_names and isinstance(argument, (ast.List, ast.Tuple)):
+                            keeps_all = True
+                        elif not all(_plain_column_name(name) for name in listed_names):
+                            if selecting:
+                                # A regex keeps or excludes columns the syntax does not name.
+                                return None
+                        elif isinstance(argument, (ast.List, ast.Tuple)):
+                            outputs.extend((name, True) for name in listed_names)
+                        else:
+                            keeps_all = True
+                            excluded.update(listed_names)
                         continue
                     if _selector_nodes(argument, selector_aliases):
                         root_name = root_input or (
@@ -3576,13 +3767,21 @@ def carried_column_proof(
                             superset=None if superset is None else superset | assigned,
                             root_dtypes=root_dtypes,
                         )
-                        if written is None:
+                        if written is None or (selecting and not written):
+                            # A selection by selector keeps columns the syntax
+                            # does not name.
                             return None
                         outputs.extend((name, False) for name in written)
                         continue
                     listed = _name_list_assignment(argument)
                     if listed is not None:
-                        outputs.extend((name, False) for name in listed)
+                        if listed:
+                            outputs.extend((name, False) for name in listed)
+                        else:
+                            # A pure selection, possibly behind an empty prefix or suffix.
+                            named = _name_list_outputs(argument)
+                            assert named is not None
+                            outputs.extend((name, True) for name in named[1])
                         continue
                     output = _expression_output(argument)
                     if output is None:
@@ -3594,6 +3793,14 @@ def carried_column_proof(
                 written_names = {name for name, bare in outputs if not bare}
                 assigned.update(written_names)
                 frame_changed = frame_changed or bool(written_names)
+                if selecting:
+                    if keeps_all:
+                        # A column the selection also names is kept after all.
+                        drop(excluded - {name for name, bare in outputs if bare})
+                    else:
+                        kept = {name for name, bare in outputs if bare}
+                        restrict(kept)
+                        join_keys = {key: keys & kept for key, keys in join_keys.items()}
             elif method == "with_row_index":
                 index_name = call.args[0] if call.args else None
                 for keyword in call.keywords:
@@ -3627,11 +3834,18 @@ def carried_column_proof(
                 right_columns: list[str] | None
                 if isinstance(right, ast.Name):
                     # A non-root input joined twice has two rows behind one output
-                    # row; its carried values would mix them.
-                    if right.id not in names or aliases.get(right.id, right.id) in join_keys:
+                    # row; its carried values would mix them. An aggregate whose
+                    # name the syntax does not fix may share a name with one of
+                    # its columns.
+                    if (
+                        right.id not in names
+                        or aliases.get(right.id, right.id) in join_keys
+                        or unnamed_outputs
+                    ):
                         return None
                     right_input = aliases.get(right.id, right.id)
                     join_keys[right_input] = frozenset()
+                    present.append(right_input)
                     right_columns = (
                         None
                         if input_columns is None or right_input not in input_columns
@@ -3690,9 +3904,18 @@ def carried_column_proof(
                     for keyword in call.keywords
                 ):
                     return None
-                carried_only = (
-                    set(group_keys) if carried_only is None else carried_only & set(group_keys)
-                )
+                restrict(set(group_keys))
+                aggregate_call = calls[index + 1]
+                for keyword in aggregate_call.keywords:
+                    if keyword.arg is None:
+                        return None
+                    assigned.add(keyword.arg)
+                for argument in _spread_expressions(aggregate_call.args):
+                    output = _expression_output(argument)
+                    if output is None:
+                        unnamed_outputs = True
+                    else:
+                        assigned.add(output[0])
                 whole_groups = rows_intact and not grouped
                 grouped = True
                 rows_intact = False
@@ -3708,9 +3931,12 @@ def carried_column_proof(
     return CarriedColumnProof(
         root_input,
         frozenset(assigned),
-        MappingProxyType(dict(join_keys)),
-        None if carried_only is None else frozenset(carried_only),
+        MappingProxyType(
+            {key: keys - dropped_from.get(key, frozenset()) for key, keys in join_keys.items()}
+        ),
+        MappingProxyType(restricted_to),
         whole_groups,
+        MappingProxyType(dropped_from),
     )
 
 

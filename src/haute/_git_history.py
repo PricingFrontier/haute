@@ -193,16 +193,6 @@ def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
     return ok and len(raw.split()) <= 1
 
 
-def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
-    """A milestone's ledger fold-point — the last ledger commit it folded in, i.e.
-    its SECOND parent. Milestone *merges* (working line) are never ancestors of
-    the ledger's save commits, but their fold-point IS, so ancestry against the
-    fold-point is what locates the latest milestone for a given save. A non-merge
-    milestone (the root) has no second parent, so it is its own fold-point."""
-    second = _rev_parse(f"{milestone_sha}^2", cwd=cwd)
-    return second if second is not None else milestone_sha
-
-
 def commit_context(
     project_root: Path, sha: str, cwd: Path | None = None, base: str | None = None
 ) -> GitCommitContext:

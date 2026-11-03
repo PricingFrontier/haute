@@ -75,19 +75,22 @@ export function MlflowExportSection({
   // remote the node names disables the action with that remote's reason, and
   // a remote nobody selected never does.
   const inventory = useMlflowDestinations()
-  const availability = mlflowLogAvailability(
-    inventory,
-    configField(config, "mlflow_destination", ""),
-  )
+  const destination = configField(config, "mlflow_destination", "")
+  const experiment = configField(config, "mlflow_experiment", "")
+  const availability = mlflowLogAvailability(inventory, destination)
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
   const [loggingToMlflow, setLoggingToMlflow] = useState(false)
   const [mlflowResult, setMlflowResult] = useState<MlflowResult | null>(null)
-  const [confirmingLogAgain, setConfirmingLogAgain] = useState(false)
+  // "Log again" is confirmed for the destination, experiment and availability
+  // it was asked under: a change to any withdraws the confirmation.
+  const confirmationKey = JSON.stringify([trainJobId, destination, experiment, availability.available])
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null)
+  const confirmingLogAgain = confirmedFor === confirmationKey
 
   const logOperation = useCallback(async (operationId: string) => {
     if (!trainJobId) return
     setLoggingToMlflow(true)
-    setConfirmingLogAgain(false)
+    setConfirmedFor(null)
     setMlflowResult(null)
     onMlflowResult?.(null)
     try {
@@ -117,19 +120,21 @@ export function MlflowExportSection({
     }
   }, [trainJobId, config, onMlflowResult, onLogAttempted])
 
+  const canLog = !!trainJobId && availability.available && !loggingToMlflow
   const handleLogExperiment = useCallback(() => {
+    if (!canLog) return
     if (lastReceipt && !confirmingLogAgain) {
-      setConfirmingLogAgain(true)
+      setConfirmedFor(confirmationKey)
       return
     }
     void logOperation(newOperationId())
-  }, [lastReceipt, confirmingLogAgain, logOperation])
+  }, [canLog, lastReceipt, confirmingLogAgain, confirmationKey, logOperation])
 
   return (
     <div className="space-y-1.5">
       <button
         onClick={handleLogExperiment}
-        disabled={!trainJobId || !availability.available || loggingToMlflow}
+        disabled={!canLog}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-60"
         style={{
           background: loggingToMlflow ? "var(--chrome-hover)" : "var(--accent-soft-strong)",
@@ -158,10 +163,10 @@ export function MlflowExportSection({
             {`This result is already logged to ${lastReceipt.experiment_name}. Logging again creates a new run.`}
           </div>
           <div className="flex gap-2">
-            <button type="button" onClick={handleLogExperiment} className="underline" style={{ color: "var(--text-accent)" }}>
+            <button type="button" onClick={handleLogExperiment} disabled={!canLog} className="underline disabled:opacity-60" style={{ color: "var(--text-accent)" }}>
               Log as a new run
             </button>
-            <button type="button" onClick={() => setConfirmingLogAgain(false)} className="underline" style={{ color: "var(--text-muted)" }}>
+            <button type="button" onClick={() => setConfirmedFor(null)} className="underline" style={{ color: "var(--text-muted)" }}>
               Cancel
             </button>
           </div>

@@ -181,7 +181,7 @@ class TestSaveLoad:
         save_contract(basic_contract, path)
 
         saved = json.loads(path.read_text(encoding="utf-8"))
-        assert saved["contract_version"] == CONTRACT_VERSION == 4
+        assert saved["contract_version"] == CONTRACT_VERSION == 5
         assert "categorical_levels" not in saved
 
     def test_saved_json_is_human_readable(
@@ -203,6 +203,26 @@ class TestSaveLoad:
         # Top-level keys sorted alphabetically.
         top_keys = list(parsed.keys())
         assert top_keys == sorted(top_keys), f"Top-level keys must be sorted, got {top_keys}"
+
+    def test_save_creates_its_folder_and_replaces_a_contract_whole(
+        self,
+        tmp_path: Path,
+        basic_contract: FeatureContract,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = tmp_path / "models" / "freq" / "contract.json"
+        save_contract(basic_contract, path)
+        assert load_contract(path) == basic_contract
+        before = path.read_bytes()
+
+        def refuse_replace(self: Path, target: Path) -> Path:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "replace", refuse_replace)
+        with pytest.raises(OSError, match="disk full"):
+            save_contract(dataclasses.replace(basic_contract, task="classification"), path)
+        assert path.read_bytes() == before
+        assert [child.name for child in path.parent.iterdir()] == ["contract.json"]
 
     def test_save_is_deterministic(self, tmp_path: Path, basic_contract: FeatureContract) -> None:
         """Writing the same contract twice produces identical bytes —
@@ -234,6 +254,7 @@ class TestLoadRejectsMalformed:
             "contract_hash": c.contract_hash,
             "offset_column": c.offset_column,
             "offset_link": c.offset_link,
+            "offset_type": c.offset_type,
             "contract_version": CONTRACT_VERSION,
             "model": None,
         }
@@ -454,6 +475,7 @@ def _raw_from_contract(contract: FeatureContract) -> dict:
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
         "offset_link": contract.offset_link,
+        "offset_type": contract.offset_type,
         "contract_version": CONTRACT_VERSION,
         "model": None,
     }

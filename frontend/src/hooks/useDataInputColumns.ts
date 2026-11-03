@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react"
+import { useCallback, useState, useEffect, useRef, useMemo } from "react"
 import { previewNode } from "../api/client"
 import useGraphStore, { computeStructuralFingerprint } from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -60,9 +60,10 @@ export function useDataInputColumns(
 
   const addToast = useToastStore((s) => s.addToast)
 
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const graphFingerprint = useMemo(
-    () => computeStructuralFingerprint(allNodes, edges, preamble),
-    [allNodes, edges, preamble],
+    () => computeStructuralFingerprint(allNodes, edges, preamble, globalConstants),
+    [allNodes, edges, preamble, globalConstants],
   )
 
   // Keep fresh refs for allNodes/edges so the effect body reads current data
@@ -74,8 +75,15 @@ export function useDataInputColumns(
   useEffect(() => { fallbackColumnsRef.current = fallbackColumns }, [fallbackColumns])
 
   const initialColumns = enabled ? (cachedColumns ?? fallbackColumns) : fallbackColumns
-  const [dataInputColumns, setDataInputColumns] = useState<DataInputColumn[]>(
-    initialColumns,
+  // The columns shown belong to one input: after a switch, until the effects
+  // below catch up, the new input's cached (else fallback) columns are shown,
+  // never the previous input's.
+  const [shown, setShown] = useState<{ key: string; columns: DataInputColumn[] }>(
+    { key: cacheKey, columns: initialColumns },
+  )
+  const setDataInputColumns = useCallback(
+    (columns: DataInputColumn[]) => setShown({ key: cacheKey, columns }),
+    [cacheKey],
   )
 
   // Read cache state via refs so the fetch effect doesn't re-fire when the
@@ -102,7 +110,7 @@ export function useDataInputColumns(
       prevColumnFingerprint.current = fingerprint
       setDataInputColumns(cachedColumns)
     }
-  }, [cachedColumns, enabled])
+  }, [cachedColumns, enabled, setDataInputColumns])
 
   useEffect(() => {
     if (!enabled) {
@@ -173,10 +181,11 @@ export function useDataInputColumns(
     preamble,
     activeSource,
     setColumnsCache,
+    setDataInputColumns,
     addToast,
     enabled,
     fallbackColumnsFingerprint,
   ])
 
-  return dataInputColumns
+  return shown.key === cacheKey ? shown.columns : initialColumns
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { memo, useCallback, useMemo, useState } from "react"
 import { X, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
@@ -11,13 +11,14 @@ import {
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import { stepInputNames, steppedSurfaceFor } from "../utils/polarsStepInputs"
-import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
+import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors/_shared"
 import {
   effectiveNodeType,
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
   type HauteNodeData,
   type LoadAvailability,
+  type NodeEditorState,
   type PipelineGraph,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
@@ -25,6 +26,7 @@ import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } 
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useGraphStore from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
@@ -55,11 +57,12 @@ type NodePanelProps = {
   onDeleteSubmodelInputPort?: (portName: string) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
-  onRecoverSettings?: () => void
   /** True when showing last-selected node while nothing is actively selected */
   dimmed?: boolean
   /** 1-based line number of the error in user code, if any */
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed */
   runError?: string | null
   /** Preview rows from the current node's preview data (input columns pass through) */
@@ -277,14 +280,14 @@ const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columnsStructuralVersion",
 ]
 
-function clearCachedResultShape(
-  data: HauteNodeData,
+function clearCachedResultShape<T extends Record<string, unknown>>(
+  data: T,
   { preserveAvailableColumns = false }: { preserveAvailableColumns?: boolean } = {},
-): HauteNodeData {
+): T {
   const next = { ...data }
   for (const key of CACHED_PREVIEW_KEYS) {
     if (preserveAvailableColumns && key === "_availableColumns") continue
-    delete next[key]
+    delete next[key as keyof T]
   }
   return next
 }
@@ -968,6 +971,8 @@ function SchemaWarningBanner({
 
 type NodeEditorBodyProps = {
   nodeId: string
+  /** The server's editor state for the node, beside its config. */
+  editorState?: NodeEditorState
   documentReadOnly: boolean
   readOnly: boolean
   config: Record<string, unknown>
@@ -978,6 +983,8 @@ type NodeEditorBodyProps = {
   inputSources: InputSource[]
   onDeleteEdge?: (edgeId: string) => void
   errorLine?: number | null
+  /** Changes with each run's result, so a repeat error line is marked again. */
+  errorRevision?: unknown
   /** The last run's error message for this node, if it failed. */
   runError?: string | null
   upstreamColumns: { name: string; dtype: string }[]
@@ -992,6 +999,7 @@ type NodeEditorBodyProps = {
 
 function NodeEditorBody({
   nodeId,
+  editorState,
   documentReadOnly,
   readOnly,
   config,
@@ -1002,6 +1010,7 @@ function NodeEditorBody({
   inputSources,
   onDeleteEdge,
   errorLine,
+  errorRevision,
   runError,
   upstreamColumns,
   nodeColumns,
@@ -1029,12 +1038,14 @@ function NodeEditorBody({
         inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}
         start={surface.start}
         nodeId={nodeId}
         codeHint={POLARS_TAB_HINTS[nodeType] ?? null}
+        editor={editorState}
       />
     )
   } else if (activeTab === "columns" && showColumnsTab) {
@@ -1079,9 +1090,62 @@ function NodeEditorBody({
 
 type ActiveNodePanelProps = Omit<NodePanelProps, "node"> & { node: SimpleNode }
 
-export default function NodePanel(props: NodePanelProps) {
+function hasResolvableUpstreamIdentities(
+  nodeId: string,
+  allNodes: readonly SimpleNode[],
+  edges: readonly SimpleEdge[],
+  submodels: Record<string, unknown> | undefined,
+): boolean {
+  const nodeMap = Object.fromEntries(allNodes.map((n) => [n.id, n]))
+  try {
+    for (const edge of edges) {
+      if (edge.target !== nodeId) continue
+      const sourceNode = nodeMap[edge.source]
+      if (!sourceNode) return false
+      edgeInputName(edge, sourceNode, submodels)
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+const NodePanel = memo(function NodePanel(props: NodePanelProps) {
   if (!props.node) return null
-  return <NodePanelContent key={props.node.id} {...props} node={props.node} />
+  return <NodePanelBoundary key={props.node.id} {...props} node={props.node} />
+})
+
+export default NodePanel
+
+function NodePanelBoundary(props: ActiveNodePanelProps) {
+  const { node, onClose, scopedSave, onRemoveUnavailableNode } = props
+  const { allNodes, edges, submodels } = useGraph()
+  const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
+  const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
+  const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
+  const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
+  const canMountScopedEditor =
+    recoveryAvailability === "blocked" &&
+    scopedEditable &&
+    Boolean(scopedSave) &&
+    hasResolvableUpstreamIdentities(node.id, allNodes, edges, submodels)
+  if (
+    recoveryAvailability === "unavailable" ||
+    (recoveryAvailability === "blocked" && !canMountScopedEditor)
+  ) {
+    return (
+      <RecoveryNodePanel
+        node={node}
+        availability={recoveryAvailability}
+        diagnostics={documentDiagnostics}
+        submodels={submodels}
+        canRepair={canRepair}
+        onClose={onClose}
+        onRemoveUnavailableNode={onRemoveUnavailableNode}
+      />
+    )
+  }
+  return <NodePanelContent {...props} />
 }
 
 function NodePanelContent({
@@ -1095,13 +1159,13 @@ function NodePanelContent({
   onRefreshPreview,
   dimmed,
   errorLine,
+  errorRevision,
   runError,
   previewRows,
   selectedPreviewLoading = false,
   readOnly = false,
   documentReadOnly = false,
   scopedSave,
-  onRemoveUnavailableNode,
 }: ActiveNodePanelProps) {
   const [scopedSaving, setScopedSaving] = useState(false)
   // The editor freezes while a scoped save is in flight so keystrokes cannot
@@ -1147,8 +1211,7 @@ function NodePanelContent({
     setOptimiserPaneIssues({ nodeId, panes })
   }, [])
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
-  const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
     (s) => s.capabilities?.reserved_api_input_frame_labels,
   )
@@ -1156,6 +1219,7 @@ function NodePanelContent({
     () => new Set(reservedApiInputFrameLabels ?? []),
     [reservedApiInputFrameLabels],
   )
+  const inputBindingViolations = useDocumentStatusStore((s) => s.inputBindingViolations)
 
   // Current Explore cache identity hash — the same client identity gate the
   // Explore preview applies, so a Chart Configure subview never treats a
@@ -1163,9 +1227,16 @@ function NodePanelContent({
   // picker never renders members from a superseded identity.
   const exploreConfigHash = useMemo(() => {
     if (!node || effectiveNodeType(node) !== NODE_TYPES.EXPLORE) return null
-    const identity = buildNodeDataCacheIdentity({ node, allNodes, edges, submodels, preamble })
+    const identity = buildNodeDataCacheIdentity({
+      node,
+      allNodes,
+      edges,
+      submodels,
+      preamble,
+      globalConstants,
+    })
     return hashConfig({ graph: identity, source: activeSource })
-  }, [node, allNodes, edges, submodels, preamble, activeSource])
+  }, [node, allNodes, edges, submodels, preamble, globalConstants, activeSource])
 
   // The columns of the data this node reads, when another consumer of the
   // point has already established them; never a request of its own. Gated on
@@ -1257,12 +1328,6 @@ function NodePanelContent({
     return onUpdateNode(targetId, clearCachedResultShape({ ...target.data, config: { ...targetConfig, ...patch } }))
   }, [allNodes, documentReadOnly, onUpdateNode, readOnly, scopedSaving])
 
-  const configWithNodeId = useMemo(
-    () => ({ ...config, _nodeId: node.id }),
-    [config, node.id]
-  )
-
-  // Compute input sources (must be before early return to satisfy hook ordering rules)
   const nodeMap = useMemo(() => Object.fromEntries(allNodes.map((n) => [n.id, n])), [allNodes])
   const selectedNodeId = node.id
   const upstreamEdges = useMemo(
@@ -1296,23 +1361,6 @@ function NodePanelContent({
     [exploreProfile, upstreamColumns],
   )
   const recoveryAvailability = (node.data as HauteNodeData)._loadAvailability ?? "ready"
-  const scopedEditable = (node.data as HauteNodeData)._scopedEditable === true
-  if (
-    recoveryAvailability === "unavailable" ||
-    (recoveryAvailability === "blocked" && !(scopedEditable && scopedSave))
-  ) {
-    return (
-      <RecoveryNodePanel
-        node={node}
-        availability={recoveryAvailability}
-        diagnostics={documentDiagnostics}
-        submodels={submodels}
-        canRepair={canRepair}
-        onClose={onClose}
-        onRemoveUnavailableNode={onRemoveUnavailableNode}
-      />
-    )
-  }
 
   const nodeType = effectiveNodeType(node)
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
@@ -1357,7 +1405,6 @@ function NodePanelContent({
       nodeType={nodeType as NodeTypeValue}
       readOnly={nodeType === NODE_TYPES.SUBMODEL && (effectiveReadOnly || documentReadOnly)}
       config={config}
-      configWithNodeId={configWithNodeId}
       node={node}
       onUpdateConfig={handleConfigUpdate}
       onReplaceConfig={handleConfigReplace}
@@ -1378,12 +1425,14 @@ function NodePanelContent({
       onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
       onShowPivots={() => setExplorePane(node.id, "pivots")}
       errorLine={errorLine}
+      errorRevision={errorRevision}
       runError={runError}
       previewRows={previewRows}
       selectedPreviewLoading={selectedPreviewLoading}
       loadPivotFilterMembers={loadPivotFilterMembers}
       exploreConfigHash={exploreConfigHash}
       reservedApiInputFrameLabels={reservedApiInputFrameLabelSet}
+      inputBindingViolations={inputBindingViolations}
       accentColor={accentColor}
     />
   )
@@ -1474,6 +1523,7 @@ function NodePanelContent({
 
       <NodeEditorBody
         nodeId={node.id}
+        editorState={(node.data as HauteNodeData).editor}
         documentReadOnly={documentReadOnly}
         readOnly={effectiveReadOnly}
         config={config}
@@ -1484,6 +1534,7 @@ function NodePanelContent({
         inputSources={inputSources}
         onDeleteEdge={onDeleteEdge}
         errorLine={errorLine}
+        errorRevision={errorRevision}
         runError={runError}
         upstreamColumns={upstreamColumns}
         nodeColumns={nodeColumns}

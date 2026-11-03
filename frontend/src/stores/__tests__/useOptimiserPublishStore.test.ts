@@ -8,6 +8,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 import { renderHook } from "@testing-library/react"
+import useDocumentStatusStore from "../useDocumentStatusStore"
 import useOptimiserPublishStore, { usePublishState } from "../useOptimiserPublishStore"
 
 const SAVE = { nodeId: "opt_1", pointIndex: null, outputPath: "output/a.json", version: "", stale: false }
@@ -49,6 +50,20 @@ describe("useOptimiserPublishStore", () => {
     const state = useOptimiserPublishStore.getState().byNode.opt_1
     expect(state?.jobId).toBe("job_2")
     expect(state?.saveReceipt).toBeNull()
+  })
+
+  it("forgets every node's state when another document loads, and drops a reply that arrives after", async () => {
+    let resolveSave: (value: unknown) => void = () => {}
+    mockSaveOptimiser.mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
+    const save = useOptimiserPublishStore.getState().save({ ...SAVE, jobId: "job_1" })
+    expect(useOptimiserPublishStore.getState().byNode.opt_1?.saving).toBe(true)
+
+    useDocumentStatusStore.getState().reset()
+    expect(useOptimiserPublishStore.getState().byNode).toEqual({})
+
+    resolveSave({ status: "ok", path: "/p/a.json", apply_path: "a.json", message: "" })
+    await save
+    expect(useOptimiserPublishStore.getState().byNode).toEqual({})
   })
 
   it("sends the target explicitly and records a stale publish", async () => {

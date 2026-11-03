@@ -153,6 +153,13 @@ _EXPECTED_DEBT_IDS = {
     # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
     "08c3e550bc505052",
     "d0db18a1315ae001",
+    # CACHE-S17 — the lock-file sweep's POSIX protocol: a process waiting on a
+    # lock file the sweep deletes must lock the file the path names. Windows
+    # refuses to delete a file a process has open, so the race cannot occur
+    # there; its branch is covered by tests/test_file_lock.py's Windows test.
+    # See tests/test_file_lock.py and tests/test_node_snapshot_cross_process.py.
+    "83e16e5482771a5d",
+    "d2b7c7021cada091",
     # Bundle 5.M2 — atomic sidecar write means the readonly-DIR check
     # only fires on POSIX (Windows chmod differs); the test is skipped
     # on win32 by design. See TestPermissionDenied.

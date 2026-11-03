@@ -13,8 +13,9 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,6 +54,11 @@ from haute._execution_context import (
 )
 from haute._graph_utils import _sanitize_func_name, edge_input_name
 from haute._io import _select_columns
+from haute._keyword_parameters import (
+    keyword_parameter_values,
+    reject_input_named_keyword_parameters,
+    validate_keyword_parameters,
+)
 from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
@@ -175,6 +181,27 @@ def apply_source_scan(
     that code consumes, never the ones it creates, and stays full width when the
     code is outside the column lineage model.
     """
+    projected = project_source_scan(
+        frame,
+        profile=profile,
+        required_output_columns=required_output_columns,
+        config=config,
+        code=code,
+        node_id=node_id,
+    )
+    return run_source_code(projected, code=code, preamble_ns=preamble_ns) if code else projected
+
+
+def project_source_scan(
+    frame: pl.LazyFrame,
+    *,
+    profile: str | None,
+    required_output_columns: frozenset[str] | set[str] | None,
+    config: Mapping[str, Any],
+    code: str,
+    node_id: str,
+) -> pl.LazyFrame:
+    """An opened source scan, read for the columns its post-load code and demand need."""
     projected = _source_scan_projection(
         profile,
         required_output_columns,
@@ -183,19 +210,47 @@ def apply_source_scan(
         source_columns=frame.collect_schema().names(),
         node_id=node_id,
     )
-    frame = _select_columns(
+    return _select_columns(
         frame,
         None if projected.columns is None else tuple(projected.columns),
     )
-    if code:
-        return _exec_user_code(
-            code,
-            ["df"],
-            (frame,),
-            extra_ns=preamble_ns,
-            alias_first_input_as_df=True,
-        )
-    return frame
+
+
+def run_source_code(
+    frame: pl.LazyFrame, *, code: str, preamble_ns: dict[str, Any] | None
+) -> _Frame:
+    """Run a source's post-load code on *frame*, which the code reads as ``df``."""
+    return _exec_user_code(
+        code,
+        ["df"],
+        (frame,),
+        extra_ns=preamble_ns,
+        alias_first_input_as_df=True,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceWithCode:
+    """A source node's function as its two halves: opening its scan, and its post-load code.
+
+    Calling it does both. A write of the node's whole output can instead keep the
+    scan it opened and apply the code a slice of it at a time (a write recipe),
+    as a Transform's input is sliced. ``open_scan`` returns ``None`` for a source
+    with nothing to open yet, whose output is an empty frame.
+    """
+
+    open_scan: Callable[[], pl.LazyFrame | None]
+    apply_code: Callable[[pl.LazyFrame], _Frame]
+
+    def opened(self) -> tuple[pl.LazyFrame | None, _Frame]:
+        """The scan this call opened and the node's output built from it."""
+        scan = self.open_scan()
+        if scan is None:
+            return None, pl.LazyFrame()
+        return scan, self.apply_code(scan)
+
+    def __call__(self) -> _Frame:
+        return self.opened()[1]
 
 
 def _allow_empty_source_path(profile: str | None) -> bool:
@@ -553,20 +608,20 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     code = str(config.get("code") or "").strip()
     preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
-    def data_input_fn(
+    def open_scan(
         _config: Mapping[str, Any] = config,
         _profile: str | None = ctx.execution_profile,
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         _node_id: str = ctx.node.id,
         _schema_only: bool = ctx.schema_only,
-    ) -> _Frame:
+    ) -> pl.LazyFrame | None:
         from haute._input_providers import resolve_data_input
 
         if not _config.get("inputType") and _allow_empty_source_path(_profile):
             # An unsaved, freshly-dropped editor node may preview empty. Strict
             # persisted validation still rejects this shape on save.
-            return pl.LazyFrame()
-        return apply_source_scan(
+            return None
+        return project_source_scan(
             resolve_data_input(
                 _config,
                 base_dir=_configured_pipeline_dir(),
@@ -577,9 +632,20 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             required_output_columns=_columns,
             config=_config,
             code=code,
-            preamble_ns=preamble,
             node_id=_node_id,
         )
+
+    if code:
+        # The code's two halves are kept apart so a full write can slice the scan.
+        return (
+            ctx.func_name,
+            SourceWithCode(open_scan, partial(run_source_code, code=code, preamble_ns=preamble)),
+            True,
+        )
+
+    def data_input_fn() -> _Frame:
+        scan = open_scan()
+        return pl.LazyFrame() if scan is None else scan
 
     return ctx.func_name, data_input_fn, True
 
@@ -956,6 +1022,21 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     return ctx.func_name, scenario_expand_with_code, False
 
 
+def _frames_in_declared_order(
+    dfs_by_name: Mapping[str, _Frame], source_names: Sequence[str], *, node_label: str
+) -> tuple[_Frame, ...]:
+    """The named input frames in declared-source order; a missing declared name raises.
+
+    Dropping a missing frame would shift every later input onto the wrong name.
+    """
+    try:
+        return tuple(dfs_by_name[name] for name in source_names)
+    except KeyError as exc:
+        raise ValueError(
+            f"{node_label} did not receive every declared connected input name.",
+        ) from exc
+
+
 @_register(NodeType.OPTIMISER, recompute_cost="cheap", columns=_passthrough_columns)
 def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
@@ -971,15 +1052,11 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _src_names_captured = list(ctx.source_names)
 
         def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            if dfs_by_name:
-                try:
-                    dfs = tuple(dfs_by_name[name] for name in _src_names_captured)
-                except KeyError as exc:
-                    raise ValueError(
-                        "Optimiser did not receive every declared connected input name.",
-                    ) from exc
-            else:
-                dfs = dfs_positional
+            dfs = (
+                _frames_in_declared_order(dfs_by_name, _src_names_captured, node_label="Optimiser")
+                if dfs_by_name
+                else dfs_positional
+            )
             if len(dfs) <= _i_captured:
                 raise ValueError(
                     f"Optimiser expected input at index {_i_captured} but only "
@@ -1039,6 +1116,7 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _run_id = config.get("run_id", "")
     _registered_model = config.get("registered_model", "")
     _config_captured = dict(config)
+    _schema_only = ctx.schema_only
 
     # Determine if we have a valid source configured
     if _artifact_path and not _source_type:
@@ -1060,14 +1138,16 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # Reconstruct positional tuple in declared-source order, then delegate
         # to the shared apply helper that generated standalone code also
         # calls — one code path, no drift.
-        if dfs_by_name:
-            dfs = tuple(dfs_by_name[name] for name in _source_names if name in dfs_by_name)
-        else:
-            dfs = dfs_positional
+        dfs = (
+            _frames_in_declared_order(dfs_by_name, _source_names, node_label="Optimiser Apply")
+            if dfs_by_name
+            else dfs_positional
+        )
         return apply_optimiser_apply_from_config(
             *dfs,
             config=_config_captured,
             source_names=_source_names,
+            schema_only=_schema_only,
         )
 
     return ctx.func_name, optimiser_apply_fn, False
@@ -1320,6 +1400,15 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
+    keyword_parameters = validate_keyword_parameters(config, node_label=ctx.node.data.label)
+    # The signature's inputs are the logical names; a parameter shadows the
+    # physical alias the code is also given, as it does in the generated function.
+    reject_input_named_keyword_parameters(
+        keyword_parameters,
+        _orig_src if _orig_src is not None else _src_names,
+        node_id=ctx.node.id,
+        node_label=ctx.node.data.label,
+    )
 
     steps = config.get("steps")
     if isinstance(steps, list):
@@ -1348,6 +1437,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
+                parameters=keyword_parameter_values(keyword_parameters),
             )
 
         def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1459,9 +1549,6 @@ def stepped_code_problem(
     """
     if node_type not in STEPPED_NODE_TYPES or not isinstance(config.get("steps"), list):
         return None
-    problem = config.get("_steps_error")
-    if problem is not None:
-        return str(problem)
     try:
         render_polars_steps(
             config["steps"], sorted(names), start=STEPPED_NODE_TYPES[node_type].start
@@ -1653,13 +1740,17 @@ def _dispatch_apply(
     artifact: dict[str, Any],
     version_col: str,
     optimised_value_col: str = "",
+    *,
+    schema_only: bool = False,
 ) -> _Frame:
     """Route to the correct apply function based on artifact mode."""
     mode = artifact.get("mode", "online")
     version = artifact.get("version", "")
     if mode == "ratebook":
         return _apply_ratebook(lf, artifact, version, version_col, optimised_value_col)
-    return _apply_online(lf, artifact, version, version_col, optimised_value_col)
+    return _apply_online(
+        lf, artifact, version, version_col, optimised_value_col, schema_only=schema_only
+    )
 
 
 def _apply_online(
@@ -1668,13 +1759,17 @@ def _apply_online(
     version: str,
     version_col: str,
     optimised_value_col: str = "",
+    *,
+    schema_only: bool = False,
 ) -> _Frame:
     """Apply online optimisation: Lagrangian argmax with stored lambdas.
 
     Sum constraints choose each quote's scenario independently, so the result is
     a per-quote Python scan: a limited preview applies to the first quotes in
     the result's order only. Ratio constraints linearise against the whole
-    apply-time frame, so their apply always reads every input row.
+    apply-time frame, so their apply always reads every input row, except under
+    a *schema_only* walk, which reads no rows: it checks the apply's columns are
+    there and returns an empty frame of the apply's schema.
     """
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
@@ -1708,22 +1803,21 @@ def _apply_online(
 
     if isinstance(lf, pl.DataFrame):
         return apply(lf.lazy()).lazy()
+    schema = online_apply_output_schema(
+        artifact,
+        version=version,
+        version_col=version_col,
+        optimised_value_col=optimised_value_col,
+    )
     if has_ratio_constraint(constraints):
+        if schema_only:
+            lf.select(read_columns).collect_schema()
+            return pl.LazyFrame(schema=schema)
         return apply(lf).lazy()
 
     from haute._polars_utils import key_prefix_python_scan
 
-    return key_prefix_python_scan(
-        lf,
-        apply,
-        schema=online_apply_output_schema(
-            artifact,
-            version=version,
-            version_col=version_col,
-            optimised_value_col=optimised_value_col,
-        ),
-        key_column=qid_col,
-    )
+    return key_prefix_python_scan(lf, apply, schema=schema, key_column=qid_col)
 
 
 def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
@@ -1762,7 +1856,11 @@ def online_apply_output_schema(
     version_col: str,
     optimised_value_col: str = "",
 ) -> pl.Schema:
-    """Return the exact schema a sum-constraint online apply emits."""
+    """Return the exact schema an online apply emits.
+
+    One ``optimal_<name>`` per constraint, by name; a ratio constraint's
+    numerator and denominator follow, each once, in the constraints' order.
+    """
     constraints = artifact.get("constraints") or {}
     columns: dict[str, pl.DataType] = {
         name: dtype
@@ -1773,6 +1871,10 @@ def online_apply_output_schema(
     columns["optimal_objective"] = pl.Float32()
     for name in sorted(constraints):
         columns[f"optimal_{name}"] = pl.Float32()
+    for spec in constraints.values():
+        if isinstance(spec, dict) and {"numerator", "denominator"}.issubset(spec):
+            for component in (spec["numerator"], spec["denominator"]):
+                columns.setdefault(f"optimal_{component}", pl.Float32())
     if version:
         columns[version_col] = pl.String()
     return pl.Schema(columns)

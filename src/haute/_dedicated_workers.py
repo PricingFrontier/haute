@@ -440,25 +440,27 @@ class DedicatedWorker:
                     terminal_reason="cancelled",
                 )
             _REGISTRY.add(self)
-        self._request_queue = create_worker_queue(self._ctx, 1)
-        self._result_queue = create_worker_queue(self._ctx, 1)
-        self._progress = ProgressCell(self._ctx)
-        self._evidence = LimitEvidenceCounter(self._ctx)
-        self._cancel_cell = CommandCancelCell(self._ctx)
-        process = self._ctx.Process(
-            target=_dedicated_worker_entrypoint,
-            name=self._process_name,
-            args=(
-                self._request_queue,
-                self._result_queue,
-                os.getpid(),
-                self._preload_modules,
-                self._progress,
-                self._evidence,
-                self._cancel_cell,
-            ),
-        )
         try:
+            # A failure from here on terminates the worker, which closes what was
+            # opened and leaves the registry.
+            self._request_queue = create_worker_queue(self._ctx, 1)
+            self._result_queue = create_worker_queue(self._ctx, 1)
+            self._progress = ProgressCell(self._ctx)
+            self._evidence = LimitEvidenceCounter(self._ctx)
+            self._cancel_cell = CommandCancelCell(self._ctx)
+            process = self._ctx.Process(
+                target=_dedicated_worker_entrypoint,
+                name=self._process_name,
+                args=(
+                    self._request_queue,
+                    self._result_queue,
+                    os.getpid(),
+                    self._preload_modules,
+                    self._progress,
+                    self._evidence,
+                    self._cancel_cell,
+                ),
+            )
             # Spawn under the state lock, and only if nothing terminated us first: a
             # concurrent terminate then either stops the spawn or sees its pid.
             with self._state_lock:
