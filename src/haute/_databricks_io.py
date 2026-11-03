@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 from haute._databricks_credentials import (
     DatabricksConfigError,
     DatabricksCredentials,
+    DatabricksSignInError,
+    cli_refused_a_refresh,
     databricks_sdk_config,
     resolve_databricks_credentials,
 )
@@ -117,11 +119,13 @@ def _user_sign_in_credentials(credentials: DatabricksCredentials) -> Callable[[]
     """Zero-arg credentials provider for the SQL connector from a user sign-in.
 
     The SDK config that signs the user in (``databricks_sdk_config``) is built when
-    the connector asks, not before, so the sign-in (a CLI call, or a browser the
-    SDK opens) happens at connection time and only then; its ``authenticate`` is
-    the header factory the connector calls per request, so the SDK refreshes the
-    token while a long fetch runs. The SDK import is deferred for the same reason
-    as the service-principal provider's.
+    the connector asks, not before, so the sign-in (a CLI call) happens at
+    connection time and only then; its ``authenticate`` is the header factory the
+    connector calls per request, so the SDK refreshes the token while a long fetch
+    runs. A refresh the CLI refuses mid-fetch is the token source's plain
+    ``OSError``; it is raised as :class:`DatabricksSignInError`, so the fetch fails
+    with haute's remedy rather than retrying an expired sign-in. The SDK import is
+    deferred for the same reason as the service-principal provider's.
     """
 
     def provider() -> Any:
@@ -133,7 +137,18 @@ def _user_sign_in_credentials(credentials: DatabricksCredentials) -> Callable[[]
                 "Install the databricks extra: haute[databricks]."
             ) from exc
 
-        return databricks_sdk_config(credentials).authenticate
+        config = databricks_sdk_config(credentials)
+
+        def headers() -> dict[str, str]:
+            try:
+                return dict(config.authenticate())
+            except OSError as exc:
+                if not cli_refused_a_refresh(exc):
+                    raise
+                problem, remedy = credentials.sign_in_failure()
+                raise DatabricksSignInError(problem, remedy) from exc
+
+        return headers
 
     return provider
 

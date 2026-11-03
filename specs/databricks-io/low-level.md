@@ -166,7 +166,17 @@ for a user sign-in: `Config(profile=..., auth_type=<pinned>)` for mode `profile`
 always passed, so the SDK never walks its default chain. Building it signs in (the
 SDK runs `databricks auth token`), so it is called only where a connection is about
 to be made. The SDK's construction-time `ValueError` becomes `DatabricksSignInError`
-with `credentials.sign_in_failure()`'s words. `databricks_workspace_client(credentials,
+with `credentials.sign_in_failure()`'s words, except when the failure is that there
+is no `databricks` executable (a `FileNotFoundError` in the cause chain for a
+`DATABRICKS_CLI_PATH` that does not exist, or the SDK's "cannot configure default
+credentials" when its CLI provider found nothing on the PATH), which is worded as
+the CLI not being found, with the PATH and `DATABRICKS_CLI_PATH` as the remedy,
+rather than as an expired sign-in. A refresh the CLI refuses after the client was
+built is the SDK token source's plain `OSError("cannot get access token: ...")`;
+`cli_refused_a_refresh` recognises it, `credentials_rejected` counts it, and the
+connector's header factory (`_user_sign_in_credentials`) raises it as
+`DatabricksSignInError`, so a long fetch fails with the remedy instead of retrying
+an expired sign-in. `databricks_workspace_client(credentials,
 retry_timeout_seconds=None)` builds `WorkspaceClient(host, token)`,
 `WorkspaceClient(host, client_id, client_secret)` or
 `WorkspaceClient(config=databricks_sdk_config(...))` by mode; the optional retry
@@ -285,13 +295,17 @@ component keeps host values out of its logs).
   on Windows): the header is the token the CLI prints, byte for byte, a profile's
   pinned sign-in wins over ambient basic-auth variables, a profile is signed in with
   the profile's host, an exiting CLI with the "refresh token is invalid" text
-  becomes `DatabricksSignInError` with the login command, and the auth-type form's
-  failure names `DATABRICKS_HOST` rather than the host. The handoff tests record
-  the SDK version they were observed under.
+  becomes `DatabricksSignInError` with the login command, the auth-type form's
+  failure names `DATABRICKS_HOST` rather than the host, and a CLI path that does not
+  exist or a CLI missing from the PATH is worded as the CLI not found, never as an
+  expired sign-in. The handoff tests record the SDK version they were observed under.
 - `tests/test_databricks_io.py` covers SQL credential adaptation (token, service
   principal, and a user sign-in whose provider builds the SDK config only when the
-  connector asks and hands it the config's `authenticate`; a profile connects to the
-  profile's host), table/projection validation,
+  connector asks and whose header factory returns the config's headers; a profile
+  connects to the profile's host; a refresh the CLI refuses mid-fetch is raised as
+  the sign-in error with the remedy; and the real connector's own auth chain,
+  `get_python_sql_connector_auth_provider`, built with haute's provider, puts the
+  sign-in's header on a request), table/projection validation,
   cancellation before execute, batch streaming, retries, empty-schema behaviour, row-loss
   detection, identity-independent batch sizing, and builder-through-store publication.
 - `tests/test_databricks_output.py` covers output config validation, the load SQL,
@@ -316,7 +330,16 @@ component keeps host values out of its logs).
   kind, the display-name fallback, an expired sign-in, a refused token, an
   unreachable workspace answered within seconds under a one-second retry deadline,
   any other SDK failure with its text logged and the token scrubbed, missing
-  configuration and a missing SDK, each `ok: false` and never a 5xx).
+  configuration and a missing SDK, each `ok: false` and never a 5xx); and, through
+  the real SDK with a fake CLI against the stub workspace (one class skipped on
+  Windows), the CLI's token as the bearer on every request the catalog listing and
+  the connection test make, a token the workspace refuses answered 401 with the
+  login command, and a refresh the CLI refuses after the client was built answered
+  401 rather than 500. `tests/_databricks_workspace_stub.py` records each request's
+  path and bearer, serves the current-user endpoint, and refuses any bearer but the
+  accepted one when one is given. These three files are in
+  `scripts/core_test_files.txt`, so the dependency-floors and unlocked-resolve lanes
+  exercise the SDK and connector versions they resolve.
 - `tests/test_databricks_routes_auth.py` proves the browsing adapter consumes
   the shared resolution result for both auth modes and preserves normalised
   workspace hosts.

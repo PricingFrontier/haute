@@ -104,8 +104,10 @@ stable `build_failed` response.
 
 A browsing failure the SDK raises is answered with its cause: refused credentials 401,
 naming the `.env` variables of the form in use, or for a user sign-in the SDK could not
-complete (an expired CLI login) the profile or form and the command that restores it; a
-missing grant 403, naming what was listed; a catalog or schema that does not exist 404,
+complete (an expired CLI login, whether it fails as the client is built or on a later
+refresh) the profile or form and the command that restores it, or, when there is no
+`databricks` executable, that the CLI was not found and where to put it; a missing
+grant 403, naming what was listed; a catalog or schema that does not exist 404,
 naming it; any other failure 502. The SDK's own text is logged with credentials and the
 workspace host scrubbed, never returned. The connection test answers the same failures as
 `ok: false` with the same words, and an unreachable workspace as `ok: false` naming the

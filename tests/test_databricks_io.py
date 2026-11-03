@@ -224,9 +224,64 @@ def test_user_sign_in_provider_hands_the_connector_the_sdk_config_s_authenticate
 
     # The SDK is not built until the connector asks: a sign-in is a side effect.
     assert recorded == {}
-    assert auth_kwargs["credentials_provider"]() is authenticate
+    authenticate.return_value = {"Authorization": "Bearer cli-token-123"}
+    header_factory = auth_kwargs["credentials_provider"]()
+    assert header_factory() == {"Authorization": "Bearer cli-token-123"}
     assert host == "workspace.example"
     assert recorded == {"host": "workspace.example", "auth_type": "databricks-cli"}
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_a_refresh_the_cli_refuses_mid_fetch_is_the_sign_in_error_not_an_os_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK's CLI token source raises a plain OSError when `databricks auth token`
+    fails after the client was built; the fetch must fail with haute's remedy."""
+    from haute._databricks_credentials import DatabricksSignInError
+
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+    _, authenticate = _stub_sdk_config(monkeypatch)
+    authenticate.side_effect = OSError(
+        "cannot get access token: Error: A new access token could not be retrieved "
+        "because the refresh token is invalid."
+    )
+
+    _, auth_kwargs, _ = _connection_settings("/sql/warehouse")
+    header_factory = auth_kwargs["credentials_provider"]()
+
+    with pytest.raises(DatabricksSignInError) as exc_info:
+        header_factory()
+    assert str(exc_info.value) == (
+        "The Databricks CLI sign-in failed or has expired: "
+        "run `databricks auth login --host <your DATABRICKS_HOST>` and try again."
+    )
+    assert "refresh token is invalid" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_the_real_connector_s_auth_chain_sends_the_user_sign_in_s_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connector's own auth provider, built as `databricks.sql.connect` builds it,
+    with haute's credentials provider: the request header is the sign-in's header.
+    Observed under databricks-sql-connector 4.x: `credentials_provider` is called
+    once for a header factory, which is called per request."""
+    from databricks.sql.auth.auth import get_python_sql_connector_auth_provider
+
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+    _, authenticate = _stub_sdk_config(monkeypatch)
+    authenticate.return_value = {"Authorization": "Bearer cli-token-123"}
+    credentials, _ = _resolve_connection("/sql/warehouse", node_label="Data Input")
+
+    provider = get_python_sql_connector_auth_provider(
+        credentials.server_hostname, MagicMock(name="http_client"), **_sql_auth_kwargs(credentials)
+    )
+    request_headers: dict[str, str] = {}
+    provider.add_headers(request_headers)
+
+    assert request_headers["Authorization"] == "Bearer cli-token-123"
 
 
 @pytest.mark.usefixtures("_no_ambient_databricks_env")
@@ -245,7 +300,8 @@ def test_a_profile_connects_to_the_profile_s_host(
 
     assert host == "profile.example"
     assert http_path == "/sql/warehouse"
-    assert auth_kwargs["credentials_provider"]() is authenticate
+    authenticate.return_value = {"Authorization": "Bearer cli-token-123"}
+    assert auth_kwargs["credentials_provider"]()() == {"Authorization": "Bearer cli-token-123"}
     # The pinned sign-in travels to the SDK, so it never walks its default chain.
     assert recorded == {"profile": "work", "auth_type": "databricks-cli"}
 

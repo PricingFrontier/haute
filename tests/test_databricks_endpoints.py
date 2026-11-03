@@ -7,6 +7,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -565,3 +566,110 @@ def test_the_connection_test_reports_a_missing_sdk(
         "sdk_auth_type": "",
         "detail": "databricks-sdk is not installed. Install with: pip install haute[databricks]",
     }
+
+
+# ---------------------------------------------------------------------------
+# The CLI sign-in end to end: real SDK, a fake CLI, a stub workspace
+# ---------------------------------------------------------------------------
+
+_CLI_TOKEN = "cli-token-123"
+
+
+def _fake_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str) -> Path:
+    """A ``databricks`` stand-in the SDK runs for ``auth token`` (``DATABRICKS_CLI_PATH``)."""
+    path = tmp_path / "databricks"
+    path.write_text("#!/bin/sh\n" + script, encoding="utf-8")
+    path.chmod(0o755)
+    monkeypatch.setenv("DATABRICKS_CLI_PATH", str(path))
+    return path
+
+
+def _token_json(token: str, expiry: str = "2099-01-01T00:00:00Z") -> str:
+    return f'{{"access_token":"{token}","token_type":"Bearer","expiry":"{expiry}"}}'
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the fake Databricks CLI is a POSIX shell script; the routes' own tests "
+    "above run everywhere",
+)
+class TestCliSignInEndToEnd:
+    """What CI cannot otherwise see: that the token the CLI produces is the one the
+    SDK sends, through haute's routes, and what happens when the workspace or the
+    CLI refuses it after the client was built."""
+
+    @pytest.fixture()
+    def cli_env(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Iterator[tuple[TestClient, Any]]:
+        monkeypatch.delenv("DATABRICKS_TOKEN")
+        monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+        with workspace_stub(accepted_secret="unused", accepted_bearer=_CLI_TOKEN) as workspace:
+            monkeypatch.setenv("DATABRICKS_HOST", workspace.host)
+            yield client, workspace
+
+    def test_the_cli_s_token_is_the_bearer_on_every_request(
+        self, cli_env: tuple[TestClient, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        client, workspace = cli_env
+        _fake_cli(tmp_path, monkeypatch, f"printf '%s' '{_token_json(_CLI_TOKEN)}'\n")
+
+        catalogs = client.get("/api/databricks/catalogs")
+        tested = client.post("/api/databricks/test-connection")
+
+        assert catalogs.status_code == 200
+        assert catalogs.json()["catalogs"] == [{"name": "main", "comment": ""}]
+        assert tested.json() == {
+            "ok": True,
+            "identity": "nick@example.com",
+            "sdk_auth_type": "databricks-cli",
+            "detail": "",
+        }
+        assert {authorization for _, authorization in workspace.requests} == {
+            f"Bearer {_CLI_TOKEN}"
+        }
+        assert [path for path, _ in workspace.requests if "scim/v2/Me" in path]
+
+    def test_a_token_the_workspace_refuses_answers_401_with_the_login_command(
+        self, cli_env: tuple[TestClient, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        client, _ = cli_env
+        _fake_cli(tmp_path, monkeypatch, f"printf '%s' '{_token_json('stale-token')}'\n")
+
+        response = client.get("/api/databricks/catalogs")
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == (
+            "The Databricks CLI sign-in failed or has expired, so the catalogs could not "
+            "be listed: run `databricks auth login --host <your DATABRICKS_HOST>` and try again."
+        )
+
+    def test_a_refresh_the_cli_refuses_after_the_client_was_built_answers_401_not_500(
+        self, cli_env: tuple[TestClient, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The first call hands the SDK an already-expired token, so the first request
+        asks the CLI again; that second call fails as the real CLI does once the
+        refresh token has died, which the SDK raises as a plain OSError."""
+        client, _ = cli_env
+        expired = _token_json(_CLI_TOKEN, "2000-01-01T00:00:00Z")
+        _fake_cli(
+            tmp_path,
+            monkeypatch,
+            'count="$0.calls"\nn=0\n[ -f "$count" ] && n=$(cat "$count")\n'
+            'echo $((n + 1)) > "$count"\n'
+            f"if [ \"$n\" -eq 0 ]; then printf '%s' '{expired}'; "
+            "else echo 'Error: A new access token could not be retrieved because the "
+            "refresh token is invalid.' >&2; exit 1; fi\n",
+        )
+
+        with structlog.testing.capture_logs() as logs:
+            response = client.get("/api/databricks/catalogs")
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == (
+            "The Databricks CLI sign-in failed or has expired, so the catalogs could not "
+            "be listed: run `databricks auth login --host <your DATABRICKS_HOST>` and try again."
+        )
+        (entry,) = [log for log in logs if log["event"] == "databricks_browsing_failed"]
+        assert entry["error_type"] == "OSError"
+        assert "refresh token is invalid" in entry["error"]

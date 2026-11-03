@@ -582,6 +582,35 @@ class TestSdkHandoffThroughTheCli:
         )
         assert "secret-corp" not in str(exc_info.value)
 
+    def test_a_cli_path_that_does_not_exist_is_reported_as_the_cli_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABRICKS_CLI_PATH", str(tmp_path / "no-such" / "databricks"))
+        monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
+        monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+
+        with pytest.raises(DatabricksSignInError) as exc_info:
+            databricks_sdk_config(resolve_databricks_credentials())
+
+        assert exc_info.value.problem == "The Databricks CLI was not found by the server"
+        assert "DATABRICKS_CLI_PATH" in exc_info.value.remedy
+        assert "expired" not in str(exc_info.value)
+
+    def test_a_cli_missing_from_the_path_is_reported_as_the_cli_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without DATABRICKS_CLI_PATH the SDK looks along PATH; finding nothing, its
+        CLI provider declines and the SDK reports no credentials at all."""
+        monkeypatch.delenv("DATABRICKS_CLI_PATH", raising=False)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")
+        monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "databricks-cli")
+
+        with pytest.raises(DatabricksSignInError) as exc_info:
+            databricks_sdk_config(resolve_databricks_credentials())
+
+        assert exc_info.value.problem == "The Databricks CLI was not found by the server"
+
 
 def test_a_token_or_service_principal_needs_no_sdk_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example")

@@ -333,6 +333,8 @@ def credentials_rejected(exc: BaseException) -> bool:
     """
     if isinstance(exc, DatabricksSignInError):
         return True
+    if cli_refused_a_refresh(exc):
+        return True
     try:
         from databricks.sdk.errors import Unauthenticated
     except ImportError:  # pragma: no cover - the SDK raised exc, so it is installed
@@ -340,6 +342,46 @@ def credentials_rejected(exc: BaseException) -> bool:
     if isinstance(exc, Unauthenticated):
         return True
     return isinstance(exc, ValueError) and str(exc).partition(":")[0] in _REFUSED_CREDENTIAL_CODES
+
+
+#: What the SDK's CLI token source raises when `databricks auth token` fails after
+#: the client was built, on a refresh mid-session: ``IOError("cannot get access
+#: token: <the CLI's message>")`` (databricks-sdk 0.88, ``CliTokenSource.refresh``).
+_CLI_REFRESH_FAILURE = "cannot get access token"
+
+
+def cli_refused_a_refresh(exc: BaseException) -> bool:
+    """Whether *exc* is the Databricks CLI refusing to refresh a token mid-session.
+
+    A sign-in that fails as the client is built is a ``ValueError`` the SDK wraps and
+    :func:`databricks_sdk_config` words; one that fails later, when a request asks
+    for a fresh token, is the token source's plain ``OSError`` and must be read as
+    the same refused credential, not a server error.
+    """
+    return isinstance(exc, OSError) and str(exc).startswith(_CLI_REFRESH_FAILURE)
+
+
+_CLI_NOT_FOUND = (
+    "The Databricks CLI was not found by the server",
+    "install it and make sure `databricks` is on the PATH of the shell that starts "
+    "Haute, or set DATABRICKS_CLI_PATH to it",
+)
+
+
+def _cli_not_found(exc: BaseException) -> bool:
+    """Whether the SDK failed because there is no ``databricks`` executable.
+
+    A path ``DATABRICKS_CLI_PATH`` names that does not exist surfaces as a
+    ``FileNotFoundError`` in the cause chain; a binary missing from the PATH makes
+    the SDK's CLI provider decline, and the SDK then reports that no credentials
+    could be configured.
+    """
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, FileNotFoundError):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return "cannot configure default credentials" in str(exc)
 
 
 def databricks_sdk_config(
@@ -368,6 +410,8 @@ def databricks_sdk_config(
         else:
             config = Config(host=credentials.workspace_host, auth_type=credentials.sdk_auth_type)
     except ValueError as exc:
+        if credentials.sdk_auth_type == "databricks-cli" and _cli_not_found(exc):
+            raise DatabricksSignInError(*_CLI_NOT_FOUND) from exc
         problem, remedy = credentials.sign_in_failure()
         raise DatabricksSignInError(problem, remedy) from exc
     if retry_timeout_seconds is not None:

@@ -52,6 +52,10 @@ _EXPECTED_DEBT_IDS = {
     # tests run everywhere (tests/test_databricks_credentials.py::
     # TestSdkHandoffThroughTheCli).
     "a30d337eaac95c5c",
+    # The same fake CLI drives the routes end to end against the stub workspace
+    # (tests/test_databricks_endpoints.py::TestCliSignInEndToEnd); the routes'
+    # other tests run everywhere.
+    "59bc09a298e3bb9f",
     # Offset-through-serving suite — every test trains a real model, so each
     # leg importorskips its optional modelling engine (rustystats for the GLM
     # legs, catboost for the boosted / numeric-only legs), matching the
