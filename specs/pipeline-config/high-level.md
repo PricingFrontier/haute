@@ -768,7 +768,12 @@ Constant node whose `values` hold two entries with one non-empty name is refused
 node-config error naming the name, wherever its frame is built (`constant_frame`, which
 canvas execution and a standalone run share), rather than keeping the second value; an
 entry whose name is not text is refused the same way, and an entry without a name is
-skipped, as before. An
+skipped, as before. Its sidecar writes `values` as a map from each name to its value,
+one a line (`haute._constant_config`, READ-28): a value that reads as a number and
+reads back to the text it was typed as is a JSON number, anything else as typed; each
+runs as before, and the editor reads the map back into its rows. A row without a name
+is not written, two rows with one name are refused, and a sidecar still holding rows is
+refused, naming its one-off conversion. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent

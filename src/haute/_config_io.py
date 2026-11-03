@@ -31,6 +31,7 @@ from haute._banding_config import (
     expand_banding_config_from_sidecar,
     refuse_breakpoint_maps,
 )
+from haute._constant_config import constants_for_sidecar, constants_from_sidecar
 from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
 from haute._json_files import ANY, at, render_json
@@ -159,6 +160,9 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
         # A sidecar writes breakpoints as a list of bands (READ-27).
         refuse_breakpoint_maps(config)
         return expand_banding_config_from_sidecar(config)
+    if node_type == NodeType.CONSTANT:
+        # A sidecar writes the constants as a map from name to value (READ-28).
+        return constants_from_sidecar(config)
     if node_type == NodeType.RATING_STEP:
         # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
         return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
@@ -193,6 +197,8 @@ def _prepare_config_for_sidecar(
 
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
+    if node_type == NodeType.CONSTANT:
+        return constants_for_sidecar(filtered)
     if node_type == NodeType.RATING_STEP:
         normalised = normalise_rating_step_config(filtered)
         refuse_levels_equal_under_factor_dtypes(normalised)
@@ -231,6 +237,10 @@ _SIDECAR_ONE_LINE = at(
 )
 
 
+#: A sidecar's maps of numbers written one item a line: a Constant's values (READ-28).
+_SIDECAR_VERTICAL = at(("values",))
+
+
 def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
     """*record* with the keys *order* names first, in that order, the rest as given."""
     first = {key: record[key] for key in order if key in record}
@@ -260,7 +270,7 @@ def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label:
     }
     if node_type == NodeType.RATING_STEP and isinstance(canonical.get("tables"), list):
         canonical["tables"] = [_rating_table_record(table) for table in canonical["tables"]]
-    return render_json(canonical, one_line=_SIDECAR_ONE_LINE)
+    return render_json(canonical, one_line=_SIDECAR_ONE_LINE, vertical=_SIDECAR_VERTICAL)
 
 
 # ---------------------------------------------------------------------------

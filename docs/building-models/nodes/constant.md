@@ -88,16 +88,16 @@ The constants are saved in `config/global_constants.json`, beside the node setti
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **VALUES** | `values`: a list of `{"name": ..., "value": ...}` pairs, with each value stored as text |
+    | **VALUES** | `values`: a map from each constant's name to its value, one a line: a number as a number, anything else as typed |
     | **COLUMNS** tab | `selected_columns` |
 
     ```json
     {
-      "values": [
-        { "name": "expense_loading", "value": "1.15" },
-        { "name": "tax_rate", "value": "0.12" },
-        { "name": "min_premium", "value": "250" }
-      ]
+      "values": {
+        "expense_loading": 1.15,
+        "tax_rate": 0.12,
+        "min_premium": 250
+      }
     }
     ```
 

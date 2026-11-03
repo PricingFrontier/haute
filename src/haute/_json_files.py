@@ -67,34 +67,36 @@ def _one_line(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
 
 
-def _render(value: Any, path: JsonPath, indent: int, one_line: OneLine) -> str:
+def _render(value: Any, path: JsonPath, indent: int, one_line: OneLine, vertical: OneLine) -> str:
     if not isinstance(value, dict | list):
         return _scalar(value)
     if not value:
         return "{}" if isinstance(value, dict) else "[]"
-    if one_line(path) or _numbers_only(value):
+    if one_line(path) or (_numbers_only(value) and not vertical(path)):
         return _one_line(value)
     pad = "  " * (indent + 1)
     if isinstance(value, dict):
         items = ",\n".join(
-            f"{pad}{_scalar(key)}: {_render(item, (*path, key), indent + 1, one_line)}"
+            f"{pad}{_scalar(key)}: {_render(item, (*path, key), indent + 1, one_line, vertical)}"
             for key, item in value.items()
         )
         return "{\n" + items + "\n" + "  " * indent + "}"
     items = ",\n".join(
-        f"{pad}{_render(item, (*path, index), indent + 1, one_line)}"
+        f"{pad}{_render(item, (*path, index), indent + 1, one_line, vertical)}"
         for index, item in enumerate(value)
     )
     return "[\n" + items + "\n" + "  " * indent + "]"
 
 
-def render_json(value: Any, *, one_line: OneLine = _never) -> str:
+def render_json(value: Any, *, one_line: OneLine = _never, vertical: OneLine = _never) -> str:
     """*value* as Haute writes a JSON file: the records *one_line* names, and lists and
-    mappings of numbers alone, on one line each; the rest one item a line, two-space
-    indented; nothing escaped; a final newline."""
-    return _render(value, (), 0, one_line) + "\n"
+    mappings of numbers alone that *vertical* does not name, on one line each; the rest one
+    item a line, two-space indented; nothing escaped; a final newline."""
+    return _render(value, (), 0, one_line, vertical) + "\n"
 
 
-def render_json_bytes(value: Any, *, one_line: OneLine = _never) -> bytes:
+def render_json_bytes(
+    value: Any, *, one_line: OneLine = _never, vertical: OneLine = _never
+) -> bytes:
     """:func:`render_json` as the UTF-8 bytes written to disk, LF line endings."""
-    return render_json(value, one_line=one_line).encode("utf-8")
+    return render_json(value, one_line=one_line, vertical=vertical).encode("utf-8")

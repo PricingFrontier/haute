@@ -48,7 +48,7 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
 | READ-24 | Planned | P2 | A sheet, its sections and their components are identified by file name, title and number, not random ids. |
 | READ-25 | Planned | P2 | A column's sourced allowed values are stored only as a reference to their parameter file. |
-| READ-28 | Planned | P3 | Constants are a map from name to value, and constants that only formulas read become global constants. |
+| READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-30 | Planned | P3 | `main.py` holds a `connect()` call only for an edge the signatures cannot express. |
 | READ-31 | Planned | P3 | Gaps, conditions and appearance on a sheet are written where a reader looks for them. |
@@ -266,11 +266,10 @@ The owner judged that the complexity isn't worth it.
 **Evidence:** `src/haute/_workbench_params.py::with_param_options`;
 `src/haute/_workbench_folder.py::form_at_ref`; `src/haute/_workbench_app.py`.
 
-### READ-28 — Constants are a map from name to value
-**Why:** A constant node holds each constant in 4 lines, with its value as text (`"1.45"`); a numeric text becomes a number when it runs. In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.
+### READ-28 — Constants that only formulas read become global constants
+**Why:** A Constant node's sidecar is a map from name to value ([pipeline-config](../pipeline-config/high-level.md)). In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.
 
 **Plan:**
-- Write a constant node as a map from name to value, one per line. A number is a JSON number and text stays text, as each runs today.
 - **Promotion to global constants:** the conversion promotes a constant node, turning its constants into global constants and removing the node and its join, only when its structure allows it. All of these must hold:
   - the node's one consumer is a single cross join, with no keys, that adds its columns to every row of one stepped Polars node's input. A keyed join can leave a row without the constant or drop it, so it never qualifies;
   - within that Polars node, every reference to a constant column is a column reference in a formula step outside any group-by or aggregation, where a column and a scalar behave alike;
@@ -285,7 +284,6 @@ The owner judged that the complexity isn't worth it.
 - Trace already shows a global constant's value in a formula.
 
 **Acceptance:**
-- The constant node round-trips as a map, with numbers and text.
 - Conversion tests leave the node, naming the failed condition, for each of these:
   - a name collision;
   - a constant column reaching the node's output;
