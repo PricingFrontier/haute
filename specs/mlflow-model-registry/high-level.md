@@ -272,7 +272,9 @@ Out of scope (owned elsewhere):
   Haute class labels (every Haute-trained binary classifier scores a
   probability), its column contract declares that column as produced, so
   deployed projection and output mappings can use it; a prediction-only
-  classifier declares none.
+  classifier declares none. Planned from the loaded model instead (no
+  contract), a classification node declares it whenever the model scores
+  probabilities, a pyfunc classifier among them.
 - The output column and the `_proba` column replace a same-named column
   already in the input frame, by design: a pipeline may score over an
   existing column. Two Model Score nodes that should both survive need
@@ -315,6 +317,9 @@ Out of scope (owned elsewhere):
   interrupted download, a disk hiccup); a hard ceiling after that means
   persistent corruption becomes a loud, diagnosable failure instead of an
   invisible retry loop burning time and bandwidth on-call would never see.
+  Only a failure Haute cannot explain is retried: a model Haute read and
+  refused (any `HauteError` or `HauteValidationError`) fails once with its
+  own message and keeps its cached file.
 - **The in-memory cache key includes local artifact byte identity, not just
   the source reference.** Keying only on run/version/path would let a
   long-lived process continue serving its old deserialised object after the
@@ -412,11 +417,6 @@ Out of scope (owned elsewhere):
 
 ## Failure model
 
-> NOTE: Explicitly loading Haute's classifier pyfunc can reach a scorer that flattens
-> its label/probability columns, doubling the output length.
-> [MSC-11](../roadmap/model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape)
-> tracks the declared output adapter; automatic native-artifact loading is a separate path.
-
 - `mlflow` not installed: `ImportError` from `resolve_mlflow_source`
   (the discovery routes convert this to `HTTPException(503)`).
 - Missing required source arguments (`run_id` for `"run"`,
@@ -453,7 +453,8 @@ Out of scope (owned elsewhere):
 - `AttributeError` / `TypeError` / `KeyError` raised while loading a
   model are treated as a programming or library-contract error, not
   corruption — they are never retried and propagate immediately with
-  their real stack trace.
+  their real stack trace. A `HauteError` or `HauteValidationError` (a
+  readable model Haute refuses) likewise propagates on the first attempt.
 - A scoring input that fails the feature contract (missing features, a
   categorical column with numeric dtype, or a missing additive offset):
   `FeatureMismatchError` with the relevant expected/actual context. A categorical
@@ -517,4 +518,16 @@ CatBoost is logged this way too, wrapping its
 `.cbm`, because MLflow's CatBoost flavor serves only the native `predict`. A package without a
 model identity, or whose file is not the model it describes, fails at load, and logging loads
 the package once first so a broken artifact never reaches MLflow.
+
+Model Scoring reads any pyfunc, this one included, through its signature. Required inputs
+must be in the scoring input; an input the signature marks optional is passed when the input
+has it and never demanded, so a logged model's exposure (declared optional, see
+`modelling/_signature.py`) prices a quote without one for a full policy term, exactly as its
+native artifact does. Outputs that are exactly `pred_label` and `pred_proba` score as a
+classifier: the label column takes `pred_label` with its declared type and
+`<output_col>_proba` takes `pred_proba`, row for row, on every eager, preview and batched
+path, and the declared types give an empty result its columns; the node must score
+classification. Any other pyfunc returns one prediction per row, and a
+declaration or a result of several columns is refused, never flattened into more values than
+rows.
 

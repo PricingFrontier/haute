@@ -102,7 +102,9 @@ logger = get_logger(component="model_scorer")
 from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
 
 _SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
-_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str], str | None]
+_ModelFeatureContractKey: TypeAlias = tuple[
+    tuple[str, ...], frozenset[str], frozenset[str], str | None
+]
 _FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
@@ -155,6 +157,7 @@ def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
         CacheConsumer.MODEL_CONTRACT,
         {
             "feature_names": tuple(scoring_model.feature_names),
+            "optional_feature_names": frozenset(scoring_model.optional_feature_names),
             "categorical_features": frozenset(scoring_model.cat_feature_names or ()),
             "offset_column": _declared_offset_column(scoring_model),
         },
@@ -278,6 +281,8 @@ def _validate_features_uncached(
 
     missing = [f for f in expected if f not in available and f != offset_column]
     usable = [f for f in expected if f in available or f == offset_column]
+    # An optional input (a pyfunc signature's) is read only where the input has it.
+    usable += sorted(scoring_model.optional_feature_names & (available - set(usable)))
 
     # Cheap dtype checks for categorical expectations
     type_mismatches: list[tuple[str, str, str]] = []
@@ -1768,22 +1773,24 @@ def _declared_score_dtypes(
     """Return output dtypes when the scoring contract fixes them.
 
     Regression predictions are ``Float64`` for every flavor. CatBoost
-    classification declares its labels through ``classes_``. Any other
+    classification declares its labels through ``classes_``, and a pyfunc
+    classifier's signature declares its ``pred_label`` type. Any other
     classifier must be probed.
     """
     proba_dtype = pl.Float64 if include_proba else None
     if task != "classification":
         return pl.Float64, proba_dtype
-    if model_family(flavor).self_describing:
-        raw = getattr(scoring_model, "raw_model", scoring_model)
-        if raw.class_labels is None:
-            raise ValueError(f"{flavor} classification model has no recorded class labels")
-        return pl.Series("prediction", list(raw.class_labels)).dtype, proba_dtype
-    if flavor != "catboost":
-        return None
-    from haute._mlflow_io import catboost_class_labels
+    from haute._mlflow_io import _PyfuncClassifier, catboost_class_labels
 
     raw_model = getattr(scoring_model, "raw_model", scoring_model)
+    if isinstance(raw_model, _PyfuncClassifier):
+        return raw_model.label_dtype, proba_dtype
+    if model_family(flavor).self_describing:
+        if raw_model.class_labels is None:
+            raise ValueError(f"{flavor} classification model has no recorded class labels")
+        return pl.Series("prediction", list(raw_model.class_labels)).dtype, proba_dtype
+    if flavor != "catboost":
+        return None
     labels = catboost_class_labels(raw_model)
     if labels is None:
         raise ValueError(

@@ -66,6 +66,7 @@ class TestModelScoreColumnDetectionLoud:
             config["mlflow_destination"] = config_value
         model = MagicMock(spec=ScoringModel, run_contract_path=None)
         model.feature_names = ["a", "b"]
+        model.optional_feature_names = frozenset()
         with patch("haute._mlflow_io.load_mlflow_model", return_value=model) as mock_load:
             produced, referenced = get_column_contract(NodeType.MODEL_SCORE, config)
 
@@ -215,6 +216,28 @@ class TestModelScoreColumnDetectionLoud:
         }
         with pytest.raises(ConfigError, match="internal deploy model inputs"):
             _model_score_columns(config)
+
+    def test_an_optional_pyfunc_input_is_planned_as_optional(self) -> None:
+        """Projection keeps a present optional input and never demands an absent one."""
+        from haute._builders import _model_score_columns
+        from haute._mlflow_io import ScoringModel
+
+        config = {
+            "sourceType": "run",
+            "run_id": "run",
+            "artifact_path": "model",
+            "output_column": "pred",
+        }
+        model = ScoringModel(
+            model=object(),
+            feature_names=["age"],
+            optional_feature_names=frozenset({"exposure"}),
+        )
+        with patch("haute._model_source.load_scoring_model", return_value=model):
+            contract = _model_score_columns(config)
+
+        assert contract.inputs == frozenset({"age"})
+        assert contract.optional_inputs == frozenset({"exposure"})
 
 
 # ===========================================================================

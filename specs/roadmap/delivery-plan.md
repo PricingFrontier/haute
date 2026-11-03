@@ -41,26 +41,19 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | Phase | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---|---:|---|---|---|---|---|
 | B | 8 | Worker primitive | `ROAD-WORKER-05` | — | L | One worker primitive and one failure family, mapped once to HTTP and job states, after the estimate has moved and services raise domain errors. |
-| E | 13 | Typed node configs | `PCFG-R07` | — | L | The generated browser contract types a node's config as an open object; the typed models narrow it with a regeneration. The existing Model Scoring file source supplies its config seam; round 21 extends the same models with external-family selection and pyfunc trust. |
+| E | 13 | Typed node configs | `PCFG-R07` | — | L | The generated browser contract types a node's config as an open object; the typed models narrow it with a regeneration. The existing Model Scoring file source supplies its config seam. |
 | E | 14 | Node specification | `PCFG-R09` | 13 | M | It builds on the typed models and the complete generated contract. |
 | F | 17 | Dead code | `ENGQ-R01` | — | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
-| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | M | Generic suffixes and the XGBoost missing-value sentinel first; pyfunc files after, on the same file source. |
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
 ## User-visible changes in this plan
 
-These packages change what a user sees or relies on. Each was decided on the
-date its entry records; raise an objection before its round starts.
-
-- `MSC-06`: Model Scoring reads XGBoost and LightGBM files saved under their
-  libraries' generic suffixes (`.json`, `.txt`), and a contract can declare an
-  XGBoost model's missing-value sentinel.
-- `MSC-05`: Local pyfunc packages are executable imports requiring explicit
-  trust of their content digest. Inspection does not execute package code;
-  changed contents require a new trust decision.
+None of the scheduled rounds changes what a user sees or relies on. A package
+that does is listed here, with the date it was decided, so an objection can be
+raised before its round starts.
 
 ## Not scheduled
 
@@ -70,6 +63,5 @@ and [28 October functional review](codebase-review-2026-10-28.md)
 packages, have not been assigned a round; that does not defer their stated
 priority. Decision packages need the choice in their entry before scheduling.
 
-Deferred packages start only when their trigger is met. For example, `MSC-07`
-([model scoring](model-scoring.md)) waits for the evidence or demand its entry
-names.
+Deferred packages start only when their trigger is met: the evidence or demand
+their entry names.

@@ -435,6 +435,17 @@ def _poll_auto_range_until_done(client: TestClient, job_id: str, timeout: float 
 
 
 @pytest.fixture()
+def modest_solve_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the solve profile's grant, so a job reaches the code under test.
+
+    Unpinned, the grant is a share of the RAM free when it is admitted, which a
+    busy CI runner can lack: the job is then refused as
+    ``in_flight_memory_budget_exceeded`` before it runs.
+    """
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
+
+
+@pytest.fixture()
 def _in_solver_worker_context():
     """Enter the solver worker context for unit tests that call the heavy
     solver entrypoints directly (they are guarded against inline execution)."""
@@ -2874,6 +2885,7 @@ class TestEstimateRoute:
     def test_frontier_auto_range_classifies_a_reducer_failure(
         self,
         scored_data,
+        modest_solve_budget,
         raised,
         status_code,
         terminal_reason,
@@ -2917,6 +2929,7 @@ class TestEstimateRoute:
     def test_frontier_auto_range_reducer_budget_below_minimum_is_memory_limited(
         self,
         scored_data,
+        modest_solve_budget,
     ):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import (
