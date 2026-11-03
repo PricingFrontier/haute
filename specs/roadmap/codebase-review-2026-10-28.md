@@ -67,18 +67,14 @@ owners. A group is not an individual failing assertion or a release-wide blocker
 | Priority | Trigger and observed consequence | Owning package | Evidence strength |
 |---|---|---|---|
 | P1 | An IDE save after assistant plan verification is overwritten by apply; the rename and post-save verification still succeed. | [ASSIST-61](assistant.md#assist-61--keep-the-authenticated-revision-through-commit) | Real temporary pipeline and transactional save; deterministic edit before commit. |
-| P2 | Two independent API Input edits before identity resolution completes retain only the second edit. | [FSH-R10](frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution) | Actual controller: expected `[false, false]`, received `[true, false]`; `onUpdateNode` surfaces the superseded edit as an error toast. |
-| P1 | Cancellation of A finishes after B starts; A's reply retires B or publishes A's result under B's calculation identity. | [FSH-R11](frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job) | Two pivot hook/store probes. Training has the same source pattern but was not separately executed. |
 
 ### Additional full-source findings
 
 | Priority | Trigger and observed consequence | Owning package | Evidence and practical limit |
 |---|---|---|---|
-| P1 | Failed solve B restamps retained success A with B's identity, making old numbers appear current under a new objective. | [FSH-R12](frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results) | Actual store/hash/staleness helpers; preview label source checked. Publication already refuses the error state. |
 | P2 | Haute classifier pyfunc's label/probability table is flattened to 40 values for 20 input rows. | [MSC-11](model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape) | Real saved/loaded CatBoost pyfunc, feature contract and scoring adapter. Explicit pyfunc selection is affected; automatic native selection may avoid it. |
 | P3 | Relationships target `__w=[10,20]` is overwritten by internal weight alias: means become `[1,1]`, strength 0. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual Parquet, data-point resolver and relationship service; ordinary-name equivalent requires means `[10,20]`, strength 1. |
 | P3 | Copied Explore node B receives cached result.node_id A for the same producer/card. | [EDA-R01](explore-eda.md#eda-r01--pivot-requests-answered-right), extended | Actual pivot service/cache. Numbers are correct; browser stores them under B, so no numerical cross-node corruption claim. |
-| P2 | Shared-flight operation TimeoutError is mistaken for a polling timeout; completed work spins until cancellation. | [ROAD-WORKER-09](background-jobs-api.md#road-worker-09--completed-operation-timeouts-are-terminal-failures) | Real SharedFlights and LatestWinsQueue with controlled failure/cancellation. |
 
 The first implementation pass should address the P1 packages before opportunistic
 cleanup. Each package includes the expected behaviour, scope, regression scenarios
@@ -164,7 +160,7 @@ adds a finding group or changes the 42-group count.
 | `frontend/src/api/client.ts::request` / retry policy | **Unverified, hypothesis underspecified.** Name a real retry-enabled PUT/DELETE endpoint with a non-idempotent effect, let its mutation commit while losing the response, and observe a duplicate effect or incorrect retry result. POST is not retried by default; project-file/workbench writes have explicit zero-retry paths. Do not label every mutation unsafe. |
 | `frontend/src/api/projectFiles.ts` XHR upload / `FilesPanel` | **Unverified.** Stall an actual upload transport indefinitely, check whether the panel remains stuck and whether its cancel/close action retires transport and UI ownership. Lack of an automatic timeout alone is not a confirmed failure if intentional long uploads remain cancellable. |
 | `frontend/src/app/useQuoteListStore.ts::more` / `load` | **Unverified.** Hold old-list `more()`, load another list, and try its pagination before/after the old request settles. Confirm new pagination remains blocked or old completion clears a newer loading state. This is distinct from the archive/restore query adoption delivered on 29 October. |
-| `ExplorePivotsConfig` / `PivotFormulaSection` confirmation continuations | **Unverified; previous ownership statement lacked an exact package.** Open a destructive pivot/formula confirmation, apply an independent edit or document switch while it is open, then confirm and inspect current config. Confirmation must show old captured arrays replacing newer state or deleting a no-longer-current target. FSH-R07's identity-resolved creation fences and the pivot name's committed draft do not by themselves dispose of this separate continuation. |
+| `ExplorePivotsConfig` / `PivotFormulaSection` confirmation continuations | **Unverified; previous ownership statement lacked an exact package.** Open a destructive pivot/formula confirmation, apply an independent edit or document switch while it is open, then confirm and inspect current config. Confirmation must show old captured arrays replacing newer state or deleting a no-longer-current target. The identity-resolved creation fences and the pivot name's committed draft do not by themselves dispose of this separate continuation. |
 | `frontend/src/panels/modelling/TermTableView.tsx` state, `EBMTermsTab` / `TBoostTablesTab` keys | **Unverified.** Keep the same mounted term key, replace its result with different axis count/levels, and observe an invalid fixed index/axis or wrong slice. First establish the real parent lifecycle preserves that component across results; an isolated rerender is insufficient if production remounts it. |
 | `frontend/src/stores/useSettingsStore.ts::loadPipelineSettings` | **Unverified.** Complete newer load B before older A so `_confirmedPipelineSettings` could regress, then fail a settings save and inspect rollback. Confirmation requires the UI to restore A despite B being the latest accepted settings. The existing save-completion fence may rule out some interleavings; no completed witness is recorded. |
 | `scripts/benchmarks/benchmark_optimiser_pipeline_timing.py::_process_memory_mb` | **Unverified manual-tool measurement issue, not a product claim.** Run or unit-check the helper on Linux/macOS with known `ru_maxrss` units and compare the returned MB to an independent RSS value. Record the affected benchmark output. The fact it is auxiliary does not prove its numbers correct. |
@@ -187,7 +183,7 @@ adds a finding group or changes the 42-group count.
 | Existing report; source projection transparent-chain helper | **Unverified beyond the tested case:** the recorded schema-dependent `head` witness did not fail. A different accepted argument-dependent chain must show wrong actual executor rows before promotion. Do not generalize one passing probe into universal unreachability. |
 | SQLite duplicate result-column names / `_source_cache.py` publication | **Not reachable as a successful corrupted cached result in the measured path:** duplicate schema is refused before publication. This does not claim every direct helper caller rejects; a supported consumer bypassing that guard would be the confirming counterexample.  |
 | `_json_shred/_runtime_storage.py` source proof/freshness | **Unverified beyond that negative probe:** ordinary same-size modification was detected. Confirmation requires a concrete supported mutation with unchanged accepted proof that returns stale rows. No general claim that all same-size/open-writer changes are impossible. |
-| `frontend/src/panels/optimiser/solveActions.ts` solve request omits the active source | **Not a defect:** `solveActions` and the backend provenance path intentionally use the batch scenario; absence of an active-source field is not lost source identity. This is separate from FSH-R12's retained-success identity bug. |
+| `frontend/src/panels/optimiser/solveActions.ts` solve request omits the active source | **Not a defect:** `solveActions` and the backend provenance path intentionally use the batch scenario; absence of an active-source field is not lost source identity. |
 | Persisted trained-handle freshness after source/model changes | **Unverified and underspecified.** The batch note named no exact package or transition. Confirm through an actual restore/load that a stale persisted model handle survives a supported source/model change and is reused incorrectly. |
 | Raw pricing-error redaction in `src/haute/_workbench_app.py` | **Unverified and underspecified.** The generated container's 500 envelopes no longer carry exception text (they name a request id the log carries), but that does not establish this workbench hypothesis. Identify a supported pricing failure and show an externally returned sensitive/raw detail that the error contract forbids; no concrete payload was recorded. |
 
@@ -195,8 +191,6 @@ adds a finding group or changes the 42-group count.
 
 | Candidate scope | Disposition |
 |---|---|
-| save flush, coarse graph creation fence, scoped edited marker | Duplicate **FSH-R07**. |
-| saved-document sync | Duplicate **FSH-R05**. |
 | utility error wording | Duplicate **FGC-R04**; distinct accepted read/draft race remains FGC-R08. |
 | assistant undo/state fencing | Duplicate **ASSIST-60**. |
 | typed allowed-values onto older form | Duplicate **WB-38**. |
@@ -215,16 +209,12 @@ scratch notes. Package splits use the new owners without adding finding groups.
 
 | Earlier candidate note | Accepted owner |
 |---|---|
-| dispersion caller ownership / estimate queued | The helper's error-contract wording is **FSH-R06**. |
-| cancellation caller / result consumer identity | **FSH-R11**. Native polling's captured-job guard is not itself a new defect. |
-| request-input edits / explicit Auto Layout | **FSH-R10**, **FGC-R05**; mixed Delete **FGC-R07**. |
+| request-input edits / explicit Auto Layout | **FGC-R05**; mixed Delete **FGC-R07**. |
 | delayed drill-in | **FGC-R06**. |
 | utility async read/save/switch | **FGC-R08**. |
 | blocked recovery inspector | **FGC-R09**. |
 | cached pivot response consumer node identity | **EDA-R01**; numbers remain correct as recorded in the accepted report. |
-| failed new solve identity | **FSH-R12**. |
 | pyfunc classifier output shape | **MSC-11**. |
-| completed TimeoutError retry loop | **ROAD-WORKER-09** after requested split; formerly bundled ROAD-WORKER-07. |
 
 The training-import note was attached to a batch including `cli/_app.py`, but its
 actual source is `cli/_train.py::handle_train`. The table-handle note attached to

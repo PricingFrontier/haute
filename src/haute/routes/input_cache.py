@@ -67,7 +67,11 @@ from haute._worker_isolation import (
     isolated_worker_memory_detail,
     run_isolated_worker,
 )
-from haute.routes._background_jobs import CancellableJobRegistry, SingleFlightCoordinator
+from haute.routes._background_jobs import (
+    CancellableJobRegistry,
+    SingleFlightCoordinator,
+    start_job_thread,
+)
 from haute.routes._job_lifecycle import JobLifecycle, require_job_status
 from haute.routes._job_store import RunningJobFields, TerminalReason, get_job_store
 from haute.routes._memory_messages import memory_limit_user_message
@@ -1022,7 +1026,7 @@ def _start_build(
             daemon=True,
             name=f"haute-input-cache-{job_id}",
         )
-        thread.start()
+        start_job_thread(thread)
 
     return InputCacheBuildResponse(
         job_id=job_id,

@@ -1552,6 +1552,7 @@ def test_each_worker_outcome_maps_to_one_not_run_reason(make: str, reason: str) 
             remote_message="private",
             remote_traceback="private",
             public_payload=None,
+            is_memory=issubclass(error, MemoryError),
         )
 
     errors: dict[str, workers.InteractiveWorkerError] = {

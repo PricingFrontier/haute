@@ -24,11 +24,9 @@ records corrections to that audit's claims and proposed remedies.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Assistant](assistant.md) | The provider client as the policy describes it, bounded requests with a terminal event on every stream, tools that never stall the server, facts the model can trust, the core's and the tools' hygiene, the chat panel's failures and clicks; blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred); assistant apply retaining the authenticated revision through commit, and workbench form tables resolved from the configured project root | `ASSIST-54` |
-| [Background jobs and API lifecycle](background-jobs-api.md) | A shutdown that cancels every job, one failure classification with persistence failures surfaced, one worker envelope and one cgroup resolver, one worker primitive; operation-raised timeouts propagated by shared flights and the latest-wins queue | `ROAD-WORKER-06` |
 | [Documentation](docs.md) | The Databricks guide as the deploy runs, the CI pages as the generated workflows are, a new project's path from an empty folder, upgrade notes for a project made by 0.6.0, the site publishing `main` again | `DOC-01` |
-| [Engineering quality](engineering-quality.md) | Dead code, test organisation; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
+| [Engineering quality](engineering-quality.md) | Dead code, test organisation, one worker primitive and failure family; mutation witnesses for the price-changing modules (a decision) | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Pivot requests answered right (invalid cards, time-zone-aware members, formula causes, one scan per feature), the chart panels' empty state and glyphs; advanced pivot and PivotChart parity (deferred); noncolliding relationship aliases and cached responses naming their consumer; pivot header format lookup by field name, fresh config reads after confirmation dialogs, and Explore error assistant action | `EDA-R01` |
-| [Frontend shared](frontend-shared.md) | A save that keeps the browser in step after a reconnect, surfaced completion errors, aborted fetches, a bootstrap deadline; Ctrl+S saving what is being typed and creation fenced on structure; one copy of each store derivation and helper; the specification as the code is; the results store; independent edits during input resolution, job-bound cancellation replies, failed solves retaining the identity of prior successful results, and store-backed node-data job ownership | `FSH-R05` |
 | [IO layer](io-layer.md) | Lock holds and usage cost; memory admission and isolated worker execution for explicit Data Input cache builds | `IO-R07` |
 | [Model scoring](model-scoring.md) | Generic model-file suffixes, pyfunc files, loader errors that keep their meaning; pyfunc classifiers preserving separate labels and positive-class probabilities | `MSC-06` |
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM (deferred until RustyStats fits out of core), XGBoost through external memory when a job will not fit; evaluation planning that holds its memberships compactly | `MOD-R11` |
@@ -108,7 +106,7 @@ with a systematic batch-by-batch pass over all 961 authored production source fi
 (`376,420` lines across `src/haute/` and `frontend/src/`, tracked in a scratch
 inventory ledger with `0` unread files remaining). It maps the verified findings to
 new component packages (`ASSIST-62`,
-`EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`, `FSH-R13`,
+`EDA-R04`, `FGC-R10` to `FGC-R12`, `FMOU-R07`, `FNED-R07`,
 `GIT-R19`, `IO-R07`,
 `API-R04`, `TBOOST-11`, `WB-41`) and extensions of `DEP-R12B` and
 `DEP-R13` (delivered, with the deploy roadmap retired); findings whose packages were

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 import subprocess
 import sys
 import textwrap
@@ -25,6 +26,7 @@ from haute._execution_context import ExecutionCancellationToken
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerError,
+    InteractiveWorkerProtocolError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerStartError,
     InteractiveWorkerStoppedError,
@@ -441,6 +443,71 @@ def test_a_result_over_the_owner_bound_fails_the_command_not_the_worker(
     assert raised.value.remote_type == "WorkerResultTooLargeError"
     assert worker.alive
     assert _run(worker, remember, 3) == 3
+
+
+def test_malformed_failure_evidence_is_a_protocol_failure_that_ends_the_worker() -> None:
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-evidence")
+    malformed = pickle.dumps(("result", "c" * 32, "error", ("only", "three", "fields"), None))
+
+    with pytest.raises(InteractiveWorkerProtocolError, match="malformed error evidence"):
+        created._interpret_result("c" * 32, malformed, evidence_before=None)
+
+    assert created.death is not None
+    assert created.death.kind == "crashed"
+
+
+def test_a_sampled_checkpoint_over_budget_ends_the_worker_on_watchdog_evidence() -> None:
+    """A child's ExecutionMemoryLimitExceededError is a MemoryError: memory, from its watchdog."""
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-checkpoint")
+    evidence = (
+        "ExecutionMemoryLimitExceededError",
+        "haute._execution_context",
+        "over budget",
+        "traceback",
+        None,
+        True,
+    )
+    result = pickle.dumps(("result", "c" * 32, "error", evidence, None))
+
+    with pytest.raises(InteractiveWorkerRemoteError) as raised:
+        created._interpret_result("c" * 32, result, evidence_before=None)
+
+    assert raised.value.terminal_reason == "memory_limited"
+    assert created.death is not None
+    assert (created.death.kind, created.death.memory_evidence) == ("remote_memory", "watchdog")
+
+
+def test_a_command_failure_is_sent_as_the_pools_failure_evidence() -> None:
+    from haute._dedicated_workers import _error_envelope
+
+    try:
+        raise MemoryError("refused")
+    except MemoryError as exc:
+        envelope = _error_envelope("c" * 32, exc, None)
+
+    kind, command_id, status, evidence, cap = envelope
+    assert (kind, command_id, status, cap) == ("result", "c" * 32, "error", None)
+    assert evidence[:3] == ("MemoryError", "builtins", "refused")
+    assert evidence[5] is True
+
+
+def test_a_queue_that_will_not_close_is_logged_as_the_worker_ends() -> None:
+    import structlog.testing
+
+    class UnclosableQueue:
+        def close(self) -> None:
+            raise OSError("pipe already gone")
+
+        def join_thread(self) -> None:
+            raise AssertionError("never reached")
+
+    created = DedicatedWorker(owner="test", polars_threads=2, process_name="haute-test-queue")
+    created._request_queue = UnclosableQueue()
+    with structlog.testing.capture_logs() as logs:
+        created.terminate("cancelled")
+
+    (record,) = [r for r in logs if r["event"] == "dedicated_worker_queue_close_failed"]
+    assert (record["queue"], record["error"]) == ("request", "pipe already gone")
 
 
 def test_a_worker_terminated_before_it_starts_never_spawns() -> None:

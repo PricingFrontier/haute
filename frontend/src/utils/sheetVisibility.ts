@@ -8,7 +8,8 @@
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
 import { QUOTE_DETAILS_ID, QUOTE_DETAILS_STORE_ONLY, sheetColumns } from "./quoteIdentity"
-import { filled, isDay, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
+import { isDay } from "./isoDate"
+import { filled, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 export type CountTest = RowCount["op"]

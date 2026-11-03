@@ -232,3 +232,52 @@ describe("useGraphStore - undo atomicity", () => {
     expect(restored.dirty).toBe(false)
   })
 })
+
+describe("one commit rule for the history-aware setters", () => {
+  beforeEach(() => resetGraphStoreForTests())
+
+  it("records an undo step for an authored change and none for a change of no authored state", () => {
+    seed([makeNode("a"), makeNode("b")], [])
+    const store = useGraphStore.getState()
+    useGraphStore.setState({ redoStack: [{ nodes: [], edges: [], preamble: "", submodels: {} }] })
+
+    act(() => store.setNodes((nds) => nds.map((n) => ({ ...n, selected: true }))))
+    act(() => store.setNodesAndEdges((nds) => nds, (eds) => eds))
+    act(() => store.setPreamble(""))
+    act(() => store.setGlobalConstants([]))
+    expect(useGraphStore.getState().undoStack).toHaveLength(0)
+    // Nothing authored changed, so the redo step is still there.
+    expect(useGraphStore.getState().redoStack).toHaveLength(1)
+
+    act(() => store.setNodes((nds) => nds.filter((n) => n.id !== "b")))
+    act(() => store.setPreamble("RATE = 1"))
+    expect(useGraphStore.getState().undoStack).toHaveLength(2)
+    expect(useGraphStore.getState().redoStack).toHaveLength(0)
+
+    act(() => useGraphStore.getState().undo())
+    expect(useGraphStore.getState().preamble).toBe("")
+    expect(useGraphStore.getState().dirty).toBe(useGraphStore.getState().isDirty())
+  })
+  const at = (x: number) => (nds: Node[]) => nds.map((n) => ({ ...n, position: { x, y: 0 } }))
+  /** A drag: one snapshot at its start, then position-only raw updates the cached fingerprint does not follow. */
+  function dragged() {
+    seed([makeNode("a", "polars", { position: { x: 0, y: 0 } })], [])
+    act(() => useGraphStore.getState().pushSnapshot())
+    act(() => useGraphStore.getState().setNodesRaw(at(50)))
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+  }
+
+  it("records no undo step for a selection after a drag", () => {
+    dragged()
+    act(() => useGraphStore.getState().setNodes((nds) => nds.map((n) => ({ ...n, selected: true }))))
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+  })
+
+  it("records an undo step for putting a dragged node back where it started", () => {
+    dragged()
+    act(() => useGraphStore.getState().setNodes(at(0)))
+    expect(useGraphStore.getState().undoStack).toHaveLength(2)
+    act(() => useGraphStore.getState().undo())
+    expect(useGraphStore.getState().nodes[0].position).toEqual({ x: 50, y: 0 })
+  })
+})

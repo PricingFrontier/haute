@@ -915,12 +915,12 @@ The behavioural contract is defined in
   lineage to `startTrainJob`, so an edit made while the request is pending never relabels the job.
   A fence-current `completeTrainJob` writes the handle — job ID, config hash, source and that
   lineage — under the job's document (`documentFence.sourceFile`); a job started without a lineage
-  is never remembered; a fence-current error result of a job, a job failure (`failTrainJob`) or a
-  synchronous completion without a job forgets the node's handle, and a job whose document
-  changed touches no handle. A request refused before any job existed (a rejected request or an
-  `error` response) is recorded by `failTrainStart` as the node's error result, the job-free
-  identity reading as stale, and keeps the handle: the last completed job is still the server's.
-  Both failure paths record the one error result `trainFailureResult` builds. The job's config
+  is never remembered; a fence-current error result of a job or a job failure (`failTrainJob`)
+  forgets the node's handle, and a job whose document changed touches no handle. A request
+  refused before any job existed (a rejected request, or an answer that starts no job) is
+  recorded by `failTrainStart` as the node's failure, `result: null` with its `error`, under the
+  identity it was asked for, and keeps the handle: the last completed job is still the server's.
+  No failure is recorded as a fabricated training result. The job's config
   hash is the hash of the training identity `ModellingConfig` renders with
   (`useStaleConfigEstimate`'s `configHash` of `trainingIdentityConfig(config)`, computed in that
   render, never debounced), taken with the lineage before awaiting.

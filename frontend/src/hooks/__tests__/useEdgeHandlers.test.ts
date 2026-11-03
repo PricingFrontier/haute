@@ -1157,6 +1157,47 @@ describe("useEdgeHandlers", () => {
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
   })
 
+  it("does not commit a resolved edgeJoin after its dragged source is edited", async () => {
+    const params = makeEdgeJoinInsertionParams()
+    let candidate: { nodes: Node[]; edges: Edge[] } | null = null
+    let resolveIdentities!: (value: { nodes: Node[]; edges: Edge[] }) => void
+    params.resolveGraphIdentities = vi.fn((nodes, edges) => {
+      candidate = { nodes: [...nodes], edges: [...edges] }
+      return new Promise((resolve) => { resolveIdentities = resolve })
+    })
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", fromHandleId: "lookup_out" }),
+      )
+    })
+    await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    // The source's outputs are edited (an API input's frame renamed): the new
+    // edge would name an output the source no longer has. Names and structure stay.
+    params.graphRef.current = {
+      ...params.graphRef.current,
+      nodes: params.graphRef.current.nodes.map((node) => node.id === "c"
+        ? { ...node, data: { ...node.data, config: { frames: [{ label: "renamed_out" }] } } }
+        : node),
+    }
+    await act(async () => {
+      if (!candidate) throw new Error("Expected an Edge Join identity candidate")
+      resolveIdentities({
+        nodes: candidate.nodes.map((node) => node.id === "edgeJoin_1"
+          ? { ...node, data: { ...node.data, _defaultInputName: "server_join" } }
+          : node),
+        edges: candidate.edges,
+      })
+      await Promise.resolve()
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/graph changed/)
+  })
+
   it("onConnectEnd ignores input-handle drops on an existing edge", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
@@ -1945,7 +1986,8 @@ describe("useEdgeHandlers", () => {
 
     act(() => result.current.onDrop(droppedNodeEvent()))
     await vi.waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
-    params.graphRef.current = { nodes: [], edges: [] }
+    // Another node appeared: a structural change.
+    params.graphRef.current = { nodes: [identifiedNode("other", NODE_TYPES.POLARS)], edges: [] }
     await act(async () => {
       if (!candidate) throw new Error("Expected a dropped-node identity candidate")
       resolveIdentities({ nodes: [candidate], edges: [] })
@@ -2911,7 +2953,7 @@ describe("useEdgeHandlers connection drop menu", () => {
     )
   })
 
-  it("refuses the creation when the graph changes while identities resolve", async () => {
+  it("creates onto the live graph when only the selection or positions changed while identities resolve", async () => {
     const params = makeDropParams()
     let finishResolution: () => void = () => {}
     params.resolveGraphIdentities = vi.fn((nodes: readonly Node[]) => new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
@@ -2921,7 +2963,32 @@ describe("useEdgeHandlers connection drop menu", () => {
     releaseOnCanvas(result)
 
     act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.POLARS))
-    params.graphRef.current = { nodes: [...params.graphRef.current.nodes], edges: [] }
+    // A drag moved and selected the source: a new graph object, the same structure.
+    params.graphRef.current = {
+      nodes: params.graphRef.current.nodes.map((node) => ({ ...node, selected: true, position: { x: 900, y: 900 } })),
+      edges: [],
+    }
+    finishResolution()
+    await flushIdentityCommit()
+
+    expect(params.pushSnapshot).toHaveBeenCalledTimes(1)
+    const nodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nodes.map((node) => node.id)).toEqual(["a", `${NODE_TYPES.POLARS}_1`])
+    // The drag is kept; only the new node is selected.
+    expect(nodes[0]).toMatchObject({ position: { x: 900, y: 900 }, selected: false })
+  })
+
+  it("refuses the creation when the graph's structure changes while identities resolve", async () => {
+    const params = makeDropParams()
+    let finishResolution: () => void = () => {}
+    params.resolveGraphIdentities = vi.fn((nodes: readonly Node[]) => new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+      finishResolution = () => resolve({ nodes: [...nodes], edges: [] })
+    }))
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    releaseOnCanvas(result)
+
+    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.POLARS))
+    params.graphRef.current = { nodes: [...params.graphRef.current.nodes, identifiedNode("b", NODE_TYPES.POLARS)], edges: [] }
     finishResolution()
     await flushIdentityCommit()
 

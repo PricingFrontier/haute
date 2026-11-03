@@ -120,7 +120,13 @@ describe("useNodeDataStore", () => {
 
     store.startJob("join||live", { jobId: "job-1", message: "Caching data", startedByLabel: "Explore" })
     expect(useNodeDataStore.getState().jobs).toEqual({
-      "join||live": { jobId: "job-1", progress: 0.03, message: "Caching data", startedByLabel: "Explore" },
+      "join||live": {
+        jobId: "job-1",
+        progress: 0.03,
+        message: "Caching data",
+        startedByLabel: "Explore",
+        startedHere: false,
+      },
     })
     expect(useNodeDataStore.getState().slots["join||live"].reportedState).toBe("building")
 
@@ -154,7 +160,77 @@ describe("useNodeDataStore", () => {
       progress: 0.2,
       message: "Caching data",
       startedByLabel: "join",
+      // Another client's build is not this tab's to stop.
+      startedHere: false,
     })
+  })
+
+  it("keeps a build this tab started as its own when a later answer joins it or a point reports it", () => {
+    const store = useNodeDataStore.getState()
+    const building = (jobId: string) =>
+      point({
+        state: "building",
+        generation: null,
+        data_version: null,
+        job: { job_id: jobId, progress: 0.4, message: "Caching data" },
+      })
+    store.observePoint(point({ state: "missing", generation: null, data_version: null }), "live", IDENTITY)
+
+    store.startJob("join||live", {
+      jobId: "job-1",
+      message: "Caching data",
+      startedByLabel: "Explore",
+      startedHere: true,
+    })
+    // Another consumer's run joins the same build.
+    store.startJob("join||live", { jobId: "job-1", message: "Caching data", startedByLabel: "Banding" })
+    expect(useNodeDataStore.getState().slots["join||live"].job?.startedHere).toBe(true)
+
+    // A consumer's inspection reports the same build running.
+    store.observePoint(building("job-1"), "live", IDENTITY)
+    expect(useNodeDataStore.getState().slots["join||live"].job?.startedHere).toBe(true)
+    expect(useNodeDataStore.getState().jobs["join||live"]?.startedHere).toBe(true)
+
+    // A different build, joined or reported, is judged on its own.
+    store.observePoint(building("job-2"), "live", IDENTITY)
+    expect(useNodeDataStore.getState().jobs["join||live"]?.startedHere).toBe(false)
+    store.startJob("join||live", { jobId: "job-3", message: "Caching data", startedByLabel: "Banding" })
+    expect(useNodeDataStore.getState().jobs["join||live"]?.startedHere).toBe(false)
+  })
+
+  // A run whose consumer moved on before its answer was published names a slot
+  // the store may not hold; the build the server started still runs.
+  it("registers a started build for a slot it does not hold from the run's point", () => {
+    const store = useNodeDataStore.getState()
+    const beforeEpoch = useNodeDataStore.getState().epoch
+
+    store.startJob(
+      "join||live",
+      { jobId: "job-1", message: "Caching data", startedByLabel: "Explore", startedHere: true },
+      { point: point({ state: "building", generation: null, data_version: null }), source: "live" },
+    )
+
+    const after = useNodeDataStore.getState()
+    const running = {
+      jobId: "job-1",
+      progress: 0.03,
+      message: "Caching data",
+      startedByLabel: "Explore",
+      startedHere: true,
+    }
+    expect(after.jobs).toEqual({ "join||live": running })
+    expect(after.slots["join||live"]).toMatchObject({
+      producerNodeId: "join",
+      portLabel: null,
+      source: "live",
+      kind: "node_output",
+      reportedState: "building",
+      job: running,
+      delegatedBuild: null,
+    })
+    // No consumer was told it reads this slot, and nothing anyone held changed.
+    expect(after.consumerSlots).toEqual({})
+    expect(after.epoch).toBe(beforeEpoch)
   })
 
   it("ends a failed build so its consumers ask what is there now", () => {
@@ -453,6 +529,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       jobId: "job-1",
       message: "Caching data",
       startedByLabel: "Explore",
+      startedHere: true,
     })
 
     // The point agrees a build is running but carries no job of its own, as a
@@ -468,6 +545,7 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       progress: 0.03,
       message: "Caching data",
       startedByLabel: "Explore",
+      startedHere: true,
     })
   })
 

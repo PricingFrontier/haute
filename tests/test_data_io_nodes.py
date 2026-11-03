@@ -408,6 +408,7 @@ class TestExecuteSinkDataOutput:
                 remote_type="NativeMemoryLimitUnsupportedError",
                 remote_message="unsupported",
                 remote_traceback="traceback",
+                is_memory=False,
             )
         elif failure_kind == "crashed":
             failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
@@ -2930,12 +2931,14 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
             remote_type="MemoryError",
             remote_message="private memory detail",
             remote_traceback="private traceback",
+            is_memory=True,
         )
     else:
         failure = IsolatedWorkerRemoteError(
             remote_type="RuntimeError",
             remote_message="private child detail",
             remote_traceback="private traceback",
+            is_memory=False,
         )
 
     def _fail(*_args: object, **_kwargs: object) -> None:

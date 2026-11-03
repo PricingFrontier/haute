@@ -48,7 +48,7 @@ describe("useScopedNodeSave", () => {
   let revisionCounter: number
   let graphRef: { current: { nodes: Node[]; edges: never[] } }
   let onUpdateNode: Mock<(id: string, data: Record<string, unknown>) => OnUpdateConfigResult>
-  let applyDocument: Mock<(document: PipelineEditorDocument, savedNodeId: string) => void>
+  let applyDocument: Mock<(document: PipelineEditorDocument, documentFingerprint: string, savedNodeId: string) => void>
 
   function serverDocument(revision: string): PipelineEditorDocument {
     return makePipelineEditorDocument({
@@ -98,14 +98,14 @@ describe("useScopedNodeSave", () => {
       async (args: { targetRecoveryId: string; config: Record<string, unknown> }) => {
         serverConfigs.set(args.targetRecoveryId, structuredClone(args.config))
         revisionCounter += 1
-        return serverDocument(`rev-${revisionCounter}`)
+        return { value: serverDocument(`rev-${revisionCounter}`), documentFingerprint: `fp-${revisionCounter}` }
       },
     )
     // Adoption replaces the whole canvas from the response's nodes — if the
     // response omitted or reset another node, the canvas now shows it.
-    applyDocument = vi.fn((document: PipelineEditorDocument) => {
+    applyDocument = vi.fn((document: PipelineEditorDocument, documentFingerprint: string) => {
       graphRef.current.nodes = canvasFromDocument(document)
-      useDocumentStatusStore.getState().loadDocumentStatus(document)
+      useDocumentStatusStore.getState().loadDocumentStatus(document, true, documentFingerprint)
     })
     act(() => {
       useDocumentStatusStore.getState().loadDocumentStatus(initial)
@@ -164,12 +164,20 @@ describe("useScopedNodeSave", () => {
     expect(nodeConfig("b@1")).toEqual({ code: "authored-b" })
 
     await act(async () => {
-      release(serverDocument("rev-2"))
+      release({ value: serverDocument("rev-2"), documentFingerprint: "fp-rev-2" })
       await pending
     })
     expect(hook.result.current.handlePanelUpdateNode("b@1", editedData("b@1", "b-edit")).ok).toBe(
       true,
     )
+  })
+
+  it("marks nothing edited when the update is refused, so another node can still be edited", () => {
+    const hook = render("a@1")
+    onUpdateNode.mockReturnValueOnce({ ok: false, error: "Rename refused" })
+
+    expect(hook.result.current.handlePanelUpdateNode("a@1", editedData("a@1", "a-edit-1")).ok).toBe(false)
+    expect(hook.result.current.handlePanelUpdateNode("b@1", editedData("b@1", "b-edit-1")).ok).toBe(true)
   })
 
   it("completes the two-node sequence saving each node's edited values", async () => {
@@ -196,6 +204,8 @@ describe("useScopedNodeSave", () => {
     )
     expect(nodeConfig("a@1")).toEqual({ code: "a-edit-1" })
     expect(nodeConfig("b@1")).toEqual({ code: "authored-b" })
+    // The document is adopted with the fingerprint the save named, so a resync skips it.
+    expect(applyDocument).toHaveBeenLastCalledWith(expect.objectContaining({ source_revision: "rev-2" }), "fp-2", "a@1")
     await waitFor(() => expect(useDocumentStatusStore.getState().sourceRevision).toBe("rev-2"))
 
     hook.rerender({ selectedNodeId: "b@1" })
@@ -254,7 +264,7 @@ describe("useScopedNodeSave", () => {
     })
     let result!: { ok: boolean; error?: string }
     await act(async () => {
-      release(serverDocument("rev-9"))
+      release({ value: serverDocument("rev-9"), documentFingerprint: "fp-rev-9" })
       result = await pending
     })
     expect(result.ok).toBe(false)
@@ -275,7 +285,7 @@ describe("useScopedNodeSave", () => {
       error: expect.stringContaining("already in flight"),
     })
     await act(async () => {
-      release(serverDocument("rev-2"))
+      release({ value: serverDocument("rev-2"), documentFingerprint: "fp-rev-2" })
       await pending
     })
     expect(saveNodeScoped).toHaveBeenCalledTimes(1)

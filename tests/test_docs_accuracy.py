@@ -149,11 +149,9 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
-    "background-jobs-api",
     "docs",
     "engineering-quality",
     "explore-eda",
-    "frontend-shared",
     "io-layer",
     "model-scoring",
     "modelling",

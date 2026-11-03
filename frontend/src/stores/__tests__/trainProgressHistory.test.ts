@@ -41,10 +41,12 @@ describe("training progress loss history", () => {
 
     useNodeResultsStore.getState().updateTrainProgress(
       "model",
+      "job",
       progress(20, first),
     )
     useNodeResultsStore.getState().updateTrainProgress(
       "model",
+      "job",
       progress(40, latest),
     )
 
@@ -60,10 +62,12 @@ describe("training progress loss history", () => {
   it("does not invent history when the latest status omits it", () => {
     useNodeResultsStore.getState().updateTrainProgress(
       "model",
+      "job",
       progress(20, [{ iteration: 20, train_rmse: 0.8 }]),
     )
     useNodeResultsStore.getState().updateTrainProgress(
       "model",
+      "job",
       progress(30, undefined),
     )
 

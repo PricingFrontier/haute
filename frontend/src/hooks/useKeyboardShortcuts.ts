@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react"
 import type { Node, Edge, NodeChange } from "@xyflow/react"
-import { apiErrorMessage } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -10,6 +9,7 @@ import { NODE_TYPES, isSingletonType, singletonTypesOccupiedBy, type NodeTypeVal
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
+import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
 
 export interface KeyboardShortcutBinding {
   id:
@@ -189,7 +189,9 @@ export default function useKeyboardShortcuts({
   commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
-  const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
+  const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
+  const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
+  const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
   const pasteRequestSerialRef = useRef(0)
   useEffect(() => {
     if (!enabled) return
@@ -277,7 +279,8 @@ export default function useKeyboardShortcuts({
             id: newId,
             position: { x: n.position.x + 60, y: n.position.y + 60 },
             selected: true,
-            data: { ...n.data, label: `${n.data.label} copy` },
+            // Another node's recovery identity, column stash or editor identities are not the copy's.
+            data: { ...authoredNodeData(n.data), label: `${n.data.label} copy` },
           }
         })
         const newEdges: Edge[] = copiedEdges.flatMap((ed) => {
@@ -286,45 +289,26 @@ export default function useKeyboardShortcuts({
           if (!newSource || !newTarget) return []
           return [withEdgeIdentity(ed, { source: newSource, target: newTarget })]
         })
-        const requestSerial = ++pasteRequestSerialRef.current
-        void resolveGraphIdentities(newNodes, newEdges).then((resolved) => {
-          if (
-            pasteRequestSerialRef.current !== requestSerial
-            || graphRef.current !== capturedGraph
-          ) {
-            addToast(
-              "error",
-              "Paste was not applied because the graph changed while identity resolution was running.",
+        void createAfterIdentity({
+          graphRef,
+          serialRef: pasteRequestSerialRef,
+          resolve: async () => {
+            const resolved = await resolveGraphIdentities(newNodes, newEdges)
+            assertResolvedPasteMatchesCandidate(newNodes, newEdges, resolved)
+            return resolved
+          },
+          apply: (resolved) => {
+            // Pasted nodes + their internal edges land in ONE undo step, so a
+            // single ⌘/Ctrl-Z removes the whole paste, added to the live graph.
+            setNodesAndEdges(
+              (nds) => [...nds.map((node) => ({ ...node, selected: false })), ...resolved.nodes],
+              (eds) => [...eds, ...resolved.edges],
             )
-            return
-          }
-          assertResolvedPasteMatchesCandidate(newNodes, newEdges, resolved)
-          // Pasted nodes + their internal edges land in ONE undo step, so a
-          // single ⌘/Ctrl-Z removes the whole paste. The captured graph is
-          // still current here; any intervening mutation rejects above.
-          setNodesAndEdges(
-            [
-              ...capturedGraph.nodes.map((node) => ({ ...node, selected: false })),
-              ...resolved.nodes,
-            ],
-            [...capturedGraph.edges, ...resolved.edges],
-          )
-          addToast("info", `Pasted ${resolved.nodes.length} node${resolved.nodes.length > 1 ? "s" : ""}`)
-        }).catch((error: unknown) => {
-          if (
-            pasteRequestSerialRef.current !== requestSerial
-            || graphRef.current !== capturedGraph
-          ) {
-            addToast(
-              "error",
-              "Paste was not applied because the graph changed while identity resolution was running.",
-            )
-            return
-          }
-          addToast(
-            "error",
-            `Paste failed: ${apiErrorMessage(error)}`,
-          )
+            addToast("info", `Pasted ${resolved.nodes.length} node${resolved.nodes.length > 1 ? "s" : ""}`)
+          },
+          addToast,
+          action: "Paste",
+          failure: "Paste failed",
         })
         return
       }

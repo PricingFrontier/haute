@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from collections.abc import Callable, Hashable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,7 +18,6 @@ from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerError,
     IsolatedWorkerRemoteError,
-    run_isolated_worker,
 )
 from haute._worker_protocol import (
     WORKER_USER_MESSAGE_FIELD,
@@ -33,8 +33,51 @@ from haute.routes._job_lifecycle import (
     TerminalReason,
     require_job_status,
 )
+from haute.routes._job_store import JobSnapshot
 
 logger = get_logger(component="server.background_jobs")
+
+# Every job registry and job thread alive in this process, so a server shutdown can
+# stop every job (``stop_background_jobs``). Weak: a registry or a finished thread
+# nothing else holds is gone from here too.
+_LIVE_LOCK = threading.Lock()
+_REGISTRIES: weakref.WeakSet[CancellableJobRegistry] = weakref.WeakSet()
+_JOB_THREADS: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
+# How long a shutdown joins job threads between its passes over the registries.
+_SHUTDOWN_PASS_SECONDS = 0.1
+
+
+def start_job_thread(thread: threading.Thread) -> None:
+    """Start the thread that runs one job, where a server shutdown waits for it.
+
+    Tracked before it starts: until then it is not alive, so a shutdown passes over it.
+    """
+    with _LIVE_LOCK:
+        _JOB_THREADS.add(thread)
+    thread.start()
+
+
+def stop_background_jobs(*, timeout_seconds: float) -> tuple[str, ...]:
+    """Cancel every registered job and wait for every job thread, for at most the timeout.
+
+    Cancellation fires each job's stop reason, so a supervised worker is terminated and
+    joined, its cleanup runs and the job is recorded ``cancelled``. A job registered or a
+    thread started while this waits is cancelled and waited for too. Returns the names of
+    the job threads still running at the timeout.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        with _LIVE_LOCK:
+            registries = tuple(_REGISTRIES)
+            running = [thread for thread in _JOB_THREADS if thread.is_alive()]
+        for registry in registries:
+            # Never waits: a registry a job's publication holds is tried on the next pass.
+            registry.cancel_all(reason="cancelled")
+        if not running or time.monotonic() >= deadline:
+            return tuple(thread.name for thread in running)
+        pass_ends = min(deadline, time.monotonic() + _SHUTDOWN_PASS_SECONDS)
+        for thread in running:
+            thread.join(max(0.0, pass_ends - time.monotonic()))
 
 
 class BackgroundJobStoppedError(RuntimeError):
@@ -78,6 +121,8 @@ class CancellableJobRegistry:
         self._lock = threading.RLock()
         self._latest_by_key: dict[Hashable, str] = {}
         self._tokens_by_job_id: dict[str, JobCancellation] = {}
+        with _LIVE_LOCK:
+            _REGISTRIES.add(self)
 
     def register_latest(
         self,
@@ -111,6 +156,22 @@ class CancellableJobRegistry:
                 return False
             token.cancel(reason)
             return True
+
+    def cancel_all(self, *, reason: TerminalReason) -> bool:
+        """Request cancellation for every active job not already asked to stop.
+
+        Never waits for the registry, which a job's publication holds
+        (``latest_publication``): False, with nothing cancelled, while it is held.
+        """
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            for token in self._tokens_by_job_id.values():
+                if not token.cancelled:
+                    token.cancel(reason)
+        finally:
+            self._lock.release()
+        return True
 
     def is_cancelled(self, job_id: str) -> bool:
         with self._lock:
@@ -249,6 +310,15 @@ class IsolatedSupervisorThread(threading.Thread):
 
 
 @dataclass(frozen=True, slots=True)
+class _UnrecordedOutcome:
+    """What a supervisor keeps of an outcome it could not persist: text, not the exception."""
+
+    error: str
+    error_class: str
+    recorded_at: float  # time.monotonic()
+
+
+@dataclass(frozen=True, slots=True)
 class _SupervisorOutcome:
     terminal_reason: TerminalReason
     message: str
@@ -272,28 +342,50 @@ class IsolatedJobSupervisor:
     ) -> None:
         self._lifecycle = lifecycle
         self._protocol_runner = protocol_runner
+        self._failures_lock = threading.Lock()
+        # Jobs whose terminal outcome could not be persisted, until a status poll settles
+        # them or the store's TTL has evicted the job itself.
+        self._unrecorded: dict[str, _UnrecordedOutcome] = {}
 
-    def launch(
-        self,
-        job_id: str,
-        function: Any,
-        *args: Any,
-        config: IsolatedWorkerConfig | None = None,
-        completed_message: str = "Completed",
-        **kwargs: Any,
-    ) -> IsolatedSupervisorThread:
-        return self._launch_callable(
-            job_id,
-            execute=lambda: run_isolated_worker(
-                function,
-                *args,
-                config=config,
-                **kwargs,
-            ),
-            completed_fields=lambda result: {"result": result},
-            completed_message=completed_message,
-            start_time=time.monotonic(),
-        )
+    def settle_unrecorded_outcome(self, job_id: str) -> JobSnapshot | None:
+        """Record ``error`` for a job whose outcome this supervisor could not persist.
+
+        Its status route calls this, so the job is answered as failed instead of staying
+        ``running`` until its TTL. The write carries only the failure's text and class,
+        not the fields that may have failed the first write. Returns the job after the
+        write (as another writer left it, when precedence refused this one), or ``None``
+        when nothing is waiting for this job.
+        """
+        with self._failures_lock:
+            failure = self._unrecorded.pop(job_id, None)
+        if failure is None:
+            return None
+        try:
+            settled = self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=_UNRECORDED_OUTCOME_MESSAGE,
+                fields={"error": failure.error, "supervisor_error_class": failure.error_class},
+            )
+        except BaseException:
+            with self._failures_lock:
+                self._unrecorded.setdefault(job_id, failure)
+            raise
+        return settled if settled is not None else self._lifecycle.store.require_job(job_id)
+
+    def _keep_unrecorded(self, job_id: str, cause: BaseException) -> None:
+        """Keep *cause*'s text for the job's status route, dropping any kept past the TTL."""
+        now = time.monotonic()
+        ttl_seconds = self._lifecycle.store.ttl_seconds
+        with self._failures_lock:
+            self._unrecorded = {
+                kept_id: kept
+                for kept_id, kept in self._unrecorded.items()
+                if now - kept.recorded_at < ttl_seconds
+            }
+            self._unrecorded[job_id] = _UnrecordedOutcome(
+                error=str(cause), error_class=type(cause).__name__, recorded_at=now
+            )
 
     def launch_protocol(
         self,
@@ -370,6 +462,7 @@ class IsolatedJobSupervisor:
             except BaseException as exc:
                 failure = SupervisorInfrastructureError(job_id, exc)
                 thread._record_infrastructure_failure(failure)
+                self._keep_unrecorded(job_id, exc)
                 logger.error(
                     "isolated_supervisor_terminal_persistence_failed",
                     job_id=job_id,
@@ -383,7 +476,7 @@ class IsolatedJobSupervisor:
 
         thread = IsolatedSupervisorThread(target=run)
         try:
-            thread.start()
+            start_job_thread(thread)
         except BaseException as exc:
             outcome = _unexpected_supervisor_outcome(
                 exc,
@@ -501,6 +594,12 @@ class IsolatedJobSupervisor:
             or current_reason != current_status
         ):
             raise RuntimeError(f"Isolated job {job_id!r} has incoherent terminal status and reason")
+
+
+_UNRECORDED_OUTCOME_MESSAGE = (
+    "The job finished, but the server could not record its outcome. "
+    "Check the server logs, then run it again."
+)
 
 
 def _coerce_worker_terminal_reason(reason: str) -> TerminalReason:

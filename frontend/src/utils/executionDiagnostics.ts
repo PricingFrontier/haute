@@ -6,6 +6,7 @@ import type {
   ExecutionStrategyProjectionCause,
   JobStatus,
 } from "../api/types"
+import { JOB_STATUS_VALUES } from "../api/types"
 import { formatBytes } from "./formatBytes"
 import { isPlainObject } from "../types/guards"
 
@@ -330,16 +331,7 @@ function isMemoryLimitedFailure(
   )
 }
 
-const JOB_STATUSES = new Set<JobStatus>([
-  "running",
-  "completed",
-  "error",
-  "cancelled",
-  "superseded",
-  "timed_out",
-  "memory_limited",
-  "contract_error",
-])
+const JOB_STATUSES: ReadonlySet<string> = new Set(JOB_STATUS_VALUES)
 
 export function executionJobStatusFromReason(reason: string | null | undefined): JobStatus {
   if (isMemoryTerminalReason(reason)) return "memory_limited"

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from haute._host_memory import own_unified_cgroup
 from haute._process_memory import current_process_private_bytes, current_process_virtual_bytes
 
 NativeMemoryBackend = Literal["cgroup", "rlimit", "windows_job"]
@@ -196,28 +197,14 @@ def _linux_cgroup_v2_available() -> bool:
         return False
 
 
-def _cgroup_parent() -> Path:
-    return Path("/sys/fs/cgroup")
-
-
 def _current_cgroup_path() -> Path:
-    """Resolve our unified v2 cgroup, rejecting paths outside the cgroup root."""
+    """Our unified v2 cgroup, found as the headroom probe finds it, inside its mount."""
+    location = own_unified_cgroup()
+    if location is None:
+        raise NativeMemoryLimitUnsupportedError("cannot locate unified cgroup v2 membership")
     try:
-        unified = next(
-            line.split("::", 1)[1]
-            for line in Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
-            if line.startswith("0::")
-        )
-    except (OSError, StopIteration, IndexError) as exc:
-        raise NativeMemoryLimitUnsupportedError(
-            "cannot locate unified cgroup v2 membership"
-        ) from exc
-    relative = Path(unified.lstrip("/"))
-    if relative.is_absolute() or ".." in relative.parts:
-        raise NativeMemoryLimitUnsupportedError("unsafe unified cgroup path")
-    try:
-        root = _cgroup_parent().resolve(strict=True)
-        current = (root / relative).resolve(strict=True)
+        root = Path(location.mount_point).resolve(strict=True)
+        current = Path(location.directory).resolve(strict=True)
         current.relative_to(root)
     except (OSError, ValueError) as exc:
         raise NativeMemoryLimitUnsupportedError(

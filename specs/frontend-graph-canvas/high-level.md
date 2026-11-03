@@ -558,9 +558,15 @@ candidate, with the error toast.
   server skips re-sending an unchanged one. The initial load's fingerprint
   arrives with the document itself; loading a page therefore never re-applies
   the same document, never announces it as updated from file, and never
-  re-fits the view or clears the selection it has just made. A document
-  adopted from a response that names no fingerprint (repair, scoped node save)
-  records none, and the next resync asks for the current document.
+  re-fits the view or clears the selection it has just made. A save, a
+  node-scoped save and a repair record the fingerprint of the document they
+  wrote (the save's `document_fingerprint`, the other two routes'
+  `x-haute-document-fingerprint` header), so a reconnect after them, or the
+  watcher's frame of a repair's own write, skips the document the canvas
+  already holds: no generation bump, no discarded job, no lost undo history
+  and no "updated from file" notice. The save's fingerprint is adopted only
+  together with its revision, for the snapshot it saved; edits made since stay
+  dirty.
 - **Submodel navigation.** Drilling resolves a canonical occurrence from its
   node type and `{definitionId, alias}` config, loads the shared definition by
   definition id, verifies any returned identity, and builds boundary nodes from

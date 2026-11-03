@@ -156,7 +156,7 @@ describe("1. API returns unexpected shapes", () => {
         development_rows: 0,
         final_test_rows: 0,
       })
-      expect(() => store.completeTrainJob("t1", minimalResult)).not.toThrow()
+      expect(() => store.completeTrainJob("t1", "tj1", minimalResult)).not.toThrow()
       expect(useNodeResultsStore.getState().trainResults["t1"]).toBeDefined()
     })
   })

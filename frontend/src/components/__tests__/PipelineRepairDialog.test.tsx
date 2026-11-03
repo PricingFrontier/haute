@@ -19,14 +19,17 @@ vi.mock("../../api/client", async (importOriginal) => ({
 
 function applied(overrides: Record<string, unknown> = {}) {
   return {
-    repair_kind: "remove_unavailable_node" as const,
-    applied_artifacts: ["server-main.py"],
-    changes: [{ path: "server-main.py", operation: "update" as const, description: "Remove broken node.", diff: "- @pipeline.broken", diff_truncated: false }],
-    document: makePipelineEditorDocument(),
-    field_changes: [],
-    completeness: [],
-    previous_config: null,
-    ...overrides,
+    value: {
+      repair_kind: "remove_unavailable_node" as const,
+      applied_artifacts: ["server-main.py"],
+      changes: [{ path: "server-main.py", operation: "update" as const, description: "Remove broken node.", diff: "- @pipeline.broken", diff_truncated: false }],
+      document: makePipelineEditorDocument(),
+      field_changes: [],
+      completeness: [],
+      previous_config: null,
+      ...overrides,
+    },
+    documentFingerprint: "fp-repaired",
   }
 }
 
@@ -57,7 +60,7 @@ describe("PipelineRepairDialog", () => {
     const button = screen.getByRole("button", { name: "Remove node" })
     fireEvent.click(button)
     fireEvent.click(button)
-    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(document))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(document, "fp-repaired"))
     expect(applyRemoveUnavailableNode).toHaveBeenCalledTimes(1)
     expect(applyRemoveUnavailableNode).toHaveBeenCalledWith({
       sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetRecoveryId: "target@1", deleteConfig: false,
@@ -93,7 +96,7 @@ describe("PipelineRepairDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove connection" }))
 
-    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(document))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(document, "fp-repaired"))
     expect(applyRemoveBrokenConnection).toHaveBeenCalledWith({
       sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetConnectionId: "target@1",
     })

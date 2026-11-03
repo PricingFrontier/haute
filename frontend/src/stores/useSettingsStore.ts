@@ -158,14 +158,21 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     const confirmations = _settingsConfirmations
     try {
       const settings = await getPipelineSettings()
-      // A save confirmed since this load began holds newer settings.
-      if (confirmations !== _settingsConfirmations) return
-      set({ _confirmedPipelineSettings: settings })
-      // A pending save shows its own value; its failure restores these.
-      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
+      // A save confirmed since this load began, or a newer load, holds newer
+      // settings; a pending save shows its own value, and its failure restores
+      // the settings confirmed before it, not this answer.
+      if (
+        confirmations !== _settingsConfirmations
+        || request !== _settingsLoadSeq
+        || Object.keys(get()._pendingPipelineSettings).length > 0
+      ) {
         return
       }
-      set({ pipelineSettings: settings, pipelineSettingsError: null })
+      set({
+        _confirmedPipelineSettings: settings,
+        pipelineSettings: settings,
+        pipelineSettingsError: null,
+      })
     } catch (e) {
       if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
         return
@@ -261,15 +268,20 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     _mlflowFetchingGuard = true
     set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
     let timeoutId: ReturnType<typeof setTimeout> | undefined
+    // The deadline also aborts the request, so it does not run on unseen.
+    const inventoryRequest = new AbortController()
     const timeout = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
-        () => reject(new Error(
-          `MLflow inventory check timed out after ${MLFLOW_INVENTORY_TIMEOUT_MS / 1000}s`,
-        )),
+        () => {
+          reject(new Error(
+            `MLflow inventory check timed out after ${MLFLOW_INVENTORY_TIMEOUT_MS / 1000}s`,
+          ))
+          inventoryRequest.abort()
+        },
         MLFLOW_INVENTORY_TIMEOUT_MS,
       )
     })
-    Promise.race([getMlflowDestinations(true), timeout])
+    Promise.race([getMlflowDestinations(true, { signal: inventoryRequest.signal }), timeout])
       .then((data) => {
         // The probes' verdicts live in the entries; only the package facts
         // decide whether the inventory itself is usable.

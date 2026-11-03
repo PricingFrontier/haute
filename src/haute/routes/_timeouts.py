@@ -199,6 +199,10 @@ async def run_blocking_with_response_timeout(
     try:
         result = await asyncio.wait_for(asyncio.shield(blocking_task), timeout=timeout)
     except TimeoutError:
+        if blocking_task.done():
+            # wait_for raised the work's own TimeoutError (one type since Python 3.11), or
+            # the deadline passed as the work finished: the work's outcome is the answer.
+            return _finished_outcome(blocking_task, measurement)
         measurement.mark_response_boundary("response_timeout")
         blocking_task.add_done_callback(
             lambda future: _drain_measured_background_future_result(future, measurement)
@@ -221,6 +225,19 @@ async def run_blocking_with_response_timeout(
             _blocking_work_occupancy.cancellation_wait_finished()
             measurement.log_after_cleanup()
         raise
+    except BaseException:
+        measurement.mark_response_boundary("failed")
+        measurement.log_after_cleanup()
+        raise
+    measurement.mark_response_boundary("completed")
+    measurement.log_after_cleanup()
+    return result
+
+
+def _finished_outcome(task: asyncio.Future[R], measurement: _BlockingWorkMeasurement) -> R:
+    """Return a finished task's value or raise its exception, recording the outcome."""
+    try:
+        result = task.result()
     except BaseException:
         measurement.mark_response_boundary("failed")
         measurement.log_after_cleanup()

@@ -10,7 +10,7 @@
 import { Loader2 } from "lucide-react"
 import { formatNumber } from "../../utils/formatValue"
 import type { OptimiserDiagnosticError, OptimiserSolveResult } from "../../api/types"
-import { effectiveConstraintBounds } from "../../stores/useNodeResultsStore"
+import { effectiveConstraintBounds } from "../../utils/optimiserSolveResults"
 import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
 import { hasFactorTables } from "./ratebookFactorTables"
 import ConstraintAttainmentTable from "./ConstraintAttainmentTable"

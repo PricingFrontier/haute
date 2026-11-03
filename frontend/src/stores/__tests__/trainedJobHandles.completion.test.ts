@@ -21,7 +21,7 @@ describe("remembering training jobs at completion", () => {
   it("remembers a job that completes with no editor mounted, with its submitted lineage", () => {
     useNodeResultsStore.getState().startTrainJob("model", "job_bg", "model", "hash", "live", 3, "lineage-submitted")
 
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().completeTrainJob("model", "job_bg", makeTrainResult())
 
     expect(readTrainedJobHandle(DOCUMENT, "model")).toEqual({
       jobId: "job_bg",
@@ -34,29 +34,29 @@ describe("remembering training jobs at completion", () => {
   it("never remembers a job started without a lineage", () => {
     useNodeResultsStore.getState().startTrainJob("model", "job_bare", "model", "hash", "live", 0)
 
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().completeTrainJob("model", "job_bare", makeTrainResult())
 
     expect(readTrainedJobHandle(DOCUMENT, "model")).toBeNull()
   })
 
   it("forgets the node when a later training attempt fails", () => {
     useNodeResultsStore.getState().startTrainJob("model", "job_ok", "model", "hash", "live", 0, "l1")
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().completeTrainJob("model", "job_ok", makeTrainResult())
     expect(readTrainedJobHandle(DOCUMENT, "model")?.jobId).toBe("job_ok")
 
     useNodeResultsStore.getState().startTrainJob("model", "job_oom", "model", "hash", "live", 0, "l2")
-    useNodeResultsStore.getState().failTrainJob("model", "Out of memory")
+    useNodeResultsStore.getState().failTrainJob("model", "job_oom", "Out of memory")
 
     expect(readTrainedJobHandle(DOCUMENT, "model")).toBeNull()
   })
 
   it("forgets the node when a job completes with an error result", () => {
     useNodeResultsStore.getState().startTrainJob("model", "job_ok", "model", "hash", "live", 0, "l1")
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().completeTrainJob("model", "job_ok", makeTrainResult())
     expect(readTrainedJobHandle(DOCUMENT, "model")?.jobId).toBe("job_ok")
     useNodeResultsStore.getState().startTrainJob("model", "job_err", "model", "hash", "live", 0, "l2")
 
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult({ status: "error", error: "bad" }))
+    useNodeResultsStore.getState().completeTrainJob("model", "job_err", makeTrainResult({ status: "error", error: "bad" }))
 
     expect(readTrainedJobHandle(DOCUMENT, "model")).toBeNull()
   })
@@ -65,7 +65,7 @@ describe("remembering training jobs at completion", () => {
     useNodeResultsStore.getState().startTrainJob("model", "job_old_doc", "model", "hash", "live", 0, "l1")
     useDocumentStatusStore.setState({ sourceFile: "rating/other.py" })
 
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().completeTrainJob("model", "job_old_doc", makeTrainResult())
 
     expect(readTrainedJobHandle(DOCUMENT, "model")).toBeNull()
     expect(readTrainedJobHandle("rating/other.py", "model")).toBeNull()

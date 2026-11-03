@@ -45,7 +45,7 @@ import json
 import os
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 ENV_ROOT = "HAUTE_TEST_SANDBOX_ROOT"
@@ -125,10 +125,14 @@ def _realpath(target: object) -> str | None:
 
 def _is_multiprocessing_arena(real: str) -> bool:
     """A backing file of multiprocessing's shared memory: ``multiprocessing.heap``
-    creates each arena under ``/dev/shm`` and unlinks it at once. It is the
-    interpreter's own infrastructure, not anything a test writes."""
+    creates each arena as a ``pym-`` file and unlinks it at once, under ``/dev/shm``
+    on Linux and otherwise (macOS, or a full ``/dev/shm``) in the process's own
+    ``pymp-`` temporary directory (``multiprocessing.util.get_temp_dir``), which the
+    first test to need it created under its own ``tmp_path``. It is the interpreter's
+    own infrastructure, not anything a test writes."""
     directory, name = os.path.split(real)
-    return directory == "/dev/shm" and name.startswith("pym-")
+    in_arena_directory = directory == "/dev/shm" or PurePath(directory).name.startswith("pymp-")
+    return in_arena_directory and name.startswith("pym-")
 
 
 def _is_within(child_real: str, root_real: str) -> bool:

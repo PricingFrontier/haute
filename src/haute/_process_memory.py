@@ -60,11 +60,6 @@ def process_rss_bytes(pid: int) -> int | None:
     return _memory_field_bytes(_validated_pid(pid), "rss")
 
 
-def process_rss_sampling_supported() -> bool:
-    """Return whether the current host can observe a process's RSS."""
-    return current_process_rss_bytes() is not None
-
-
 def process_is_alive(pid: int) -> bool:
     """Return whether *pid* may still be alive, preserving on uncertainty."""
     pid = _validated_pid(pid)

@@ -599,9 +599,16 @@ def test_pool_validation_result_shapes_and_queue_cleanup() -> None:
         pool._interpret_result(
             slot,
             job_id="id",
-            envelope=("result", "id", "error", ("MemoryError", "m", "x", "t", {"x": 1})),
+            envelope=("result", "id", "error", ("MemoryError", "m", "x", "t", {"x": 1}, True)),
         )
     assert remote.value.terminal_reason == "memory_limited"
+    with pytest.raises(worker_mod.InteractiveWorkerProtocolError):
+        # The memory flag is the child's isinstance check: a bool, never inferred.
+        pool._interpret_result(
+            slot,
+            job_id="id",
+            envelope=("result", "id", "error", ("MemoryError", "m", "x", "t", None, 1)),
+        )
     first, second = _Queue(), _Queue()
     pool._close_unstarted_queues(first, second)
     assert (first.closed, second.joined) == (1, 1)
@@ -914,7 +921,9 @@ def test_remote_result_keeps_primary_error_when_release_is_invalid(
         request_queue=_Queue(),
         result_queue=_Queue(
             [
-                pickle.dumps(("result", "x", "error", ("ValueError", "m", "bad", "tb", None))),
+                pickle.dumps(
+                    ("result", "x", "error", ("ValueError", "m", "bad", "tb", None, False))
+                ),
                 pickle.dumps(("released", "other", "ok", None)),
             ]
         ),
@@ -1649,7 +1658,7 @@ def test_wait_for_result_preserves_remote_error_when_ack_or_release_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
-    remote = pickle.dumps(("result", "job", "error", ("ValueError", "x", "bad", "tb", None)))
+    remote = pickle.dumps(("result", "job", "error", ("ValueError", "x", "bad", "tb", None, False)))
     process = SimpleNamespace(pid=1, exitcode=None, is_alive=lambda: True)
     slot = SimpleNamespace(
         index=0,
@@ -1956,7 +1965,12 @@ def test_interpret_release_surfaces_valid_remote_error_evidence() -> None:
     with pytest.raises(InteractiveWorkerRemoteError) as exc_info:
         pool._interpret_release(
             job_id="job",
-            envelope=("released", "job", "error", ("ValueError", "mod", "bad", "tb", {"x": 1})),
+            envelope=(
+                "released",
+                "job",
+                "error",
+                ("ValueError", "mod", "bad", "tb", {"x": 1}, False),
+            ),
         )
 
     assert exc_info.value.remote_message == "bad"

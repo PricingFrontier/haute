@@ -550,6 +550,49 @@ describe("useNodeDataCache", () => {
     expect(result.current.point?.consumer_node_id).toBe("explore")
   })
 
+  it("starts no delegated build for an identity the consumer left while the run was on the wire", async () => {
+    mockGetPoint.mockImplementation(async () => delegatedPoint())
+    let finishRun: ((value: Awaited<ReturnType<typeof runNodeData>>) => void) | null = null
+    mockRun.mockImplementation(
+      () =>
+        new Promise<Awaited<ReturnType<typeof runNodeData>>>((resolve) => {
+          finishRun = resolve
+        }),
+    )
+    const { result, rerender } = renderHook(
+      ({ code }: { code: string }) =>
+        useNodeDataCache({
+          node: { id: "join", data: { label: "join", nodeType: "polars", config: { code } } } as never,
+          allNodes: nodes,
+          edges,
+          preamble: "",
+        }),
+      { initialProps: { code: "df = source" } },
+    )
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    const running = result.current.run()
+    await waitFor(() => expect(finishRun).not.toBeNull())
+    await act(async () => {
+      rerender({ code: "df = source.head(5)" })
+    })
+    await act(async () => {
+      finishRun?.({
+        status: "delegated",
+        job_id: null,
+        cached: false,
+        message: "Build this Data Input's snapshot",
+        point: delegatedPoint(),
+      })
+      await running
+    })
+
+    // Nothing had started on the server, and what the run would build belongs
+    // to the graph the consumer has left.
+    expect(ensureInputSnapshots).not.toHaveBeenCalled()
+    expect(useNodeDataStore.getState().slots["source||live"]?.delegatedBuild ?? null).toBeNull()
+  })
+
   it("never repopulates the shared store with a clear that landed after the document changed", async () => {
     mockGetPoint.mockResolvedValue(point())
     const { result } = renderCache("explore")
@@ -817,6 +860,141 @@ describe("useNodeDataCache", () => {
     })
 
     await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-own"))
+  })
+
+  it("lets another consumer of the point stop a build this tab started", async () => {
+    mockGetPoint.mockImplementation(async (args) =>
+      point({ consumer_node_id: args.node_id, state: "missing", generation: null, data_version: null }),
+    )
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-shared",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const explore = renderCache("explore")
+    const banding = renderCache("banding")
+    await waitFor(() => expect(banding.result.current.availability).toBe("missing"))
+
+    await act(async () => {
+      await explore.result.current.run()
+    })
+    // The editor's node shows Stop for the build its preview's consumer started.
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toContain("banding"))
+
+    await act(async () => {
+      stopNodeWork("banding")
+    })
+
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-shared"))
+  })
+
+  it("stops a build this tab started after its consumer is mounted again", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-before-switch",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const first = renderCache("explore")
+    await waitFor(() => expect(first.result.current.availability).toBe("missing"))
+    await act(async () => {
+      await first.result.current.run()
+    })
+    // Another tab or node is shown, then this one again: the consumer is new.
+    first.unmount()
+    mockGetPoint.mockResolvedValue(
+      point({
+        state: "building",
+        generation: null,
+        data_version: null,
+        job: { job_id: "job-before-switch", progress: 0.3, message: "Caching data" },
+      }),
+    )
+    const returned = renderCache("explore")
+    await waitFor(() => expect(returned.result.current.jobId).toBe("job-before-switch"))
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toContain("explore"))
+
+    await act(async () => {
+      await returned.result.current.cancel()
+    })
+
+    expect(mockCancel).toHaveBeenCalledWith("job-before-switch")
+  })
+
+  it("keeps a build started for an identity the consumer left while the run was on the wire", async () => {
+    // The first identity's inspection never answers; the second's answers
+    // only after the run, so no slot exists when the run's answer lands.
+    let answerSecond: ((value: NodeDataPointResponse) => void) | null = null
+    mockGetPoint
+      .mockImplementationOnce(() => new Promise<NodeDataPointResponse>(() => {}))
+      .mockImplementationOnce(
+        () =>
+          new Promise<NodeDataPointResponse>((resolve) => {
+            answerSecond = resolve
+          }),
+      )
+    let finishRun: ((value: Awaited<ReturnType<typeof runNodeData>>) => void) | null = null
+    mockRun.mockImplementation(
+      () =>
+        new Promise<Awaited<ReturnType<typeof runNodeData>>>((resolve) => {
+          finishRun = resolve
+        }),
+    )
+    mockCancel.mockResolvedValue(makeNodeDataStatus({ status: "cancelled", progress: 0, message: "Cache build cancelled" }))
+    const { result, rerender } = renderHook(
+      ({ code }: { code: string }) =>
+        useNodeDataCache({
+          node: { id: "join", data: { label: "join", nodeType: "polars", config: { code } } } as never,
+          allNodes: nodes,
+          edges,
+          preamble: "",
+        }),
+      { initialProps: { code: "df = source" } },
+    )
+
+    const running = result.current.run()
+    await waitFor(() => expect(finishRun).not.toBeNull())
+    await act(async () => {
+      rerender({ code: "df = source.head(5)" })
+    })
+    await waitFor(() => expect(answerSecond).not.toBeNull())
+    await act(async () => {
+      finishRun?.({
+        status: "started",
+        job_id: "job-left",
+        cached: false,
+        message: "Caching started",
+        point: point({ state: "building", generation: null, data_version: null }),
+      })
+      await running
+    })
+
+    // The build runs on the server whatever the consumer asks about now, so
+    // the one poller watches it.
+    expect(useNodeDataStore.getState().jobs["join||live"]?.jobId).toBe("job-left")
+
+    await act(async () => {
+      answerSecond?.(
+        point({
+          state: "building",
+          generation: null,
+          data_version: null,
+          job: { job_id: "job-left", progress: 0.2, message: "Caching data" },
+        }),
+      )
+    })
+    await waitFor(() => expect(result.current.jobId).toBe("job-left"))
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(mockCancel).toHaveBeenCalledWith("job-left")
   })
 
   it("stops showing the previous identity's answer the moment the identity changes", async () => {

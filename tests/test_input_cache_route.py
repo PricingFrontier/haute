@@ -1408,6 +1408,7 @@ def test_api_input_worker_refused_a_path_for_its_length_says_so(
             remote_type="PathTooLongError",
             remote_message="Windows cannot use a path of 269 characters: C:\\private",
             remote_traceback="Traceback (most recent call last):\n",
+            is_memory=False,
         )
     )
     worker.install(monkeypatch, tmp_path)

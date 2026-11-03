@@ -9,6 +9,7 @@
  * backend's `GlobalConstant` model accepts; save refuses drafts that do not
  * all validate.
  */
+import { isDay } from "./isoDate"
 
 export const GLOBAL_CONSTANT_TYPES = ["integer", "float", "text", "boolean", "date"] as const
 export type GlobalConstantType = (typeof GLOBAL_CONSTANT_TYPES)[number]
@@ -52,17 +53,6 @@ export const PYTHON_KEYWORDS: ReadonlySet<string> = new Set([
 ])
 const INTEGER_PATTERN = /^[+-]?\d+$/
 const FLOAT_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
-const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
-
-function isRealDate(text: string): boolean {
-  const match = DATE_PATTERN.exec(text)
-  if (!match) return false
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
-  const date = new Date(Date.UTC(year, month - 1, day))
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  )
-}
 
 /** Why *text* is not a value of *type*, or null when it is. */
 export function valueProblem(type: GlobalConstantType, text: string): string | null {
@@ -78,7 +68,7 @@ export function valueProblem(type: GlobalConstantType, text: string): string | n
     case "boolean":
       return text === "true" || text === "false" ? null : "Choose true or false."
     case "date":
-      return isRealDate(text) ? null : "Enter a real date as YYYY-MM-DD."
+      return isDay(text) ? null : "Enter a real date as YYYY-MM-DD."
     case "text":
       return null
   }

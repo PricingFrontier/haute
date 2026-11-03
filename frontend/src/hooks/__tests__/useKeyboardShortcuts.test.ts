@@ -33,6 +33,16 @@ function resolvedIdentityGraph(
   }
 }
 
+/** The graph a paste committed: its updaters applied to the live graph. */
+function committedPaste(params: ReturnType<typeof makeParams>): [Node[], Edge[]] {
+  const [nodes, edges] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
+  const graph = params.graphRef.current
+  return [
+    typeof nodes === "function" ? nodes(graph.nodes) : nodes,
+    typeof edges === "function" ? edges(graph.edges) : edges,
+  ]
+}
+
 function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0]> = {}) {
   return {
     enabled: true,
@@ -307,6 +317,41 @@ describe("useKeyboardShortcuts", () => {
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Copied 1 node" })
   })
 
+  it("Ctrl+V copies authored fields only, and pastes onto the live graph across a selection change", async () => {
+    let finish!: () => void
+    cleanup()
+    params = makeParams({
+      resolveGraphIdentities: vi.fn((nodes: readonly Node[], edges: readonly Edge[]) => new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve) => {
+        finish = () => resolve({ nodes: [...nodes], edges: [...edges] })
+      })),
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    params.clipboard.current = {
+      nodes: [{
+        id: "n1",
+        position: { x: 0, y: 0 },
+        data: { label: "A", nodeType: "polars", config: { code: "x" }, _recoveryId: "n1@3", _columns: [{ name: "a" }] },
+        type: "pipelineNode",
+      } as Node],
+      edges: [],
+    }
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.resolveGraphIdentities).toHaveBeenCalledOnce())
+    const [candidate] = vi.mocked(params.resolveGraphIdentities).mock.calls[0][0]
+    expect(Object.keys(candidate.data).filter((key) => key.startsWith("_"))).toEqual([])
+    expect(candidate.data).toMatchObject({ config: { code: "x" } })
+
+    // Selecting a node replaces the graph object without changing its structure.
+    params.graphRef.current = {
+      nodes: params.graphRef.current.nodes.map((node) => ({ ...node, selected: true })),
+      edges: params.graphRef.current.edges,
+    }
+    await act(async () => { finish() })
+
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    expect(committedPaste(params)[0].at(-1)?.id).toBe(candidate.id)
+  })
+
   it("Ctrl+V resolves copied node and edge identities before one atomic paste", async () => {
     params.clipboard.current = {
       nodes: [
@@ -350,7 +395,7 @@ describe("useKeyboardShortcuts", () => {
     await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(params.setEdges).not.toHaveBeenCalled()
-    const [nextNodes, nextEdges] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
+    const [nextNodes, nextEdges] = committedPaste(params)
     expect(nextNodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "pipelineNode_1",
@@ -385,7 +430,7 @@ describe("useKeyboardShortcuts", () => {
     }
     fireKey("v", { ctrlKey: true })
     await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
-    const result = vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as Node[]
+    const [result] = committedPaste(params)
     // Original node + 1 pasted (polars), singleton (apiInput) filtered out
     expect(result).toHaveLength(2)
     expect(result.some((n: Node) => n.data.label === "Transform copy")).toBe(true)
@@ -402,7 +447,7 @@ describe("useKeyboardShortcuts", () => {
     }
     fireKey("v", { ctrlKey: true })
     await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
-    const [nodes, edges] = vi.mocked(params.setNodesAndEdges).mock.calls[0] as [Node[], Edge[]]
+    const [nodes, edges] = committedPaste(params)
     expect(nodes.map((n) => n.data.label)).toEqual(["Transform copy"])
     expect(edges).toEqual([])
     expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
@@ -548,7 +593,7 @@ describe("useKeyboardShortcuts", () => {
       await second.promise
     })
     await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
-    expect((vi.mocked(params.setNodesAndEdges).mock.calls[0][0] as Node[]).at(-1)?.id).toBe("polars_2")
+    expect(committedPaste(params)[0].at(-1)?.id).toBe("polars_2")
 
     const [firstNodes, firstEdges] = resolveGraphIdentities.mock.calls[0] as [Node[], Edge[]]
     await act(async () => {

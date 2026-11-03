@@ -41,6 +41,7 @@ from haute._worker_isolation import (
     _exitcode_looks_memory_limited,
     _terminate_process,
     create_worker_queue,
+    remote_failure_terminal_reason,
     start_process_with_environment,
 )
 
@@ -188,23 +189,18 @@ class InteractiveWorkerRemoteError(InteractiveWorkerError):
         remote_message: str,
         remote_traceback: str,
         public_payload: dict[str, object] | None,
+        is_memory: bool,
     ) -> None:
-        terminal_reason: WorkerTerminalReason = (
-            "contract_error"
-            if remote_type.startswith("NativeMemoryLimit")
-            else "memory_limited"
-            if remote_type.endswith("MemoryError")
-            else "error"
-        )
         super().__init__(
             f"Interactive worker raised {remote_type}: {remote_message}",
-            terminal_reason=terminal_reason,
+            terminal_reason=remote_failure_terminal_reason(remote_type, is_memory=is_memory),
         )
         self.remote_type = remote_type
         self.remote_module = remote_module
         self.remote_message = remote_message
         self.remote_traceback = remote_traceback
         self.public_payload = public_payload
+        self.is_memory = is_memory
 
 
 @dataclass(slots=True)
@@ -224,6 +220,43 @@ class _PreemptibleJob:
     """A pre-emptible request running on a slot index; a waiting request marks it."""
 
     preempted: bool = False
+
+
+# What a warm or dedicated worker sends for a failure: the exception's type name,
+# module, message and traceback, its public payload, and whether it is a MemoryError.
+FailureEvidence = tuple[str, str, str, str, dict[str, object] | None, bool]
+
+
+def failure_evidence(exc: BaseException, *, message: str | None = None) -> FailureEvidence:
+    """The evidence a warm or dedicated worker sends for *exc* (child side)."""
+    return (
+        type(exc).__name__,
+        type(exc).__module__,
+        str(exc) if message is None else message,
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        _public_exception_payload(exc),
+        isinstance(exc, MemoryError),
+    )
+
+
+def remote_error_from_evidence(evidence: Any) -> InteractiveWorkerRemoteError:
+    """The typed failure for a worker's evidence (parent side); malformed evidence is refused."""
+    if not isinstance(evidence, tuple) or len(evidence) != 6 or type(evidence[5]) is not bool:
+        raise InteractiveWorkerProtocolError(
+            "Interactive worker returned malformed error evidence",
+            terminal_reason="contract_error",
+        )
+    remote_type, remote_module, remote_message, remote_traceback, public_payload, is_memory = (
+        evidence
+    )
+    return InteractiveWorkerRemoteError(
+        remote_type=str(remote_type),
+        remote_module=str(remote_module),
+        remote_message=str(remote_message),
+        remote_traceback=str(remote_traceback),
+        public_payload=public_payload if isinstance(public_payload, dict) else None,
+        is_memory=is_memory,
+    )
 
 
 def _public_exception_payload(exc: BaseException) -> dict[str, object] | None:
@@ -278,18 +311,7 @@ def _interactive_worker_entrypoint(
                 if native_growth is not None:
                     applied = lease.apply(native_growth, required=native_required)
             except BaseException as exc:
-                envelope = (
-                    "result",
-                    job_id,
-                    "error",
-                    (
-                        type(exc).__name__,
-                        type(exc).__module__,
-                        str(exc),
-                        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-                        _public_exception_payload(exc),
-                    ),
-                )
+                envelope = ("result", job_id, "error", failure_evidence(exc))
                 backend = None
                 run_function = False
             else:
@@ -307,22 +329,7 @@ def _interactive_worker_entrypoint(
                         failure = (
                             memory_error_for_thread_start_failure(raised) if applied else raised
                         )
-                        envelope = (
-                            "result",
-                            job_id,
-                            "error",
-                            (
-                                type(failure).__name__,
-                                type(failure).__module__,
-                                str(failure),
-                                "".join(
-                                    traceback.format_exception(
-                                        type(failure), failure, failure.__traceback__
-                                    )
-                                ),
-                                _public_exception_payload(failure),
-                            ),
-                        )
+                        envelope = ("result", job_id, "error", failure_evidence(failure))
                         # The envelope carries only text; the exception's traceback
                         # would hold the failed job's frames into the next job.
                         del failure
@@ -331,22 +338,11 @@ def _interactive_worker_entrypoint(
                 try:
                     payload = pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL)
                 except BaseException as exc:
+                    evidence = failure_evidence(
+                        exc, message=f"worker result was not serialisable: {exc}"
+                    )
                     payload = pickle.dumps(
-                        (
-                            "result",
-                            job_id,
-                            "error",
-                            (
-                                type(exc).__name__,
-                                type(exc).__module__,
-                                f"worker result was not serialisable: {exc}",
-                                "".join(
-                                    traceback.format_exception(type(exc), exc, exc.__traceback__)
-                                ),
-                                None,
-                            ),
-                        ),
-                        protocol=pickle.HIGHEST_PROTOCOL,
+                        ("result", job_id, "error", evidence), protocol=pickle.HIGHEST_PROTOCOL
                     )
                 result_queue.put(payload)
                 # A warm worker keeps nothing of a job while it waits for the next:
@@ -366,20 +362,7 @@ def _interactive_worker_entrypoint(
             except BaseException as exc:
                 result_queue.put(
                     pickle.dumps(
-                        (
-                            "released",
-                            job_id,
-                            "error",
-                            (
-                                type(exc).__name__,
-                                type(exc).__module__,
-                                str(exc),
-                                "".join(
-                                    traceback.format_exception(type(exc), exc, exc.__traceback__)
-                                ),
-                                _public_exception_payload(exc),
-                            ),
-                        ),
+                        ("released", job_id, "error", failure_evidence(exc)),
                         protocol=pickle.HIGHEST_PROTOCOL,
                     )
                 )
@@ -1149,19 +1132,7 @@ class InteractiveWorkerPool:
             )
         if status == "ok":
             return payload
-        if not isinstance(payload, tuple) or len(payload) != 5:
-            raise InteractiveWorkerProtocolError(
-                "Interactive worker returned malformed error evidence",
-                terminal_reason="contract_error",
-            )
-        remote_type, remote_module, remote_message, remote_traceback, public_payload = payload
-        raise InteractiveWorkerRemoteError(
-            remote_type=str(remote_type),
-            remote_module=str(remote_module),
-            remote_message=str(remote_message),
-            remote_traceback=str(remote_traceback),
-            public_payload=(public_payload if isinstance(public_payload, dict) else None),
-        )
+        raise remote_error_from_evidence(payload)
 
     def _interpret_release(self, *, job_id: str, envelope: Any) -> None:
         if not isinstance(envelope, tuple) or len(envelope) != 4:
@@ -1182,19 +1153,7 @@ class InteractiveWorkerPool:
                     terminal_reason="contract_error",
                 )
             return
-        if not isinstance(payload, tuple) or len(payload) != 5:
-            raise InteractiveWorkerProtocolError(
-                "Interactive worker returned malformed release error evidence",
-                terminal_reason="contract_error",
-            )
-        remote_type, remote_module, remote_message, remote_traceback, public_payload = payload
-        raise InteractiveWorkerRemoteError(
-            remote_type=str(remote_type),
-            remote_module=str(remote_module),
-            remote_message=str(remote_message),
-            remote_traceback=str(remote_traceback),
-            public_payload=(public_payload if isinstance(public_payload, dict) else None),
-        )
+        raise remote_error_from_evidence(payload)
 
     @staticmethod
     def _close_slot(slot: _WorkerSlot, *, graceful: bool) -> None:

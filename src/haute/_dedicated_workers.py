@@ -31,7 +31,6 @@ import queue
 import sys
 import threading
 import time
-import traceback
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -46,11 +45,11 @@ from haute._interactive_workers import (
     InteractiveWorkerError,
     InteractiveWorkerMemoryLimitError,
     InteractiveWorkerProtocolError,
-    InteractiveWorkerRemoteError,
     InteractiveWorkerStartError,
     InteractiveWorkerStoppedError,
     InteractiveWorkerTimeoutError,
-    _public_exception_payload,
+    failure_evidence,
+    remote_error_from_evidence,
 )
 from haute._logging import get_logger
 from haute._native_memory_limit import (
@@ -261,19 +260,7 @@ def read_limit_evidence(counter: LimitEvidenceCounter, baseline: int | None) -> 
 
 
 def _error_envelope(command_id: str, exc: BaseException, cap: CommandCap | None) -> tuple[Any, ...]:
-    return (
-        "result",
-        command_id,
-        "error",
-        (
-            type(exc).__name__,
-            type(exc).__module__,
-            str(exc),
-            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-            _public_exception_payload(exc),
-        ),
-        cap,
-    )
+    return ("result", command_id, "error", failure_evidence(exc), cap)
 
 
 # The child's limit-notification counter: the Windows watcher's sink, and the
@@ -694,24 +681,20 @@ class DedicatedWorker:
         self.last_cap = cap if isinstance(cap, CommandCap) else None
         if status == "ok":
             return payload
-        remote_type, remote_module, remote_message, remote_traceback, public_payload = payload
-        error = InteractiveWorkerRemoteError(
-            remote_type=str(remote_type),
-            remote_module=str(remote_module),
-            remote_message=str(remote_message),
-            remote_traceback=str(remote_traceback),
-            public_payload=public_payload if isinstance(public_payload, dict) else None,
-        )
-        if remote_type == "ExecutionMemoryLimitExceededError":
-            self._die("remote_memory", evidence="watchdog", reason="memory_limited")
-        elif str(remote_type).endswith("MemoryError"):
-            confirmed = self._limit_recorded(evidence_before)
-            self._die(
-                "remote_memory",
-                evidence="cap_confirmed" if confirmed else "suspected",
-                reason="memory_limited",
-            )
-        elif str(remote_type).startswith("NativeMemoryLimit"):
+        try:
+            error = remote_error_from_evidence(payload)
+        except InteractiveWorkerProtocolError:
+            self._die("crashed", evidence="none")
+            raise
+        remote_type = error.remote_type
+        if error.is_memory:
+            if remote_type == "ExecutionMemoryLimitExceededError":
+                # The child's own sampled checkpoint, not the native limiter, refused it.
+                evidence: MemoryEvidence = "watchdog"
+            else:
+                evidence = "cap_confirmed" if self._limit_recorded(evidence_before) else "suspected"
+            self._die("remote_memory", evidence=evidence, reason="memory_limited")
+        elif remote_type.startswith("NativeMemoryLimit"):
             # A cap that could not be installed leaves the worker uncapped.
             self._die("terminated", evidence="none", reason="contract_error")
         raise error
@@ -779,14 +762,24 @@ class DedicatedWorker:
                 error_type=type(exc).__name__,
             )
         finally:
-            for work_queue in (self._request_queue, self._result_queue):
+            for name, work_queue in (
+                ("request", self._request_queue),
+                ("result", self._result_queue),
+            ):
                 if work_queue is None:
                     continue
                 try:
                     work_queue.close()
                     work_queue.join_thread()
-                except BaseException:
-                    pass
+                except BaseException as exc:
+                    # Nothing is raised from an ending worker; its owner sees the death.
+                    logger.warning(
+                        "dedicated_worker_queue_close_failed",
+                        owner=self.owner,
+                        queue=name,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
             with _REGISTRY_LOCK:
                 _REGISTRY.discard(self)
 

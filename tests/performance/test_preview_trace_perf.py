@@ -886,7 +886,7 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
     assert statuses.count(200) == 1
     assert statuses.count(409) == request_count - 1
     assert all(
-        "superseded" in response.json()["detail"].lower()
+        response.json()["detail"]["error_code"] == "request_superseded"
         for response in responses
         if response.status_code == 409
     )

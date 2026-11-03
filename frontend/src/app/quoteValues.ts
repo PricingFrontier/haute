@@ -11,6 +11,7 @@ import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteActivi
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
+import { operationKey } from "../utils/operationKey"
 import { formattedNumber } from "../utils/sheetValues"
 import { basisOf, columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
@@ -308,11 +309,8 @@ export function clearDraft(key: string): void {
   }
 }
 
-/** A new operation key, which makes a save repeated after its answer was lost write once. */
-export function operationKey(): string {
-  const random = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  return `save-${random}`.slice(0, 64)
-}
+/** A new operation key (`utils/operationKey.ts`), which the pipeline save shares. */
+export { operationKey }
 
 // ── A quote asked for ────────────────────────────────────────────────────
 

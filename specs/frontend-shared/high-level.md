@@ -78,9 +78,12 @@ In scope:
   `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
   `utils/mlflowOptimiser.ts`). Each repeated concern has one helper: error
-  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations
-  (`utils/formatValue.ts`), relative times (`utils/relativeTime.ts`) and the
-  object guard (`types/guards.ts`); lint rejects a new local copy. Every panel
+  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations and
+  abbreviated numbers (`utils/formatValue.ts`), relative times
+  (`utils/relativeTime.ts`), canonical JSON (`utils/canonicalJson.ts`), calendar
+  days (`utils/isoDate.ts`), the job-status vocabulary (`api/types.ts`) and the
+  object guard (`types/guards.ts`); lint rejects a new local copy. Numbers follow
+  the browser's locale on every surface. Every panel
   says how long ago something was by one rule, so one instant reads the same in
   the git panel, the assistant's chats, the Files panel, Explore and the
   underwriter app: "just now" under a minute, then whole minutes, hours and days
@@ -155,9 +158,9 @@ whose detail matches the "missing/invalid session" reason fires a
 `window` `CustomEvent` (`HAUTE_SESSION_EXPIRED_EVENT`) rather than being
 handled locally — any part of the app can listen for session expiry without
 the client needing to know about auth UI. Before `App` mounts,
-`bootstrapHauteSession()` makes one same-origin, no-store POST and lets the
-browser retain the returned HttpOnly cookie; concurrent callers share the
-same promise. A forced refresh requested while a normal bootstrap is active
+`bootstrapHauteSession()` makes one same-origin, no-store POST, bounded by a
+deadline, and lets the browser retain the returned HttpOnly cookie; concurrent
+callers share the same promise. A forced refresh requested while a normal bootstrap is active
 is queued behind that request rather than incorrectly joining it. The token
 never enters JavaScript, request headers assembled by the client, or a
 WebSocket URL. Bundle-split modules such as `api/dispersion.ts` reuse the
@@ -183,10 +186,11 @@ Capability order and unsupported legs remain intact, and cache
 readiness/freshness/progress are separate typed values.
 
 **Result caching.** `useNodeResultsStore` is the only place preview rows,
-optimiser solves, training runs, explore reports, and pivot matrices are kept
-once computed. Each result category (`previews`, `solveResults`, `trainResults`,
-`exploreResults`, `pivotResults`) is bounded to a fixed entry count and evicted
-by least-recently-touched. In all five caches the currently pinned/open node's
+optimiser solves, training runs, and Explore pivot matrices are kept
+once computed; the data an Explore preview profiles is the shared data point's,
+kept in `useNodeDataStore`. Each result category (`previews`, `solveResults`,
+`trainResults`, `pivotResults`) is bounded to a fixed entry count and evicted
+by least-recently-touched. In all four caches the currently pinned/open node's
 entries survive eviction pressure; the pivot trimmer excludes the pinned node's
 entries entirely from eviction candidates. A
 config-hash (`hashConfig`) lets panels detect
@@ -342,7 +346,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 ## Design rationale
 
 - **Fail loud, not soft.** The API layer and the result-cache parsers
-  (`hashConfig`, frontier-point derivation) throw on malformed input rather
+  (frontier-point derivation in `utils/optimiserSolveResults.ts`) throw on malformed input rather
   than defaulting — per the project's error-handling policy, a wrong
   fallback is worse than a visible crash, because a silent fallback hides
   the bug that produced it.
@@ -424,9 +428,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   modules (dispersion, assistant) consume `client.ts`'s exported fetch/stream
   helpers rather than hand-rolling transport, which is how the rule holds
   even for the assistant's non-JSON SSE stream.
-- `useBackgroundJobs` (mounted once via `BackgroundJobPolling`) polls solve,
-  train, and explore jobs regardless of which panel is currently open, so
-  those results reach `useNodeResultsStore` even after the user navigates
+- `useBackgroundJobs` (mounted once via `BackgroundJobPolling`) polls optimiser
+  solve, training, Explore pivot, node-data build and data-profile jobs
+  regardless of which panel is currently open, so their results reach
+  `useNodeResultsStore` and `useNodeDataStore` even after the user navigates
   away from the node that started them; this depends on the backend's job
   endpoints described in [background-jobs](../background-jobs/high-level.md).
 - Every job wait goes through `hooks/jobPollingController.ts`. Jobs the store
@@ -442,19 +447,29 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 
 ## Failure model
 
-> NOTE: A failed optimiser retry can stamp its identity onto a retained successful result.
-> [FSH-R12](../roadmap/frontend-shared.md#fsh-r12--failed-solves-cannot-relabel-retained-successful-results)
-> separates attempt status from result provenance; the preview is currently affected.
-
-> NOTE: Independent request-input edits can supersede each other while identity
-> resolution is pending, losing an earlier change. Retaining the pending draft
-> is tracked in [FSH-R10](../roadmap/frontend-shared.md#fsh-r10--retain-edits-during-input-identity-resolution).
-
-> NOTE: Pivot cancellation can retire a newer job or label an old result with its
-> identity; training cancellation has the same missing response-ownership guard.
-> Job and document fencing is tracked in
-> [FSH-R11](../roadmap/frontend-shared.md#fsh-r11--cancellation-replies-belong-to-one-job).
-
+- Request-input edits made while their identities resolve build on one
+  another. The Quote Input editor shows the node's pending draft and each edit
+  extends it; the newest draft is committed once its identities resolve,
+  whatever order the replies arrive in, and an older draft's reply, success or
+  failure, changes nothing because the newer draft carries its edits. A failed
+  resolution of the newest draft is reported and returns the editor to the
+  committed configuration without rolling back anything committed before it. A
+  document or editing-capability change withdraws the draft and commits
+  nothing, and Save waits for the newest draft to commit before it reads the
+  graph.
+- A failed optimiser solve is recorded as a failed attempt beside the node's
+  earlier result, never over that result's identity: the retained numbers keep
+  the job, config, source and graph version that produced them, so they read as
+  stale against a changed config and are never labelled with the failed
+  attempt's objective. The Solve pane shows the failure and publication stays
+  refused until a solve succeeds.
+- A job reply belongs to the job it was asked about. Polling and Cancel name
+  the job id with every progress, completion and failure they hand the results
+  store, and the store changes nothing when the node's or pivot's active job
+  has another id; a Cancel reply also applies only while the document it was
+  sent for is current. A late reply for an earlier pivot, training or solve
+  therefore never retires a newer job or labels its result with the newer
+  calculation's identity.
 - A non-2xx HTTP response becomes an `ApiError` with `status`/`detail`;
   `loadPipeline` follows the same fail-loud rule as other endpoints and does
   not invent an empty graph for a 404.
@@ -483,8 +498,8 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   integer) throws immediately from `assertValidCacheLimit` rather than
   silently disabling eviction.
 - `runDispersionEstimate`'s job wait rejects with
-  an `ApiError` carrying the job's message on any non-`running`/non-`completed` terminal
-  status, and with a plain `Error` if a `"completed"` status arrives
+  a `JobFailedError` carrying the job's status and message on any non-`running`/non-`completed`
+  terminal status (no HTTP request failed, so it is no `ApiError`), and with a plain `Error` if a `"completed"` status arrives
   without a result/value payload — a job that finishes without the data
   it promised is a contract violation, not treated as success. A caller
   `AbortSignal` fired mid-poll rejects with a `DOMException`
@@ -536,4 +551,5 @@ validation requires the action-specific discriminator, the applied artifacts,
 bounded artifact patches and a complete valid editor document. The browser never
 accepts replacement bytes, source spans, migration instructions, or a recovery
 graph as an apply payload; it sends only server identities, revision, and the
-update/reset/recover action or explicit removal config-deletion choice.
+reset/recover action, the connection to remove, or the explicit removal
+config-deletion choice.

@@ -86,7 +86,7 @@ describe("BackgroundJobPolling", () => {
     expect(EditorShell).toHaveBeenCalledTimes(2)
 
     act(() => {
-      useNodeResultsStore.getState().updateTrainProgress("train-node", {
+      useNodeResultsStore.getState().updateTrainProgress("train-node", "train-job", {
         status: "running",
         progress: 0.25,
         message: "Training",

@@ -12,6 +12,7 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
     training: false,
     trainProgress: null,
     trainResult: null,
+    trainError: null,
     isStale: false,
     ramEstimate: null,
     ramEstimateLoading: false,
@@ -182,9 +183,9 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText(/Model trained/)).toBeInTheDocument()
   })
 
-  it("shows error when trainResult has error status", () => {
+  it("shows the error of a failed training", () => {
     render(<TrainingActionsAndResults {...makeProps({
-      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+      trainError: "Out of memory",
     })} />)
     expect(screen.getByText("Training failed")).toBeInTheDocument()
     expect(screen.getByText("Out of memory")).toBeInTheDocument()
@@ -193,7 +194,7 @@ describe("TrainingActionsAndResults", () => {
   it("shows the worker's traceback collapsed under Error details", () => {
     const traceback = "Traceback (most recent call last):\n  ImportError: /opt/lib/_catboost.so"
     render(<TrainingActionsAndResults {...makeProps({
-      trainResult: makeTrainResult({ status: "error", error: "Training failed with an unexpected internal error" }),
+      trainError: "Training failed with an unexpected internal error",
       terminalTraceback: traceback,
     })} />)
 
@@ -205,14 +206,14 @@ describe("TrainingActionsAndResults", () => {
 
   it("has no Error details without a traceback", () => {
     render(<TrainingActionsAndResults {...makeProps({
-      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+      trainError: "Out of memory",
     })} />)
     expect(screen.queryByText("Error details")).toBeNull()
   })
 
   it("shows structured terminal memory diagnostics when training failed", () => {
     render(<TrainingActionsAndResults {...makeProps({
-      trainResult: makeTrainResult({ status: "error", error: "Out of memory" }),
+      trainError: "Out of memory",
       terminalMetrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
     })} />)
 
@@ -222,7 +223,7 @@ describe("TrainingActionsAndResults", () => {
 
   it("does not imply memory caused non-memory terminal training failures", () => {
     render(<TrainingActionsAndResults {...makeProps({
-      trainResult: makeTrainResult({ status: "error", error: "Feature contract mismatch" }),
+      trainError: "Feature contract mismatch",
       terminalMetrics: makeExecutionMetricsFixture({
         profile: "training_prep",
         status: "running",

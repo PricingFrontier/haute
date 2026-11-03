@@ -644,6 +644,7 @@ class TestErrorHandling:
             remote_message=str(refused),
             remote_traceback="",
             public_payload=refused.to_payload(),
+            is_memory=False,
         )
 
         with pytest.raises(HTTPException) as answered:

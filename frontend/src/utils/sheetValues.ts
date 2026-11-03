@@ -8,6 +8,7 @@
 import type { FormSchema, SchemaColumn, SchemaTable } from "../api/types"
 import { formatPivotNumber } from "../panels/explore/pivotNumberFormat"
 import type { SampleRow, SampleValue } from "./workbenchForm"
+import { isDay } from "./isoDate"
 
 /** Rows by table id, as the sample and a quote hold them. */
 export type RowsByTable = Readonly<Record<string, readonly SampleRow[]>>
@@ -180,22 +181,6 @@ export function formattedNumber(column: SchemaColumn, value: unknown): string | 
   if (column.type !== "int" && column.type !== "float") return null
   if (column.number_format === "general" && column.decimal_places === null) return null
   return formatPivotNumber(typeof value === "string" ? parseTypedNumber(value) : value, column)
-}
-
-const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/
-
-/**
- * Whether stripped text names a real calendar day as YYYY-MM-DD, as the server's dates
- * do: year 1 or later. JavaScript's Date is no use here, as it reads years before 100 as
- * the 1900s and takes the year 0.
- */
-export function isDay(text: string): boolean {
-  if (!DAY.test(text)) return false
-  const [year, month, day] = text.split("-").map(Number)
-  if (year < 1 || month < 1 || month > 12 || day < 1) return false
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
-  return day <= days
 }
 
 /**
