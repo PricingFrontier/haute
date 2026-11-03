@@ -1172,20 +1172,25 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 def _model_score_inputs(
-    produced: set[str], features: Iterable[str], offset_column: object, offset_link: object
+    produced: set[str],
+    features: Iterable[str],
+    offset_column: object,
+    offset_link: object,
+    optional_features: frozenset[str] = frozenset(),
 ) -> Contract:
     """A scorer reads its features, and its exposure only where the input has it.
 
     A quote is priced for a full policy term, so a missing exposure (a log-link
     offset) is filled at scoring; projection keeps a present one so pruning
     never drops it. An additive offset is a base premium and a required input.
+    A pyfunc signature's optional inputs are likewise read only where present.
     """
     offset = (
         frozenset({offset_column})
         if isinstance(offset_column, str) and offset_column
         else frozenset()
     )
-    optional = offset if offset_link == "log" else frozenset()
+    optional = (offset if offset_link == "log" else frozenset()) | optional_features
     return Contract(
         inputs=(frozenset(features) | offset) - optional,
         outputs=frozenset(produced),
@@ -1300,12 +1305,13 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
     scoring_model = load_scoring_model(
         model_source, model_score_task(config), base_dir=current_project().pipeline_dir
     )
-    if scoring_model.feature_names:
+    if scoring_model.feature_names or scoring_model.optional_feature_names:
         return _model_score_inputs(
             produced,
             scoring_model.feature_names,
             getattr(scoring_model, "offset_column", None),
             getattr(scoring_model, "offset_link", None),
+            scoring_model.optional_feature_names,
         )
     return produced, None
 

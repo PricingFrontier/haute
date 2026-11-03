@@ -32,6 +32,15 @@ from haute._mlflow_utils import ResolvedBackend, resolve_backend
 from haute._model_scorer import _cleanup_registered_temp_files
 from tests._project import use_project
 
+
+def _signature(*names: str) -> object:
+    """A real MLflow signature with required double inputs *names*."""
+    from mlflow.models import ModelSignature
+    from mlflow.types import ColSpec, Schema
+
+    return ModelSignature(inputs=Schema([ColSpec("double", name) for name in names]))
+
+
 # The backend ``mock_mlflow_env`` pins, and the one the destination-free
 # helper tests below thread through explicitly.
 _FAKE_BACKEND = ResolvedBackend(
@@ -186,7 +195,7 @@ class TestPyfuncAutoDetect:
     def test_non_cbm_artifact_uses_pyfunc(self, mock_mlflow_env):
         """Artifact path not ending in .cbm loads via pyfunc."""
         fake_pyfunc = MagicMock()
-        fake_pyfunc.metadata.signature.inputs.input_names.return_value = ["f1", "f2"]
+        fake_pyfunc.metadata.signature = _signature("f1", "f2")
         _, _, modules_patch, resolve_patch = mock_mlflow_env
 
         with (
@@ -209,7 +218,7 @@ class TestPyfuncAutoDetect:
     def test_auto_discover_falls_back_to_pyfunc(self, mock_mlflow_env):
         """When no .cbm found and no artifact_path, falls back to pyfunc 'model'."""
         fake_pyfunc = MagicMock()
-        fake_pyfunc.metadata.signature.inputs.input_names.return_value = ["a"]
+        fake_pyfunc.metadata.signature = _signature("a")
         _, _, modules_patch, resolve_patch = mock_mlflow_env
 
         with (
@@ -384,23 +393,14 @@ class TestWrappers:
         sm = _wrap_catboost(model, source="test model")
         assert sm.cat_feature_names == frozenset()
 
-    def test_wrap_pyfunc(self):
-        """_wrap_pyfunc extracts features from model signature."""
-        model = MagicMock()
-        model.metadata.signature.inputs.input_names.return_value = ["f1", "f2"]
-
-        sm = _wrap_pyfunc(model)
-        assert sm.flavor == "pyfunc"
-        assert sm.feature_names == ["f1", "f2"]
-        assert sm.cat_feature_names == frozenset()
-
     def test_wrap_pyfunc_no_signature(self):
         """_wrap_pyfunc with no signature returns empty feature list."""
         model = MagicMock()
         model.metadata = None
 
-        sm = _wrap_pyfunc(model)
+        sm = _wrap_pyfunc(model, task="regression")
         assert sm.feature_names == []
+        assert sm.optional_feature_names == frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -1506,28 +1506,38 @@ class TestExtractPyfuncFeatures:
             _extract_pyfunc_features(ModelWithoutMetadata())
 
     def test_no_signature(self):
-        """Returns empty list when model has no signature."""
+        """No signature declares no inputs."""
         from haute._mlflow_io import _extract_pyfunc_features
 
         model = MagicMock()
         model.metadata = None
-        assert _extract_pyfunc_features(model) == []
+        assert _extract_pyfunc_features(model) == ([], frozenset())
 
     def test_inputs_is_none(self):
-        """Returns empty list when signature.inputs is None."""
         from haute._mlflow_io import _extract_pyfunc_features
 
         model = MagicMock()
         model.metadata.signature.inputs = None
-        assert _extract_pyfunc_features(model) == []
+        assert _extract_pyfunc_features(model) == ([], frozenset())
 
-    def test_input_names_method(self):
-        """Uses input_names() when available."""
+    def test_optional_inputs_are_separated_from_required_ones(self):
+        """An input the signature marks optional is read only where present."""
+        from mlflow.models import ModelSignature
+        from mlflow.types import ColSpec, Schema
+
         from haute._mlflow_io import _extract_pyfunc_features
 
         model = MagicMock()
-        model.metadata.signature.inputs.input_names.return_value = ["x", "y"]
-        assert _extract_pyfunc_features(model) == ["x", "y"]
+        model.metadata.signature = ModelSignature(
+            inputs=Schema(
+                [
+                    ColSpec("double", "x"),
+                    ColSpec("double", "exposure", required=False),
+                    ColSpec("string", "y"),
+                ]
+            )
+        )
+        assert _extract_pyfunc_features(model) == (["x", "y"], frozenset({"exposure"}))
 
 
 # ---------------------------------------------------------------------------
@@ -2000,7 +2010,7 @@ class TestLoadMlflowModelPyfunc:
     def test_pyfunc_model_loaded_and_wrapped(self):
         """Pyfunc model is loaded and wrapped correctly."""
         fake_pyfunc = MagicMock()
-        fake_pyfunc.metadata.signature.inputs.input_names.return_value = ["f1"]
+        fake_pyfunc.metadata.signature = _signature("f1")
 
         with (
             patch(

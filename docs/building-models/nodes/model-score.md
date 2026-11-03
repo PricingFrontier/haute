@@ -71,6 +71,10 @@ A run logged by Haute's Model Training node records its task. When you pick such
 Model Scoring loads the native model a Model Training run logged or **Save model to
 file** wrote: CatBoost (`.cbm`), XGBoost (`.ubj`), LightGBM (`.lgbm`), t-boost
 (`.tboost`), EBM (`.ebm`) or GLM (`.rsglm`). From MLflow it also loads an MLflow pyfunc model.
+A pyfunc model reads the inputs its signature names; one the signature marks optional, such as
+the exposure of a model Haute logged, is used when your input has it. It must return one
+prediction per row, or a classifier's `pred_label` and `pred_proba`, which fill the prediction
+and `_proba` columns.
 
 A model file scores with the feature contract saved beside it: `<model name>.feature_contract.json`,
 or else `feature_contract.json` in the same folder. **Save model to file** writes the

@@ -102,7 +102,9 @@ logger = get_logger(component="model_scorer")
 from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SIZE  # noqa: E402
 
 _SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
-_ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str], str | None]
+_ModelFeatureContractKey: TypeAlias = tuple[
+    tuple[str, ...], frozenset[str], frozenset[str], str | None
+]
 _FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
@@ -155,6 +157,7 @@ def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
         CacheConsumer.MODEL_CONTRACT,
         {
             "feature_names": tuple(scoring_model.feature_names),
+            "optional_feature_names": frozenset(scoring_model.optional_feature_names),
             "categorical_features": frozenset(scoring_model.cat_feature_names or ()),
             "offset_column": _declared_offset_column(scoring_model),
         },
@@ -278,6 +281,8 @@ def _validate_features_uncached(
 
     missing = [f for f in expected if f not in available and f != offset_column]
     usable = [f for f in expected if f in available or f == offset_column]
+    # An optional input (a pyfunc signature's) is read only where the input has it.
+    usable += sorted(scoring_model.optional_feature_names & (available - set(usable)))
 
     # Cheap dtype checks for categorical expectations
     type_mismatches: list[tuple[str, str, str]] = []

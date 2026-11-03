@@ -18,7 +18,10 @@
 
 - **`ScoringModel`** (`_mlflow_io.py`, `__slots__`-based) — carrier for a
   loaded model: `_model` (the raw flavor-specific object), `feature_names`
-  (ordered `list[str]`), `cat_feature_names` (`frozenset[str]`), `flavor`
+  (ordered `list[str]`, all required), `optional_feature_names`
+  (`frozenset[str]`: inputs read only where the input has them, a pyfunc
+  signature's optional inputs; empty for every other family),
+  `cat_feature_names` (`frozenset[str]`), `flavor`
   (`str`, the flavor of the registered family that loaded it),
   `offset_column` (`str | None`), `offset_link` (`log`, `identity` or
   `None`), `offset_declared` (`bool`; `False` only for a CatBoost model
@@ -410,7 +413,8 @@ the scoring errors and the route returns them as `400`.
    (`_run_contract_if_logged`), calls the family's `load_file` and records the
    contract as the carrier's `run_contract_path`; the
    directory family loads via MLflow's
-   pyfunc flavor (`_load_pyfunc_model` + `_wrap_pyfunc`). For a file-loaded
+   pyfunc flavor (`_load_pyfunc_model` + `_wrap_pyfunc(model, task=task)`,
+   see "Pyfunc inputs and outputs" under edge cases). For a file-loaded
    family, the bounded retry may have deleted
    and re-downloaded the artifact, so the fingerprint is re-derived after
    loading (a no-op stat when nothing changed) and the cache key rebuilt
@@ -919,10 +923,32 @@ endpoint.
   preview seeded from it says the same without scoring; a non-numeric or
   non-finite explanation offset raises `ModelExplanationError` before CatBoost
   is called.
-- **Pyfunc feature discovery uses the supported MLflow signature API.**
-  `_extract_pyfunc_features` reads `signature.inputs.input_names()`; Haute's
-  MLflow dependency floor is 3.11 and no older list-shaped signature adapter
-  is retained.
+- **Pyfunc inputs and outputs come from the signature.**
+  `_extract_pyfunc_features` reads `signature.inputs.required_input_names()`
+  as the carrier's `feature_names` and `optional_input_names()` (a `ColSpec`
+  with `required=False`) as its `optional_feature_names`; Haute's MLflow
+  dependency floor is 3.11 and no older list-shaped signature adapter is
+  retained. An optional input is passed to the model when the input has it
+  and never demanded: `_validate_features_uncached` appends the present ones
+  to the usable features, the feature-validation key (`model_contract`)
+  includes them, and column planning (`_model_score_inputs`) plans them as
+  optional inputs, as it does an exposure. Haute's own logged model declares
+  its log-link exposure optional, so scored through its pyfunc artifact
+  without an exposure it prices a full policy term, as its native artifact
+  does. `_wrap_pyfunc` wraps the loaded model in an adapter chosen by the
+  signature's outputs. `_PyfuncClassifier` serves outputs that are exactly
+  `PYFUNC_CLASSIFIER_OUTPUTS` (`pred_label`, `pred_proba`, Haute's classifier
+  pyfunc): `predict` returns the labels cast to the type the signature
+  declares for `pred_label` (so an empty input keeps a typed column) and
+  `predict_proba` the probabilities, one model call per input (`predict`
+  keeps the probabilities, per thread, for the `predict_proba` every
+  classification path makes next on the same input). Declaring that pair
+  for a node scoring regression, or declaring any other set of two or more
+  outputs, raises `ConfigError` at load. `_PyfuncPredictor` serves every
+  other model and accepts one prediction per row (a vector, an `(n, 1)`
+  array or a one-column table); a wider table or array, or a count that
+  differs from the input rows, raises `ValueError` naming the shape, never
+  flattened into more values than rows.
 - **Feature order is never checked.** `_validate_features_uncached` checks
   presence and categorical dtype, and `assert_schema_matches_contract` a bound
   contract's dtypes, and the usable features come back in the model's
@@ -989,6 +1015,9 @@ endpoint.
 | File source with a missing model file, an explicit contract that does not exist, or a path outside the project | `ConfigError` naming the file / `RuntimePathOutsideProjectError` | `resolve_model_file`, `model_contract_path`; also `GET /api/model-file` as `400`. |
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |
 | Bug in load dispatch (bad attribute/type/key) | `AttributeError` / `TypeError` / `KeyError` | Re-raised immediately from `_load_with_bounded_retry`, never retried. |
+| A readable model Haute refuses (a file without Haute's record, a contract that does not describe it, the wrong task) | The `HauteError` / `HauteValidationError` itself, with its own message | Re-raised immediately from `_load_with_bounded_retry`: the cached file is kept and never re-downloaded. |
+| A pyfunc declaring the classifier pair for a regression node, or another set of several outputs | `ConfigError` naming the outputs | `_wrap_pyfunc`, at load. |
+| A pyfunc returning more than one prediction per row, or a count that differs from its input rows | `ValueError` naming the shape | `_PyfuncPredictor.predict` / `_PyfuncClassifier`. |
 | Invalid disk-cache run_id/artifact_path | `ValueError` | `_validate_disk_cache_run_id` / `_validate_artifact_path`, called from `_artifact_cache_path` before any I/O. |
 | Feature/categorical/offset mismatch, or a dtype that differs from the bound contract | `FeatureMismatchError` | `assert_schema_matches_contract` (with a bound contract, first) / `_validate_features_uncached` / `_require_offset_column`; propagates through `ModelScorer.score()` uncaught (no rewrap of other exception types — see `_run_score_pipeline` docstring). |
 | Unsupported scoring flavor | `ConfigError` | `score_frame()`, at the top of dispatch. |
@@ -1030,7 +1059,11 @@ to a live MLflow tracking server.
   run/registered loading (happy path, missing args, invalid source
   type), pyfunc auto-detect and auto-discovery fallback, in-memory cache
   hit/LRU-eviction, CatBoost loader dispatch by task, model wrapping
-  (CatBoost cat-feature extraction, pyfunc signature extraction),
+  (CatBoost cat-feature extraction, pyfunc signature extraction with its
+  optional inputs), a Haute refusal of a readable model (a task mismatch, a
+  LightGBM file with two Haute records) raised once with its own message
+  and the cached file kept, an unreadable CatBoost class-label record
+  raised rather than replaced by `classes_`,
   predict-frame preparation for
   every flavor/dtype/null/categorical combination, artifact-by-extension
   discovery (top-level, subdirectory, "prefers top-level" ordering,
@@ -1078,7 +1111,14 @@ to a live MLflow tracking server.
 - **`tests/test_mlflow_io_real_pyfunc.py`** — pyfunc wrapping and predict-
   frame dtype fidelity against a real (non-mocked) MLflow pyfunc model,
   including the named-column signature contract and declared-dtype
-  precision preservation.
+  precision preservation. Haute's own classifier pyfunc (a trained CatBoost
+  model saved as training logs it) scores separate `<output>` labels and
+  `<output>_proba` probabilities equal to the native model's, row for row,
+  eagerly and batched, and an empty input keeps both typed columns; its
+  classifier outputs scored as regression are refused at load; a model
+  returning two columns is refused rather than flattened; and a logged
+  Poisson model with an exposure prices as its native artifact with and
+  without the exposure column.
 - **`tests/test_mlflow_registered_alias.py`** — against a real local
   registry: an alias resolving to the version it targets and following a move,
   a missing alias naming the model and alias, a concrete version beside an alias

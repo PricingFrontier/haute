@@ -415,11 +415,6 @@ Out of scope (owned elsewhere):
 
 ## Failure model
 
-> NOTE: Explicitly loading Haute's classifier pyfunc can reach a scorer that flattens
-> its label/probability columns, doubling the output length.
-> [MSC-11](../roadmap/model-scoring.md#msc-11--pyfunc-classification-outputs-have-an-explicit-scoring-shape)
-> tracks the declared output adapter; automatic native-artifact loading is a separate path.
-
 - `mlflow` not installed: `ImportError` from `resolve_mlflow_source`
   (the discovery routes convert this to `HTTPException(503)`).
 - Missing required source arguments (`run_id` for `"run"`,
@@ -521,4 +516,15 @@ CatBoost is logged this way too, wrapping its
 `.cbm`, because MLflow's CatBoost flavor serves only the native `predict`. A package without a
 model identity, or whose file is not the model it describes, fails at load, and logging loads
 the package once first so a broken artifact never reaches MLflow.
+
+Model Scoring reads any pyfunc, this one included, through its signature. Required inputs
+must be in the scoring input; an input the signature marks optional is passed when the input
+has it and never demanded, so a logged model's exposure (declared optional, see
+`modelling/_signature.py`) prices a quote without one for a full policy term, exactly as its
+native artifact does. Outputs that are exactly `pred_label` and `pred_proba` score as a
+classifier: the label column takes `pred_label` with its declared type and
+`<output_col>_proba` takes `pred_proba`, row for row, on every eager and batched path; the
+node must score classification. Any other pyfunc returns one prediction per row, and a
+declaration or a result of several columns is refused, never flattened into more values than
+rows.
 
