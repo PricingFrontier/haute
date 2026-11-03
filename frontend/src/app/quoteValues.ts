@@ -18,6 +18,13 @@ import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_M
 
 export type Values = Record<string, SampleRow[]>
 
+/**
+ * The field of a row holding its values in store columns the form no longer holds, as the
+ * quote store opened them (specs/workbench). No sheet shows it: it stays on its row, through
+ * inserts, deletes and edits, and the save writes it back.
+ */
+export const KEPT_KEY = "$kept"
+
 /** `values` without what is not a value: blank cells, rows left empty at the end, tables with none. */
 export function normalisedValues(values: Readonly<Record<string, readonly SampleRow[]>>): Values {
   const kept: Values = {}
@@ -33,8 +40,8 @@ export function normalisedValues(values: Readonly<Record<string, readonly Sample
 export const valuesKey = (values: Readonly<Record<string, readonly SampleRow[]>>): string => canonicalJson(normalisedValues(values))
 
 /**
- * `values` on `form`'s sheets: the cells of its input tables' columns alone, by id, as
- * values typed into other sheets, a draft kept before a release, are put back.
+ * `values` on `form`'s sheets: the cells of its input tables' columns alone, by id, and each
+ * row's kept field, as values typed into other sheets, a draft kept before a release, are put back.
  */
 export function onSheets(form: FormSpec, values: Values): Values {
   const kept: Values = {}
@@ -42,7 +49,7 @@ export function onSheets(form: FormSpec, values: Values): Values {
     const rows = values[table.id]
     if (table.role !== "input" || rows === undefined) continue
     const columns = new Set(table.columns.map((column) => column.id))
-    kept[table.id] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => columns.has(id))))
+    kept[table.id] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => id === KEPT_KEY || columns.has(id))))
   }
   return kept
 }

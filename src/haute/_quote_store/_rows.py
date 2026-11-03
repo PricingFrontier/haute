@@ -13,9 +13,10 @@ output tables are rendered as the pricing route renders them.
 
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime
 from typing import Any
 
 from haute._json_values import JsonValueError, json_value
@@ -49,16 +50,107 @@ PricedTables = dict[str, list[Any]]
 
 _IDENTITY_NAMES = ("quote_reference", "quote_option")
 
+#: The field of a row holding its values in store columns the form no longer holds, as JSON
+#: text by column name (READ-05). No sheet shows it and no pricing reads it: it moves with its
+#: row through inserts and deletes, and a save writes it back. ``$`` starts no column's id or
+#: name, so it is never a cell.
+KEPT_KEY = "$kept"
+#: Each input table's kept columns, by table id, each by its name and kind.
+KeptColumns = Mapping[str, Sequence[tuple[str, str]]]
+
+
+def _kept_json(row: Mapping[str, Any], columns: Sequence[tuple[str, str]]) -> str | None:
+    """*row*'s values in its kept *columns* as the field's JSON text, None when it holds none."""
+    held: dict[str, Any] = {}
+    for name, _kind in columns:
+        value = row.get(name)
+        if isinstance(value, datetime | date):
+            value = value.isoformat()
+        elif isinstance(value, float) and not math.isfinite(value):
+            value = None
+        if value is not None:
+            held[name] = value
+    return json.dumps(held, sort_keys=True, separators=(",", ":")) if held else None
+
+
+def _typed_kept(value: Any, kind: str) -> Any:
+    """*value* as a kept column of *kind* holds it; :class:`ValueError` when it does not fit."""
+    if value is None:
+        return None
+    if kind == "integer" and isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if kind == "float" and isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    if kind == "string" and isinstance(value, str):
+        return value
+    if kind == "boolean" and isinstance(value, bool):
+        return value
+    if kind == "date" and isinstance(value, str):
+        return date.fromisoformat(value)
+    if kind == "datetime" and isinstance(value, str):
+        return datetime.fromisoformat(value)
+    raise ValueError(value)
+
+
+def _kept_values(
+    text: Any, table: SchemaTable, columns: Sequence[tuple[str, str]], row: int | None
+) -> dict[str, Any]:
+    """The values the kept field *text* of *table*'s *row* holds, typed as the store holds
+    them: refused (:class:`QuoteValuesError`), naming them, for a column the form holds, one
+    the store does not hold, or a value its column's kind does not hold."""
+    try:
+        held = json.loads(text) if isinstance(text, str) else None
+    except ValueError:
+        held = None
+    if not isinstance(held, dict):
+        raise QuoteValuesError(
+            f"A row of {table.name} carries a {KEPT_KEY} field that is not an object of values, "
+            "so the quote was not saved.",
+            cells=[MisfitCell(table=table.name, row=row, column=KEPT_KEY)],
+        )
+    kinds = dict(columns)
+    form_columns = {column.name for column in table.columns}
+    named = sorted(name for name in held if name in form_columns or name not in kinds)
+    if named:
+        raise QuoteValuesError(
+            f"A row of {table.name} carries values for "
+            + ", ".join(named)
+            + ", which are no columns the store keeps outside the form, so the quote was not "
+            "saved.",
+            cells=[MisfitCell(table=table.name, row=row, column=name) for name in named],
+        )
+    typed: dict[str, Any] = {}
+    misfits: list[str] = []
+    for name, value in held.items():
+        try:
+            typed[name] = _typed_kept(value, kinds[name])
+        except ValueError:
+            misfits.append(name)
+    if misfits:
+        raise QuoteValuesError(
+            f"A row of {table.name} carries values not of their store columns' kinds: "
+            + ", ".join(sorted(misfits))
+            + "; the quote was not saved.",
+            cells=[MisfitCell(table=table.name, row=row, column=name) for name in sorted(misfits)],
+        )
+    return typed
+
 
 def _label(column: SchemaColumn) -> str:
     return column.label or column.name
 
 
-def input_rows(form: FormSpec, values: Values, identity: tuple[str, int]) -> dict[str, Rows]:
+def input_rows(
+    form: FormSpec,
+    values: Values,
+    identity: tuple[str, int],
+    kept: KeptColumns | None = None,
+) -> dict[str, Rows]:
     """Each input table's rows for *values*, by table id, as the store writes them: a one-row
     table its one row, nulls where nothing is typed; a many-row table its typed rows, each
     under its number on the sheet. Refused (:class:`QuoteValuesError`), naming each cell, when
-    any value is not of its column's type."""
+    any value is not of its column's type. With *kept*, the store's columns outside the form,
+    each row also writes back the values its kept field carries (READ-05)."""
     request, numbers = quote_request_rows(form, values)
     by_name = {table.name: table for table in input_tables(form)}
     reference, option = identity
@@ -95,6 +187,19 @@ def input_rows(form: FormSpec, values: Values, identity: tuple[str, int]) -> dic
             row["quote_option"] = option
             if many:
                 row[QUOTE_ROW] = sheet[place]
+            if kept is not None and table.id != QUOTE_DETAILS_ID:
+                typed = values.get(table.id) or []
+                index = sheet[place] - 1 if many else 0
+                source = typed[index] if 0 <= index < len(typed) else {}
+                # Every row names each kept column, a value or null: one insert writes them.
+                row.update(dict.fromkeys(name for name, _ in kept.get(table.id, ())))
+                text = source.get(KEPT_KEY)
+                if text is not None:
+                    row.update(
+                        _kept_values(
+                            text, table, kept.get(table.id, ()), sheet[place] if many else None
+                        )
+                    )
             written.append(row)
         rows[table.id] = written
     if misfits:
@@ -175,7 +280,9 @@ def _cell(value: Any) -> Cell | None:
     return str(value)
 
 
-def _row_cells(table: SchemaTable, row: Mapping[str, Any]) -> dict[str, Cell]:
+def _row_cells(
+    table: SchemaTable, row: Mapping[str, Any], kept: Sequence[tuple[str, str]] = ()
+) -> dict[str, Cell]:
     details = table.id == QUOTE_DETAILS_ID
     cells: dict[str, Cell] = {}
     for column in table.columns:
@@ -184,14 +291,21 @@ def _row_cells(table: SchemaTable, row: Mapping[str, Any]) -> dict[str, Cell]:
         cell = _cell(row.get(column.name))
         if cell is not None:
             cells[column.id] = cell
+    carried = _kept_json(row, kept)
+    if carried is not None:
+        cells[KEPT_KEY] = carried
     return cells
 
 
-def cells(form: FormSpec, rows: Mapping[str, Rows]) -> tuple[Values, list[str]]:
+def cells(
+    form: FormSpec, rows: Mapping[str, Rows], kept: KeptColumns | None = None
+) -> tuple[Values, list[str]]:
     """The values *rows* (by table id) read back as on the sheets, and each row that no longer
     fits them: a many-row table's rows in their places by ``quote_row``, a gap a blank row;
     a preset row whose value is no longer allowed left out and named as ``table row N
-    (value)``."""
+    (value)``. With *kept*, each row carries its values in the store's columns outside the
+    form in its kept field (:data:`KEPT_KEY`)."""
+    kept = kept or {}
     values: Values = {}
     dropped: list[str] = []
     for table in form.data_schema.tables:
@@ -199,7 +313,7 @@ def cells(form: FormSpec, rows: Mapping[str, Rows]) -> tuple[Values, list[str]]:
             continue
         held = rows.get(table.id, [])
         if table.rows == "one":
-            row = _row_cells(table, held[0]) if held else {}
+            row = _row_cells(table, held[0], kept.get(table.id, ())) if held else {}
             if row:
                 values[table.id] = [row]
             continue
@@ -212,7 +326,7 @@ def cells(form: FormSpec, rows: Mapping[str, Rows]) -> tuple[Values, list[str]]:
                 if value is not None and value not in given.options:
                     dropped.append(f"{table.name} row {number} ({value})")
                     continue
-            placed[number] = _row_cells(table, row)
+            placed[number] = _row_cells(table, row, kept.get(table.id, ()))
         if placed:
             values[table.id] = [placed.get(number, {}) for number in range(1, max(placed) + 1)]
     return values, dropped

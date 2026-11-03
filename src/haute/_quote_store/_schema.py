@@ -14,9 +14,10 @@ its tables' shape. ``quote_details`` holds the store's own columns besides the f
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -202,6 +203,9 @@ class StoreSchema:
     metadata: MetaData
     tables: tuple[StoredTable, ...]
     activity: Table
+    #: Each input table's columns the store holds that the form does not, by table id, each
+    #: by its name and kind: what a quote's rows carry back to the save (READ-05).
+    kept: Mapping[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
 
     @property
     def details(self) -> StoredTable:
@@ -268,6 +272,45 @@ def store_schema(form: FormSpec, *, sql_schema: str | None = None) -> StoreSchem
     metadata = MetaData(schema=sql_schema)
     tables = tuple(_stored(metadata, table) for table in form.data_schema.tables)
     return StoreSchema(metadata=metadata, tables=tables, activity=_activity_table(metadata))
+
+
+#: The SQL type each kind a kept column can be of is written as (``_catalogue.kind_of``): the
+#: kinds of the types Haute gives a form's columns.
+_KEPT_TYPES: dict[str, Callable[[], TypeEngine[Any]]] = {
+    "boolean": Boolean,
+    "integer": BigInteger,
+    "float": _double,
+    "date": _date,
+    "datetime": UtcDateTime,
+    "string": _text,
+}
+
+
+def with_kept_columns(
+    schema: StoreSchema, extras: Mapping[str, list[tuple[str, str]]]
+) -> StoreSchema:
+    """*schema* with each input table's store-only columns, *extras* by table name as the
+    database's catalogue holds them (name and kind), read and written with its rows (READ-05).
+
+    A column leaves the form but the SQL Haute writes keeps it, so a saved quote's values stay
+    in it. A save deletes a quote's rows and writes them again, so its rows carry those values
+    back. ``quote_details`` is updated in place, and the output tables are written afresh by
+    each pricing, so neither carries any; nor does a column of a kind Haute never writes.
+    """
+    kept: dict[str, tuple[tuple[str, str], ...]] = {}
+    for stored in schema.tables:
+        if stored.form.role != "input" or stored.form.id == QUOTE_DETAILS_ID:
+            continue
+        carried = tuple(
+            (name, kind)
+            for name, kind in extras.get(stored.table.name, [])
+            if kind in _KEPT_TYPES and name not in stored.table.columns
+        )
+        for name, kind in carried:
+            stored.table.append_column(Column(name, _KEPT_TYPES[kind](), nullable=True))
+        if carried:
+            kept[stored.form.id] = carried
+    return dataclasses.replace(schema, kept=kept)
 
 
 def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:

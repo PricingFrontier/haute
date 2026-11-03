@@ -16,11 +16,13 @@ import {
   clearDraft,
   draftKey,
   forgetCreation,
+  KEPT_KEY,
   keepCreation,
   keptCreationKey,
   listColumns,
   listValue,
   normalisedValues,
+  onSheets,
   operationKey,
   readDraft,
   readKeptCreation,
@@ -40,6 +42,12 @@ describe("values", () => {
     expect(normalisedValues({ policy: [{ a: "1", b: "" }, {}], empty: [{}] })).toEqual({ policy: [{ a: "1" }] })
     expect(valuesKey({ policy: [{ a: "1" }] })).toBe(valuesKey({ policy: [{ b: "", a: "1" }, {}] }))
     expect(valuesKey({ policy: [{ a: "1" }] })).not.toBe(valuesKey({ policy: [{ a: "2" }] }))
+  })
+
+  it("put back on the sheets keep each row's values in store columns the form dropped", () => {
+    const kept = JSON.stringify({ mileage: 100 })
+    const values = { equipment: [{ "equipment.item": "Crane", gone: "x", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] }
+    expect(onSheets(sheetForm(), values)).toEqual({ equipment: [{ "equipment.item": "Crane", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] })
   })
 
   it("show a saved quote's price for the values as they are, and none unpriced", () => {

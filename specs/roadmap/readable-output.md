@@ -34,8 +34,7 @@ The owner decided the following on 3 November 2026:
 
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
-The packages fall into three groups:
-- **Defect fix:** `READ-05`.
+The packages fall into two groups:
 - **Writing changes:** `READ-10` to `READ-13` change how files are written, but every file loads to the same values. The next save rewrites each file once, and no conversion is needed.
 - **Format changes:** `READ-20` onwards. The loader accepts only the current format ([specification governance](../README.md)), and `READ-20` says how commercial-pricing moves to each new one.
 
@@ -45,7 +44,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-05 | Planned | P1 | Saving a quote keeps its input values in store columns the form no longer holds; outputs are written afresh by each pricing. |
 | READ-10 | Planned | P2 | One printer writes every committed JSON file, with a fixed shape per kind of record. |
 | READ-11 | Planned | P2 | Node positions are whole numbers, on one line per node, and only a move changes them. |
 | READ-12 | Planned | P2 | Adding or removing a node leaves every unaffected function in `main.py` where it was. |
@@ -67,33 +65,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-41 | Planned | P3 | A new project holds no `uv init` placeholders and no settings at their default values. |
 
 ## Planned improvements
-
-### READ-05 — Saving a quote keeps its input values in store columns the form no longer holds
-**Why:** When a column leaves the form, the SQL Haute writes for the store keeps the column: its `DROP` is left commented out. But saving a quote deletes each of its rows outside `quote_details` and writes them back with only the form's columns. So each quote loses its value in the kept column the next time it is saved. This happens today when a column is removed. After `READ-23`, every renamed column reads as removed and added, so it would happen on every rename.
-
-**Plan:**
-- A row's number is its place in the table, and inserting or deleting a row renumbers the rows after it. So a row's number cannot find its old values.
-- Instead, the values travel with the row:
-  - opening a quote returns, with each row, its values in store columns the form doesn't hold, as a field of the row that no sheet shows and no pricing reads;
-  - the editor and the app keep that field on the row object, so it moves with the row through inserts, deletes, saves that keep edits made while they were pending, and replays after a lost response;
-  - the save writes the field back into those columns.
-- The save accepts the field only for store columns the form doesn't hold, typed as the store holds them, and refuses anything else by name.
-- A new row has no such values, and a deleted row takes its values with it.
-- A one-row table works the same way. `quote_details` is updated in place and keeps its values already.
-- **Output tables are excluded.** Each save prices the quote again and writes its output rows afresh from that pricing, in that pricing's order; a save without pricing writes none. A value in an output column the form no longer holds came from an older pricing, so it is cleared on the quote's next save, like every other output of that pricing. A renamed output column is filled again by the next pricing.
-
-**Acceptance:** On SQLite and on a hosted engine, remove a column from the form and open a quote saved before the change. Then:
-- save and reopen it: the kept SQL column still holds every row's value;
-- delete the first row, or a middle row, and save twice: each remaining row keeps its own value;
-- insert a row before a remaining row and save twice: the new row holds none, and the others keep their own;
-- type while a save is pending, and replay a save whose response was lost: every row keeps its own value.
-- The save refuses the field for a column the form holds and for a column the store doesn't hold.
-- An output column removed from the form holds no value after a priced save, or after a save without pricing. The input tables keep theirs.
-
-**Dependencies:** None. `READ-23` depends on it.
-
-**Evidence:** `src/haute/_quote_store/_book.py::_replace_rows`; `src/haute/_quote_store/_rows.py`;
-`frontend/src/workbench/sheet/FieldGrid.tsx`; `frontend/src/app/useOpenQuoteStore.ts`.
 
 ### READ-10 — One printer writes every committed JSON file
 **Why:** Six writers follow four key-order rules and two rules for defaults:
@@ -327,7 +298,7 @@ The owner judged that the complexity isn't worth it.
 - **Existing stores keep their constraint and index names.** Haute names them only when it creates a table, and nothing looks them up by name afterwards. The implementation confirms this for every schema change and for the app's check.
 - **Renames:**
   - a renamed column reads as a column removed and a column added, and a renamed table as a table removed and a table added;
-  - the store keeps the removed column, and quotes keep their values there (`READ-05` keeps them through saves);
+  - the store keeps the removed column, and quotes keep their values there through saves (the `$kept` field, [workbench](../workbench/high-level.md));
   - the renamed column starts empty;
   - the schema pane already pairs a renamed column with its column in the database, when comparing against a database;
   - `READ-33` owns pairing against the default branch.
@@ -340,11 +311,11 @@ The owner judged that the complexity isn't worth it.
 - No id remains in the form model, the folder files or a release form.
 - Building a form twice gives the same release id.
 - The store comparison, the cell reader and the store-only columns work by name.
-- A renamed column shows as one column removed and one added, and the old column keeps its values through a save (`READ-05`).
+- A renamed column shows as one column removed and one added, and the old column keeps its values through a save.
 - Table or column names that differ only in case are refused.
 - A store created before the change opens and saves quotes, on SQLite and on a hosted engine.
 
-**Dependencies:** `READ-05`, `READ-20`.
+**Dependencies:** `READ-20`.
 
 **Evidence:** `src/haute/_workbench_form.py::_gives_each_its_own_id`;
 `src/haute/_quote_store/_schema.py::structure`; `src/haute/_quote_store/_schema.py::_named`;
@@ -561,7 +532,7 @@ The owner judged that the complexity isn't worth it.
 **Evidence:** `src/haute/_workbench_form.py::CollectionWidget`; `src/haute/_workbench_form.py::ConditionGroup`.
 
 ### READ-33 — A column or table renamed against the default branch keeps its values
-**Why:** After `READ-23`, a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values (`READ-05`), but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.
+**Why:** After `READ-23`, a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.
 
 **Plan:** If reopened, let the analyst pair a removed column with an added one when comparing against the default branch too, as the pane does against a database. The SQL then renames the column, or the table, so saved quotes keep their values in it.
 

@@ -35,7 +35,7 @@ from haute._quote_store._catalogue import (
     table_problems,
 )
 from haute._quote_store._providers import SignIn, make_server_engine, missing_privileges
-from haute._quote_store._schema import StoreSchema, store_schema
+from haute._quote_store._schema import StoreSchema, store_schema, with_kept_columns
 from haute._workbench_config import (
     STORE_DATABASE_ENV,
     STORE_SERVER_ENV,
@@ -342,6 +342,13 @@ def open_engine(
                         + ". Grant them to it.",
                         differences=lacking,
                     )
+                schema = with_kept_columns(
+                    schema,
+                    {
+                        found.name: [(column.name, column.kind) for column in found.columns]
+                        for found in catalogue.tables
+                    },
+                )
     except Exception:
         engine.dispose()
         raise

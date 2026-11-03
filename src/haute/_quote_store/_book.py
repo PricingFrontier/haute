@@ -451,7 +451,7 @@ class QuoteBook:
         """The quote with what it holds, as *connection* reads it."""
         quote = self._get(connection, reference, option)
         rows = self._rows(connection, reference, option)
-        values, dropped = cells(self._form, rows)
+        values, dropped = cells(self._form, rows, self._schema.kept)
         outputs = rendered_outputs(self._form, rows) if quote.priced else None
         return OpenQuote(quote=quote, values=values, outputs=outputs, dropped=dropped)
 
@@ -895,7 +895,7 @@ class QuoteBook:
             "quote_option": option,
         }
         written = as_written(values, managed)
-        rows = input_rows(self._form, written, (reference, option))
+        rows = input_rows(self._form, written, (reference, option), self._schema.kept)
         details = rows.pop(QUOTE_DETAILS_ID)[0]
         connection.execute(
             insert(self._details).values(
@@ -938,7 +938,7 @@ class QuoteBook:
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)
         rows = {
-            **input_rows(self._form, written, (reference, option)),
+            **input_rows(self._form, written, (reference, option), self._schema.kept),
             **output_rows(
                 self._form, None if priced is None else priced.document, (reference, option)
             ),

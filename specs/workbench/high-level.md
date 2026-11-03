@@ -2279,7 +2279,16 @@ Out of scope:
   engine's ALTER in place, with a note that a value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows or
   role as a note of what the table needs; a table or column the form does not have as a DROP
-  left commented out, since the check passes a column that takes a null; from the database,
+  left commented out, since the check passes a column that takes a null. Such a column of an
+  input table keeps its values through saves: opening a quote gives each of its rows a `$kept`
+  field, the row's values in the store's columns of the kinds Haute writes that the form does
+  not hold, as JSON text no sheet shows and no pricing reads; the row keeps it through
+  inserts, deletes, edits made while a save is pending and the answer to a save replayed, and
+  a save writes it back, refusing it, by name, for a column the form holds, one the store
+  does not hold, or a value its column's kind does not hold. A new row has none; a deleted row
+  takes its values with it. `quote_details` is updated in place, and an output table is
+  written afresh by each pricing, so an output column the form no longer holds is cleared by
+  the quote's next save, priced or not; from the database,
   each other way its tables differ (a column taking a null otherwise, a table keyed or
   referring otherwise, a collation, the store's own columns missing or of another kind) as a
   note that the SQL does not change it, and each note on a table or column that holds
