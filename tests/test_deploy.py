@@ -1824,6 +1824,21 @@ class TestDatabricksTracking:
             assert result.model_version == "1"
             assert result.build_dir is None
 
+    def test_deploy_to_mlflow_runs_in_the_resolved_project_with_none_installed(
+        self, deploy_pipeline_file: Path
+    ) -> None:
+        """A script calling ``deploy_to_mlflow`` directly need not install a project."""
+        from haute._project_context import _CURRENT_PROJECT
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+        _CURRENT_PROJECT.set(None)
+
+        with mock_mlflow_deploy():
+            result = deploy_to_mlflow(resolved)
+
+        assert result.model_version == "1"
+
     def test_deploy_uses_uc_model_name(self, deploy_pipeline_file: Path) -> None:
         """Model must be registered with catalog.schema.model_name format."""
         from haute.deploy._config import DatabricksConfig, DeployConfig

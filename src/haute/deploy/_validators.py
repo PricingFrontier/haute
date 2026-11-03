@@ -751,6 +751,7 @@ def score_test_quotes(
     return [score_test_quote_file(resolved, jf) for jf in json_files]
 
 
+@in_resolved_project
 def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult:
     """Score one test-quote file as :func:`score_test_quotes` scores each: its cases
     priced and each expected output compared, answering its result (``status`` ``ok`` or

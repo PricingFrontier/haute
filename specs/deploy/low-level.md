@@ -771,8 +771,9 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    the root is the current project's. `resolve_config` runs everything after validating the
    project root (parsing, project modules, snapshot preparation, schema and policy inference)
    inside `project_scope(ProjectContext.at(<the validated root>))`, whoever calls it; every
-   step on the resolved deployment (`validate_deploy`, `score_test_quotes` and the dispatch
-   behind `deploy` and `deploy_resolved`) runs in that project too
+   step on the resolved deployment (`validate_deploy`, `score_test_quotes`,
+   `score_test_quote_file`, `deploy_to_mlflow` and the dispatch behind `deploy` and
+   `deploy_resolved`) runs in that project too
    (`src/haute/deploy/_config.py::in_resolved_project`), so they
    read exactly the files its path validation admitted. Only a path scoring reads is resolved:
    a request input (its sample is replaced by the live request) and a node served from a

@@ -26,7 +26,12 @@ from haute._polars_dtypes import (
 )
 from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._project_python import deployed_python_version
-from haute.deploy._config import DEFAULT_CATALOG, DEFAULT_SCHEMA, ResolvedDeploy
+from haute.deploy._config import (
+    DEFAULT_CATALOG,
+    DEFAULT_SCHEMA,
+    ResolvedDeploy,
+    in_resolved_project,
+)
 from haute.deploy._databricks_serving import (
     ServingEndpointError,
     endpoint_update_state,
@@ -88,6 +93,7 @@ def build_experiment_name(config: DeployConfig) -> str:
     return name
 
 
+@in_resolved_project
 def deploy_to_mlflow(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
