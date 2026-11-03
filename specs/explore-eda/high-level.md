@@ -379,10 +379,6 @@ Out of scope (owned elsewhere):
 
 ## Failure model
 
-> NOTE: Relationship temporary aliases can overwrite user columns such as `__w`,
-> and shared pivot cache replies can retain another consumer's node id.
-> [EDA-R01](../roadmap/explore-eda.md#eda-r01--pivot-requests-answered-right) includes alias isolation and response identity.
-
 - An Explore node with zero or more than one upstream parent fails synchronously with HTTP 400
   before a job is created; no background work is attempted.
 - Posting a missing `node_id` returns HTTP 404; a node that resolves but is not Explore-typed
@@ -395,6 +391,12 @@ Out of scope (owned elsewhere):
   statistics and never treats a failed profile as an empty one.
 - A pivot or member request against a point with no current data answers `cache_required` with
   that state, never a partial aggregation.
+- A pivot card the validators reject is refused with HTTP 400 naming the field and value, before
+  any data is read or a job is created.
+- A failing pivot formula names itself and its cause: a syntax error with its column, a call the
+  sandbox refuses, the Python error evaluating it raised, a result that is not a Polars
+  expression or not one value per group, or the Polars error the data raised. Cancellation and
+  memory limits keep their own terminal states and are never reported as a formula failure.
 - The Explore display validators raise `ConfigError` (not a generic exception) for invalid
   top-level containers, non-string keys, wrong-typed known fields, an unknown overview key, or
   unknown pivot/chart values that are not round-trippable. Chart validation also rejects malformed entries and blank or duplicate ids;

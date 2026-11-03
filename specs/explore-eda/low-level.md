@@ -142,7 +142,9 @@
   `sort_by` selection whose effective ordering is unchanged reuses the same key. It excludes
   card name/enabled, Value/formula display names, all Column/Row/Value/formula numeric-format
   settings, Value colour scales and their split-by references, and all unknown presentation
-  fields. The in-process result LRU stores at most 32 matrices.
+  fields. The in-process result LRU stores at most 32 matrices. Because the key is the point's,
+  Explore nodes reading the same point share a cached matrix; a cache hit answers with the
+  requesting node's id in `result.node_id`, never the id of the node that calculated it.
 - Physical aggregation aliases are internal. Public Value references use field-first names such as
   `total_claims_sum` and `total_claims_mean`. Exact `(field, aggregation)` duplicates are computed
   once per grouping query and projected to each stable Value reference; different aggregations of
@@ -154,6 +156,13 @@
   root source-column names, which must exist in the Explore dataframe schema. Planning against a
   grouped schema requires each expression to produce one supported scalar rather than a List,
   Struct, Object, or other nested output. No selected Value or hidden dependency is required.
+  Every compile failure is an `invalid_pivot_formula` failure whose message starts
+  `Formula "<display name>"` and states the cause: `is not a valid Python expression at column
+  N: <syntax error>`, `cannot run: <sandbox refusal>`, `raised <ExceptionType>: <message>`,
+  `returns <type>, not a Polars expression`, `cannot be aggregated per group: <Polars error>`, or
+  `produces <dtype> per group, not one value`. A Polars error while the grouped query runs with
+  formulas selected names every selected formula and the error's first line; only Polars errors
+  are attributed to formulas, so cancellation and memory limits keep their own states.
   Each expression is physically aliased to a reserved name derived from its stable placement id,
   so a public formula reference may safely equal a grouped source-field name. Formula and ordinary
   Value outputs follow the pivot's combined `value_order` and use the existing value-cell
@@ -188,6 +197,10 @@
   Integer and decimal payloads are canonical decimal strings, temporal payloads are ISO strings,
   finite floats are JSON numbers, and null/NaN carry `value: null`. The members endpoint returns
   a display label and count beside the key, sorted by count descending then typed canonical key.
+  A time-zone-aware `Datetime` member carries its offset; the filter literal is built in the
+  column's own dtype (unit and time zone), so it compares as the same instant. A member whose
+  awareness differs from the column's (an offset against a naive column, or none against an
+  aware one) is refused as `invalid_pivot_filter_member`.
 - Explore materialisation and pivot calculation share the Explore job-store namespace, and every
   job record carries its owning kind: `kind: "explore"` for materialisation jobs and
   `kind: "pivot"` for pivot jobs. Each service's status and cancel reject a job id whose kind it
@@ -437,6 +450,13 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   when the centred spread is below 1e-12 of the target's scale. Relationships are ranked by
   strength, then feature name. Categorical labels use the profile's `categorical_label_expr`
   (Binary decoded leniently, Duration formatted), so every groupable dtype the pane offers works.
+- **Internal columns and query count.** The weight and weighted-target columns added beside the
+  data are named `__w` and `__wy`, prefixed with underscores until neither is a column of the
+  data, so a target or weight with either name is read as data. A question reads the data in a
+  row count, one totals query (which also reads every numeric feature's finite extrema), one
+  centred-moments query, and then exactly one query per feature: a numeric feature's grouped
+  bins, or a categorical feature's sums, heaviest levels (`top_k_by` weight then label) and
+  missing level together.
 - **Key check.** Over every row: exact distinct keys (`n_unique` of the column or of a struct of
   the columns), rows with any missing key value, duplicate rows (`rows − distinct_keys`), and
   `unique` only when there are neither duplicates nor missing key values.
@@ -532,7 +552,9 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   These surface directly as the HTTP response; no job is created.
 - `ConfigError` (from `haute.errors`) — raised by the Explore display-config validators for
   structurally invalid overview/pivot/chart values, including malformed cards and duplicate ids.
-  Raised during codegen/parse, not during the run/status/cancel routes.
+  Raised during codegen/parse; the pivot run route validates its card first and answers a
+  `ConfigError` as `InvalidRequestError` (HTTP 400) with the validator's message, before resolving
+  the point or creating a job.
 - Build and profile failures — cancellation, admission, memory limits, and contract and schema
   mismatches — are terminal job states of the shared
   [node-data jobs](../server-api/low-level.md#node-data-builds), not of an Explore-owned worker.
@@ -575,7 +597,8 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
 - `tests/test_explore_relationships.py` — relationships and key checks: cache miss, every 422, numeric
   bins and the missing level, exact large-integer bins, categorical folding, strength 1 and 0 and
   ranking, weight exclusion, single/composite/duplicate/missing key counts, unhashable feature and
-  key refusal, cache identity, a cancelled token, and the route.
+  key refusal, cache identity, a cancelled token, and the route; a target and weight named `__w`
+  and `__wy` read as data, and the count of collects is three plus one per feature.
 - `tests/test_analysis_results.py` — the profile through `POST /api/node-data/profile`: an
   Explore node's point profiled once and then served from the analysis store, a rebuilt point
   never answering with the previous data version's profile, one column-statistics run against a
@@ -601,7 +624,11 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   export, and JSON-safe scalar results including Binary and Duration min/max values.
   Its runtime type matrix covers every persisted member kind (null, NaN, string, Boolean,
   integer, finite float, decimal, date, datetime, and time), dtype-mismatch failures, and
-  unsupported dimension/value dtypes rather than stopping at config validation. The four hard
+  unsupported dimension/value dtypes rather than stopping at config validation, and a
+  `Europe/London` datetime member filters its row while a naive member against that column is
+  refused. An invalid card answers HTTP 400 naming its field; each formula failure kind answers
+  its exact message; a memory limit during a formula pivot ends `memory_limited`; and a copied
+  Explore node served the first node's cached matrix is answered under its own id. The four hard
   bounds (row groups, column groups, displayed cells, and filter members) are each pinned at and
   immediately above their limit.
   It also pins the data the calculation reads: a pivot on an unbuilt point asks for the build

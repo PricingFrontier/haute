@@ -197,7 +197,6 @@ puts it in front of the owner because of what it can cost in production:
 | Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |

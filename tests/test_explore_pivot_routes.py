@@ -886,18 +886,38 @@ def test_pivot_value_order_controls_mixed_result_and_cell_order_without_affectin
 
 
 @pytest.mark.parametrize(
-    "expression",
+    ("expression", "message"),
     [
-        'pl.concat_list(pl.col("claims").sum())',
-        'pl.col("claims") * 2',
-        "42",
-        "pl.col(",
+        (
+            'pl.concat_list(pl.col("claims").sum())',
+            'Formula "Calculated" produces List(Float64) per group, not one value.',
+        ),
+        (
+            'pl.col("claims") * 2',
+            'Formula "Calculated" produces List(Float64) per group, not one value.',
+        ),
+        ("42", 'Formula "Calculated" returns int, not a Polars expression.'),
+        (
+            "pl.col(",
+            'Formula "Calculated" is not a valid Python expression at column 7: '
+            "'(' was never closed.",
+        ),
+        (
+            'col("claims").sum()',
+            "Formula \"Calculated\" raised NameError: name 'col' is not defined",
+        ),
+        (
+            "input()",
+            "Formula \"Calculated\" cannot run: 'input()' waits for console input the server "
+            "never receives, so pipeline code cannot call it.",
+        ),
     ],
 )
-def test_pivot_formula_failures_are_typed(
+def test_pivot_formula_failures_name_their_cause(
     client: TestClient,
     tmp_path: Path,
     expression: str,
+    message: str,
 ) -> None:
     path = tmp_path / "invalid-formula.parquet"
     pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
@@ -919,10 +939,11 @@ def test_pivot_formula_failures_are_typed(
     assert final["status"] == "contract_error"
     assert result is None
     assert final["failure"]["reason_code"] == "invalid_pivot_formula"
+    assert final["failure"]["message"] == message
     assert final["failure"]["dimensions"] == {"formula_id": "formula_1"}
 
 
-def test_pivot_formula_runtime_failure_is_typed(
+def test_pivot_formula_runtime_failure_names_its_cause(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -950,10 +971,51 @@ def test_pivot_formula_runtime_failure_is_typed(
     assert result is None
     assert final["failure"] == {
         "reason_code": "invalid_pivot_formula",
-        "message": "A pivot formula failed while evaluating the grouped data.",
-        "remediation": "Check the selected formulas against the source field values and types.",
+        "message": (
+            'The pivot failed on the data with formulas "Calculated": conversion from `str` '
+            "to `i64` failed in column 'claims' for 1 out of 1 values: [\"not-a-number\"]"
+        ),
+        "remediation": "Check the formulas against the source field values and types.",
         "dimensions": {"formula_ids": "formula_1"},
     }
+
+
+def test_a_memory_limit_during_a_formula_pivot_is_not_blamed_on_the_formula(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_context import ExecutionMemoryLimitExceededError
+    from haute.routes import _pivot_service as pivot_module
+
+    path = tmp_path / "formula-memory-limit.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    collect = pivot_module.cancellable_streaming_collect
+
+    def limited_aggregation(query: pl.LazyFrame, **kwargs: Any) -> pl.DataFrame:
+        if any(name.startswith("__haute_pivot_value_") for name in query.collect_schema()):
+            raise ExecutionMemoryLimitExceededError("explore_pivot", rss_bytes=2, limit_bytes=1)
+        return collect(query, **kwargs)
+
+    monkeypatch.setattr(pivot_module, "cancellable_streaming_collect", limited_aggregation)
+    pivot = _pivot(
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "calculated",
+                "display_name": "Calculated",
+                "expression": 'pl.col("claims").sum()',
+            }
+        ]
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "memory_limited", final
+    assert result is None
+    assert final["failure"] is None
 
 
 def test_pivot_formula_metadata_failure_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -983,8 +1045,10 @@ def test_pivot_formula_metadata_failure_is_typed(monkeypatch: pytest.MonkeyPatch
 
     assert caught.value.failure.model_dump() == {
         "reason_code": "invalid_pivot_formula",
-        "message": "Pivot formula is invalid.",
-        "remediation": "Use a safe Python expression that returns one Polars expression.",
+        "message": (
+            'Formula "Calculated" does not say which source fields it reads: metadata unavailable'
+        ),
+        "remediation": 'Read source fields with pl.col, for example pl.col("amount").sum() * 2.',
         "dimensions": {"formula_id": "formula_1"},
     }
 
@@ -1921,6 +1985,101 @@ def test_pivot_runtime_members_and_exact_filters_cover_all_persisted_kinds(
         ("datetime", "2024-02-29T12:30:00"),
         ("time", "12:30:00.123456"),
     } <= observed_keys
+
+
+def test_a_member_of_a_time_zone_aware_datetime_filters_its_rows(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "aware-members.parquet"
+    pl.DataFrame(
+        {
+            "moment": pl.Series(
+                [datetime(2024, 6, 1, 12, 0), datetime(2024, 12, 1, 9, 0)]
+            ).dt.replace_time_zone("Europe/London"),
+            "claims": [11.0, 22.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    members = client.post(
+        "/api/explore/pivots/members",
+        json={"graph": graph, "node_id": "explore", "source": "live", "field": "moment"},
+    ).json()
+    summer = {"kind": "datetime", "value": "2024-06-01T12:00:00+01:00"}
+    assert summer in [item["key"] for item in members["members"]]
+
+    final, result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            filters=[{"id": "filter_moment", "field": "moment", "members": [summer]}],
+            rows=[],
+            columns=[],
+            options={"row_grand_totals": False, "column_grand_totals": False},
+        ),
+    )
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert _cell(result, [], [], "sum_claims") == 11.0
+
+    naive = {"kind": "datetime", "value": "2024-06-01T12:00:00"}
+    final, _ = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            filters=[{"id": "filter_moment", "field": "moment", "members": [naive]}],
+            rows=[],
+            columns=[],
+        ),
+    )
+    assert final["status"] == "contract_error"
+    assert final["failure"]["reason_code"] == "invalid_pivot_filter_member"
+    assert "time zone" in final["failure"]["message"]
+
+
+def test_an_invalid_pivot_card_is_refused_naming_the_field(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "invalid-card.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    pivot = _pivot(rows=[{"id": "row_1", "field": "region", "sort": "sideways"}])
+
+    response = client.post(
+        "/api/explore/pivots/run",
+        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": pivot},
+    )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "unsupported sort direction" in detail
+    assert "sort=sideways" in detail
+
+
+def test_a_cached_pivot_shared_by_two_explore_nodes_names_the_node_that_asked(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "shared-point.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    explore = graph["nodes"][1]
+    copy = {**explore, "id": "explore_copy", "data": {**explore["data"], "label": "Explore copy"}}
+    graph["nodes"].append(copy)
+    graph["edges"].append(make_edge("source", "explore_copy").model_dump())
+    _materialise(client, graph)
+
+    first, first_result = _run_pivot(client, graph, _pivot())
+    shared = client.post(
+        "/api/explore/pivots/run",
+        json={"graph": graph, "node_id": "explore_copy", "source": "live", "pivot": _pivot()},
+    ).json()
+
+    assert first["status"] == "completed" and first_result is not None
+    assert first_result["node_id"] == "explore"
+    assert shared["status"] == "completed" and shared["cached"] is True
+    assert shared["result"]["node_id"] == "explore_copy"
+    assert shared["result"]["cells"] == first_result["cells"]
 
 
 @pytest.mark.parametrize(

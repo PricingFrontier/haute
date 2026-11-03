@@ -11,8 +11,9 @@ key check is a handful of counts rather than the duplicated rows themselves.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import polars as pl
 
@@ -90,6 +91,34 @@ class _Question:
             if column is not None:
                 seen.setdefault(column, None)
         return tuple(seen)
+
+
+@dataclass(frozen=True, slots=True)
+class _SumColumns:
+    """The weight and weighted-target columns added beside the data's own."""
+
+    weight: str
+    weighted_target: str
+
+    @classmethod
+    def beside(cls, columns: Collection[str]) -> _SumColumns:
+        """Names none of *columns* uses, so adding them never overwrites the data."""
+        taken = set(columns)
+        weight = _unused_name("__w", taken)
+        return cls(weight, _unused_name("__wy", taken | {weight}))
+
+
+def _unused_name(base: str, taken: Collection[str]) -> str:
+    name = base
+    while name in taken:
+        name = f"_{name}"
+    return name
+
+
+def _extrema(feature: str, dtype: pl.DataType, index: int) -> tuple[pl.Expr, pl.Expr]:
+    """The finite minimum and maximum of a numeric feature, in its own dtype."""
+    finite_values = pl.col(feature).filter(numeric_finite_mask(pl.col(feature), dtype))
+    return finite_values.min().alias(f"lo_{index}"), finite_values.max().alias(f"hi_{index}")
 
 
 def _unprocessable(message: str) -> UnprocessableError:
@@ -308,14 +337,25 @@ class ExploreRelationshipsService:
             used_filter = y.is_finite()
             if weight is not None:
                 used_filter = used_filter & w.is_finite() & (w >= 0)
+            # The weight and weighted-target columns are added beside the
+            # data's own, so their names must be ones the data does not use.
+            sums = _SumColumns.beside(schema.names())
             # Only the rows a target and weight can be read from are related:
             # the features are analysed over exactly these.
-            used = frame.filter(used_filter.fill_null(False)).with_columns(w.alias("__w"))
+            used = frame.filter(used_filter.fill_null(False)).with_columns(w.alias(sums.weight))
+            numeric = [feature for feature in question.features if schema[feature].is_numeric()]
+            # Each numeric feature's extrema place its bins; they are read with
+            # the totals so a numeric feature costs one grouped query of its own.
             totals = cancellable_streaming_collect(
                 used.select(
                     pl.len().alias("rows"),
-                    pl.col("__w").sum().alias("W"),
-                    (pl.col("__w") * y).sum().alias("S"),
+                    pl.col(sums.weight).sum().alias("W"),
+                    (pl.col(sums.weight) * y).sum().alias("S"),
+                    *(
+                        expression
+                        for index, feature in enumerate(numeric)
+                        for expression in _extrema(feature, schema[feature], index)
+                    ),
                 ),
                 execution_context=context,
             )
@@ -326,11 +366,11 @@ class ExploreRelationshipsService:
             # target's spread: a target of 1,000,000 +/- 1 would otherwise lose
             # its whole variance to rounding.
             centred = y - centre
-            used = used.with_columns((pl.col("__w") * centred).alias("__wy"))
+            used = used.with_columns((pl.col(sums.weight) * centred).alias(sums.weighted_target))
             moments = cancellable_streaming_collect(
                 used.select(
-                    pl.col("__wy").sum().alias("S"),
-                    (pl.col("__wy") * centred).sum().alias("Q"),
+                    pl.col(sums.weighted_target).sum().alias("S"),
+                    (pl.col(sums.weighted_target) * centred).sum().alias("Q"),
                 ),
                 execution_context=context,
             )
@@ -340,12 +380,21 @@ class ExploreRelationshipsService:
                 dtype = schema[feature]
                 kind: Literal["numeric", "categorical"]
                 if dtype.is_numeric():
-                    levels, between = self._numeric_levels(used, feature, dtype, centre, context)
+                    index = numeric.index(feature)
+                    levels, between = self._numeric_levels(
+                        used,
+                        sums,
+                        feature,
+                        dtype,
+                        (totals.item(0, f"lo_{index}"), totals.item(0, f"hi_{index}")),
+                        centre,
+                        context,
+                    )
                     truncated = False
                     kind = "numeric"
                 else:
                     levels, between, truncated = self._categorical_levels(
-                        used, feature, dtype, question.level_limit, centre, context
+                        used, sums, feature, dtype, question.level_limit, centre, context
                     )
                     kind = "categorical"
                 relationships.append(
@@ -385,21 +434,17 @@ class ExploreRelationshipsService:
     def _numeric_levels(
         self,
         used: pl.LazyFrame,
+        sums: _SumColumns,
         feature: str,
         dtype: pl.DataType,
+        extrema: tuple[Any, Any],
         centre: float,
         context: ExecutionContext,
     ) -> tuple[list[ExploreRelationshipLevel], float]:
         # The profile's exact bins: extrema in the column's own dtype and integer
         # boundaries for integers, so large identifiers are not merged together.
         finite = numeric_finite_mask(pl.col(feature), dtype)
-        bounds = cancellable_streaming_collect(
-            used.filter(finite).select(
-                pl.col(feature).min().alias("lo"), pl.col(feature).max().alias("hi")
-            ),
-            execution_context=context,
-        )
-        lo, hi = bounds.item(0, "lo"), bounds.item(0, "hi")
+        lo, hi = extrema
         scale = (
             numeric_bin_scale(feature, dtype, lo, hi, NUMERIC_RELATIONSHIP_BINS)
             if lo is not None and lo != hi
@@ -415,8 +460,8 @@ class ExploreRelationshipsService:
             used.group_by(bin_expr.alias("bin"))
             .agg(
                 pl.len().alias("rows"),
-                pl.col("__w").sum().alias("W"),
-                pl.col("__wy").sum().alias("S"),
+                pl.col(sums.weight).sum().alias("W"),
+                pl.col(sums.weighted_target).sum().alias("S"),
             )
             .sort("bin", nulls_last=True),
             execution_context=context,
@@ -448,6 +493,7 @@ class ExploreRelationshipsService:
     def _categorical_levels(
         self,
         used: pl.LazyFrame,
+        sums: _SumColumns,
         feature: str,
         dtype: pl.DataType,
         level_limit: int,
@@ -458,62 +504,66 @@ class ExploreRelationshipsService:
         # where a plain String cast would fail the whole query.
         grouped = used.group_by(categorical_label_expr(feature, dtype).alias("label")).agg(
             pl.len().alias("rows"),
-            pl.col("__w").sum().alias("W"),
-            pl.col("__wy").sum().alias("S"),
+            pl.col(sums.weight).sum().alias("W"),
+            pl.col(sums.weighted_target).sum().alias("S"),
         )
         is_value = pl.col("label").is_not_null()
-        # Only the heaviest levels and a handful of sums are collected, so a
-        # feature with millions of distinct values never materialises them all.
-        sums = cancellable_streaming_collect(
+        level = pl.struct("label", "rows", "W", "S")
+        # One query reads the data once: only the heaviest levels, the missing
+        # level and a handful of sums are collected, so a feature with millions
+        # of distinct values never materialises them all.
+        answer = cancellable_streaming_collect(
             grouped.select(
                 (pl.col("S") ** 2 / pl.col("W")).filter(pl.col("W") > 0).sum().alias("between"),
                 is_value.sum().alias("value_levels"),
                 pl.col("rows").filter(is_value).sum().alias("value_rows"),
                 pl.col("W").filter(is_value).sum().alias("value_W"),
                 pl.col("S").filter(is_value).sum().alias("value_S"),
+                level.filter(is_value)
+                .top_k_by(
+                    [pl.col("W").filter(is_value), pl.col("label").filter(is_value)],
+                    k=level_limit,
+                    reverse=[False, True],
+                )
+                .implode()
+                .alias("top"),
+                level.filter(is_value.not_()).implode().alias("missing"),
             ),
             execution_context=context,
         )
-        top = cancellable_streaming_collect(
-            grouped.filter(is_value)
-            .sort(["W", "label"], descending=[True, False])
-            .head(level_limit),
-            execution_context=context,
-        )
-        missing = cancellable_streaming_collect(
-            grouped.filter(pl.col("label").is_null()), execution_context=context
-        )
+        # Heaviest first, then by label: top_k_by does not promise an order.
+        top = sorted(answer.item(0, "top").to_list(), key=lambda row: (-row["W"], row["label"]))
         levels = [
             _level(
                 row["label"], "value", int(row["rows"]), float(row["W"]), float(row["S"]), centre
             )
-            for row in top.iter_rows(named=True)
+            for row in top
         ]
-        truncated = int(sums.item(0, "value_levels")) > top.height
+        truncated = int(answer.item(0, "value_levels")) > len(top)
         if truncated:
             # The folded levels are whatever the value totals hold beyond the top ones.
             levels.append(
                 _level(
                     _OTHER_LABEL,
                     "other",
-                    int(sums.item(0, "value_rows") or 0) - int(top["rows"].sum()),
-                    float(sums.item(0, "value_W") or 0.0) - float(top["W"].sum()),
-                    float(sums.item(0, "value_S") or 0.0) - float(top["S"].sum()),
+                    int(answer.item(0, "value_rows") or 0) - sum(int(row["rows"]) for row in top),
+                    float(answer.item(0, "value_W") or 0.0) - sum(float(row["W"]) for row in top),
+                    float(answer.item(0, "value_S") or 0.0) - sum(float(row["S"]) for row in top),
                     centre,
                 )
             )
-        if missing.height:
+        for row in answer.item(0, "missing").to_list():
             levels.append(
                 _level(
                     _MISSING_LABEL,
                     "missing",
-                    int(missing.item(0, "rows")),
-                    float(missing.item(0, "W")),
-                    float(missing.item(0, "S")),
+                    int(row["rows"]),
+                    float(row["W"]),
+                    float(row["S"]),
                     centre,
                 )
             )
-        return levels, float(sums.item(0, "between") or 0.0), truncated
+        return levels, float(answer.item(0, "between") or 0.0), truncated
 
     @staticmethod
     def _key_check(
