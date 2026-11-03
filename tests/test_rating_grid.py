@@ -17,9 +17,11 @@ from haute._config_io import load_node_config, node_config_json
 from haute._rating import _apply_rating_table
 from haute._rating_step_config import (
     GRID_CONVERSION,
+    compact_rating_config_for_sidecar,
     entries_from_grid,
     grid_from_entries,
     normalise_rating_step_config,
+    refuse_levels_equal_under_factor_dtypes,
 )
 from haute._types import NodeType
 from haute._validation_error import ConfigSettingError
@@ -150,3 +152,41 @@ def test_a_row_of_the_wrong_width_is_refused() -> None:
     grid = {"factors": ["a", "b"], "columns": ["x", "y"], "rows": [["p", 1]]}
     with pytest.raises(ConfigSettingError, match="1 level"):
         entries_from_grid(grid, 0)
+
+
+@pytest.mark.parametrize(
+    ("grid", "message"),
+    [
+        ({"factors": ["a"], "columns": ["x"]}, "has columns but no rows"),
+        ({"factors": ["a"], "rows": "p"}, "rows must be a list"),
+        ({"factors": ["a"], "columns": ["x"], "rows": []}, "one factor"),
+        ({"factors": ["a"], "rows": [["p"]]}, "a level and its rate"),
+        ({"factors": ["a", "b"], "rows": [["p", 1]]}, "columns must list the levels"),
+    ],
+    ids=["columns-no-rows", "rows-not-a-list", "one-factor-columns", "short-row", "no-columns"],
+)
+def test_a_grid_of_the_wrong_shape_is_refused(grid: dict, message: str) -> None:
+    with pytest.raises(ConfigSettingError, match=message):
+        entries_from_grid(grid, 0)
+
+
+def test_a_one_factor_grid_reads_a_null_rate_as_no_entry() -> None:
+    grid = {"factors": ["a"], "rows": [["p", None], ["q", 2]]}
+    assert entries_from_grid(grid, 0)["entries"] == [{"a": "q", "value": 2}]
+
+
+def test_a_config_with_no_tables_list_is_written_as_it_is() -> None:
+    config = {"code": ""}
+    assert compact_rating_config_for_sidecar(config) is config
+
+
+def test_the_save_leaves_a_level_its_type_cannot_hold_to_the_run() -> None:
+    """The save refuses levels equal under factorDtypes; a level the type cannot convert is
+    not a duplicate, so the save passes it and the run reports it."""
+    table = {
+        "factors": ["age"],
+        "factorDtypes": {"age": {"kind": "Int64"}},
+        "outputColumn": "f",
+        "entries": [{"age": "not a number", "value": 1.0}, {"age": "25", "value": 2.0}],
+    }
+    refuse_levels_equal_under_factor_dtypes({"tables": [table]})

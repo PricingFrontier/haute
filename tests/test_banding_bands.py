@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from haute._banding_config import BANDS_CONVERSION
+from haute._banding_config import BANDS_CONVERSION, bands_from_sidecar
 from haute._config_io import load_node_config, node_config_json
 from haute._types import NodeType
 from haute._validation_error import ConfigSettingError
@@ -117,3 +117,20 @@ def test_an_editor_row_without_a_boundary_is_still_refused_on_save() -> None:
     factor = _factor([{"boundary": "4", "label": "1-4"}, {"label": "orphan"}])
     with pytest.raises(ConfigSettingError, match="requires boundary"):
         node_config_json(NodeType.BANDING, {"factors": [factor]}, node_label="bands")
+
+
+@pytest.mark.parametrize(
+    ("bands", "message"),
+    [
+        ({"upper": 4, "label": "1-4"}, "breakpoint bands must be a list"),
+        ([[4, "1-4"]], "must be an upper edge and a label"),
+        ([{"upper": 4, "label": "1-4", "colour": "red"}], "must be an upper edge and a label"),
+        ([{"upper": 4}], "must be an upper edge and a label"),
+        ([{"upper": True, "label": "yes"}], "must be a number or text"),
+        ([{"upper": [4], "label": "1-4"}], "must be a number or text"),
+    ],
+    ids=["not-a-list", "band-not-a-record", "extra-key", "no-label", "boolean-edge", "list-edge"],
+)
+def test_bands_of_the_wrong_shape_are_refused(bands: object, message: str) -> None:
+    with pytest.raises(ConfigSettingError, match=message):
+        bands_from_sidecar(bands)
