@@ -298,7 +298,15 @@ def test_every_card_configuration_applies_and_executes(
 
     graph = flatten_graph(parse_pipeline_to_graph(project / _SOURCE_FILE))
     saved = graph.node_map[_CARD_NODE].data.config
-    assert {key: saved.get(key) for key in config["config"]} == config["config"]
+    authored = dict(config["config"])
+    if node_type == NodeType.POLARS:
+        # A transform's steps live only in its code and come back with ids from kind
+        # and place (READ-22); each card step rebuilds as itself, a source and one code step.
+        authored["steps"] = [
+            {**step, "id": f"{step['kind']}-{place}"}
+            for place, step in enumerate(authored["steps"], 1)
+        ]
+    assert {key: saved.get(key) for key in authored} == authored
     _prepare_snapshots(project, graph)
     for item in _card_inputs(card, config):
         upstream = _executed(graph, item["edge"])

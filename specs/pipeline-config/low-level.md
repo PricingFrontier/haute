@@ -408,8 +408,10 @@ order, since they are data. Rating-step canonicalisation always emits ordered en
 Banding canonicalisation removes underscore-prefixed properties from factor records and
 expanded rule records, which is where the editor's rule-row `_id` sits. Compact category maps are data and retain those
 same keys. All other nested dictionaries and payloads retain user keys verbatim, including
-underscore-prefixed schema fields, inline records, rating factors and row metadata, feature
-maps, constraints, and category declarations. Serialization does not mutate the input graph.
+underscore-prefixed schema fields, inline records, rating factor names, feature maps,
+constraints, and category declarations. A rating table's entry holds its levels and its
+rate alone, which is what its grid keeps (READ-26): an entry holding any other key is refused
+at save, naming the key, rather than the key lost. Serialization does not mutate the input graph.
 Shared column settings (`COLUMN_CONFIG_KEYS`) are accepted and parsed consistently across
 node types; inline decorators and JSON sidecars preserve the same authored values.
 Any validation error is raised while collecting/staging content, before an existing sidecar is

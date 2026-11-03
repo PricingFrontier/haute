@@ -21,7 +21,3 @@ def risk_features(quotes: pl.LazyFrame) -> pl.LazyFrame:
     # Flag experienced drivers
     df = df.with_columns((pl.col('driver_age') >= 25).alias('experienced_driver'))
     return df
-
-
-# Wire nodes together - edges define data flow
-pipeline.connect("quotes", "risk_features")

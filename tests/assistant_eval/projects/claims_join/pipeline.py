@@ -30,7 +30,5 @@ def loss_ratio(quote_claims: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-# Wire nodes together - edges define data flow
 pipeline.connect("quotes", "quote_claims", target_port="base")
 pipeline.connect("claims", "quote_claims", target_port="join")
-pipeline.connect("quote_claims", "loss_ratio")

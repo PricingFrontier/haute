@@ -369,8 +369,9 @@ def _examples():
             {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
         )
         yield f"{node_type.value}-variant-{index}", variant
-    # A stepped transform persists its steps in the optional polars sidecar and
-    # regenerates its body from them; the sidecar must survive save -> parse.
+    # A stepped transform's steps live only in its code (READ-22): the save renders them
+    # into the body and the load rebuilds them, each id its kind and place, so the steps
+    # carry the ids a load gives them and must survive save -> parse.
     variant = graph.model_copy(deep=True)
     polars = next(node for node in variant.nodes if node.data.nodeType == NodeType.POLARS)
     upstream_id = next(edge.source for edge in variant.edges if edge.target == polars.id)
@@ -378,8 +379,12 @@ def _examples():
     stepped = polars.with_config(
         {
             "steps": [
-                {"id": "s", "kind": "source", "input": _sanitize_func_name(upstream.data.label)},
-                {"id": "l", "kind": "limit", "n": 5},
+                {
+                    "id": "source-1",
+                    "kind": "source",
+                    "input": _sanitize_func_name(upstream.data.label),
+                },
+                {"id": "limit-2", "kind": "limit", "n": 5},
             ],
             "contract": "opaque",
             **deepcopy(_SHARED_COLUMN_CONFIG),

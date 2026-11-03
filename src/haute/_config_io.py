@@ -34,7 +34,7 @@ from haute._banding_config import (
 from haute._constant_config import constants_for_sidecar, constants_from_sidecar
 from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
-from haute._json_files import ANY, at, render_json
+from haute._json_files import ANY, OneLine, at, render_json
 from haute._logging import get_logger
 from haute._rating_step_config import (
     compact_rating_config_for_sidecar,
@@ -234,19 +234,25 @@ _RATING_TABLE_KEYS = (
     "rows",
 )
 
-#: A sidecar's records written on one line each: a rating table's factors, its columns and
-#: each row of its grid (READ-26).
-_SIDECAR_ONE_LINE = at(
-    ("tables", ANY, "factors"),
-    ("tables", ANY, "columns"),
-    ("tables", ANY, "rows", ANY),
-    # A banding factor's bands, one a line (READ-27).
-    ("factors", ANY, "rules", ANY),
-)
+#: No place in a file: the printer's own rule alone.
+_NO_PLACE: OneLine = at()
 
 
-#: A sidecar's maps of numbers written one item a line: a Constant's values (READ-28).
-_SIDECAR_VERTICAL = at(("values",))
+#: Each node type's records written on one line each: a rating table's factors, its columns
+#: and each row of its grid (READ-26), and a banding factor's bands (READ-27). Keyed by the
+#: node type, so another type's ``tables`` or ``factors`` keeps one item a line.
+_SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
+    NodeType.RATING_STEP: at(
+        ("tables", ANY, "factors"),
+        ("tables", ANY, "columns"),
+        ("tables", ANY, "rows", ANY),
+    ),
+    NodeType.BANDING: at(("factors", ANY, "rules", ANY)),
+}
+
+
+#: Each node type's maps of numbers written one item a line: a Constant's values (READ-28).
+_SIDECAR_VERTICAL: dict[NodeType, OneLine] = {NodeType.CONSTANT: at(("values",))}
 
 
 def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
@@ -278,7 +284,11 @@ def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label:
     }
     if node_type == NodeType.RATING_STEP and isinstance(canonical.get("tables"), list):
         canonical["tables"] = [_rating_table_record(table) for table in canonical["tables"]]
-    return render_json(canonical, one_line=_SIDECAR_ONE_LINE, vertical=_SIDECAR_VERTICAL)
+    return render_json(
+        canonical,
+        one_line=_SIDECAR_ONE_LINE.get(node_type, _NO_PLACE),
+        vertical=_SIDECAR_VERTICAL.get(node_type, _NO_PLACE),
+    )
 
 
 # ---------------------------------------------------------------------------

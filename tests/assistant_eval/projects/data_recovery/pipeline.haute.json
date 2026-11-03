@@ -1,8 +1,5 @@
 {
   "positions": {
-    "quotes": {
-      "x": 0.0,
-      "y": 0.0
-    }
+    "quotes": {"x": 0, "y": 0}
   }
 }

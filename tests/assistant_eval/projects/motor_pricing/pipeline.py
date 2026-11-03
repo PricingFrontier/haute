@@ -74,13 +74,5 @@ def premium_explore(base_premium): ...
 def priced_batch(base_premium): ...
 
 
-# Wire nodes together - edges define data flow
 pipeline.connect("quote_request", "policies", source_port="quotes")
-pipeline.connect("batch_quotes", "policies")
-pipeline.connect("policies", "rating_features")
-pipeline.connect("rating_features", "claim_frequency")
-pipeline.connect("claim_frequency", "rating_bands")
 pipeline.connect("rating_bands", "base_premium")
-pipeline.connect("base_premium", "quote_response")
-pipeline.connect("base_premium", "premium_explore")
-pipeline.connect("base_premium", "priced_batch")

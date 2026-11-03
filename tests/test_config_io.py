@@ -13,17 +13,17 @@ import pytest
 from haute._config_io import (
     FOLDER_TO_NODE_TYPE,
     NODE_TYPE_TO_FOLDER,
-    _prepare_config_for_sidecar,
     collect_node_configs,
     config_path_for_node,
     find_config_by_func_name,
     has_config_folder,
-    has_optional_config_folder,
     is_windows_reserved_filename,
     load_node_config,
+    node_config_json,
     remove_config_file,
 )
 from haute._types import NodeType
+from haute._validation_error import ConfigSettingError
 from tests.conftest import make_graph, make_output_config
 
 
@@ -33,14 +33,12 @@ def _write_node_config_sidecar(
     config: dict[str, Any],
     base_dir: Path,
 ) -> Path:
+    """Write *config*'s sidecar as every save path writes it (``node_config_json``)."""
     rel_path = config_path_for_node(node_type, node_name)
     abs_path = base_dir / rel_path
+    text = node_config_json(node_type, config, node_label=node_name)
     abs_path.parent.mkdir(parents=True, exist_ok=True)
-    filtered = _prepare_config_for_sidecar(node_type, config, node_label=node_name)
-    abs_path.write_text(
-        json.dumps(filtered, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    abs_path.write_bytes(text.encode("utf-8"))
     return rel_path
 
 
@@ -91,19 +89,16 @@ class TestConfigPathForNode:
             p = config_path_for_node(nt, "test_node")
             assert p == Path(f"config/{folder}/test_node.json")
 
-    @pytest.mark.parametrize("node_type", [NodeType.EDGE_JOIN, NodeType.EXPLORE])
+    @pytest.mark.parametrize("node_type", [NodeType.EDGE_JOIN, NodeType.EXPLORE, NodeType.POLARS])
     def test_no_config_folder_type_raises(self, node_type):
         with pytest.raises(ValueError, match="No config folder"):
             config_path_for_node(node_type, "my_transform")
 
-    def test_polars_sidecar_is_optional(self):
-        # A stepped transform owns ``config/polars/<name>.json``; a code-only
-        # transform has no sidecar, so the folder is optional for the type.
-        assert config_path_for_node(NodeType.POLARS, "my_transform") == Path(
-            "config/polars/my_transform.json"
-        )
+    def test_a_transform_has_no_sidecar(self):
+        # A transform's steps live in its code alone (READ-22): no ``config/polars/``.
         assert not has_config_folder(NodeType.POLARS)
-        assert has_optional_config_folder(NodeType.POLARS)
+        assert NodeType.POLARS not in NODE_TYPE_TO_FOLDER
+        assert "polars" not in FOLDER_TO_NODE_TYPE
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +163,13 @@ class TestSaveAndLoad:
                         {
                             "factors": ["_id"],
                             "outputColumn": "factor",
-                            "entries": [{"_id": "A", "value": 1.25, "_note": {"_id": "kept"}}],
+                            "entries": [{"_id": "A", "value": 1.25}],
                         }
-                    ]
+                    ],
+                    # Left out of the file at its default and read back as it (READ-10).
+                    "combinedOutputs": [],
                 },
-                id="rating-factor-names-and-row-metadata",
+                id="rating-factor-names",
             ),
         ],
     )
@@ -222,9 +219,11 @@ class TestSaveAndLoad:
 
     def test_saved_content_is_valid_json(self, tmp_path):
         config = {"path": "data/input.parquet"}
-        _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
+        assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == config
         loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
-        assert loaded == config
+        # ``arguments`` is left out at its default, and the loader restores it (READ-10).
+        assert loaded == {**config, "arguments": {}}
 
     def test_api_input_projection_fields_round_trip(self, tmp_path):
         config = {
@@ -321,10 +320,13 @@ class TestSaveAndLoad:
                         {"boundary": "20", "label": "0-20"},
                         {"boundary": "", "label": "20+"},
                     ],
+                    # A null default is left unwritten and reads back as null (READ-27).
+                    "default": None,
                 },
             ],
         }
-        _write_node_config_sidecar(NodeType.BANDING, "band", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "band", config, tmp_path)
+        assert '"default"' not in (tmp_path / rel).read_text(encoding="utf-8")
         loaded = load_node_config("config/banding/band.json", base_dir=tmp_path)
         assert loaded == config
 
@@ -355,7 +357,7 @@ class TestSaveAndLoad:
         }
         assert load_node_config(rel, base_dir=tmp_path) == config
 
-    def test_banding_breakpoint_rules_saved_as_map_and_loaded_as_rows(self, tmp_path):
+    def test_banding_breakpoint_rules_saved_as_bands_and_loaded_as_rows(self, tmp_path):
         config = {
             "factors": [
                 {
@@ -376,11 +378,12 @@ class TestSaveAndLoad:
         rel = _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["factors"][0]["rules"] == {
-            "25": "young",
-            "65": "adult",
-            "": "senior",
-        }
+        # A list of bands in order, the open-ended one last with no upper edge (READ-27).
+        assert saved["factors"][0]["rules"] == [
+            {"upper": 25, "label": "young"},
+            {"upper": 65, "label": "adult"},
+            {"label": "senior"},
+        ]
         assert load_node_config(rel, base_dir=tmp_path) == config
 
     def test_banding_compact_save_rejects_duplicate_categorical_keys(self, tmp_path):
@@ -1123,12 +1126,20 @@ class TestRatingStepSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == config["tables"][0]["entries"]
-        assert saved["tables"][1]["entries"] == config["tables"][1]["entries"]
+        # Each table is written as a grid (READ-26): one factor, a level and its rate a row;
+        # two, the last factor's levels as columns and null where no entry is. The default
+        # and each rate are written as held.
+        one, two = saved["tables"]
+        assert "entries" not in one and "columns" not in one
+        assert one["defaultValue"] == "1.0"
+        assert one["rows"] == [["London", "1.25"], ["Rural", 0.85]]
+        assert "entries" not in two
+        assert two["columns"] == ["comprehensive", "tpft"]
+        assert two["rows"] == [["1-3", 0.9, 1.1], ["10+", 1.4, None]]
         assert saved["combinedOutputs"] == config["combinedOutputs"]
         assert load_node_config(rel, base_dir=tmp_path) == config
 
-    def test_save_writes_three_factor_entries_in_editor_axis_order(self, tmp_path):
+    def test_save_writes_three_factors_as_rows_of_two_and_columns_of_the_third(self, tmp_path):
         config = {
             "tables": [
                 {
@@ -1162,8 +1173,19 @@ class TestRatingStepSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == config["tables"][0]["entries"]
-        assert load_node_config(rel, base_dir=tmp_path) == config
+        # The last factor's levels are the columns and each row one combination of the
+        # others, both in the order the entries first give them (READ-26).
+        table = saved["tables"][0]
+        assert "entries" not in table
+        assert table["columns"] == ["confused", "compare_the_market"]
+        assert table["rows"] == [
+            ["1-3", "comprehensive", 0.91, None],
+            ["4-5", "comprehensive", 0.96, None],
+            ["1-3", "third_party_only", None, 1.08],
+        ]
+        # The entries come back in the grid's row-major order, here the order written, and
+        # the combined outputs left out at their default read back as it (READ-10).
+        assert load_node_config(rel, base_dir=tmp_path) == {**config, "combinedOutputs": []}
 
     def test_save_keeps_sparse_three_factor_entries_sparse(self, tmp_path):
         config = {
@@ -1193,7 +1215,12 @@ class TestRatingStepSidecars:
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "sparse", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
-        assert saved["tables"][0]["entries"] == config["tables"][0]["entries"]
+        # A cell with no entry is null, and reads back as no entry (READ-26).
+        assert saved["tables"][0]["columns"] == ["confused", "broker"]
+        assert saved["tables"][0]["rows"] == [
+            ["1-3", "comprehensive", 0.91, None],
+            ["10+", "third_party_only", None, 1.25],
+        ]
         assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == [
             {
                 "vehicle_age_band": "1-3",
@@ -1244,11 +1271,11 @@ class TestRatingStepSidecars:
         configs = collect_node_configs(graph)
         content = json.loads(configs["config/rating_step/adjustments.json"])
 
-        assert content["tables"][0]["entries"] == [
-            {"vehicle_age_band": "1-3", "cover_type": "comprehensive", "value": 0.9}
-        ]
+        table = content["tables"][0]
+        assert "entries" not in table
+        assert (table["columns"], table["rows"]) == (["comprehensive"], [["1-3", 0.9]])
 
-    def test_collect_node_configs_writes_three_factor_entries_in_editor_axis_order(self):
+    def test_collect_node_configs_writes_three_factors_as_a_grid(self):
         graph = make_graph(
             {
                 "nodes": [
@@ -1288,14 +1315,13 @@ class TestRatingStepSidecars:
         configs = collect_node_configs(graph)
         content = json.loads(configs["config/rating_step/adjustments.json"])
 
-        assert content["tables"][0]["entries"] == [
-            {
-                "vehicle_age_band": "1-3",
-                "cover_type": "comprehensive",
-                "channel": "confused",
-                "value": 0.9,
-            }
-        ]
+        table = content["tables"][0]
+        assert "entries" not in table
+        assert table["factors"] == ["vehicle_age_band", "cover_type", "channel"]
+        assert (table["columns"], table["rows"]) == (
+            ["confused"],
+            [["1-3", "comprehensive", 0.9]],
+        )
 
     def test_save_preserves_ordered_duplicate_rating_factor_keys(self, tmp_path):
         config = {
@@ -1316,7 +1342,8 @@ class TestRatingStepSidecars:
         expected_entries = config["tables"][0]["entries"]
 
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
-        assert saved["tables"][0]["entries"] == expected_entries
+        # Levels keep their JSON type in the grid, so 1 and "1" stay two rows (READ-26).
+        assert saved["tables"][0]["rows"] == [[1, 1.1], ["1", 1.2]]
         assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == expected_entries
 
     def test_save_rejects_entries_missing_factor_values(self, tmp_path):
@@ -1355,7 +1382,7 @@ class TestRatingStepSidecars:
         ):
             _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
-    def test_save_preserves_rating_entry_metadata(self, tmp_path):
+    def test_save_refuses_a_rating_entry_key_its_grid_cannot_keep(self, tmp_path):
         config = {
             "tables": [
                 {
@@ -1367,12 +1394,10 @@ class TestRatingStepSidecars:
             ]
         }
 
-        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
-        expected_entries = [{"area": "London", "value": 1.25, "note": "kept"}]
-
-        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
-        assert saved["tables"][0]["entries"] == expected_entries
-        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == expected_entries
+        # A grid holds each entry's levels and rate alone (READ-26): a key it cannot keep is
+        # refused rather than lost.
+        with pytest.raises(ConfigSettingError, match="holding 'note'"):
+            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
     def test_load_rejects_non_list_rating_tables(self, tmp_path):
         path = tmp_path / "config" / "rating_step" / "bad_tables.json"
@@ -1393,7 +1418,7 @@ class TestRatingStepSidecars:
                             "name": "area_factor",
                             "factors": "area",
                             "outputColumn": "area_factor",
-                            "entries": [{"area": "London", "value": 1.25}],
+                            "rows": [["London", 1.25]],
                         }
                     ]
                 }
@@ -1401,7 +1426,9 @@ class TestRatingStepSidecars:
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="ratingStep tables\\[0\\].factors must be a list"):
+        with pytest.raises(
+            ValueError, match="ratingStep tables\\[0\\].factors must be a non-empty list"
+        ):
             load_node_config(path)
 
     def test_load_rejects_duplicate_rating_json_keys(self, tmp_path):
@@ -1415,13 +1442,9 @@ class TestRatingStepSidecars:
       "name": "area_factor",
       "factors": ["area"],
       "outputColumn": "area_factor",
-      "entries": [
-        {
-          "area": "London",
-          "value": 1.25,
-          "value": 1.1
-        }
-      ]
+      "defaultValue": 1.25,
+      "defaultValue": 1.1,
+      "rows": [["London", 1.25]]
     }
   ]
 }
@@ -1429,7 +1452,7 @@ class TestRatingStepSidecars:
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="duplicate JSON key 'value'"):
+        with pytest.raises(ValueError, match="duplicate JSON key 'defaultValue'"):
             load_node_config(path)
 
 
@@ -1447,10 +1470,8 @@ class TestGlobalConstantsFile:
         "    {\n"
         '      "name": "constant_x",\n'
         '      "type": "integer",\n'
-        '      "by_source": {\n'
-        '        "live": 1,\n'
-        '        "nb_batch": 2\n'
-        "      }\n"
+        # A map of numbers alone is written on one line (READ-10).
+        '      "by_source": {"live": 1, "nb_batch": 2}\n'
         "    },\n"
         "    {\n"
         '      "name": "label",\n'

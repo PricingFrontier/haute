@@ -264,6 +264,18 @@ def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
     factors = table.get("factors") or []
     if not isinstance(entries, list) or not factors:
         return result
+    # A grid holds each entry's levels and rate alone: another key an entry holds would be
+    # lost, so it is refused.
+    known = {*factors, "value"}
+    for entry in entries:
+        extra = sorted(str(key) for key in entry if key not in known)
+        if extra:
+            raise ConfigSettingError(
+                f"Rating table {table.get('name') or table.get('outputColumn')!r} has an entry "
+                f"holding {extra[0]!r}, which a rating table's grid of levels and rates cannot "
+                "keep: remove it from the entry.",
+                setting="tables",
+            )
     if len(factors) == 1:
         (factor,) = factors
         result["rows"] = [[entry[factor], entry["value"]] for entry in entries]

@@ -1,12 +1,6 @@
 {
   "positions": {
-    "competitor_insight": {
-      "x": 300.0,
-      "y": 0.0
-    },
-    "nb_batch": {
-      "x": 0.0,
-      "y": 0.0
-    }
+    "competitor_insight": {"x": 300, "y": 0},
+    "nb_batch": {"x": 0, "y": 0}
   }
 }

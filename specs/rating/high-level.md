@@ -210,7 +210,10 @@ Out of scope (owned by neighbouring components):
   column. A cell with no entry is `null`, and a lookup there misses and follows
   the table's miss policy; a rate of 0 is a rate. Levels keep their JSON type,
   so `25` and `"25"` stay distinct (JSON object keys would erase that, so the
-  grid uses arrays). `defaultValue` is written as a number next to `onMissing`,
+  grid uses arrays). `defaultValue` is written as the editor holds it, text,
+  next to `onMissing`, which the engine reads as the number it is; an entry
+  holding a key other than its levels and its rate is refused at save, naming
+  it, since the grid has no place for it,
   and `factorDtypes`, the outputs and the other settings stay beside the grid,
   each line of which is one line of the file, so changing one rate changes one
   line. `_rating_step_config.compact_rating_config_for_sidecar` writes the grid

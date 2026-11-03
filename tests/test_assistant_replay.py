@@ -172,7 +172,11 @@ def _expect_one_error_at_the_failing_step(data: dict[str, Any]) -> None:
         "vehicle_bands",
     ]
     failed = statuses["rating_features"]
-    assert (failed["status"], failed["error"]["step"]) == ("failed", {"id": "logic", "number": 2})
+    # The transform's steps come from its code, each id its kind and place (READ-22).
+    assert (failed["status"], failed["error"]["step"]) == (
+        "failed",
+        {"id": "free_code-2", "number": 2},
+    )
     assert failed["error"]["columns"] == ["vehicle_year"]
     assert statuses["vehicle_bands"] == {
         "node": "vehicle_bands",

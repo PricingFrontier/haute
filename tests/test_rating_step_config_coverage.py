@@ -322,6 +322,9 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
 ) -> None:
     factors = [f"factor_{index}" for index in range(factor_count)]
     entries: list[dict[str, object]] = []
+    # Two entries for the same levels as written are refused (READ-06), so each row's
+    # levels differ from every earlier row's.
+    written_levels: set[tuple[str, ...]] = set()
     for row_index in range(data.draw(st.integers(min_value=0, max_value=8), label="row_count")):
         metadata = data.draw(
             st.dictionaries(_METADATA_KEYS, _JSON_VALUES, max_size=4),
@@ -335,6 +338,10 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
             },
             "value": data.draw(_RATING_VALUES, label=f"value_{row_index}"),
         }
+        levels = tuple(json.dumps(row[factor], sort_keys=True) for factor in factors)
+        if levels in written_levels:
+            continue
+        written_levels.add(levels)
         entries.append(row)
 
     config = {

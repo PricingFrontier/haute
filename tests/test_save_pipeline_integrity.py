@@ -643,7 +643,9 @@ class TestSaveServiceTransaction:
             "# ORIGINAL pipeline content — must survive a failed save.\n"
             'import haute\npipeline = haute.Pipeline("main")\n'
         )
-        py_path.write_text(original_contents)
+        # The save reads the file it replaces (to keep its docstring, READ-02), and a
+        # pipeline file is UTF-8 on every platform.
+        py_path.write_text(original_contents, encoding="utf-8", newline="\n")
 
         req = self._make_request(
             "pipeline.py",
@@ -658,7 +660,7 @@ class TestSaveServiceTransaction:
                 svc.save(req)
 
         assert py_path.exists(), "#50: pipeline.py vanished after a failed save — no rollback"
-        assert py_path.read_text() == original_contents, (
+        assert py_path.read_text(encoding="utf-8") == original_contents, (
             "#50: pipeline.py was updated even though a later save step "
             "failed — transaction not atomic"
         )

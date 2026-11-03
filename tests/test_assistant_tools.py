@@ -1208,11 +1208,8 @@ class TestSubmodelOccurrenceSchema:
             'pipeline.connect("policies", "vehicle_copy", target_port="vehicles")\n'
             'pipeline.connect("vehicle_copy", "premium", source_port="factored")',
         )
+        # The premium transform's first step is its code's `df = <input>` (READ-22).
         path.write_text(source, encoding="utf-8", newline="\n")
-        config_path = submodel_project / "config/polars/premium.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["steps"][0]["input"] = input_name
-        config_path.write_text(json.dumps(config), encoding="utf-8", newline="\n")
         if extra_output:
             definition_path = submodel_project / "modules/vehicle_factors.py"
             definition = definition_path.read_text(encoding="utf-8")
@@ -2811,7 +2808,8 @@ class TestStepsFirstAuthoring:
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         assert [item.id for item in graph.nodes] == [item.id for item in before.nodes]
         saved = next(item for item in graph.nodes if item.id == node).data
-        assert saved.config["steps"] == steps
+        # A transform's steps come back from its code; every other surface keeps its own.
+        assert saved.config["steps"] == (_reloaded(steps) if saved.nodeType == "polars" else steps)
         assert saved.editor.steps_error is None and saved.editor.steps_discarded is None
         with native_memory_backend_scope("rlimit"):
             result = execute_graph(graph, target_node_id=node)[node]
@@ -2859,7 +2857,8 @@ class TestStepsFirstAuthoring:
         assert "error" not in plan, plan
         diff = _stored_plan(plan).diff
         assert list(diff.nodes_updated) == ["august_totals"]
-        assert list(diff.config_changes) == ["august_totals:steps[start].input"]
+        # The fill's apply reloaded the steps with ids from kind and place (READ-22).
+        assert list(diff.config_changes) == ["august_totals:steps[source-1].input"]
         consumer = next(node for node in plan["changes"]["nodes"] if node["id"] == "august_totals")
         assert (consumer["change"], consumer["steps_changed"]) == ("changed", 1)
         assert "error" not in await apply_graph_plan(
@@ -2868,7 +2867,7 @@ class TestStepsFirstAuthoring:
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         saved = next(item for item in graph.nodes if item.id == "august_totals").data.config
-        assert saved["steps"][0] == {"id": "start", "kind": "source", "input": "proposer"}
+        assert saved["steps"][0] == {"id": "source-1", "kind": "source", "input": "proposer"}
         with native_memory_backend_scope("rlimit"):
             result = execute_graph(graph, target_node_id="august_totals")["august_totals"]
         assert result.status == "ok", result.error
@@ -2952,6 +2951,14 @@ def _august_ops(code: str) -> list[dict[str, object]]:
     return [
         {"op": "update_node", "node": "august_totals", "config": {"steps": _august_steps(code)}}
     ]
+
+
+def _reloaded(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A transform's *steps* as its reload holds them: they live only in its code, and
+    loading gives each the id of its kind and place (READ-22). It holds for steps that each
+    rebuild as themselves: a free-code statement a structured step renders exactly comes
+    back as that step, and two adjacent code steps as one."""
+    return [{**step, "id": f"{step['kind']}-{place}"} for place, step in enumerate(steps, 1)]
 
 
 #: The August failure: a Transform fed by two claim sources reads one of them
@@ -3602,7 +3609,8 @@ async def test_a_dry_run_validates_every_scenario_a_switch_maps(steps_first_proj
                 {
                     "op": "edit_steps",
                     "node": "kept",
-                    "edits": [{"replace": "logic", "step": premium}],
+                    # The apply's reload named the code step by kind and place (READ-22).
+                    "edits": [{"replace": "free_code-2", "step": premium}],
                 }
             ],
         },
@@ -3728,11 +3736,13 @@ class TestActionableErrors:
         error = result["error"]
         assert error["code"] == "invalid_ops"
         assert error["retryable"] is True
+        # The plan holds a transform's steps as its reload will: the step the model called
+        # 'logic' is the code step in second place (READ-22).
         assert error["where"] == {
             "op_index": 0,
             "node": "august_totals",
             "field": "steps",
-            "step": "logic",
+            "step": "free_code-2",
         }
         assert error["context"] == {
             "inputs": {
@@ -4016,11 +4026,12 @@ class TestActionableErrors:
         )
 
         error = result["error"]
+        # The plan names a transform's steps as its reload will: kind and place (READ-22).
         assert error["where"] == {
             "op_index": 0,
             "node": "august_totals",
             "field": "steps",
-            "step": "start",
+            "step": "source-1",
         }
         assert error["fix"] == (
             "Connect 'quotes' to 'august_totals' in the same plan: {\"op\": \"add_edge\", "
@@ -4113,11 +4124,12 @@ class TestActionableErrors:
 
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
+        # The plan names a transform's steps as its reload will: kind and place (READ-22).
         assert error["where"] == {
             "op_index": 1,
             "node": "claims_agg",
             "field": "steps",
-            "step": "start",
+            "step": "source-1",
         }
         assert f"Unknown input {read!r}" in error["message"]
         assert error["fix"] == fix
@@ -4251,7 +4263,7 @@ class TestActionableErrors:
         assert events[-1].outcome.kind == "applied"
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         saved = next(node for node in graph.nodes if node.id == "august_totals")
-        assert saved.data.config["steps"] == good
+        assert saved.data.config["steps"] == _reloaded(good)
 
 
 EGRESS_SOURCE = """\
@@ -4348,7 +4360,8 @@ class TestExecutionErrorEgress:
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
         message = result["error"]["message"]
-        assert "ValueError in step 2 ('logic') of node 'probe'" in message
+        # The plan names the probe's code step as its reload will (READ-22).
+        assert "ValueError in step 2 ('free_code-2') of node 'probe'" in message
         assert "allow_row_samples" in message
 
     async def test_csv_cast_failure_names_the_column_not_the_value(self, egress_project: Path):
@@ -4396,7 +4409,8 @@ class TestExecutionErrorEgress:
         assert result["error"]["code"] == "schema_unresolvable", result
         assert _row_values_in(result) == []
         message = result["error"]["message"]
-        assert "ComputeError in step 2 ('logic') of node 'probe'" in message
+        # The plan names the probe's code step as its reload will (READ-22).
+        assert "ComputeError in step 2 ('free_code-2') of node 'probe'" in message
         assert "; it names a column." in message
 
     async def test_a_missing_column_the_code_names_is_still_named(self, egress_project: Path):
@@ -4651,8 +4665,9 @@ def test_a_node_whose_step_fails_names_the_step_and_its_inputs(broken_project: P
     error = node_schema("pipeline.py", "rating_features")["error"]
 
     assert error["code"] == "schema_unresolvable"
-    assert error["step"] == "logic"
-    assert "in step 2 ('logic') of node 'rating_features'" in error["message"]
+    # The transform's steps come from its code, each id its kind and place (READ-22).
+    assert error["step"] == "free_code-2"
+    assert "in step 2 ('free_code-2') of node 'rating_features'" in error["message"]
     columns = {column["name"] for column in error["inputs"]["quotes"]}
     assert {"year_of_manufacture", "driver_age"} <= columns
     assert "vehicle_year" not in json.dumps(error)
@@ -4762,7 +4777,8 @@ class TestPreambleFailureEgress:
             config_visibility=None,
         )
 
-        assert "ValueError in step 2 ('logic') of node 'probe'" in result["error"]["message"]
+        # The plan names the probe's code step as its reload will (READ-22).
+        assert "ValueError in step 2 ('free_code-2') of node 'probe'" in result["error"]["message"]
         assert "Q-7781" in result["error"]["message"]
 
 
@@ -4798,10 +4814,9 @@ async def test_saved_free_code_step_text_is_masked_without_executable_source(
 
     config = tools_module.node_config("main.py", "august_totals")["config"]
 
-    assert config["steps"] == [
-        steps[0],
-        {**steps[1], "code": "<redacted: executable_source>"},
-    ]
+    # Saved, the steps come back from the code with ids from kind and place (READ-22).
+    source, logic = _reloaded(steps)
+    assert config["steps"] == [source, {**logic, "code": "<redacted: executable_source>"}]
     assert config["code"] == "<redacted: executable_source>"
 
 
@@ -4860,7 +4875,9 @@ async def test_a_dry_run_refuses_retyping_steps_the_turn_has_not_seen(
     error = result["error"]
     assert (error["code"], error["retryable"]) == (code, True)
     assert error["where"] == {"op_index": 0, "node": "august_totals", "field": "steps"}
-    assert "saved steps entries 'logic'" in error["message"]
+    # The saved steps carry the ids their load gave them (READ-22), which the retyped
+    # list, spelled with the ids the model first wrote, would both drop.
+    assert "saved steps entries 'source-1', 'free_code-2'" in error["message"]
     assert "edit_steps" in error["fix"]
 
 
@@ -5009,15 +5026,16 @@ class TestStepAuthoringViews:
             nodes = {node["id"]: node for node in tools_module.get_pipeline("main.py")["nodes"]}
             views[executable] = nodes
 
+        # The saved steps come back from the code, each id its kind and place (READ-22).
         assert views[False]["august_totals"]["authoring"] == {
             "state": "stepped",
             "steps": [
-                {"id": "start", "kind": "source", "reads": ["proposer_claims"]},
-                {"id": "logic", "kind": "free_code"},
+                {"id": "source-1", "kind": "source", "reads": ["proposer_claims"]},
+                {"id": "free_code-2", "kind": "free_code"},
             ],
         }
         assert views[True]["august_totals"]["authoring"]["steps"][1] == {
-            "id": "logic",
+            "id": "free_code-2",
             "kind": "free_code",
             "intent": "Keep August claims",
         }
@@ -5060,7 +5078,26 @@ class TestStepAuthoringViews:
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         saved = next(item for item in graph.nodes if item.id == "august_totals").data.config
-        assert saved["steps"] == [*saved_steps, {"id": "free_code_1", **inserted["step"]}]
+        # The steps come back from the code (READ-22): each id its kind and place, and the
+        # inserted code, a statement the filter step renders exactly, as that filter step
+        # with its comment.
+        assert saved["steps"] == [
+            *_reloaded(saved_steps),
+            {
+                "id": "filter-3",
+                "kind": "filter",
+                "match": "all",
+                "conditions": [
+                    {
+                        "column": "august_claims",
+                        "operator": "gt",
+                        "value": {"kind": "literal", "type": "number", "value": 100},
+                    }
+                ],
+                "comment": "# Keep policies with over 100 of August claims\n",
+            },
+        ]
+        assert inserted["step"]["code"].endswith('df = df.filter(pl.col("august_claims") > 100)')
         with native_memory_backend_scope("rlimit"):
             result = execute_graph(graph, target_node_id="august_totals")["august_totals"]
         assert result.status == "ok", result.error
@@ -5080,11 +5117,12 @@ class TestStepAuthoringViews:
             "resolve_egress_policy",
             lambda _root: _policy(max_sensitivity="internal", executable=False),
         )
+        # The apply's reload named the saved code step by kind and place (READ-22).
         edit = {
             "op": "edit_steps",
             "node": "august_totals",
             "edits": [
-                {"replace": "logic", "step": {"kind": "free_code", "code": AUGUST_DISCARDED}}
+                {"replace": "free_code-2", "step": {"kind": "free_code", "code": AUGUST_DISCARDED}}
             ],
         }
 
@@ -5092,11 +5130,12 @@ class TestStepAuthoringViews:
             "dry_run_graph_edits", {"summary": "Test plan.", "ops": [edit]}
         )
 
+        assert "discarded" in result["error"]["message"]
         assert result["error"]["where"] == {
             "op_index": 0,
             "node": "august_totals",
             "field": "steps",
-            "step": "logic",
+            "step": "free_code-2",
         }
 
 
@@ -5689,7 +5728,7 @@ class TestBriefBoundaries:
         from tests._workbench_helpers import form_table, workbench_project
 
         monkeypatch.chdir(tmp_path)
-        workbench_project(tmp_path, [form_table("t_policy", "policy", "input", ("state", "str"))])
+        workbench_project(tmp_path, [form_table("policy", "input", ("state", "str"))])
         briefed: list[list[str]] = []
 
         def ports(_graph, flat):
@@ -5705,8 +5744,8 @@ class TestBriefBoundaries:
         workbench_project(
             tmp_path,
             [
-                form_table("t_policy", "policy", "input", ("state", "str")),
-                form_table("t_items", "items", "input", ("value", "float"), many=True),
+                form_table("policy", "input", ("state", "str")),
+                form_table("items", "input", ("value", "float"), many=True),
             ],
         )
         _tools._cached_brief_nodes(graph, "revision")

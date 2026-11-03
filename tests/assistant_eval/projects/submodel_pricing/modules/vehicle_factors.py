@@ -29,7 +29,3 @@ def vehicle_factor(vehicle_age: pl.LazyFrame) -> pl.LazyFrame:
         vehicle_factor=pl.when(pl.col("vehicle_age") > 10).then(1.2).otherwise(1.0)
     )
     return df
-
-
-# Wire nodes together - edges define data flow
-submodel.connect("vehicle_age", "vehicle_factor")

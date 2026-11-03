@@ -114,19 +114,26 @@ class TestCompactConfigRowRules:
         ]
         assert _compact_rules("categorical", rules) == {"north": "A", "south": "B"}
 
-    def test_breakpoint_rows_compact_to_map(self):
+    def test_breakpoint_rows_compact_to_bands(self):
         rules = [
             {"boundary": "10", "label": "low"},
             {"boundary": "20", "label": "high"},
         ]
-        assert _compact_rules("breakpoints", rules) == {"10": "low", "20": "high"}
+        # A list of bands, each its upper edge and label (READ-27).
+        assert _compact_rules("breakpoints", rules) == [
+            {"upper": 10, "label": "low"},
+            {"upper": 20, "label": "high"},
+        ]
 
-    def test_breakpoint_allows_empty_key_row(self):
+    def test_breakpoint_empty_boundary_row_is_the_open_ended_band_written_last(self):
         rules = [
             {"boundary": "", "label": "catch-all"},
             {"boundary": "10", "label": "low"},
         ]
-        assert _compact_rules("breakpoints", rules) == {"": "catch-all", "10": "low"}
+        assert _compact_rules("breakpoints", rules) == [
+            {"upper": 10, "label": "low"},
+            {"label": "catch-all"},
+        ]
 
     def test_categorical_rejects_empty_key_row(self):
         rules = [{"value": "", "assignment": "A"}]

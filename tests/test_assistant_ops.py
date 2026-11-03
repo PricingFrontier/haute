@@ -2111,15 +2111,18 @@ class TestSemanticPlans:
         assert excinfo.value.where["step"] == "logic"
 
     @pytest.mark.parametrize(
-        ("node", "steps"),
+        ("node", "steps", "named"),
         [
-            # The rendered `df = prepared` line retains a frame, but not this step's.
+            # The rendered `df = prepared` line retains a frame, but not this step's. The
+            # plan holds a transform's steps as its reload will, each id its kind and place
+            # (READ-22).
             (
                 "t",
                 [
                     {"id": "start", "kind": "source", "input": "prepared"},
                     {"id": "logic", "kind": "free_code", "code": "df.filter(pl.col('x') > 1)"},
                 ],
+                "free_code-2",
             ),
             (
                 "rated",
@@ -2127,16 +2130,17 @@ class TestSemanticPlans:
                     {"id": "keep", "kind": "limit", "n": 2},
                     {"id": "logic", "kind": "free_code", "code": "# tidy\ndf.drop('x')"},
                 ],
+                "logic",
             ),
         ],
     )
     def test_a_free_code_step_whose_frame_result_is_discarded_is_refused(
-        self, tmp_path: Path, node: str, steps: list[dict]
+        self, tmp_path: Path, node: str, steps: list[dict], named: str
     ):
         with pytest.raises(OpValidationError) as excinfo:
             self._stepped_plan(tmp_path, node, steps)
         message = str(excinfo.value)
-        assert "step 2 ('logic')" in message
+        assert f"step 2 ('{named}')" in message
         assert "discarded" in message
 
     @pytest.mark.parametrize(
@@ -2173,7 +2177,7 @@ class TestSemanticPlans:
         assert plan.diff.config_changes == ("rated:steps",)
 
     @pytest.mark.parametrize(
-        ("node", "steps", "fix"),
+        ("node", "steps", "fix", "named"),
         [
             (
                 "t",
@@ -2183,19 +2187,22 @@ class TestSemanticPlans:
                 ],
                 "df is already the 'prepared' frame the source step chose; transform df "
                 "directly (df = df.filter(...)).",
+                "free_code-2",
             ),
             (
                 "rated",
                 [{"id": "logic", "kind": "free_code", "code": "df = df['prepared']"}],
                 "df is this node's own frame; transform df directly (df = df.filter(...)).",
+                "logic",
             ),
         ],
     )
     def test_a_step_indexing_df_by_an_input_name_names_the_operation_that_wrote_it(
-        self, tmp_path: Path, node: str, steps: list[dict], fix: str
+        self, tmp_path: Path, node: str, steps: list[dict], fix: str, named: str
     ):
         """The check runs on the planned graph after the whole batch, and its
-        failure still names the operation that wrote the node."""
+        failure still names the operation that wrote the node, and the step by the id
+        the plan holds: a transform's as its reload will give it (READ-22)."""
 
         from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
 
@@ -2233,7 +2240,7 @@ class TestSemanticPlans:
 
         error = excinfo.value
         assert "indexes df by the input name 'prepared'" in str(error)
-        assert error.where == {"op_index": 1, "node": node, "field": "steps", "step": "logic"}
+        assert error.where == {"op_index": 1, "node": node, "field": "steps", "step": named}
         assert error.fix == fix
         assert error.graph is not None
 

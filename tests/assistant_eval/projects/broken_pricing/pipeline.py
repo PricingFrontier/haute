@@ -22,8 +22,3 @@ def rating_features(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 @pipeline.banding(config="config/banding/vehicle_bands.json")
 def vehicle_bands(rating_features): ...
-
-
-# Wire nodes together - edges define data flow
-pipeline.connect("quotes", "rating_features")
-pipeline.connect("rating_features", "vehicle_bands")
