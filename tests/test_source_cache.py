@@ -408,6 +408,149 @@ def test_a_second_lease_of_a_described_generation_reads_no_part_footer_or_schema
     assert sorted(reads) == sorted([*generation.data_paths, *generation.data_paths])
 
 
+def test_a_build_reads_its_parts_outside_the_store_wide_lease_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every lease and release waits on the lease lock, so a build validates before it (IO-R06)."""
+    import pyarrow.parquet as pq
+
+    store = SourceCacheStore(tmp_path)
+    other = _identity(path="data/other.parquet", format="parquet")
+    store.build(other, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context())
+    identity = _identity(path="data/input.parquet", format="parquet")
+    builder_threads: set[int] = set()
+    lock_held_during_read: list[bool] = []
+    reading, release = threading.Event(), threading.Event()
+    read_schema = pq.read_schema
+
+    def slow_read_schema(path: Path, *args: object, **kwargs: object) -> object:
+        if threading.get_ident() in builder_threads:
+            lock_held_during_read.append(store._lease_lock.owned_by_current_thread())
+            reading.set()
+            assert release.wait(10)
+        return read_schema(path, *args, **kwargs)
+
+    def build() -> Any:
+        builder_threads.add(threading.get_ident())
+        return store.build(
+            identity,
+            _LazyBuilder(pl.DataFrame({"id": [1, 2]}).lazy()),
+            context=_context(),
+        )
+
+    def lease_other() -> list[int]:
+        with store.lease(other) as leased:
+            return leased.lazy_frame.collect()["id"].to_list()
+
+    monkeypatch.setattr(pq, "read_schema", slow_read_schema)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        built = pool.submit(build)
+        try:
+            assert reading.wait(10)
+            # Another identity's lease, and its release, need the same lock.
+            assert pool.submit(lease_other).result(timeout=5) == [1]
+        finally:
+            release.set()
+        generation = built.result(timeout=10)
+
+    assert lock_held_during_read and not any(lock_held_during_read)
+    # The published generation is the one the build validated: leasing it reads no part.
+    reads = _count_footer_reads(monkeypatch)
+    with store.lease(identity) as leased:
+        assert leased.generation_id == generation.generation_id
+        assert leased.lazy_frame.collect()["id"].to_list() == [1, 2]
+    assert reads == []
+    assert generation.directory == store.identity_path(identity) / "generations" / (
+        generation.generation_id
+    )
+    assert all(path.parent == generation.directory for path in generation.data_paths)
+
+
+def test_a_build_cancelled_while_it_waits_for_the_lease_lock_publishes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validation moved before the lock; the cancellation check after it did not."""
+    from haute._source_cache import SourceCacheBuildError
+
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    first = store.build(
+        identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context()
+    )
+    cancelled = threading.Event()
+    waiting = threading.Event()
+    retiring = store._retiring
+
+    @contextlib.contextmanager
+    def announced_retiring() -> Iterator[list[Path]]:
+        if threading.current_thread() is not threading.main_thread():
+            waiting.set()
+        with retiring() as retired:
+            yield retired
+
+    def refresh() -> Any:
+        return store.build(
+            identity,
+            _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+            context=SourceCacheBuildContext(
+                profile=ExecutionProfile.LAZY_SINK,
+                build_class="bounded",
+                cancellation=cancelled,
+            ),
+            refresh=True,
+        )
+
+    monkeypatch.setattr(store, "_retiring", announced_retiring)
+    store._lease_lock.acquire()
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            built = pool.submit(refresh)
+            assert waiting.wait(10)
+            # Cancelled while it waits for the lock another lease holds.
+            cancelled.set()
+            store._lease_lock.release()
+            with pytest.raises(SourceCacheBuildError, match="cancelled"):
+                built.result(timeout=10)
+    finally:
+        if store._lease_lock.owned_by_current_thread():
+            store._lease_lock.release()
+
+    assert store.open_generation(identity).generation_id == first.generation_id
+    assert [path.name for path in (store.identity_path(identity) / "generations").iterdir()] == [
+        first.generation_id
+    ]
+
+
+def test_a_retirement_failure_after_publication_keeps_the_published_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure surfaces, but what was published stays current and validated."""
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
+    identity = _identity(path="data/input.parquet", format="parquet")
+    store.build(identity, _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()), context=_context())
+
+    def failing_retirement(_identity: SourceCacheIdentity) -> None:
+        raise OSError("retirement failed")
+
+    monkeypatch.setattr(store, "retire_unleased", failing_retirement)
+    with pytest.raises(OSError, match="retirement failed"):
+        store.build(
+            identity,
+            _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+            context=_context(),
+            refresh=True,
+        )
+    monkeypatch.undo()
+
+    reads = _count_footer_reads(monkeypatch)
+    with store.lease(identity) as leased:
+        assert leased.lazy_frame.collect()["id"].to_list() == [2]
+    assert reads == []
+
+
 def test_a_generation_whose_part_changed_is_validated_again(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -693,10 +836,11 @@ def test_failed_staged_generation_validation_preserves_previous_pointer(
     def reject_new_generation(
         candidate_identity: SourceCacheIdentity,
         generation_id: str,
+        **kwargs: Any,
     ):
         if generation_id != first.generation_id:
             raise SourceCacheCorruptError("staged generation did not validate")
-        return original_metadata_from_path(candidate_identity, generation_id)
+        return original_metadata_from_path(candidate_identity, generation_id, **kwargs)
 
     monkeypatch.setattr(store, "_metadata_from_path", reject_new_generation)
     with pytest.raises(SourceCacheCorruptError, match="did not validate"):
@@ -711,6 +855,9 @@ def test_failed_staged_generation_validation_preserves_previous_pointer(
     current = store.open_generation(identity)
     assert current.generation_id == first.generation_id
     assert current.lazy_frame.collect()["id"].to_list() == [1]
+    identity_dir = store.identity_path(identity)
+    assert [path.name for path in (identity_dir / "generations").iterdir()] == [first.generation_id]
+    assert not list(identity_dir.glob(".staging-*"))
 
 
 def test_same_identity_build_is_single_flight(tmp_path: Path) -> None:
@@ -1644,6 +1791,38 @@ def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(
     meta = json.loads(generation.metadata_path.read_text(encoding="utf-8"))
     assert meta["parts"] == [part.to_dict() for part in generation.metadata.parts]
     assert_frame_equal(generation.lazy_frame.collect(), expected)
+
+
+def test_a_sliced_build_reports_each_part_as_it_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An Import counts a Parquet source's rows slice by slice, not only at the end."""
+    monkeypatch.delenv(STREAMING_CHUNK_SIZE_ENV, raising=False)
+    store = SourceCacheStore(tmp_path)
+    source_parquet = tmp_path / "source.parquet"
+    pl.DataFrame({"id": list(range(10))}).write_parquet(source_parquet)
+    identity = _identity(path="source.parquet", format="parquet")
+    staging = store.identity_path(identity) / ".staging-0123abcd"
+    reported: list[tuple[int, int]] = []
+
+    def progress(rows: int) -> None:
+        reported.append((rows, len(list(staging.glob("part-*.parquet")))))
+
+    set_streaming_chunk_size(3)
+    store.build(
+        identity,
+        _LazyBuilder(pl.scan_parquet(source_parquet)),
+        context=SourceCacheBuildContext(
+            profile=ExecutionProfile.LAZY_SINK,
+            build_class="bounded",
+            progress=progress,
+            generation_id=str(uuid.uuid4()),
+            staging_token="0123abcd",
+        ),
+    )
+
+    # Each part's rows, reported once that part is on disk and before the next.
+    assert reported == [(3, 1), (3, 2), (3, 3), (1, 4)]
 
 
 @pytest.mark.parametrize("corrupt_mode", ["truncate", "flip_byte"])

@@ -23,10 +23,14 @@ from haute._execution_admission import (
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._execution_schemas import ExecutionMetricsPayload
 from haute._input_preparation import (
+    BuildProgressCounter,
     InputPreparationOutcome,
     InputPreparationRecord,
+    _relayed_progress,
     build_input_snapshot_worker,
     prepare_input_snapshots,
+    published_data_input,
+    run_supervised_data_input_build,
 )
 from haute._input_providers import build_input_snapshot, resolve_data_input
 from haute._native_memory_limit import native_memory_backend_scope
@@ -861,15 +865,17 @@ def test_a_call_without_an_admitted_context_does_nothing(
 # ---------------------------------------------------------------- (10) placement
 
 
-def test_the_worker_path_receives_the_budget_and_a_required_memory_limit(
+@pytest.mark.parametrize("policy", ["required", "best_effort"])
+def test_the_worker_path_receives_the_budget_and_the_policys_memory_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    policy: str,
 ) -> None:
     store = _project(tmp_path, monkeypatch)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
     config = _csv_config(path)
-    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", policy)
 
     captured: dict[str, Any] = {}
 
@@ -888,7 +894,8 @@ def test_the_worker_path_receives_the_budget_and_a_required_memory_limit(
 
     assert captured["function"] is build_input_snapshot_worker
     assert captured["budget"].memory_limit_bytes == expected.memory_limit_bytes
-    assert captured["config"].require_memory_limit is True
+    assert captured["config"].memory_limit_bytes == expected.memory_limit_bytes
+    assert captured["config"].require_memory_limit is (policy == "required")
     assert record.execution == "worker"
     assert record.action == "built"
 
@@ -1016,7 +1023,47 @@ def test_terminal_diagnostics_carry_digests_and_counts_only(
 # -------------------------------------------------------------- (15) cap gate
 
 
-def test_a_host_without_a_native_cap_refuses_before_any_provider_access(
+def test_a_host_without_a_native_cap_builds_in_a_supervised_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS's default policy: the build runs, its worker held to the limit by its parent."""
+    import haute._worker_isolation as isolation_mod
+
+    store = _project(tmp_path, monkeypatch)
+    path = tmp_path / "rows.csv"
+    pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
+    config = _csv_config(path)
+    monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT")
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setattr(
+        "haute._input_preparation.process_memory_caps_supported",
+        lambda: False,
+    )
+    configs: list[IsolatedWorkerConfig] = []
+
+    def supervised_spawn(function: Any, *args: Any, config: IsolatedWorkerConfig) -> Any:
+        configs.append(config)
+        return function(*args)
+
+    context = _context()
+    try:
+        budget = isolated_execution_budget(context)
+        record = _prepare(
+            config, store=store, base_dir=tmp_path, context=context, spawn=supervised_spawn
+        )[0]
+    finally:
+        context.release_admission()
+
+    assert (record.action, record.execution) == ("built", "worker")
+    [worker_config] = configs
+    assert worker_config.require_memory_limit is False
+    assert worker_config.memory_limit_bytes == budget.memory_limit_bytes
+    prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    assert prepared["id"].to_list() == [1, 2, 3]
+
+
+def test_a_required_cap_the_host_cannot_install_refuses_before_any_provider_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1024,7 +1071,7 @@ def test_a_host_without_a_native_cap_refuses_before_any_provider_access(
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
     config = _csv_config(path)
-    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
     monkeypatch.setattr(
         "haute._input_preparation.process_memory_caps_supported",
         lambda: False,
@@ -1920,3 +1967,76 @@ def test_automatic_preparation_runs_a_real_hard_capped_worker(
     assert store.open_generation(identity).generation_id == record.generation_id
     prepared = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
     assert prepared["id"].to_list() == [1, 2, 3]
+
+
+def test_the_progress_relay_reports_while_the_build_runs() -> None:
+    counter = BuildProgressCounter()
+    reported: list[tuple[int, int]] = []
+    heard = threading.Event()
+
+    def progress(rows: int, batches: int) -> None:
+        reported.append((rows, batches))
+        heard.set()
+
+    with _relayed_progress(counter, progress, interval_seconds=0.01):
+        counter.advance(5)
+        assert heard.wait(5)
+        counter.advance(2)
+
+    assert reported[0] == (5, 1)
+    # The last increase arrives once the build has returned.
+    assert (sum(rows for rows, _ in reported), sum(batches for _, batches in reported)) == (7, 2)
+
+
+def test_a_spawned_build_relays_the_rows_it_writes_to_its_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counter crosses the spawn: the parent hears every batch the child wrote (IO-R07)."""
+    import sqlite3
+    from contextlib import closing
+
+    from haute._input_providers import source_cache_identity
+    from haute._worker_isolation import run_isolated_worker
+
+    store = _project(tmp_path, monkeypatch)
+    database = tmp_path / "policies.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE policies (id INTEGER)")
+        connection.executemany("INSERT INTO policies VALUES (?)", [(1,), (2,), (3,)])
+        connection.commit()
+    config = {
+        "inputType": "database",
+        "format": "database",
+        "uri": f"sqlite:///{database.as_posix()}",
+        "query": "SELECT id FROM policies ORDER BY id",
+        "arguments": {"batch_size": 1},
+    }
+    identity = source_cache_identity(config, base_dir=tmp_path)
+    budget = IsolatedExecutionBudget(
+        operation="input_snapshot_build",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=2 * 1024 * 1024 * 1024,
+        config_key="test-config-key",
+        budget_policy="test",
+    )
+    reported: list[tuple[int, int]] = []
+
+    build = run_supervised_data_input_build(
+        run_isolated_worker,
+        config,
+        store=store,
+        identity=identity,
+        base_dir=tmp_path,
+        project_root=tmp_path,
+        profile=ExecutionProfile.LAZY_SINK,
+        refresh=False,
+        budget=budget,
+        # Uncapped, so a host without the native cap shows the relay too.
+        worker_config=IsolatedWorkerConfig(timeout_seconds=120),
+        progress=lambda rows, batches: reported.append((rows, batches)),
+    )
+
+    assert build.failure is None
+    assert published_data_input(store, identity, build).row_count == 3
+    assert (sum(rows for rows, _ in reported), sum(batches for _, batches in reported)) == (3, 3)

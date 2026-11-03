@@ -435,8 +435,11 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
   of the node): one other than a direct
   Parquet scan. A Quote Input has no Import; its Refresh re-reads its source
   (below). Import re-reads the source with `ensureInputSnapshots([input], { force: true })`,
-  showing "Importing · N rows" while a bounded build streams rows and
-  "Importing…" otherwise, and registers as the node's work so the frame's Stop
+  showing "Importing · N rows" once the build has counted rows (a database or
+  Databricks read counts each batch, a Parquet or IPC file each slice it writes) and
+  "Importing…" until then, and for the whole of a build that counts none (a CSV,
+  written in one streaming pass; an API Input's tables), and registers as the node's
+  work so the frame's Stop
   stops it. The import belongs to the node that started it
   (`stores/useInputImportStore.ts`), not to the open panel: opening another node
   leaves it running, shown and stoppable on its own node, and its re-preview runs

@@ -6,7 +6,6 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from itertools import islice
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -255,17 +254,27 @@ def _infer_records(
 
 def _learn_jsonl_prefix(
     data_path: Path, end: int
-) -> tuple[_InferenceState, InferenceSeed | None]:  # pragma: no mutate
-    """Infer one bounded file prefix for all parallel ranges to share."""
+) -> tuple[_InferenceState, InferenceSeed | None, int]:  # pragma: no mutate
+    """Infer one bounded file prefix for all parallel ranges to share.
+
+    Also returns the byte offset just past the last line read, so the ranges
+    start there rather than reading the prefix again.
+    """
     state = _InferenceState()
     known_structure = InferenceFilter()
-    for record in islice(
-        _records._iter_range_records(data_path, 0, end),
-        _inference_filter._INITIAL_SAMPLE_RECORDS,
-    ):
+    offset = 0
+    learned = 0
+    for raw_line in _records._iter_range_lines(data_path, 0, end):
+        offset += len(raw_line)
+        record = _records._jsonl_record(raw_line, None)
+        if record is None:
+            continue
         state.walk(record)
         known_structure.observe(record)
-    return state, known_structure.snapshot()
+        learned += 1
+        if learned == _inference_filter._INITIAL_SAMPLE_RECORDS:
+            break
+    return state, known_structure.snapshot(), offset
 
 
 def _infer_jsonl_lines(
@@ -323,8 +332,14 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
     started = time.perf_counter()
     # Prefix evidence must precede range evidence: workers may skip records
     # covered by this seed, and column order follows first file observation.
-    merged, seed = _learn_jsonl_prefix(data_path, ranges[-1][1])
-    tasks = [(str(data_path), start, end, index, seed) for index, (start, end) in enumerate(ranges)]
+    merged, seed, prefix_end = _learn_jsonl_prefix(data_path, ranges[-1][1])
+    # The ranges resume where the prefix stopped (a line boundary).
+    remaining = [(max(start, prefix_end), end) for start, end in ranges if end > prefix_end]
+    if not remaining:
+        return merged
+    tasks = [
+        (str(data_path), start, end, index, seed) for index, (start, end) in enumerate(remaining)
+    ]
     workers = _records._parallel_worker_count(len(tasks))
     logger.info(
         "json_schema_infer_parallel_start",
