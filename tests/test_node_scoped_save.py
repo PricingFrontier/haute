@@ -507,6 +507,22 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
             "reserved '__haute_' prefix",
             id="optimiser-analysis-reserved-prefix",
         ),
+        # The Quote Response's mapping rules raise their own error type, not a ConfigError.
+        pytest.param(
+            NodeType.OUTPUT,
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "in",
+                        "source_column": "id",
+                        "output_path": "$[0].id",
+                        "enabled": True,
+                    }
+                ]
+            },
+            "output path must start with '$[:]'",
+            id="quote-response-output-path",
+        ),
     ],
 )
 def test_scoped_save_refuses_a_config_error_as_not_loadable(

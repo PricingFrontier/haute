@@ -141,7 +141,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     | `leftOn` | text or list of text | The key column or columns on the base input. |
     | `rightOn` | text or list of text | The key column or columns on the join input, matched in order with `leftOn`. |
     | `suffix` | text | The suffix added to a join-input column whose name the base input already has. |
-    | `coalesce` | `true` or `false` | Whether key columns of the same name are merged into one. |
+    | `coalesce` | `true` or `false` or `null` | Whether key columns of the same name are merged into one; `null` leaves it to the join type, as Polars does. |
     | `validate` | `"1:1"` or `"1:m"` or `"m:1"` or `"m:m"` or `null` | The cardinality the keys must have, checked when the join runs; `null` checks none. |
     | `maintainOrder` | `"none"` or `"left"` or `"right"` or `"left_right"` or `"right_left"` | Which input's row order the result keeps; required, which the engine's join rules check with the values it takes. |
     | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |

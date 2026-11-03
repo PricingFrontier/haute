@@ -71,7 +71,7 @@ orphaned halves).
   `config_schema` is derived from the node type's config model
   (`haute._node_config_models.NODE_CONFIG_MODELS`: its `TypedDict` annotations,
   including `Required`, `Literal`, unions, lists, mappings and discriminated
-  Data Input/Output branches) and has `additionalProperties: false`.
+  Data Input/Output branches, and the pydantic models they hold, an Explore chart's) and has `additionalProperties: false`.
   `required_fields`, `optional_fields` and enum values are derived from that
   resolved schema rather than maintained separately. For Data Input and Data
   Output the top-level properties merge every branch: a key every declaring

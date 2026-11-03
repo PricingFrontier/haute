@@ -185,6 +185,8 @@ def test_a_model_training_key_the_editor_clears_takes_null(key: str) -> None:
     ("node_type", "config"),
     [
         (NodeType.EDGE_JOIN, {"how": "left", "on": "a", "maintainOrder": "left", "validate": None}),
+        # The editor's Coalesce "Not set" writes null.
+        (NodeType.EDGE_JOIN, {"how": "left", "on": "a", "maintainOrder": "left", "coalesce": None}),
         (NodeType.BANDING, {"factors": [{"banding": "categorical", "default": None}]}),
         (
             NodeType.RATING_STEP,
@@ -253,6 +255,56 @@ def test_model_training_names_what_an_unfinished_config_lacks() -> None:
     assert config_gaps(NodeType.MODELLING, complete) == []
     with pytest.raises(NodeConfigError, match="target"):
         validate_node_config(NodeType.MODELLING, {**complete, "target": ""}, require_complete=True)
+
+
+@pytest.mark.parametrize(
+    ("evaluation", "blank"),
+    [
+        # Switching the Split pane to Group, before a group column is picked.
+        (
+            {**EVALUATION, "strategy": "group", "group_column": ""},
+            ["evaluation.group_column"],
+        ),
+        # Switching it to Temporal, before a date column and boundary are picked.
+        (
+            {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "",
+                "validation": {"method": "single", "start": ""},
+            },
+            ["evaluation.date_column", "evaluation.validation.start"],
+        ),
+    ],
+    ids=["group", "temporal"],
+)
+def test_an_evaluation_setting_the_editor_leaves_blank_is_unfinished(
+    evaluation: dict[str, Any], blank: list[str]
+) -> None:
+    config = {
+        "algorithm": "catboost",
+        "target": "y",
+        "loss_function": "RMSE",
+        "feature_columns": ["x"],
+        "evaluation": evaluation,
+    }
+
+    validate_node_config(NodeType.MODELLING, config, require_complete=False)
+
+    assert [gap.path for gap in config_gaps(NodeType.MODELLING, config)] == blank
+    with pytest.raises(NodeConfigError, match=f"{blank[0]} is not set") as refused:
+        validate_node_config(NodeType.MODELLING, config, require_complete=True)
+    assert refused.value.setting == blank[0]
+
+
+def test_an_evaluation_with_no_blank_setting_is_held_to_its_rules() -> None:
+    evaluation = {**EVALUATION, "strategy": "group", "group_column": "g", "seed": "x"}
+    with pytest.raises(TrainingConfigError, match="seed"):
+        validate_node_config(
+            NodeType.MODELLING,
+            {"algorithm": "catboost", "evaluation": evaluation},
+            require_complete=False,
+        )
 
 
 def test_a_source_switch_maps_only_what_it_routes() -> None:

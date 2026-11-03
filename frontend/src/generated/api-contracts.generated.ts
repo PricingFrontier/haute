@@ -3462,9 +3462,10 @@ export interface EdgeJoinNodeData {
  */
 export interface EdgeJoinConfig {
   /**
-   * Whether key columns of the same name are merged into one.
+   * Whether key columns of the same name are merged into one; `null` leaves it to the join
+   * type, as Polars does.
    */
-  coalesce?: boolean;
+  coalesce?: boolean | null;
   column_renames?: {
     [k: string]: string;
   };

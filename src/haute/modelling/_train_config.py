@@ -333,6 +333,34 @@ class TrainingConfigError(HauteValidationError):
     """
 
 
+#: The evaluation settings the editor writes blank until the author picks them: a group or
+#: temporal split's column and a temporal boundary.
+_EVALUATION_TEXT_SETTINGS: tuple[tuple[str, ...], ...] = (
+    ("group_column",),
+    ("date_column",),
+    ("validation", "start"),
+    ("test", "start"),
+)
+
+
+def blank_evaluation_settings(raw: Any) -> list[str]:
+    """The settings an evaluation holds blank (``""``), as paths under ``evaluation``.
+
+    A blank one is unfinished, not malformed: the config saves, its completeness
+    names each, and the evaluation's rules are checked once none is blank.
+    """
+    if not isinstance(raw, Mapping):
+        return []
+    blank = []
+    for path in _EVALUATION_TEXT_SETTINGS:
+        value: Any = raw
+        for part in path:
+            value = value.get(part) if isinstance(value, Mapping) else None
+        if value == "":
+            blank.append(".".join(("evaluation", *path)))
+    return blank
+
+
 def parse_evaluation_config(raw: Any) -> dict[str, Any]:
     """Validate and canonicalise the required public evaluation object."""
     if raw is None:

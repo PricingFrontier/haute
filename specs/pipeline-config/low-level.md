@@ -135,7 +135,7 @@
   is exactly where Haute writes `null` for a cleared setting: a banding factor's `default`, a
   rating table's `defaultValue`, a pivot placement's `decimal_places` and
   `color_scale_split_by` and its options' `sort_by`, a Quote Input table's `displayPath` and
-  `row_id_column` and a column's `levels`, an Edge Join's `validate`, and Model Training's
+  `row_id_column` and a column's `levels`, an Edge Join's `validate` and `coalesce` (its "Not set"), and Model Training's
   `tuning`, `loss_function`, `regularization`, `alpha`, `max_iter`, `tol`,
   `robust_standard_errors`, `theta`, `var_power`, `variance_power`, `offset`,
   `monotone_constraints` and `row_limit` (each written by an editor control that clears to
@@ -154,7 +154,7 @@
   pivot and chart validators, `_edge_join.build_edge_join_kwargs`,
   `_node_apply.scenario_step_count`, `_node_apply.constant_frame`'s name rules,
   `_keyword_parameters.validate_keyword_parameters`, Model Training's pure rules
-  (`modelling/_train_config`: `validate_modelling_config_values`, `parse_evaluation_config` for a present `evaluation`,
+  (`modelling/_train_config`: `validate_modelling_config_values`, `parse_evaluation_config` for a present `evaluation` none of whose settings is blank,
   `parse_tuning_config` for a present `tuning`, checked whether or not an evaluation is chosen
   (its one rule that needs the split, a validation fit, waits for one), and
   `validate_training_device`, which refuses a
@@ -171,7 +171,8 @@
   request), a Transform's code or a
   stepped node's steps that do not render, a Quote Response's `outputMapping`, Model Training's
   target, objective (`training_objective_issue`) and, for a tree family, features
-  (`feature_selection_issue`), the Optimiser's objective and a ratebook's factor groups, and a
+  (`feature_selection_issue`) and its evaluation's blank settings, the Optimiser's objective and a
+  ratebook's factor groups, and a
   Source Switch scenario mapped from an input no longer connected; an input with no scenario is
   not a gap: the editor removes an input set to `-` from the map, and a switch none of whose
   inputs is mapped passes its first input through),
@@ -445,7 +446,7 @@ wherever it first appears:
 | Load File | an absent or empty `path` | a `fileType` other than `pickle`, `json` or `joblib` |
 | Quote Input | tables the v2 schema rules refuse: a table or column not yet named, a path still to set, a label not yet unique (the panel shows each row) | a value of the wrong type (the shape) |
 | Transform | no code, or steps that do not yet render | `keyword_parameters` not records with a literal default and a usable name, or beside `steps` |
-| Model Training | `{}`; an unset target, algorithm or objective | an untrainable `algorithm`, GLM `family`/`link`/solver setting or `loss_function` |
+| Model Training | `{}`; an unset target, algorithm or objective; an evaluation setting the Split pane leaves blank (`modelling/_train_config.blank_evaluation_settings`: a group or date column, a temporal boundary) | an untrainable `algorithm`, GLM `family`/`link`/solver setting or `loss_function` |
 | Optimiser | an unset objective | an unknown `mode`; a reserved constraint name; a solver control that is not positive; more than twelve or reserved analysis columns |
 | Source Switch | a scenario mapped from an input no longer connected | a scenario that is not a non-empty string |
 | Banding, Rating Step, Quote Response, Explore, Scenario Expander, Constant, Edge Join | none | anything their engine rules refuse (a boundary, a rating row, a mapping path, a pivot, a grid size, a duplicate constant name, a join without keys); a Rating Step's `baseValue` is the editor's text of a number or a number |

@@ -375,8 +375,9 @@ class EdgeJoinConfig(NodeConfigBase, total=False):
     """The key column or columns on the join input, matched in order with `leftOn`."""
     suffix: str
     """The suffix added to a join-input column whose name the base input already has."""
-    coalesce: bool
-    """Whether key columns of the same name are merged into one."""
+    coalesce: bool | None
+    """Whether key columns of the same name are merged into one; `null` leaves it to the join
+    type, as Polars does."""
     validate: Literal["1:1", "1:m", "m:1", "m:m"] | None
     """The cardinality the keys must have, checked when the join runs; `null` checks none."""
     maintainOrder: Literal["none", "left", "right", "left_right", "right_left"]
@@ -1381,6 +1382,7 @@ def _live_switch_gaps(
 
 def _check_modelling(config: Mapping[str, Any]) -> None:
     from haute.modelling._train_config import (
+        blank_evaluation_settings,
         build_train_params,
         effective_metrics,
         parse_evaluation_config,
@@ -1391,10 +1393,14 @@ def _check_modelling(config: Mapping[str, Any]) -> None:
 
     validate_modelling_config_values(config)
     validate_training_device(config)
-    # A present evaluation and tuning are each checked; an absent evaluation is
-    # completeness, and tuning's one rule that needs it waits for it.
+    # A present evaluation and tuning are each checked; an absent evaluation, or one
+    # the editor left a setting of blank, is completeness, and tuning's one rule that
+    # needs it waits for it.
+    raw_evaluation = config.get("evaluation")
     evaluation = (
-        None if config.get("evaluation") is None else parse_evaluation_config(config["evaluation"])
+        None
+        if raw_evaluation is None or blank_evaluation_settings(raw_evaluation)
+        else parse_evaluation_config(raw_evaluation)
     )
     if config.get("tuning") is not None:
         parse_tuning_config(
@@ -1409,7 +1415,11 @@ def _check_modelling(config: Mapping[str, Any]) -> None:
 def _modelling_gaps(
     config: Mapping[str, Any], input_names: Sequence[str] | None
 ) -> list[ConfigGap]:
-    from haute.modelling._train_config import feature_selection_issue, training_objective_issue
+    from haute.modelling._train_config import (
+        blank_evaluation_settings,
+        feature_selection_issue,
+        training_objective_issue,
+    )
 
     gaps = []
     if not config.get("target"):
@@ -1435,6 +1445,10 @@ def _modelling_gaps(
                 "how the data is structured, how candidates are validated, and whether a "
                 "final test is reserved.",
             )
+        )
+    for path in blank_evaluation_settings(config.get("evaluation")):
+        gaps.append(
+            ConfigGap(path, "required", f"{path} is not set. Open the Split pane and set it.")
         )
     return gaps
 

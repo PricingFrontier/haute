@@ -147,6 +147,29 @@ describe("#116 - a canonical graph read as the editor's", () => {
     expect(() => read(withoutEdges)).toThrow("PipelineGraph: invalid contract at /edges: required")
   })
 
+  // A submodel definition holds a graph of its own, checked as the root graph is.
+  const withSubmodel = (inner: Record<string, unknown>) => graph({
+    submodels: {
+      pricing: { definitionId: "pricing", file: "modules/pricing.py", inputPorts: [], outputPorts: [], graph: inner },
+    },
+  })
+
+  it("accepts a graph holding a submodel's graph", () => {
+    expect(validatePipelineGraph(withSubmodel(graph()))).toBe(true)
+  })
+
+  it("refuses a malformed graph inside a submodel definition", () => {
+    expect(() => read(withSubmodel({ ...graph(), nodes: "not an array" })))
+      .toThrow("PipelineGraph: invalid contract at /submodels/pricing/graph/nodes: type")
+  })
+
+  it("refuses a node config inside a submodel's graph that its node type's model refuses", () => {
+    const [node] = graph().nodes
+    const refused = { ...node, data: { ...node.data, config: { inputType: "file", format: "parquet", path: 3 } } }
+    expect(() => read(withSubmodel(graph({ nodes: [refused] }))))
+      .toThrow("PipelineGraph: invalid contract at /submodels/pricing/graph/nodes/0/data")
+  })
+
   // The bare casts that triggered #116 must not appear in the source. Ref
   // declarations typed as an opaque bag are not casts; `x as Record<string, unknown>`
   // on a value is.

@@ -16,7 +16,9 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType, UnionType
-from typing import Literal, Required, Union, cast, get_args, get_origin, get_type_hints
+from typing import Annotated, Literal, Required, Union, cast, get_args, get_origin, get_type_hints
+
+from pydantic import BaseModel
 
 from haute._cache import canonical_json
 from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
@@ -256,10 +258,10 @@ def _json_value_schema() -> dict[str, object]:
 
 
 def _schema_for_annotation(annotation: object) -> dict[str, object]:
-    """Resolve the useful JSON Schema subset of the config TypedDict vocabulary."""
+    """Resolve the useful JSON Schema subset of the config models' vocabulary."""
     origin = get_origin(annotation)
     args = get_args(annotation)
-    if origin is Required:
+    if origin in (Required, Annotated):
         return _schema_for_annotation(args[0])
     if origin is Literal:
         values = list(args)
@@ -280,6 +282,8 @@ def _schema_for_annotation(annotation: object) -> dict[str, object]:
         }
     if isinstance(annotation, type) and hasattr(annotation, "__required_keys__"):
         return _schema_for_typeddict(annotation)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _schema_for_model(annotation)
     if annotation is str:
         return {"type": "string"}
     if annotation is int:
@@ -291,6 +295,21 @@ def _schema_for_annotation(annotation: object) -> dict[str, object]:
     if annotation is type(None):
         return {"type": "null"}
     return _json_value_schema()
+
+
+def _schema_for_model(model: type[BaseModel]) -> dict[str, object]:
+    """A pydantic config shape (an Explore chart) as the same subset: its fields by name."""
+    fields = model.model_fields
+    result: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            name: _schema_for_annotation(field.annotation) for name, field in sorted(fields.items())
+        },
+        "additionalProperties": model.model_config.get("extra") != "forbid",
+    }
+    if required := sorted(name for name, field in fields.items() if field.is_required()):
+        result["required"] = required
+    return result
 
 
 def _schema_for_typeddict(typed_dict: type, *, keys: set[str] | None = None) -> dict[str, object]:

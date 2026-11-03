@@ -4493,9 +4493,16 @@
       "description": "An Edge Join: joins its `join` input onto its `base` input.",
       "properties": {
         "coalesce": {
-          "description": "Whether key columns of the same name are merged into one.",
-          "title": "Coalesce",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether key columns of the same name are merged into one; `null` leaves it to the join\ntype, as Polars does.",
+          "title": "Coalesce"
         },
         "column_renames": {
           "additionalProperties": {

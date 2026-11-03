@@ -665,7 +665,7 @@ def apply_scoped_node_save(
     other artifact byte is conserved, and the candidate only has to remain
     loadable — completeness gaps are allowed.
     """
-    from haute._config_validation import validate_node_config
+    from haute._config_validation import CONFIG_REFUSALS, validate_node_config
     from haute._pipeline_repair import _commit_repair_plan
 
     root = project_root.resolve()
@@ -705,7 +705,7 @@ def apply_scoped_node_save(
             require_complete=False,
             node_label=target.label,
         )
-    except (ValueError, ConfigError) as exc:
+    except CONFIG_REFUSALS as exc:
         raise _unsupported(f"The proposed settings are not loadable: {exc}") from exc
     edits = _reset_node(
         root,
