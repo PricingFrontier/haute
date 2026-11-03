@@ -3,7 +3,7 @@
  * pauses (150 ms): text typed while a save waits must not be lost to that pause.
  */
 import { EditorView } from "@codemirror/view"
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import useGitStore from "../../stores/useGitStore"
@@ -108,6 +108,30 @@ describe("UtilityPanel with the live editor", () => {
     expect(screen.getByTestId("utility-panel")).toBeInTheDocument()
     expect(view.state.doc.toString()).toBe("x = 1\ny = 2\nz = 3\n")
     expect(mockUpdateFile).toHaveBeenCalledOnce()
+  })
+
+  it("shows the preamble changed outside the panel while Imports is open, and edits build on it", async () => {
+    const onPreambleChange = vi.fn()
+    const props = { onClose: vi.fn(), onImportAdded: vi.fn(), onPreambleChange }
+    const { rerender } = render(<UtilityPanel {...props} preamble="import numpy as np" />)
+    fireEvent.click(await screen.findByText("features"))
+    fireEvent.click(await screen.findByTestId("utility-imports-entry"))
+    await screen.findByTestId("utility-imports")
+    const view = await liveEditor()
+    await waitFor(() => expect(view.state.doc.toString()).toBe("import numpy as np"))
+
+    // Undo, Redo or a new utility file's import line changes the preamble elsewhere.
+    rerender(<UtilityPanel {...props} preamble={"import numpy as np\nfrom utility.features import *"} />)
+    await waitFor(() =>
+      expect(view.state.doc.toString()).toBe("import numpy as np\nfrom utility.features import *"),
+    )
+
+    typeAtEnd(view, "\nimport math")
+    await waitFor(() =>
+      expect(onPreambleChange).toHaveBeenLastCalledWith(
+        "import numpy as np\nfrom utility.features import *\nimport math",
+      ),
+    )
   })
 
   it("saves on Ctrl+S what was typed just now, and shows a hook's formatting in place", async () => {

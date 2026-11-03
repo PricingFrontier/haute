@@ -11,7 +11,8 @@ import {
   type UseStaleConfigEstimateResult,
 } from "../hooks/useStaleConfigEstimate"
 import useGraphStore from "../stores/useGraphStore"
-import useNodeResultsStore, { trainFailureResult, type TrainProgress } from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { type CachedTrainResult, type TrainProgress } from "../stores/useNodeResultsStore"
+import { hasTrainResult } from "../stores/nodeResultsSelectors"
 import useDocumentStatusStore, {
   captureDocumentExecutionFence,
   documentExecutionKey,
@@ -198,6 +199,12 @@ const DEFAULT_EVALUATION: Record<string, unknown> = {
   validation: { method: "single", size: 0.2 },
 }
 
+/** Why a node's last training failed: the failed job's error, or a result the server marked an error. */
+function trainFailure(cached: CachedTrainResult): string | null {
+  if (cached.result === null) return cached.error ?? null
+  return cached.result.status === "error" ? cached.result.error ?? null : null
+}
+
 function failureStatus(error: unknown, message: string): TrainProgress | undefined {
   const execution_metrics = executionMetricsFromError(error)
   if (!execution_metrics) return undefined
@@ -341,6 +348,7 @@ function TrainPane({
         trainProgress={trainJob?.progress ?? null}
         estimatedRemainingSeconds={trainJob?.estimatedRemainingSeconds ?? null}
         trainResult={cachedResult?.result ?? null}
+        trainError={cachedResult ? trainFailure(cachedResult) : null}
         isStale={estimate.isStale}
         ramEstimate={estimate.estimate}
         ramEstimateLoading={estimate.loading}
@@ -570,6 +578,7 @@ export default function ModellingConfig({
     const submittedGraph = graph()
     const lineage = trainingLineage(submittedGraph)
     const configHash = trainingHash
+    const attempt = { configHash, source: activeSource, structuralVersion }
     try {
       const result = await trainModel({
         graph: submittedGraph,
@@ -587,31 +596,39 @@ export default function ModellingConfig({
           structuralVersion,
           lineage,
         )
-      } else if (result.status === "error") {
-        failTrainStart(nodeId, result)
       } else {
-        completeTrainJob(nodeId, result)
+        // The server only ever answers a started job; anything else refused the start.
+        failTrainStart(nodeId, attempt, result.error || `Training did not start (status ${result.status}).`)
       }
     } catch (error) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       const message = apiErrorMessage(error)
-      failTrainStart(nodeId, trainFailureResult(message), failureStatus(error, message))
+      failTrainStart(nodeId, attempt, message, failureStatus(error, message))
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, completeTrainJob, failTrainStart, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, trainingHash])
+  }, [activeSource, allNodes, failTrainStart, graph, hasTrainingConfigurationIssues, nodeId, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
     const job = useNodeResultsStore.getState().trainJobs[nodeId]
     if (!job || cancelling) return
 
     setCancelling(true)
+    const documentFence = captureDocumentExecutionFence()
     try {
       const status = await cancelTrain(job.jobId)
-      if (status.status === "completed" && status.result) completeTrainJob(nodeId, status.result, status)
-      else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(nodeId, status.message || "Training stopped", status)
-      else updateTrainProgress(nodeId, status)
+      // The reply belongs to the job it cancelled; the store ignores it once
+      // polling has retired that job, and a changed document drops it here.
+      if (!isDocumentExecutionFenceCurrent(documentFence)) return
+      if (status.status === "completed" && status.result) completeTrainJob(nodeId, job.jobId, status.result, status)
+      else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(nodeId, job.jobId, status.message || "Training stopped", status)
+      else updateTrainProgress(nodeId, job.jobId, status)
     } catch (error) {
-      addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`)
+      if (
+        isDocumentExecutionFenceCurrent(documentFence)
+        && useNodeResultsStore.getState().trainJobs[nodeId]?.jobId === job.jobId
+      ) {
+        addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`)
+      }
     } finally {
       setCancelling(false)
     }
@@ -667,7 +684,7 @@ export default function ModellingConfig({
       onUpdate={onUpdate}
       nodeLabel={allNodes.find((node) => node.id === nodeId)?.data.label ?? "model"}
       trainedJobId={
-        cachedResult && cachedResult.result.status !== "error" && cachedResult.jobId
+        cachedResult && hasTrainResult(cachedResult) && cachedResult.jobId
           ? cachedResult.jobId
           : null
       }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef } from "react"
 import { apiErrorCode } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
-import { hashConfig } from "../stores/useNodeResultsStore"
+import { hashConfig } from "../utils/configHash"
 import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
 
 export interface UseStaleConfigEstimateResult<TEstimate> {

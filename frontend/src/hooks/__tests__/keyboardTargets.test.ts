@@ -64,4 +64,18 @@ describe("keyboardTargets", () => {
     vi.runAllTimers()
     expect(save).toHaveBeenCalledTimes(2)
   })
+
+  it("blurs a code editor's focused content first and saves after, as it commits on blur", () => {
+    vi.useFakeTimers()
+    const save = vi.fn()
+    const content = element('<div class="cm-editor"><div class="cm-content" data-target contenteditable="true" tabindex="0"></div></div>')
+    content.focus()
+    expect(document.activeElement).toBe(content)
+
+    saveCommittingField(content, save)
+    expect(document.activeElement).not.toBe(content)
+    expect(save).not.toHaveBeenCalled()
+    vi.runAllTimers()
+    expect(save).toHaveBeenCalledTimes(1)
+  })
 })

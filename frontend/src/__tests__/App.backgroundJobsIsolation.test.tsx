@@ -250,7 +250,7 @@ function updateBackgroundJobProgress(): void {
     message: "Solving",
     elapsed_seconds: 2,
   })
-  useNodeResultsStore.getState().updateTrainProgress("model_1", {
+  useNodeResultsStore.getState().updateTrainProgress("model_1", "train-job-1", {
     status: "running",
     progress: 0.7,
     message: "Training",

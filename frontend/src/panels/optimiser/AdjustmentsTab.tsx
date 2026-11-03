@@ -145,7 +145,7 @@ function barWeight(bar: OptimiserAdjustmentBar, weighting: OptimiserAdjustmentWe
 }
 
 function formatWeight(value: number): string {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 2 })
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
 function AdjustmentsReport({

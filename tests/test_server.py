@@ -626,7 +626,11 @@ class TestPreviewNode:
         )
 
         assert resp.status_code == 409
-        assert resp.json()["detail"] == "Preview request superseded by a newer request"
+        # The browser knows a superseded preview by its code, not its wording.
+        assert resp.json()["detail"] == {
+            "error_code": "request_superseded",
+            "message": "Preview request superseded by a newer request",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +695,10 @@ class TestTraceRow:
         )
 
         assert resp.status_code == 409
-        assert resp.json()["detail"] == "Trace request superseded by a newer request"
+        assert resp.json()["detail"] == {
+            "error_code": "request_superseded",
+            "message": "Trace request superseded by a newer request",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +755,99 @@ class TestSavePipeline:
         # Sidecar should exist too
         sidecar = py_file.with_suffix(".haute.json")
         assert sidecar.exists()
+
+
+class TestSaveOperation:
+    """A save naming an operation writes once; its repeat is answered with what it did."""
+
+    @staticmethod
+    def _request(pipeline_dir: Path, operation: str, **changes: Any) -> dict[str, Any]:
+        graph = {
+            "nodes": [
+                {
+                    "id": "s",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Source",
+                        "nodeType": "dataInput",
+                        "config": _file_input_config("d.parquet"),
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        return {
+            "name": "op_pipe",
+            "description": "First",
+            "graph": graph,
+            "source_file": "op_pipe.py",
+            "base_revision": current_source_revision(pipeline_dir / "op_pipe.py", pipeline_dir),
+            "connection_id": "connection-before",
+            "operation": operation,
+            **changes,
+        }
+
+    def test_a_repeat_of_a_committed_save_is_answered_with_its_response_and_writes_nothing(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        request = self._request(pipeline_dir, "op-repeat-0001")
+        first = client.post("/api/pipeline/save", json=request)
+        assert first.status_code == 200
+        source = pipeline_dir / "op_pipe.py"
+        # Another writer changes the file after the save committed.
+        external = source.read_text(encoding="utf-8") + "\n# another writer\n"
+        source.write_text(external, encoding="utf-8")
+
+        # The tab reconnected its socket before repeating the save whose answer it lost.
+        repeat = client.post(
+            "/api/pipeline/save", json={**request, "connection_id": "connection-after"}
+        )
+
+        assert repeat.status_code == 200
+        assert repeat.json() == first.json()
+        assert source.read_text(encoding="utf-8") == external
+
+    def test_an_operation_naming_a_different_save_is_refused(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        request = self._request(pipeline_dir, "op-reused-0001")
+        assert client.post("/api/pipeline/save", json=request).status_code == 200
+        source = pipeline_dir / "op_pipe.py"
+        saved = source.read_bytes()
+
+        reused = client.post("/api/pipeline/save", json={**request, "description": "Second"})
+
+        assert reused.status_code == 409
+        assert reused.json()["detail"].startswith("save_operation_reused:")
+        assert source.read_bytes() == saved
+
+    def test_an_operation_the_server_does_not_know_is_saved_against_its_base_revision(
+        self, client: TestClient, pipeline_dir: Path
+    ) -> None:
+        request = self._request(pipeline_dir, "op-unknown-0001")
+        assert client.post("/api/pipeline/save", json=request).status_code == 200
+
+        # A request that never arrived, repeated after the file moved on, is stale.
+        stale = client.post("/api/pipeline/save", json={**request, "operation": "op-unknown-0002"})
+
+        assert stale.status_code == 409
+        assert stale.json()["detail"].startswith("stale_document_revision:")
+
+
+def test_save_operations_forget_the_oldest_beyond_their_capacity() -> None:
+    from haute.routes._save_operations import SaveOperations
+    from haute.schemas import SavePipelineResponse
+
+    operations = SaveOperations(capacity=2)
+    answer = SavePipelineResponse(
+        file="main.py", pipeline_name="main", source_revision="r", document_fingerprint="f"
+    )
+    for key in ("op-one", "op-two", "op-three"):
+        operations.record(key, "digest", answer)
+
+    assert operations.replay("op-one", "digest") is None
+    assert operations.replay("op-three", "digest") == answer
 
 
 # ---------------------------------------------------------------------------

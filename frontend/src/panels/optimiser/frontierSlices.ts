@@ -19,7 +19,7 @@
  */
 
 import type { FrontierPoint, OptimiserSolveResult } from "../../api/types"
-import { effectiveConstraintBounds } from "../../stores/useNodeResultsStore"
+import { effectiveConstraintBounds } from "../../utils/optimiserSolveResults"
 import { constraintAttainment, type ConstraintAttainment, type ConstraintKind } from "./constraintAttainment"
 
 export type ConstraintKinds = Record<string, ConstraintKind>

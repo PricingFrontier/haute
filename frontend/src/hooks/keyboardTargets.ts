@@ -53,13 +53,25 @@ export function isFormControl(target: EventTarget | null): boolean {
 }
 
 /**
- * Run `save` with a focused field's edit included. Editor fields commit on blur, so a
- * focused field is blurred first and the save runs once React has rendered that commit;
- * otherwise the value being typed would be left out of the save.
+ * The focused element whose edit commits on blur: a text field, or a code editor's
+ * content, whose debounced commit flushes on blur.
+ */
+function fieldCommittingOnBlur(target: EventTarget | null): HTMLElement | null {
+  if (target instanceof HTMLElement && isTextField(target)) return target
+  const editor = element(target)?.closest(".cm-editor")
+  const focused = document.activeElement
+  return editor && focused instanceof HTMLElement && editor.contains(focused) ? focused : null
+}
+
+/**
+ * Run `save` with a focused field's edit included. Editor fields and code editors
+ * commit on blur, so the focused one is blurred first and the save runs once React has
+ * rendered that commit; otherwise the value being typed would be left out of the save.
  */
 export function saveCommittingField(target: EventTarget | null, save: () => void): void {
-  if (target instanceof HTMLElement && isTextField(target)) {
-    target.blur()
+  const field = fieldCommittingOnBlur(target)
+  if (field) {
+    field.blur()
     window.setTimeout(save, 0)
     return
   }

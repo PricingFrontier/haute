@@ -25,8 +25,13 @@
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses, outside the initial JavaScript graph. `parseTrainResponse` and `parseTrainStatusResponse` take the whole structure, including the evaluation and tuning reports and the fit evidence, from the generated `training` validators, and shape by hand only what the server model leaves open: the diagnostic row lists, loss history, GLM inference and regularisation, EBM terms and the feature-selection report. The evaluation and tuning invariants are checked once on the server, where their artifacts are produced, so the browser does not re-check them. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
-| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and a job's error or failure forgets it, while `failTrainStart`, a training request refused before any job existed, records its error result (`trainFailureResult`, the one failure result `failTrainJob` records too) and keeps the handle; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job; `markTrainResultExpired` records, in `expiredTrainJobs`, a node whose remembered completed result the server no longer holds, unless the node has a result or running job, and starting a training job, a completed or restored result, or clearing the node drops that record), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
-| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress, or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
+| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview, solve, train and Explore pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and a job's error or failure forgets it, while `failTrainStart`, a training request refused before any job existed, records its failure (`result: null` with its `error`) under the identity it was asked for and keeps the handle; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job; `markTrainResultExpired` records, in `expiredTrainJobs`, a node whose remembered completed result the server no longer holds, unless the node has a result or running job, and starting a training job, a completed or restored result, or clearing the node drops that record), authoritative training history plus bounded ETA samples (computed by `utils/trainEstimate.ts`), column cache, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
+| `frontend/src/stores/nodeResultsSelectors.ts` | The previews derived from the results store's records: `optimiserPreviewFor` (a solved result's preview) and `modellingPreviewFor` (a completed training result's under its node's label), memoised on the record in a `WeakMap`. |
+| `frontend/src/utils/operationKey.ts` | `operationKey`, a new operation key (`save-` and a random UUID, or a time-and-random fallback where the browser has no `crypto.randomUUID`, at most 64 characters), which makes a save repeated after its answer was lost write once: the pipeline save's (`hooks/usePipelineAPI.ts`) and the underwriter app's quote writes (re-exported by `app/quoteValues.ts`). |
+| `frontend/src/utils/optimiserSolveResults.ts` | The optimiser derivations the results store applies: `frontierFromSolveResult` (the frontier a completed solve carries, refusing one of another generation), `applyFrontierPointSummary`/`resultForFrontierPoint`, `assertSelectReplyForPoint`, `selectReplyIsCurrent`, `frontierPointSummaryFromSelect`, `effectiveConstraintBounds`, and the `/apply` identity (`optimiserApplyIdentityFor`, `optimiserApplyKey`, `sameApplyTarget`) and cache housekeeping. These cross-field checks stay hand-written beside the generated response validators. |
+| `frontend/src/utils/configHash.ts` | `hashConfig`, a node config's identity: its `canonicalJson`. Remembered training handles keep it, so its output must not change. |
+| `frontend/src/utils/trainEstimate.ts` | `nextTrainEstimate`, a training's remaining time from the rate between its last two progress samples (rounds, or fits while tuning). |
+| `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress and whether this tab started it (`startedHere`, as a profile job also records), or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
@@ -40,7 +45,8 @@
 | `frontend/src/utils/formatBytes.ts` | The byte formatters: `formatBytes` (byte count → `B`/`KB`/`MB`/`GB` with one decimal, the unit chosen by the value as printed so rounding carries into the next one — 1,048,575 bytes reads `1.0 MB`, never `1024.0 KB`; a negative count keeps its sign and is scaled by its size) and `formatByteSize` (budget-sized values up to `TB`, whole numbers from ten, carrying the same way). |
 | `frontend/src/utils/relativeTime.ts` | `relativeTime(when, now)`, the one relative-time rule, on a `Date` (each caller converts its ISO string or Unix seconds): "just now" below a minute, a time ahead of `now` included, then whole minutes, hours and days ago, floored ("5m ago", "3h ago", "2d ago"), below seven days, then the day and short month, with the year when it is not `now`'s; an invalid date reads as nothing. The git panel's rows, the comparison canvas's version breadcrumb, the assistant's chat list, the Files panel, Explore's snapshot card, an Import's title and the underwriter app's quote pages all read their times through it. |
 | `frontend/src/utils/objectLiteral.ts` | `isObjectLiteral`: true only for a plain object literal (`{}` or a null-prototype object), the object shape a JSON config holds. |
-| `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`, owns `formatDuration`, the one seconds formatter (`0.4 s`, `12 s`, `2m 05s`), and `formatNumber`, the compact number formatter (`12.3K`, `1.23M`, four decimals below a thousand), whose unit is chosen by the value as printed so rounding carries into the next one: 999,999 reads `1.00M`, never `1000.0K`, and 999,949 reads `999.9K`. |
+| `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`, owns `formatDuration`, the one seconds formatter (`0.4 s`, `12 s`, `2m 05s`), and `formatNumber`, the compact number formatter (`12.3K`, `1.23M`, four decimals below a thousand), whose unit is chosen by the value as printed so rounding carries into the next one: 999,999 reads `1.00M`, never `1000.0K`, and 999,949 reads `999.9K`; and `formatFixed`. Numbers follow the browser's locale. |
+| `frontend/src/utils/isoDate.ts` | The one check of each ISO 8601 calendar form the browser validates: `isDay` (a real YYYY-MM-DD day from year 1, without a `Date`, which reads years before 100 as the 1900s), `isTime` (HH:MM:SS with an optional fraction and offset) and `isDateTime` (the two joined by `T`); the sheets, global constants, pivot card filters and pivot response guards all use them. |
 | `frontend/src/utils/serial.ts` | `serial()`, a turn queue: each piece of work given to it runs once the one before has settled, failed or not, so each acts on the state as it is when its turn comes, its promise the work's own. The workbench's form store (its reads, syncs and saves) and the editor's project Save take turns through one each. |
 | `frontend/src/utils/latest.ts` | `latest()`, the ticket of the newest of a kind of request, so an answer that comes back after a newer request was made is dropped: `take()` stamps one, putting every earlier one out of date; `current()` reads the newest without taking one, for work done under the request it belongs to; `is(ticket)`; and `bump()`, putting every ticket out of date, as leaving the scope they were taken in does. What else makes an answer stale (the document, the quote, the form) stays with the caller. The preview, open-quote, quote-list and workbench stores and the allowed-values field use it. |
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
@@ -86,7 +92,7 @@
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
 | `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. Also exports `waitForJob`, the only way to await one job's terminal status inside an operation, and its `JobWaitTimeoutError`. |
-| `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore/node-data endpoints and the `useNodeResultsStore` and `useNodeDataStore` actions; mounted once in `App.tsx`. |
+| `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser solve, training, Explore pivot, node-data build and data-profile status endpoints and the `useNodeResultsStore` and `useNodeDataStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs from one destination (`destination` option: the node's stored value, `""` = the local folder, passed to every discovery request); shared by `ModelScoreEditor`, `OptimiserApplyEditor` (node-editors), and the modelling Export pane's experiment suggestions. |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). Each read is keyed by its path and reader settings and only the latest request's reply lands; the schema, error and loading state it gives are the current path's and settings' only (none for a cleared path), and `fetchForPath` retries the current read. |
 | `frontend/src/hooks/useParamsFiles.ts` | `useParamsFiles(file, onHeaderProblem)`, the pipeline's params folder as Banding's Import from params (node-editors) and the Workbench's Allowed values ([workbench](../workbench/low-level.md)) read it: its CSV files, whatever the case of the extension, listed through `listProjectFiles("pipeline", "params")` as the caller mounts (`files`, null until listed), why the listing failed (`unlisted`, through `apiErrorMessage`, "The params files could not be listed." when the error says nothing) and `retry`, which clears it and lists the folder again; and the header of `file` ("" for none) through `fetchParamFile`, read while it is not held and then kept per file while the caller is mounted (`header`), with `keepHeader` for a header a read of a column's values brought back. A header read that fails hands its message to `onHeaderProblem` only while `file` is still the one it was read for and its header is still unread. |
@@ -102,7 +108,7 @@
 | `frontend/src/haute-ui/side-panel.css` | The side panel's styles, plain CSS like `toolbar.css`: the panel (`.side-panel`) and its slide-in, from the left for `.side-panel.left`, the drag handle (`.panel-drag-handle`, 4px, which turns `--accent` on hover and while `.dragging`, `!important` over its inline rest colour), the body column (`.side-panel-body`) and the header (`.side-panel-header`, `.side-panel-heading`, `.side-panel-title`, `.side-panel-close`: `--danger-solid` under a `--text-on-accent` X, `--danger-hover` on hover and focus). Colours come only from `index.css`'s tokens. |
 | `frontend/src/haute-ui/dropdowns.css` | Native dropdowns in the editor's colours: every `select` on `--bg-input` in `--text-primary`, and its `option` list, which the browser otherwise draws white, on `--bg-elevated`. Unlayered, so it wins over utility classes. Colours come only from `index.css`'s tokens. |
 | `frontend/src/utils/chartHelpers.ts` | The axis and scale helpers every SVG chart uses: `formatChartNumber` (one value: three significant digits, compact from ten thousand, exponential below 0.0001), `formatChartTicks` (one linear axis's labels formatted together: it starts from the precision `formatChartNumber` gives the largest tick and adds decimals until neighbouring labels differ, but never past the 15 significant digits a double holds (ticks that still read alike there differ only by float noise, and `Intl` refuses more than 21); a standard-notation axis shows the same decimals on every label, dropping only trailing zeros every tick shares, while compact and exponential labels share the rounding; a lone tick is formatted as one value, and ticks that are not distinct and evenly spaced, such as a log axis's decades, throw; every linear axis labels its ticks through it: the modelling value grid, the Lorenz, actual-versus-predicted, histogram and frontier x-axes, the EBM shape axis and the optimiser data preview's value axes), `chartDomain` (an 8% padded domain that gives constant series a finite scale; a series whose spread is at most 1e-9 of its magnitude, rounding noise such as a flat frontier's objective, is padded like a constant one), `chartTickSpan` (the range an axis's ticks cover: the values' own range, or for a flat series its padded domain, so ticks spread instead of stacking on one pixel), `chartTicks` (inclusive evenly spaced ticks; a degenerate range yields one tick), `chartLabelIndices` (label thinning that keeps both ends) and `chartAxisLabel` (truncation to the plot width). |
-| `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, shows a formula's operators through `displayOperators`, which reads them as tokens outside quoted text, and (`formatCalculation`) substitutes values for escaped column names, longest names first to avoid partial replacement. |
+| `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: numbers in the browser's locale (a non-zero value that would round to zero is shown whole), shows a string value as it is, unquoted, represents non-finite numbers explicitly, shows a formula's operators through `displayOperators`, which reads them as tokens outside quoted text, and (`formatCalculation`) substitutes values for escaped column names, longest names first to avoid partial replacement. |
 | `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
 | `frontend/src/utils/mlflowModelMetadata.ts` | Pure MLflow model metadata helpers for Model Score: `resolveLoadedVersion` (the loaded version a stored choice resolves to; `latest` is the newest) and `recordedModelTask` (a run's recorded `task` param when it is `regression` or `classification`, else `null`). |
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
@@ -119,7 +125,7 @@
 | `frontend/src/components/form/LabelledRow.tsx` | `LabelledRow`, a side panel's row of a label in a fixed column beside its control, so the controls line up, or with no label that column left blank, as for tick boxes under labelled rows; and `SelectRow`, a labelled select of named choices, its label its name unless given a `name` of its own. |
 | `frontend/src/components/form/QuietAction.tsx` | `QuietAction`, the quiet "+ Add" text action under a list (`.quiet-action`: accent text, underlined on hover), a plus before it unless another icon is given, its other props passed to the button. |
 | `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing and the stale-response document-identity fence. |
-| `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking, edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. |
+| `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking (a node is marked edited only once its update is accepted, so a refused update locks no other node), edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. |
 | `frontend/src/stores/useRecoverySummaryStore.ts` | Transient per-session recovery summary (field outcomes, completeness, previous config, diffs) keyed by recovery id. |
 
 ## Key types and data structures
@@ -164,15 +170,25 @@
   `CachedSolveResult` additionally carries both `result` (current,
   possibly a frontier point's server summary applied) and `originalResult`
   (the as-solved baseline), so switching frontier points never loses the original.
-  A failed solve with no earlier result is cached with `result` and
-  `originalResult` `null` and its `error`; no result is fabricated for it (no zero
-  objective or baseline), `getOptimiserPreview` returns `null` for it, and the
-  point-selection actions ignore it. A
-  direct `complete*Job` call with no active job recorded (no in-flight
-  `ActiveSolveJob`/`ActiveTrainJob` to read `source`/`structuralVersion`
-  from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
-  that can never equal a real value, so the record reads as stale rather
-  than silently matching whatever the caller happens to be viewing.
+  A failed attempt is recorded in `failedAttempt` (`FailedSolveAttempt`: its job
+  id, config hash, source, structural version, error and terminal status), never
+  over a stored result's identity. A node with an earlier result keeps that result
+  with its own job id, config hash, source, structural version, constraints, label,
+  terminal status, frontier and selection beside the failed attempt, so staleness,
+  the preview's objective label and the publish target are judged from the
+  result's identity; the next completed solve clears `failedAttempt`. The Solve
+  pane reports the failed attempt (its error and terminal status, and no result),
+  and publication is refused while one is recorded. A failed solve with no
+  earlier result is cached with `result` and `originalResult` `null`, the
+  attempt's identity and its `failedAttempt`; no result is fabricated for it (no
+  zero objective or baseline), `getOptimiserPreview` returns `null` for it, and
+  the point-selection actions ignore it. Every result is stored from the active
+  job that produced it, with that job's `source` and `structuralVersion`; a
+  completion with no matching active job stores nothing.
+  A `CachedTrainResult` holds the server's training result, or, for a job
+  that failed, `result: null` and the failure's `error`, as the solve cache
+  models a failure: no response is fabricated to record one, and readers ask
+  `hasTrainResult` whether a usable result is there.
 - **`CachedExplorePivotResult` / `ActiveExplorePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
   `${exploreNodeId}:${pivotId}`. A cached matrix stores its backend calculation identity and
   dataframe-cache key; an active job stores the same composite ownership plus job id/source.
@@ -191,14 +207,16 @@
 - **`JOB_STATUS_VALUES` / `JobStatus` / `FAILED_JOB_STATUSES` /
   `TERMINAL_JOB_STATUSES`** (`api/types.ts`) — the single runtime/type
   vocabulary for all job parsers and polling failure/terminal checks.
-- **`NodeResultsState`**: the store's full shape — five result and job
-  record pairs (`previews`, `solveResults` + `solveJobs`, `trainResults` + `trainJobs`,
-  `exploreResults` + `exploreJobs`, `pivotResults` + `pivotJobs`), `pivotStartClaims`,
+- **`NodeResultsState`**: the store's full shape — four result records, three with the job
+  record that fills them (`previews`, `solveResults` + `solveJobs`, `trainResults` +
+  `trainJobs`, `pivotResults` + `pivotJobs`), `optimiserApplyCache` (the `/apply`
+  responses, least recently used first), `pivotStartClaims`,
   `expiredTrainJobs` (node → the remembered training job the server no longer holds),
   a `columnCache` keyed `"nodeId"` or `"nodeId:source"`, and a `pinnedPreviewNodeId`
-  that is exempted from LRU eviction in the four caches trimmed by
-  `trimCacheByRecency` and whose pivot entries are likewise exempted by
-  `trimExplorePivotCache`.
+  that is exempted from LRU eviction in the three caches trimmed by
+  `trimCacheByRecency` (`previews`, `solveResults`, `trainResults`) and whose pivot
+  entries are likewise exempted by `trimExplorePivotCache`. It holds no Explore report:
+  the Explore preview reads the shared data point and its profile from `useNodeDataStore`.
   Occurrence output previews use their `PreviewData.cacheKey` as the record key;
   the data's `nodeId` still names the visible occurrence. Pinning protects that
   occurrence's most recently touched output, and `clearNode` removes all of its
@@ -207,7 +225,8 @@
   installed, importable, destinations, detail}` — populated from
   `GET /api/mlflow/destinations?probe=true`
   (`parseMlflowDestinationsResponse`), fetched once on the first render of
-  any MLflow section under a 15-second deadline — the backend may spend its
+  any MLflow section under a 15-second deadline, at which the request is
+  aborted rather than left running — the backend may spend its
   full 5-second probe budget per remote, so a remote that exhausts its
   budget arrives as an amber entry rather than tripping a whole-inventory
   error. `status` is `"ready"` when the inventory arrived,
@@ -271,7 +290,10 @@ never inserts one silently.
 **Local session bootstrap (`main.tsx` + `api/client.ts`)**:
 `bootstrapHauteSession()` deduplicates concurrent calls, POSTs
 `/api/session/bootstrap` with `credentials:"same-origin"` and `cache:"no-store"`,
-and never reads a response token. The browser stores the HttpOnly cookie and
+and never reads a response token. The request has a 15-second deadline
+(`SESSION_BOOTSTRAP_TIMEOUT_MS`): a server that accepts the connection but never
+answers is aborted and rejects with `ApiTimeoutError`, so the page reaches the
+failure diagnostic instead of staying blank. The browser stores the HttpOnly cookie and
 ordinary API/raw-stream requests explicitly use same-origin credentials.
 `main.tsx` mounts `App` only after success; failure renders a local-server
 diagnostic with Reload. A forced bootstrap refresh is used by WebSocket
@@ -305,8 +327,10 @@ shorter `timeoutMs`) rejects it with `JobWaitTimeoutError`. The wait never
 cancels the job; a caller that owns the job decides that. The callers are:
 
 - `runDispersionEstimate`: starts the job, waits at the configured interval
-  (500ms by default) with the caller's signal, and resolves or rejects the
-  single outer promise. An abort after job creation awaits
+  (500ms by default) with the caller's signal, and resolves with the value or
+  rejects the single outer promise: with a `JobFailedError` (the job's status
+  and message) for a job that ended in any terminal status but completed, as
+  the failure model says. An abort after job creation awaits
   `cancelDispersion(jobId)` before the outer promise rejects; cancellation
   failure remains visible. `GLMTargetConfig` owns one controller per estimate
   and aborts it on unmount, so a closed panel cancels its estimate and never
@@ -325,12 +349,17 @@ A current response (1) removes the corresponding entry from the `*Jobs` in-fligh
 (2) builds the next cached record, (3) calls `trimCacheByRecency` to bound
 the record count (recency tracked in a module-level `Map`, not store state,
 so touching a cache entry for read purposes doesn't trigger a re-render),
-(4) evicts the module-level derived-getter cache
-(`_optimiserPreviewCache`/`_modellingPreviewCache`) for anything
-`trimCacheByRecency` dropped, and (5) recomputes the derived-getter cache
-entry for the just-written node. `getOptimiserPreview`/`getModellingPreview`
-are safe to call during render because they only ever read the memoized
-derived cache or recompute it inline — they never call `set()`.
+and (4) writes the new record. The store holds state and actions only: the
+previews derived from a record come from `stores/nodeResultsSelectors.ts`
+(`optimiserPreviewFor`, `modellingPreviewFor`), memoised on the record they
+read in a `WeakMap` (records are replaced, never mutated, so a render reading
+the same record gets the same preview object and an evicted record's preview
+goes with it), and the optimiser derivations — a frontier point's result from
+its summary, the frontier a completed solve carries with its generation check,
+the select reply's point check, and the `/apply` identity, key and cache
+housekeeping — come from `utils/optimiserSolveResults.ts`.
+`getOptimiserPreview`/`getModellingPreview` are safe to call during render:
+they read a record and its memoised preview and never call `set()`.
 
 **Frontier point selection** (`selectFrontierPoint`,
 `updateFrontierAfterSelect`): selecting a point applies the server's summary
@@ -367,7 +396,7 @@ eviction drop all the node's entries. `touchOptimiserApply` marks a hit most
 recently used. See the
 [optimiser UI spec](../frontend-modelling-optimiser-ui/low-level.md#edge-cases-and-invariants).
 
-**Constraint bounds** (`effectiveConstraintBounds`): the one selector the
+**Constraint bounds** (`effectiveConstraintBounds`, `utils/optimiserSolveResults.ts`): the one selector the
 optimiser Summary and frontier detail card read a result's constraint bounds
 from. It returns the displayed result's backend `effective_bounds` (the
 selected point's, else the solve's) and throws when an entry is missing,
@@ -375,9 +404,11 @@ malformed or does not match the result's constraints; it never falls back to
 the node's configured constraints.
 
 **Background job polling** (`JobPollingController` + `useJobPolling` +
-`useBackgroundJobs`): `useBackgroundJobs` mounts four `useJobPolling`
-instances (solve/train/explore/pivot), each driven by the store's `*Jobs`
-record. The hook owns one controller instance, updates its callbacks, and
+`useBackgroundJobs`): `useBackgroundJobs` mounts five `useJobPolling`
+instances — optimiser solve, training and Explore pivot, each driven by
+`useNodeResultsStore`'s `solveJobs`, `trainJobs` and `pivotJobs`, and the node-data build
+and data profile, driven by `useNodeDataStore`'s `jobs` and `profileJobs` (keyed by slot).
+There is no Explore report job to poll. The hook owns one controller instance, updates its callbacks, and
 reconciles the committed job record into it. The controller is the single
 authority for the running-poller map: a job not yet present gets a
 `setTimeout`-driven loop starting
@@ -408,7 +439,34 @@ progress behind the retry loop. Reconciliation aborts and retires a
 poller when its node disappears or the same node is replaced by a different
 job id; completions from retired identities cannot publish progress or
 terminal state. Controller disposal performs the same retirement for every
-job and leaves no timer or request alive after unmount.
+job and leaves no timer or request alive after unmount. The controller hands
+every callback the id of the job it polled (`onProgress(key, jobId, status)`,
+`onComplete(key, jobId, status)`, `onFail(key, jobId, message, status?)`):
+its own job record is the one the last render committed, so the id, not the
+key, says which job a reply is for. A terminal callback runs inside a guard:
+when `onComplete` throws (a result that breaks its contract, a storage
+failure), the controller reports the error as an error toast naming the job
+and ends the job through `onFail` with that message, so no job is left shown
+as running and no poller is recreated to fetch and throw again; an `onFail`
+that throws is reported the same way.
+
+**Terminal-response ownership.** A progress, completion or failure applies
+only to the job it was asked about. The training and pivot actions take that
+job's id (`updateTrainProgress`, `completeTrainJob`, `failTrainJob`,
+`updateExplorePivotProgress`, `completeExplorePivotJob`,
+`failExplorePivotJob`, each `(key, jobId, ...)`) and change nothing unless the
+key's active job has that id; the solve poller checks the node's active solve
+id before calling the solve actions, as `stopOptimiserSolve` does. Cancel
+(`cancelPivot`, the modelling panel's Cancel, `stopOptimiserSolve`) captures
+the document fence before sending, drops a reply that arrives after the fence
+moved, and otherwise hands the reply to the store under the id it cancelled:
+a completed reply stores that job's result with that job's identity, a
+cancelled or failed reply retires that job, and a progress reply updates it.
+A cancel request that fails leaves the job to polling; its notice or toast is
+shown only while that job is still the active one in the same document. A
+training start that is refused, or answers anything but a started job, is
+recorded by `failTrainStart` under the identity it was asked for, with no job
+and no result, leaving a running job and the remembered handle as they are.
 
 **Modal focus trap** (`ModalShell`): on mount, stashes
 `document.activeElement`, focuses the dialog container, and installs a
@@ -437,10 +495,10 @@ focus nor leaves stale callbacks.
   direct cross-store read at call time, not a subscription, so a stale
   read only happens if the caller doesn't re-invoke `getColumns` after a
   structural change.
-- **`hashConfig`** hashes the whole config (editor state travels beside it on the
-  node data, never in it), applies ordinary
-  `JSON.stringify`/`JSON.parse` normalisation, recursively sorts object keys,
-  preserves array order, and returns the canonical JSON string itself.
+- **`hashConfig`** (`utils/configHash.ts`) hashes the whole config (editor state
+  travels beside it on the node data, never in it): it is the config's
+  `canonicalJson`, with JSON's own value rules, sorted object keys and array
+  order preserved.
   Nested fields with the same names remain semantic. This exact identity is
   intentionally collision-free; cycles, `BigInt`, and other genuine
   serialization failures throw rather than receiving a fallback identity.
@@ -561,7 +619,9 @@ value again; a draft equal to what the field already shows sends nothing. The Ca
 disabled, since nothing is captured for it to bound.
 
 The pane loads the settings each time it opens; reopened while a save is in flight, it shows
-that save's outcome instead of loading over it. Until the first load returns, the settings'
+that save's outcome instead of loading over it. A load answered after a newer load began,
+after a save was confirmed, or while a save is pending changes nothing: neither the settings
+shown nor the last confirmed settings a failed save restores. Until the first load returns, the settings'
 fields are disabled and empty; a failed load reports the server's message (`role="alert"`)
 above them, and they stay disabled until a later open loads. Each commit sends one key in
 `PATCH /api/pipeline-settings` (`null` for automatic) and shows the new value at once; saves
@@ -720,7 +780,18 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
 3. `stores/useNodeDataStore.ts` keeps one entry per slot, so consumers of the same point share
    the generation and the running build. `run` and `refresh` post `/api/node-data/run`; a
    `started` or `joined` response registers the build under the slot, and `useBackgroundJobs`
-   polls it once for the whole application. Every terminal outcome — completed, failed, or
+   polls it once for the whole application. The registered build records whether this tab
+   started it (`startedHere`), which a later `joined` answer or a `point` reporting the same
+   job never takes away and a different job does not inherit. The slot holds that, not the
+   consumer, so every consumer of the point in this tab shows the node's Stop for the build and
+   cancels it: the consumer that started it, another consumer of the same point (an editor's
+   build stopped from the preview frame), and a consumer remounted after its tab, panel or node
+   switched away and back. A build joined from another client is left running. The run's
+   answer is fenced on the identity that sent it: a build the server started or joined is
+   registered whatever the consumer now asks about — the slot created from the run's `point`
+   when the store does not hold it — so it is polled and can still be stopped; for an identity
+   the consumer has left, a `delegated` answer starts no build and an already-cached answer
+   raises no notice. Every terminal outcome — completed, failed, or
    cancelled — clears the build and raises the epoch, so consumers ask what is there now instead
    of showing a cancel control for a build that has stopped. A `delegated` response hands a
    snapshot-backed Data Input or an API-input table to the input-snapshot orchestration
@@ -786,7 +857,12 @@ same Vitest config.
   raises it once, and a reset making the next announcement count again — a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress
-  from a build either of them started, delegation handing over exactly the producer node, a
+  from a build either of them started, a build this tab started stopped by another consumer
+  of the point and by the consumer remounted, its `startedHere` kept by a `joined` answer or a
+  `point` naming the same job and not carried to a different one, a build started for an
+  identity the consumer left while the run was on the wire still registered (its slot created
+  from the run's point) and stoppable while a delegated answer for such an identity starts
+  nothing, delegation handing over exactly the producer node, a
   forced or stale delegated build replacing data the ensure pass would skip, a delegated build
   shown to another consumer and cancelled through the slot, delegated clears, a point read
   directly offering no build, a clear that leaves nothing claimed as cached and a refused clear
@@ -864,7 +940,9 @@ same Vitest config.
   had and recording the message; a save shown at once and replaced by the server's response;
   saves sent in order with only the latest one's outcome displayed; a failed save restoring
   the last confirmed settings and toasting; a load during a pending save waiting for that save
-  instead of overwriting it; and a repeated save of a pending or confirmed value sending nothing.
+  instead of overwriting it; a load answered while a save is pending, or after a newer load,
+  leaving the confirmed settings a failed save restores untouched; and a repeated save of a
+  pending or confirmed value sending nothing.
 - **`useSettingsStore`** (`frontend/src/stores/__tests__/useSettingsStore.addSource.test.ts`):
   covers the sanitize-then-dedup `addSource` path (asserting the
   discriminated `{ok, reason, key}` result for the empty and duplicate
@@ -873,10 +951,11 @@ same Vitest config.
 - **`useToastStore`** (`frontend/src/stores/__tests__/useToastStore.test.ts`,
   `frontend/src/stores/__tests__/useToastStore.dedup.test.ts`): dedup-by-`(type,text)`, cap-at-10, and
   the counter-not-advancing-on-suppression invariant.
-- **`useUIStore`** (`frontend/src/stores/__tests__/useUIStore.test.ts`,
-  `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
+- **`useUIStore`** (`frontend/src/stores/__tests__/useUIStore.test.ts`): modal-mutual-exclusion (opening
   utility/constants/git/assistant closes the other three) and per-node selection-map
-  helpers.
+  helpers. `frontend/src/stores/__tests__/useGraphStore.dirtyDerivation.test.ts` pins the
+  derived dirty flag (`serializeSnapshot`, `selectIsDirty` and the graph store's
+  lifecycle) and that `useUIStore` holds no saved-snapshot state.
 - **MLflow destination surface**
   (`frontend/src/components/__tests__/MlflowDestinationSelector.test.tsx`,
   `frontend/src/utils/__tests__/mlflowDestinations.test.ts`,
@@ -1055,15 +1134,24 @@ Known gaps: `frontend/src/components/Toolbar.tsx`'s inline millisecond timing he
 
 **One helper per repeated concern** (`frontend/src/__tests__/lint/helperBans.test.ts` runs ESLint on probes). Error text comes from `apiErrorMessage`, byte counts from
 `formatBytes`/`formatByteSize`, durations in seconds from `formatDuration`, how long ago from
-`relativeTime`, and the
-non-array-object check from `isPlainObject`/`expectPlainObject` in `types/guards.ts`. ESLint's
+`relativeTime`, fixed decimals and `K`/`M` abbreviations from `formatFixed`/`formatNumber`,
+sorted-key JSON from `canonicalJson`/`canonicalValue` (`utils/canonicalJson.ts`), calendar
+days and times from `isDay`/`isTime`/`isDateTime` (`utils/isoDate.ts`), the job-status
+vocabulary from `JOB_STATUS_VALUES` (`api/types.ts`), and the
+non-array-object check from `isPlainObject`/`expectPlainObject` in `types/guards.ts`. Numbers
+and dates follow the browser's locale: no `toLocale*String` or `Intl` formatter names one, so
+one number reads alike on every surface; the Explore chart's `inherit` format is the exception,
+matching the pivot cells' hand-written `en-GB` General format. ESLint's
 `no-restricted-syntax` rejects a local function named `errorMessage`, `errorMsg`, `errorDetail`,
 `requestErrorDetail`, `previewErrorDetail` or `gitErrorMessage` (declared or assigned, with no
 exceptions; the tracing hook's `technicalDetail` is not error text but the raw detail its Technical
 details disclosure shows whole), the
 `e.detail || e.message` and `e instanceof Error ? e.message : ...` idioms, a local `formatBytes`/`formatMemory`/`formatSize`/`formatDuration`/
 `formatElapsed`, a local function named `relativeTime`/`timeAgo`/`formatRelativeTime`, and a local
-`isRecord`/`asRecord`/`isPlainRecord`/`isPlainObject`/`isObjectLiteral`
+`isRecord`/`asRecord`/`isPlainRecord`/`isPlainObject`/`isObjectLiteral`, a local
+`formatFixed`/`formatNumber`, `sortObjectKeys`/`canonical`/`canonicalize`/`stableValue`-style
+canonical JSON, `isRealDate`/`isValidDate`/`isDay`, an array literal spelling out the job
+statuses, and a literal locale passed to `toLocaleString` or an `Intl` formatter,
 outside the owning modules. `utils/objectLiteral.ts`'s `isObjectLiteral` is the stricter check a
 JSON config needs (a plain object literal, not a class instance); the Explore chart and pivot
 configs, `utils/banding.ts` and the rating table utilities use it.
@@ -1249,7 +1337,7 @@ recovery objects.
 `api/client.ts` exposes one apply call per repair family; there is no dry-run
 call or plan hash. The removal call sends the root document source, current raw
 revision, target source/recovery identity, and explicit `delete_config`; the
-recovery call sends `action: update | reset | recover` and no deletion option to
+recovery call sends `action: reset | recover` and no deletion option to
 `/api/pipeline/repair/recover/apply`. Runtime parsers reject unknown keys,
 unexpected discriminators, unbounded/invalid patch entries, and a malformed
 nested editor document. The response's bounded display diffs describe what the
@@ -1264,7 +1352,7 @@ authoritative document.
 
 Recovery has no draft dialog, draft transport, draft validators, or persistent
 client recovery state. The single `PipelineRepairDialog` confirms all four
-actions (remove, update, reset, recover) with one Apply click; there is no
+actions (remove, reset, recover, remove-connection) with one Apply click; there is no
 preview step. Applying a recover stores the apply response's field
 outcomes, completeness entries, previous configuration and bounded diffs in
 `useRecoverySummaryStore`, keyed by the owning source file plus the target's

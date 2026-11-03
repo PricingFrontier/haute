@@ -203,6 +203,11 @@ from haute.routes._isolated_worker_async import (
 )
 from haute.routes._preview_progress import preview_progress
 from haute.routes._runtime_path_errors import runtime_path_http_exception
+from haute.routes._save_operations import (
+    SaveOperationReusedError,
+    committed_saves,
+    save_request_digest,
+)
 from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._synchronous_analysis import await_until_disconnected
@@ -977,7 +982,8 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
     its admission back.
 
     The memory budget answers 507; a deadline 504 with *timed_out*, the run's token
-    cancelled so its work stops; a newer request 409; a worker that crashed or failed
+    cancelled so its work stops; a newer request 409 with ``request_superseded``, and a
+    worker stopped for another reason a plain 409; a worker that crashed or failed
     507 or 500, by what it reported; a public contract error its own payload. A thread
     still running past its deadline keeps the admission until it ends.
     """
@@ -992,7 +998,11 @@ def _interactive_failures(run: _InteractiveRun, *, timed_out: str) -> Iterator[N
     except (InteractiveWorkerTimeoutError, TimeoutError):
         run.token.cancel()
         raise HTTPException(status_code=504, detail=timed_out) from None
-    except (InteractiveWorkerStoppedError, SupersededRequestError) as exc:
+    except SupersededRequestError as exc:
+        # The browser drops a superseded preview silently, so it is named by a
+        # code rather than recognised by its wording.
+        raise HTTPException(status_code=409, detail=exc.to_payload()) from None
+    except InteractiveWorkerStoppedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except InteractiveWorkerCrashedError as exc:
         _raise_interactive_worker_crash_http_error(exc, operation=run.operation)
@@ -1193,6 +1203,7 @@ _Repaired = TypeVar("_Repaired", PipelineRepairApplyResponse, PipelineEditorDocu
 async def _apply_repair(
     apply: Callable[..., _Repaired],
     body: BaseModel,
+    response: Response,
     *,
     io_event: str,
     noun: str,
@@ -1201,11 +1212,14 @@ async def _apply_repair(
 
     A refusal answers its structured detail. A read or write failure answers 409: a
     restore that fails is its own refusal (``repair_rollback_failed``), so whenever this
-    answer is reached the *noun* changed nothing.
+    answer is reached the *noun* changed nothing. A success names the fingerprint of the
+    document it returns, so the canvas that adopts it can skip that document on a resync.
     """
     try:
         async with save_lock:
-            return await run_in_threadpool(apply, project_root=Path.cwd().resolve(), request=body)
+            repaired = await run_in_threadpool(
+                apply, project_root=Path.cwd().resolve(), request=body
+            )
     except PipelineRepairError as exc:
         return _pipeline_recovery_error_response(exc.status_code, exc.detail())
     except OSError as exc:
@@ -1220,6 +1234,9 @@ async def _apply_repair(
                 ),
             },
         )
+    document = repaired if isinstance(repaired, PipelineEditorDocument) else repaired.document
+    _name_document_fingerprint(response, document)
+    return repaired
 
 
 @router.post(
@@ -1228,11 +1245,13 @@ async def _apply_repair(
 )
 async def apply_remove_unavailable_node(
     body: PipelineRepairRemoveRequest,
+    response: Response,
 ) -> PipelineRepairApplyResponse | JSONResponse:
     """Plan and apply one explicitly confirmed removal against its named revision."""
     return await _apply_repair(
         apply_remove_unavailable_node_plan,
         body,
+        response,
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )
@@ -1241,21 +1260,28 @@ async def apply_remove_unavailable_node(
 @router.post("/pipeline/node/save", response_model=PipelineEditorDocument)
 async def scoped_node_save(
     body: PipelineNodeSaveRequest,
+    response: Response,
 ) -> PipelineEditorDocument | JSONResponse:
     """Save one scoped-editable node in isolation; the document fences stay."""
     return await _apply_repair(
-        apply_scoped_node_save, body, io_event="pipeline_node_save_io_failed", noun="save"
+        apply_scoped_node_save,
+        body,
+        response,
+        io_event="pipeline_node_save_io_failed",
+        noun="save",
     )
 
 
 @router.post("/pipeline/repair/connection/remove/apply", response_model=PipelineRepairApplyResponse)
 async def apply_remove_broken_connection(
     body: PipelineRepairRemoveConnectionRequest,
+    response: Response,
 ) -> PipelineRepairApplyResponse | JSONResponse:
     """Plan and commit one confirmed broken-connection removal through the shared transaction."""
     return await _apply_repair(
         apply_remove_connection_plan,
         body,
+        response,
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )
@@ -1264,11 +1290,13 @@ async def apply_remove_broken_connection(
 @router.post("/pipeline/repair/recover/apply", response_model=PipelineRepairApplyResponse)
 async def apply_recover_unavailable_node(
     body: PipelineRepairRecoverRequest,
+    response: Response,
 ) -> PipelineRepairApplyResponse | JSONResponse:
     """Plan and commit one confirmed update, reset or recover through the shared transaction."""
     return await _apply_repair(
         apply_recover_unavailable_node_plan,
         body,
+        response,
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )
@@ -1291,6 +1319,14 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
     """
     try:
         async with save_lock:
+            # A repeat of a committed save (its answer was lost) is answered with
+            # what that save did, before the file is read: it writes nothing.
+            operation = body.operation
+            digest = "" if operation is None else save_request_digest(body)
+            if operation is not None:
+                replayed = committed_saves.replay(operation, digest)
+                if replayed is not None:
+                    return replayed
             project_root = Path.cwd().resolve()
             # The service reads the file once, under the repository's lock; the
             # editor's Save refuses one that is not ready on disk.
@@ -1303,6 +1339,8 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
             committed = svc.committed
             if committed is None:
                 raise RuntimeError("A save returned without the document it committed.")
+            if operation is not None:
+                committed_saves.record(operation, digest, response)
             exclude: DocumentUpdateExclusion | None = (
                 None
                 if body.connection_id is None
@@ -1335,6 +1373,8 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
             for update in shared:
                 default_bus.publish("pipeline.document.update", update)
             return response
+    except SaveOperationReusedError as exc:
+        raise HTTPException(status_code=409, detail=f"save_operation_reused: {exc}") from None
     except StaleDocumentRevisionError as exc:
         # The client's document is behind the disk; nothing was written.
         # The detail keeps the repository's flat-string error shape and

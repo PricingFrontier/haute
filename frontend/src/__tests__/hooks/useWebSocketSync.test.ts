@@ -36,7 +36,7 @@ vi.mock("../../stores/useToastStore.ts", () => {
     }),
     dismissToast: vi.fn(),
   }
-  const useToastStore = Object.assign(() => store, {
+  const useToastStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -69,7 +69,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setShortcutsOpen: vi.fn(),
     clearBandingRuleStash: vi.fn(),
   }
-  const useUIStore = Object.assign(() => store, {
+  const useUIStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -97,7 +97,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
       store.submodels = snapshot.submodels
     }),
   }
-  const useGraphStore = Object.assign(() => store, {
+  const useGraphStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),

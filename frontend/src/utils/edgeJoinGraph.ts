@@ -318,6 +318,44 @@ export function finalizeResolvedEdgeJoinInsertion(
   }
 }
 
+/** The nodes whose data an insertion rewrites: the split edge's downstream node. */
+export function edgeJoinRewrittenNodeIds(insertion: EdgeJoinInsertSuccess): string[] {
+  return insertion.deferredInputMappingRewrite ? [insertion.deferredInputMappingRewrite.targetEdge.target] : []
+}
+
+/**
+ * Apply a resolved insertion, computed from the `captured` graph, onto the live
+ * graph whose structure still matches it: the new nodes and edges, the removed
+ * edge and the rewritten nodes' data come from the insertion; every other node
+ * and edge, and every node's position and measurements, stay as they are live.
+ * The new node is selected alone.
+ */
+export function rebaseEdgeJoinInsertion(
+  captured: { nodes: readonly Node[]; edges: readonly Edge[] },
+  inserted: { nodes: Node[]; edges: Edge[]; newNodeId: string },
+  live: { nodes: readonly Node[]; edges: readonly Edge[] },
+  rewrittenNodeIds: readonly string[],
+): { nodes: Node[]; edges: Edge[] } {
+  const capturedNodeIds = new Set(captured.nodes.map((node) => node.id))
+  const capturedEdgeIds = new Set(captured.edges.map((edge) => edge.id))
+  const insertedEdgeIds = new Set(inserted.edges.map((edge) => edge.id))
+  const rewritten = new Map(
+    inserted.nodes.filter((node) => rewrittenNodeIds.includes(node.id)).map((node) => [node.id, node]),
+  )
+  const nodes = [
+    ...live.nodes.map((node) => {
+      const replacement = rewritten.get(node.id)
+      return replacement ? { ...node, data: replacement.data } : node
+    }),
+    ...inserted.nodes.filter((node) => !capturedNodeIds.has(node.id)),
+  ]
+  const edges = [
+    ...live.edges.filter((edge) => !capturedEdgeIds.has(edge.id) || insertedEdgeIds.has(edge.id)),
+    ...inserted.edges.filter((edge) => !capturedEdgeIds.has(edge.id)),
+  ]
+  return { nodes: selectOnlyNode(nodes, inserted.newNodeId), edges }
+}
+
 export function swapEdgeJoinInputs({
   nodes,
   edges,

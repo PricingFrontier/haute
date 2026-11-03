@@ -26,7 +26,7 @@ vi.mock("../../stores/useToastStore.ts", () => {
     addToast: vi.fn(),
     dismissToast: vi.fn(),
   }
-  const useToastStore = Object.assign(() => store, {
+  const useToastStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -47,7 +47,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
     setRenameDialog: vi.fn(),
     clearBandingRuleStash: vi.fn(),
   }
-  const useUIStore = Object.assign(() => store, {
+  const useUIStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -79,7 +79,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
       store.redoStack = []
     }),
   }
-  const useGraphStore = Object.assign(() => store, {
+  const useGraphStore = Object.assign((selector?: (state: typeof store) => unknown) => (selector ? selector(store) : store), {
     getState: () => store,
     setState: vi.fn(),
     subscribe: vi.fn(),
@@ -93,6 +93,7 @@ import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
+import { trackPendingSave } from "../../stores/pendingSaves.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 
 // ── Mock WebSocket ───────────────────────────────────────────────
@@ -302,10 +303,216 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
 
     // The canvas is saved as something else, then a switch lands on a branch
     // holding the document first loaded: the canvas must show it.
-    act(() => { useDocumentStatusStore.getState().acknowledgeSave("revision-saved") })
+    act(() => { useDocumentStatusStore.getState().acknowledgeSave("revision-saved", "fingerprint-as-saved") })
     await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: frame })) })
 
     expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(2)
+  })
+
+  describe("after this tab's save", () => {
+    function loadSavedCanvas() {
+      const params = makeHookParams()
+      const document = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-test",
+        nodes: [{ ...baseNode, id: "n1" }],
+      })
+      renderHook(() => useWebSocketSync(params))
+      act(() => { latestWS().onopen?.(new Event("open")) })
+      const saved = makePipelineEditorDocument({
+        source_file: SOURCE_FILE,
+        source_revision: "revision-saved",
+        nodes: [{ ...baseNode, id: "n1" }],
+      })
+      return { document, saved }
+    }
+
+    it("resyncs a reconnect with the saved document's fingerprint and keeps the canvas, its history and its jobs", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      vi.mocked(useToastStore.getState().addToast).mockClear()
+      act(() => { useDocumentStatusStore.getState().acknowledgeSave("revision-saved", "fingerprint-as-saved") })
+      // A replaced document would install a fresh history (the mock's loadGraphSnapshot does).
+      const history = useGraphStore.getState().undoStack
+      const generation = useDocumentStatusStore.getState().executionGeneration
+
+      // The socket drops (a sleep-wake) and reconnects.
+      act(() => { latestWS().onclose?.(new CloseEvent("close", { code: 1006 })) })
+      act(() => { vi.advanceTimersByTime(1_000) })
+      act(() => { latestWS().onopen?.(new Event("open")) })
+      const resync = JSON.parse(latestWS().send.mock.calls[0][0] as string)
+      expect(resync).toMatchObject({ type: "resync", source_file: SOURCE_FILE, document_fingerprint: "fingerprint-as-saved" })
+
+      // Any frame of the saved document (another tab's broadcast of it) is the canvas's own.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-as-saved")) }))
+      })
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().undoStack).toBe(history)
+      // The execution generation, which the background jobs are fenced on, is unchanged.
+      expect(useDocumentStatusStore.getState().executionGeneration).toBe(generation)
+      expect(useToastStore.getState().addToast).not.toHaveBeenCalled()
+    })
+
+    it("holds a frame that arrives before the save's own answer, and drops it once the save acknowledges it", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      const generation = useDocumentStatusStore.getState().executionGeneration
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // A resync answered while the save is in flight carries what it wrote.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-as-saved")) }))
+      })
+      expect(useDocumentStatusStore.getState().executionGeneration).toBe(generation)
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-saved", "fingerprint-as-saved")
+        answer()
+        await saving
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState().executionGeneration).toBe(generation)
+    })
+
+    it("holds a frame of the document shown before the save, and asks for the file once the save moved on", async () => {
+      const { document } = loadSavedCanvas()
+      const asLoaded = JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded"))
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // Another tab restores the version shown before the save (or a git action
+      // broadcasts it unchanged) while the save, or its repeat, is in flight.
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-saved", "fingerprint-as-saved")
+        answer()
+        await saving
+      })
+
+      // The held frame is not adopted, nor dropped as the document shown: the
+      // file is asked for with the save's fingerprint.
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(latestWS().send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        document_fingerprint: "fingerprint-as-saved",
+      })
+      // The file holds the restored version, so the answer is that document.
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: asLoaded })) })
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(1)
+      expect(useDocumentStatusStore.getState().documentFingerprint).toBe("fingerprint-as-loaded")
+    })
+
+    it("asks for the document on disk instead of adopting a held frame the save's answer superseded", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // A resync read what the save wrote before a formatter rewrote it on disk.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-before-hook")) }))
+      })
+      // The save answers with the document the formatter left.
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-after-hook", "fingerprint-after-hook")
+        answer()
+        await saving
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        sourceRevision: "revision-after-hook",
+        documentFingerprint: "fingerprint-after-hook",
+      })
+      expect(latestWS().send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        source_file: SOURCE_FILE,
+        document_fingerprint: "fingerprint-after-hook",
+      })
+    })
+
+    it("asks for the document on disk when a formatter put back the document shown before the save", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
+      let answer!: () => void
+      const saving = new Promise<void>((resolve) => { answer = resolve })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      // A resync read what the save wrote before a formatter put the
+      // file back as it was; the save answers with the document as loaded.
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-before-hook")) }))
+      })
+      await act(async () => {
+        useDocumentStatusStore.getState().acknowledgeSave("revision-test", "fingerprint-as-loaded")
+        answer()
+        await saving
+      })
+
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(useDocumentStatusStore.getState().documentFingerprint).toBe("fingerprint-as-loaded")
+      expect(latestWS().send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        document_fingerprint: "fingerprint-as-loaded",
+      })
+    })
+
+    it("asks for the document on disk when the save fails, and applies the answer", async () => {
+      const { document, saved } = loadSavedCanvas()
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
+      })
+      vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
+      latestWS().send.mockClear()
+      let refuse!: (error: Error) => void
+      const saving = new Promise<void>((_, reject) => { refuse = reject })
+      trackPendingSave(SOURCE_FILE, saving)
+
+      const otherWriter = JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-other-writer"))
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: otherWriter })) })
+      await act(async () => {
+        refuse(new Error("Save rejected"))
+        await saving.catch(() => undefined)
+      })
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      expect(JSON.parse(latestWS().send.mock.calls[0][0] as string)).toMatchObject({
+        type: "resync",
+        document_fingerprint: "fingerprint-as-loaded",
+      })
+
+      // The resync's answer, with no save in flight, is another writer's document.
+      await act(async () => { latestWS().onmessage?.(new MessageEvent("message", { data: otherWriter })) })
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ nodes: [expect.objectContaining({ id: "n1" })] }),
+      )
+      expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-saved")
+    })
   })
 
   it("asks for the document without its fingerprint on a resync request, and applies a frame a dirty canvas blocked", async () => {

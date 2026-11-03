@@ -42,7 +42,7 @@ import {
   type FrontierSliceChoice,
   type FrontierSlicing,
 } from "./optimiser/frontierSlices"
-import { effectiveConstraintBounds } from "../stores/useNodeResultsStore"
+import { effectiveConstraintBounds } from "../utils/optimiserSolveResults"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
@@ -664,7 +664,7 @@ const STATUS_LABELS = {
 } as const
 
 function formatFrontierValue(value: number): string {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
+  return value.toLocaleString(undefined, { maximumFractionDigits: 6 })
 }
 
 /** A held threshold in its unit: a percentage constraint's fraction reads as a percentage of its baseline. */

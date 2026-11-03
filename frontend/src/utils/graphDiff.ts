@@ -7,7 +7,7 @@
  */
 import type { Node } from "@xyflow/react"
 
-import { canonicalize } from "./graphSnapshot"
+import { canonicalJson } from "./canonicalJson"
 
 export interface GraphDiff {
   /** Node ids present in the NEW graph but not the OLD (highlight on the right). */
@@ -50,9 +50,7 @@ function userConfig(config: unknown): unknown {
  */
 function nodeContent(n: Node): string {
   const data = (n.data ?? {}) as Record<string, unknown>
-  return JSON.stringify(
-    canonicalize({ nodeType: data.nodeType, label: data.label, config: userConfig(data.config) }),
-  )
+  return canonicalJson({ nodeType: data.nodeType, label: data.label, config: userConfig(data.config) })
 }
 
 /** Whether a node's canvas position differs between the two graphs (rounded). */

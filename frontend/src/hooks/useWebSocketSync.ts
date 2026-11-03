@@ -11,6 +11,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { pendingSavesSettled } from "../stores/pendingSaves"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { constantDrafts } from "../utils/globalConstants"
 import {
@@ -220,8 +221,8 @@ export default function useWebSocketSync({
   preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   graphRefreshingRef, nodeIdCounter, fitView, enabled = true, onDocumentReload,
 }: WebSocketSyncParams): WsStatus {
-  const { setSyncBanner } = useUIStore()
-  const { addToast } = useToastStore()
+  const setSyncBanner = useUIStore((s) => s.setSyncBanner)
+  const addToast = useToastStore((s) => s.addToast)
   const [status, setStatus] = useState<WsStatus>(() => enabled ? "connecting" : "idle")
   const retriesRef = useRef(0)
 
@@ -380,14 +381,29 @@ export default function useWebSocketSync({
           if (!isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) {
             return
           }
-          // The document already shown: a git action's broadcast, or the answer to
-          // a forced resync, of what the canvas holds. Nothing to apply or announce.
-          if (
+          // The document already shown: a git action's broadcast, the answer to a
+          // resync, or this tab's own save, of what the canvas holds. Nothing to
+          // apply or announce.
+          const showsFrame = () => (
             useDocumentStatusStore.getState().graphSynchronized
             && frame.documentFingerprint === acceptedDocumentFingerprintFor(frame.sourceFile)
-          ) {
+          )
+          // A frame that arrives while this tab's save is in flight was read at an
+          // unknown point of it: before it, from what it wrote, or from what a
+          // formatter rewrote on disk; or it is another tab's change, perhaps back
+          // to the document shown before the save. It is never adopted, nor judged
+          // against the document the save is about to replace: once the saves
+          // settle it is dropped if it is the document shown, and otherwise the
+          // document on disk is asked for again with the fingerprint the saves left
+          // accepted, so the server answers nothing while the file is that one.
+          const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
+          if (saves) {
+            await saves
+            if (!mounted || !isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) return
+            if (!showsFrame()) sendResync(true)
             return
           }
+          if (showsFrame()) return
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
           const dirty = graphState.dirty

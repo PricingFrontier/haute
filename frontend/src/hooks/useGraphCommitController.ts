@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
+import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
 import { EditorNameCollisionError } from "../utils/editorIdentities"
 import type { Edge, Node } from "@xyflow/react"
 
@@ -29,6 +29,14 @@ type GraphCommitRequest = {
   contextGeneration: number
 }
 
+/** A request input's update accepted ahead of its identities; the object is its identity. */
+type PendingDraft = { data: Record<string, unknown> }
+
+const NO_PENDING_DRAFTS: ReadonlyMap<string, Record<string, unknown>> = new Map()
+
+const SUPERSEDED_UPDATE =
+  "Node update was not applied because the document, editing capability, or a newer node edit superseded it."
+
 export type UseGraphCommitControllerOptions = {
   graphRef: MutableRefObject<GraphSnapshot>
   submodelsRef: MutableRefObject<Record<string, unknown>>
@@ -55,6 +63,9 @@ export type GraphCommitController = {
   onUpdateNode: (nodeId: string, data: Record<string, unknown>) => OnUpdateConfigResult
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   waitForPendingCommits: () => Promise<OnUpdateConfigResult>
+  /** Each request input's pending draft, by node id, while its identities
+   *  resolve: the data its editor builds the next update on. */
+  pendingNodeData: ReadonlyMap<string, Record<string, unknown>>
 }
 
 /**
@@ -77,6 +88,9 @@ export default function useGraphCommitController({
 }: UseGraphCommitControllerOptions): GraphCommitController {
   const requestGenerationsRef = useRef(new Map<string, number>())
   const pendingCommitsRef = useRef(new Set<Promise<OnUpdateConfigResult>>())
+  // The newest update of each request input, held until its identities resolve.
+  const draftsRef = useRef(new Map<string, PendingDraft>())
+  const [pendingNodeData, setPendingNodeData] = useState(NO_PENDING_DRAFTS)
   const documentIdentity = readDocumentIdentity()
   const contextRef = useRef({ readOnly, readDocumentIdentity, documentIdentity, generation: 0 })
   useLayoutEffect(() => {
@@ -84,12 +98,30 @@ export default function useGraphCommitController({
     const context = contextRef.current
     if (context.readOnly !== readOnly || context.documentIdentity !== identity) {
       context.generation += 1
+      // A draft belongs to the document and capability it was made in: no
+      // edit in the next one may build on it, so it goes before paint.
+      if (draftsRef.current.size > 0) {
+        draftsRef.current.clear()
+        setPendingNodeData(NO_PENDING_DRAFTS)
+      }
     }
     context.readOnly = readOnly
     context.readDocumentIdentity = readDocumentIdentity
     context.documentIdentity = identity
   }, [readOnly, readDocumentIdentity, documentIdentity])
   useLayoutEffect(() => () => { contextRef.current.generation += 1 }, [])
+
+  const publishDrafts = useCallback((): void => {
+    setPendingNodeData(draftsRef.current.size === 0
+      ? NO_PENDING_DRAFTS
+      : new Map([...draftsRef.current].map(([nodeId, draft]) => [nodeId, draft.data])))
+  }, [])
+
+  const retireDraft = useCallback((nodeId: string, draft: PendingDraft): void => {
+    if (draftsRef.current.get(nodeId) !== draft) return
+    draftsRef.current.delete(nodeId)
+    publishDrafts()
+  }, [publishDrafts])
 
   const registerPendingCommit = useCallback((pending: Promise<OnUpdateConfigResult>): void => {
     pendingCommitsRef.current.add(pending)
@@ -147,12 +179,16 @@ export default function useGraphCommitController({
     }
   }, [editKey])
 
-  const requestInvalidated = useCallback((request: GraphCommitRequest): boolean => (
-    requestGenerationsRef.current.get(request.nodeId) !== request.generation
-    || contextRef.current.readOnly
+  const contextInvalidated = useCallback((request: GraphCommitRequest): boolean => (
+    contextRef.current.readOnly
     || contextRef.current.generation !== request.contextGeneration
     || contextRef.current.readDocumentIdentity() !== request.documentIdentity
   ), [])
+
+  const requestInvalidated = useCallback((request: GraphCommitRequest): boolean => (
+    requestGenerationsRef.current.get(request.nodeId) !== request.generation
+    || contextInvalidated(request)
+  ), [contextInvalidated])
 
   const requestIsStale = useCallback((request: GraphCommitRequest): boolean => (
     requestInvalidated(request)
@@ -179,6 +215,70 @@ export default function useGraphCommitController({
     )
   }, [addToast, commitGraph, graphRef, setSelectedNode, submodelsRef])
 
+  /**
+   * Resolves a request input's draft and commits it while it is the node's
+   * newest. A reply for a draft a newer update replaced, success or failure,
+   * changes nothing: the newer draft carries its edits.
+   */
+  const resolveDraft = useCallback(async (
+    nodeId: string,
+    draft: PendingDraft,
+    firstRequest: GraphCommitRequest,
+  ): Promise<OnUpdateConfigResult> => {
+    const superseded = (request: GraphCommitRequest): OnUpdateConfigResult | null => {
+      if (contextInvalidated(request)) {
+        retireDraft(nodeId, draft)
+        return { ok: false, error: SUPERSEDED_UPDATE }
+      }
+      if (draftsRef.current.get(nodeId) !== draft) return { ok: true }
+      // A rename of the node, issued after this request.
+      if (requestInvalidated(request)) {
+        retireDraft(nodeId, draft)
+        return { ok: false, error: SUPERSEDED_UPDATE }
+      }
+      return null
+    }
+    let request = firstRequest
+    try {
+      for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
+        const liveNode = graphRef.current.nodes.find((node) => node.id === nodeId)
+        if (!liveNode) {
+          retireDraft(nodeId, draft)
+          return { ok: false, error: `Cannot update missing node "${nodeId}".` }
+        }
+        if (attempt > 1) request = beginRequest(nodeId)
+        const resolved = await resolveNodeIdentities([{ ...liveNode, data: draft.data }])
+        const outcome = superseded(request)
+        if (outcome) return outcome
+        if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+          throw new Error("identity resolver returned an invalid node")
+        }
+        if (requestIsStale(request)) continue
+        const finalPlan = prepare(nodeId, resolved[0].data, true)
+        if (!finalPlan.ok) {
+          retireDraft(nodeId, draft)
+          return finalPlan
+        }
+        commit(finalPlan)
+        retireDraft(nodeId, draft)
+        return { ok: true }
+      }
+      retireDraft(nodeId, draft)
+      return {
+        ok: false,
+        error: "Node update was not applied because the graph kept changing while identity resolution was running.",
+      }
+    } catch (error: unknown) {
+      const outcome = superseded(request)
+      if (outcome) return outcome
+      retireDraft(nodeId, draft)
+      return {
+        ok: false,
+        error: `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+  }, [beginRequest, commit, contextInvalidated, graphRef, prepare, requestInvalidated, requestIsStale, resolveNodeIdentities, retireDraft])
+
   const onUpdateNode = useCallback((
     nodeId: string,
     data: Record<string, unknown>,
@@ -200,45 +300,18 @@ export default function useGraphCommitController({
       return { ok: true }
     }
 
-    const pending = (async (): Promise<OnUpdateConfigResult> => {
-      try {
-        for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
-          const liveNode = graphRef.current.nodes.find((node) => node.id === nodeId)
-          if (!liveNode) return { ok: false, error: `Cannot update missing node "${nodeId}".` }
-          const attemptRequest = attempt === 1 ? request : beginRequest(nodeId)
-          const resolved = await resolveNodeIdentities([{ ...liveNode, data }])
-          if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-            throw new Error("identity resolver returned an invalid node")
-          }
-          if (requestInvalidated(attemptRequest)) {
-            return {
-              ok: false,
-              error: "Node update was not applied because the document, editing capability, or a newer node edit superseded it.",
-            }
-          }
-          if (requestIsStale(attemptRequest)) continue
-          const finalPlan = prepare(nodeId, resolved[0].data, true)
-          if (!finalPlan.ok) return finalPlan
-          commit(finalPlan)
-          return { ok: true }
-        }
-        return {
-          ok: false,
-          error: "Node update was not applied because the graph kept changing while identity resolution was running.",
-        }
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
-        }
-      }
-    })()
+    // The editor builds its next update on this draft, so an edit made before
+    // the reply arrives carries this one.
+    const draft: PendingDraft = { data }
+    draftsRef.current.set(nodeId, draft)
+    publishDrafts()
+    const pending = resolveDraft(nodeId, draft, request)
     registerPendingCommit(pending)
     void pending.then((result) => {
       if (!result.ok) addToast("error", result.error)
     })
     return { ok: true }
-  }, [addToast, beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestInvalidated, resolveNodeIdentities])
+  }, [addToast, beginRequest, commit, graphRef, prepare, publishDrafts, registerPendingCommit, resolveDraft])
 
   const onRenameNode = useCallback((
     nodeId: string,
@@ -340,5 +413,5 @@ export default function useGraphCommitController({
     return pending
   }, [beginRequest, commit, graphRef, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
 
-  return { onUpdateNode, onRenameNode, waitForPendingCommits }
+  return { onUpdateNode, onRenameNode, waitForPendingCommits, pendingNodeData }
 }

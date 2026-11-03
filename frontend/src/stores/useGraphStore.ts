@@ -20,11 +20,12 @@
  *
  * Actions split into two tiers:
  *
- *   - History-aware: `setNodes`, `setEdges`, `setPreamble`,
- *     `setNodesAndEdgesAndSubmodels`, and manual `pushSnapshot`. Each captures
- *     the pre-mutation `{nodes, edges, preamble, submodels}` onto `undoStack`
- *     and clears `redoStack`. An atomic graph commit whose authored fingerprint
- *     is unchanged (such as generated step-code refresh) preserves both stacks.
+ *   - History-aware: `setNodes`, `setEdges`, `setNodesAndEdges`,
+ *     `setNodesAndEdgesAndSubmodels`, `setPreamble`, `setGlobalConstants`, and
+ *     manual `pushSnapshot`. Each commits through `commitGraphChange`, which
+ *     captures the pre-mutation graph onto `undoStack` and clears `redoStack`
+ *     when the authored fingerprint changed; a change of no authored state
+ *     (a selection, a generated step-code refresh) preserves both stacks.
  *
  *   - Raw: `setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`. No
  *     history push — used for mid-drag position updates (React Flow's
@@ -700,42 +701,24 @@ const useGraphStore = create<GraphStore>()((set, get) => {
   }
 
   /**
-   * One atomic graph commit of nodes, edges and submodels (and the preamble when given),
-   * as an undo step when `history` holds and the authored graph changed. A render can
-   * refresh generated step code without changing authored graph state: that cache update
-   * consumes neither Undo nor Redo.
+   * The one commit of a change to the graph's persisted fields: the changed fields with
+   * the fingerprints, versions and dirty state they move, and, when `history` holds and
+   * the authored graph changed, an undo step of the state before it (clearing redo). A
+   * change of no authored state — a selection, or a render refreshing generated step
+   * code — consumes neither Undo nor Redo.
    */
-  function commitGraphState(
-    state: GraphStore,
-    nodesUpdater: Node[] | ((nds: Node[]) => Node[]),
-    edgesUpdater: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
-    submodels: Record<string, unknown>,
-    preamble: string | undefined,
-    history: boolean,
-  ): Partial<GraphStore> {
-    const next: GraphFields = {
-      ...state,
-      nodes: applyUpdater(state.nodes, nodesUpdater),
-      edges: applyUpdater(state.edges, edgesUpdater),
-      preamble: preamble === undefined ? state.preamble : preamble,
-      submodels,
-    }
-    const patch = derivedPatch(state, next)
-    const recorded = history && patch.persistedFingerprint !== state.persistedFingerprint
+  function commitGraphChange(state: GraphStore, change: Partial<GraphFields>, history: boolean): Partial<GraphStore> {
+    const patch = derivedPatch(state, { ...state, ...change })
+    // A drag's position-only raw updates leave the cached fingerprint behind, so
+    // the state before the change is fingerprinted as it is.
+    const recorded = history && patch.persistedFingerprint !== computePersistedFingerprint(
+      state.nodes, state.edges, state.preamble, state.submodels, state.globalConstants,
+    )
     return {
-      undoStack: recorded ? pushSnapshotInternal() : state.undoStack,
-      redoStack: recorded ? [] : state.redoStack,
-      nodes: next.nodes,
-      edges: next.edges,
-      preamble: next.preamble,
-      submodels,
+      ...(recorded ? { undoStack: pushSnapshotInternal(), redoStack: [] } : {}),
+      ...change,
       ...patch,
     }
-  }
-
-  /** The constants replaced, with the fingerprints and dirty state they move. */
-  function globalConstantsPatch(state: GraphStore, constants: GlobalConstantDraft[]): Partial<GraphStore> {
-    return { globalConstants: constants, ...derivedPatch(state, { ...state, globalConstants: constants }) }
   }
 
   /**
@@ -792,44 +775,33 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── History-aware actions ────────────────────────────────────────────
 
     setNodes: (updater) => {
-      set((state) => {
-        const nodes = applyUpdater(state.nodes, updater)
-        return { undoStack: pushSnapshotInternal(), redoStack: [], nodes, ...derivedPatch(state, { ...state, nodes }) }
-      })
+      set((state) => commitGraphChange(state, { nodes: applyUpdater(state.nodes, updater) }, true))
     },
 
     setEdges: (updater) => {
-      set((state) => {
-        const edges = applyUpdater(state.edges, updater)
-        return { undoStack: pushSnapshotInternal(), redoStack: [], edges, ...derivedPatch(state, { ...state, edges }) }
-      })
+      set((state) => commitGraphChange(state, { edges: applyUpdater(state.edges, updater) }, true))
     },
 
     setNodesAndEdges: (nodesUpdater, edgesUpdater) => {
-      set((state) => {
-        // One snapshot for the whole gesture, captured BEFORE either mutation
-        // (pushSnapshotInternal reads current state), then both node and edge
-        // updaters applied in this single set() — so nodes and edges never
-        // render in an inconsistent in-between state, and a single undo
-        // restores both.
-        const undoStack = pushSnapshotInternal()
-        const nodes = applyUpdater(state.nodes, nodesUpdater)
-        const edges = applyUpdater(state.edges, edgesUpdater)
-        return { undoStack, redoStack: [], nodes, edges, ...derivedPatch(state, { ...state, nodes, edges }) }
-      })
+      // Both updaters in this single set(), so nodes and edges never render in
+      // an inconsistent in-between state, and a single undo restores both.
+      set((state) => commitGraphChange(state, {
+        nodes: applyUpdater(state.nodes, nodesUpdater),
+        edges: applyUpdater(state.edges, edgesUpdater),
+      }, true))
     },
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
-      set((state) => commitGraphState(state, nodesUpdater, edgesUpdater, submodels, preamble, true))
+      set((state) => commitGraphChange(state, {
+        nodes: applyUpdater(state.nodes, nodesUpdater),
+        edges: applyUpdater(state.edges, edgesUpdater),
+        submodels,
+        ...(preamble === undefined ? {} : { preamble }),
+      }, true))
     },
 
     setPreamble: (value) => {
-      set((state) => ({
-        undoStack: pushSnapshotInternal(),
-        redoStack: [],
-        preamble: value,
-        ...derivedPatch(state, { ...state, preamble: value }),
-      }))
+      set((state) => commitGraphChange(state, { preamble: value }, true))
     },
 
     // ── Raw actions ─────────────────────────────────────────────────────
@@ -867,24 +839,19 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     setSubmodelsRaw: (submodels) => {
-      set((state) => ({ submodels, ...derivedPatch(state, { ...state, submodels }) }))
+      set((state) => commitGraphChange(state, { submodels }, false))
     },
 
     setPreambleRaw: (value) => {
-      set((state) => ({ preamble: value, ...derivedPatch(state, { ...state, preamble: value }) }))
+      set((state) => commitGraphChange(state, { preamble: value }, false))
     },
 
     setGlobalConstantsRaw: (constants) => {
-      set((state) => globalConstantsPatch(state, constants))
+      set((state) => commitGraphChange(state, { globalConstants: constants }, false))
     },
 
     setGlobalConstants: (constants) => {
-      set((state) => {
-        const patch = globalConstantsPatch(state, constants)
-        return patch.persistedFingerprint === state.persistedFingerprint
-          ? patch
-          : { ...patch, undoStack: pushSnapshotInternal(), redoStack: [] }
-      })
+      set((state) => commitGraphChange(state, { globalConstants: constants }, true))
     },
 
     // ── Submodel navigation ─────────────────────────────────────────────
@@ -1071,12 +1038,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           .finally(() => set({ vcBusy: false }))
         return
       }
-      const restored = restoredFields(prev)
       set((state) => ({
+        ...commitGraphChange(state, restoredFields(prev), false),
         undoStack: newUndo,
         redoStack: appendHistoryEntry(state.redoStack, captureGraphSnapshot(state)),
-        ...restored,
-        ...derivedPatch(state, restored),
       }))
     },
 
@@ -1102,12 +1067,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           .finally(() => set({ vcBusy: false }))
         return
       }
-      const restored = restoredFields(next)
       set((state) => ({
+        ...commitGraphChange(state, restoredFields(next), false),
         redoStack: newRedo,
         undoStack: appendHistoryEntry(state.undoStack, captureGraphSnapshot(state)),
-        ...restored,
-        ...derivedPatch(state, restored),
       }))
     },
 

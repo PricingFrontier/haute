@@ -95,6 +95,11 @@ describe("global constant drafts", () => {
     expect(issues[4].bySource).toEqual({ live: "Enter a whole number.", nb_batch: MISSING_VALUE })
   })
 
+  it("accept a date in a year before 100, which a JavaScript Date reads as the 1900s", () => {
+    expect(constantIssues([uniform("founded", "0099-03-01", "date")], ["live"])[0].value).toBeUndefined()
+    expect(constantIssues([uniform("founded", "0099-02-30", "date")], ["live"])[0].value).toBe("Enter a real date as YYYY-MM-DD.")
+  })
+
   it("refuse a save for an invalid constant but not for a missing value", () => {
     expect(saveRefusal([split("rate", { live: "1" })], ["live", "nb_batch"])).toBeNull()
     expect(saveRefusal([uniform("rate", "")], ["live"])).toBe(

@@ -332,6 +332,48 @@ describe("useSettingsStore", () => {
       expect(shown()?.chunk_rows).toBe(100_000)
     })
 
+    it("a load answered while a save is pending leaves the settings a failed save restores", async () => {
+      await loaded({ preview_memory_gb: 6 })
+      const load = deferred<PipelineSettingsResponse>()
+      const save = deferred<PipelineSettingsResponse>()
+      vi.mocked(getPipelineSettings).mockReturnValueOnce(load.promise)
+      vi.mocked(patchPipelineSettings).mockReturnValueOnce(save.promise)
+
+      // The pane reopens with no save pending, and a save starts before the load answers.
+      const loading = useSettingsStore.getState().loadPipelineSettings()
+      const saving = useSettingsStore.getState().savePipelineSetting("preview_memory_gb", 8)
+      load.resolve(settingsResponse({ preview_memory_gb: 7 }))
+      await loading
+      save.reject(new Error("disk full"))
+      await saving
+
+      expect(useSettingsStore.getState()._confirmedPipelineSettings?.settings.preview_memory_gb).toBe(6)
+      expect(shown()?.preview_memory_gb).toBe(6)
+    })
+
+    it("a load a newer load overtook leaves the confirmed settings alone", async () => {
+      await loaded({ preview_memory_gb: 6 })
+      const older = deferred<PipelineSettingsResponse>()
+      const newer = deferred<PipelineSettingsResponse>()
+      vi.mocked(getPipelineSettings)
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(newer.promise)
+
+      const first = useSettingsStore.getState().loadPipelineSettings()
+      const second = useSettingsStore.getState().loadPipelineSettings()
+      newer.resolve(settingsResponse({ preview_memory_gb: 8 }))
+      await second
+      older.resolve(settingsResponse({ preview_memory_gb: 7 }))
+      await first
+
+      expect(shown()?.preview_memory_gb).toBe(8)
+      expect(useSettingsStore.getState()._confirmedPipelineSettings?.settings.preview_memory_gb).toBe(8)
+      // A failed save therefore restores what the newer load confirmed.
+      vi.mocked(patchPipelineSettings).mockRejectedValueOnce(new Error("disk full"))
+      await useSettingsStore.getState().savePipelineSetting("caching", false)
+      expect(shown()?.preview_memory_gb).toBe(8)
+    })
+
     it("a repeated save of a pending or confirmed value sends nothing", async () => {
       await loaded({ preview_memory_gb: 6 })
       vi.mocked(patchPipelineSettings).mockResolvedValue(settingsResponse({ preview_memory_gb: 8 }))
@@ -350,6 +392,31 @@ describe("useSettingsStore", () => {
   // ────────────────────────────────────────────────────────────────
   // MLflow dedup
   // ────────────────────────────────────────────────────────────────
+
+  describe("MLflow fetch deadline", () => {
+    it("aborts an inventory request that outlives its deadline and reports the timeout", async () => {
+      vi.useFakeTimers()
+      try {
+        let signal: AbortSignal | undefined
+        vi.mocked(getMlflowDestinations).mockImplementationOnce((_probe, options) => {
+          signal = options?.signal
+          return new Promise(() => {})
+        })
+        useSettingsStore.getState().fetchMlflow()
+        expect(signal?.aborted).toBe(false)
+
+        await vi.advanceTimersByTimeAsync(15_000)
+
+        expect(signal?.aborted).toBe(true)
+        expect(useSettingsStore.getState().mlflow).toMatchObject({
+          status: "error",
+          detail: "MLflow inventory check timed out after 15s",
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
 
   describe("MLflow fetch dedup", () => {
     it("calling fetchMlflow twice rapidly only makes one API request", async () => {
@@ -383,7 +450,7 @@ describe("useSettingsStore", () => {
       await vi.waitFor(() => {
         expect(useSettingsStore.getState().mlflow.status).toBe("ready")
       })
-      expect(mockInventory).toHaveBeenCalledWith(true)
+      expect(mockInventory).toHaveBeenCalledWith(true, { signal: expect.any(AbortSignal) })
     })
 
     it("successful inventory sets ready with its destinations", async () => {

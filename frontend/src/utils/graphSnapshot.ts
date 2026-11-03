@@ -13,6 +13,7 @@
  */
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../types/node"
+import { canonicalJson } from "./canonicalJson"
 import type { GlobalConstant, GlobalConstantDraft } from "./globalConstants"
 import { authoredPolarsConfig, isSteppedConfig } from "./polarsStepInputs"
 
@@ -234,14 +235,6 @@ function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T 
 // correct loud-failure behaviour.
 // ---------------------------------------------------------------------------
 
-export function canonicalize(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value
-  if (Array.isArray(value)) return value.map(canonicalize)
-  const entries = Object.entries(value as Record<string, unknown>)
-  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  return Object.fromEntries(entries.map(([key, child]) => [key, canonicalize(child)]))
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -308,15 +301,13 @@ export function serializeSnapshot(input: {
   submodels: Record<string, unknown>
   globalConstants?: readonly GlobalConstantDraft[]
 }): string {
-  return JSON.stringify(
-    canonicalize({
-      nodes: input.nodes.map((node) => stripNodeUiFields(node, true)),
-      edges: input.edges.map(stripEdgeUiFields),
-      preamble: input.preamble,
-      submodels: stripGraphMetadataTransientFields(input.submodels, true),
-      globalConstants: input.globalConstants ?? [],
-    }),
-  )
+  return canonicalJson({
+    nodes: input.nodes.map((node) => stripNodeUiFields(node, true)),
+    edges: input.edges.map(stripEdgeUiFields),
+    preamble: input.preamble,
+    submodels: stripGraphMetadataTransientFields(input.submodels, true),
+    globalConstants: input.globalConstants ?? [],
+  })
 }
 
 /**

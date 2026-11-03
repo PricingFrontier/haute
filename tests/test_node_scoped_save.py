@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._pipeline_recovery import load_pipeline_editor_document, pipeline_document_fingerprint
 from haute._pipeline_repair import PipelineRepairError
 from haute._types import NodeType
 
@@ -285,6 +285,12 @@ def test_scoped_save_route_saves_and_rejects_stale_revisions(client, monkeypatch
     response = client.post("/api/pipeline/node/save", json=body)
     assert response.status_code == 200
     payload = response.json()
+    # The fingerprint a resync of the written file carries, so the saver's canvas skips it.
+    saved = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    fingerprint = response.headers["x-haute-document-fingerprint"]
+    saved_payload = saved.model_dump(mode="json", by_alias=True)
+    assert fingerprint == pipeline_document_fingerprint(saved_payload)
+    assert fingerprint == pipeline_document_fingerprint(payload)
     assert payload["load_status"] == "degraded"
     node = next(item for item in payload["nodes"] if item["authored_id"] == "source_b")
     assert node["config"]["path"] == "data/quotes.parquet"

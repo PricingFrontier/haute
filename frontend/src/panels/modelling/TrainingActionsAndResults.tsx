@@ -41,6 +41,8 @@ export type TrainingActionsAndResultsProps = {
   trainProgress: TrainProgress | null
   estimatedRemainingSeconds?: number | null
   trainResult: TrainResult | null
+  /** Why the last training failed, or null. */
+  trainError: string | null
   isStale: boolean
   ramEstimate: TrainEstimate | null
   ramEstimateLoading: boolean
@@ -75,6 +77,7 @@ export function TrainingActionsAndResults({
   trainProgress,
   estimatedRemainingSeconds = null,
   trainResult,
+  trainError,
   isStale,
   ramEstimate,
   ramEstimateLoading,
@@ -376,7 +379,7 @@ export function TrainingActionsAndResults({
       )}
 
       {/* Error display — keep in config panel since there's no preview to show */}
-      {trainResult && trainResult.status === "error" && (
+      {trainError !== null && (
         <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{ background: "var(--danger-soft-subtle)", border: "1px solid var(--danger-border)" }}>
           <div className="flex items-start gap-2">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} />
@@ -384,7 +387,7 @@ export function TrainingActionsAndResults({
               <div className="font-semibold" style={{ color: "var(--danger)" }}>
                 {terminalStatus === "cancelled" ? "Training cancelled" : "Training failed"}
               </div>
-              <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{trainResult.error}</div>
+              <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{trainError}</div>
               <ExecutionDiagnosticsSummary
                 metrics={terminalMetrics}
                 status={terminalStatus}

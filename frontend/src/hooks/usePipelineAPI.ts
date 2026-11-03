@@ -23,6 +23,8 @@ import { reportSaveCapture } from "../stores/saveCapture"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
+import { trackPendingSave } from "../stores/pendingSaves"
+import { operationKey } from "../utils/operationKey"
 import useUIStore from "../stores/useUIStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
@@ -48,7 +50,7 @@ import {
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
-import { apiErrorMessage, isStaleRevision } from "../api/errors"
+import { apiErrorCode, apiErrorMessage, isStaleRevision } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
 export { columnFingerprint } from "../utils/columnFingerprint"
@@ -445,16 +447,20 @@ function isAbortError(err: unknown): boolean {
       (err as { name?: unknown }).name === "AbortError"
 }
 
+/** The server dropped this preview for a newer one of the same node: its 409 says so by code. */
 function isPreviewSupersededError(err: unknown): boolean {
-  if (!(err instanceof ApiError) || err.status !== 409) return false
-  const text = `${err.detail ?? ""} ${err.message}`
-  return text.toLowerCase().includes("superseded")
+  return err instanceof ApiError && err.status === 409 && apiErrorCode(err) === "request_superseded"
 }
 
 function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
   return typeof err === "object" &&
     err !== null &&
     (err as { name?: unknown }).name === "ApiTimeoutError"
+}
+
+/** A request that failed with no HTTP answer: the server may still have acted on it. */
+function isLostAnswer(err: unknown): boolean {
+  return err instanceof TypeError || isApiTimeoutError(err)
 }
 
 export default function usePipelineAPI({
@@ -1518,47 +1524,64 @@ export default function usePipelineAPI({
     })
     const requestGraph = toCanonicalGraphPayload(savedSnapshot)
     const saveRequestId = ++saveRequestSeq.current
-    try {
-      const data = await savePipeline({
-        name: pipelineNameRef.current,
-        description: descriptionRef.current,
-        graph: {
-          nodes: requestGraph.nodes,
-          edges: requestGraph.edges,
-          submodels: requestGraph.submodels,
-          ...(globalConstantsError === null
-            ? { global_constants: constantsPayload(saveConstants) }
-            : {}),
-        },
-        preamble: savePreamble,
-        source_file: sourceFileRef.current,
-        // A never-persisted document keeps an empty revision ref; the server wants null.
-        base_revision: saveSourceRevision || null,
-        sources: sc,
-        active_source: as_,
-        preserved_blocks: preservedBlocksRef.current,
-        connection_id: syncConnectionId(),
-      })
-      // Mark the exact graph snapshot that reached the backend, unless a
-      // newer save has already been applied.
+    const savePipelineName = pipelineNameRef.current
+    const saveDescription = descriptionRef.current
+    const savePreservedBlocks = preservedBlocksRef.current
+    // Mark the exact graph snapshot that reached the backend, unless a newer
+    // save has already been applied or another revision arrived meanwhile.
+    const acknowledge = (sourceRevision: string, documentFingerprint: string) => {
       if (
-        saveRequestId > appliedSaveSeq.current &&
-        useDocumentStatusStore.getState().sourceFile === saveSourceFile
-      ) {
-        const observedRevision = sourceRevisionRef.current
-        const acknowledgesCurrentRevision =
-          observedRevision === saveSourceRevision ||
-          observedRevision === data.source_revision
-        if (acknowledgesCurrentRevision) {
-          useGraphStore.getState().markSaved(savedSnapshot)
-          appliedSaveSeq.current = saveRequestId
-          sourceRevisionRef.current = data.source_revision
-          const status = useDocumentStatusStore.getState()
-          status.acknowledgeSave(data.source_revision)
-          status.setGraphSynchronized(true)
-          useUIStore.getState().setSyncBanner(null)
-        }
+        saveRequestId <= appliedSaveSeq.current ||
+        useDocumentStatusStore.getState().sourceFile !== saveSourceFile
+      ) return
+      const observedRevision = sourceRevisionRef.current
+      if (observedRevision !== saveSourceRevision && observedRevision !== sourceRevision) return
+      useGraphStore.getState().markSaved(savedSnapshot)
+      appliedSaveSeq.current = saveRequestId
+      sourceRevisionRef.current = sourceRevision
+      const status = useDocumentStatusStore.getState()
+      status.acknowledgeSave(sourceRevision, documentFingerprint)
+      status.setGraphSynchronized(true)
+      useUIStore.getState().setSyncBanner(null)
+    }
+    const request = {
+      name: savePipelineName,
+      description: saveDescription,
+      graph: {
+        nodes: requestGraph.nodes,
+        edges: requestGraph.edges,
+        submodels: requestGraph.submodels,
+        ...(globalConstantsError === null
+          ? { global_constants: constantsPayload(saveConstants) }
+          : {}),
+      },
+      preamble: savePreamble,
+      source_file: sourceFileRef.current,
+      // A never-persisted document keeps an empty revision ref; the server wants null.
+      base_revision: saveSourceRevision || null,
+      sources: sc,
+      active_source: as_,
+      preserved_blocks: savePreservedBlocks,
+      connection_id: syncConnectionId(),
+      // A repeat under the same operation writes once: the server answers it with
+      // what the first request did when that one committed.
+      operation: operationKey(),
+    }
+    // Live sync holds a frame of this file until the save, its repeat included,
+    // has settled.
+    let settleSave!: () => void
+    trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
+    try {
+      let data: Awaited<ReturnType<typeof savePipeline>>
+      try {
+        data = await savePipeline(request)
+      } catch (err: unknown) {
+        // No answer: the save may have been written. Sent once more, exactly, its
+        // answer is the first request's if that committed, else the save made now.
+        if (!isLostAnswer(err)) throw err
+        data = await savePipeline(request)
       }
+      acknowledge(data.source_revision, data.document_fingerprint)
       addToast("success", `Saved → ${data.file}`)
       // The ledger commit, the warnings and the identity prompt, as every save reports them.
       reportSaveCapture(data)
@@ -1586,6 +1609,8 @@ export default function usePipelineAPI({
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to save pipeline: ${detail}`)
       return false
+    } finally {
+      settleSave()
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 

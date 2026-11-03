@@ -119,7 +119,7 @@ describe("useOptimiserAutoRange", () => {
     ))
 
     // A successful save advances the source revision, not the execution identity.
-    act(() => useDocumentStatusStore.getState().acknowledgeSave("revision-after-save"))
+    act(() => useDocumentStatusStore.getState().acknowledgeSave("revision-after-save", "fingerprint-after-save"))
 
     expect(api.cancel).not.toHaveBeenCalled()
     expect(result.current.autoRangeLoading).toBe(true)

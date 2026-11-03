@@ -10,7 +10,8 @@ import type { SimpleNode as GraphNodeInput } from "../editors/_shared"
 import { GraphProvider } from "../GraphContext"
 import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
-import useNodeResultsStore, { hashConfig, trainFailureResult } from "../../stores/useNodeResultsStore"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { ModellingPane } from "../../stores/useUIStore"
@@ -1203,8 +1204,42 @@ describe("ModellingConfig", () => {
         const state = useNodeResultsStore.getState()
         expect(state.trainJobs.node_1).toBeUndefined()
         expect(state.trainResults.node_1?.terminalStatus?.status).toBe("cancelled")
-        expect(state.trainResults.node_1?.result.error).toBe("Cancelled")
+        expect(state.trainResults.node_1?.error).toBe("Cancelled")
       })
+    })
+
+    it.each([
+      ["completed", { status: "completed", result: makeTrainResult({ final_test_metrics: { rmse: 9 } }) }],
+      ["cancelled", { status: "cancelled", result: null }],
+      ["refused", null],
+    ] as const)("leaves a newer job alone when the earlier job's cancellation (%s) answers late", async (_name, reply) => {
+      const running = { status: "running" as const, progress: 0.1, message: "Fitting", iteration: 0, total_iterations: 0, train_loss: {}, elapsed_seconds: 1 }
+      useNodeResultsStore.getState().startTrainJob("node_1", "job_a", "Model", "hash-a", "live", 0)
+      let answer!: (value: unknown) => void
+      let refuse!: (error: Error) => void
+      mockCancelTrain.mockReturnValueOnce(new Promise((resolve, reject) => {
+        answer = resolve
+        refuse = reject
+      }))
+      renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "Cancel training" }))
+      await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("job_a"))
+
+      // Polling retires A with its own result, then B starts.
+      const resultA = makeTrainResult()
+      act(() => {
+        useNodeResultsStore.getState().completeTrainJob("node_1", "job_a", resultA)
+        useNodeResultsStore.getState().startTrainJob("node_1", "job_b", "Model", "hash-b", "live", 1)
+      })
+      await act(async () => {
+        if (reply === null) refuse(new Error("Cancellation unavailable"))
+        else answer({ ...running, ...reply, message: "Answer", terminal_reason: reply.status })
+      })
+
+      const state = useNodeResultsStore.getState()
+      expect(state.trainJobs.node_1).toMatchObject({ jobId: "job_b", configHash: "hash-b", progress: null })
+      expect(state.trainResults.node_1).toMatchObject({ jobId: "job_a", configHash: "hash-a", result: resultA })
+      expect(useToastStore.getState().toasts.some((toast) => toast.text.includes("Could not cancel training"))).toBe(false)
     })
 
     it("stores error result when trainModel throws", async () => {
@@ -1215,8 +1250,8 @@ describe("ModellingConfig", () => {
         const store = useNodeResultsStore.getState()
         const cached = store.trainResults.node_1
         expect(cached).toBeTruthy()
-        expect(cached.result.status).toBe("error")
-        expect(cached.result.error).toBe("Network fail")
+        expect(cached.result).toBeNull()
+        expect(cached.error).toBe("Network fail")
       })
     })
 
@@ -1245,17 +1280,17 @@ describe("ModellingConfig", () => {
         renderConfig()
         fireEvent.click(screen.getByRole("button", { name: "Re-train" }))
 
-        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.result.error).toBe("Network fail"))
+        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.error).toBe("Network fail"))
         expect(readTrainedJobHandle("rating/main.py", "node_1")).toEqual(handle)
       })
 
       it("keeps the handle when the server answers the request with an error", async () => {
         const { readTrainedJobHandle } = await rememberEarlierModel()
-        mockTrainModel.mockResolvedValue(trainFailureResult("Training is already running for this node"))
+        mockTrainModel.mockResolvedValue(makeTrainResult({ status: "error", error: "Training is already running for this node" }))
         renderConfig()
         fireEvent.click(screen.getByRole("button", { name: "Re-train" }))
 
-        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.result.error)
+        await waitFor(() => expect(useNodeResultsStore.getState().trainResults.node_1?.error)
           .toBe("Training is already running for this node"))
         expect(readTrainedJobHandle("rating/main.py", "node_1")).toEqual(handle)
       })
@@ -1303,23 +1338,26 @@ describe("ModellingConfig", () => {
 
       await waitFor(() => {
         const cached = useNodeResultsStore.getState().trainResults.node_1
-        expect(cached?.result.error).toBe("Training rejected by admission control")
+        expect(cached?.error).toBe("Training rejected by admission control")
         expect(cached?.terminalStatus?.status).toBe("memory_limited")
         expect(cached?.terminalStatus?.terminal_reason).toBe("memory_limited")
         expect(cached?.terminalStatus?.execution_metrics).toBe(executionMetrics)
       })
     })
 
-    it("stores synchronous result when trainModel returns non-started status", async () => {
-      const result = makeTrainResult()
-      mockTrainModel.mockResolvedValue(result)
+    it("records a start that answers no started job as a failure of that attempt", async () => {
+      mockTrainModel.mockResolvedValue(makeTrainResult({ status: "error", error: "Refused" }))
       renderConfig()
       fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
       await waitFor(() => {
         const store = useNodeResultsStore.getState()
         const cached = store.trainResults.node_1
-        expect(cached).toBeTruthy()
-        expect(cached.result.status).toBe("completed")
+        expect(cached?.result).toBeNull()
+        expect(cached?.error).toBe("Refused")
+        // A refused start ran no job: no job id stands in for one.
+        expect(cached?.jobId).toBe("")
+        expect(cached?.source).toBe("live")
+        expect(store.trainJobs.node_1).toBeUndefined()
       })
     })
   })
