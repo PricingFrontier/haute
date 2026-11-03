@@ -6,40 +6,17 @@ Data Input providers and their freshness proofs, the input snapshot store and
 its generations, the config path anchoring the registry and the engine share,
 and the input preparation builds. Current behaviour is specified in
 [the IO-layer specification](../io-layer/high-level.md) and
-[caching](../caching/high-level.md). These packages come from the
-[25 October 2026 codebase review](codebase-review-2026-10-25.md); the numbering
-continues from the September 2026 review's packages, which are retired.
+[caching](../caching/high-level.md). `IO-R07` comes from the
+[31 October 2026 codebase review](codebase-review-2026-10-31.md); the numbering
+continues from the earlier reviews' packages.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| IO-R06 | Planned | P3 | A snapshot build validates its generation outside the store-wide lease lock, and the cache-usage endpoint stops walking every generation per preview. |
 | IO-R07 | Planned | P2 | Explicit `/api/input-cache/build` jobs for `"bounded"` Data Inputs run under memory admission and isolated worker supervision like automatic preparation builds, `input_cache` and `json_cache` resolve paths from the project root rather than `Path.cwd()`, and `_infer_jsonl_in_parallel` avoids re-walking the prefix range already scanned by `_learn_jsonl_prefix`. |
 
 ## Planned improvements
-
-### IO-R06 — Lock hold and usage cost
-**Why:** A snapshot build validates its new generation (every part's footer, Arrow schema
-and Polars schema) while holding the store-wide cross-process lease lock, blocking every
-lease and release in every process for the duration, against the specification's
-instruction not to hold the global lease lock while building or validating; node-output
-publication validates after releasing it. `GET /api/cache/usage`, called by the status bar
-after every preview, constructs a store and walks every generation (part stats,
-`meta.json`, pointer and slot-index reads), linear in the store's size.
-
-**Plan:** Validate the staged directory before taking the lock and keep only the
-supersession check, the rename and the pointer write under it; memoise the usage for a
-short interval per process or keep running totals updated by publish and retire.
-
-**Acceptance:** The lock is held for no part read during a build (a test with a slow
-part reader); a repeated usage call within the interval reads no generation.
-
-**Dependencies:** None. The staging glob a store construction runs is already limited to once per interval per process.
-
-**Evidence:** `src/haute/_source_cache.py::SourceCacheStore` (the validation inside
-`with self._lease_lock`); `src/haute/_node_snapshots.py` (publication after the lock);
-`src/haute/routes/cache.py::cache_usage`; `src/haute/_node_snapshots.py::NodeSnapshotStore.usage`.
 
 ### IO-R07 — Memory admission and isolated worker execution for explicit Data Input cache builds, project-root path anchoring, and non-overlapping parallel JSONL schema inference
 **Why:** Three IO and JSON-shredding defects affect explicit Data Input cache builds,

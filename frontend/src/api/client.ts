@@ -1317,8 +1317,8 @@ export function clearCacheIdentities(
 /**
  * The snapshot store's size and the automatic captures' share of its budget.
  *
- * One pass over the store and no point resolution, so the preview status bar
- * reads it each time a preview settles.
+ * One pass over the store and no point resolution; Pipeline settings reads it
+ * with each read of the cached-data inventory.
  */
 export function fetchCacheUsage(
   options?: { signal?: AbortSignal },

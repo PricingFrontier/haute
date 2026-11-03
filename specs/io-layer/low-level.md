@@ -326,8 +326,16 @@ platforms, and on Windows with long paths on, nothing is renamed.
    a part with no recorded digest), while an Arrow-batch builder's parts are still hashed
    in a read pass. Publication reads every part's footer and schema but never re-reads a
    part in full to hash it; verification and the verified-generation memo check xxh64.
-   It writes canonical `meta.json` and validates the staged generation.
-5. The staging directory is atomically renamed and `current.json` is atomically replaced.
+   It writes canonical `meta.json` and validates the staged generation with the validator
+   every lease uses (metadata, part sizes, footers, Arrow and Polars schemas), recording it
+   in the verified and described memos, before it takes the store-wide lease lock.
+5. Under the lease lock publication reads no part: it checks cancellation and the deadline
+   once more (a build cancelled while it waited for the lock publishes nothing), re-checks
+   supersession (a build that
+   replaces a named generation publishes only while that generation is current), retires
+   unleased superseded generations, atomically renames the staging directory to its
+   generation and atomically replaces `current.json`. The generation it returns is the
+   staged validation's, under the published directory.
 6. Old generations with live leases survive until the final lease release. Publication
    has no cache byte/count limit and never evicts another identity's current dataset.
 
@@ -416,8 +424,10 @@ captures have one budget, applied after each automatic publication:
   publication runs no enforcement.
 
 `usage()` reports the total, the automatic bytes and the budget for
-[`GET /api/cache/usage`](../server-api/low-level.md#cache-usage), which the preview
-status bar reads. The [cache inventory endpoint](../server-api/low-level.md#cache-usage)
+[`GET /api/cache/usage`](../server-api/low-level.md#cache-usage), which Pipeline settings
+reads beside the cached-data inventory. It walks the store each time it is asked and keeps
+no memo, so a size read after a Clear or a Refresh is the store's size then. The
+[cache inventory endpoint](../server-api/low-level.md#cache-usage)
 lists the data for user-managed cleanup. Physical disk-headroom checks and
 execution-memory limits still apply. Constructing the store can create the inputs root
 and sweep retired directories.
@@ -1050,7 +1060,10 @@ failure sections above are the maintained answers.
   and the next retirement removes it. A retirement whose delete fails logs
   `source_cache_retired_delete_failed` and leaves its renamed directory, which the next
   process's sweep removes while leaving a stray file named like one; a generation another
-  actor removes while it is being retired counts as retired.
+  actor removes while it is being retired counts as retired. While a build's part read is
+  held, another thread leases a different identity, and the published generation's first
+  lease reads no footer or schema. A build cancelled while it waits for the lease lock leaves
+  the previous generation current and publishes nothing.
 - `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, missing database rejection, and the inferred schema tier:
@@ -1264,7 +1277,8 @@ supervised parent retirement after a successful worker build. A held superseded 
 can survive beyond grace or explicit Clear and stays readable until release;
 once unpointed, the last release permits retirement. Input build publication
 takes the shared lease lock before the in-process count lock. Do not
-hold the global lease lock while building or validating a leased input. The
+hold the global lease lock while building or validating a leased input; a build validates
+its staged generation before it takes the lock. The
 existing file-lock implementation and token directory are shared, not duplicated.
 ## Scratch filesystem headroom
 
