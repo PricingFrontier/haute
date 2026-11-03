@@ -466,6 +466,60 @@ class _TwoColumnPythonModel(mlflow.pyfunc.PythonModel):
         return pd.DataFrame({"low": model_input["a"], "high": model_input["b"]})
 
 
+class _ShapedPythonModel(mlflow.pyfunc.PythonModel):
+    """Returns the output shape named by *kind* for each input of ``a`` values."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+
+    def predict(self, context: Any, model_input: Any, params: Any = None) -> Any:
+        import pandas as pd
+
+        a = model_input["a"].to_numpy()
+        if self.kind == "one_column_table":
+            return pd.DataFrame({"pred": a * 2})
+        if self.kind == "column_vector":
+            return (a * 2).reshape(-1, 1)
+        if self.kind == "matrix":
+            return np.stack([a, a], axis=1)
+        if self.kind == "one_too_many":
+            return np.append(a * 2, 0.0)
+        if self.kind == "pair":
+            return pd.DataFrame({"pred_label": np.where(a > 1, "yes", "no"), "pred_proba": a / 4})
+        if self.kind == "pair_missing_a_row":
+            return pd.DataFrame(
+                {"pred_label": ["no"] * (len(a) - 1), "pred_proba": [0.1] * (len(a) - 1)}
+            )
+        if self.kind == "labels_only":
+            return pd.DataFrame({"pred_label": np.where(a > 1, "yes", "no")})
+        raise AssertionError(self.kind)
+
+
+def _shaped_pyfunc(tmp_path: Path, kind: str, outputs: list[Any] | None = None) -> Any:
+    """A real saved and loaded pyfunc returning *kind*, with *outputs* as its signature's."""
+    from mlflow.models import ModelSignature
+    from mlflow.types import ColSpec, Schema
+
+    signature = ModelSignature(
+        inputs=Schema([ColSpec("double", "a")]),
+        outputs=Schema(outputs) if outputs is not None else None,
+    )
+    model_dir = tmp_path / kind
+    mlflow.pyfunc.save_model(
+        path=str(model_dir), python_model=_ShapedPythonModel(kind), signature=signature
+    )
+    return mlflow.pyfunc.load_model(str(model_dir))
+
+
+def _pair_outputs() -> list[Any]:
+    from mlflow.types import ColSpec
+
+    return [ColSpec("string", "pred_label"), ColSpec("double", "pred_proba")]
+
+
+_A = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
+
+
 class TestUndeclaredPyfuncOutputs:
     def test_a_multicolumn_output_is_refused_not_flattened(self, tmp_path):
         model_dir = tmp_path / "two_columns"
@@ -475,6 +529,65 @@ class TestUndeclaredPyfuncOutputs:
 
         with pytest.raises(ValueError, match="2 columns"):
             _score_eager(scoring, frame.lazy(), ["a", "b"], "pred", "regression").collect()
+
+    @pytest.mark.parametrize("kind", ["one_column_table", "column_vector"])
+    def test_one_prediction_per_row_scores_in_either_shape(self, tmp_path, kind):
+        scoring = _wrap_pyfunc(_shaped_pyfunc(tmp_path, kind), task="regression")
+
+        scored = _score_eager(scoring, _A.lazy(), ["a"], "pred", "regression").collect()
+
+        assert scored["pred"].to_list() == [2.0, 4.0, 6.0]
+
+    @pytest.mark.parametrize(
+        ("kind", "message"),
+        [
+            ("matrix", r"shape \(3, 2\)"),
+            ("one_too_many", "4 predictions for 3 rows"),
+        ],
+    )
+    def test_a_result_that_is_not_one_per_row_is_refused(self, tmp_path, kind, message):
+        scoring = _wrap_pyfunc(_shaped_pyfunc(tmp_path, kind), task="regression")
+
+        with pytest.raises(ValueError, match=message):
+            _score_eager(scoring, _A.lazy(), ["a"], "pred", "regression").collect()
+
+    def test_several_declared_outputs_of_another_kind_are_refused_at_load(self, tmp_path):
+        from mlflow.types import ColSpec
+
+        from haute.errors import ConfigError
+
+        outputs = [ColSpec("double", "low"), ColSpec("double", "high")]
+        with pytest.raises(ConfigError, match=r"declares 2 outputs \(low, high\)"):
+            _wrap_pyfunc(_shaped_pyfunc(tmp_path, "matrix", outputs), task="regression")
+
+
+class TestDeclaredClassifierPyfunc:
+    """A pyfunc declaring the classifier pair must return it, one row per input."""
+
+    def test_probabilities_asked_for_alone_come_from_their_own_call(self, tmp_path):
+        scoring = _wrap_pyfunc(
+            _shaped_pyfunc(tmp_path, "pair", _pair_outputs()), task="classification"
+        )
+        raw = scoring.raw_model
+        x_data = _prepare_predict_frame(_A, ["a"], frozenset(), "pyfunc")
+
+        np.testing.assert_allclose(raw.predict_proba(x_data), [0.25, 0.5, 0.75])
+        assert raw.predict(x_data).tolist() == ["no", "yes", "yes"]
+
+    @pytest.mark.parametrize(
+        ("kind", "message"),
+        [
+            ("labels_only", r"returned columns \['pred_label'\]"),
+            ("pair_missing_a_row", "2 predictions for 3 rows"),
+        ],
+    )
+    def test_a_result_breaking_the_declared_pair_is_refused(self, tmp_path, kind, message):
+        scoring = _wrap_pyfunc(
+            _shaped_pyfunc(tmp_path, kind, _pair_outputs()), task="classification"
+        )
+
+        with pytest.raises(ValueError, match=message):
+            _score_eager(scoring, _A.lazy(), ["a"], "pred", "classification").collect()
 
 
 class TestHauteExposurePyfunc:

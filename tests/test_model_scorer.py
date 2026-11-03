@@ -1615,6 +1615,33 @@ class TestBatchScoreToParquetEmptyDtype:
 
         assert {column: schema[column] for column in expected_columns} == expected_columns
 
+    def test_empty_self_describing_classifier_uses_its_recorded_labels(self, tmp_path: Path):
+        """A Haute wrapper's recorded class labels type an empty result's labels."""
+
+        class LabelledWrapper:
+            class_labels = ("no", "yes")
+
+            def predict(self, _frame):
+                raise AssertionError("empty input must not score a synthetic null row")
+
+            def predict_proba(self, _frame):
+                raise AssertionError("empty input must not score a synthetic null row")
+
+        input_path = str(tmp_path / "empty-wrapper.parquet")
+        pl.DataFrame({"a": pl.Series([], dtype=pl.Float64)}).write_parquet(input_path)
+        scoring_model = ScoringModel(model=LabelledWrapper(), feature_names=["a"], flavor="xgboost")
+
+        out_path = _batch_score_to_parquet(
+            scoring_model, input_path, ["a"], "pred", "classification"
+        )
+        try:
+            schema = pl.read_parquet_schema(out_path)
+        finally:
+            _cleanup_registered_temp_files([out_path])
+
+        assert schema["pred"] == pl.String
+        assert schema["pred_proba"] == pl.Float64
+
     def test_empty_classification_proba_dtype_matches_nonempty(self, tmp_path):
         """Zero-row output reuses the model's *proba* dtype, not a hardcoded one.
 
