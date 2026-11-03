@@ -79,6 +79,7 @@ After `haute init --target databricks --ci github`:
 ```
 my-project/
   .env.example
+  .gitattributes
   .githooks/
   .githooks/pre-commit
   .github/
