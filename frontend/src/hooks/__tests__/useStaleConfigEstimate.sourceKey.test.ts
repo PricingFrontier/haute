@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, waitFor, cleanup } from "@testing-library/react"
 import { useStaleConfigEstimate } from "../useStaleConfigEstimate"
-import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { hashConfig } from "../../utils/configHash"
 
 // Key-contract pin (Maginot: fingerprint / cache-key completeness).
 // The solve/train staleness key must cover every input that affects the
@@ -109,7 +110,7 @@ describe("solve/train cached results carry source identity", () => {
   it("completeTrainJob stamps the job's source and structuralVersion onto the cached result", () => {
     const store = useNodeResultsStore.getState()
     store.startTrainJob("node_1", "job_1", "Model Training", "hash_a", "source_a", 3)
-    useNodeResultsStore.getState().completeTrainJob("node_1", {
+    useNodeResultsStore.getState().completeTrainJob("node_1", "job_1", {
       status: "completed",
       metrics: {},
       feature_importance: [],

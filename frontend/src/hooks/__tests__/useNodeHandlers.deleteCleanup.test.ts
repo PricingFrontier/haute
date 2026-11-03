@@ -1,16 +1,7 @@
 /**
- * Phase 1 Package 1H — Item #32: deleting a node must NOT race cache cleanup
- * ahead of the React commit that removes the node from the DOM.
- *
- * Pre-fix: `clearNode(id)` is called synchronously in `handleDeleteNode`,
- * *before* React has committed the state update that removes the node.
- * Downstream components (like OptimiserPreview / ModellingPreview that read
- * from the store during render) then flip from "cached result" to "null" on
- * the same render cycle the node is still present — a flicker-crash.
- *
- * Fix: defer `clearNode` by one render cycle (queueMicrotask or
- * `setTimeout(..., 0)`) so downstream components see the node removed from
- * the graph BEFORE the store-backed cache is cleared.
+ * Deleting a node removes it from the graph first and then clears its cached
+ * results in the same task, as the keyboard delete does: React renders both
+ * store updates together, so no render shows the node without its results.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
@@ -39,7 +30,7 @@ function makeParams() {
   }
 }
 
-describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
+describe("useNodeHandlers - cache cleanup on delete", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useNodeResultsStore.setState({
@@ -60,14 +51,8 @@ describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
   })
 
   it("setNodes is called synchronously BEFORE clearNode commits", async () => {
-    // Catches: if clearNode fires before setNodes, any component reading
-    // `useNodeResultsStore.getOptimiserPreview(nodeId)` during the same
-    // render tick will see `null` while the graph still contains the node,
-    // triggering a panel unmount/remount flicker.
-    //
-    // We verify by seeding an optimiser result, calling handleDeleteNode,
-    // and confirming the store still has the result immediately after
-    // setNodes is invoked.  Only after a tick should the cache be gone.
+    // The graph mutation runs while the node's result is still cached; the
+    // cache is cleared only after it.
     const params = makeParams()
     const n1 = makeNode("n1")
     params.graphRef.current = { nodes: [n1], edges: [] }
@@ -125,19 +110,10 @@ describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
     expect(snapshotDuringSetNodes).toBe(true)
   })
 
-  it("clearNode is deferred past the current microtask (cache outlives the setNodes call)", async () => {
-    // Catches: if `clearNode(id)` is still invoked synchronously after
-    // `setNodes`, downstream selectors reading during the same render
-    // cycle will observe a state where the node is gone from the cache
-    // *before* React has committed the node removal.
-    //
-    // The fix is to schedule cleanup via queueMicrotask / setTimeout so
-    // the cache entry survives at least the current render tick.
+  it("clears the deleted node's cache in the same task as its removal", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
     params.graphRef.current = { nodes: [n1], edges: [] }
-
-    // Seed a preview entry
     useNodeResultsStore.getState().setPreview("n1", {
       nodeId: "n1",
       nodeLabel: "Node 1",
@@ -148,42 +124,19 @@ describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
       preview: [{ a: 1 }],
       error: null,
     }, 0)
-
     const { result } = renderHook(() => useNodeHandlers(params))
-
-    vi.useFakeTimers()
 
     act(() => {
       result.current.handleDeleteNode("n1")
     })
 
-    // Immediately after handleDeleteNode returns (still in the same
-    // synchronous microtask window), the cache MUST still hold the
-    // preview — otherwise a downstream component that re-reads the
-    // store on its next render will see null while the graph still
-    // displays the node.
-    const cachedAfterDelete = useNodeResultsStore.getState().getPreview("n1")
-    expect(cachedAfterDelete).not.toBeNull()
-
-    // After the microtask queue drains, cleanup should have run.
-    await act(async () => {
-      vi.runOnlyPendingTimers()
-      await Promise.resolve()
-    })
-    const cachedAfterTick = useNodeResultsStore.getState().getPreview("n1")
-    expect(cachedAfterTick).toBeNull()
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()
   })
 
-  it("multiple rapid deletes each defer their own clearNode (no missed nodes)", async () => {
-    // Catches: the deferral logic must handle N pending deletes without
-    // dropping cleanup for any of them.
+  it("multiple rapid deletes each clear their own cache (no missed nodes)", () => {
     const params = makeParams()
-    const n1 = makeNode("n1")
-    const n2 = makeNode("n2")
-    const n3 = makeNode("n3")
-    params.graphRef.current = { nodes: [n1, n2, n3], edges: [] }
-
-    // Seed previews for all three nodes
+    params.graphRef.current = { nodes: [makeNode("n1"), makeNode("n2"), makeNode("n3")], edges: [] }
     const { setPreview } = useNodeResultsStore.getState()
     const mkData = (id: string) => ({
       nodeId: id, nodeLabel: `Node ${id}`,
@@ -193,26 +146,12 @@ describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
     setPreview("n1", mkData("n1"), 0)
     setPreview("n2", mkData("n2"), 0)
     setPreview("n3", mkData("n3"), 0)
-
     const { result } = renderHook(() => useNodeHandlers(params))
-
-    vi.useFakeTimers()
 
     act(() => {
       result.current.handleDeleteNode("n1")
       result.current.handleDeleteNode("n2")
       result.current.handleDeleteNode("n3")
-    })
-
-    // All three previews must still exist in the cache right now
-    expect(useNodeResultsStore.getState().getPreview("n1")).not.toBeNull()
-    expect(useNodeResultsStore.getState().getPreview("n2")).not.toBeNull()
-    expect(useNodeResultsStore.getState().getPreview("n3")).not.toBeNull()
-
-    // Drain microtasks — all should be cleaned up.
-    await act(async () => {
-      vi.runOnlyPendingTimers()
-      await Promise.resolve()
     })
 
     expect(useNodeResultsStore.getState().getPreview("n1")).toBeNull()

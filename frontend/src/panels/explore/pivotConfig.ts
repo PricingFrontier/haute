@@ -1,6 +1,7 @@
 import { isNumericDtype } from "../../utils/polarsDtypes"
 import { portableKey } from "../../utils/portableKey"
 import { isObjectLiteral } from "../../utils/objectLiteral"
+import { isDateTime, isDay, isTime } from "../../utils/isoDate"
 
 export const PIVOT_CONFIG_VERSION = 1 as const
 export const PIVOT_DECIMAL_PLACES_MAX = 10
@@ -145,8 +146,6 @@ const COLOR_SCALES = new Set<PivotValuePlacement["color_scale"]>([
   "low_green_high_red",
 ])
 const DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
-const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
-const TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/
 const CARD_KEYS = new Set([
   "version",
   "id",
@@ -282,43 +281,6 @@ function parseNumberFormatting(
   }
 }
 
-function isValidDate(value: string): boolean {
-  const match = DATE_PATTERN.exec(value)
-  if (match === null) return false
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  if (year < 1) return false
-  const candidate = new Date(0)
-  candidate.setUTCFullYear(year, month - 1, day)
-  candidate.setUTCHours(0, 0, 0, 0)
-  return (
-    candidate.getUTCFullYear() === year &&
-    candidate.getUTCMonth() === month - 1 &&
-    candidate.getUTCDate() === day
-  )
-}
-
-function isValidTime(value: string): boolean {
-  const match = TIME_PATTERN.exec(value)
-  if (match === null) return false
-  const hour = Number(match[1])
-  const minute = Number(match[2])
-  const second = Number(match[3])
-  if (hour > 23 || minute > 59 || second > 59) return false
-  const offset = /([+-])(\d{2}):(\d{2})$/.exec(value)
-  return offset === null || (Number(offset[2]) <= 23 && Number(offset[3]) <= 59)
-}
-
-function isValidDateTime(value: string): boolean {
-  const separator = value.indexOf("T")
-  return (
-    separator > 0 &&
-    isValidDate(value.slice(0, separator)) &&
-    isValidTime(value.slice(separator + 1))
-  )
-}
-
 function memberValueMatchesKind(kind: PivotMemberKind, value: unknown): boolean {
   switch (kind) {
     case "null":
@@ -335,11 +297,11 @@ function memberValueMatchesKind(kind: PivotMemberKind, value: unknown): boolean 
     case "decimal":
       return typeof value === "string" && DECIMAL_PATTERN.test(value)
     case "date":
-      return typeof value === "string" && isValidDate(value)
+      return typeof value === "string" && isDay(value)
     case "datetime":
-      return typeof value === "string" && isValidDateTime(value)
+      return typeof value === "string" && isDateTime(value)
     case "time":
-      return typeof value === "string" && isValidTime(value)
+      return typeof value === "string" && isTime(value)
   }
 }
 

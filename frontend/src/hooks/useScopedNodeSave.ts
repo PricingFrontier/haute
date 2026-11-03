@@ -20,8 +20,8 @@ interface UseScopedNodeSaveArgs {
   selectedNodeId: string | null
   graphRef: React.RefObject<{ nodes: Node[]; edges: Edge[] }>
   onUpdateNode: UpdateNode
-  /** Adopt the authoritative response; owns selection retention. */
-  applyDocument: (document: PipelineEditorDocument, savedNodeId: string) => void
+  /** Adopt the authoritative response and the fingerprint it names; owns selection retention. */
+  applyDocument: (document: PipelineEditorDocument, documentFingerprint: string, savedNodeId: string) => void
 }
 
 /**
@@ -85,7 +85,10 @@ export function useScopedNodeSave({
               "another node.",
           }
         }
-        editedNodeIdsRef.current.add(id)
+        const result = onUpdateNode(id, data)
+        // A refused update edited nothing, so it locks no other node.
+        if (result.ok) editedNodeIdsRef.current.add(id)
+        return result
       }
       return onUpdateNode(id, data)
     },
@@ -116,7 +119,7 @@ export function useScopedNodeSave({
     inFlightRef.current = true
     setScopedSaveInFlight(true)
     try {
-      const document = await saveNodeScoped({
+      const { value: document, documentFingerprint } = await saveNodeScoped({
         sourceFile: requestSourceFile,
         sourceRevision: requestRevision,
         targetSourceFile: data._sourceFile,
@@ -132,7 +135,7 @@ export function useScopedNodeSave({
       })
       if (fenceError) return { ok: false, error: fenceError }
       editedNodeIdsRef.current.delete(target.id)
-      applyDocument(document, target.id)
+      applyDocument(document, documentFingerprint, target.id)
       return { ok: true }
     } catch (error) {
       const detail = apiErrorMessage(error)

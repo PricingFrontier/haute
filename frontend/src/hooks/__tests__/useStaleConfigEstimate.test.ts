@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { renderHook, waitFor, cleanup, act } from "@testing-library/react"
 import { useStaleConfigEstimate } from "../useStaleConfigEstimate"
 import useToastStore from "../../stores/useToastStore"
-import { hashConfig } from "../../stores/useNodeResultsStore"
+import { hashConfig } from "../../utils/configHash"
 
 interface FakeEstimate {
   estimated_mb: number

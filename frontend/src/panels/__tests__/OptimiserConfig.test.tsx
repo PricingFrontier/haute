@@ -3,7 +3,8 @@ import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testi
 import { useEffect, useRef, useState } from "react"
 import OptimiserConfig from "../OptimiserConfig"
 import { GraphProvider } from "../GraphContext"
-import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -1215,7 +1216,7 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("button", { name: "Stop" }))
       await waitFor(() => expect(mockCancelOptimiserSolve).toHaveBeenCalledWith("job_run"))
       await waitFor(() => expect(useNodeResultsStore.getState().solveJobs.opt_1).toBeUndefined())
-      expect(useNodeResultsStore.getState().solveResults.opt_1?.error).toBe("Cancelled by user")
+      expect(useNodeResultsStore.getState().solveResults.opt_1?.failedAttempt?.error).toBe("Cancelled by user")
     })
 
     it("Ctrl+Enter in an edited field solves the committed value, not the previous one", async () => {
@@ -1274,7 +1275,7 @@ describe("OptimiserConfig", () => {
         })
       })
       expect(useNodeResultsStore.getState().solveJobs.opt_1?.jobId).toBe("job_b")
-      expect(useNodeResultsStore.getState().solveResults.opt_1?.error).toBeUndefined()
+      expect(useNodeResultsStore.getState().solveResults.opt_1?.failedAttempt?.error).toBeUndefined()
     })
 
     it("does not re-request the size estimate when the node's own edit moves the structural version", async () => {
@@ -1610,7 +1611,7 @@ describe("OptimiserConfig", () => {
 
       await waitFor(() => {
         const cached = useNodeResultsStore.getState().solveResults.opt_1
-        expect(cached?.error).toBe("Optimiser rejected by admission control")
+        expect(cached?.failedAttempt?.error).toBe("Optimiser rejected by admission control")
         expect(cached?.terminalStatus?.status).toBe("memory_limited")
         expect(cached?.terminalStatus?.terminal_reason).toBe("memory_limited")
         expect(cached?.terminalStatus?.execution_metrics).toBe(executionMetrics)
@@ -1635,7 +1636,7 @@ describe("OptimiserConfig", () => {
 
       await waitFor(() => {
         const cached = useNodeResultsStore.getState().solveResults.opt_1
-        expect(cached?.error).toBe("Objective column is required")
+        expect(cached?.failedAttempt?.error).toBe("Objective column is required")
         expect(cached?.jobId).toBe("startup-failure:opt_1")
       })
     })
@@ -2189,13 +2190,46 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText("Solver exploded")).toBeInTheDocument()
     })
 
+    it("reports a failed attempt's own terminal status beside a retained result", () => {
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            ...convergedResult,
+            terminalStatus: { status: "completed", progress: 1, message: "Done", elapsed_seconds: 3, terminal_reason: "completed" },
+            failedAttempt: {
+              jobId: "job-failed",
+              configHash: convergedResult.configHash,
+              source: convergedResult.source,
+              structuralVersion: convergedResult.structuralVersion,
+              error: "Worker ran out of memory",
+              terminalStatus: { status: "memory_limited", progress: 1, message: "Stopped", elapsed_seconds: 8, terminal_reason: "memory_limited" },
+            },
+          },
+        },
+      })
+      renderConfig(makeProps({
+            config: { mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+          }))
+      expect(screen.getByText("Optimisation failed")).toBeInTheDocument()
+      expect(screen.getByText("Worker ran out of memory")).toBeInTheDocument()
+      // The retained result is not reported as this attempt's outcome.
+      expect(screen.queryByText("Converged")).not.toBeInTheDocument()
+    })
+
     it("shows cached background failure after polling removes the active job", () => {
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
             ...convergedResult,
             result: { ...convergedResult.result, converged: false },
-            error: "Data error: Ratebook factor columns contain null values",
+            failedAttempt: {
+              jobId: "job-failed",
+              configHash: convergedResult.configHash,
+              source: convergedResult.source,
+              structuralVersion: convergedResult.structuralVersion,
+              error: "Data error: Ratebook factor columns contain null values",
+              terminalStatus: null,
+            },
           },
         },
       })
@@ -2952,6 +2986,22 @@ describe("OptimiserConfig", () => {
 
     it("explains there is nothing to publish before any solve", () => {
       renderConfig(makeProps())
+      expect(screen.getByText(/Nothing to publish yet/)).toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Save to file" })).not.toBeInTheDocument()
+    })
+
+    it("refuses to publish a retained result while a later attempt has failed", () => {
+      const config = seedSolve({
+        failedAttempt: {
+          jobId: "job_failed",
+          configHash: "another-config",
+          source: "batch",
+          structuralVersion: 9,
+          error: "Infeasible",
+          terminalStatus: null,
+        },
+      })
+      renderConfig(makeProps({ config }))
       expect(screen.getByText(/Nothing to publish yet/)).toBeInTheDocument()
       expect(screen.queryByRole("button", { name: "Save to file" })).not.toBeInTheDocument()
     })

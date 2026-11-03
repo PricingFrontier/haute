@@ -384,6 +384,28 @@ describe("useNodeHandlers", () => {
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/invalid node/)
   })
 
+  it("duplicates from the authored fields only, and applies across a selection change", async () => {
+    let resolve!: (nodes: Node[]) => void
+    const params = makeParams()
+    const original = makeNode("n1", "polars", {
+      data: { label: "Node n1", nodeType: "polars", config: { code: "x" }, _recoveryId: "n1@4", _columns: [{ name: "a" }] },
+    })
+    params.graphRef.current = { nodes: [original], edges: [] }
+    params.resolveNodeIdentities = vi.fn((nodes: readonly Node[]) => new Promise<Node[]>((done) => { resolve = done; void nodes }))
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    const pending = result.current.handleDuplicateNode("n1")
+    const candidate = vi.mocked(params.resolveNodeIdentities).mock.calls[0][0][0]
+    expect(Object.keys(candidate.data).filter((key) => key.startsWith("_"))).toEqual([])
+    expect(candidate.data).toMatchObject({ config: { code: "x" } })
+    // Selecting the original replaces the graph object but not its structure.
+    params.graphRef.current = { nodes: [{ ...original, selected: true }], edges: [] }
+    await act(async () => { resolve([candidate]); await pending })
+
+    expect(params.setNodes).toHaveBeenCalledTimes(1)
+    expect(params.setSelectedNode).toHaveBeenCalledWith(candidate)
+  })
+
   it("rejects a stale duplicate identity result after graph replacement", async () => {
     let resolve!: (nodes: Node[]) => void
     const params = makeParams()

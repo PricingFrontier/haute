@@ -22,23 +22,36 @@ import {
 } from "./useDocumentStatusStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
+import type { ModellingPreviewData } from "../panels/ModellingPreview"
 import type {
   ApplyOptimiserResponse,
   ExecutionMetrics,
   ExplorePivotResult,
   ExplorePivotStatusResponse,
   FrontierData,
-  FrontierPointSummary,
   FrontierSelectResponse,
   JobStatus,
   OptimiserApplyQuery,
-  OptimiserEffectiveBound,
   OptimiserSolveResult,
   TrainResponse,
 } from "../api/types"
 import type { ColumnInfo } from "../types/node"
-import { TERMINAL_JOB_STATUSES } from "../api/types"
 import { clearTrainedJobHandle, writeTrainedJobHandle } from "../utils/trainedJobHandles"
+import {
+  applyFrontierPointSummary,
+  assertSelectReplyForPoint,
+  frontierFromSolveResult,
+  frontierPointSummaryFromSelect,
+  optimiserApplyIdentityFor,
+  optimiserApplyKey,
+  resultForFrontierPoint,
+  sameApplyTarget,
+  selectReplyIsCurrent,
+  withoutApplyEntriesForNodes,
+  withoutSupersededApplyEntries,
+} from "../utils/optimiserSolveResults"
+import { nextTrainEstimate, type TrainEstimateSample } from "../utils/trainEstimate"
+import { hasTrainResult, modellingPreviewFor, optimiserPreviewFor } from "./nodeResultsSelectors"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
@@ -61,75 +74,6 @@ export interface OptimiserApplyCacheEntry {
   key: string
   identity: OptimiserApplyIdentity
   response: ApplyOptimiserResponse
-}
-
-type TrainEstimateSample = {
-  iteration: number
-  elapsedSeconds: number
-  totalIterations: number
-  mode?: "fits"
-}
-
-export function nextTrainEstimate(
-  previous: TrainEstimateSample[],
-  progress: TrainProgress,
-): {
-  samples: TrainEstimateSample[]
-  estimatedRemainingSeconds: number | null
-} {
-  if (TERMINAL_JOB_STATUSES.has(progress.status)) {
-    return { samples: [], estimatedRemainingSeconds: null }
-  }
-
-  const tuningSample = (
-    progress.phase != null
-    && progress.completed_fits != null
-    && progress.total_fits != null
-  )
-  const sample: TrainEstimateSample = {
-    iteration: tuningSample ? progress.completed_fits! : progress.iteration,
-    elapsedSeconds: progress.elapsed_seconds,
-    totalIterations: tuningSample ? progress.total_fits! : progress.total_iterations,
-    ...(tuningSample ? { mode: "fits" as const } : {}),
-  }
-  const validSample =
-    Number.isFinite(sample.iteration)
-    && Number.isFinite(sample.elapsedSeconds)
-    && Number.isFinite(sample.totalIterations)
-    && sample.iteration > 0
-    && sample.elapsedSeconds > 0
-    && sample.totalIterations > sample.iteration
-  if (!validSample) {
-    return { samples: previous, estimatedRemainingSeconds: null }
-  }
-
-  const prior = previous.at(-1)
-  if (!prior) return { samples: [sample], estimatedRemainingSeconds: null }
-  if (
-    prior.mode !== sample.mode
-    ||
-    sample.iteration <= prior.iteration
-    || sample.elapsedSeconds <= prior.elapsedSeconds
-  ) {
-    return { samples: previous, estimatedRemainingSeconds: null }
-  }
-
-  const rate =
-    (sample.iteration - prior.iteration)
-    / (sample.elapsedSeconds - prior.elapsedSeconds)
-  const remaining = (sample.totalIterations - sample.iteration) / rate
-  const estimatedRemainingSeconds =
-    Number.isFinite(rate)
-    && rate > 0
-    && Number.isFinite(remaining)
-    && remaining > 0
-      ? remaining
-      : null
-
-  return {
-    samples: [prior, sample],
-    estimatedRemainingSeconds,
-  }
 }
 
 // Result caches use entry-count LRU deliberately: preview payloads are already
@@ -199,7 +143,6 @@ interface CachedPreview {
 }
 
 interface CachedSolveFields {
-  error?: string
   terminalStatus?: SolveProgress | null
   jobId: string
   configHash: string
@@ -211,14 +154,27 @@ interface CachedSolveFields {
   nodeLabel: string
 }
 
+/** The node's latest solve attempt, when it failed: what it was asked to solve and why it failed. */
+export interface FailedSolveAttempt {
+  jobId: string
+  configHash: string
+  source: string
+  structuralVersion: number
+  error: string
+  terminalStatus: SolveProgress | null
+}
+
 /** A node's solve result: the displayed result (a selected frontier point's
- *  summary applied, or the solve's) and the as-solved one. A later failed solve
- *  keeps it and adds its `error`. */
+ *  summary applied, or the solve's) and the as-solved one, under the identity of
+ *  the job that solved it. A later failed attempt is kept beside it in
+ *  `failedAttempt` and never relabels it. */
 export interface SolvedCachedSolveResult extends CachedSolveFields {
   result: OptimiserSolveResult
   originalResult: OptimiserSolveResult
   frontier: FrontierData | null
   selectedPointIndex: number | null
+  /** Absent until an attempt after this result fails; a completed solve has none. */
+  failedAttempt?: FailedSolveAttempt
 }
 
 /** A failed solve with no earlier result: nothing was solved, so no result is
@@ -226,9 +182,9 @@ export interface SolvedCachedSolveResult extends CachedSolveFields {
 interface FailedCachedSolveResult extends CachedSolveFields {
   result: null
   originalResult: null
-  error: string
   frontier: null
   selectedPointIndex: null
+  failedAttempt: FailedSolveAttempt
 }
 
 export type CachedSolveResult = SolvedCachedSolveResult | FailedCachedSolveResult
@@ -247,8 +203,12 @@ interface ActiveSolveJob {
   documentFence?: DocumentExecutionFence
 }
 
+/** A node's training outcome: the server's result, or, for a job that failed,
+ *  no result and the failure, as the solve cache models it. */
 export interface CachedTrainResult {
-  result: TrainResult
+  result: TrainResult | null
+  /** Why the job failed; set exactly when `result` is null. */
+  error?: string
   terminalStatus?: TrainProgress | null
   jobId: string
   configHash: string
@@ -344,59 +304,16 @@ function jobFenceIsCurrent(job: { documentFence?: DocumentExecutionFence }): boo
  * Runs at the store's completion boundary, so a job that finishes while the
  * node's editor is closed is still restorable after a reload. A completed job
  * started through `startTrainJob` is remembered under its document; an error,
- * or a direct completion with no job, forgets the node's handle.
+ * or a job with no lineage (a refused start), forgets the node's handle.
  */
-/**
- * Cache a node's training result, the most recent first under the cache bound,
- * with its preview: from its job's identity, or with no job an identity that
- * never matches a real source, so it reads as stale.
- */
-function installTrainResult(
-  s: Pick<NodeResultsState, "trainResults" | "expiredTrainJobs" | "pinnedPreviewNodeId">,
-  nodeId: string,
-  result: TrainResult,
-  terminalStatus: TrainProgress | null,
-  job: ActiveTrainJob | undefined,
-): Pick<NodeResultsState, "trainResults" | "expiredTrainJobs"> {
-  touchCachedResult(trainResultRecency, nodeId)
-  const nextCached: CachedTrainResult = {
-    result,
-    terminalStatus,
-    jobId: job?.jobId ?? "",
-    configHash: job?.configHash ?? "",
-    source: job?.source ?? "",
-    structuralVersion: job?.structuralVersion ?? -1,
-  }
-  const bounded = trimCacheByRecency(
-    { ...s.trainResults, [nodeId]: nextCached },
-    trainResultRecency,
-    MAX_CACHED_TRAIN_RESULTS,
-    s.pinnedPreviewNodeId,
-  )
-  for (const evictedNodeId of bounded.evicted) {
-    delete _modellingPreviewCache[evictedNodeId]
-  }
-  if (bounded.records[nodeId]?.result.status === "error") {
-    delete _modellingPreviewCache[nodeId]
-  } else if (bounded.records[nodeId]) {
-    cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
-  }
-  return {
-    trainResults: bounded.records,
-    expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
-  }
-}
-
 function rememberTrainOutcome(
   nodeId: string,
-  job: ActiveTrainJob | undefined,
+  job: ActiveTrainJob,
   result: TrainResult | null,
 ): void {
-  const sourceFile = job
-    ? job.documentFence?.sourceFile
-    : captureDocumentExecutionFence().sourceFile
+  const sourceFile = job.documentFence?.sourceFile
   if (!sourceFile) return
-  if (!job || !job.lineage || result === null || result.status === "error") {
+  if (!job.lineage || result === null || result.status === "error") {
     clearTrainedJobHandle(sourceFile, nodeId)
     return
   }
@@ -408,58 +325,10 @@ function rememberTrainOutcome(
   })
 }
 
-/**
- * The error result a training failure is recorded as: a failed job, or a
- * request the server refused before any job existed.
- */
-export function trainFailureResult(error: string): TrainResult {
-  return { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, validation_loss_history: [], validation_loss_history_truncated: false, double_lift: [], shap_summary: [], shap_beeswarm: [], shap_curves: [], shap_link: null, feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], tboost_tables: null, diagnostics_errors: [], feature_selection: null, final_tree_count: null, fit_evidence: null }
-}
 
-// ─── Config hashing ──────────────────────────────────────────────
-
-export function hashConfig(config: Record<string, unknown>): string {
-  // Editor state travels beside the config (`HauteNodeData.editor` and the
-  // node data's own fields), so the whole config is the node's identity.
-  // Normalise through JSON first so identity follows the same value semantics
-  // as persisted config: undefined object fields are omitted, non-finite
-  // numbers become null, and serialisable values may use toJSON.
-  const json = JSON.stringify(config)
-  const jsonValue: unknown = JSON.parse(json)
-
-  return JSON.stringify(sortObjectKeys(jsonValue))
-}
-
-/** A JSON value with every object's keys sorted, so equal values stringify equally. */
-function sortObjectKeys(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortObjectKeys)
-  }
-  if (value !== null && typeof value === "object") {
-    const object = value as Record<string, unknown>
-    return Object.fromEntries(
-      Object.keys(object)
-        .sort()
-        .map(key => [key, sortObjectKeys(object[key])]),
-    )
-  }
-  return value
-}
-
-// ─── Derived-getter caches (Issue #13) ──────────────────────────
-// Writes keep these memo entries up to date so getOptimiserPreview /
-// getModellingPreview can be read during render without mutating module state.
-
-type ModellingPreviewData = {
-  result: TrainResult
-  jobId: string
-  nodeLabel: string
-  configHash: string
-  elapsedSeconds: number | null
-}
-
-const _optimiserPreviewCache: Record<string, { source: SolvedCachedSolveResult; result: OptimiserPreviewData }> = {}
-const _modellingPreviewCache: Record<string, { source: CachedTrainResult; nodeLabel: string; result: ModellingPreviewData }> = {}
+// ─── Recency of the bounded result caches ───────────────────────
+// The previews derived from a record are memoised on it in
+// `nodeResultsSelectors.ts`; only the LRU recency lives here.
 
 let resultCacheClock = 0
 const previewRecency = new Map<string, number>()
@@ -467,9 +336,8 @@ const solveResultRecency = new Map<string, number>()
 const trainResultRecency = new Map<string, number>()
 const explorePivotResultRecency = new Map<string, number>()
 
+/** Forget every cache's recency (tests, and a hot module reload). */
 export function resetNodeResultsDerivedCaches(): void {
-  for (const key of Object.keys(_optimiserPreviewCache)) delete _optimiserPreviewCache[key]
-  for (const key of Object.keys(_modellingPreviewCache)) delete _modellingPreviewCache[key]
   previewRecency.clear()
   solveResultRecency.clear()
   trainResultRecency.clear()
@@ -498,181 +366,28 @@ function dropCachedResult(recency: Map<string, number>, key: string): void {
   recency.delete(key)
 }
 
-function buildOptimiserPreview(cached: SolvedCachedSolveResult): OptimiserPreviewData {
-  return {
-    result: cached.result,
-    solvedResult: cached.originalResult,
-    jobId: cached.jobId,
-    constraints: cached.constraints,
-    nodeLabel: cached.nodeLabel,
-    frontier: cached.frontier,
-    selectedPointIndex: cached.selectedPointIndex,
-  }
-}
 
-function cacheOptimiserPreview(nodeId: string, cached: CachedSolveResult): void {
-  if (cached.result === null) {
-    delete _optimiserPreviewCache[nodeId]
-    return
-  }
-  _optimiserPreviewCache[nodeId] = { source: cached, result: buildOptimiserPreview(cached) }
-}
 
-function readOptimiserPreview(nodeId: string, cached: SolvedCachedSolveResult): OptimiserPreviewData {
-  const prev = _optimiserPreviewCache[nodeId]
-  return prev && prev.source === cached ? prev.result : buildOptimiserPreview(cached)
-}
 
-/** The as-solved result with a frontier point's server summary applied; a
- *  null summary field clears that field, as on the server. Factor tables are
- *  never absent from a result: a point without them has none (`{}`), as the
- *  server's result and select response report it. */
-function applyFrontierPointSummary(base: OptimiserSolveResult, summary: FrontierPointSummary): OptimiserSolveResult {
-  const overlay: Record<string, unknown> = {}
-  for (const [field, value] of Object.entries(summary)) overlay[field] = value ?? undefined
-  return { ...base, ...overlay, factor_tables: summary.factor_tables ?? {} }
-}
 
-function resultForFrontierPoint(cached: SolvedCachedSolveResult, pointIndex: number): OptimiserSolveResult {
-  const summary = cached.frontier?.point_summaries[pointIndex]
-  if (!summary) throw new Error(`Frontier point index ${pointIndex} is out of range`)
-  return applyFrontierPointSummary(cached.originalResult, summary)
-}
+
+
+
+
+
+
 
 /**
- * The constraint bounds a displayed optimiser result was solved at: its backend
- * `effective_bounds` (the selected frontier point's, else the solve's). The
- * optimiser Summary and the frontier detail card both read bounds only through
- * here, never from the node's configured constraints. A result whose bounds do
- * not cover exactly its constraints, or hold a non-finite bound, is a contract
- * error and throws.
+ * Whether a frontier select reply answers the node's installed solve: the same
+ * job and the same frontier generation. A recompute keeps the job and reuses
+ * point indices for different points, so a reply from another generation (a
+ * late one, or one the node has not installed yet) describes another point.
  */
-export function effectiveConstraintBounds(result: OptimiserSolveResult): Record<string, OptimiserEffectiveBound> {
-  const bounds = result.effective_bounds
-  const constraintNames = Object.keys(result.constraints)
-  const missing = constraintNames.filter((name) => !(name in bounds))
-  const unexpected = Object.keys(bounds).filter((name) => !(name in result.constraints))
-  if (missing.length > 0 || unexpected.length > 0) {
-    throw new Error(
-      `Optimiser result bounds do not match its constraints: missing [${missing.join(", ")}], `
-      + `unexpected [${unexpected.join(", ")}]`,
-    )
-  }
-  for (const [name, { kind, bound }] of Object.entries(bounds)) {
-    if ((kind !== "min" && kind !== "max") || !Number.isFinite(bound)) {
-      throw new Error(`Optimiser result bound for ${name} is invalid: ${JSON.stringify({ kind, bound })}`)
-    }
-  }
-  return bounds
-}
 
-/** The cache key of an `/apply` request identity, with the query canonicalised. */
-export function optimiserApplyKey(identity: OptimiserApplyIdentity): string {
-  return JSON.stringify([
-    identity.jobId,
-    identity.target,
-    sortObjectKeys(identity.query),
-  ])
-}
 
-/** The `/apply` identity a node's cached solve shows now: its job and selected target. */
-export function optimiserApplyIdentityFor(
-  cached: SolvedCachedSolveResult,
-  query: OptimiserApplyQuery,
-): OptimiserApplyIdentity {
-  return {
-    jobId: cached.jobId,
-    target: cached.selectedPointIndex ?? "solved",
-    query,
-  }
-}
 
-function sameApplyTarget(a: OptimiserApplyIdentity, b: OptimiserApplyIdentity): boolean {
-  return a.jobId === b.jobId && a.target === b.target
-}
 
-/** The node's entries for any job other than the one installed. */
-function withoutSupersededApplyEntries(
-  entries: OptimiserApplyCacheEntry[],
-  nodeId: string,
-  installedJobId: string,
-): OptimiserApplyCacheEntry[] {
-  const kept = entries.filter((entry) => entry.nodeId !== nodeId || entry.identity.jobId === installedJobId)
-  return kept.length === entries.length ? entries : kept
-}
 
-function withoutApplyEntriesForNodes(
-  entries: OptimiserApplyCacheEntry[],
-  nodeIds: readonly string[],
-): OptimiserApplyCacheEntry[] {
-  if (nodeIds.length === 0) return entries
-  const dropped = new Set(nodeIds)
-  const kept = entries.filter((entry) => !dropped.has(entry.nodeId))
-  return kept.length === entries.length ? entries : kept
-}
-
-/** Whether a frontier select reply answers the node's installed solve: the same job. */
-function selectReplyIsCurrent(
-  cached: CachedSolveResult | undefined,
-  jobId: string,
-): cached is SolvedCachedSolveResult {
-  return cached !== undefined && cached.result !== null && cached.jobId === jobId
-}
-
-/** A select response is the server's complete result for its point. */
-function frontierPointSummaryFromSelect(selectResult: FrontierSelectResponse): FrontierPointSummary {
-  return {
-    total_objective: selectResult.total_objective,
-    constraints: selectResult.constraints,
-    effective_bounds: selectResult.effective_bounds,
-    lambdas: selectResult.lambdas,
-    converged: selectResult.converged,
-    iterations: selectResult.iterations ?? null,
-    cd_iterations: selectResult.cd_iterations ?? null,
-    clamp_rate: selectResult.clamp_rate ?? null,
-    history: selectResult.history ?? null,
-    ratebook_cd_trace: selectResult.ratebook_cd_trace ?? null,
-    // A point's report is loaded on request by the Adjustments tab, never kept in its summary.
-    adjustments: null,
-    factor_tables: selectResult.factor_tables ?? null,
-    warning: selectResult.warning ?? null,
-    frontier_error: null,
-    diagnostics_errors: selectResult.diagnostics_errors,
-  }
-}
-
-function modellingPreviewNodeLabel(job: ActiveTrainJob | undefined): string {
-  return job?.nodeLabel ?? "Model"
-}
-
-function buildModellingPreview(cached: CachedTrainResult, nodeLabel: string): ModellingPreviewData {
-  return {
-    result: cached.result,
-    jobId: cached.jobId,
-    nodeLabel,
-    configHash: cached.configHash,
-    // The terminal status, never a later job's progress: a re-train's clock
-    // is not this result's.
-    elapsedSeconds: cached.terminalStatus?.elapsed_seconds ?? null,
-  }
-}
-
-function cacheModellingPreview(nodeId: string, cached: CachedTrainResult, job: ActiveTrainJob | undefined): void {
-  const nodeLabel = modellingPreviewNodeLabel(job)
-  _modellingPreviewCache[nodeId] = { source: cached, nodeLabel, result: buildModellingPreview(cached, nodeLabel) }
-}
-
-function readModellingPreview(
-  nodeId: string,
-  cached: CachedTrainResult,
-  job: ActiveTrainJob | undefined,
-): ModellingPreviewData {
-  const nodeLabel = modellingPreviewNodeLabel(job)
-  const prev = _modellingPreviewCache[nodeId]
-  return prev && prev.source === cached && prev.nodeLabel === nodeLabel
-    ? prev.result
-    : buildModellingPreview(cached, nodeLabel)
-}
 
 function trimCacheByRecency<T>(
   records: Record<string, T>,
@@ -817,8 +532,10 @@ interface NodeResultsState {
 
   // ── Training actions ──
   startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number, lineage?: string) => void
-  updateTrainProgress: (nodeId: string, progress: TrainProgress) => void
-  completeTrainJob: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
+  // The training and pivot job actions name the job a reply is for and change
+  // nothing unless the key's active job has that id.
+  updateTrainProgress: (nodeId: string, jobId: string, progress: TrainProgress) => void
+  completeTrainJob: (nodeId: string, jobId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
   /**
    * Put back a completed result the server still holds (after a browser reload).
    * Never replaces a result or a running job the node already has.
@@ -829,14 +546,22 @@ interface NodeResultsState {
    * job. Ignored when the node has meanwhile got a result or a running job.
    */
   markTrainResultExpired: (nodeId: string, jobId: string) => void
-  failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
-  /** Record a training request refused before any job existed, keeping the remembered handle. */
-  failTrainStart: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
+  failTrainJob: (nodeId: string, jobId: string, error: string, terminalStatus?: TrainProgress) => void
+  /**
+   * Record a training request refused before any job existed, under the identity
+   * it was asked for, keeping a running job's tracking and the remembered handle.
+   */
+  failTrainStart: (
+    nodeId: string,
+    attempt: { configHash: string; source: string; structuralVersion: number },
+    error: string,
+    terminalStatus?: TrainProgress,
+  ) => void
 
   startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataVersion?: string | null) => void
-  updateExplorePivotProgress: (key: string, progress: ExplorePivotProgress) => void
-  completeExplorePivotJob: (key: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
-  failExplorePivotJob: (key: string, error: string, terminalStatus?: ExplorePivotProgress) => void
+  updateExplorePivotProgress: (key: string, jobId: string, progress: ExplorePivotProgress) => void
+  completeExplorePivotJob: (key: string, jobId: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
+  failExplorePivotJob: (key: string, jobId: string, error: string, terminalStatus?: ExplorePivotProgress) => void
   /**
    * Takes the auto-update claim for a pivot before submitting. Returns the
    * claim token, or null when an identical target is already claimed (the
@@ -991,20 +716,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         return { solveJobs: omitRecordKey(s.solveJobs, nodeId) }
       }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
-      // Extract frontier data from the result if present
-      const rawFrontier = result.frontier
-      const frontier: FrontierData | null = rawFrontier && rawFrontier.points?.length
-        ? {
-            points: rawFrontier.points,
-            point_summaries: rawFrontier.point_summaries,
-            n_points: rawFrontier.n_points,
-            points_returned: rawFrontier.points_returned,
-            constraint_names: rawFrontier.constraint_names,
-            swept_axes: rawFrontier.swept_axes,
-            points_limit: rawFrontier.points_limit,
-            points_truncated: rawFrontier.points_truncated,
-          }
-        : null
+      const frontier = frontierFromSolveResult(result)
       const initialPointIndex = frontier ? 0 : null
       touchCachedResult(solveResultRecency, nodeId)
       let nextCached: CachedSolveResult = {
@@ -1035,10 +747,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         MAX_CACHED_SOLVE_RESULTS,
         s.pinnedPreviewNodeId,
       )
-      for (const evictedNodeId of bounded.evicted) {
-        delete _optimiserPreviewCache[evictedNodeId]
-      }
-      if (bounded.records[nodeId]) cacheOptimiserPreview(nodeId, bounded.records[nodeId])
       // A new job makes the node's /apply responses answers to other requests.
       const optimiserApplyCache = withoutApplyEntriesForNodes(
         withoutSupersededApplyEntries(s.optimiserApplyCache, nodeId, job.jobId),
@@ -1060,24 +768,33 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.solveJobs; void _removedJob
       touchCachedResult(solveResultRecency, nodeId)
-      const failure = {
-        terminalStatus: terminalStatus ?? null,
+      const failedAttempt: FailedSolveAttempt = {
         jobId: job.jobId,
         configHash: job.configHash,
         source: job.source,
         structuralVersion: job.structuralVersion,
-        constraints: job.constraints,
-        nodeLabel: job.nodeLabel,
-        frontier: null,
-        selectedPointIndex: null,
         error,
+        terminalStatus: terminalStatus ?? null,
       }
-      // An earlier result is kept beside the error; with none, nothing was solved
-      // and no result stands in for one.
+      // An earlier result keeps its own identity, with the failed attempt beside
+      // it; with none, nothing was solved and no result stands in for one.
       const previous = s.solveResults[nodeId]
       const nextCached: CachedSolveResult = previous !== undefined && previous.result !== null
-        ? { ...previous, ...failure }
-        : { ...failure, result: null, originalResult: null }
+        ? { ...previous, failedAttempt }
+        : {
+            terminalStatus: failedAttempt.terminalStatus,
+            jobId: job.jobId,
+            configHash: job.configHash,
+            source: job.source,
+            structuralVersion: job.structuralVersion,
+            constraints: job.constraints,
+            nodeLabel: job.nodeLabel,
+            result: null,
+            originalResult: null,
+            frontier: null,
+            selectedPointIndex: null,
+            failedAttempt,
+          }
       const bounded = trimCacheByRecency(
         {
           ...s.solveResults,
@@ -1087,10 +804,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         MAX_CACHED_SOLVE_RESULTS,
         s.pinnedPreviewNodeId,
       )
-      for (const evictedNodeId of bounded.evicted) {
-        delete _optimiserPreviewCache[evictedNodeId]
-      }
-      if (bounded.records[nodeId]) cacheOptimiserPreview(nodeId, bounded.records[nodeId])
       return {
         solveJobs: remainingJobs,
         solveResults: bounded.records,
@@ -1115,7 +828,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         selectedPointIndex: pointIndex,
         result,
       }
-      cacheOptimiserPreview(nodeId, nextCached)
       return {
         solveResults: {
           ...s.solveResults,
@@ -1125,13 +837,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     }),
 
   updateFrontierAfterSelect: (nodeId, jobId, pointIndex, selectResult) => {
-    // Backend echoes ``point_index`` in every select response.  A mismatch is
-    // never a race — it is a contract violation, so fail loudly per CLAUDE.md.
-    if (selectResult.point_index != null && selectResult.point_index !== pointIndex) {
-      throw new Error(
-        `Frontier select response point_index (${selectResult.point_index}) does not match requested index (${pointIndex})`,
-      )
-    }
+    assertSelectReplyForPoint(pointIndex, selectResult)
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (!selectReplyIsCurrent(cached, jobId)) return s
@@ -1152,7 +858,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       if (cached.selectedPointIndex !== null && cached.selectedPointIndex !== pointIndex) {
         if (frontier === cached.frontier) return s
         const nextCached: SolvedCachedSolveResult = { ...cached, frontier }
-        cacheOptimiserPreview(nodeId, nextCached)
         return {
           solveResults: {
             ...s.solveResults,
@@ -1166,7 +871,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         selectedPointIndex: pointIndex,
         result: applyFrontierPointSummary(cached.originalResult, summary),
       }
-      cacheOptimiserPreview(nodeId, nextCached)
       return {
         solveResults: {
           ...s.solveResults,
@@ -1177,11 +881,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   },
 
   recordFrontierPointSummary: (nodeId, jobId, pointIndex, selectResult) => {
-    if (selectResult.point_index != null && selectResult.point_index !== pointIndex) {
-      throw new Error(
-        `Frontier select response point_index (${selectResult.point_index}) does not match requested index (${pointIndex})`,
-      )
-    }
+    assertSelectReplyForPoint(pointIndex, selectResult)
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (
@@ -1200,7 +900,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           ? applyFrontierPointSummary(cached.originalResult, summary)
           : cached.result,
       }
-      cacheOptimiserPreview(nodeId, nextCached)
       return { solveResults: { ...s.solveResults, [nodeId]: nextCached } }
     })
   },
@@ -1257,10 +956,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         estimateSamples: [],
         estimatedRemainingSeconds: null,
       }
-      const cached = s.trainResults[nodeId]
-      if (cached && cached.result.status !== "error") {
-        cacheModellingPreview(nodeId, cached, nextJob)
-      }
       return {
         trainJobs: {
           ...s.trainJobs,
@@ -1270,10 +965,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  updateTrainProgress: (nodeId, progress) =>
+  updateTrainProgress: (nodeId, jobId, progress) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
       }
@@ -1283,71 +978,20 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeTrainJob: (nodeId, result, terminalStatus) => {
+  completeTrainJob: (nodeId, jobId, result, terminalStatus) => {
     const completingJob = get().trainJobs[nodeId]
-    const fenceCurrent = completingJob === undefined || jobFenceIsCurrent(completingJob)
+    if (completingJob?.jobId !== jobId) return
+    const fenceCurrent = jobFenceIsCurrent(completingJob)
     set((s) => {
       const job = s.trainJobs[nodeId]
-      if (job && !jobFenceIsCurrent(job)) {
-        return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
-      }
-      // Remove the active job if present; also works for direct completion
-      // (no active job) used by ModellingConfig for a synchronous result.
-      const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
-      return {
-        trainJobs: job ? remainingJobs : s.trainJobs,
-        ...installTrainResult(s, nodeId, result, terminalStatus ?? null, job),
-      }
-    })
-    if (fenceCurrent) rememberTrainOutcome(nodeId, completingJob, result)
-  },
-
-  failTrainStart: (nodeId, result, terminalStatus) =>
-    // The request was refused before any job existed: the node shows the
-    // failure, while a running job's tracking and the browser's handle to the
-    // last completed job, which this attempt neither replaced nor
-    // invalidated on the server, stay as they are.
-    set((s) => installTrainResult(s, nodeId, result, terminalStatus ?? null, undefined)),
-
-  markTrainResultExpired: (nodeId, jobId) =>
-    set((s) => {
-      if (s.trainResults[nodeId] || s.trainJobs[nodeId]) return s
-      return { expiredTrainJobs: { ...s.expiredTrainJobs, [nodeId]: jobId } }
-    }),
-
-  restoreTrainResult: (nodeId, cached) =>
-    set((s) => {
-      if (s.trainResults[nodeId] || s.trainJobs[nodeId] || cached.result.status === "error") return s
-      touchCachedResult(trainResultRecency, nodeId)
-      const bounded = trimCacheByRecency(
-        { ...s.trainResults, [nodeId]: cached },
-        trainResultRecency,
-        MAX_CACHED_TRAIN_RESULTS,
-        s.pinnedPreviewNodeId,
-      )
-      for (const evictedNodeId of bounded.evicted) {
-        delete _modellingPreviewCache[evictedNodeId]
-      }
-      if (bounded.records[nodeId]) cacheModellingPreview(nodeId, bounded.records[nodeId], undefined)
-      return {
-        trainResults: bounded.records,
-        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
-      }
-    }),
-
-  failTrainJob: (nodeId, error, terminalStatus) => {
-    const failingJob = get().trainJobs[nodeId]
-    const fenceCurrent = failingJob !== undefined && jobFenceIsCurrent(failingJob)
-    set((s) => {
-      const job = s.trainJobs[nodeId]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
       }
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: trainFailureResult(error),
+        result,
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
@@ -1363,10 +1007,89 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         MAX_CACHED_TRAIN_RESULTS,
         s.pinnedPreviewNodeId,
       )
-      for (const evictedNodeId of bounded.evicted) {
-        delete _modellingPreviewCache[evictedNodeId]
+      return {
+        trainJobs: remainingJobs,
+        trainResults: bounded.records,
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
       }
-      delete _modellingPreviewCache[nodeId]
+    })
+    if (fenceCurrent) rememberTrainOutcome(nodeId, completingJob, result)
+  },
+
+  failTrainStart: (nodeId, attempt, error, terminalStatus) =>
+    // The request was refused before any job existed: the node shows the
+    // failure, while a running job's tracking and the browser's handle to the
+    // last completed job, which this attempt neither replaced nor invalidated
+    // on the server, stay as they are.
+    set((s) => {
+      touchCachedResult(trainResultRecency, nodeId)
+      const bounded = trimCacheByRecency(
+        {
+          ...s.trainResults,
+          [nodeId]: { result: null, error, terminalStatus: terminalStatus ?? null, jobId: "", ...attempt },
+        },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      return {
+        trainResults: bounded.records,
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
+      }
+    }),
+
+  markTrainResultExpired: (nodeId, jobId) =>
+    set((s) => {
+      if (s.trainResults[nodeId] || s.trainJobs[nodeId]) return s
+      return { expiredTrainJobs: { ...s.expiredTrainJobs, [nodeId]: jobId } }
+    }),
+
+  restoreTrainResult: (nodeId, cached) =>
+    set((s) => {
+      if (s.trainResults[nodeId] || s.trainJobs[nodeId] || !hasTrainResult(cached)) return s
+      touchCachedResult(trainResultRecency, nodeId)
+      const bounded = trimCacheByRecency(
+        { ...s.trainResults, [nodeId]: cached },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      return {
+        trainResults: bounded.records,
+        expiredTrainJobs: forgetExpiredTrainJob(s.expiredTrainJobs, nodeId),
+      }
+    }),
+
+  failTrainJob: (nodeId, jobId, error, terminalStatus) => {
+    const failingJob = get().trainJobs[nodeId]
+    if (failingJob?.jobId !== jobId) return
+    const fenceCurrent = jobFenceIsCurrent(failingJob)
+    set((s) => {
+      const job = s.trainJobs[nodeId]
+      if (job?.jobId !== jobId) return s
+      if (!jobFenceIsCurrent(job)) {
+        return { trainJobs: omitRecordKey(s.trainJobs, nodeId) }
+      }
+      const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
+      touchCachedResult(trainResultRecency, nodeId)
+      const nextCached: CachedTrainResult = {
+        result: null,
+        error,
+        terminalStatus: terminalStatus ?? null,
+        jobId: job.jobId,
+        configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.trainResults,
+          [nodeId]: nextCached,
+        },
+        trainResultRecency,
+        MAX_CACHED_TRAIN_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
       return {
         trainJobs: remainingJobs,
         trainResults: bounded.records,
@@ -1397,20 +1120,20 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       },
     })),
 
-  updateExplorePivotProgress: (key, progress) =>
+  updateExplorePivotProgress: (key, jobId, progress) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }
       return { pivotJobs: { ...s.pivotJobs, [key]: { ...job, progress } } }
     }),
 
-  completeExplorePivotJob: (key, result, terminalStatus) =>
+  completeExplorePivotJob: (key, jobId, result, terminalStatus) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }
@@ -1437,10 +1160,10 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return { pivotJobs, pivotResults }
     }),
 
-  failExplorePivotJob: (key, error, terminalStatus) =>
+  failExplorePivotJob: (key, jobId, error, terminalStatus) =>
     set((s) => {
       const job = s.pivotJobs[key]
-      if (!job) return s
+      if (job?.jobId !== jobId) return s
       if (!jobFenceIsCurrent(job)) {
         return { pivotJobs: omitRecordKey(s.pivotJobs, key) }
       }
@@ -1542,16 +1265,15 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     if (!cached || cached.result === null) {
       return null
     }
-    return readOptimiserPreview(nodeId, cached)
+    return optimiserPreviewFor(cached)
   },
 
   getModellingPreview: (nodeId) => {
     const cached = get().trainResults[nodeId]
-    if (!cached || cached.result.status === "error") {
+    if (!cached || !hasTrainResult(cached)) {
       return null
     }
-    const job = get().trainJobs[nodeId]
-    return readModellingPreview(nodeId, cached, job)
+    return modellingPreviewFor(cached, get().trainJobs[nodeId]?.nodeLabel ?? "Model")
   },
 
   // ── Cleanup ──
@@ -1566,7 +1288,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   touchModellingPreview: (nodeId) => {
     const cached = get().trainResults[nodeId]
-    if (cached && cached.result.status !== "error") {
+    if (cached && hasTrainResult(cached)) {
       touchCachedResult(trainResultRecency, nodeId)
     } else {
       dropCachedResult(trainResultRecency, nodeId)
@@ -1581,9 +1303,6 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   }),
 
   clearNode: (nodeId) => {
-    // Clear derived-getter caches for this node
-    delete _optimiserPreviewCache[nodeId]
-    delete _modellingPreviewCache[nodeId]
     dropCachedResult(previewRecency, nodeId)
     dropCachedResult(solveResultRecency, nodeId)
     dropCachedResult(trainResultRecency, nodeId)

@@ -27,6 +27,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import { apiErrorCode } from "../api/errors"
+import { canonicalJson } from "../utils/canonicalJson"
 
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
@@ -216,21 +217,13 @@ function usePrefersReducedMotion(): boolean {
   )
 }
 
-function stableValue(value: unknown): string {
-  if (value === undefined) return "undefined"
-  if (typeof value === "bigint") return `${value}n`
-  if (value === null || typeof value !== "object") return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`
-  return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`).join(",")}}`
-}
-
 /** The server's raw error detail for the trace panel's "Technical details"
  *  disclosure: structured details are kept whole (keys sorted), not reduced to
  *  the message `apiErrorMessage` would show beside them. */
 function technicalDetail(err: unknown): string {
   const detail = (err as { detail?: unknown; rawDetail?: unknown })?.rawDetail ?? (err as { detail?: unknown })?.detail
   if (typeof detail === "string") return detail
-  if (detail !== undefined) return stableValue(detail)
+  if (detail !== undefined) return canonicalJson(detail)
   return err instanceof Error ? err.message : String(err)
 }
 
@@ -301,7 +294,7 @@ export default function useTracing({
   // What a 409's recovery notice belongs to. The preview refresh it starts
   // replaces the seed plan and may raise the node-data epoch; the notice
   // asking for the row again must outlive exactly that refresh.
-  const recoveryContext = stableValue({
+  const recoveryContext = canonicalJson({
     structuralVersion,
     activeSource,
     rowLimit,
@@ -311,7 +304,7 @@ export default function useTracing({
     () => ({ recoveryContext }),
     [recoveryContext],
   )
-  const semanticContext = stableValue({
+  const semanticContext = canonicalJson({
     recoveryContext,
     // The table the explained preview shows; a refresh replaces it, as it does the seed plan.
     frame: previewOutputHandle ?? previewFrame ?? null,
@@ -389,7 +382,7 @@ export default function useTracing({
     if (progressTimer.current) clearTimeout(progressTimer.current)
     const controller = new AbortController()
     traceAbort.current = controller
-    const requestContext = stableValue({
+    const requestContext = canonicalJson({
       semanticContext,
       rowIndex,
       column,

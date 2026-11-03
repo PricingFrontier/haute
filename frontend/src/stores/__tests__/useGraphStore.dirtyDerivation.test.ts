@@ -88,7 +88,7 @@ function resetStore() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("useUIStore - derived dirty flag (item #99)", () => {
+describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph store", () => {
   beforeEach(resetStore)
 
   // -----------------------------------------------------------------------

@@ -5,8 +5,9 @@ import { create } from "zustand"
  * consumer of the node started — a shared data-point build, an Import — so the
  * frame can show Stop while it runs and stop all of it.
  *
- * Only work this browser tab started is registered. A build joined from
- * another tab or consumer is theirs to stop; this node only stops waiting.
+ * Only work this browser tab started is registered, by every consumer of the
+ * node that reads it. A build joined from another tab or client is theirs to
+ * stop; this node only stops waiting.
  */
 interface NodeWorkState {
   /** Running work, keyed by the registering consumer, to the node it is for. */

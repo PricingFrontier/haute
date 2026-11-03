@@ -775,19 +775,22 @@ describe("App integration - degraded execution fence", () => {
       nodes: [makeNode("survivor", "Survivor")],
     })
     vi.mocked(api.applyRemoveUnavailableNode).mockResolvedValueOnce({
-      repair_kind: "remove_unavailable_node",
-      applied_artifacts: ["rating/main.py"],
-      changes: [{
-        path: "rating/main.py",
-        operation: "update",
-        description: "Remove broken.",
-        diff: "-@pipeline.removed",
-        diff_truncated: false,
-      }],
-      document: repaired,
-      field_changes: [],
-      completeness: [],
-      previous_config: null,
+      value: {
+        repair_kind: "remove_unavailable_node",
+        applied_artifacts: ["rating/main.py"],
+        changes: [{
+          path: "rating/main.py",
+          operation: "update",
+          description: "Remove broken.",
+          diff: "-@pipeline.removed",
+          diff_truncated: false,
+        }],
+        document: repaired,
+        field_changes: [],
+        completeness: [],
+        previous_config: null,
+      },
+      documentFingerprint: "fingerprint-repaired",
     })
 
     render(<App />)
@@ -814,6 +817,8 @@ describe("App integration - degraded execution fence", () => {
       { timeout: PANEL_HYDRATION_TIMEOUT_MS },
     )
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-repaired")
+    // The watcher's frame of the repair's own write, or a reconnect, skips the document shown.
+    expect(useDocumentStatusStore.getState().documentFingerprint).toBe("fingerprint-repaired")
     expect(screen.queryByTestId("pipeline-repair-dialog")).not.toBeInTheDocument()
     expect(screen.queryByTestId("node-recovery-diagnostics")).not.toBeInTheDocument()
   })
@@ -2549,6 +2554,56 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     // ...but the still-valid edge is untouched.
     expect(useGraphStore.getState().edges).toHaveLength(1)
   })
+
+  it.each([
+    ["in order", [0, 1]],
+    ["reversed", [1, 0]],
+  ])("keeps two column deselections made while identities resolve (replies %s) and saves both", async (_order, replyOrder) => {
+    const graph = makeApiInputGraph()
+    const drivers = (graph.nodes[0].data.config as { tables: Array<{ columns: Array<Record<string, unknown>> }> }).tables[1]
+    drivers.columns.push(
+      { ...drivers.columns[0], name: "licence_years", path: "$[:].drivers[:].licence_years" },
+      { ...drivers.columns[0], name: "claims", path: "$[:].drivers[:].claims" },
+    )
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline(graph))
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    const answer = vi.mocked(api.resolveEditorNodeIdentities).getMockImplementation()!
+    const replies: Array<() => void> = []
+    for (let reply = 0; reply < 2; reply += 1) {
+      vi.mocked(api.resolveEditorNodeIdentities).mockImplementationOnce((payload) => new Promise((resolve, reject) => {
+        replies.push(() => { answer(payload).then(resolve, reject) })
+      }))
+    }
+    const driverSelections = (config: unknown) => (
+      config as { tables: Array<{ columns: Array<{ selected: boolean }> }> }
+    ).tables[1].columns.map((column) => column.selected)
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    fireEvent.click(await findEditorTestId("api-input-table-1-col-0-selected"))
+    fireEvent.click(screen.getByTestId("api-input-table-1-col-1-selected"))
+
+    // The editor shows both edits while neither reply has arrived.
+    expect(screen.getByTestId("api-input-table-1-col-0-selected")).not.toBeChecked()
+    expect(screen.getByTestId("api-input-table-1-col-1-selected")).not.toBeChecked()
+    expect(replies).toHaveLength(2)
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(api.savePipeline).not.toHaveBeenCalled()
+
+    await act(async () => {
+      for (const index of replyOrder) replies[index]()
+    })
+
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1))
+    expect(driverSelections(configFor("api_0"))).toEqual([false, false, true])
+    const [payload] = vi.mocked(api.savePipeline).mock.calls[0]
+    const saved = payload.graph.nodes.find((node) => node.id === "api_0")
+    expect(driverSelections(saved?.data.config)).toEqual([false, false, true])
+    expect(useToastStore.getState().toasts.filter((toast) => toast.type === "error")).toEqual([])
+  })
+
   it("migrates a frame rename through an arbitrary canonical occurrence and every fan-out target", async () => {
     const base = makeApiInputGraph()
     const occurrence = makeNode(
@@ -3215,7 +3270,8 @@ describe("App integration - a Model Training node's results panel", () => {
   })
 
   it("shows the results, and no such message, when a result is present", async () => {
-    useNodeResultsStore.getState().completeTrainJob("model", makeTrainResult())
+    useNodeResultsStore.getState().startTrainJob("model", "job-1", "Claims Model", "config", "live", 0)
+    useNodeResultsStore.getState().completeTrainJob("model", "job-1", makeTrainResult())
     await openModelNode()
 
     expect(await screen.findByRole("tablist", { name: "Model result panes" }, { timeout: 10_000 })).toBeTruthy()

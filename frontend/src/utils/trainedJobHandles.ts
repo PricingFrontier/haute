@@ -17,6 +17,7 @@ import {
   trainingIdentityConfig,
 } from "./modellingExportConfig"
 import { isPlainObject } from "../types/guards"
+import { canonicalValue } from "./canonicalJson"
 
 const STORAGE_KEY = "haute.modelling.trainedJobs.v2"
 
@@ -113,20 +114,6 @@ export type TrainingLineageInput = {
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "")
 
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical)
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .filter((key) => record[key] !== undefined)
-        .map((key) => [key, canonical(record[key])]),
-    )
-  }
-  return value
-}
-
 function nodeConfig(data: Record<string, unknown>): Record<string, unknown> {
   const raw = data.config
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {}
@@ -164,7 +151,7 @@ function lineageMaterial(graph: TrainingLineageInput): unknown {
         text(data.description),
         text(data.code),
         text(data.func_name),
-        canonical(nodeConfig(data)),
+        canonicalValue(nodeConfig(data)),
       ] as const
     })
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
@@ -181,18 +168,18 @@ function lineageMaterial(graph: TrainingLineageInput): unknown {
 function constantsMaterial(graph: TrainingLineageInput): Record<string, unknown> {
   if (graph.global_constants === undefined && graph.global_constants_error === undefined) return {}
   return {
-    globalConstants: canonical(graph.global_constants ?? []),
+    globalConstants: canonicalValue(graph.global_constants ?? []),
     globalConstantsError: graph.global_constants_error ?? null,
   }
 }
 
 /** A submodel's interface and file, plus its own graph by the same rules. */
 function submodelMaterial(definition: unknown): unknown {
-  if (!isPlainObject(definition)) return canonical(definition)
+  if (!isPlainObject(definition)) return canonicalValue(definition)
   const { graph, ...interfaceFields } = definition
   return {
-    definition: canonical(interfaceFields),
-    graph: isPlainObject(graph) ? lineageMaterial(graph as TrainingLineageInput) : canonical(graph),
+    definition: canonicalValue(interfaceFields),
+    graph: isPlainObject(graph) ? lineageMaterial(graph as TrainingLineageInput) : canonicalValue(graph),
   }
 }
 

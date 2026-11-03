@@ -865,7 +865,11 @@ describe("usePipelineAPI", () => {
     // that frame while the submitted graph is still dirty.
     act(() => {
       params.sourceRevisionRef.current = "revision-save"
-      useDocumentStatusStore.getState().setSourceRevision("revision-save")
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(
+        makePipelineEditorDocument({ source_file: useDocumentStatusStore.getState().sourceFile, source_revision: "revision-save" }),
+        false,
+        "fingerprint-saved",
+      )
       useDocumentStatusStore.getState().setGraphSynchronized(false)
       useUIStore.getState().setSyncBanner(
         "Pipeline changed on disk while you have unsaved changes.",
@@ -907,7 +911,11 @@ describe("usePipelineAPI", () => {
 
     act(() => {
       params.sourceRevisionRef.current = "revision-external"
-      useDocumentStatusStore.getState().setSourceRevision("revision-external")
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(
+        makePipelineEditorDocument({ source_file: useDocumentStatusStore.getState().sourceFile, source_revision: "revision-external" }),
+        false,
+        "fingerprint-external",
+      )
       useDocumentStatusStore.getState().setGraphSynchronized(false)
       useUIStore.getState().setSyncBanner("External change is waiting.")
       resolveSave({

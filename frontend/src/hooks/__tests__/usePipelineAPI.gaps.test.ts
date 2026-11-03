@@ -15,10 +15,13 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import { pendingSavesSettled } from "../../stores/pendingSaves"
 import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
+  loadPipelineDocument: vi.fn(),
   previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
   previewNode: vi.fn(),
   previewRecoveryNode: vi.fn(),
@@ -26,12 +29,16 @@ vi.mock("../../api/client", () => ({
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
+    body?: unknown
+    rawDetail?: unknown
 
-    constructor(msg: string, status = 0, detail?: string) {
+    constructor(msg: string, status = 0, detail?: string, body?: unknown, rawDetail?: unknown) {
       super(msg)
       this.name = "ApiError"
       this.status = status
       this.detail = detail
+      this.body = body
+      this.rawDetail = rawDetail
     }
   },
 }))
@@ -58,10 +65,10 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { loadPipeline, previewNode, savePipeline, ApiError } from "../../api/client"
+import { loadPipeline, loadPipelineDocument, previewNode, savePipeline, ApiError } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
 import { NODE_TYPES } from "../../utils/nodeTypes"
-import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
+import { makeLoadedPipeline, makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
@@ -185,8 +192,10 @@ describe("usePipelineAPI - gap tests", () => {
     it("does NOT show error preview when the backend supersedes an obsolete preview", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
 
+      // Reworded on purpose: the code, not the message, says the preview was superseded.
+      const superseded = { error_code: "request_superseded", message: "A newer preview of this node replaced this one" }
       mockPreview.mockRejectedValue(
-        new ApiError("HTTP 409", 409, "Preview request superseded by a newer request"),
+        new ApiError("HTTP 409", 409, JSON.stringify(superseded), { detail: superseded }, superseded),
       )
 
       const params = makeParams()
@@ -202,6 +211,29 @@ describe("usePipelineAPI - gap tests", () => {
       await advanceTimers(200)
       expect(mockPreview).toHaveBeenCalledTimes(1)
       expect(result.current.previewData?.status).not.toBe("error")
+    })
+
+    it("shows a 409 that only mentions supersession as a preview error", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+
+      // No code: a worker stopped for another reason is a failure the panel shows.
+      mockPreview.mockRejectedValue(
+        new ApiError("HTTP 409", 409, "Interactive execution was stopped with reason 'superseded'"),
+      )
+
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+
+      await advanceTimers(200)
+      expect(mockPreview).toHaveBeenCalledTimes(1)
+      expect(result.current.previewData?.status).toBe("error")
     })
   })
 
@@ -236,6 +268,115 @@ describe("usePipelineAPI - gap tests", () => {
 
       await waitFor(() => {
         expect(saveCallCount).toBe(2)
+      })
+    })
+
+    it("adopts the saved document's fingerprint, and holds live-sync frames until the save answers", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+      let answer!: (response: Awaited<ReturnType<typeof savePipeline>>) => void
+      mockSave.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+      const params = makeParams()
+      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      const sourceFile = useDocumentStatusStore.getState().sourceFile
+      expect(pendingSavesSettled(sourceFile)).toBeNull()
+
+      let saving!: Promise<boolean>
+      act(() => { saving = result.current.handleSave() })
+      const held = pendingSavesSettled(sourceFile)
+      expect(held).not.toBeNull()
+      await act(async () => {
+        answer({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" })
+        await saving
+        await held
+      })
+
+      expect(useDocumentStatusStore.getState()).toMatchObject({
+        sourceRevision: "revision-saved",
+        documentFingerprint: "fingerprint-saved",
+      })
+      expect(pendingSavesSettled(sourceFile)).toBeNull()
+    })
+
+    describe("whose answer was lost", () => {
+      const onDisk = () => makePipelineEditorDocument({
+        source_file: "rating/main.py",
+        source_revision: "revision-test",
+        pipeline_name: "test",
+        nodes: [makeNode("n1")],
+        preserved_blocks: ["# kept"],
+      })
+
+      /** A save whose first answer is lost, and whose repeat `repeat` answers. */
+      async function saveWithLostAnswer(repeat: () => ReturnType<typeof savePipeline>) {
+        mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
+        mockSave.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        mockSave.mockImplementationOnce(repeat)
+        const params = makeParams()
+        const { result } = renderHook(() => usePipelineAPI(params))
+        await waitFor(() => expect(result.current.loading).toBe(false))
+        let saved!: boolean
+        await act(async () => { saved = await result.current.handleSave() })
+        return saved
+      }
+
+      it("is sent again exactly, under the same operation, and acknowledged from the repeat's answer", async () => {
+        const saved = await saveWithLostAnswer(() => Promise.resolve({
+          file: "rating/main.py",
+          pipeline_name: "test",
+          source_revision: "revision-written",
+          document_fingerprint: "fingerprint-written",
+        } as Awaited<ReturnType<typeof savePipeline>>))
+
+        expect(saved).toBe(true)
+        expect(mockSave).toHaveBeenCalledTimes(2)
+        const [first, repeat] = mockSave.mock.calls.map(([payload]) => payload)
+        expect(first.operation).toMatch(/^save-/)
+        expect(repeat).toEqual(first)
+        expect(loadPipelineDocument).not.toHaveBeenCalled()
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-written",
+          documentFingerprint: "fingerprint-written",
+        })
+        expect(useGraphStore.getState().dirty).toBe(false)
+        expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "success", text: "Saved → rating/main.py" })
+      })
+
+      it("sets the reload banner when the repeat is refused as stale", async () => {
+        const saved = await saveWithLostAnswer(() => Promise.reject(
+          new ApiError("Conflict", 409, "stale_document_revision: disk moved"),
+        ))
+
+        expect(saved).toBe(false)
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-test",
+          graphSynchronized: false,
+        })
+        expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/^Save rejected: the pipeline changed on disk/)
+      })
+
+      it("is reported failed when the repeat's answer is lost too", async () => {
+        const saved = await saveWithLostAnswer(() => Promise.reject(new TypeError("Failed to fetch")))
+
+        expect(saved).toBe(false)
+        expect(mockSave).toHaveBeenCalledTimes(2)
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-test",
+          documentFingerprint: "fingerprint-loaded",
+        })
+        expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "error", text: "Failed to save pipeline: Failed to fetch" })
+      })
+
+      it("is not sent again after an answer", async () => {
+        mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
+        mockSave.mockRejectedValueOnce(new ApiError("HTTP 400", 400, "bad graph"))
+        const params = makeParams()
+        const { result } = renderHook(() => usePipelineAPI(params))
+        await waitFor(() => expect(result.current.loading).toBe(false))
+        await act(async () => { await result.current.handleSave() })
+
+        expect(mockSave).toHaveBeenCalledTimes(1)
       })
     })
 

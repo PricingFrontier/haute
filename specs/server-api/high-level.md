@@ -184,7 +184,9 @@ discovered pipeline with `ready`, `degraded`, or `source_only` load status. The 
 `GET /api/pipeline` and `GET /api/pipeline/{name}` routes return a versioned editor document,
 not the canonical runtime graph, and name that document's fingerprint — the same SHA-256
 live-sync frames carry — in the `x-haute-document-fingerprint` response header, so the
-canvas's first resync after loading can skip an unchanged document: readable authored failures are HTTP 200 responses carrying
+canvas's first resync after loading can skip an unchanged document; the node-scoped save
+and the repair-apply routes name the fingerprint of the document they return in the same
+header: readable authored failures are HTTP 200 responses carrying
 structured diagnostics, element availability, explicit capabilities, and a raw-artifact
 revision. The unnamed route selects the first discovered document with authored content
 without skipping a broken document in favour of a later healthy one. It returns an empty
@@ -655,7 +657,8 @@ detail, and the assistant shows the same message.
 - **Resource limits** surface as their own status codes rather than a generic 500:
   `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 from any synchronous
   route, through the one memory-limit mapping; a superseded request →
-  `SupersededRequestError` → 409; a timed-out isolated operation → 504. Production heavy-route
+  `SupersededRequestError` → 409, a superseded preview or trace naming itself with
+  `error_code: "request_superseded"`; a timed-out isolated operation → 504. Production heavy-route
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.

@@ -43,7 +43,8 @@ import {
 } from "./sheetGeometry"
 import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { canonicalJson } from "./canonicalJson"
-import { cellProblem, filled, isDay, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, type PricedRows, type RowsByTable } from "./sheetValues"
+import { isDay } from "./isoDate"
+import { cellProblem, filled, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, type PricedRows, type RowsByTable } from "./sheetValues"
 import {
   ALWAYS,
   basisOf,

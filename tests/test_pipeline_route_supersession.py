@@ -177,7 +177,9 @@ async def test_preview_supersedes_obsolete_same_key_requests(
     assert call_count == 2
     assert max_active == 1
     assert all(
-        "superseded" in r.json()["detail"].lower() for r in responses if r.status_code == 409
+        r.json()["detail"]["error_code"] == "request_superseded"
+        for r in responses
+        if r.status_code == 409
     )
 
 
@@ -1217,7 +1219,9 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
     assert call_count == 2
     assert max_active == 1
     assert all(
-        "superseded" in r.json()["detail"].lower() for r in responses if r.status_code == 409
+        r.json()["detail"]["error_code"] == "request_superseded"
+        for r in responses
+        if r.status_code == 409
     )
 
 

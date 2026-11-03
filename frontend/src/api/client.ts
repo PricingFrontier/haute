@@ -349,15 +349,26 @@ let sessionBootstrap: Promise<void> | null = null
 let activeBootstrapIsForced = false
 let sessionBootstrapped = false
 
+/** A server that accepts the connection but never answers must still reach the failure screen. */
+export const SESSION_BOOTSTRAP_TIMEOUT_MS = 15_000
+
 function performSessionBootstrap(): Promise<void> {
+  const deadline = new AbortController()
+  const timeoutId = setTimeout(() => deadline.abort(), SESSION_BOOTSTRAP_TIMEOUT_MS)
   return fetch("/api/session/bootstrap", {
     method: "POST",
     credentials: "same-origin",
     cache: "no-store",
+    signal: deadline.signal,
   }).then(async (response) => {
     if (!response.ok) await throwApiError(response)
     sessionBootstrapped = true
-  })
+  }).catch((error: unknown) => {
+    if (deadline.signal.aborted && isAbortError(error)) {
+      throw new ApiTimeoutError("/api/session/bootstrap", SESSION_BOOTSTRAP_TIMEOUT_MS)
+    }
+    throw error
+  }).finally(() => clearTimeout(timeoutId))
 }
 
 function trackSessionBootstrap(promise: Promise<void>, forced: boolean): Promise<void> {
@@ -643,15 +654,53 @@ export interface LoadedPipeline {
   documentFingerprint: string
 }
 
-export async function loadPipeline(options: ApiClientOptions = {}): Promise<LoadedPipeline> {
-  const { document, documentFingerprint } = await requestWith("/api/pipeline", options, async (response) => ({
-    document: await response.json() as unknown,
-    documentFingerprint: response.headers.get(DOCUMENT_FINGERPRINT_HEADER)?.trim() ?? "",
-  }))
-  if (!documentFingerprint) {
-    throw new Error(`loadPipeline: response has no ${DOCUMENT_FINGERPRINT_HEADER} header`)
+/** The response body with the document fingerprint its header names; a response without one breaks its contract. */
+function readNamedDocument(caller: string) {
+  return async (response: Response): Promise<{ body: unknown; documentFingerprint: string }> => {
+    const documentFingerprint = response.headers.get(DOCUMENT_FINGERPRINT_HEADER)?.trim() ?? ""
+    if (!documentFingerprint) {
+      throw new Error(`${caller}: response has no ${DOCUMENT_FINGERPRINT_HEADER} header`)
+    }
+    return { body: await response.json() as unknown, documentFingerprint }
   }
-  return { document, documentFingerprint }
+}
+
+export async function loadPipeline(options: ApiClientOptions = {}): Promise<LoadedPipeline> {
+  const { body, documentFingerprint } = await requestWith("/api/pipeline", options, readNamedDocument("loadPipeline"))
+  return { document: body, documentFingerprint }
+}
+
+/** The editor document of the named pipeline, as `GET /api/pipeline/{name}` reads it now. */
+export async function loadPipelineDocument(name: string, options: ApiClientOptions = {}): Promise<LoadedPipeline> {
+  const { body, documentFingerprint } = await requestWith(
+    `/api/pipeline/${encodeURIComponent(name)}`,
+    options,
+    readNamedDocument("loadPipelineDocument"),
+  )
+  return { document: body, documentFingerprint }
+}
+
+/** A write's parsed answer and the fingerprint of the editor document it carries. */
+export interface WithDocumentFingerprint<T> {
+  value: T
+  documentFingerprint: string
+}
+
+/** POST a write whose answer carries an editor document named by its fingerprint header. */
+async function postNamingDocument<T>(
+  url: string,
+  body: unknown,
+  options: MutationOptions | undefined,
+  parse: (data: unknown) => T,
+  caller: string,
+): Promise<WithDocumentFingerprint<T>> {
+  const named = await requestWith(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    ...options,
+  }, readNamedDocument(caller))
+  return { value: parse(named.body), documentFingerprint: named.documentFingerprint }
 }
 
 const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set<string>([
@@ -727,39 +776,39 @@ export async function resolveEditorNodeIdentities(
 export function applyRemoveUnavailableNode(
   args: RemoveUnavailableNodeRequest,
   options?: MutationOptions,
-): Promise<RemoveUnavailableNodeApplyResponse> {
-  return post<unknown>("/api/pipeline/repair/remove/apply", {
+): Promise<WithDocumentFingerprint<RemoveUnavailableNodeApplyResponse>> {
+  return postNamingDocument("/api/pipeline/repair/remove/apply", {
     source_file: args.sourceFile,
     source_revision: args.sourceRevision,
     target_source_file: args.targetSourceFile,
     target_recovery_id: args.targetRecoveryId,
     delete_config: args.deleteConfig,
-  }, options).then(parseRemoveUnavailableNodeApplyResponse)
+  }, options, parseRemoveUnavailableNodeApplyResponse, "applyRemoveUnavailableNode")
 }
 
 export function applyRecoverUnavailableNode(
   args: RecoverUnavailableNodeRequest,
   options?: MutationOptions,
-): Promise<RecoverUnavailableNodeApplyResponse> {
-  return post<unknown>("/api/pipeline/repair/recover/apply", {
+): Promise<WithDocumentFingerprint<RecoverUnavailableNodeApplyResponse>> {
+  return postNamingDocument("/api/pipeline/repair/recover/apply", {
     source_file: args.sourceFile,
     source_revision: args.sourceRevision,
     target_source_file: args.targetSourceFile,
     target_recovery_id: args.targetRecoveryId,
     action: args.action,
-  }, options).then(parseRecoverUnavailableNodeApplyResponse)
+  }, options, parseRecoverUnavailableNodeApplyResponse, "applyRecoverUnavailableNode")
 }
 
 export function applyRemoveBrokenConnection(
   args: RemoveBrokenConnectionRequest,
   options?: MutationOptions,
-): Promise<RemoveBrokenConnectionApplyResponse> {
-  return post<unknown>("/api/pipeline/repair/connection/remove/apply", {
+): Promise<WithDocumentFingerprint<RemoveBrokenConnectionApplyResponse>> {
+  return postNamingDocument("/api/pipeline/repair/connection/remove/apply", {
     source_file: args.sourceFile,
     source_revision: args.sourceRevision,
     target_source_file: args.targetSourceFile,
     target_connection_id: args.targetConnectionId,
-  }, options).then(parseRemoveBrokenConnectionApplyResponse)
+  }, options, parseRemoveBrokenConnectionApplyResponse, "applyRemoveBrokenConnection")
 }
 
 export interface ScopedNodeSaveRequest {
@@ -774,14 +823,14 @@ export interface ScopedNodeSaveRequest {
 export function saveNodeScoped(
   args: ScopedNodeSaveRequest,
   options?: MutationOptions,
-): Promise<PipelineEditorDocument> {
-  return post<unknown>("/api/pipeline/node/save", {
+): Promise<WithDocumentFingerprint<PipelineEditorDocument>> {
+  return postNamingDocument("/api/pipeline/node/save", {
     source_file: args.sourceFile,
     source_revision: args.sourceRevision,
     target_source_file: args.targetSourceFile,
     target_recovery_id: args.targetRecoveryId,
     config: args.config,
-  }, options).then(parsePipelineEditorDocument)
+  }, options, parsePipelineEditorDocument, "saveNodeScoped")
 }
 
 export interface PreviewNodeArgs {
@@ -1008,6 +1057,8 @@ export function savePipeline(
     preserved_blocks: string[]
     /** The tab's live-sync connection: the save's broadcast leaves this tab out. */
     connection_id: string | null
+    /** Makes a repeat of this save, after its answer was lost, write once. */
+    operation: string
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {

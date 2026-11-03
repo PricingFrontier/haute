@@ -21,7 +21,8 @@ interface PipelineRepairDialogProps {
   sourceFile: string
   sourceRevision: string
   onClose: () => void
-  onApplied: (document: PipelineEditorDocument) => void
+  /** The repaired document and the fingerprint its response names. */
+  onApplied: (document: PipelineEditorDocument, documentFingerprint: string) => void
 }
 
 function PipelineRepairDialogContent({
@@ -52,7 +53,7 @@ function PipelineRepairDialogContent({
     setApplying(true)
     setError(null)
     try {
-      const response = action === "remove"
+      const { value: response, documentFingerprint } = action === "remove"
         ? await applyRemoveUnavailableNode({
             sourceFile,
             sourceRevision,
@@ -85,7 +86,7 @@ function PipelineRepairDialogContent({
           changes: response.changes,
         })
       }
-      onApplied(response.document)
+      onApplied(response.document, documentFingerprint)
     } catch (err) {
       setError(apiErrorMessage(err, "Could not apply this repair."))
     } finally {

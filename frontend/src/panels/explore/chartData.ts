@@ -158,6 +158,8 @@ function numberFormatter(
 ): Intl.NumberFormat {
   let formatter = NUMBER_FORMATTERS.get(key)
   if (!formatter) {
+    // The pivot's General format, which its cells write by hand in en-GB (pivotNumberFormat.ts).
+    // eslint-disable-next-line no-restricted-syntax
     formatter = new Intl.NumberFormat("en-GB", options)
     NUMBER_FORMATTERS.set(key, formatter)
   }

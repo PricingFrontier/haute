@@ -8,6 +8,7 @@ import type {
 } from "../../../api/types"
 import type { ExploreDataView } from "../exploreDataView"
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
+import { makePipelineEditorDocument } from "../../../testSupport/pipelineDocumentFixture"
 import useGraphStore from "../../../stores/useGraphStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
@@ -149,7 +150,13 @@ describe("useExplorePivotActions", () => {
     }
     expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
 
-    act(() => { useDocumentStatusStore.getState().setSourceRevision("adopted-document") })
+    act(() => {
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(
+        makePipelineEditorDocument({ source_revision: "adopted-document" }),
+        true,
+        "fingerprint-adopted",
+      )
+    })
     await act(async () => { finishOld(completed(result)) })
 
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(2))
@@ -465,6 +472,119 @@ describe("useExplorePivotActions", () => {
     expect(useNodeResultsStore.getState().pivotJobs[key]).toBeDefined()
     expect(hook.current.notices[config.id]).toEqual({
       message: "Cancellation unavailable",
+    })
+  })
+
+  describe("a delayed cancellation reply", () => {
+    const completedA: ExplorePivotStatusResponse = {
+      status: "completed",
+      progress: 1,
+      message: "Done",
+      result,
+      failure: null,
+      terminal_reason: "completed",
+      execution_metrics: null,
+    }
+    const replies: Record<"completed" | "cancelled" | "failed", ExplorePivotStatusResponse> = {
+      completed: { ...completedA, result: { ...result, generated_at: 99 } },
+      cancelled: { ...completedA, status: "cancelled", message: "", result: null, terminal_reason: "cancelled" },
+      failed: { ...completedA, status: "error", message: "Boom", result: null, terminal_reason: "error" },
+    }
+
+    function delayCancellation() {
+      let reply!: (response: ExplorePivotStatusResponse) => void
+      let refuse!: (error: Error) => void
+      mockCancelExplorePivot.mockReturnValueOnce(
+        new Promise<ExplorePivotStatusResponse>((resolve, reject) => {
+          reply = resolve
+          refuse = reject
+        }),
+      )
+      return { reply: (response: ExplorePivotStatusResponse) => reply(response), refuse: (error: Error) => refuse(error) }
+    }
+
+    function startJobB(key: string, config: ExplorePivotConfig) {
+      useNodeResultsStore.getState().startExplorePivotJob(
+        key, "job-b", node.id, config.id, "Explore Claims", config.name, "identity-b", "pricing", 1,
+      )
+    }
+
+    it.each(["completed", "cancelled", "failed"] as const)(
+      "leaves the newer job and the retired job's result alone (%s reply)",
+      async (status) => {
+        const config = pivot()
+        const key = startActiveJob(config, "job-a")
+        const cancellation = delayCancellation()
+        const { result: hook } = renderActions()
+        let cancelling!: Promise<void>
+        act(() => {
+          cancelling = hook.current.cancelPivot(config, "job-a")
+        })
+        // Polling retires A with its own result before the reply; B starts for a changed calculation.
+        act(() => {
+          useNodeResultsStore.getState().completeExplorePivotJob(key, "job-a", result, completedA)
+          startJobB(key, config)
+        })
+        await act(async () => {
+          cancellation.reply(replies[status])
+          await cancelling
+        })
+
+        const state = useNodeResultsStore.getState()
+        expect(state.pivotJobs[key]).toMatchObject({ jobId: "job-b", calculationIdentity: "identity-b" })
+        expect(state.pivotResults[key]).toMatchObject({
+          jobId: "job-a",
+          calculationIdentity: "identity",
+          result,
+          structuralVersion: 0,
+        })
+        expect(state.pivotResults[key]).not.toHaveProperty("error")
+      },
+    )
+
+    it("is dropped after a document change that reuses the node and pivot ids", async () => {
+      const config = pivot()
+      const key = startActiveJob(config, "job-a")
+      const cancellation = delayCancellation()
+      const { result: hook } = renderActions()
+      let cancelling!: Promise<void>
+      act(() => {
+        cancelling = hook.current.cancelPivot(config, "job-a")
+      })
+      act(() => {
+        useDocumentStatusStore.getState().reset()
+        startJobB(key, config)
+      })
+      await act(async () => {
+        cancellation.reply(replies.completed)
+        await cancelling
+      })
+
+      const state = useNodeResultsStore.getState()
+      expect(state.pivotJobs[key]).toMatchObject({ jobId: "job-b", calculationIdentity: "identity-b" })
+      expect(state.pivotResults[key]).toBeUndefined()
+    })
+
+    it("shows no notice for a refused cancellation once a newer job is active", async () => {
+      const config = pivot()
+      const key = startActiveJob(config, "job-a")
+      const cancellation = delayCancellation()
+      const { result: hook } = renderActions()
+      let cancelling!: Promise<void>
+      act(() => {
+        cancelling = hook.current.cancelPivot(config, "job-a")
+      })
+      act(() => {
+        useNodeResultsStore.getState().completeExplorePivotJob(key, "job-a", result, completedA)
+        startJobB(key, config)
+      })
+      await act(async () => {
+        cancellation.refuse(new Error("Cancellation unavailable"))
+        await cancelling
+      })
+
+      expect(useNodeResultsStore.getState().pivotJobs[key]).toMatchObject({ jobId: "job-b" })
+      expect(hook.current.notices[config.id]).toBeUndefined()
     })
   })
 

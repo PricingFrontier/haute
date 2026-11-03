@@ -7,6 +7,7 @@ import useNodeResultsStore, {
 } from "../../stores/useNodeResultsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import { makeFrontier } from "../../test-utils/factories"
+import { solveConfigHash } from "../optimiser/solveActions"
 import {
   makeOnlineFrontier,
   makeOnlineSolveResult,
@@ -55,7 +56,7 @@ const MLFLOW_INVENTORY = vi.hoisted(() => ({
 
 vi.mock("../../stores/useSettingsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ mlflow: MLFLOW_INVENTORY }),
+    selector({ mlflow: MLFLOW_INVENTORY, activeSource: "live" }),
   useMlflowDestinations: () => MLFLOW_INVENTORY,
 }))
 
@@ -102,6 +103,33 @@ describe("OptimiserPreview store integration", () => {
 
     expect(await screen.findByText("Point 3 of 5")).toBeInTheDocument()
     expect(useNodeResultsStore.getState().solveResults.opt_1.selectedPointIndex).toBe(2)
+  })
+
+  it("shows a retained result as stale, under no objective label, after a later solve with another config fails", () => {
+    const solvedConfig = { objective: "profit" }
+    const failedConfig = { objective: "premium" }
+    const store = useNodeResultsStore.getState()
+    store.startSolveJob("opt_1", "job-a", "My Optimiser", {}, solveConfigHash(solvedConfig), "live", 0)
+    store.completeSolveJob("opt_1", makeOnlineSolveResult({ frontier: makeFrontier(makeOnlineFrontier(5)) }))
+    const node = (config: Record<string, unknown>) => ({
+      id: "opt_1",
+      data: { label: "My Optimiser", description: "", nodeType: "optimiser", config },
+    })
+    const solved = render(
+      <OptimiserPreview data={store.getOptimiserPreview("opt_1")!} nodeId="opt_1" allNodes={[node(solvedConfig)]} edges={[]} />,
+    )
+    expect(screen.getByRole("group", { name: /^Efficient frontier: profit against/ })).toBeInTheDocument()
+    solved.unmount()
+
+    store.startSolveJob("opt_1", "job-b", "My Optimiser", {}, solveConfigHash(failedConfig), "live", 0)
+    store.failSolveJob("opt_1", "Infeasible")
+
+    const data = useNodeResultsStore.getState().getOptimiserPreview("opt_1")!
+    expect(data.jobId).toBe("job-a")
+    render(<OptimiserPreview data={data} nodeId="opt_1" allNodes={[node(failedConfig)]} edges={[]} />)
+    expect(screen.getByText(/The configuration has changed since this result was solved\./)).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: /^Efficient frontier: Objective against/ })).toBeInTheDocument()
+    expect(screen.queryByRole("group", { name: /premium/ })).not.toBeInTheDocument()
   })
 
   it("materialises selected ratebook frontier rates into the Rates tab", async () => {

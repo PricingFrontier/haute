@@ -122,11 +122,11 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the seventy packages delivered or settled since (thirteen by 28
+The findings of the seventy-six packages delivered or settled since (thirteen by 28
 October 2026, twenty-five more on 29 October, two on 1 November, thirty more by 2 November,
 the deploy roadmap's nine, the CLI roadmap's six and the background-jobs roadmap's three
-among them) have been removed from the sections below; the coverage table keeps the
-original counts.
+among them, and the frontend-shared roadmap's six on 3 November) have been removed from
+the sections below; the coverage table keeps the original counts.
 
 ## Validation — 25 October 2026
 
@@ -137,12 +137,9 @@ target dependency resolution. The component roadmaps now carry the resulting pla
 
 | Packages | Correction |
 |---|---|
-| `FSH-R07`, `FSH-R05` | Recover a save only from complete canonical saved-content equality, retain newer dirty edits, and distinguish intended other-tab broadcasts from watcher duplicates and self-echoes. |
 | `WB-43` | Shipped SQLite already has atomic insert-if-absent. Require a real selected-engine concurrency test and correct transaction recovery. |
 
-The roadmap chooses complete canonical content comparison for save recovery and excludes
-the saving socket while retaining fingerprint guards. These are planned rules to specify and test in the
-component specifications before code changes. WB-43's server-engine choice remains
+WB-43's server-engine choice remains
 with the project's IT team; the audit does not choose one or present its generic
 branch as a current SQLite release defect.
 
@@ -174,14 +171,6 @@ these are the Majors still open.
   `ASSIST-57`): every save, write and other server process on the project waits
   for the profile; 47 ms of descriptor construction per tool result on the
   event-loop thread.
-- **A WebSocket reconnect after a save discards every running job's tracking
-  and the undo history** (Major, `FSH-R05`): the save stores no document
-  fingerprint, so the resync is answered with a full document the client takes
-  for an external change.
-- **Ctrl+S with the cursor in a code box saves without the last keystrokes**
-  (Major, `FSH-R07`): the save helper blurs only text fields, the code editor's
-  debounced commit flushes only on blur, and the toolbar shows "Saved" while the
-  canvas re-dirties with no indicator.
 
 ## Design choices the review asks the owner to confirm
 
@@ -210,11 +199,6 @@ puts it in front of the owner because of what it can cost in production:
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
 | Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
-| Frontend shared | FSA-1, FSA-2, FSA-8, FSA-10 | `FSH-R05` |
-| Frontend shared | FSA-3, FSA-4, FSA-5, FSA-6, FSA-7, FSA-9, FSA-12 | `FSH-R06` |
-| Frontend shared | FSB-1, FSB-2, FSB-10, FSB-12, FSB-15 | `FSH-R07` |
-| Frontend shared | FSB-3, FSB-4, FSB-5, FSB-6, FSB-9, FSB-13, FSB-14, FSB-16, FSB-17, FSB-18 | `FSH-R08` |
-| Frontend shared | FSB-7, FSB-8, FSB-11 | `FSH-R09` |
 | Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
@@ -241,16 +225,13 @@ assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
 (`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the
-browser's hand-written contract mirrors (`API-R03`), the results store's optimiser logic (`FSH-R03`) and the dead
+browser's hand-written contract mirrors (`API-R03`) and the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
-utilities (`ENGQ-R01`); the optimiser
-panels' three locales (`FSH-R08`), the pivot date validators (`FSH-R06`) and
-`applyFrontierPointSummary`'s null handling (`FSH-R03`); in the workbench UI and
+utilities (`ENGQ-R01`); in the workbench UI and
 the app shell, the
-chart theme observer written twice (`EDA-R03`), knip's export-only symbols (`ENGQ-R01`), browser-locale dates (`FSH-R08`), the bootstrap without
-a deadline (`FSH-R05`) and Ctrl+S inside a code box (`FSH-R07`); in the tests, scripts
+chart theme observer written twice (`EDA-R03`) and knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
 and CI, the campaign-named test modules (`ENGQ-R05`), the test-only reset hooks in
 production code (`ENGQ-R01`), and the
 189 test modules that change directory because production resolves the project

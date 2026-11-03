@@ -199,7 +199,7 @@ describe("useBackgroundJobs", () => {
 
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Job 'sj-missing' not found")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe("Job 'sj-missing' not found")
       expect(useToastStore.getState().toasts).toContainEqual(
         expect.objectContaining({
           type: "error",
@@ -233,7 +233,7 @@ describe("useBackgroundJobs", () => {
 
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
       expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe(
         "Job 'sj-gone' has been purged",
       )
 
@@ -283,7 +283,7 @@ describe("useBackgroundJobs", () => {
             pollCount: () => mockGetStatus.mock.calls.length,
             progressMessage: () => useNodeResultsStore.getState().solveJobs.n1?.progress?.message,
             jobRemoved: () => useNodeResultsStore.getState().solveJobs.n1 === undefined,
-            resultError: () => useNodeResultsStore.getState().solveResults.n1?.error,
+            resultError: () => useNodeResultsStore.getState().solveResults.n1?.failedAttempt?.error,
           }
         },
       },
@@ -357,8 +357,8 @@ describe("useBackgroundJobs", () => {
 
       const state = useNodeResultsStore.getState()
       expect(state.trainResults["t1"]).toBeDefined()
-      expect(state.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.05)
-      expect(state.trainResults["t1"].result.pdp_data[0]?.grid[0]?.value).toBeNull()
+      expect(state.trainResults["t1"].result?.final_test_metrics.rmse).toBe(0.05)
+      expect(state.trainResults["t1"].result?.pdp_data[0]?.grid[0]?.value).toBeNull()
       expect(state.trainJobs["t1"]).toBeUndefined()
     })
 
@@ -379,7 +379,7 @@ describe("useBackgroundJobs", () => {
       expect(useNodeResultsStore.getState().trainJobs.t1?.progress?.message).toBe("Computing partial dependence")
       await advance(1000)
       expect(useNodeResultsStore.getState().trainJobs.t1).toBeUndefined()
-      expect(useNodeResultsStore.getState().trainResults.t1?.result.error).toBe(failure.message)
+      expect(useNodeResultsStore.getState().trainResults.t1?.error).toBe(failure.message)
       await advance(10_000)
       expect(mockGetStatus).toHaveBeenCalledTimes(2)
     })
@@ -445,8 +445,8 @@ describe("useBackgroundJobs", () => {
 
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
       expect(useNodeResultsStore.getState().trainJobs["t1"]).toBeUndefined()
-      expect(useNodeResultsStore.getState().trainResults["t1"]?.result).toMatchObject({
-        status: "error",
+      expect(useNodeResultsStore.getState().trainResults["t1"]).toMatchObject({
+        result: null,
         error: "Job 'tj-missing' not found",
       })
       expect(useToastStore.getState().toasts).toContainEqual(
@@ -517,14 +517,14 @@ describe("useBackgroundJobs", () => {
       await advance(500)
 
       const cached = useNodeResultsStore.getState().trainResults.t1
-      expect(cached?.result.error).toBe(detail.message)
+      expect(cached?.error).toBe(detail.message)
       expect(cached?.terminalStatus).toMatchObject({
         status: "memory_limited",
         error_code: "gpu_vram_limit",
         http_status_code: 507,
         error_detail: detail,
       })
-      expect(cached?.result.error).not.toMatch(/automatically/i)
+      expect(cached?.error).not.toMatch(/automatically/i)
     })
   })
 
@@ -776,7 +776,7 @@ describe("useBackgroundJobs", () => {
 
       await advance(500)
 
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe(
         "Optimiser reached 75% of its memory allowance. Memory used: 1.7 KB; limit: 2.9 KB.",
       )
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.status).toBe("memory_limited")
@@ -812,7 +812,7 @@ describe("useBackgroundJobs", () => {
 
       await advance(500)
 
-      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Projection contract failed")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.failedAttempt?.error).toBe("Projection contract failed")
       expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
       expect(useToastStore.getState().toasts.some(
         (toast) =>
