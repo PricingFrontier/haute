@@ -3,6 +3,7 @@
  * as it is with the form the view holds, whose tables and sample every workbench node of
  * the request takes, and the Workbench Output's tables previewed all at once, from one run.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../api/client", async (importOriginal) => ({
@@ -57,7 +58,7 @@ function graph(): GraphPayload {
 }
 
 /** A preview's answer: each table asked for with its rows, as many as it has and not cut short unless said. */
-const ok = (tables: Record<string, Record<string, unknown>[]>, cut: Record<string, number> = {}): PreviewNodeResponse => ({
+const ok = (tables: Record<string, Record<string, unknown>[]>, cut: Record<string, number> = {}): PreviewNodeResponse => (makePreviewResponse({
   node_id: "response",
   status: "ok",
   port_previews: Object.fromEntries(
@@ -66,7 +67,7 @@ const ok = (tables: Record<string, Record<string, unknown>[]>, cut: Record<strin
       { row_count: cut[label] ?? rows.length, columns: [], preview: rows, preview_truncated: label in cut },
     ]),
   ),
-})
+}))
 
 afterEach(() => {
   preview.mockReset()
@@ -137,11 +138,11 @@ describe("priceSample", () => {
   })
 
   it("rejects with the preview's error", async () => {
-    preview.mockResolvedValue({
+    preview.mockResolvedValue(makePreviewResponse({
       node_id: "response",
       status: "error",
       error: "Connect a frame to the Workbench Output's 'pricing_output' table.",
-    })
+    }))
 
     await expect(priceSample(graph(), form, workbench([pricing]), "live")).rejects.toThrow(
       "Connect a frame to the Workbench Output's 'pricing_output' table.",

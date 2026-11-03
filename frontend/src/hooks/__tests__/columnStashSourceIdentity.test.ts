@@ -21,6 +21,7 @@
  *   5. refreshPreview treats an upstream stash captured under a different
  *      source as missing and re-previews that upstream node.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -128,13 +129,13 @@ describe("column-stash source identity (cache-key completeness)", () => {
 
   it("stamps the stash with the source the preview ran under", async () => {
     vi.useRealTimers()
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "A",
       status: "ok",
       columns: LIVE_COLUMNS,
       available_columns: LIVE_COLUMNS,
       preview: [],
-    })
+    }))
     const A = makeNode("A")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
@@ -211,13 +212,13 @@ describe("column-stash source identity (cache-key completeness)", () => {
 
   it("refreshPreview re-previews an upstream node whose stash was captured under another source", async () => {
     vi.useRealTimers()
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "A",
       status: "ok",
       columns: LIVE_COLUMNS,
       available_columns: LIVE_COLUMNS,
       preview: [],
-    })
+    }))
     // Upstream A carries a live-source stash; active source is staging.
     // The lazy-refresh gap-fill must treat A as never previewed.
     const A = makeStashedNode("A", "live")

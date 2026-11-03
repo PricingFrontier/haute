@@ -23,7 +23,7 @@ ALLOWED_TEST_CHDIRS: dict[tuple[str, str], int] = {
     # A test proving Haute reads the installed project, never the working directory.
     ("tests/_project.py", "work_elsewhere"): 1,
     # The harness: a strict test runs in its project (and its writes stay in the sandbox),
-    # and every test ends in the directory it started in.
+    # and every test ends in the directory its process started in.
     ("tests/conftest.py", "_haute_write_sandbox"): 1,
     ("tests/conftest.py", "_installed_project"): 1,
     # The interpreter multiprocessing exec's is a path relative to the process's own

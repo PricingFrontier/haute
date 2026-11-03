@@ -159,7 +159,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "pipeline-config",
     "polars-2",
     "polars-node-clarity",
-    "server-api",
     "t-boost",
     "workbench",
 )

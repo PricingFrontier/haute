@@ -46,6 +46,7 @@ const PILOT_VALIDATOR_MODULES = [
 // The Python stage owns the response and request module groups and records them here.
 const RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups";
 const REQUEST_GROUPS_KEYWORD = "x-haute-request-groups";
+const SHARED_RESPONSE_GROUPS_KEYWORD = "x-haute-shared-response-groups";
 const TYPE_ROOT_NAME = "HauteApiContractRoots";
 
 function groupValidatorModules(schema, keyword, kind) {
@@ -74,7 +75,40 @@ function groupValidatorModules(schema, keyword, kind) {
   });
 }
 
+// The roots of the shared response groups: each is compiled once, in its own group's module.
+function sharedRoots(schema) {
+  const shared = schema[SHARED_RESPONSE_GROUPS_KEYWORD];
+  if (!Array.isArray(shared)) {
+    throw new Error(`Contract bundle is missing its ${SHARED_RESPONSE_GROUPS_KEYWORD} list`);
+  }
+  return new Set(shared.map((group) => {
+    const roots = schema[RESPONSE_GROUPS_KEYWORD]?.[group];
+    if (!Array.isArray(roots) || roots.length !== 1) {
+      throw new Error(`A shared response group holds exactly one model: ${group}`);
+    }
+    return roots[0];
+  }));
+}
+
+// Elsewhere a reference to a shared root checks only that the value is an object; the
+// client checks the field through the shared module.
+function withSharedRootsAsObjects(value, roots) {
+  if (Array.isArray(value)) return value.map((item) => withSharedRootsAsObjects(item, roots));
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value).map(([key, nested]) => [key, withSharedRootsAsObjects(nested, roots)]);
+  const reference = value.$ref;
+  if (typeof reference !== "string" || !roots.has(reference.replace(/^#\/\$defs\//, ""))) {
+    return Object.fromEntries(entries);
+  }
+  return { ...Object.fromEntries(entries.filter(([key]) => key !== "$ref")), type: "object" };
+}
+
+function validatorSchema(schema) {
+  return { ...schema, $defs: withSharedRootsAsObjects(schema.$defs, sharedRoots(schema)) };
+}
+
 export function validatorModules(schema) {
+  sharedRoots(schema);
   const modules = [
     ...PILOT_VALIDATOR_MODULES,
     ...groupValidatorModules(schema, RESPONSE_GROUPS_KEYWORD, "response"),
@@ -230,6 +264,17 @@ export function untypedAsUnknown(schema) {
   return Object.keys(typed).some((key) => TYPE_KEYWORDS.has(key)) ? typed : { ...typed, tsType: "unknown" };
 }
 
+// A reference with an annotation beside it (a field's default) would be declared as a
+// schema of its own, numbered apart from the definition it names (NodeType, NodeType1).
+function referencesWithoutAnnotations(value) {
+  if (Array.isArray(value)) return value.map(referencesWithoutAnnotations);
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value)
+    .filter(([key]) => !(typeof value.$ref === "string" && VALIDATION_ANNOTATION_KEYS.has(key)))
+    .map(([key, nested]) => [key, referencesWithoutAnnotations(nested)]);
+  return Object.fromEntries(entries);
+}
+
 // Every contract root compiles into one declaration module, so a nested
 // definition is declared once. Only definitions keep their titles: a property
 // title would become an alias that json-schema-to-typescript numbers apart
@@ -238,7 +283,10 @@ function typeDeclarationSchema(schema, definitionNames) {
   const definitions = Object.fromEntries(
     Object.entries(schema.$defs).map(([name, definition]) => [
       name,
-      { ...untypedAsUnknown(withoutNestedTitles(definition)), ...(definition.title ? { title: definition.title } : {}) },
+      {
+        ...untypedAsUnknown(withoutNestedTitles(referencesWithoutAnnotations(definition))),
+        ...(definition.title ? { title: definition.title } : {}),
+      },
     ]),
   );
   return compactNullableSchemas({
@@ -270,7 +318,8 @@ function visitLocalDefinitionReferences(value, enqueue) {
   }
 }
 
-export function extractContractSchema(schema, definitionName) {
+export function extractContractSchema(bundle, definitionName) {
+  const schema = validatorSchema(bundle);
   const reachable = reachableDefinitionNames(schema, definitionName);
   const definitions = Object.fromEntries(
     [...reachable]
@@ -293,7 +342,8 @@ export function extractContractSchema(schema, definitionName) {
  * One schema holding every definition a module's contracts reach, so a
  * definition shared by several of them compiles to one validator function.
  */
-export function extractModuleContractSchema(schema, module) {
+export function extractModuleContractSchema(bundle, module) {
+  const schema = validatorSchema(bundle);
   const reachable = new Set();
   for (const { definitionName } of module.validators) {
     for (const name of reachableDefinitionNames(schema, definitionName)) reachable.add(name);

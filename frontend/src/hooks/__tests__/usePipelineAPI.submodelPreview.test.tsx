@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react"
+import { makePreviewResponse } from "../../test-utils/factories"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import usePipelineAPI from "../usePipelineAPI"
 import DataPreview from "../../panels/DataPreview"
@@ -57,8 +58,8 @@ function fixture(instance = true, sameChild = false, outputCount = 2) {
 }
 
 function response(value: number) {
-  return { node_id: "runtime", status: "ok" as const, columns: [{ name: "value", dtype: "Int64" }],
-    preview: [{ value }], row_count: 1, column_count: 1 }
+  return makePreviewResponse({ node_id: "runtime", columns: [{ name: "value", dtype: "Int64" }],
+    preview: [{ value }], row_count: 1, column_count: 1 })
 }
 
 async function loaded(f = fixture()) {
@@ -259,8 +260,8 @@ describe("submodel occurrence previews", () => {
   it("keeps occurrence schemas keyed by public handles after previewing a child frame", async () => {
     const hook = await loaded(fixture(true, true))
     const columns = [{ name: "value", dtype: "Int64" }]
-    vi.mocked(previewNode).mockResolvedValueOnce({ ...response(11), frame_columns: { prices: columns },
-      node_frame_columns: { again: { out__premium: columns } } })
+    vi.mocked(previewNode).mockResolvedValueOnce(makePreviewResponse({ ...response(11), frame_columns: { prices: columns },
+      node_frame_columns: { again: { out__premium: columns } } }))
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
     const data = hook.params.graphRef.current.nodes[0].data
@@ -286,10 +287,10 @@ describe("submodel occurrence previews", () => {
 
   it("an output's own captured snapshots keep its cache current", async () => {
     const hook = await loaded()
-    vi.mocked(previewNode).mockResolvedValueOnce({ ...response(11), seed_plan: [{
+    vi.mocked(previewNode).mockResolvedValueOnce(makePreviewResponse({ ...response(11), seed_plan: [{
       node_id: "source", port_label: null, node_label: "Source", identity_digest: "d".repeat(64),
       generation_id: "occurrence-capture", columns: null, created_at: "2026-10-29T00:00:00Z", kind: "captured",
-    }] })
+    }] }))
     act(() => hook.result.current.fetchPreview(hook.occurrence, { debounceMs: 0 }))
     await settled(hook)
     expect(useNodeDataStore.getState().epoch).toBe(1)

@@ -72,6 +72,8 @@
  *
  * The suite combines structural scanning with behavioural assertions.
  */
+import { makeTraceResult } from "../../test-utils/factories"
+import { makeTraceStep } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { readFileSync, existsSync } from "node:fs"
@@ -476,7 +478,7 @@ describe("NodePanel standalone hover/focus sites", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
-  return {
+  return makeTraceStep({
     node_id: "n1",
     node_name: "Step",
     node_type: "polars",
@@ -492,11 +494,11 @@ function makeStep(overrides: Partial<TraceStep> = {}): TraceStep {
     column_relevant: true,
     contributed_columns: [], derivations: [],
     ...overrides,
-  }
+  })
 }
 
 function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
-  return {
+  return makeTraceResult({
     target_node_id: "n3",
     row_index: 0,
     column: "premium",
@@ -517,7 +519,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
     generated_at: overrides.generated_at ?? "2026-07-23T12:00:00+00:00",
     pipeline_source: overrides.pipeline_source ?? null,
     execution_origin: overrides.execution_origin ?? "fresh_execution",
-  }
+  })
 }
 
 function getTraceStoryRowButtons(): HTMLElement[] {

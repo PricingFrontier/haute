@@ -388,3 +388,39 @@ def test_a_worker_request_after_a_settings_update_reads_the_new_destination(
         pool.close()
 
     assert (before, after) == ("", "http://localhost:5000")
+
+
+def test_every_test_ends_in_the_directory_its_process_started_in() -> None:
+    """A strict test that undoes its own monkeypatch leaves the next test where it began.
+
+    The sandbox has already entered the strict test's ``tmp_path`` when the
+    project fixture starts, so returning to the directory the test started in
+    would leave every later test of the process in that folder.
+    """
+    cases = Path(__file__).with_name("_working_directory_cases.py")
+    repository = Path(__file__).resolve().parents[1]
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("HAUTE_TEST_WRITE_SANDBOX")
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            f"{cases}::test_a_strict_test_undoes_its_monkeypatch",
+            f"{cases}::test_the_next_test_starts_where_the_process_started",
+        ],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
+    assert "2 passed" in result.stdout

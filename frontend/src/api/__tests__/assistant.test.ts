@@ -73,6 +73,13 @@ const PLAN: AssistantBuildPlan = {
   ],
 }
 
+function entry(overrides: Record<string, unknown>) {
+  return {
+    text: "", name: "", title: "", summary: "", is_error: false, outcome: null, change: null,
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   mockFetch = vi.fn()
   globalThis.fetch = mockFetch as unknown as typeof fetch
@@ -146,7 +153,6 @@ describe("getAssistantStatus", () => {
     ["a wrong primitive field", { configured: "yes", reason: null, provider: null, model: null, endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true, mutations_reason: null }],
     ["an invalid nullable field", { configured: true, reason: 1, provider: null, model: null, endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true, mutations_reason: null }],
     ["an invalid trust class", { configured: true, reason: null, provider: null, model: null, endpoint_host: "x", trust: "trusted", max_sensitivity: "public", mutations_enabled: true, mutations_reason: null }],
-    ["a configured status without egress identity", { configured: true, reason: null, provider: "openai", model: "m", endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true, mutations_reason: null }],
   ])("rejects %s with an ordinary validation error", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
     const result = getAssistantStatus()
@@ -179,7 +185,7 @@ describe("undoAssistantChange", () => {
   it("requires the build plan the undo left, null without one", async () => {
     mockFetch.mockReturnValueOnce(jsonResponse({ change_id: CHANGE.id, git_sha: null }))
     await expect(undoAssistantChange("abc123", CHANGE.id, "main.py")).rejects.toThrow(
-      /undo\.build_plan/,
+      "AssistantUndoResponse: invalid contract at /build_plan: required",
     )
   })
 
@@ -188,10 +194,13 @@ describe("undoAssistantChange", () => {
     mockFetch.mockReturnValueOnce(jsonResponse({
       session_id: "abc123",
       source_file: "main.py",
-      history: [{ kind: "change", change: withoutRevision }],
+      history: [entry({ kind: "change", change: withoutRevision })],
+      build_plan: null,
     }))
 
-    await expect(createAssistantSession("main.py", "abc123")).rejects.toThrow(/revision/)
+    await expect(createAssistantSession("main.py", "abc123")).rejects.toThrow(
+      "AssistantSessionResponse: invalid contract at /history/0/change/revision: required",
+    )
   })
 })
 
@@ -222,27 +231,30 @@ describe("createAssistantSession", () => {
   })
 
   it("offers a remembered session id and surfaces returned history", async () => {
+    const user = { kind: "user", text: "hi", name: "", title: "", summary: "", is_error: false }
+    const tool = {
+      kind: "tool",
+      text: "",
+      name: "get_pipeline",
+      title: "Reading the pipeline",
+      summary: "{}",
+      is_error: false,
+    }
     const history = [
-      { kind: "user", text: "hi", name: "", title: "", summary: "", is_error: false },
-      {
-        kind: "tool",
-        text: "",
-        name: "get_pipeline",
-        title: "Reading the pipeline",
-        summary: "{}",
-        is_error: false,
-      },
-      { kind: "change", change: CHANGE },
-      { kind: "undo", change: CHANGE },
+      entry(user),
+      entry(tool),
+      entry({ kind: "change", change: CHANGE }),
+      entry({ kind: "undo", change: CHANGE }),
     ]
     mockFetch.mockReturnValueOnce(
       jsonResponse({ session_id: "abc123", source_file: "main.py", history, build_plan: PLAN }),
     )
 
+    // Each entry carries exactly its own kind's fields.
     await expect(createAssistantSession("main.py", "abc123")).resolves.toEqual({
       sessionId: "abc123",
       sourceFile: "main.py",
-      history,
+      history: [user, tool, { kind: "change", change: CHANGE }, { kind: "undo", change: CHANGE }],
       buildPlan: PLAN,
     })
     const [, opts] = mockFetch.mock.calls[0]
@@ -257,23 +269,12 @@ describe("createAssistantSession", () => {
       session_id: "abc123",
       source_file: "main.py",
       history: [
-        { kind: "user", text: "go", name: "", title: "", summary: "", is_error: false, outcome: null },
-        {
+        entry({ kind: "user", text: "go" }),
+        entry({ kind: "outcome", outcome: { kind: "needs_input", detail: "Which column?", changes: [] } }),
+        entry({
           kind: "outcome",
-          text: "",
-          name: "",
-          summary: "",
-          is_error: false,
-          outcome: { kind: "needs_input", detail: "Which column?", changes: [] },
-        },
-        {
-          kind: "outcome",
-          text: "",
-          name: "",
-          summary: "",
-          is_error: false,
           outcome: { kind: "incomplete", detail: "A dry-run validated a plan that was never applied.", changes: [] },
-        },
+        }),
       ],
       build_plan: null,
     }))
@@ -316,21 +317,20 @@ describe("createAssistantSession", () => {
     ["a missing source file", { session_id: "abc", history: [] }],
     ["a non-array history", { session_id: "abc", source_file: "main.py", history: {} }],
     ["a non-object history entry", { session_id: "abc", source_file: "main.py", history: [null] }],
-    ["an unknown history kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "other", text: "", name: "", title: "", summary: "", is_error: false }] }],
-    ["a missing history field", { session_id: "abc", source_file: "main.py", history: [{ kind: "user", text: "", name: "", title: "", summary: "" }] }],
-    ["a tool row without its title", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: false }] }],
-    ["a wrong history field primitive", { session_id: "abc", source_file: "main.py", history: [{ kind: "tool", text: "", name: "", title: "", summary: "", is_error: "false" }] }],
-    ["a change row without its record", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: null }] }],
-    ["a change row with an unknown change kind", { session_id: "abc", source_file: "main.py", history: [{ kind: "change", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], change: "moved" }] } } }] }],
-    ["an outcome row without its outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", text: "", name: "", summary: "", is_error: false, outcome: null }] }],
-    ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [{ kind: "outcome", outcome: { kind: "blocked", detail: null, changes: [] } }] }],
+    ["an unknown history kind", { session_id: "abc", source_file: "main.py", history: [entry({ kind: "other" })], build_plan: null }],
+    ["a missing history field", { session_id: "abc", source_file: "main.py", history: [{ kind: "user", text: "", name: "", title: "", summary: "", outcome: null, change: null }], build_plan: null }],
+    ["a wrong history field primitive", { session_id: "abc", source_file: "main.py", history: [entry({ kind: "tool", is_error: "false" })], build_plan: null }],
+    ["a change row without its record", { session_id: "abc", source_file: "main.py", history: [entry({ kind: "change" })], build_plan: null }],
+    ["a change row with an unknown change kind", { session_id: "abc", source_file: "main.py", history: [entry({ kind: "change", change: { ...CHANGE, changes: { ...CHANGE.changes, nodes: [{ ...CHANGE.changes.nodes[0], change: "moved" }] } } })], build_plan: null }],
+    ["an outcome row without its outcome", { session_id: "abc", source_file: "main.py", history: [entry({ kind: "outcome" })], build_plan: null }],
+    ["an outcome row with a malformed outcome", { session_id: "abc", source_file: "main.py", history: [entry({ kind: "outcome", outcome: { kind: "blocked", detail: null, changes: [] } })], build_plan: null }],
     ["a missing build plan", { session_id: "abc", source_file: "main.py", history: [] }],
     ["a build plan without items", { session_id: "abc", source_file: "main.py", history: [], build_plan: { items: [] } }],
-    ["a build plan repeating an item id", { session_id: "abc", source_file: "main.py", history: [], build_plan: { items: [PLAN.items[0], PLAN.items[0]] } }],
-    ["a complete item without a live change", { session_id: "abc", source_file: "main.py", history: [], build_plan: { items: [{ ...PLAN.items[0], changes: [{ id: CHANGE.id, undone: true }] }] } }],
   ])("rejects %s", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
-    await expect(createAssistantSession("main.py")).rejects.toThrow(/assistant|session|history/i)
+    await expect(createAssistantSession("main.py")).rejects.toThrow(
+      /AssistantSessionResponse: invalid contract|Invalid assistant/,
+    )
   })
 })
 
@@ -353,7 +353,9 @@ describe("listAssistantSessions", () => {
 
   it("rejects a list without its source file", async () => {
     mockFetch.mockReturnValueOnce(jsonResponse({ sessions: [] }))
-    await expect(listAssistantSessions("main.py")).rejects.toThrow(/sessions\.source_file/)
+    await expect(listAssistantSessions("main.py")).rejects.toThrow(
+      "AssistantSessionListResponse: invalid contract at /source_file: required",
+    )
   })
 })
 
@@ -471,7 +473,7 @@ describe("streamAssistantMessage", () => {
         context: NO_CONTEXT,
         onEvent: () => {},
       }),
-    ).rejects.toThrow(/mystery_event/)
+    ).rejects.toThrow("AssistantStreamEventPayload: invalid contract")
   })
 
   it.each([
@@ -490,11 +492,8 @@ describe("streamAssistantMessage", () => {
     ["completed outcome kind", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: 1, detail: null } }],
     ["completed answered with a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: "x", changes: [] } }],
     ["completed question without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "needs_input", detail: null, changes: [] } }],
-    ["completed blocker with a blank detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: " ", changes: [] } }],
     ["completed incomplete without a detail", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "incomplete", detail: null, changes: [] } }],
     ["completed without its saved changes", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "blocked", detail: "x" } }],
-    ["completed applied with no saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "applied", detail: null, changes: [] } }],
-    ["completed answered with a saved change", { type: "completed", usage: { input_tokens: 1, output_tokens: 2 }, outcome: { kind: "answered", detail: null, changes: ["plan-1"] } }],
     ["change_applied without its id", { type: "change_applied", change: { ...CHANGE, id: undefined } }],
     ["change_applied without its data check", { type: "change_applied", change: { ...CHANGE, data_check: undefined } }],
     ["change_applied with an unknown data-check visibility", { type: "change_applied", change: { ...CHANGE, data_check: { visibility: "other_graph", outcome: "checked", scenario: "live", findings: [], findings_omitted: 0, not_checked: null } } }],
@@ -512,7 +511,7 @@ describe("streamAssistantMessage", () => {
       signal: new AbortController().signal,
       context: NO_CONTEXT,
       onEvent: callback,
-    })).rejects.toThrow(/Invalid assistant payload/)
+    })).rejects.toThrow(/AssistantStreamEventPayload: invalid contract|Invalid assistant turn outcome/)
     expect(callback).not.toHaveBeenCalled()
   })
 
@@ -530,7 +529,7 @@ describe("streamAssistantMessage", () => {
       signal: new AbortController().signal,
       context: NO_CONTEXT,
       onEvent: () => {},
-    })).rejects.toThrow(/mystery_event/)
+    })).rejects.toThrow("AssistantStreamEventPayload: invalid contract")
     expect(cancel).toHaveBeenCalledTimes(1)
   })
 

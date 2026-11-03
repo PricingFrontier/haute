@@ -333,18 +333,29 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
                 "versioned. Change that rule to apply only at the project root, for "
                 "example '/data/' instead of 'data/'.",
             )
+    # The destination's folders are made only when the file is published, under the
+    # project write lock, so a refused upload leaves none behind.
+    nearest = _nearest_existing_folder(target)
     try:
-        target.path.parent.mkdir(parents=True, exist_ok=True)
-    except (FileExistsError, NotADirectoryError):
-        raise _refusal(400, "invalid_path", f"{display} is inside a file, not a folder.") from None
-    try:
-        ensure_disk_headroom(target.path.parent, length)
+        ensure_disk_headroom(nearest, length)
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
             raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
         raise
     branch = read_working_branch(project_root) if target.place.name == "pipeline" else None
     return _WritePlan(target, length, branch, _staging_path(project_root))
+
+
+def _nearest_existing_folder(target: _Target) -> Path:
+    """The destination's nearest folder that exists, refusing a path inside a file."""
+    folder = target.path.parent
+    while not folder.exists():
+        folder = folder.parent
+    if not folder.is_dir():
+        raise _refusal(
+            400, "invalid_path", f"{target.project_relative} is inside a file, not a folder."
+        )
+    return folder
 
 
 def _staging_path(project_root: Path) -> Path:
@@ -414,6 +425,10 @@ def _publish_write(
             "file_changed",
             f"{display} changed since you chose to replace it. Look again, then retry.",
         )
+    try:
+        target.path.parent.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        raise _refusal(400, "invalid_path", f"{display} is inside a file, not a folder.") from None
     try:
         publish_staged_file(staging, target.path, replace=replace_revision is not None)
     except FileExistsError:

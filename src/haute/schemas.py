@@ -1216,6 +1216,10 @@ AssistantStreamEvent = Annotated[
 ]
 
 
+class AssistantStreamEventPayload(RootModel[AssistantStreamEvent]):
+    """One ``data:`` frame of the assistant's message stream, as the browser reads it."""
+
+
 # ---------------------------------------------------------------------------
 # Pipeline editor recovery document
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from scripts.generate_api_contracts import (
     REQUEST_GROUPS_KEYWORD,
     RESPONSE_CONTRACT_GROUPS,
     RESPONSE_GROUPS_KEYWORD,
+    SHARED_RESPONSE_GROUPS_KEYWORD,
     _ResponseJsonSchema,
     _serialized_definitions,
     build_contract_bundle,
@@ -100,6 +101,8 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
         group: [model.__name__ for model in models]
         for group, models in RESPONSE_CONTRACT_GROUPS.items()
     }
+    assert bundle[SHARED_RESPONSE_GROUPS_KEYWORD] == ["execution-metrics"]
+    assert bundle[RESPONSE_GROUPS_KEYWORD]["execution-metrics"] == ["ExecutionMetricsPayload"]
     # One validator module per group, so no name is both a request and a response group.
     assert not set(REQUEST_CONTRACT_GROUPS) & set(RESPONSE_CONTRACT_GROUPS)
 

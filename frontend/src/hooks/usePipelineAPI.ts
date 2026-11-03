@@ -15,7 +15,7 @@ import { syncConnectionId } from "../api/syncConnection"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
-import type { NodeResult, PreviewNodeResponse } from "../api/types"
+import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
@@ -197,7 +197,7 @@ function occurrencePreviewData(data: PreviewData, output: SubmodelOutputPreview 
 }
 
 /** Generation ids of shared snapshots this preview wrote that other reads may now use. */
-function capturedGenerationIds(result: NodeResult | PreviewNodeResponse): string[] {
+function capturedGenerationIds(result: PreviewNodeResponse): string[] {
   if (!("seed_plan" in result) || !result.seed_plan) return []
   return result.seed_plan
     .filter((entry) => entry.kind === "captured")
@@ -207,7 +207,7 @@ function capturedGenerationIds(result: NodeResult | PreviewNodeResponse): string
 function resultToPreview(
   nodeId: string,
   label: string,
-  r: NodeResult | PreviewNodeResponse,
+  r: PreviewNodeResponse,
   selectedFrame?: string,
 ): PreviewData {
   return makePreviewData(nodeId, label, {
@@ -327,7 +327,7 @@ function isPreviewDocumentFenceCurrent(
     current.graphSynchronized
 }
 
-function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult, source: string, structuralVersion: number): Node[] {
+function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: PreviewNodeResponse, source: string, structuralVersion: number): Node[] {
   return nodes.map((n) =>
     n.id === nodeId
       ? {
@@ -335,9 +335,9 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
         data: {
           ...n.data,
           _columns: columns,
-          _availableColumns: result.available_columns ?? columns,
-          _frameColumns: result.frame_columns ?? result.node_frame_columns?.[nodeId],
-          _schemaWarnings: result.schema_warnings ?? [],
+          _availableColumns: result.available_columns,
+          _frameColumns: result.frame_columns,
+          _schemaWarnings: result.schema_warnings,
           _columnsSource: source,
           _columnsStructuralVersion: structuralVersion,
         },
@@ -346,11 +346,11 @@ function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: Colu
   )
 }
 
-function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source: string, structuralVersion: number): Node[] {
-  const nodeColumns = result.node_columns ?? {}
-  const nodeFrameColumns = result.node_frame_columns ?? {}
-  const nodeAvailableColumns = result.node_available_columns ?? {}
-  const nodeSchemaWarnings = result.node_schema_warnings ?? {}
+function applyPreviewSchemaMapsToNodes(nodes: Node[], result: PreviewNodeResponse, source: string, structuralVersion: number): Node[] {
+  const nodeColumns: Record<string, ColumnDef[] | undefined> = result.node_columns
+  const nodeFrameColumns: Record<string, Record<string, ColumnDef[]> | undefined> = result.node_frame_columns
+  const nodeAvailableColumns: Record<string, ColumnDef[] | undefined> = result.node_available_columns
+  const nodeSchemaWarnings: Record<string, SchemaWarning[] | undefined> = result.node_schema_warnings
   return nodes.map((n) => {
     const columns = nodeColumns[n.id]
     const frames = nodeFrameColumns[n.id]
@@ -380,17 +380,16 @@ function applyPreviewSchemaMapsToNodes(nodes: Node[], result: NodeResult, source
   })
 }
 
-export function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: NodeResult, source: string, structuralVersion: number): Node[] {
+export function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result: PreviewNodeResponse, source: string, structuralVersion: number): Node[] {
   const mapped = applyPreviewSchemaMapsToNodes(nodes, result, source, structuralVersion)
-  const withColumns = !result.columns || result.node_columns?.[nodeId]
+  const withColumns = nodeId in result.node_columns
     ? mapped
-    : applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result, source, structuralVersion)
+    : applyPreviewColumnsToNodes(mapped, nodeId, result.columns, result, source, structuralVersion)
   // The previewed node's notes (a Model Score's full-policy-term note), however its columns came.
-  const notes = result.notes ?? []
-  return withColumns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, _notes: notes } } : n))
+  return withColumns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, _notes: result.notes } } : n))
 }
 
-function canvasNodeStatuses(result: NodeResult, requestedNodeId: string): Record<string, NodeStatus> {
+function canvasNodeStatuses(result: PreviewNodeResponse, requestedNodeId: string): Record<string, NodeStatus> {
   const statuses: Record<string, NodeStatus> = { ...(result.node_statuses ?? {}) }
   const promoteWarning = (nodeId: string) => {
     if (statuses[nodeId] === "ok") statuses[nodeId] = "warning"
@@ -639,14 +638,15 @@ export default function usePipelineAPI({
     useDocumentStatusStore.getState().reset()
 
     loadPipeline({ signal: controller.signal, retry: INITIAL_PIPELINE_RETRY_POLICY })
-      .then(({ document: raw, documentFingerprint }) => {
+      .then(async ({ document: raw, documentFingerprint }) => {
         if (disposed) return
         // Narrow the response at the ingestion boundary.  Any drift in
         // the backend contract (missing `nodes`/`edges`, wrong type on an
         // optional field) throws a named Error that flows into the
         // `.catch` handler below — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
-        const data = parsePipelineEditorDocument(raw)
+        const data = await parsePipelineEditorDocument(raw)
+        if (disposed) return
         adoptPipelineDocument(data, documentFingerprint)
         setLoading(false)
       })

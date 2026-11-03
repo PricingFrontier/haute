@@ -4,9 +4,6 @@ import type { toCanonicalGraphPayload } from "../utils/graphSnapshot"
 
 // Re-export canonical types from their source locations
 import type {
-  BackendNodeStatus,
-  ColumnInfo,
-  NodeTypeValue,
   PipelineEdge,
   PipelineGraph,
 } from "../types/node"
@@ -24,6 +21,15 @@ import type {
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataStatusResponse as GeneratedNodeDataStatusResponse,
+  CreateNodeInstanceResponse as GeneratedCreateNodeInstanceResponse,
+  CreateSubmodelResponse as GeneratedCreateSubmodelResponse,
+  DissolveSubmodelResponse as GeneratedDissolveSubmodelResponse,
+  PreviewNodeResponse as GeneratedPreviewNodeResponse,
+  EditorIdentityRequestNode as GeneratedEditorIdentityRequestNode,
+  OptimiserApplyRequest as GeneratedOptimiserApplyRequest,
+  OptimiserQuoteFilters as GeneratedOptimiserQuoteFilters,
+  SubmodelGraphResponse as GeneratedSubmodelGraphResponse,
+  TraceResponse as GeneratedTraceResponse,
   WriteOutputResponse as GeneratedWriteOutputResponse,
   OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
   OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
@@ -35,6 +41,8 @@ import type {
   TrainStatusResponse as GeneratedTrainStatusResponse,
 } from "../generated/api-contracts.generated"
 import type {
+  ExecutionMemoryPressureEventPayload,
+  ExecutionMetricsPayload,
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
   ExecutionStrategyDiagnosticPayload as GeneratedExecutionStrategyDiagnostic,
@@ -45,16 +53,8 @@ import type {
 export type { BackendNodeStatus, ColumnInfo, NodeStatus, PipelineGraph } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 
-export interface EditorIdentityRequestNode {
-  node_id: string
-  label: string
-  node_type: NodeTypeValue
-  source_handles: string[]
-  alias?: string
-  instance_of?: string
-  /** The submodel definition the node belongs to in the naming context; absent at the root. */
-  submodel?: string
-}
+/** A prospective node to name; the editor always sends its source handles. */
+export type EditorIdentityRequestNode = GeneratedEditorIdentityRequestNode & { source_handles: string[] }
 
 export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
@@ -74,75 +74,7 @@ export type {
   PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
-export type SchemaWarning = {
-  column: string
-  status: string
-  input?: string | null
-  detail?: string | null
-} | {
-  column?: null
-  status: "unavailable"
-  input: string
-  detail: string
-}
-
-export interface ExecutionStageMetrics {
-  schema_version: number
-  name: string
-  operation: string
-  profile: string
-  elapsed_ms: number
-  node_id: string | null
-  job_id: string | null
-  rss_start_bytes: number | null
-  rss_end_bytes: number | null
-  rss_delta_bytes: number | null
-  rss_peak_bytes: number | null
-  n_collects: number
-  n_checkpoints: number
-}
-
-export interface ExecutionAdmission {
-  admitted: boolean
-  operation: string
-  profile: string
-  memory_limit_bytes: number
-  rss_at_admission_bytes: number | null
-  rss_limit_bytes: number | null
-  process_rss_limit_bytes: number | null
-  headroom_bytes: number | null
-  config_key: string
-  budget_policy: string
-  available_ram_bytes: number | null
-  os_reserve_bytes: number | null
-  reason: string
-}
-
-export interface ExecutionMemoryPressureEvent {
-  schema_version: number
-  event: "memory_pressure"
-  operation: string
-  profile: string
-  job_id: string | null
-  node_id: string | null
-  stage: string | null
-  label: string | null
-  threshold_ratio: number
-  threshold_percent: number
-  rss_bytes: number
-  rss_limit_bytes: number
-  headroom_bytes: number
-  headroom_used_bytes: number
-  rss_peak_bytes: number
-  memory_limit_bytes: number | null
-  memory_baseline_bytes: number | null
-  baseline_rss_bytes: number | null
-  budget_policy: string | null
-  config_key: string | null
-  available_ram_bytes: number | null
-  os_reserve_bytes: number | null
-  pressure_ratio: number
-}
+export type ExecutionMemoryPressureEvent = ExecutionMemoryPressureEventPayload
 
 export type ExecutionStrategyStatus = GeneratedExecutionStrategyDiagnostic["status"]
 export type ExecutionStrategy = GeneratedExecutionStrategyDiagnostic["strategy"]
@@ -175,313 +107,46 @@ export type ExecutionStrategyDiagnostic = GeneratedExecutionStrategyDiagnostic &
   provenance: ExecutionStrategyBoundedCollection<ExecutionStrategyProvenance>
 }
 
-export interface ExecutionStreamabilityEvidence {
-  state: "available" | "unavailable" | "truncated"
-  total_count: number | null
-  items: string[]
-}
-
-export interface ExecutionColumnWidth {
-  node_id: string
-  input_width: number | null
-  output_width: number | null
-  requested_width: number | null
-  physically_scanned_width: number | null
-}
-
-export interface ExecutionColumnWidths {
-  state: "available" | "truncated"
-  total_count: number
-  items: ExecutionColumnWidth[]
-}
-
-export interface InputPreparationRecord {
-  node_id: string
-  identity_digest: string
-  action: "reused" | "built" | "refreshed"
-  build_class: string
-  execution: "in_process" | "worker"
-  memory_limit_bytes: number | null
-  elapsed_seconds: number
-  row_count: number | null
-  size_bytes: number | null
-  generation_id: string | null
-  warning_code: string | null
-}
-
-/** A node output an execution read from a shared snapshot generation. */
-export interface SharedSnapshotSeed {
-  node_id: string
-  identity_digest: string
-  generation_id: string
-  columns: "all" | string[]
-}
-
 /**
- * A full-data materialisation an execution wrote to shared snapshots. Only a
- * `published` capture names the generation it continued from; otherwise the
- * execution continued from its own staged data.
+ * The execution metrics a response carries, checked through the shared execution-metrics
+ * validator, with the strategy diagnostic in the shape `parseExecutionStrategyDiagnostic` gives it.
  */
-export interface SharedSnapshotCapture {
-  node_id: string
-  identity_digest: string
-  kind: "structural" | "materialising" | "model_score" | "consumed"
-  outcome: "published" | "superseded"
-  generation_id: string | null
-  columns: "all" | string[]
-  write_strategy?: "chunked_join" | "sliced" | "input_sliced" | "native" | "prewritten" | null
-  write_parts?: number | null
-  write_chunk_rows?: number | null
-  write_staged_inputs?: number | null
-  write_input_slices?: number | null
-  write_native_reason?: string | null
-  write_blocking_operator?: string | null
-}
-
-/** A candidate capture point skipped under cost gating. */
-export interface SharedSnapshotCaptureSkip {
-  node_id: string
-  reason: "cheap_segment" | "slice_transparent_feeder"
-}
-
-/** A non-fatal condition an execution continued past. */
-export interface ExecutionWarning {
-  code: string
-  node_id: string | null
-  reason: string | null
-}
-
-export interface ExecutionMetrics {
-  schema_version: number
-  operation: string
-  profile: string
-  job_id: string | null
-  status: string | null
-  terminal_reason: string | null
-  stage_count: number
-  retained_stage_count: number
-  truncated_stage_count: number
-  stages_truncated: boolean
-  total_elapsed_ms: number
-  node_elapsed_ms: Record<string, number>
-  stage_elapsed_ms: Record<string, number>
-  rss_start_bytes: number | null
-  rss_end_bytes: number | null
-  rss_delta_bytes: number | null
-  rss_peak_bytes: number | null
-  max_rss_bytes: number | null
-  n_collects: number
-  n_checkpoints: number
-  memory_pressure_event_count: number
-  retained_memory_pressure_event_count: number
-  truncated_memory_pressure_event_count: number
-  memory_pressure_events_truncated: boolean
-  memory_limit_bytes: number | null
-  memory_baseline_bytes: number | null
-  rss_limit_bytes: number | null
-  streamability: "streaming" | "materialising" | null
-  streamability_evidence: ExecutionStreamabilityEvidence
-  column_widths: ExecutionColumnWidths
-  requested_column_width_total: number | null
-  physically_scanned_column_width_total: number | null
-  cache_direct_fallbacks: number
-  bytes_written: number | null
-  estimated_bytes: number | null
-  raw_estimated_bytes: number | null
-  estimate_calibration_factor_basis_points: number | null
-  estimate_admission_basis: "provided" | "projected_columns" | "complete_width_fallback" | null
-  observed_peak_rss_bytes: number | null
-  observed_peak_rss_growth_bytes: number | null
-  checkpoint_count: number
-  chunk_count: number
-  admission: ExecutionAdmission | null
+export type ExecutionMetrics = Omit<ExecutionMetricsPayload, "execution_strategy"> & {
   execution_strategy: ExecutionStrategyDiagnostic | null
-  stages: ExecutionStageMetrics[]
-  memory_pressure_events: ExecutionMemoryPressureEvent[]
-  input_preparation: InputPreparationRecord[]
-  shared_snapshot_seeds: SharedSnapshotSeed[]
-  shared_snapshot_captures: SharedSnapshotCapture[]
-  shared_snapshot_capture_skips: SharedSnapshotCaptureSkip[]
-  warnings: ExecutionWarning[]
-  training_write_strategy?: string | null
-  training_write_input_slices?: number | null
-  training_write_native_reason?: string | null
-  training_write_blocking_operator?: string | null
-  data_output_write_strategy?: string | null
-  data_output_write_input_slices?: number | null
-  data_output_write_native_reason?: string | null
 }
 
-/**
- * One frame's preview of a multi-frame target asked for several (`port_labels`): what a
- * preview of that frame alone answers.
- */
-export interface PortPreview {
-  row_count: number
-  columns: ColumnInfo[]
-  preview: Record<string, unknown>[]
-  preview_truncated: boolean
+// The preview, the inputs it reads and its progress are generated; its execution metrics
+// are checked through the shared module.
+export type PreviewNodeResponse = Omit<GeneratedPreviewNodeResponse, "execution_metrics"> & {
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface NodeResult {
-  status: BackendNodeStatus
-  row_count?: number
-  column_count?: number
-  columns?: ColumnInfo[]
-  available_columns?: ColumnInfo[]
-  /** Per-frame column schema for a multi-frame producer (a multi-table
-   * apiInput today), keyed by emit-table label. Empty for single-frame
-   * nodes; additive to `columns`, never replaces it. */
-  frame_columns?: Record<string, ColumnInfo[]>
-  preview?: Record<string, unknown>[]
-  preview_columns?: string[]
-  preview_row_count?: number
-  preview_row_limit?: number | null
-  preview_truncated?: boolean
-  /** Each frame asked for (`port_labels`) of a multi-frame target, by label, from one run. */
-  port_previews?: Record<string, PortPreview>
-  error?: string | null
-  error_line?: number | null
-  timing_ms?: number
-  memory_bytes?: number
-  timings?: NodeTiming[]
-  memory?: NodeMemory[]
-  schema_warnings?: SchemaWarning[]
-  /** What the node's result rests on that its rows do not show, one line each
-   * (a Model Score whose input had no exposure priced it as a full policy term). */
-  notes?: string[]
-  node_statuses?: Record<string, BackendNodeStatus>
-  node_columns?: Record<string, ColumnInfo[]>
-  node_available_columns?: Record<string, ColumnInfo[]>
-  /** Per-output-handle columns of every multi-frame producer the preview ran. */
-  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
-  node_schema_warnings?: Record<string, SchemaWarning[]>
-  execution_metrics?: ExecutionMetrics | null
-}
+export type {
+  NodeMemoryInfo as NodeMemory,
+  NodeTimingInfo as NodeTiming,
+  JsonCacheInferResponse,
+  PortPreview,
+  PreviewInputsResponse,
+  PreviewProgressResponse,
+  PreviewSeedPlanEntry,
+  SchemaResponse as SchemaResult,
+  SchemaWarning,
+} from "../generated/api-contracts.generated"
 
-export interface NodeTiming {
-  node_id: string
-  label: string
-  timing_ms: number
-}
-
-export interface NodeMemory {
-  node_id: string
-  label: string
-  memory_bytes: number
-}
-
-export interface SavePipelineResponse {
-  status?: string
-  file: string
-  pipeline_name: string
-  warnings?: string[]
-  /** SHA of the ledger commit this save produced, or null when no working
-   *  branch is configured. Updates the saved comparison anchor. */
-  git_sha?: string | null
-  source_revision: string
-  /** The saved document's fingerprint, as live sync names it. */
-  document_fingerprint: string
-  /** True when version capture was skipped only because git has no commit
-   *  identity. The app prompts for a name/email, then captures what was skipped. */
-  identity_required?: boolean
-  /** The files, relative to the project, the save's capture skipped or failed on. */
-  uncaptured?: string[]
-}
-
-/** One shared-snapshot generation a preview's collected rows were computed from. */
-export interface PreviewSeedPlanEntry {
-  node_id: string
-  /** Always null: only node outputs are seeded or captured. */
-  port_label: null
-  node_label: string
-  identity_digest: string
-  generation_id: string
-  /** The generation's column set; null means all columns. */
-  columns: string[] | null
-  /** ISO-8601 UTC. */
-  created_at: string
-  /** `seeded`: read instead of computing the node. `captured`: computed by
-   * this preview, written, and read by everything below it. */
-  kind: "seeded" | "captured"
-}
-
-export interface PreviewNodeResponse extends NodeResult {
-  node_id: string
-  /** Per-frame column schemas for multi-frame producers, keyed
-   * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
-   * single-frame nodes are absent. Additive to `node_columns`. */
-  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
-  /** Every snapshot generation the rows were computed from, in topological
-   * order; empty when the preview read no snapshot. */
-  seed_plan?: PreviewSeedPlanEntry[]
-}
 
 /** One generation a trace reads: an entry of the preview's `seed_plan`. */
-export interface TraceSeedPlanEntry {
-  node_id: string
-  port_label: null
-  identity_digest: string
-  generation_id: string
-}
+export type { TraceSeedPlanEntry } from "../generated/api-contracts.generated"
 
-/** The inputs a preview would read, so only those are prepared before it. */
-export interface PreviewInputsResponse {
-  input_node_ids: string[]
-}
+// The save and the submodel actions are generated; a graph they answer with is the
+// editor's React Flow graph (`withPipelineGraph`).
+type WithEditorGraph<T> = Omit<T, "graph"> & { graph: PipelineGraph }
+export type SubmodelCreateResponse = WithEditorGraph<GeneratedCreateSubmodelResponse>
+export type NodeInstanceCreateResponse = WithEditorGraph<GeneratedCreateNodeInstanceResponse>
+export type SubmodelGraphResponse = WithEditorGraph<GeneratedSubmodelGraphResponse>
+export type DissolveSubmodelResponse = WithEditorGraph<GeneratedDissolveSubmodelResponse>
+export type { SavePipelineResponse } from "../generated/api-contracts.generated"
 
-/**
- * A running preview's step progress: `preparing` until its execution plan is
- * known, then `running` with its planned heavy steps completed of the total.
- */
-export interface PreviewProgressResponse {
-  request_id: string
-  phase: "preparing" | "running"
-  done: number | null
-  total: number | null
-  label: string | null
-}
-
-export interface SubmodelCreateResponse {
-  status: string
-  submodel_file: string
-  parent_file: string
-  graph: PipelineGraph
-  source_revision: string
-}
-
-export interface NodeInstanceCreateResponse {
-  status: string
-  graph: PipelineGraph
-  owner_name: string
-  instance_name: string
-  definition_id: string
-  source_revision: string
-}
-
-export interface SubmodelGraphResponse {
-  status: string
-  submodel_name: string
-  /** Canonical transport graph; it does not contain editor identity metadata. */
-  graph: PipelineGraph
-  submodel_file: string
-  definition_id: string
-}
-
-export interface DissolveSubmodelResponse {
-  status: string
-  graph: PipelineGraph
-  source_revision: string
-  instance_id: string
-  definition_id: string
-}
-
-/** HTTP response envelope for /api/pipeline/trace (wraps TraceResult).
- *  The backend (`TraceResponse` in `src/haute/schemas.py`) always returns a
- *  `trace`; failures raise an HTTP error rather than a 200 body — so `trace`
- *  is required and there is no `error` field on the envelope. */
-export interface TraceResponse {
-  status: string
+export type TraceResponse = Omit<GeneratedTraceResponse, "trace"> & {
   trace: import("../types/trace").TraceResult
 }
 
@@ -494,16 +159,6 @@ export type {
   OutputAssembleDryRunResponse,
   OutputDestinationResponse,
 } from "../generated/api-contracts.generated"
-
-/** Schema info returned by the schema endpoint. */
-export interface SchemaResult {
-  path: string
-  columns: ColumnInfo[]
-  row_count: number | null
-  row_count_estimated?: boolean
-  column_count: number
-  preview: Record<string, unknown>[]
-}
 
 // ---------------------------------------------------------------------------
 // Data In/Out capabilities (GET /api/io-capabilities)
@@ -628,17 +283,11 @@ export type {
 // Input-cache contracts (/api/input-cache)
 // ---------------------------------------------------------------------------
 
-export interface InputCacheSourceRequest {
-  schema_version: 1
-  /** A structured API Input acts on every emitting table of the node together. */
-  node_type?: "dataInput" | "apiInput"
-  config: Record<string, unknown>
-}
-
-/** Start or join a snapshot build; the server chooses how it is built. */
-export interface InputCacheBuildRequest extends InputCacheSourceRequest {
-  refresh: boolean
-}
+// The input-cache requests are generated, as the routes read them.
+export type {
+  InputCacheBuildRequest,
+  InputCacheSourceRequest,
+} from "../generated/api-contracts.generated"
 
 // The input-cache responses are generated.
 export type {
@@ -704,17 +353,10 @@ export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
 
 export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
 
-export interface MlflowSettingsUpdateRequest {
-  tracking_uri: string
-  folder: string
-}
-
-export interface MlflowTestConnectionRequest {
-  /** Empty destination probes the local folder. */
-  destination: "" | MlflowDestinationKey
-  tracking_uri?: string
-  folder?: string
-}
+export type {
+  MlflowSettingsUpdateRequest,
+  MlflowTestConnectionRequest,
+} from "../generated/api-contracts.generated"
 
 /** Why a training estimate cannot size its input: one reason from a closed set. */
 export type TrainEstimateUnavailable =
@@ -1097,19 +739,10 @@ export type ExplorePivotMembersResponse = Omit<GeneratedExplorePivotMembersRespo
   members: ExplorePivotMemberOption[]
 }
 
-export interface ModelSaveDestinationRequest {
-  /** A bare filename saves under models/; paths are project-root-relative. */
-  output_path: string
-  algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm" | "tboost"
-}
-
-export interface SaveModelRequest {
-  job_id: string
-  /** A bare filename saves under models/; paths are project-root-relative. */
-  output_path: string
-  /** Replace an existing destination; without it the server answers 409. */
-  overwrite: boolean
-}
+export type {
+  ModelSaveDestinationRequest,
+  SaveModelRequest,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Optimiser types
@@ -1151,55 +784,22 @@ export type {
 
 export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
-/** The Quotes explorer's filters (OPT-V12), combined with AND; unset ones are null, false or `{}`. */
-export interface OptimiserQuoteFilters {
-  scenario_value_min: number | null
-  scenario_value_max: number | null
-  at_range_edge: boolean
-  /** `{analysis column: value}`; `null` matches a missing value. */
-  analysis_equals: Record<string, string | number | boolean | null>
-  deployed_factor_differs: boolean
-}
+/** The Quotes explorer's filters (OPT-V12), combined with AND, as the apply route reads them. */
+export type OptimiserQuoteFilters = Required<GeneratedOptimiserQuoteFilters>
 
 /** A Quotes page's query beyond its target, always fully specified so one query has one cache key. */
-export interface OptimiserApplyQuery {
-  /** `null` keeps the apply frame's quote order; ties always break by quote id. */
-  sort_by: string | null
-  descending: boolean
-  quote_id_prefix: string | null
-  filters: OptimiserQuoteFilters
-  offset: number
-  limit: number
-}
+export type OptimiserApplyQuery = Required<
+  Omit<GeneratedOptimiserApplyRequest, "job_id" | "point_index" | "filters">
+> & { filters: OptimiserQuoteFilters }
 
 /** Omitting `point_index` pages the job's own solve; a number, that frontier point. */
-export interface ApplyOptimiserRequest extends OptimiserApplyQuery {
-  job_id: string
-  point_index?: number
-}
+export type ApplyOptimiserRequest = OptimiserApplyQuery
+  & Pick<GeneratedOptimiserApplyRequest, "job_id" | "point_index">
 
-/** Omitting `point_index` publishes the job's own solve; a number, that frontier point. */
-export interface SaveOptimiserRequest {
-  job_id: string
-  output_path: string
-  point_index?: number
-  /** Artifact version label; blank lets the server derive one. */
-  version?: string
-  /** Replace an existing file instead of refusing with `optimiser_result_exists`. */
-  overwrite?: boolean
-  /** The node config changed since the solve; recorded as `stale_at_publish`. */
-  stale?: boolean
-}
-
-export interface LogOptimiserToMlflowRequest {
-  job_id: string
-  experiment_name?: string | null
-  point_index?: number
-  /** `""` logs to the local folder. */
-  destination: "" | MlflowDestinationKey
-  /** The node config changed since the solve; recorded as `stale_at_publish`. */
-  stale?: boolean
-}
+export type {
+  OptimiserMlflowLogRequest as LogOptimiserToMlflowRequest,
+  OptimiserSaveRequest as SaveOptimiserRequest,
+} from "../generated/api-contracts.generated"
 
 /** A typed frontier row: price-contour's point, per-constraint columns as maps. */
 export type FrontierPoint = GeneratedOptimiserFrontierResponse["points"][number]

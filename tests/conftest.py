@@ -673,23 +673,33 @@ def _session_project(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]
         _CURRENT_PROJECT.reset(token)
 
 
+@pytest.fixture(scope="session")
+def _session_working_dir() -> str:
+    """The directory this test process started in, which every test ends in."""
+    return os.getcwd()
+
+
 @pytest.fixture(autouse=True)
-def _installed_project(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[None]:
+def _installed_project(
+    request: pytest.FixtureRequest, tmp_path: Path, _session_working_dir: str
+) -> Iterator[None]:
     """Run every test in its ``tmp_path`` project, as an entry point installs one.
 
     ``@pytest.mark.no_project`` runs a test with no project installed, so it
     proves an entry point installs its own. Teardown restores what was
     installed before the test, whatever it installed since
-    (``tests._project.use_project``).
+    (``tests._project.use_project``), and returns to the directory the process
+    started in: not the one the test started in, which a strict test's sandbox
+    has already made its ``tmp_path`` and which an explicit ``monkeypatch.undo()``
+    would otherwise leave for the next test.
     """
     no_project = request.node.get_closest_marker("no_project") is not None
     token = _CURRENT_PROJECT.set(None if no_project else ProjectContext.at(tmp_path))
-    working_dir = os.getcwd()
     try:
         yield
     finally:
         _CURRENT_PROJECT.reset(token)
-        os.chdir(working_dir)
+        os.chdir(_session_working_dir)
 
 
 @pytest.fixture()

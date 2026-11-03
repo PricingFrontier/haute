@@ -963,12 +963,15 @@ it on the reading node instead of aborting the walk, and every other run propaga
   their own (their `utility` too, A then B then A with a cached preamble and a deferred
   import), a job thread reading its request's project, a worker request after `PUT
   /api/mlflow/settings` using the new destination, and `validate_project_path` anchoring a
-  relative path at the root rather than the working directory.
+  relative path at the root rather than the working directory, and (through
+  `tests/_working_directory_cases.py`, run in a nested pytest) the test after a strict test
+  that undoes its own monkeypatch starting where the process started.
 - `tests/test_project_context_lint.py` holds the ratchets, each an exact list of allowed
   sites with the reason: no `os.chdir` or `monkeypatch.chdir` in the tests apart from
   `tests._project.use_project` (which installs a test's project and runs the test in its
   folder, as `haute serve` runs in its project's root), the harness (a strict test runs in
-  its project; every test ends where it started) and tests of code that itself changes or
+  its project; every test ends in the directory its test process started in, even after a
+  strict test undoes its own monkeypatch) and tests of code that itself changes or
   reads the working directory (the spawned interpreter's relative path, the Databricks
   bootstrap), and
   no `Path.cwd()` / `os.getcwd()` in `src/haute` apart from the CLI group's one read of the

@@ -1,17 +1,15 @@
 import {
-  expectArray,
   expectBoolean,
   expectExactKeys,
   expectNonBlankString,
   expectPlainObject,
-  expectString,
-  expectStringLiteral,
 } from "./guards"
+import type { PipelineRepairApplyResponse } from "../generated/api-contracts.generated"
+import { expectGeneratedContract } from "./generatedContractValidation"
 import {
-  parseNodeCompleteness,
-  parsePipelineEditorDocument,
+  editorDocumentFromContract,
+  loadEditorDocumentValidators,
   type PipelineEditorDocument,
-  type PipelineNodeCompleteness,
 } from "./pipelineDocument"
 
 const PARSER = "parsePipelineRepairResponse"
@@ -57,139 +55,64 @@ export function parseRemoveUnavailableNodeRequest(value: unknown): RemoveUnavail
   return parseRequestBase(value, "request")
 }
 
-export interface PipelineRepairChange {
-  path: string
-  operation: "update" | "delete"
-  description: string
-  diff: string
-  diff_truncated: boolean
-}
+export type {
+  PipelineRepairChange,
+  PipelineRepairFieldChange,
+} from "../generated/api-contracts.generated"
 
-export interface PipelineRepairFieldChange {
-  path: string
-  outcome: "retained" | "defaulted" | "needs_input" | "needs_review" | "removed" | "blocked"
-  reason: string
-}
+type RepairKind = PipelineRepairApplyResponse["repair_kind"]
 
-export interface RemoveUnavailableNodeApplyResponse {
-  repair_kind: "remove_unavailable_node"
-  applied_artifacts: string[]
-  /** Bounded display diffs of what the server wrote. */
-  changes: PipelineRepairChange[]
+/** A repair's answer, its document read as the editor's and its kind the route's own. */
+type RepairApplied<K extends RepairKind> = Omit<PipelineRepairApplyResponse, "repair_kind" | "document"> & {
+  repair_kind: K
   document: PipelineEditorDocument
-  field_changes: PipelineRepairFieldChange[]
-  completeness: PipelineNodeCompleteness[]
-  previous_config: Record<string, unknown> | null
 }
 
-export interface RecoverUnavailableNodeApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
-  repair_kind: "reset_node" | "recover_node"
+export type RemoveUnavailableNodeApplyResponse = RepairApplied<"remove_unavailable_node">
+export type RecoverUnavailableNodeApplyResponse = RepairApplied<"reset_node" | "recover_node">
+export type RemoveBrokenConnectionApplyResponse = RepairApplied<"remove_connection">
+
+function unique(values: string[], field: string): void {
+  if (new Set(values).size !== values.length) {
+    throw new Error(`${PARSER}: ${field} contains duplicate values`)
+  }
 }
 
-export interface RemoveBrokenConnectionApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
-  repair_kind: "remove_connection"
-}
-
-function uniqueStrings(value: unknown, field: string, nonEmpty: boolean): string[] {
-  const values = expectArray(PARSER, value, field).map((item, index) =>
-    nonEmpty ? expectNonBlankString(PARSER, item, `${field}[${index}]`) : expectString(PARSER, item, `${field}[${index}]`),
+// The generated validator owns the answer's structure. Each repair route answers its
+// own kinds, and names each artifact and each changed path once.
+async function parseRepairApplyResponse<K extends RepairKind>(
+  value: unknown,
+  kinds: readonly K[],
+): Promise<RepairApplied<K>> {
+  const { validatePipelineRepairApplyResponse } = await loadEditorDocumentValidators()
+  const response = expectGeneratedContract(
+    "PipelineRepairApplyResponse",
+    validatePipelineRepairApplyResponse,
+    value,
   )
-  if (new Set(values).size !== values.length) throw new Error(`${PARSER}: ${field} contains duplicate values`)
-  return values
+  const kind = kinds.find((item) => item === response.repair_kind)
+  if (kind === undefined) {
+    throw new Error(`${PARSER}: response.repair_kind ${response.repair_kind} is not one of ${kinds.join(", ")}`)
+  }
+  unique(response.applied_artifacts, "response.applied_artifacts")
+  unique(response.changes.map((change) => change.path), "response.changes paths")
+  return { ...response, repair_kind: kind, document: editorDocumentFromContract(response.document) }
 }
 
-function parseChange(value: unknown, field: string): PipelineRepairChange {
-  const object = expectPlainObject(PARSER, value, field)
-  expectExactKeys(PARSER, object, field, ["path", "operation", "description", "diff", "diff_truncated"])
-  const description = expectNonBlankString(PARSER, object.description, `${field}.description`)
-  if (Array.from(description).length > 1024) {
-    throw new Error(`${PARSER}: ${field}.description exceeds 1024 characters`)
-  }
-  const diff = expectString(PARSER, object.diff, `${field}.diff`)
-  if (Array.from(diff).length > 131_072) {
-    throw new Error(`${PARSER}: ${field}.diff exceeds 131072 characters`)
-  }
-  return {
-    path: expectNonBlankString(PARSER, object.path, `${field}.path`),
-    operation: expectStringLiteral(PARSER, object.operation, `${field}.operation`, ["update", "delete"]),
-    description,
-    diff,
-    diff_truncated: expectBoolean(PARSER, object.diff_truncated, `${field}.diff_truncated`),
-  }
+export function parseRemoveUnavailableNodeApplyResponse(
+  value: unknown,
+): Promise<RemoveUnavailableNodeApplyResponse> {
+  return parseRepairApplyResponse(value, ["remove_unavailable_node"] as const)
 }
 
-const FIELD_OUTCOMES = ["retained", "defaulted", "needs_input", "needs_review", "removed", "blocked"] as const
-
-function parseFieldChange(value: unknown, field: string): PipelineRepairFieldChange {
-  const object = expectPlainObject(PARSER, value, field)
-  expectExactKeys(PARSER, object, field, ["path", "outcome", "reason"])
-  return {
-    path: expectString(PARSER, object.path, `${field}.path`),
-    outcome: expectStringLiteral(PARSER, object.outcome, `${field}.outcome`, FIELD_OUTCOMES),
-    reason: expectNonBlankString(PARSER, object.reason, `${field}.reason`),
-  }
+export function parseRecoverUnavailableNodeApplyResponse(
+  value: unknown,
+): Promise<RecoverUnavailableNodeApplyResponse> {
+  return parseRepairApplyResponse(value, ["reset_node", "recover_node"] as const)
 }
 
-function parseRepairExtras(object: Record<string, unknown>): {
-  field_changes: PipelineRepairFieldChange[]
-  completeness: PipelineNodeCompleteness[]
-  previous_config: Record<string, unknown> | null
-} {
-  return {
-    field_changes: expectArray(PARSER, object.field_changes, "response.field_changes").map(
-      (item, index) => parseFieldChange(item, `response.field_changes[${index}]`),
-    ),
-    completeness: expectArray(PARSER, object.completeness, "response.completeness").map(
-      (item, index) => parseNodeCompleteness(item, `response.completeness[${index}]`),
-    ),
-    previous_config:
-      object.previous_config === null
-        ? null
-        : { ...expectPlainObject(PARSER, object.previous_config, "response.previous_config") },
-  }
-}
-
-function parseChanges(object: Record<string, unknown>): PipelineRepairChange[] {
-  const changes = expectArray(PARSER, object.changes, "response.changes").map((item, index) => parseChange(item, `response.changes[${index}]`))
-  if (changes.length === 0) throw new Error(`${PARSER}: response.changes must not be empty`)
-  if (new Set(changes.map((change) => change.path)).size !== changes.length) throw new Error(`${PARSER}: response.changes contains duplicate paths`)
-  return changes
-}
-
-const APPLY_RESPONSE_KEYS = ["repair_kind", "applied_artifacts", "changes", "document", "field_changes", "completeness", "previous_config"]
-
-export function parseRemoveUnavailableNodeApplyResponse(value: unknown): RemoveUnavailableNodeApplyResponse {
-  const object = expectPlainObject(PARSER, value, "response")
-  expectExactKeys(PARSER, object, "response", APPLY_RESPONSE_KEYS)
-  return {
-    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["remove_unavailable_node"]),
-    applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
-    changes: parseChanges(object),
-    document: parsePipelineEditorDocument(object.document),
-    ...parseRepairExtras(object),
-  }
-}
-
-export function parseRecoverUnavailableNodeApplyResponse(value: unknown): RecoverUnavailableNodeApplyResponse {
-  const object = expectPlainObject(PARSER, value, "response")
-  expectExactKeys(PARSER, object, "response", APPLY_RESPONSE_KEYS)
-  return {
-    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["reset_node", "recover_node"]),
-    applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
-    changes: parseChanges(object),
-    document: parsePipelineEditorDocument(object.document),
-    ...parseRepairExtras(object),
-  }
-}
-
-export function parseRemoveBrokenConnectionApplyResponse(value: unknown): RemoveBrokenConnectionApplyResponse {
-  const object = expectPlainObject(PARSER, value, "response")
-  expectExactKeys(PARSER, object, "response", APPLY_RESPONSE_KEYS)
-  return {
-    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["remove_connection"]),
-    applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
-    changes: parseChanges(object),
-    document: parsePipelineEditorDocument(object.document),
-    ...parseRepairExtras(object),
-  }
+export function parseRemoveBrokenConnectionApplyResponse(
+  value: unknown,
+): Promise<RemoveBrokenConnectionApplyResponse> {
+  return parseRepairApplyResponse(value, ["remove_connection"] as const)
 }

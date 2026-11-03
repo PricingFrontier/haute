@@ -9,10 +9,13 @@ from typing import Any
 import pytest
 
 from haute.schemas import (
+    CreateSubmodelResponse,
+    DissolveSubmodelResponse,
     OptimiserStatusResponse,
     PreviewNodeResponse,
     SavePipelineResponse,
     SchemaResponse,
+    SubmodelGraphResponse,
     TraceResponse,
     TrainResponse,
     TrainStatusResponse,
@@ -35,6 +38,9 @@ def _load_fixture(name: str) -> dict[str, Any]:
         ("train_response", TrainResponse),
         ("train_status_response", TrainStatusResponse),
         ("optimiser_status_response", OptimiserStatusResponse),
+        ("submodel_create_response", CreateSubmodelResponse),
+        ("submodel_graph_response", SubmodelGraphResponse),
+        ("dissolve_submodel_response", DissolveSubmodelResponse),
     ],
 )
 def test_ui_contract_fixture_is_canonical_json_snapshot(
@@ -44,7 +50,8 @@ def test_ui_contract_fixture_is_canonical_json_snapshot(
     fixture = _load_fixture(fixture_name)
     validated = model.model_validate(fixture)
 
-    assert validated.model_dump(mode="json") == fixture
+    # The server answers by alias (a submodel definition's ``definitionId``).
+    assert validated.model_dump(mode="json", by_alias=True) == fixture
 
 
 def test_train_status_fixture_keeps_nested_train_result_complete() -> None:

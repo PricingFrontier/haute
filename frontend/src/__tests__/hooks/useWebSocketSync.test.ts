@@ -5,7 +5,7 @@
  * Mocks the global WebSocket class and uses vi.useFakeTimers() to control
  * reconnection delays.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
 import type { Node } from "@xyflow/react"
@@ -112,6 +112,7 @@ import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
 import useWorkbenchStore from "../../stores/useWorkbenchStore.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
+import { loadEditorDocumentValidators } from "../../types/pipelineDocument.ts"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "../../api/client.ts"
 
 // ── WebSocket mock infrastructure ────────────────────────────────
@@ -185,6 +186,12 @@ function pipelineDocumentFrame(
 // ── Test suites ──────────────────────────────────────────────────
 
 describe("useWebSocketSync", () => {
+  // The app loads the editor-document validators with its first document; frames here
+  // arrive under fake timers, so the one-time module load happens before them.
+  beforeAll(async () => {
+    await loadEditorDocumentValidators()
+  })
+
   it("resyncs and applies the authoritative parent document while drilled into a child", async () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "main.py", source_revision: "old" }), true)
     const onDocumentReload = vi.fn()
@@ -905,7 +912,7 @@ describe("useWebSocketSync", () => {
       }
 
       await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
+        await latestWS().onmessage?.(new MessageEvent("message", {
           data: JSON.stringify({ ...pipelineDocumentFrame(document), origin }),
         }))
         vi.advanceTimersByTime(100)
@@ -920,7 +927,7 @@ describe("useWebSocketSync", () => {
 
       // A later update without an origin clears the focus and fits the graph.
       await act(async () => {
-        latestWS().onmessage?.(new MessageEvent("message", {
+        await latestWS().onmessage?.(new MessageEvent("message", {
           data: JSON.stringify(
             pipelineDocumentFrame({ ...document, source_revision: "r3" }, "document-fingerprint-r3"),
           ),

@@ -65,6 +65,7 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
+from haute._output_assembler import OutputMappingSchemaError
 from haute._path_resolution import (
     RuntimePathError,
     resolve_node_input_path,
@@ -281,6 +282,16 @@ _TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
         (ContractMismatchError.__module__, ContractMismatchError.__name__),
         (ContractColumnsMissingError.__module__, ContractColumnsMissingError.__name__),
         (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
+    }
+)
+# A dry-run's contract failures, which it answers 422 in a thread, answered the same out of a
+# worker, by exact identity.
+_OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES = frozenset(
+    {
+        (ContractMismatchError.__module__, ContractMismatchError.__name__),
+        (ContractColumnsMissingError.__module__, ContractColumnsMissingError.__name__),
+        (OutputMappingSchemaError.__module__, OutputMappingSchemaError.__name__),
+        (ConfigError.__module__, ConfigError.__name__),
     }
 )
 # What each of the trace's refusals answers: 409 when the clicked row has changed since
@@ -872,6 +883,11 @@ def _raise_interactive_remote_http_error(
             raise HTTPException(status_code=400, detail=exc.remote_message) from None
         if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
             raise HTTPException(status_code=404, detail=exc.remote_message) from None
+    if (
+        operation == "output_assemble_dry_run"
+        and identity in _OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES
+    ):
+        raise HTTPException(status_code=422, detail=exc.remote_message) from None
     if operation == "pipeline_trace":
         if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
             raise HTTPException(status_code=422, detail=exc.remote_message) from None
@@ -1676,6 +1692,8 @@ def _trace_payload(
     It is serialised where it runs, so the event loop never walks the full trace, and
     validated there too: ``JSONResponse`` bypasses response-model validation, so this is
     where the typed omission, waterfall and provenance contract meets the HTTP boundary.
+    The payload is the validated model's serialization, every declared field present, as
+    the browser's generated validator requires.
     """
     with _trace_node_failures(graph):
         result = execute_trace(
@@ -1691,9 +1709,8 @@ def _trace_payload(
             seed_plan=_listed_seeds(body),
             port_label=body.port_label,
         )
-    trace_payload = trace_result_to_dict(result)
-    TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
-    return trace_payload
+    response = TraceResponse.model_validate({"status": "ok", "trace": trace_result_to_dict(result)})
+    return response.trace.model_dump(mode="json")
 
 
 def _execute_trace_worker(

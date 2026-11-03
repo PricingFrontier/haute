@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Node } from "@xyflow/react"
 import { applyPreviewResultColumnsToNodes } from "../usePipelineAPI"
-import type { NodeResult } from "../../api/types"
+import { makePreviewResponse } from "../../test-utils/factories"
 
 describe("preview notes", () => {
   it("stores the previewed node's notes when the response carries its schema maps", () => {
@@ -10,12 +10,12 @@ describe("preview notes", () => {
       { id: "ms", position: { x: 0, y: 0 }, data: { label: "ms", nodeType: "modelScore" } },
       { id: "src", position: { x: 0, y: 0 }, data: { label: "src", nodeType: "dataSource" } },
     ] as Node[]
-    const result = {
-      status: "ok",
+    const result = makePreviewResponse({
+      node_id: "ms",
       columns: [{ name: "pred", dtype: "Float64" }],
       node_columns: { ms: [{ name: "pred", dtype: "Float64" }] },
       notes: [note],
-    } as NodeResult
+    })
 
     const [scored, source] = applyPreviewResultColumnsToNodes(nodes, "ms", result, "live", 1)
 

@@ -460,9 +460,11 @@ pipeline's sources.
   response models of each converted module group (`RESPONSE_CONTRACT_GROUPS` in
   `scripts/generate_api_contracts.py`), and the request bodies of each request group
   (`REQUEST_CONTRACT_GROUPS`), generate reviewed browser declarations and standalone
-  validators from their canonical Pydantic models; the browser checks those responses with the
-  generated validators alone. Other frontend contracts remain explicitly maintained until they
-  are converted, rather than being claimed as generated.
+  validators from their canonical Pydantic models. Every response the browser parses is one of
+  them, checked by its generated validator; hand-written browser code keeps only the
+  cross-field rules the UI relies on and the shapes it gives a field the server leaves open
+  (a node's config, a trace step's calculation, the training diagnostics' rows). A node's
+  config is an open object until its typed models join the contract (`PCFG-R07`).
   A single `except HauteError` at any boundary catches the
   entire product's domain-error surface (with the documented exceptions — the OUTPUT
   dry-run request/response models are route-local, and resource-exhaustion

@@ -22,18 +22,28 @@ from pydantic import BaseModel, RootModel
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode, JsonSchemaValue
 from pydantic_core import core_schema
 
-from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
+from haute._execution_schemas import ExecutionMetricsPayload, ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
+from haute._types import PipelineGraph
 from haute.schemas import (
+    AssistantSessionListResponse,
+    AssistantSessionResponse,
+    AssistantStatusResponse,
+    AssistantStreamEventPayload,
+    AssistantUndoResponse,
     BandingStatsResponse,
     BrowseFilesResponse,
     CacheClearResponse,
     CacheNodesResponse,
     CacheUsageResponse,
     CatalogListResponse,
+    CreateNodeInstanceResponse,
+    CreateSubmodelResponse,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
+    DissolveSubmodelResponse,
     EditorIdentitiesResponse,
+    EditorIdentityRequestNode,
     ExplorePivotMembersResponse,
     ExplorePivotRunResponse,
     ExplorePivotStatusResponse,
@@ -65,11 +75,14 @@ from haute.schemas import (
     GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
+    InputCacheBuildRequest,
     InputCacheBuildResponse,
     InputCacheCancelResponse,
     InputCacheJobStatusResponse,
     InputCacheSnapshotStatusResponse,
+    InputCacheSourceRequest,
     IoCapabilitiesResponse,
+    JsonCacheInferResponse,
     LogExperimentResponse,
     MlflowDestinationsResponse,
     MlflowExperimentList,
@@ -77,21 +90,27 @@ from haute.schemas import (
     MlflowModelVersionList,
     MlflowRunList,
     MlflowSettingsResponse,
+    MlflowSettingsUpdateRequest,
+    MlflowTestConnectionRequest,
     MlflowTestConnectionResponse,
     ModelFileInspectionResponse,
     ModellingGpuStatusResponse,
+    ModelSaveDestinationRequest,
     ModelSaveDestinationResponse,
     NodeDataClearResponse,
     NodeDataPointResponse,
     NodeDataProfileResponse,
     NodeDataRunResponse,
     NodeDataStatusResponse,
+    OptimiserApplyRequest,
     OptimiserApplyResponse,
     OptimiserEstimateResponse,
     OptimiserFrontierAutoRangeStartResponse,
     OptimiserFrontierAutoRangeStatusResponse,
     OptimiserFrontierSelectResponse,
+    OptimiserMlflowLogRequest,
     OptimiserMlflowLogResponse,
+    OptimiserSaveRequest,
     OptimiserSaveResponse,
     OptimiserSegmentIndexResponse,
     OptimiserSegmentsResponse,
@@ -99,18 +118,29 @@ from haute.schemas import (
     OptimiserStatusResponse,
     OutputAssembleDryRunResponse,
     OutputDestinationResponse,
+    PipelineEditorDocument,
+    PipelineRepairApplyResponse,
     PipelineSettingsResponse,
     PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
+    PreviewInputsResponse,
+    PreviewNodeResponse,
+    PreviewProgressResponse,
     ProjectFileDeleteResponse,
     ProjectFileWriteResponse,
     ProjectFolderResponse,
     RatingLevelsResponse,
     SaveCapture,
+    SaveModelRequest,
     SaveModelResponse,
+    SavePipelineResponse,
     SchemaListResponse,
+    SchemaResponse,
     SessionStatusResponse,
+    SubmodelGraphResponse,
     TableListResponse,
+    TraceResponse,
+    TraceSeedPlanEntry,
     TrainEstimateResponse,
     TrainResponse,
     TrainStatusResponse,
@@ -161,12 +191,18 @@ _ContractModel = type[BaseModel] | type[RootModel[Any]]
 
 RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups"
 REQUEST_GROUPS_KEYWORD = "x-haute-request-groups"
+SHARED_RESPONSE_GROUPS_KEYWORD = "x-haute-shared-response-groups"
 
 # Request bodies the browser sends, by module group, described as their routes read them
 # (validation mode: a defaulted field may be left out), so what the browser builds is typed
 # by the model that reads it. The frontend generator emits one validator module per group,
 # which only the tests load.
 REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
+    "editor-requests": (EditorIdentityRequestNode, TraceSeedPlanEntry),
+    "input-cache-requests": (InputCacheSourceRequest, InputCacheBuildRequest),
+    "mlflow-requests": (MlflowSettingsUpdateRequest, MlflowTestConnectionRequest),
+    "modelling-requests": (ModelSaveDestinationRequest, SaveModelRequest),
+    "optimiser-requests": (OptimiserApplyRequest, OptimiserSaveRequest, OptimiserMlflowLogRequest),
     "workbench-app-requests": (
         WorkbenchAppPriceRequest,
         WorkbenchAppQuoteCreateRequest,
@@ -187,7 +223,7 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
 # Response models the browser parses with generated validators, by the module
 # group whose hand-written guards they replace. The frontend generator emits one
 # validator module per group with one export per model.
-RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
+RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
     "utility": (
         UtilityListResponse,
         UtilityReadResponse,
@@ -249,6 +285,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         GitMilestoneFork,
         # The capture fields every project write answers, alone: POST /api/git/capture.
         SaveCapture,
+        # A commit's pipeline, as GET /api/git/show/{sha} reads it.
+        PipelineGraph,
     ),
     "training": (
         TrainResponse,
@@ -281,13 +319,44 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         InputCacheJobStatusResponse,
         InputCacheCancelResponse,
         InputCacheSnapshotStatusResponse,
+        JsonCacheInferResponse,
     ),
     "output": (
         WriteOutputResponse,
         OutputDestinationResponse,
         OutputAssembleDryRunResponse,
     ),
-    "io": (IoCapabilitiesResponse,),
+    "io": (IoCapabilitiesResponse, SchemaResponse),
+    "preview": (
+        PreviewNodeResponse,
+        PreviewInputsResponse,
+        PreviewProgressResponse,
+    ),
+    "trace": (TraceResponse,),
+    # The assistant panel's status, sessions, undo and message-stream events.
+    "assistant": (
+        AssistantStatusResponse,
+        AssistantSessionResponse,
+        AssistantSessionListResponse,
+        AssistantUndoResponse,
+        AssistantStreamEventPayload,
+    ),
+    # The editor document a load, a live-sync update, a scoped node save and a repair carry.
+    # Loaded eagerly: the live-sync handler reads a document synchronously.
+    "editor-document": (
+        PipelineEditorDocument,
+        PipelineRepairApplyResponse,
+    ),
+    # The pipeline's save and the submodel actions, each answering with a canonical graph.
+    "pipeline": (
+        SavePipelineResponse,
+        CreateSubmodelResponse,
+        CreateNodeInstanceResponse,
+        SubmodelGraphResponse,
+        DissolveSubmodelResponse,
+    ),
+    # Carried by the node-data, explore, training, optimiser and output responses: shared.
+    "execution-metrics": (ExecutionMetricsPayload,),
     "workbench": (
         WorkbenchStatusResponse,
         WorkbenchTablesResponse,
@@ -343,6 +412,12 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         OptimiserSegmentIndexResponse,
     ),
 }
+
+
+# Response groups of one model that other groups' responses carry. The frontend generator
+# compiles each once, in its own module; every other module checks only that such a field is an
+# object, and the client checks it through the shared module.
+SHARED_RESPONSE_GROUPS: tuple[str, ...] = ("execution-metrics",)
 
 
 class _BundleJsonSchema(GenerateJsonSchema):
@@ -515,6 +590,10 @@ def _definitions_for(
         if not isinstance(name, str) or not isinstance(definition, dict):
             raise RuntimeError(f"{model.__name__} generated an invalid definition")
         _merge_definition(definitions, name=name, value=definition)
+    # A recursive model (a pipeline graph holds submodel definitions that hold graphs) is a
+    # reference to its own definition, which the nested section already carries.
+    if schema == {"$ref": f"#/$defs/{model.__name__}"} and model.__name__ in definitions:
+        return definitions
     _merge_definition(definitions, name=model.__name__, value=schema)
     return definitions
 
@@ -534,6 +613,9 @@ def build_contract_bundle() -> dict[str, Any]:
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
     }
+    for group in SHARED_RESPONSE_GROUPS:
+        if len(RESPONSE_CONTRACT_GROUPS.get(group, ())) != 1:
+            raise RuntimeError(f"a shared response group holds exactly one model: {group!r}")
     if set(REQUEST_CONTRACT_GROUPS) & set(RESPONSE_CONTRACT_GROUPS):
         raise RuntimeError("a contract group is both a request and a response group")
     # Requests before responses: they are validation-mode definitions, as the pilots are, so
@@ -587,6 +669,7 @@ def build_contract_bundle() -> dict[str, Any]:
             group: [model.__name__ for model in models]
             for group, models in RESPONSE_CONTRACT_GROUPS.items()
         },
+        SHARED_RESPONSE_GROUPS_KEYWORD: list(SHARED_RESPONSE_GROUPS),
         "$defs": definitions,
     }
 

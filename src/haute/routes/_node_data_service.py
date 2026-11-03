@@ -100,6 +100,7 @@ from haute.routes._job_lifecycle import (
     bind_running_execution_metrics_publisher,
 )
 from haute.routes._job_store import JobStore, RunningJobFields
+from haute.routes._memory_messages import memory_limit_user_message
 from haute.schemas import (
     ExecutionMetricsPayload,
     NodeDataClearResponse,
@@ -1295,15 +1296,15 @@ class NodeDataService:
                     elapsed_seconds=elapsed,
                 )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            payload = exc.to_payload()
+            message = memory_limit_user_message(exc, operation_noun=label)
             self._lifecycle.transition(
                 job_id,
                 to="memory_limited",
-                message=str(payload),
+                message=message,
                 fields={
-                    "error": str(payload),
+                    "error": message,
                     "error_code": "memory_limit",
-                    "error_detail": payload,
+                    "error_detail": exc.to_payload(),
                 },
                 elapsed_seconds=elapsed,
             )

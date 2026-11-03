@@ -24,7 +24,7 @@ import type {
   GraphPayload,
 } from "./types"
 
-// The generated validators own both responses' structure (API-R03).
+// The generated validators own both responses' structure.
 function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStart {
   return expectGeneratedContract("DispersionEstimateResponse", validateDispersionEstimateResponse, value)
 }
