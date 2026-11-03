@@ -496,7 +496,6 @@ def test_table_without_entries_still_rejects_malformed_factors() -> None:
 
 def _age_table(*levels: object, dtypes: dict | None = None) -> dict:
     table: dict = {
-        "name": "Age",
         "factors": ["age"],
         "outputColumn": "age_factor",
         "entries": [{"age": level, "value": 1.0 + index} for index, level in enumerate(levels)],
