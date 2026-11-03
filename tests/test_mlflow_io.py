@@ -32,6 +32,15 @@ from haute._mlflow_utils import ResolvedBackend, resolve_backend
 from haute._model_scorer import _cleanup_registered_temp_files
 from tests._project import use_project
 
+
+def _signature(*names: str) -> object:
+    """A real MLflow signature with required double inputs *names*."""
+    from mlflow.models import ModelSignature
+    from mlflow.types import ColSpec, Schema
+
+    return ModelSignature(inputs=Schema([ColSpec("double", name) for name in names]))
+
+
 # The backend ``mock_mlflow_env`` pins, and the one the destination-free
 # helper tests below thread through explicitly.
 _FAKE_BACKEND = ResolvedBackend(
@@ -186,7 +195,7 @@ class TestPyfuncAutoDetect:
     def test_non_cbm_artifact_uses_pyfunc(self, mock_mlflow_env):
         """Artifact path not ending in .cbm loads via pyfunc."""
         fake_pyfunc = MagicMock()
-        fake_pyfunc.metadata.signature.inputs.input_names.return_value = ["f1", "f2"]
+        fake_pyfunc.metadata.signature = _signature("f1", "f2")
         _, _, modules_patch, resolve_patch = mock_mlflow_env
 
         with (
@@ -209,7 +218,7 @@ class TestPyfuncAutoDetect:
     def test_auto_discover_falls_back_to_pyfunc(self, mock_mlflow_env):
         """When no .cbm found and no artifact_path, falls back to pyfunc 'model'."""
         fake_pyfunc = MagicMock()
-        fake_pyfunc.metadata.signature.inputs.input_names.return_value = ["a"]
+        fake_pyfunc.metadata.signature = _signature("a")
         _, _, modules_patch, resolve_patch = mock_mlflow_env
 
         with (
@@ -384,23 +393,14 @@ class TestWrappers:
         sm = _wrap_catboost(model, source="test model")
         assert sm.cat_feature_names == frozenset()
 
-    def test_wrap_pyfunc(self):
-        """_wrap_pyfunc extracts features from model signature."""
-        model = MagicMock()
-        model.metadata.signature.inputs.input_names.return_value = ["f1", "f2"]
-
-        sm = _wrap_pyfunc(model)
-        assert sm.flavor == "pyfunc"
-        assert sm.feature_names == ["f1", "f2"]
-        assert sm.cat_feature_names == frozenset()
-
     def test_wrap_pyfunc_no_signature(self):
         """_wrap_pyfunc with no signature returns empty feature list."""
         model = MagicMock()
         model.metadata = None
 
-        sm = _wrap_pyfunc(model)
+        sm = _wrap_pyfunc(model, task="regression")
         assert sm.feature_names == []
+        assert sm.optional_feature_names == frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -1506,28 +1506,38 @@ class TestExtractPyfuncFeatures:
             _extract_pyfunc_features(ModelWithoutMetadata())
 
     def test_no_signature(self):
-        """Returns empty list when model has no signature."""
+        """No signature declares no inputs."""
         from haute._mlflow_io import _extract_pyfunc_features
 
         model = MagicMock()
         model.metadata = None
-        assert _extract_pyfunc_features(model) == []
+        assert _extract_pyfunc_features(model) == ([], frozenset())
 
     def test_inputs_is_none(self):
-        """Returns empty list when signature.inputs is None."""
         from haute._mlflow_io import _extract_pyfunc_features
 
         model = MagicMock()
         model.metadata.signature.inputs = None
-        assert _extract_pyfunc_features(model) == []
+        assert _extract_pyfunc_features(model) == ([], frozenset())
 
-    def test_input_names_method(self):
-        """Uses input_names() when available."""
+    def test_optional_inputs_are_separated_from_required_ones(self):
+        """An input the signature marks optional is read only where present."""
+        from mlflow.models import ModelSignature
+        from mlflow.types import ColSpec, Schema
+
         from haute._mlflow_io import _extract_pyfunc_features
 
         model = MagicMock()
-        model.metadata.signature.inputs.input_names.return_value = ["x", "y"]
-        assert _extract_pyfunc_features(model) == ["x", "y"]
+        model.metadata.signature = ModelSignature(
+            inputs=Schema(
+                [
+                    ColSpec("double", "x"),
+                    ColSpec("double", "exposure", required=False),
+                    ColSpec("string", "y"),
+                ]
+            )
+        )
+        assert _extract_pyfunc_features(model) == (["x", "y"], frozenset({"exposure"}))
 
 
 # ---------------------------------------------------------------------------
@@ -2000,7 +2010,7 @@ class TestLoadMlflowModelPyfunc:
     def test_pyfunc_model_loaded_and_wrapped(self):
         """Pyfunc model is loaded and wrapped correctly."""
         fake_pyfunc = MagicMock()
-        fake_pyfunc.metadata.signature.inputs.input_names.return_value = ["f1"]
+        fake_pyfunc.metadata.signature = _signature("f1")
 
         with (
             patch(
@@ -2375,6 +2385,56 @@ class TestCatBoostTaskFromTheModelFile:
             "model.feature_contract.json",
         ]
         assert Path(path).is_file()
+
+    def test_a_haute_refusal_is_not_retried_as_a_corrupt_download(self, tmp_path, monkeypatch):
+        """A Haute refusal of readable bytes keeps its own type and message."""
+        import lightgbm as lgb
+
+        from haute._mlflow_io import _load_with_bounded_retry
+        from haute.errors import HauteValidationError
+
+        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
+        rng = np.random.RandomState(3)
+        booster = lgb.train(
+            {"objective": "regression", "verbose": -1, "num_leaves": 2},
+            lgb.Dataset(rng.rand(40, 2), label=rng.rand(40)),
+            num_boost_round=2,
+        )
+        # Two Haute records: readable LightGBM text the loader refuses by name.
+        path = tmp_path / "model.lgbm"
+        path.write_text(booster.model_to_string() + "haute:{}\nhaute:{}\n", encoding="utf-8")
+        with (
+            patch("haute._mlflow_io._resolve_artifact_local", return_value=str(path)) as resolve,
+            patch("haute._mlflow_io._run_contract_if_logged", return_value=None),
+            pytest.raises(HauteValidationError, match="holds 2 'haute:' records") as refused,
+        ):
+            _load_with_bounded_retry(
+                mlflow_mod=MagicMock(),
+                client=MagicMock(),
+                backend=_FAKE_BACKEND,
+                run_id="r",
+                artifact="model.lgbm",
+                flavor="lightgbm",
+                task="regression",
+            )
+        assert "Persistently corrupt" not in str(refused.value)
+        assert resolve.call_count == 1
+        assert path.is_file()
+
+    def test_an_unreadable_class_label_record_is_raised_not_replaced(self, tmp_path, monkeypatch):
+        from catboost import CatBoostClassifier
+
+        from haute._mlflow_io import catboost_class_labels
+
+        model = CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
+        self._saved(tmp_path, model)
+
+        def unreadable(_model):
+            raise RuntimeError("metadata unreadable")
+
+        monkeypatch.setattr(CatBoostClassifier, "get_metadata", unreadable)
+        with pytest.raises(RuntimeError, match="metadata unreadable"):
+            catboost_class_labels(model)
 
 
 class TestRunContractIfLogged:

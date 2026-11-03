@@ -309,6 +309,16 @@ export function adaptPivotChartData(
     )
   }
   if (result.row_paths.length === 0 || result.column_paths.length === 0) {
+    // No matching rows is an answer, not a misconfiguration: it charts as empty.
+    if (result.cells.length === 0) {
+      return {
+        categories: [],
+        series: [],
+        dormantOverrideIds: [],
+        dormantEncodingIds: [],
+        warnings: [],
+      }
+    }
     fail(
       "chart_result_axis_empty",
       "The Pivot result does not contain the row and column coordinates required by a chart.",

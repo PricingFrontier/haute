@@ -152,8 +152,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "docs",
     "engineering-quality",
-    "explore-eda",
-    "model-scoring",
     "modelling",
     "optimiser-validation",
     "pipeline-config",

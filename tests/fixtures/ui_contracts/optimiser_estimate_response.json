@@ -4,5 +4,7 @@
   "scenarios_per_quote_min": 20,
   "scenarios_per_quote_max": 20,
   "scenarios_per_quote_mean": 20.0,
-  "expanded_row_count": 10000
+  "expanded_row_count": 10000,
+  "solve_memory_forecast_bytes": 285212672,
+  "solve_memory_cap_bytes": 8589934592
 }

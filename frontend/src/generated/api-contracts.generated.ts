@@ -2265,6 +2265,8 @@ export interface OptimiserEstimateResponse {
   scenarios_per_quote_max: number | null;
   scenarios_per_quote_mean: number | null;
   scenarios_per_quote_min: number | null;
+  solve_memory_cap_bytes: number;
+  solve_memory_forecast_bytes: number;
   total_rows: number | null;
 }
 export interface OptimiserStatusResponse {

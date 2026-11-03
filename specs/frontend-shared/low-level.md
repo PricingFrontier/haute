@@ -170,6 +170,10 @@
   `CachedSolveResult` additionally carries both `result` (current,
   possibly a frontier point's server summary applied) and `originalResult`
   (the as-solved baseline), so switching frontier points never loses the original.
+  A pivot calculation that fails before a job exists is recorded by
+  `failExplorePivotStart` under the identity it was asked for, with `jobId: null`, retiring
+  any job held for that pivot; `failExplorePivotJob` records a started job's failure the same
+  way under its job id.
   A failed attempt is recorded in `failedAttempt` (`FailedSolveAttempt`: its job
   id, config hash, source, structural version, error and terminal status), never
   over a stored result's identity. A node with an earlier result keeps that result

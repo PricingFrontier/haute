@@ -1052,8 +1052,12 @@ when other reservations take all of `usable_now`, otherwise `no_memory_available
 has no free memory beyond the OS reserve"). `OPTIMISER_SOLVE` is an adaptive, in-flight profile:
 10,000 basis points, floor 4 GiB, no ceiling, fixed default 4 GiB, env
 `HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_*` and `HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_*`.
+`preview_growth_grant_bytes(profile, operation=...)` resolves the same terms from the same kind
+of sample (`_growth_grant_terms`, one code path) and returns `max(G, 0)` without reserving
+anything: what a grant started now would get. The optimiser's input estimate reports it beside
+its solve-memory forecast (OPT-W02).
 `ExecutionAdmissionError` carries `estimated_bytes` when a `WorkEstimate` (or the optimiser's
-thread-mode resident-grid gate) refused, and the shared user message names the estimate and the
+thread-mode solve-memory gate) refused, and the shared user message names the estimate and the
 allowance.
 
 **Chunk-local classification (`chunking.py`).** The module holds only the classifiers.

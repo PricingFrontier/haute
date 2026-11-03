@@ -256,49 +256,105 @@ def _positive_int(value: object, *, field: str) -> int:
     return int(value)
 
 
-def forecast_resident_grid_bytes(
+def solve_forecast_shape(config: Mapping[str, Any]) -> tuple[str, int, int]:
+    """The solve's mode, constraint count and ratebook factor count, as the forecast reads them."""
+    mode = str(config.get("mode", "online"))
+    constraint_count = len(config.get("constraints") or {})
+    factor_count = len(config.get("factor_columns") or []) if mode == "ratebook" else 0
+    return mode, constraint_count, factor_count
+
+
+def forecast_solve_memory_from_input(
     path: Path,
-    columns: list[str],
-    quote_id: str,
-    constraint_count: int,
+    config: Mapping[str, Any],
+    *,
+    n_steps: int | None,
     chunk_rows: int,
     execution_context: ExecutionContext | None = None,
 ) -> int:
-    """The resident grid's conservative peak, from row count and a decoded sample."""
+    """The solve's memory forecast from the solver input setup wrote.
+
+    The row count is the file's; the quote id's width is the mean of a bounded
+    decoded sample (at most 512 rows).
+    """
     import polars as pl
 
-    from haute._ram_estimate import (
-        decoded_frame_row_width_bytes,
-        estimate_optimiser_grid_peak_bytes,
-    )
+    from haute._ram_estimate import forecast_solve_memory_bytes
 
+    mode, constraint_count, factor_count = solve_forecast_shape(config)
+    quote_id = str(config.get("quote_id", "quote_id"))
     row_count = int(read_parquet_metadata(path)["row_count"])
-    sample_lf = pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512)
-    sample = streaming_collect(sample_lf, execution_context=execution_context)
-    return estimate_optimiser_grid_peak_bytes(
+    quote_count = row_count // n_steps if n_steps else 0
+    sample = streaming_collect(
+        pl.scan_parquet(path)
+        .select(pl.col(quote_id))
+        .head(512)
+        .select(pl.col(quote_id).cast(pl.String).str.len_bytes().mean()),
+        execution_context=execution_context,
+    )
+    return forecast_solve_memory_bytes(
+        mode=mode,
+        quote_count=quote_count,
         row_count=row_count,
         constraint_count=constraint_count,
-        quote_id_width_bytes=decoded_frame_row_width_bytes(
-            sample.select(pl.col(quote_id).cast(pl.String))
-        ),
-        input_row_width_bytes=decoded_frame_row_width_bytes(sample),
+        factor_count=factor_count,
+        quote_id_bytes=_mean_quote_id_bytes(sample.item(), quote_count),
         chunk_rows=chunk_rows,
     )
 
 
-def _admit_resident_grid(
+def estimate_solve_memory_forecast(
+    config: Mapping[str, Any], metrics: Mapping[str, int | float | None]
+) -> int:
+    """The solve's memory forecast from the input estimate's single scan."""
+    from haute._ram_estimate import forecast_solve_memory_bytes
+
+    mode, constraint_count, factor_count = solve_forecast_shape(config)
+    quote_count = int(_required_metric(metrics, "quote_count"))
+    steps = metrics["scenarios_per_quote_max"]
+    return forecast_solve_memory_bytes(
+        mode=mode,
+        quote_count=quote_count,
+        row_count=int(_required_metric(metrics, "expanded_row_count")),
+        constraint_count=constraint_count,
+        factor_count=factor_count,
+        quote_id_bytes=_mean_quote_id_bytes(metrics["quote_id_bytes_mean"], quote_count),
+        chunk_rows=grid_chunk_decision(None if steps is None else int(steps)).chunk_size,
+    )
+
+
+def _required_metric(metrics: Mapping[str, int | float | None], name: str) -> int | float:
+    value = metrics[name]
+    if value is None:
+        raise RuntimeError(f"the optimiser input estimate returned no {name}")
+    return value
+
+
+def _mean_quote_id_bytes(value: int | float | None, quote_count: int) -> float:
+    """A mean width; an input with no quotes has none, and prices none."""
+    if value is None:
+        if quote_count:
+            raise RuntimeError(f"{quote_count} quotes have no mean quote-id width")
+        return 0.0
+    return float(value)
+
+
+def _admit_solve_memory(
     path: Path,
-    columns: list[str],
-    quote_id: str,
-    constraint_count: int,
+    config: Mapping[str, Any],
+    n_steps: int | None,
     chunk_rows: int,
     execution_context: ExecutionContext | None,
 ) -> None:
-    """Refuse a grid whose forecast exceeds the allowance (thread mode, which has no cap)."""
+    """Refuse a solve whose forecast exceeds the allowance (thread mode, which has no cap)."""
     if execution_context is None or execution_context.remaining_memory_bytes() is None:
         return
-    peak_bytes = forecast_resident_grid_bytes(
-        path, columns, quote_id, constraint_count, chunk_rows, execution_context
+    peak_bytes = forecast_solve_memory_from_input(
+        path,
+        config,
+        n_steps=n_steps,
+        chunk_rows=chunk_rows,
+        execution_context=execution_context,
     )
     remaining = execution_context.remaining_memory_bytes()
     assert remaining is not None
@@ -311,7 +367,7 @@ def _admit_resident_grid(
             rss_limit_bytes=execution_context.rss_limit_bytes,
             estimated_bytes=peak_bytes,
             allowance_bytes=remaining,
-            reason=f"resident optimiser grid needs an estimated {peak_bytes} bytes; "
+            reason=f"the optimiser solve needs an estimated {peak_bytes} bytes; "
             f"{remaining} bytes remain in the execution allowance",
         )
 
@@ -1136,19 +1192,12 @@ def build_quote_grid(
     n_steps: int | None,
     execution_context: ExecutionContext | None,
 ) -> QuoteGrid:
-    """Admit the resident grid, then build it from the solver-input parquet."""
+    """Admit the solve's memory forecast, then build the grid from the solver-input parquet."""
     objective = config["objective"]
     qid_col = config.get("quote_id", "quote_id")
     mult_col = config.get("scenario_value", "scenario_value")
     step_col = config.get("scenario_index", "scenario_index")
-    _admit_resident_grid(
-        Path(input_path),
-        [qid_col, step_col, mult_col, objective, *constraint_cols],
-        qid_col,
-        len(constraint_cols),
-        chunk_size,
-        execution_context,
-    )
+    _admit_solve_memory(Path(input_path), config, n_steps, chunk_size, execution_context)
     try:
         grid: QuoteGrid = price_contour().build_grid_from_parquet_chunked(
             input_path,
@@ -1287,7 +1336,8 @@ def estimate_input_metrics(source_lf: Any, config: dict[str, Any]) -> dict[str, 
     projection pushdown skip every other solver column. The null-quote_id
     contract check is folded into the same scan: null keys form their own
     ``group_by`` group, so their row count comes for free instead of costing a
-    second full pass.
+    second full pass. The quote id's mean width, which the solve-memory
+    forecast prices, is read from the same groups.
     """
     import polars as pl
 
@@ -1309,6 +1359,12 @@ def estimate_input_metrics(source_lf: Any, config: dict[str, Any]) -> dict[str, 
             non_null_counts.max().alias("scenarios_per_quote_max"),
             non_null_counts.mean().alias("scenarios_per_quote_mean"),
             non_null_counts.sum().alias("expanded_row_count"),
+            pl.col(quote_id_col)
+            .filter(pl.col(quote_id_col).is_not_null())
+            .cast(pl.String)
+            .str.len_bytes()
+            .mean()
+            .alias("quote_id_bytes_mean"),
         ),
     ).row(0, named=True)
     null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
@@ -1326,6 +1382,7 @@ def estimate_input_metrics(source_lf: Any, config: dict[str, Any]) -> dict[str, 
         "scenarios_per_quote_max": row["scenarios_per_quote_max"],
         "scenarios_per_quote_mean": row["scenarios_per_quote_mean"],
         "expanded_row_count": row["expanded_row_count"],
+        "quote_id_bytes_mean": row["quote_id_bytes_mean"],
     }
 
 

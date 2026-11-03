@@ -3,7 +3,6 @@ import { ArrowLeft } from "lucide-react"
 
 import { EditorLabel, ValidatedTextField } from "../../components/form"
 import useUIStore from "../../stores/useUIStore"
-import { confirmed } from "../../stores/useQuestionStore"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
 import {
   dependentChartsForPivot,
@@ -24,6 +23,7 @@ import type {
 } from "../explore/pivotConfig"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
+import useConfirmedConfigUpdate from "./useConfirmedConfigUpdate"
 import {
   ExploreConfigCard,
   ExploreConfigCardEmptyState,
@@ -59,7 +59,7 @@ type PivotEditorProps = {
   upstreamColumns: Column[]
   persistPivot: (pivot: ExplorePivotConfig) => void
   persistFormula: (formula: PivotFormulaPlacement) => void
-  deleteFormula: (formula: PivotFormulaPlacement) => void
+  deleteFormula: (formula: PivotFormulaPlacement) => Promise<boolean>
   onBack: () => void
   loadFilterMembers?: LoadPivotFilterMembers
   currentConfigHash: string | null
@@ -553,6 +553,7 @@ export default function ExplorePivotsConfig({
     (s) => s.exploreConfiguredPivotIds[nodeId] ?? null,
   )
   const setExploreConfiguredPivot = useUIStore((s) => s.setExploreConfiguredPivot)
+  const confirmThenCurrent = useConfirmedConfigUpdate(config, onUpdate)
   const parsed = parseExplorePivots(config)
   const configuredPivotExists =
     !parsed.ok ||
@@ -575,10 +576,7 @@ export default function ExplorePivotsConfig({
   const persistExploreState = (
     nextPivots: ExplorePivotConfig[],
     nextFormulas: PivotFormulaPlacement[] = formulas,
-  ) => onUpdate({
-    pivot_formulas: nextFormulas,
-    pivots: nextPivots.map(serializeExplorePivot),
-  })
+  ) => onUpdate(exploreStateUpdate(nextPivots, nextFormulas))
 
   const persistPivot = (nextPivot: ExplorePivotConfig) => {
     const exists = pivots.some((candidate) => candidate.id === nextPivot.id)
@@ -599,15 +597,38 @@ export default function ExplorePivotsConfig({
     )
   }
 
-  const deleteFormula = (formula: PivotFormulaPlacement) => {
-    persistExploreState(
-      pivots.map((pivot) => ({
+  // A deletion asks first, then removes the card from the config as it stands
+  // once answered, so an edit made while the dialog was open survives it.
+  const deleteFormula = async (formula: PivotFormulaPlacement): Promise<boolean> => {
+    const current = await confirmThenCurrent({
+      title: `Delete ${formula.display_name} from every pivot?`,
+      confirm: "Delete",
+      danger: true,
+    })
+    const state = current && parseExplorePivots(current.config)
+    if (!current || !state?.ok) return false
+    current.onUpdate(exploreStateUpdate(
+      state.pivots.map((pivot) => ({
         ...pivot,
         formulas: pivot.formulas.filter((candidate) => candidate.id !== formula.id),
         value_order: pivot.value_order.filter((id) => id !== formula.id),
       })),
-      formulas.filter((candidate) => candidate.id !== formula.id),
-    )
+      state.formulas.filter((candidate) => candidate.id !== formula.id),
+    ))
+    return true
+  }
+
+  const deletePivot = async (pivot: ExplorePivotConfig) => {
+    const current = await confirmThenCurrent({ title: `Delete ${pivot.name}?`, confirm: "Delete", danger: true })
+    const state = current && parseExplorePivots(current.config)
+    if (!current || !state?.ok) return
+    if (useUIStore.getState().exploreConfiguredPivotIds[nodeId] === pivot.id) {
+      setExploreConfiguredPivot(nodeId, null)
+    }
+    current.onUpdate(exploreStateUpdate(
+      state.pivots.filter((candidate) => candidate.id !== pivot.id),
+      state.formulas,
+    ))
   }
 
   if (configuredPivot) {
@@ -634,17 +655,16 @@ export default function ExplorePivotsConfig({
       charts={parsedCharts.charts}
       onUpdate={persistPivot}
       onConfigure={(pivotId) => setExploreConfiguredPivot(nodeId, pivotId)}
-      onDelete={(pivot) =>
-        void (async () => {
-          if (!(await confirmed({ title: `Delete ${pivot.name}?`, confirm: "Delete", danger: true }))) return
-          if (configuredPivotId === pivot.id) {
-            setExploreConfiguredPivot(nodeId, null)
-          }
-          persistExploreState(pivots.filter((candidate) => candidate.id !== pivot.id))
-        })()
-      }
+      onDelete={(pivot) => void deletePivot(pivot)}
     />
   )
+}
+
+function exploreStateUpdate(
+  pivots: ExplorePivotConfig[],
+  formulas: PivotFormulaPlacement[],
+): Record<string, unknown> {
+  return { pivot_formulas: formulas, pivots: pivots.map(serializeExplorePivot) }
 }
 
 function ConfigError({ error }: { error: string }) {

@@ -435,6 +435,17 @@ def _poll_auto_range_until_done(client: TestClient, job_id: str, timeout: float 
 
 
 @pytest.fixture()
+def modest_solve_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the solve profile's grant, so a job reaches the code under test.
+
+    Unpinned, the grant is a share of the RAM free when it is admitted, which a
+    busy CI runner can lack: the job is then refused as
+    ``in_flight_memory_budget_exceeded`` before it runs.
+    """
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "512")
+
+
+@pytest.fixture()
 def _in_solver_worker_context():
     """Enter the solver worker context for unit tests that call the heavy
     solver entrypoints directly (they are guarded against inline execution)."""
@@ -1388,6 +1399,59 @@ class TestEstimateRoute:
         assert data["scenarios_per_quote_min"] == 2
         assert data["scenarios_per_quote_max"] == 3
         assert data["scenarios_per_quote_mean"] == pytest.approx(2.5)
+
+    def test_estimate_forecasts_the_solve_against_what_a_solve_would_be_granted(
+        self, client, tmp_path, monkeypatch
+    ):
+        """The forecast prices the quote ids' width and the ratebook factors; the cap is
+        the growth grant a solve started now would get, with the estimate's own
+        reservation already released (OPT-W02)."""
+        from haute._ram_estimate import forecast_solve_memory_bytes
+        from haute.routes._optimiser_input import grid_chunk_decision
+
+        gib = 1024**3
+        monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+        monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+        for name in (
+            "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES",
+            "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB",
+            "HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES",
+            "HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_MB",
+            "HAUTE_EXECUTION_MEMORY_LIMIT_BYTES",
+            "HAUTE_EXECUTION_MEMORY_LIMIT_MB",
+            "HAUTE_EXECUTION_PROCESS_RSS_LIMIT_BYTES",
+            "HAUTE_EXECUTION_PROCESS_RSS_LIMIT_MB",
+            "HAUTE_EXECUTION_MEMORY_POLICY",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        df = pl.DataFrame(
+            {
+                "quote_id": ["a", "a", "abcdef", "abcdef"],
+                "scenario_index": [0, 1, 0, 1],
+                "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                "expected_income": [100.0, 110.0, 90.0, 95.0],
+                "volume": [1.0, 0.9, 1.2, 1.1],
+            }
+        )
+        path = tmp_path / "widths.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post("/api/optimiser/estimate", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["solve_memory_forecast_bytes"] == forecast_solve_memory_bytes(
+            mode="online",
+            quote_count=2,
+            row_count=4,
+            constraint_count=1,
+            factor_count=0,
+            quote_id_bytes=3.5,
+            chunk_rows=grid_chunk_decision(2).chunk_size,
+        )
+        # 10 GiB available less the 2 GiB OS reserve, nothing else in flight.
+        assert data["solve_memory_cap_bytes"] == 8 * gib
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_estimate_accepts_projection_safe_data_source_limit_code(
@@ -2821,6 +2885,7 @@ class TestEstimateRoute:
     def test_frontier_auto_range_classifies_a_reducer_failure(
         self,
         scored_data,
+        modest_solve_budget,
         raised,
         status_code,
         terminal_reason,
@@ -2864,6 +2929,7 @@ class TestEstimateRoute:
     def test_frontier_auto_range_reducer_budget_below_minimum_is_memory_limited(
         self,
         scored_data,
+        modest_solve_budget,
     ):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import (

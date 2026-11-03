@@ -36,7 +36,7 @@ def test_a_sized_estimate_refusal_names_both_sizes() -> None:
         profile=ExecutionProfile.OPTIMISER_SETUP,
         memory_limit_bytes=1024 * _MIB,
         rss_at_admission_bytes=100,
-        reason="resident optimiser grid needs an estimated 3 bytes; 2 bytes remain",
+        reason="the optimiser solve needs an estimated 3 bytes; 2 bytes remain",
         estimated_bytes=13 * 1024 * _MIB,
         allowance_bytes=12 * 1024 * _MIB,
     )

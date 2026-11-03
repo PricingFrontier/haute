@@ -1267,6 +1267,49 @@ describe("App integration - load a pipeline with nodes", () => {
     expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
 
+  it("offers the assistant beside an Explore node's execution error", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
+    sourceNode.data.config = {
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      path: "data/claims.parquet",
+      arguments: {},
+    }
+    sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._columnsSource = "live"
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [sourceNode, makeNode("explore_1", "Claims Explore", "explore")],
+      edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockResolvedValueOnce(makePreviewResponse({
+      node_id: "explore_1",
+      status: "error",
+      error: "name 'premium_x' is not defined",
+      columns: [],
+      preview_columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    }))
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByText("Claims Explore"))
+
+    const preview = await screen.findByTestId("explore-preview-preview-pane")
+    expect(
+      (await within(preview).findAllByText("name 'premium_x' is not defined")).length,
+    ).toBeGreaterThan(0)
+    expect(
+      within(preview).getByRole("button", { name: /Ask the assistant to fix/ }),
+    ).toBeVisible()
+  })
+
   it("in manual calculation, clicking a node runs nothing and Ctrl+Enter calculates it", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     // Direct Parquet, so the snapshot-ensure stage skips this source.

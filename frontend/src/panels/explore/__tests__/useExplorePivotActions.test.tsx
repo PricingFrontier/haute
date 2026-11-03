@@ -327,9 +327,31 @@ describe("useExplorePivotActions", () => {
       ]
     expect(cached).toMatchObject({
       error: "Refresh the cache",
+      jobId: null,
       lastAttemptedCalculationIdentity: pivotCalculationIdentity(config),
       lastAttemptedDataframeCacheKey: "dataframe-current",
       terminalStatus: { status: "contract_error" },
+    })
+  })
+
+  it("records a refused start without a job id and retires the job it replaces", async () => {
+    const config = pivot()
+    const key = startActiveJob(config)
+    mockRunExplorePivot.mockRejectedValueOnce(new Error("Pivot card is invalid"))
+    const { result: hook } = renderActions()
+
+    await act(() => hook.current.updatePivot(config, "dataframe-current"))
+
+    const state = useNodeResultsStore.getState()
+    expect(state.pivotJobs[key]).toBeUndefined()
+    expect(state.pivotResults[key]).toMatchObject({
+      error: "Pivot card is invalid",
+      jobId: null,
+      nodeId: node.id,
+      pivotId: config.id,
+      lastAttemptedCalculationIdentity: pivotCalculationIdentity(config),
+      lastAttemptedDataframeCacheKey: "dataframe-current",
+      terminalStatus: { status: "error" },
     })
   })
 

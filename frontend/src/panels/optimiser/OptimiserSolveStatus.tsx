@@ -8,6 +8,7 @@ import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSu
 import type { SolveProgress } from "../../stores/useNodeResultsStore"
 import type { OptimiserPane } from "../../stores/useUIStore"
 import { withAlpha } from "../../utils/color"
+import { formatBytes } from "../../utils/formatBytes"
 import { formatDuration } from "../../utils/formatValue"
 import type { IterationSummary } from "./iterationSummary"
 
@@ -52,6 +53,40 @@ function formatScenariosPerQuote(
       : `${min.toLocaleString()}-${max.toLocaleString()}`
   }
   return (min ?? max)?.toLocaleString() ?? ""
+}
+
+/** The solve's memory forecast against what a solve started now would be given; never blocks Solve. */
+function SolveMemoryForecast({ forecast, cap }: { forecast: number; cap: number }) {
+  const exceeds = forecast > cap
+  return (
+    <div
+      role="status"
+      className="col-span-3 flex items-center gap-1.5 pt-1.5"
+      style={{
+        borderTop: "1px solid var(--border)",
+        color: exceeds ? "var(--warning)" : "var(--text-muted)",
+      }}
+    >
+      {exceeds && (
+        <AlertTriangle
+          size={12}
+          className="shrink-0"
+          style={{ color: "var(--warning-strong)" }}
+          aria-label="More than this machine can give"
+        />
+      )}
+      <span>
+        Estimated solve memory{" "}
+        <span className="font-mono" style={{ color: exceeds ? undefined : "var(--text-primary)" }}>
+          {formatBytes(forecast)}
+        </span>
+        {" "}of{" "}
+        <span className="font-mono" style={{ color: exceeds ? undefined : "var(--text-primary)" }}>
+          {formatBytes(cap)}
+        </span>
+      </span>
+    </div>
+  )
 }
 
 export default function OptimiserSolveStatus({
@@ -135,6 +170,10 @@ export default function OptimiserSolveStatus({
                 {estimate.expanded_row_count.toLocaleString()}
               </div>
             </div>
+            <SolveMemoryForecast
+              forecast={estimate.solve_memory_forecast_bytes}
+              cap={estimate.solve_memory_cap_bytes}
+            />
           </div>
         ) : (
           <div className="px-3 py-2 rounded-lg text-[11px]" style={{ color: "var(--text-muted)", background: "var(--bg-panel)", border: "1px solid var(--border)" }}>

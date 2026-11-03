@@ -1479,10 +1479,10 @@ class OptimiserSolveService:
             )
 
         def publish(outcome: SessionSolveOutcome) -> bool:
-            if outcome.grid_forecast_bytes is not None:
+            if outcome.solve_memory_forecast_bytes is not None:
                 self._store.atomic_update(
                     job_id,
-                    {"grid_forecast_bytes": outcome.grid_forecast_bytes},
+                    {"solve_memory_forecast_bytes": outcome.solve_memory_forecast_bytes},
                     expected_status="running",
                 )
             if outcome.failure is not None:

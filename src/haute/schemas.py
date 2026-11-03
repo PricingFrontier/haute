@@ -4540,6 +4540,12 @@ class OptimiserEstimateResponse(BaseModel):
     """Mean scenario rows per quote in the optimiser input."""
     expanded_row_count: int | None = None
     """Total rows in the optimiser input after scenario expansion."""
+    solve_memory_forecast_bytes: int
+    """The solve's forecast memory growth: the grid build, solve, inline frontier and
+    as-solved results, fitted to measured peaks (OPT-W02)."""
+    solve_memory_cap_bytes: int
+    """The memory growth a solve started now would be granted, which its solver
+    session's native cap enforces; 0 when the machine has none to give."""
 
 
 class OptimiserFrontierAutoRangeRequest(BaseModel):

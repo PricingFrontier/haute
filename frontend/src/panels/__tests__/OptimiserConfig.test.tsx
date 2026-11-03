@@ -329,6 +329,7 @@ beforeEach(() => {
   })
   useSettingsStore.setState({
     openSections: {},
+    _confirmedPipelineSettings: null,
   })
   setMlflowInventory()
   mockSolveOptimiser.mockReset()
@@ -1137,6 +1138,7 @@ describe("OptimiserConfig", () => {
         scenarios_per_quote_max: 1,
         scenarios_per_quote_mean: 1,
         expanded_row_count: 10,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
       })
       renderConfig(makeProps())
       expect(await screen.findByRole("list", { name: "Input warnings" })).toHaveTextContent(
@@ -1153,17 +1155,19 @@ describe("OptimiserConfig", () => {
         scenarios_per_quote_max: null,
         scenarios_per_quote_mean: null,
         expanded_row_count: null,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
       })
       renderConfig(makeProps())
       expect(await screen.findByText(/Size unknown/)).toBeInTheDocument()
     })
 
-    it("does not re-request the size estimate for constraint or export edits", async () => {
+    it("re-requests the size estimate for a constraint added, not for a bound or export edit", async () => {
       mockEstimateOptimiserSolve.mockResolvedValue({
         total_rows: 10, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
         scenarios_per_quote_mean: 2, expanded_row_count: 20,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
       })
-      const made = makeProps()
+      const made = makeProps({ config: { ...makeProps().componentProps.config, constraints: { volume: { min: 4 } } } })
       const view = renderConfig(made)
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
       const rerenderWith = (config: Record<string, unknown>) => view.rerender(
@@ -1174,8 +1178,11 @@ describe("OptimiserConfig", () => {
       rerenderWith({ ...made.componentProps.config, constraints: { volume: { min: 5 } }, mlflow_experiment: "x", result_export_path: "out.json" })
       await act(async () => {})
       expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1)
-      rerenderWith({ ...made.componentProps.config, scenario_value: "premium" })
+      // The solve's memory forecast prices each constraint.
+      rerenderWith({ ...made.componentProps.config, constraints: { volume: { min: 5 }, loss: { max: 1 } } })
       await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(2))
+      rerenderWith({ ...made.componentProps.config, constraints: { volume: { min: 5 }, loss: { max: 1 } }, scenario_value: "premium" })
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(3))
     })
 
     it("does not mark the solve stale for export edits", () => {
@@ -1278,12 +1285,43 @@ describe("OptimiserConfig", () => {
       expect(useNodeResultsStore.getState().solveResults.opt_1?.failedAttempt?.error).toBeUndefined()
     })
 
+    it("re-requests the size estimate when a saved pipeline setting the forecast reads changes", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValue({
+        total_rows: 10, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
+        scenarios_per_quote_mean: 2, expanded_row_count: 20,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
+      })
+      const confirmed = (settings: Record<string, unknown>) => ({
+        path: "haute.toml",
+        automatic: {},
+        settings: {
+          cache_size_gb: null, caching: null, chunk_rows: null, kept_free_gb: null,
+          modelling_time_limit_minutes: null, optimisation_time_limit_minutes: null,
+          pipeline_time_limit_minutes: null, preview_memory_gb: null, ...settings,
+        },
+      }) as never
+      useSettingsStore.setState({ _confirmedPipelineSettings: confirmed({}) })
+      renderConfig(makeProps())
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1))
+
+      act(() => useSettingsStore.setState({ _confirmedPipelineSettings: confirmed({ cache_size_gb: 4 }) }))
+      await act(async () => {})
+      expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(1)
+      act(() => useSettingsStore.setState({ _confirmedPipelineSettings: confirmed({ chunk_rows: 200_000 }) }))
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(2))
+      act(() => useSettingsStore.setState({
+        _confirmedPipelineSettings: confirmed({ chunk_rows: 200_000, kept_free_gb: 3 }),
+      }))
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalledTimes(3))
+    })
+
     it("does not re-request the size estimate when the node's own edit moves the structural version", async () => {
       mockEstimateOptimiserSolve.mockResolvedValue({
         total_rows: 10, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
         scenarios_per_quote_mean: 2, expanded_row_count: 20,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
       })
-      const made = makeProps()
+      const made = makeProps({ config: { ...makeProps().componentProps.config, constraints: { volume: { min: 4 } } } })
       const optimiserNode = (config: Record<string, unknown>): SimpleNode => ({
         id: "opt_1", data: { label: "Opt", description: "", nodeType: "optimiser", config },
       })
@@ -2107,6 +2145,7 @@ describe("OptimiserConfig", () => {
         scenarios_per_quote_min: 20,
         scenarios_per_quote_max: 21,
         expanded_row_count: 2050000,
+        solve_memory_forecast_bytes: 285212672, solve_memory_cap_bytes: 8589934592,
       })
 
       renderConfig(makeProps({
@@ -2121,6 +2160,35 @@ describe("OptimiserConfig", () => {
       expect(screen.getByText("2,050,000")).toBeInTheDocument()
       expect(screen.queryByText("Source rows")).not.toBeInTheDocument()
       expect(screen.queryByText("10,000,000")).not.toBeInTheDocument()
+    })
+
+    it("shows the solve's memory forecast against what the machine can give", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValueOnce({
+        total_rows: 20, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
+        scenarios_per_quote_mean: 2, expanded_row_count: 20,
+        solve_memory_forecast_bytes: 272 * 1024 ** 2, solve_memory_cap_bytes: 8 * 1024 ** 3,
+      })
+      renderConfig(makeProps())
+
+      expect(await screen.findByText(/Estimated solve memory/)).toHaveTextContent(
+        "Estimated solve memory 272.0 MB of 8.0 GB",
+      )
+      expect(screen.queryByLabelText("More than this machine can give")).not.toBeInTheDocument()
+    })
+
+    it("warns without blocking Solve when the forecast exceeds what the machine can give", async () => {
+      mockEstimateOptimiserSolve.mockResolvedValueOnce({
+        total_rows: 20, quote_count: 10, scenarios_per_quote_min: 2, scenarios_per_quote_max: 2,
+        scenarios_per_quote_mean: 2, expanded_row_count: 20,
+        solve_memory_forecast_bytes: 6 * 1024 ** 3, solve_memory_cap_bytes: 4 * 1024 ** 3,
+      })
+      renderConfig(makeProps())
+
+      expect(await screen.findByLabelText("More than this machine can give")).toBeInTheDocument()
+      expect(screen.getByText(/Estimated solve memory/)).toHaveTextContent(
+        "Estimated solve memory 6.0 GB of 4.0 GB",
+      )
+      expect(screen.getByRole("button", { name: /Optimise/ })).toBeEnabled()
     })
 
     it("shows non-convergence warning when the solve did not converge", () => {

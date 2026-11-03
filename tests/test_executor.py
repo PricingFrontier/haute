@@ -2934,6 +2934,7 @@ df = src.with_columns(
 
         class FakeScoringModel:
             feature_names = ["feature"]
+            optional_feature_names: frozenset[str] = frozenset()
             cat_feature_names: list[str] = []
             offset_declared = True
             run_contract_path = None

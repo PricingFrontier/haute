@@ -8,7 +8,6 @@ import {
 
 import useNodeDataStore, { profileForConsumer, slotForConsumer } from "../../stores/useNodeDataStore"
 import useNodeResultsStore, { explorePivotResultKey } from "../../stores/useNodeResultsStore"
-import { confirmed } from "../../stores/useQuestionStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { exploreDataView } from "../explore/exploreDataView"
 import useUIStore from "../../stores/useUIStore"
@@ -55,6 +54,7 @@ import {
 } from "../explore/pivotConfig"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
+import useConfirmedConfigUpdate from "./useConfirmedConfigUpdate"
 import {
   ExploreConfigCard,
   ExploreConfigCardEmptyState,
@@ -652,6 +652,7 @@ export default function ExploreChartsConfig({
   // polling ticks, so parse once per config identity, as the Charts pane does.
   const parsedCharts = useMemo(() => parseExploreCharts(config), [config])
   const parsedPivots = useMemo(() => parseExplorePivots(config), [config])
+  const confirmThenCurrent = useConfirmedConfigUpdate(config, onUpdate)
   const configuredChartExists =
     !parsedCharts.ok ||
     configuredId === null ||
@@ -676,6 +677,17 @@ export default function ExploreChartsConfig({
       "charts",
       charts.map((c) => (c.id === next.id ? next : c)),
     )
+  // A deletion asks first, then removes the card from the config as it stands
+  // once answered, so an edit made while the dialog was open survives it.
+  const deleteChart = async (target: ExploreChartConfig) => {
+    const current = await confirmThenCurrent({ title: `Delete ${target.name}?`, confirm: "Delete", danger: true })
+    const state = current && parseExploreCharts(current.config)
+    if (!current || !state?.ok) return
+    if (useUIStore.getState().exploreConfiguredChartIds[nodeId] === target.id) {
+      setExploreConfiguredChart(nodeId, null)
+    }
+    current.onUpdate("charts", state.charts.filter((candidate) => candidate.id !== target.id))
+  }
 
   if (!persistedChart)
     return (
@@ -703,13 +715,7 @@ export default function ExploreChartsConfig({
                     charts.map((x) => (x.id === c.id ? { ...x, enabled } : x)),
                   )
                 }
-                onDelete={() =>
-                  void (async () => {
-                    if (!(await confirmed({ title: `Delete ${c.name}?`, confirm: "Delete", danger: true }))) return
-                    if (configuredId === c.id) setExploreConfiguredChart(nodeId, null)
-                    onUpdate("charts", charts.filter((candidate) => candidate.id !== c.id))
-                  })()
-                }
+                onDelete={() => void deleteChart(c)}
                 onConfigure={() => {
                   setMessage(null)
                   setExploreConfiguredChart(nodeId, c.id)
@@ -770,25 +776,39 @@ export default function ExploreChartsConfig({
         .filter((group): group is string => group !== null),
     ).size > 1
   const detectedPreset = detectChartPreset(chart)
+  const sourcedFrom = (base: ExploreChartConfig, source: ExplorePivotConfig) => ({
+    ...base,
+    pivot_id: source.id,
+    value_encodings: seedValueEncodings(source),
+    series_overrides: [],
+  })
   const selectPivot = async (id: string) => {
     const next = pivots.find((p) => p.id === id)
     if (!next) return
     if (
-      chart.pivot_id !== null &&
-      (chart.value_encodings.length > 0 || chart.series_overrides.length > 0) &&
-      !(await confirmed({
-        title: "Change the source Pivot?",
-        text: "Changing the source Pivot resets chart mappings and series overrides.",
-        confirm: "Change",
-      }))
-    )
+      chart.pivot_id === null ||
+      (chart.value_encodings.length === 0 && chart.series_overrides.length === 0)
+    ) {
+      commit(sourcedFrom(chart, next))
       return
-    commit({
-      ...chart,
-      pivot_id: next.id,
-      value_encodings: seedValueEncodings(next),
-      series_overrides: [],
+    }
+    const current = await confirmThenCurrent({
+      title: "Change the source Pivot?",
+      text: "Changing the source Pivot resets chart mappings and series overrides.",
+      confirm: "Change",
     })
+    // The chart and the Pivot as they stand once answered: either may have
+    // been edited, or deleted, while the dialog was open.
+    const currentCharts = current && parseExploreCharts(current.config)
+    const currentPivots = current && parseExplorePivots(current.config)
+    if (!current || !currentCharts?.ok || !currentPivots?.ok) return
+    const source = currentPivots.pivots.find((p) => p.id === id)
+    const target = currentCharts.charts.find((c) => c.id === chart.id)
+    if (!source || !target) return
+    current.onUpdate(
+      "charts",
+      currentCharts.charts.map((c) => (c.id === target.id ? sourcedFrom(target, source) : c)),
+    )
   }
   let data: ReturnType<typeof adaptPivotChartData> | null = null
   let dataError: string | null = null

@@ -44,22 +44,15 @@ not an inventory of all active work; see [Not scheduled](#not-scheduled).
 | E | 14 | Node specification | `PCFG-R09` | — | M | It builds on the typed config models and the complete generated contract. |
 | F | 17 | Dead code | `ENGQ-R01` | — | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
-| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | — | M | Generic suffixes and the XGBoost missing-value sentinel first; pyfunc files after, on the same file source. |
 | J | 23 | Remaining Polars 2 evidence | `PL2-17`, `PL2-18` | — | L | Reverify the training overhead and width calibration, operator evidence at `10m`, and worker baselines. Apply only the policy changes those measurements justify. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
 ## User-visible changes in this plan
 
-These packages change what a user sees or relies on. Each was decided on the
-date its entry records; raise an objection before its round starts.
-
-- `MSC-06`: Model Scoring reads XGBoost and LightGBM files saved under their
-  libraries' generic suffixes (`.json`, `.txt`), and a contract can declare an
-  XGBoost model's missing-value sentinel.
-- `MSC-05`: Local pyfunc packages are executable imports requiring explicit
-  trust of their content digest. Inspection does not execute package code;
-  changed contents require a new trust decision.
+None of the scheduled rounds changes what a user sees or relies on. A package
+that does is listed here, with the date it was decided, so an objection can be
+raised before its round starts.
 
 ## Not scheduled
 
@@ -69,7 +62,5 @@ and [28 October functional review](codebase-review-2026-10-28.md)
 packages, have not been assigned a round; that does not defer their stated
 priority. Decision packages need the choice in their entry before scheduling.
 
-Deferred packages start only when their trigger is met. For example, `EDA-E18`, `EDA-E23` and
-`EDA-E24` ([Explore and EDA](explore-eda.md)) and `MSC-07`
-([model scoring](model-scoring.md)) wait for the evidence or demand their
-entries name.
+Deferred packages start only when their trigger is met: the evidence or demand
+their entry names.

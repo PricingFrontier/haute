@@ -135,6 +135,9 @@ class _OneScore:
 
     feature_names_: list[str] = ["a"]  # noqa: RUF012
 
+    def get_metadata(self) -> dict[str, str]:
+        return {}  # as CatBoost reports for a model without Haute's labels
+
     def predict(self, x_data: object) -> list[float]:
         return [1.0] * len(x_data)  # type: ignore[arg-type]
 

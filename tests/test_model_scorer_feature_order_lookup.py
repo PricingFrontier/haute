@@ -18,6 +18,7 @@ class _ScoringModel:
         cat_feature_names: Iterable[str] = (),
     ) -> None:
         self.feature_names = feature_names
+        self.optional_feature_names: frozenset[str] = frozenset()
         self.cat_feature_names = frozenset(cat_feature_names)
 
 

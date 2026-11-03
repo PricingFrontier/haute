@@ -383,7 +383,16 @@ async function installOptimiserBenchmarkRoutes(page: Page): Promise<{
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ total_rows: 5_000 }),
+        body: JSON.stringify({
+          total_rows: 5_000,
+          quote_count: 500,
+          scenarios_per_quote_min: 10,
+          scenarios_per_quote_max: 10,
+          scenarios_per_quote_mean: 10,
+          expanded_row_count: 5_000,
+          solve_memory_forecast_bytes: 128 * 1024 ** 2,
+          solve_memory_cap_bytes: 8 * 1024 ** 3,
+        }),
       })
       return
     }

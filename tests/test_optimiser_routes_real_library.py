@@ -1219,6 +1219,8 @@ class TestEstimateSingleScanContract:
         """
         import haute.routes._optimiser_input as input_mod
         import haute.routes._optimiser_service as service_mod
+        from haute._ram_estimate import forecast_solve_memory_bytes
+        from haute.routes._optimiser_input import grid_chunk_decision
 
         graph = self._ragged_graph(tmp_path)
         real_collect = input_mod.streaming_collect
@@ -1247,6 +1249,16 @@ class TestEstimateSingleScanContract:
         assert data["scenarios_per_quote_max"] == 3
         assert data["scenarios_per_quote_mean"] == pytest.approx(2.5)
         assert data["expanded_row_count"] == 5
+        # The forecast prices the quote ids' width, read in the same scan.
+        assert data["solve_memory_forecast_bytes"] == forecast_solve_memory_bytes(
+            mode="online",
+            quote_count=2,
+            row_count=5,
+            constraint_count=1,
+            factor_count=0,
+            quote_id_bytes=2.0,
+            chunk_rows=grid_chunk_decision(3).chunk_size,
+        )
 
         assert route_collect.call_count == 1, (
             f"estimate ran {route_collect.call_count} route-side collects; "

@@ -482,16 +482,23 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.MODEL_CONTRACT: _consumer_contract(
             CacheConsumer.MODEL_CONTRACT,
-            version=1,
-            fields=("feature_names", "categorical_features", "offset_column"),
+            version=2,
+            fields=(
+                "feature_names",
+                "optional_feature_names",
+                "categorical_features",
+                "offset_column",
+            ),
             consumed={
                 CacheInputClass.ARTIFACTS: (
                     "feature_names",
+                    "optional_feature_names",
                     "categorical_features",
                     "offset_column",
                 ),
                 CacheInputClass.REQUEST_SHAPE: (
                     "feature_names",
+                    "optional_feature_names",
                     "categorical_features",
                     "offset_column",
                 ),
