@@ -158,6 +158,11 @@ class NodeSpec:
     pass_through: PassThrough = "none"
     #: A standalone run returns one of its inputs.
     standalone_passthrough: bool = False
+    #: The structural types' roles: the Submodel occurrence (named by alias, carries
+    #: ``instanceOf``, expanded into its definition) and its Port.
+    structural_role: Literal["occurrence", "port"] | None = None
+    #: Its scorer writes its whole output into one batch-scored capture (Model Score).
+    batch_scored: bool = False
 
 
 _FRAME_STEPS = SteppedSurface(start="frame", inputs="none")
@@ -261,6 +266,7 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             code="frame_hook",
             stepped=_FRAME_STEPS,
             behavioural=True,
+            batch_scored=True,
         ),
         NodeType.BANDING: NodeSpec(
             NodeType.BANDING,
@@ -405,6 +411,7 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             inputs="one_or_more",
             recompute_cost="cheap",
             structural=True,
+            structural_role="occurrence",
         ),
         NodeType.SUBMODEL_PORT: NodeSpec(
             NodeType.SUBMODEL_PORT,
@@ -415,6 +422,7 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             inputs="structural",
             recompute_cost="cheap",
             structural=True,
+            structural_role="port",
         ),
     }
 )
