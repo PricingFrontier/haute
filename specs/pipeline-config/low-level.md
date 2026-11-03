@@ -291,7 +291,8 @@
       flagged, while `config.get("banding")` (a config key) is not.
   - It permits:
     - the keys of a dict literal passed directly to `node_type_table` (every key `NodeType.<MEMBER>`,
-      no `**` unpacking, no comprehension, no repeated key);
+      no `**` unpacking, no repeated key). A table passed any other way (a comprehension,
+      `dict.fromkeys`, a variable) is itself flagged, since it would fill in a new type silently;
     - the node-type argument of a registration call (the first positional argument of `_register`,
       `register_exec`, `_register_codegen`, `register_codegen`, `set_codegen` and `NodeConfigModel`,
       and `Pipeline._register_node`'s `_node_type=` keyword);

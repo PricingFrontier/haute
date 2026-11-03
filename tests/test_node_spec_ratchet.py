@@ -600,7 +600,11 @@ class _Scanner(ast.NodeVisitor):
                 for keyword in node.keywords:
                     if keyword.arg == "entries":
                         entries = keyword.value
-                if isinstance(entries, ast.Dict) and self._valid_table(entries):
+                if not isinstance(entries, ast.Dict):
+                    # A comprehension, ``dict.fromkeys`` or a variable would fill in a
+                    # new node type silently: every row is written out.
+                    self.flag(node, "table-not-literal")
+                elif self._valid_table(entries):
                     self.permitted.update(k for k in entries.keys if k is not None)
             elif callee in REGISTRATIONS:
                 position = REGISTRATIONS[callee]
@@ -896,7 +900,21 @@ ESCAPES = {
     "comprehension-table": """
         from haute._node_specs import node_type_table
         from haute._types import NodeType
-        TABLE = node_type_table("demo", {t: 1 for t in NodeType if t is not NodeType.BANDING})
+        TABLE = node_type_table("demo", {t: None for t in NodeType})
+    """,
+    "fromkeys-table": """
+        from haute._node_specs import node_type_table
+        from haute._types import NodeType
+        TABLE = node_type_table("demo", dict.fromkeys(NodeType))
+    """,
+    "variable-table": """
+        from haute._node_specs import node_type_table
+        ENTRIES = build_entries()
+        TABLE = node_type_table("demo", ENTRIES)
+    """,
+    "keyword-variable-table": """
+        from haute._node_specs import node_type_table
+        TABLE = node_type_table("demo", entries=build_entries())
     """,
     "unpacked-table": """
         from haute._node_specs import node_type_table
@@ -918,6 +936,14 @@ ESCAPES = {
             return check("banding", cfg)
     """,
 }
+
+
+@pytest.mark.parametrize(
+    "name", ["comprehension-table", "fromkeys-table", "variable-table", "keyword-variable-table"]
+)
+def test_a_table_not_written_out_is_refused_as_such(name: str) -> None:
+    """Refused for its form, not for an incidental member reference."""
+    assert "table-not-literal" in _flags(ESCAPES[name]), name
 
 
 @pytest.mark.parametrize("name", list(ESCAPES))
