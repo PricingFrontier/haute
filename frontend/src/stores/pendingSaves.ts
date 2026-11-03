@@ -3,7 +3,7 @@
  *
  * The save's broadcast leaves the saving tab's socket out, but a reconnect's
  * resync sent while the save is in flight is answered with the document the
- * save wrote (or a formatting hook left), and that frame can arrive before the
+ * save wrote (or a formatter rewrote on disk), and that frame can arrive before the
  * save's own answer. Live sync holds a frame for the file until the saves
  * settle and then asks for the document again with the fingerprint the saves
  * left accepted, so the save's acknowledgement, not the frame, decides what the

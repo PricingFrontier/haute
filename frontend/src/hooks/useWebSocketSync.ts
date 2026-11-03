@@ -390,7 +390,7 @@ export default function useWebSocketSync({
           )
           // A frame that arrives while this tab's save is in flight was read at an
           // unknown point of it: before it, from what it wrote, or from what a
-          // formatting hook left after; or it is another tab's change, perhaps back
+          // formatter rewrote on disk; or it is another tab's change, perhaps back
           // to the document shown before the save. It is never adopted, nor judged
           // against the document the save is about to replace: once the saves
           // settle it is dropped if it is the document shown, and otherwise the

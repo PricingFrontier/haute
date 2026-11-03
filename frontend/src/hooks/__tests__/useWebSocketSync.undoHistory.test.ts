@@ -428,11 +428,11 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       const saving = new Promise<void>((resolve) => { answer = resolve })
       trackPendingSave(SOURCE_FILE, saving)
 
-      // A resync read what the save wrote before a formatting hook rewrote it.
+      // A resync read what the save wrote before a formatter rewrote it on disk.
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-before-hook")) }))
       })
-      // The save answers with the document the hook left.
+      // The save answers with the document the formatter left.
       await act(async () => {
         useDocumentStatusStore.getState().acknowledgeSave("revision-after-hook", "fingerprint-after-hook")
         answer()
@@ -452,7 +452,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       })
     })
 
-    it("asks for the document on disk when the hook put back the document shown before the save", async () => {
+    it("asks for the document on disk when a formatter put back the document shown before the save", async () => {
       const { document, saved } = loadSavedCanvas()
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, "fingerprint-as-loaded")) }))
@@ -463,7 +463,7 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
       const saving = new Promise<void>((resolve) => { answer = resolve })
       trackPendingSave(SOURCE_FILE, saving)
 
-      // A resync read what the save wrote before the formatting hook put the
+      // A resync read what the save wrote before a formatter put the
       // file back as it was; the save answers with the document as loaded.
       await act(async () => {
         latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(saved, "fingerprint-before-hook")) }))
