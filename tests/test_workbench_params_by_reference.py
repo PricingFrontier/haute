@@ -18,7 +18,7 @@ import pytest
 from haute._workbench_folder import form_at_ref, read_form_document
 from haute._workbench_params import ParamFileError
 from tests._workbench_helpers import enable, form_folder
-from tests.test_workbench_folder import FORM, column_of, config, files_of, put
+from tests.test_workbench_folder import FORM, column_of, config, files_of, put, table_of
 
 PARAMS = Path("rating") / "files" / "params"
 
@@ -59,6 +59,33 @@ def test_a_schema_file_holds_the_reference_and_reading_fills_the_values(project:
     assert state["options_source"] == {"file": "states.csv", "column": "code"}
     assert "options" not in state
     assert _state_options(project) == ["CA", "NY"]
+
+
+@pytest.mark.parametrize(("table", "name"), [("policy", "state"), ("quote_details", "broker")])
+def test_a_loaded_forms_values_are_written_as_their_reference_alone(
+    project: Path, table: str, name: str
+) -> None:
+    """The form the editor holds carries the values read from the params file; saving it
+    writes the reference alone, a quote_details column's too, and saving what it reads back
+    writes the same files."""
+    (project / PARAMS / "states.csv").write_bytes(b"code,name\nCA,California\nNY,New York\n")
+    form = copy.deepcopy(FORM)
+    sourced = {"options": ["CA", "NY"], "options_source": {"file": "states.csv", "column": "code"}}
+    if table == "quote_details":
+        table_of(form, table)["columns"].append({"name": name, "type": "str", **sourced})
+    else:
+        column_of(form, table, name).update(sourced)
+
+    files = _write(project, form)
+
+    written = json.loads(files[f"schema/{table}.json"])
+    entry = next(c for c in written["columns"] if c["name"] == name)
+    assert entry["options_source"] == {"file": "states.csv", "column": "code"}
+    assert "options" not in entry
+    spec = read_form_document(config(project)).spec
+    read = next(t for t in spec.data_schema.tables if t.name == table)
+    assert next(c for c in read.columns if c.name == name).options == ["CA", "NY"]
+    assert files_of(spec, project) == files
 
 
 def test_a_form_read_at_an_older_revision_uses_that_revisions_params(project: Path) -> None:

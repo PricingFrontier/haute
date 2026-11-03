@@ -446,6 +446,8 @@ def _quote_details_file(table: SchemaTable) -> QuoteDetailsFile:
             for key, value in column.model_dump(mode="json").items()
             if key in (*DETAILS_ANY, *DETAILS_TYPED)
             and value != SchemaColumn.model_fields[key].get_default(call_default_factory=True)
+            # Sourced values are its params file's, read with the form (READ-25).
+            and not (key == "options" and column.options_source is not None)
         }
         if given:
             columns.append({"name": column.name, **given})
