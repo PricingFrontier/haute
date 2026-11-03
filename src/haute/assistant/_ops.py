@@ -60,6 +60,7 @@ from haute._polars_steps import (
     stepped_surface_for,
     validate_polars_steps,
 )
+from haute._polars_steps_lift import canonical_steps
 from haute._sandbox import _bound_names
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
@@ -842,6 +843,15 @@ def _apply_edit_steps(
         if isinstance(edit, StepReplace):
             position = position_of(edit.replace)
             step.setdefault("id", edit.replace)
+            # The comment above the replaced step stays above its replacement (READ-22),
+            # a code step holding its comments in its code.
+            replaced = edited[position]
+            if (
+                step.get("kind") != "free_code"
+                and isinstance(replaced, Mapping)
+                and isinstance(replaced.get("comment"), str)
+            ):
+                step.setdefault("comment", replaced["comment"])
             taken = ids[:position] + ids[position + 1 :]
         else:
             position = 0 if edit.insert_after is None else position_of(edit.insert_after) + 1
@@ -3236,6 +3246,31 @@ def _validate_assistant_authored_graph(
         )
 
 
+def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
+    """*graph* with each transform's steps as the save's reload rebuilds them from its code
+    (READ-22): ids from kind and place, and the canonical form, so the plan's diff and
+    postconditions are what the committed graph holds. Steps that cannot render yet are
+    saved whole beside the code, and stay as they are."""
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        steps = node.data.config.get("steps")
+        if (
+            node.data.nodeType == NodeType.POLARS
+            and isinstance(steps, list)
+            and node.data.editor.steps_error is None
+        ):
+            try:
+                reloaded = canonical_steps(NodeType.POLARS, steps)
+            except PolarsStepError:
+                reloaded = steps
+            if reloaded != steps:
+                node = node.with_config({**node.data.config, "steps": reloaded})
+                changed = True
+        nodes.append(node)
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
+
+
 def prepare_graph_edit(
     snapshot: ProjectSnapshot,
     raw_ops: Sequence[Mapping[str, Any]],
@@ -3256,7 +3291,7 @@ def prepare_graph_edit(
     applied = _apply_ops_with_refs(
         snapshot.graph, ops, positions, config_visibility=config_visibility
     )
-    result, refs = applied.graph, applied.refs
+    result, refs = _transform_steps_as_reloaded(applied.graph), applied.refs
     diff = _semantic_diff(snapshot.graph, result, ops, applied)
     try:
         _validate_assistant_authored_graph(result, diff, applied.new_node_ids)

@@ -1,24 +1,25 @@
-"""Rebuild a stepped Polars node's steps from the code Haute renders for it (READ-21).
+"""Rebuild a stepped Polars node's steps from its code (READ-21, READ-22).
 
-This is the inverse of :func:`haute._polars_steps.render_node_steps`, built as a
-prototype: nothing on disk changes, and neither the parser nor the save path
-calls it yet. :func:`lift_steps` reads a rendered body and returns the steps
-that render it; :func:`canonical_steps` says, from the steps alone, which
-steps those are. The specification records the canonical form and each
-ambiguous form (``specs/codegen/structured-syntax-boundary.md``, Rebuilding
-steps from code).
+This is the inverse of :func:`haute._polars_steps.render_node_steps`.
+:func:`lift_steps` reads a body and returns the steps that render it;
+:func:`canonical_steps` says, from the steps alone, which steps those are. The
+specification records the canonical form and each ambiguous form
+(``specs/codegen/structured-syntax-boundary.md``, Rebuilding steps from code).
 
 How a body is read:
 
 - The standard-library AST splits the body into its top-level statements. The
   lines between them are comments and blank lines, and each belongs to the
-  statement below it; lines after the last statement belong to that statement.
+  statement below it.
 - A statement becomes a step only when that step, placed after the steps
-  rebuilt before it, renders exactly the statement's text. The reader proposes
-  a step from the statement's syntax tree and the renderer confirms it, so
-  nothing is ever unparsed over the code.
+  rebuilt before it, renders exactly the statement's text. The comment and blank
+  lines above it become the step's ``comment``. The reader proposes a step from
+  the statement's syntax tree and the renderer confirms it, so nothing is ever
+  unparsed over the code.
 - Every other statement is code. A run of code statements, with the comments
   and blank lines among them, is one ``free_code`` step.
+- The comment and blank lines after the last statement are a ``free_code`` step
+  of their own, or join the code step before them.
 
 Each rebuilt step gets an id made of its kind and its place in the list (such
 as ``filter-3``), so the list renders as it stands and holds nothing the code
@@ -38,10 +39,12 @@ from haute._polars_steps import (
     _OPERAND_ARGUMENT_LITERALS,
     _STRING_OPERATORS,
     AGGREGATIONS,
+    COMMENT_FIELD,
     DATE_PARSE_TARGETS,
     FUNCTIONS,
     LITERAL_TYPES,
     PolarsStepError,
+    _code_bound_names,
     _decimal_text,
     render_node_steps,
     stepped_surface_for,
@@ -67,19 +70,20 @@ class _NoMatchError(Exception):
 
 
 def lift_steps(node_type: NodeType, code: str) -> list[Step]:
-    """Rebuild the steps of a stepped *node_type* from *code*, its rendered body.
+    """Rebuild the steps of a stepped *node_type* from *code*, its body.
 
-    Each statement a step renders becomes that step; each run of other
-    statements, with the comments and blank lines among them, becomes one
-    ``free_code`` step. The result renders to exactly *code*, or
-    :class:`StepLiftError` is raised.
+    Each statement a step renders becomes that step, keeping the comment above
+    it; each run of other statements, with the comments and blank lines among
+    them, becomes one ``free_code`` step. The result renders to exactly *code*
+    without its trailing newlines, or :class:`StepLiftError` is raised.
     """
-    steps = _assemble(node_type, _units(code), partial(_recognised, _Reader()))
+    body = code.rstrip("\n")
+    steps = _assemble(node_type, _units(body), partial(_recognised, _Reader()))
     try:
         rendered = render_node_steps(node_type, steps).code
     except PolarsStepError as exc:
         raise StepLiftError(f"The code does not rebuild as steps: {exc}") from None
-    if rendered != code:
+    if rendered != body:
         raise StepLiftError("The rebuilt steps do not render the code exactly.")
     return steps
 
@@ -89,9 +93,9 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
 
     A structured step's canonical form comes from the rules the specification
     records, not from reading its code back; the rendering only settles which
-    statement each step owns, which comments sit above it, and whether the step
-    still stands after the steps before it. A ``free_code`` step's statements are
-    read as :func:`lift_steps` reads them. Invalid steps raise
+    statement each step owns, which comment lines sit above it, and whether the
+    step still stands after the steps before it. A ``free_code`` step's
+    statements are read as :func:`lift_steps` reads them. Invalid steps raise
     :class:`~haute._polars_steps.PolarsStepError`.
     """
     rendered = render_node_steps(node_type, steps)
@@ -106,10 +110,8 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
         step = owner[unit.first]
         if step["kind"] == "free_code":
             return _recognised(reader, unit, context)
-        if unit.trivia:
-            return None
-        normal = _normal_step(step, context)
-        return normal if context.rendering(normal) == unit.statement else None
+        normal = _with_comment(_normal_step(step, context), unit)
+        return normal if context.rendering(normal) == unit.text else None
 
     return _assemble(node_type, _units(rendered.code), choose)
 
@@ -121,51 +123,62 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
 
 @dataclass(frozen=True)
 class _Unit:
-    """One top-level statement of a body with the comments and blank lines it owns.
+    """One top-level statement of a body with the comment and blank lines above it.
 
-    ``first`` is the statement's first line (one-based); ``statement`` its own
-    text; ``lines`` every line the unit owns, in order; ``node`` the statement
-    when it stands alone on its lines; ``trivia`` whether a comment or blank
-    line belongs to it.
+    ``first`` is the statement's first line (one-based); ``above`` the comment
+    and blank lines between it and the statement before; ``own`` its own lines;
+    ``nodes`` the statements on those lines; ``node`` the statement when it
+    stands alone on its lines.
     """
 
     first: int
-    statement: str
-    lines: tuple[str, ...]
-    node: ast.stmt | None
-    trivia: bool
+    above: tuple[str, ...]
+    own: tuple[str, ...]
+    nodes: tuple[ast.stmt, ...]
+
+    @property
+    def node(self) -> ast.stmt | None:
+        return self.nodes[0] if len(self.nodes) == 1 else None
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        return (*self.above, *self.own)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+    @property
+    def comment(self) -> str | None:
+        """The ``comment`` a step rebuilt from this unit keeps, or None for none."""
+        return "".join(f"{line}\n" for line in self.above) or None
 
 
-def _units(code: str) -> list[_Unit]:
-    """Split *code* into statements, each owning the comments and blank lines above it."""
+def _units(code: str) -> tuple[list[_Unit], list[str]]:
+    """*code*'s statements, each with the lines above it, and the lines after the last."""
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
         message = f"The code is not valid Python: {exc.msg} (line {exc.lineno})."
         raise StepLiftError(message) from None
-    lines = code.split("\n")
-    spans: list[tuple[int, int, ast.stmt | None]] = []
+    lines = code.split("\n") if code else []
+    spans: list[tuple[int, int, list[ast.stmt]]] = []
     for statement in tree.body:
         decorators = getattr(statement, "decorator_list", [])
         start = min([statement.lineno, *(decorator.lineno for decorator in decorators)])
         end = statement.end_lineno or statement.lineno
         if spans and start <= spans[-1][1]:
             # Statements sharing a line (``a = 1; b = 2``) are read together, as code.
-            spans[-1] = (spans[-1][0], max(spans[-1][1], end), None)
+            spans[-1] = (spans[-1][0], max(spans[-1][1], end), [*spans[-1][2], statement])
         else:
-            spans.append((start, end, statement))
+            spans.append((start, end, [statement]))
     units: list[_Unit] = []
     cursor = 1
-    for start, end, node in spans:
+    for start, end, nodes in spans:
         above = _trivia(lines[cursor - 1 : start - 1])
-        own = lines[start - 1 : end]
-        units.append(_Unit(start, "\n".join(own), (*above, *own), node, bool(above)))
+        units.append(_Unit(start, tuple(above), tuple(lines[start - 1 : end]), tuple(nodes)))
         cursor = end + 1
-    below = _trivia(lines[cursor - 1 :])
-    if below and units:
-        last = units[-1]
-        units[-1] = _Unit(last.first, last.statement, (*last.lines, *below), last.node, True)
-    return units
+    return units, _trivia(lines[cursor - 1 :])
 
 
 def _trivia(lines: Sequence[str]) -> list[str]:
@@ -174,6 +187,15 @@ def _trivia(lines: Sequence[str]) -> list[str]:
         if line.strip() and not line.lstrip().startswith("#"):
             raise StepLiftError(f"Cannot place the line {line!r} between statements.")
     return list(lines)
+
+
+def _with_comment(step: Step, unit: _Unit) -> Step:
+    """*step* keeping the comment lines above *unit*'s statement, and no other."""
+    found = {key: value for key, value in step.items() if key != COMMENT_FIELD}
+    comment = unit.comment
+    if comment is not None:
+        found[COMMENT_FIELD] = comment
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -1094,10 +1116,11 @@ class _Reader:
 
 @dataclass
 class _Context:
-    """The steps rebuilt so far that change how a later step renders.
+    """What the body rebuilt so far changes about how a later step renders.
 
-    Only two do: the start step, and the variables, which the steps after
-    them read and which cannot be defined twice.
+    Three things do: the start step; the variables, which the steps after them
+    read and which cannot be defined twice; and the names the code above binds,
+    which a variable may not take.
     """
 
     node_type: NodeType
@@ -1105,14 +1128,17 @@ class _Context:
     position: int = 0
     source: Step | None = None
     variables: list[Step] = field(default_factory=list)
+    code_names: set[str] = field(default_factory=set)
 
     def rendering(self, step: Step) -> str | None:
-        """*step*'s text at the current position, or None when it cannot stand there."""
+        """*step*'s text here, its comment included, or None when it cannot stand here."""
         if step["kind"] == "source":
             if not self.input_mode or self.position:
                 return None
             program = [step]
         elif self.input_mode and self.source is None:
+            return None
+        elif step["kind"] == "variable" and step["name"] in self.code_names:
             return None
         else:
             program = [*([self.source] if self.source else []), *self.variables, step]
@@ -1121,8 +1147,9 @@ class _Context:
             rendered = render_node_steps(self.node_type, numbered)
         except ValueError:  # a PolarsStepError, or a layout outside the vocabulary
             return None
-        start, end = rendered.step_lines[-1]
-        return "\n".join(rendered.code.split("\n")[start - 1 : end])
+        # Everything after the step before it: its comment, then its statement.
+        before = rendered.step_lines[-2][1] if len(program) > 1 else 0
+        return "\n".join(rendered.code.split("\n")[before:])
 
     def accept(self, step: Step) -> None:
         if step["kind"] == "source":
@@ -1130,23 +1157,33 @@ class _Context:
         elif step["kind"] == "variable":
             self.variables.append(step)
 
+    def keep_as_code(self, unit: _Unit) -> None:
+        for node in unit.nodes:
+            self.code_names |= _code_bound_names(ast.unparse(node))
+
 
 def _recognised(reader: _Reader, unit: _Unit, context: _Context) -> Step | None:
-    """The step a unit's statement renders from, or None when the statement is code."""
-    if unit.trivia or unit.node is None:
+    """The step a unit's statement renders from, keeping its comment, or None for code."""
+    if unit.node is None:
         return None
     for candidate in reader.candidates(unit.node):
-        if context.rendering(candidate) == unit.statement:
-            return candidate
+        step = _with_comment(candidate, unit)
+        if context.rendering(step) == unit.text:
+            return step
     return None
 
 
 def _assemble(
     node_type: NodeType,
-    units: Sequence[_Unit],
+    read: tuple[list[_Unit], list[str]],
     choose: Callable[[_Unit, _Context], Step | None],
 ) -> list[Step]:
-    """A step for each unit *choose* recognises, and one code step for each run of the rest."""
+    """A step for each unit *choose* recognises, and one code step for each run of the rest.
+
+    The lines after the last statement join the code step before them, or are a
+    code step of their own.
+    """
+    units, below = read
     context = _Context(node_type, input_mode=stepped_surface_for(node_type).start == "input")
     steps: list[Step] = []
     code: list[str] = []
@@ -1155,12 +1192,14 @@ def _assemble(
         step = choose(unit, context)
         if step is None:
             code.extend(unit.lines)
+            context.keep_as_code(unit)
             continue
         if code:
             steps.append({"kind": "free_code", "code": "\n".join(code)})
             code = []
         steps.append(step)
         context.accept(step)
+    code.extend(below)
     if code:
         steps.append({"kind": "free_code", "code": "\n".join(code)})
     return [{"id": f"{step['kind']}-{i + 1}", **step} for i, step in enumerate(steps)]
@@ -1179,7 +1218,9 @@ _Position = Literal["expr", "value", "window", "plain"]
 
 def _normal_step(step: Mapping[str, Any], context: _Context) -> Step:
     kind = step["kind"]
-    normal: Step = {key: copy.deepcopy(value) for key, value in step.items() if key != "id"}
+    # The comment comes from the lines above the statement (``_with_comment``).
+    dropped = ("id", COMMENT_FIELD)
+    normal: Step = {k: copy.deepcopy(v) for k, v in step.items() if k not in dropped}
     if kind == "filter":
         normal.update(_normal_group(step))
     elif kind == "with_column":

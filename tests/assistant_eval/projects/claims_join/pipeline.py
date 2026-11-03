@@ -22,7 +22,7 @@ def claims(): ...
 def quote_claims(quotes, claims): ...
 
 
-@pipeline.polars(config="config/polars/loss_ratio.json")
+@pipeline.polars
 def loss_ratio(quote_claims: pl.LazyFrame) -> pl.LazyFrame:
     df = quote_claims
     # Divide each quote's incurred claims by its premium

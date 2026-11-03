@@ -41,6 +41,7 @@ from haute._polars_steps import (
     step_input_names,
     stepped_surface_for,
 )
+from haute._polars_steps_lift import StepLiftError, lift_steps
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
@@ -441,6 +442,56 @@ def validate_step_container(
         )
 
 
+#: The one-off script that moves a project's Polars steps out of ``config/polars/``.
+POLARS_CODE_CONVERSION = "scripts/one_off/read_22_polars_code.py"
+
+
+def _with_lifted_steps(config: dict[str, Any], func_name: str) -> dict[str, Any]:
+    """*config* of a transform with the steps rebuilt from its code (READ-22).
+
+    Each statement a step renders exactly becomes that step and each run of
+    other statements one code step (``lift_steps``), so a hand edit or a
+    comment keeps the rest. A transform with no code (an empty body, or the
+    placeholder an unfinished step list is saved with, whose steps the editor
+    takes from ``.haute.json``), one that maps its inputs, which a stepped
+    transform never does, and one whose lines do not split into statements
+    stay code-only.
+    """
+    code = str(config.get("code") or "")
+    if not code or config.get("inputMapping") is not None:
+        return config
+    try:
+        steps = lift_steps(NodeType.POLARS, code)
+    except StepLiftError:
+        # Spaces ending a line, outside a string, are what ``ruff format`` takes off and a
+        # rendering never holds: without them the statements are what they were.
+        try:
+            steps = lift_steps(NodeType.POLARS, _without_line_end_spaces(code))
+        except StepLiftError as exc:
+            logger.info("polars_steps_not_rebuilt", func_name=func_name, reason=str(exc))
+            return config
+    return {**config, "steps": steps}
+
+
+def _without_line_end_spaces(code: str) -> str:
+    """*code* with the spaces ending each line taken off, but inside a multiline string."""
+    import io
+    import tokenize
+
+    kept: set[int] = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(code).readline):
+            if token.type == tokenize.STRING and token.end[0] > token.start[0]:
+                # Every line the string runs over but its last holds its own characters.
+                kept.update(range(token.start[0], token.end[0]))
+    except (tokenize.TokenError, SyntaxError):
+        return code
+    return "\n".join(
+        line if number in kept else line.rstrip()
+        for number, line in enumerate(code.split("\n"), start=1)
+    )
+
+
 def _reconcile_steps(
     config: dict[str, Any],
     node_type: NodeType,
@@ -448,15 +499,15 @@ def _reconcile_steps(
     config_ref: str | None,
     func_name: str,
 ) -> tuple[dict[str, Any], NodeEditorState]:
-    """Keep a stepped sidecar's ``steps`` only while they still render the body.
+    """Keep a stepped surface's ``steps`` only while they still render the body.
 
-    The ``.py`` body is the runtime truth. A body that differs from the
-    rendering of the persisted steps was edited by hand, so the steps are
-    discarded and the node becomes code-only: the returned editor state says
-    why (``steps_discarded``) and, for a transform (the one optional
-    sidecar), names the sidecar (``discarded_sidecar``) so the next save
-    retires the file. An empty body with unrenderable steps is how an
-    incomplete step list is saved, so it keeps its steps.
+    For every surface but the transform, whose steps are rebuilt from its code
+    (``_with_lifted_steps``). The ``.py`` body is the runtime truth. A body
+    that differs from the rendering of the persisted steps was edited by hand,
+    so the steps are discarded and the node becomes code-only: the returned
+    editor state says why (``steps_discarded``). An empty body with
+    unrenderable steps is how an incomplete step list is saved, so it keeps
+    its steps.
 
     The comparison is made on equal terms: the rendering is passed through
     the same extraction the body received (``normalise_user_code``), because
@@ -503,7 +554,6 @@ def _reconcile_steps(
     )
     return {k: v for k, v in config.items() if k != "steps"}, NodeEditorState(
         steps_discarded=f"Steps were discarded because {reason}.",
-        discarded_sidecar=config_ref if node_type == NodeType.POLARS else None,
     )
 
 
@@ -559,6 +609,16 @@ def _resolve_node_config(
             "config file as a string.",
             func_name=func_name,
             node_type=node_type.value,
+        )
+    if config_ref and node_type == NodeType.POLARS:
+        # A transform's steps live in its code alone (READ-22).
+        raise ConfigError(
+            f"Node {func_name!r} takes its steps from {config_ref}, the form before a Polars "
+            "node's steps lived in its code alone. Convert the project with "
+            f"{POLARS_CODE_CONVERSION}.",
+            func_name=func_name,
+            node_type=node_type.value,
+            original_path=config_ref,
         )
     if config_ref:
         if decorator_kwargs:
@@ -620,7 +680,9 @@ def _resolve_node_config(
         raise _sidecar_required_error(node_type, func_name)
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
-        if node_type in STEPPED_NODE_TYPES:
+        if node_type == NodeType.POLARS:
+            config = _with_lifted_steps(config, func_name)
+        elif node_type in STEPPED_NODE_TYPES:
             # Decorator-carried steps (Explore) reconcile with the body the same way.
             config, editor = _reconcile_steps(config, node_type, param_names, None, func_name)
 

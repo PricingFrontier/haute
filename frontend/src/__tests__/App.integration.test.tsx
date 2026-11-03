@@ -2304,7 +2304,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
           function_name: "Renamed_Source",
           default_input_name: "Renamed_Source",
           source_handle_input_names: {},
-          config_reference: "config/polars/Renamed_Source.json",
+          config_reference: null,
         }],
       })
     })

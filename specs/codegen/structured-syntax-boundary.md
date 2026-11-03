@@ -110,11 +110,11 @@ through the LibCST boundary rather than a token splice or substring mutation.
 
 ## Rebuilding steps from code (READ-21)
 
-`haute._polars_steps_lift` is a prototype of the inverse of the step renderer
+`haute._polars_steps_lift` is the inverse of the step renderer
 (`haute._polars_steps.render_node_steps`). `lift_steps(node_type, code)` rebuilds a stepped
-node's steps from its rendered body, and `canonical_steps(node_type, steps)` gives the steps
-that body rebuilds as. Neither the parser nor the save path calls them yet; `READ-22` builds
-on them.
+node's steps from its body, and `canonical_steps(node_type, steps)` gives the steps that a
+list's rendering rebuilds as. `READ-22` rebuilds every stepped node's steps from its code on
+load with `lift_steps`.
 
 This fits the boundary above. The standard-library AST is used only to propose steps.
 Nothing is unparsed over authored code, and LibCST is not needed, since nothing is
@@ -124,17 +124,27 @@ its text as code. The rebuilt steps never take authority over Python they cannot
 
 ### Canonical form
 
-- **Statements and trivia.** A body is its top-level statements. A comment or blank line
-  belongs to the statement below it, and lines after the last statement belong to that
-  statement. Statements that share a line (`a = 1; b = 2`) are read as one statement of
-  code.
+- **Statements and comments.** A body is its top-level statements. Statements that share a
+  line (`a = 1; b = 2`) are read as one statement of code.
+- **A comment belongs to the statement below it.** The comment and blank lines between
+  two statements belong to the second. A step keeps them in its `comment` field (see
+  [The `comment` field](#the-comment-field)), so a comment never turns a step into
+  code. Above a code statement they stay in the code step's text.
+- **A comment at the end stays at the end.** The comment and blank lines after the last
+  statement are a `free_code` step of their own, holding only those lines, so the last
+  step stays a step. After a code statement they join its code step, as adjacent code
+  does.
 - **Code.** A statement is code unless a step renders exactly its text where it stands. A
-  statement with a comment or blank line above it is code, because no step holds a
-  comment. A run of code statements, with the comments and blank lines among them, is
-  one `free_code` step, however many statements it holds.
-- **A step stands only where it renders the same.** A variable kept as code defines
-  nothing for the steps after it, so a step that reads it is code too. A variable step
-  whose name an earlier rebuilt variable already defines is code.
+  run of code statements, with the comments and blank lines among them, is one
+  `free_code` step, however many statements it holds.
+- **A step stands only where it renders the same.** A variable whose statement stays code
+  defines nothing for the steps after it, so a step that reads it is code too. This
+  arises only in hand-written code, such as `rate = 2  # two`, since a step never renders
+  a comment on its statement's line.
+- **Trailing newlines.** A body ending in newlines rebuilds as the same body without
+  them: `render(lift_steps(code))` is `code` with its trailing newlines removed. The
+  rendering never ends in a newline, so a body that does is the rendering plus newlines
+  the caller adds back.
 - **Ids.** Original step ids are dropped. Each rebuilt step's id is its kind and its
   one-based place in the list, such as `filter-3`, so the list renders as it stands.
 - **Display-only text.** A formula's `text` is dropped.
@@ -167,6 +177,8 @@ its text as code. The rebuilt steps never take authority over Python they cannot
 | An operand `{"kind": "expr", "expr": {"type": "operand", "operand": X}}` | the nested form, or `X` | `X`, where `X` renders the same in that slot and may stand there; otherwise the nested form |
 | An expression `{"type": "operand", "operand": {"kind": "expr", "expr": E}}` | the wrapper, or `E` | `E` |
 | A code statement that is exactly what a step renders | `free_code`, or the step | the step |
+| Comment lines between a code statement and a step | the end of the code step, or the step's `comment` | the step's `comment` |
+| A comment-only `free_code` step before a step | that code step, or the step's `comment` | the step's `comment` |
 
 **Where `X` renders the same.**
 - In expression position (a binary's left side, a function's input, an if-then's
@@ -180,17 +192,59 @@ its text as code. The rebuilt steps never take authority over Python they cannot
   `fill_null` function's argument only a number, text or true/false. So `pl.lit(None)` in
   `str.contains(...)` is the nested form.
 
-### Limits the prototype records
+### The `comment` field
 
-- **A comment above a step turns it into code.** `READ-22` needs a step to hold the
-  comment above it before "comments never turn a node into code" can hold. That is a
-  change to the step schema and the renderer.
-- **A variable can be defined twice.** The renderer accepts a variable step whose name
-  free code above it already assigns, as in `rate = 2` written as code before a `rate`
-  step. Rebuilt, the first assignment is the variable and the step is code.
-- **Only the exact rendered body is rebuilt.** `lift_steps` refuses code that its steps do
-  not render back byte for byte, such as a body with a trailing newline, raising
-  `StepLiftError`.
+Every structured step (every kind but `free_code`) may carry `comment`: the comment and
+blank lines written above its statement, verbatim, each line ending in a newline. For
+example, `"# Exposure in years\n\n# then the rate\n"` is a comment line, a blank line and
+another comment line.
+- **Rendering.** The renderer prints the comment above the statement, as stored. The
+  step's line range (`RenderedSteps.step_lines`) covers its statement only, so a failing
+  step is still reported at its statement's first line.
+- **What it may hold.** One or more lines. Each line is empty, or is a comment: optional
+  indentation, then `#`, with no whitespace at its end. No line holds a carriage return or
+  a null character. Anything else is refused with the step's index. An empty string is
+  refused, not read as no comment: a step with no comment has no `comment` key.
+- **Code steps.** A `free_code` step has no `comment`; the comments in its code are its
+  own. A `free_code` step may hold only comments and blank lines. A step with no statement
+  and no comment is still refused.
+- **The editor.** The step editor shows no control for the comment and keeps it through
+  every edit of the step. The assistant neither writes nor reads it, and `step_fields()`
+  does not list it, as it does not list `id`.
+
+### Chains of one operator (READ-22)
+
+The roadmap's `READ-22` planned a chain of one operator as one step with a list of terms.
+It keeps the binary tree instead. The JSON that made deep trees costly is being removed, and
+a flat list would reshape the expression model across the editor and the assistant for no
+gain on disk.
+
+What `READ-22` changes is the depth cap. `MAX_EXPR_DEPTH` (12) still caps how deep
+expressions nest, but a chain of one operator counts as one level, so a sum of any number
+of terms is one step. A chain is a binary whose left operand is a nested binary with the
+same operator, for `+`, `-`, `*`, `/`, `//` and `%`: the chain Python writes without
+brackets, `a + b + c`. Each other nesting still counts as a level:
+- a right operand, as in `a + (b + c)`, which keeps its brackets and its grouping;
+- a left operand with another operator, as in `(a - b) + c`;
+- a left operand of `**`, whose chain Python writes with brackets.
+
+Nothing flattens or reassociates a chain. The renderer counts depth this way, and the
+editor's checks mirror it (`frontend/src/panels/editors/polarsSteps/catalogue.ts::exprProblem`).
+
+### Variables and code
+
+The renderer refuses a variable step whose name a `free_code` step above it assigns,
+naming the variable. Such a name is bound twice: by an assignment, a `for`, a `with`, an
+import or a definition in the code. The step cannot be told from the code's own
+assignment once rendered.
+
+### Limits
+
+`lift_steps` raises `StepLiftError` for a body its steps do not render back byte for byte,
+apart from trailing newlines. A `free_code` step's lines lose the whitespace at their ends
+when rendered, as `ruff format` removes it. So a body whose code or comment lines end in
+whitespace does not rebuild: the caller hands `lift_steps` the body as `ruff format`
+leaves it.
 
 `tests/test_polars_steps_lift.py` proves both properties with Hypothesis:
 - `lift_steps(render(s)) == canonical_steps(s)`;
@@ -198,5 +252,6 @@ its text as code. The rebuilt steps never take authority over Python they cannot
 
 They hold over every step kind in `STEP_KINDS`, every function, window aggregate and
 condition operator, and chains on a transform, a Data Input and an External File. The
-chains mix steps with code, compound statements and comments. Every corpus translation
-also rebuilds step for step.
+chains mix steps with code, compound statements, comments on steps, comment-only code
+steps and trailing comments. Every corpus translation also rebuilds step for step, and a
+20-term sum rebuilds as one step.

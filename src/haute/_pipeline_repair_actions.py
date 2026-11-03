@@ -352,7 +352,7 @@ def _reset_node(
             _config_sharers(document, target, config_path, root_path=root_path, project_root=root)
         )
 
-    # A stepped transform owns an optional sidecar; a code-only one owns none.
+    # A node of a type with a config folder owns its sidecar; a transform owns none.
     if node_emits_sidecar(node):
         reference = (
             authored_reference or config_path_for_node(node_type, target.authored_id).as_posix()
@@ -386,8 +386,9 @@ def _reset_node(
             )
         )
     elif authored_reference is not None:
-        # A transform that leaves step mode no longer names its sidecar: the file
-        # it named goes with the rewrite unless another node still reads it.
+        # A transform written in the form before READ-22 names a sidecar it no
+        # longer needs: the file goes with the rewrite unless another node still
+        # reads it.
         config_path = config_file(authored_reference)
         if config_path.is_file() and not shared(config_path):
             edits.append(

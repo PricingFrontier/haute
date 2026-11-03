@@ -212,7 +212,8 @@ export default function PolarsStepsEditor({
   }
 
   const setStart = (input: string) => {
-    const sourceStep: Step = { id: startStep?.id ?? newStepId(), kind: "source", input }
+    // Keep what else the start step holds, such as the comment above it.
+    const sourceStep: Step = { ...startStep, id: startStep?.id ?? newStepId(), kind: "source", input }
     setSteps(steps[0]?.kind === "source" ? [sourceStep, ...steps.slice(1)] : [sourceStep, ...steps])
   }
 

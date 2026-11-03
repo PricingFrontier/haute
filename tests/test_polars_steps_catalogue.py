@@ -143,6 +143,13 @@ def test_expression_depth_cap_agrees() -> None:
     assert int(match.group(1)) == steps.MAX_EXPR_DEPTH
 
 
+def test_chain_operators_agree() -> None:
+    """The operators whose left-nested chain counts as one level of nesting."""
+    match = re.search(r"^export const CHAIN_OPERATORS\b.*= new Set\(\[(.*)\]\)$", SOURCE, re.M)
+    assert match
+    assert set(re.findall(r'"([^"]+)"', match.group(1))) == set(steps._CHAIN_OPERATORS)
+
+
 def test_default_join_order_agrees() -> None:
     """A new join's row order, and the order a join type change moves to, match the renderer."""
     editor = dict(re.findall(r'^\s+(\w+): "(\w+)",?$', declaration("DEFAULT_JOIN_ORDER"), re.M))

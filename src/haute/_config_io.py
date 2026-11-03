@@ -75,13 +75,7 @@ NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.OPTIMISER_APPLY: "apply_optimisation",
     NodeType.SCENARIO_EXPANDER: "expander",
     NodeType.CONSTANT: "constant",
-    NodeType.POLARS: "polars",
 }
-
-# Node types whose sidecar is optional: a ``polars`` transform stores its
-# low-code ``steps`` in ``config/polars/<name>.json`` only while it is
-# authored in step mode; a code-only transform has no sidecar at all.
-_OPTIONAL_SIDECAR_TYPES: frozenset[NodeType] = frozenset({NodeType.POLARS})
 
 FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
 
@@ -156,6 +150,11 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
 
         reject_removed_config_keys(node_type, config)
         reject_form_given_keys(node_type, config)
+        # A setting a sidecar leaves out at its default reads as that default (READ-10), so
+        # the config is the one the node had before it was written.
+        for key, default in _SIDECAR_DEFAULTS.get(node_type, {}).items():
+            if key not in config:
+                config = {**config, key: deepcopy(default)}
     if node_type == NodeType.BANDING:
         # A sidecar writes breakpoints as a list of bands (READ-27).
         return expand_banding_config_from_sidecar(bands_read_from_sidecar(config))
@@ -329,24 +328,13 @@ def palette_default_config(node_type: NodeType) -> dict[str, Any]:
 
 def has_config_folder(node_type: NodeType) -> bool:
     """Whether this node type requires an external JSON config file."""
-    return node_type in NODE_TYPE_TO_FOLDER and node_type not in _OPTIONAL_SIDECAR_TYPES
-
-
-def has_optional_config_folder(node_type: NodeType) -> bool:
-    """Whether this node type may, but need not, carry a JSON sidecar."""
-    return node_type in _OPTIONAL_SIDECAR_TYPES
+    return node_type in NODE_TYPE_TO_FOLDER
 
 
 def node_emits_sidecar(node: GraphNode) -> bool:
-    """Whether saving ``node`` writes a JSON sidecar.
-
-    Required-sidecar types always do; a ``polars`` transform does only while
-    its config carries a ``steps`` list.
-    """
-    node_type = node.data.nodeType
-    if has_config_folder(node_type):
-        return True
-    return has_optional_config_folder(node_type) and isinstance(node.data.config.get("steps"), list)
+    """Whether saving ``node`` writes a JSON sidecar: every node of a type with a
+    config folder does. A transform has none: its steps live in its code (READ-22)."""
+    return has_config_folder(node.data.nodeType)
 
 
 def config_path_for_node(

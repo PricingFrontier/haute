@@ -43,7 +43,6 @@ Each package states its formats in its owning specification before behaviour cha
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
-| READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
@@ -52,7 +51,7 @@ Each package states its formats in its owning specification before behaviour cha
 ## Planned improvements
 
 ### READ-20 — Each format change converts commercial-pricing with a one-off script
-**Why:** The loader accepts only the current format. The canonical-only rule in the [specification governance](../README.md) forbids any production code that converts an old format: "Nothing migrates it". Each format change from `READ-22` onwards must still bring commercial-pricing across. The owner decided on 3 November 2026 that no other project needs converting, so the rule stays and Haute gets no `haute migrate` command.
+**Why:** The loader accepts only the current format. The canonical-only rule in the [specification governance](../README.md) forbids any production code that converts an old format: "Nothing migrates it". Each format change must still bring commercial-pricing across. The owner decided on 3 November 2026 that no other project needs converting, so the rule stays and Haute gets no `haute migrate` command.
 
 **Plan:**
 - Each format change's pull request carries a one-off conversion script. The script:
@@ -74,58 +73,6 @@ Each package states its formats in its owning specification before behaviour cha
 **Dependencies:** None.
 
 **Evidence:** `specs/README.md`; `src/haute/_workbench_folder.py::form_at_ref`.
-
-### READ-22 — A Polars node is stored only as code in `main.py`
-**Why:** Today the code in `main.py` runs, and `config/polars/<node>.json` holds the steps again as an expression tree. The steps are kept only while their rendering is the same syntax tree as the code, with the same comments. That causes several problems:
-- the tree nests one level per term in a chain of one operator, so such a chain is capped at 13 terms (`MAX_EXPR_DEPTH = 12`);
-- adding a term changes 39 lines of JSON;
-- editing the JSON by hand discards the steps;
-- editing the code by hand, or adding a comment to it, turns the whole node into code.
-
-**Plan:**
-- Drop `config/polars/*.json` and the `config=` argument on `@pipeline.polars`.
-- **Rebuilding steps on load:**
-  - Haute rebuilds the steps from the node's code with `lift_steps` in `src/haute/_polars_steps_lift.py`, whose canonical form the [structured-syntax boundary](../codegen/structured-syntax-boundary.md) records.
-  - A run of statements it cannot recognise becomes one code step, and the statements around it stay steps.
-- **Column settings** such as `selected_columns` and `column_renames` go into the decorator's keywords, as a code-only Polars node writes them today.
-- **Unfinished steps:**
-  - While any step of a node is unfinished, the node is saved as an incomplete transform is today:
-    - its whole step list goes in the `.haute.json` sidecar under the node, the steps before and after the unfinished one included;
-    - its code is today's placeholder, which raises;
-    - the save warns.
-  - So the node fails in the editor, `haute run`, a standalone run and a deploy alike, and never returns the steps before the unfinished one.
-  - Once every step is complete, the steps move into code and leave the sidecar.
-- **Comments:**
-  - a comment belongs to the statement below it, and moves or goes with that step;
-  - a comment at the end of the body stays at the end;
-  - comments never turn a node into code.
-- **Chains:**
-  - a chain of one operator becomes one step with a list of terms, so the 13-term cap goes;
-  - grouping and the order of evaluation are kept: floats are never reassociated, and `sum_horizontal` is never substituted, since it treats missing values differently.
-- **Step ids** come from each step's kind and position on load. The assistant's step edits keep their stale-revision protection, so ids from an older load are refused.
-- **The formula box** shows each formula from the rebuilt step, so Haute needs no second implementation of the formula language.
-- **Converting a project:**
-  - the JSON is deleted once the code rebuilds to the same steps;
-  - a node that doesn't is reported, its code stays, and its unrecognised statements become code steps;
-  - a node with an unfinished step moves its step list into the sidecar.
-- Replace the stepped-transform section of the [pipeline-config specification](../pipeline-config/high-level.md).
-
-**Acceptance:**
-- Loading and saving a node's code is byte-stable.
-- A hand edit to one statement keeps the other steps, and a comment keeps the steps.
-- A 20-term sum is one step.
-- An unfinished middle step, with complete steps before and after it, round-trips. The node fails in the editor, `haute run`, a standalone run and a dry-run deploy.
-- The column settings round-trip.
-- Two unrecognised statements next to each other load as one code step.
-- Tests for grouped arithmetic and for arithmetic with missing values give the same results as today.
-- The formula box round-trips each formula.
-- The reference pipeline gives every node the same output columns, types and sample values before and after its conversion.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_config_builder.py::_same_program`; `src/haute/_polars_steps.py::MAX_EXPR_DEPTH`;
-`src/haute/_codegen_builders.py`; `frontend/src/panels/editors/polarsSteps/formula.ts::additive`;
-`src/haute/assistant/_catalog.py`.
 
 ### READ-28 — Constants that only formulas read become global constants
 **Why:** A Constant node's sidecar is a map from name to value ([pipeline-config](../pipeline-config/high-level.md)). In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.

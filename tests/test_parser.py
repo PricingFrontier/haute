@@ -707,13 +707,14 @@ import haute
 pipeline = haute.Pipeline("cfg_test")
 
 
-@pipeline.polars(config="config/nonexistent_node.json")
+@pipeline.data_input(config="config/nonexistent_node.json")
 def broken_ref() -> pl.DataFrame:
     """Node with missing config file."""
-    return pl.DataFrame()
+    ...
 '''
         p = _write_pipeline(tmp_path, code)
-        with pytest.raises(ConfigError):
+        # A transform takes no config= since READ-22; a node that reads one names it.
+        with pytest.raises(ConfigError, match="nonexistent_node.json"):
             parse_pipeline_file(p)
 
 

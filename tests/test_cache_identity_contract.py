@@ -447,7 +447,6 @@ def test_editor_state_leaves_the_execution_identity_alone() -> None:
                     "editor": NodeEditorState(
                         steps_error="step 1 is invalid",
                         steps_discarded="the sidecar could not be read",
-                        discarded_sidecar="config/transform/target.json",
                     )
                 }
             )

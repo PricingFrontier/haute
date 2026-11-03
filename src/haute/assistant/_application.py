@@ -28,6 +28,7 @@ from haute._input_providers import (
 )
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
+from haute._polars_steps_lift import canonical_steps
 from haute._rating import normalise_combined_outputs, validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
 from haute._sandbox import contained_path
@@ -912,8 +913,15 @@ def _prove_steps_survive_save(
                     where={"node": node_id, "field": "steps"},
                     fix=_steps_fix(node),
                 ) from exc
+            expected = node.data.config["steps"]
+            if node.data.nodeType == NodeType.POLARS:
+                # A transform's steps are rebuilt from its code, ids from kind and place
+                # (READ-22); while one cannot render, the list waits whole in .haute.json.
+                if node.data.editor.steps_error is not None:
+                    continue
+                expected = canonical_steps(NodeType.POLARS, expected)
             discarded = resolved["editor"].steps_discarded
-            if discarded or resolved["config"].get("steps") != node.data.config["steps"]:
+            if discarded or resolved["config"].get("steps") != expected:
                 reason = discarded or "Its steps change on reparse."
                 raise AssistantOperationError(
                     "op_not_applied",

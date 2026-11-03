@@ -5,6 +5,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test"
 
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
+// The form before READ-22 kept a transform's steps here; the code alone holds them now.
 const sidecarPath = resolve(e2eProjectRoot, "rating", "config", "polars", "browser_steps.json")
 const mainPath = resolve(e2eProjectRoot, "rating", "main.py")
 
@@ -212,18 +213,16 @@ test.describe("Transform step builder journey", () => {
     await expect(previewTable.getByRole("columnheader", { name: /step_marker/ })).toBeVisible()
     await expect(previewTable.getByRole("cell", { name: "custom", exact: true })).toHaveCount(2)
 
-    // Saving writes the steps to the node's sidecar and the rendered body to the module.
+    // Saving writes the rendered body to the module, the one place the steps are kept.
     await save(page)
-    await expect.poll(() => existsSync(sidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")) as { steps: Array<{ kind: string }> }
-    expect(sidecar.steps.map((step) => step.kind)).toEqual(["source", "limit", "free_code", "limit"])
-    expect(sidecar.steps[2]).toMatchObject({ code: snippet })
+    await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("def browser_steps(raw_rows: pl.LazyFrame)")
     const main = readFileSync(mainPath, "utf8")
-    expect(main).toContain('config="config/polars/browser_steps.json"')
-    expect(main).toContain("def browser_steps(raw_rows: pl.LazyFrame)")
+    expect(main).not.toContain("config=")
     expect(main).toContain("df = df.head(3)")
+    expect(main).toContain(snippet.replace(/\n/g, "\n    "))
+    expect(existsSync(sidecarPath)).toBe(false)
 
-    // Reopening parses the sidecar back into the same step cards.
+    // Reopening rebuilds the same step cards from the code.
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByLabel(/Transform node: browser_steps/i).click()

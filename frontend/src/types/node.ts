@@ -64,7 +64,6 @@ export type LoadAvailability = "ready" | "unavailable" | "blocked"
 export interface NodeEditorState {
   steps_error: string | null
   steps_discarded: string | null
-  discarded_sidecar: string | null
 }
 
 export interface HauteNodeData extends Record<string, unknown> {

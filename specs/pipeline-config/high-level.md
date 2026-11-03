@@ -387,13 +387,19 @@ standalone-only rebasing of `data/foo.parquet` beneath the pipeline module
 directory.
 
 **Stepped transforms.** A `polars` transform may be authored as an ordered list of
-low-code steps instead of hand-written code. The steps live in the node's optional
-`config/polars/<name>.json` sidecar, which the generated decorator references with
-`config=`; a `@pipeline.polars` function without `config=` is a code-only transform
-and has no sidecar. The `polars` folder is the one optional sidecar folder: the sidecar
-walks (collection and the save-time collision and reserved-filename guard) treat a `polars` node as a sidecar owner only while its config
-carries a `steps` list, and the stale-file sweep removes the file when a node stops
-carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
+low-code steps instead of hand-written code. The steps live only in the node's code in
+the pipeline file (READ-22): a `@pipeline.polars` decorator takes no `config=`, and no
+`config/polars/` file exists. Its column settings (`selected_columns`, `column_renames`)
+are decorator keywords, as for any transform. Loading rebuilds the steps from the body
+(`haute._polars_steps_lift.lift_steps`, whose canonical form
+[structured-syntax-boundary](../codegen/structured-syntax-boundary.md) records): a
+statement becomes a step when that step renders exactly its text, and each run of
+statements it does not recognise becomes one code step, the statements around it staying
+steps, so a hand edit to one statement or a comment keeps the rest. A body that does
+not rebuild at all (one whose lines cannot be split into statements) loads as a
+code-only transform. Each step's id is its kind and its place (`filter-3`), given anew at
+each load. A `@pipeline.polars(config=...)` is the form before READ-22 and is refused,
+naming `scripts/one_off/read_22_polars_code.py`. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive
 line range and raising a step-indexed error for any malformed or incomplete step.
 Each structured step renders one statement in common Python style, as ruff and the
@@ -409,13 +415,19 @@ pipeline file, and `ruff format` at its default line length and quote style leav
 unchanged: a float is written as ruff writes it, with no `+` in its exponent (`1e20`), and
 a free-code step keeps its authored layout with only the whitespace ruff removes taken
 off, the spaces ending a line outside a string literal (a multiline string keeps every
-character it holds). A saved body is compared with the rendering of its steps as a
-program, not as text (the same syntax tree and the same comments, a comment's trailing
-whitespace aside), so a body saved in an earlier layout, quoting or call spelling of the
-same steps (lists where the renderer now passes separate arguments, Polars' sort and
-unique defaults spelled out), or reformatted by `ruff format`, keeps its steps, while
-any other edit discards them.
+character it holds). Since the rendering is a fixed point of `ruff format`, formatting
+the pipeline file keeps a transform's steps; a statement in another layout or spelling
+loads as code.
 Step-id uniqueness checks for valid lists run in linear time in the number of steps.
+Every step but a `free_code` step may carry a `comment`: the comment and blank lines
+written above its statement, verbatim, each line ending in a newline
+(`"# Exposure in years\n"`). The renderer prints it above the statement, so rebuilding
+the steps from code keeps a comment with the step below it rather than turning that step
+into code. Each line must be empty or a comment, with no whitespace at its end; the step's
+line range covers its statement only. The step editor keeps the field through every edit
+and shows no control for it
+([structured-syntax-boundary](../codegen/structured-syntax-boundary.md), The `comment`
+field).
 The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,
 typed functions over numbers, text, dates and durations, conditionals with one or more
@@ -427,7 +439,8 @@ wherever a value does not convert, as Polars' `strict=False`), sort, unique, gro
 and quantiles (an empty key list summarises the whole frame), joins with optional
 key-cardinality validation (inner, left and full joins only, as Polars refuses it
 elsewhere) and output-order control, concat, fill-null, limit, and
-node-local variables; a null literal renders as `pl.lit(None)` in expression position
+node-local variables (a variable step is refused, naming it, when a `free_code` step
+above it already assigns its name); a null literal renders as `pl.lit(None)` in expression position
 and is refused in membership lists and variables. An operand may itself be a nested
 expression (`{"kind": "expr", "expr": ...}`) wherever a value, column or variable is
 accepted, except in membership lists, variable values and the plain-value function
@@ -439,7 +452,12 @@ evaluation needs it (a left operand only when its operator is weaker than the
 parent's, a right operand and either side of `**` always, and anywhere outside a
 formula), so a chain of terms reads flat, and nesting is capped at twelve levels (a
 step's own expression is level one), beyond which the step is refused
-with a message to compute part of the expression in an earlier step; inside a
+with a message to compute part of the expression in an earlier step. A chain of one
+operator counts as one level: a formula whose left operand is a formula with the same
+operator (`+`, `-`, `*`, `/`, `//` or `%`, which Python chains without brackets), so a
+sum of any number of terms is one step. The chain stays a binary tree and is never
+regrouped, and a right operand or a left operand with another operator still counts a
+level; inside a
 group-by aggregation's or a window's row filter operands stay plain, because a nested
 aggregate there would mean the group's or the partition's value rather than the
 frame's. A conditional is a list of `branches`, each `{"match", "conditions", "then"}`,
@@ -499,16 +517,15 @@ payload is overwritten on ingress; in-process config replacement uses the valida
 also holds after assistant and submodel operations. A stepped transform addresses its
 inputs by their current edge names and never carries `inputMapping` (a config with both
 fails loudly), and submodel flattening rewrites the input references inside a stepped
-transform's steps instead of recording a mapping. When a polars sidecar is referenced,
-parsing loads it, renders its steps against the function's parameter names, and
-compares the result with the code extracted from the body before the node model is
-built: an identical body keeps the node in step mode; a different body, or a body that
-is not empty while the steps cannot be rendered, discards the steps (the body was edited
-by hand), records in the node's editor state a `steps_discarded` reason and a
-`discarded_sidecar` path that the stale-sidecar sweep baseline includes so the file is
-retired on the next save, and logs a warning; an empty body with
-unrenderable steps keeps the steps, because that is how an incomplete step list is
-saved. A sidecar whose `steps` value is not a list fails the parse with a `ConfigError`.
+transform's steps instead of recording a mapping. A transform with an unfinished step
+is saved with the raising placeholder for its body and its whole step list, the steps
+before and after the unfinished one included, in the pipeline's `.haute.json` under
+the node's name (`unfinished_steps`), and the save warns which step; so the node fails
+in the editor, `haute run`, a standalone run and a deploy alike, never returning the
+steps before the unfinished one. Loading in the editor gives such a node the steps the
+sidecar holds; once every step is complete the next save renders them into the body
+and drops them from the sidecar. A sidecar entry for a node whose body is not the
+placeholder is ignored, and the next save drops it.
 
 **Stepped surfaces.** The same step list authors the Polars code of every surface
 that has one: a Data Input's post-load code, an External File's code over the loaded
@@ -520,10 +537,19 @@ beside `obj`, the rated, scored or expanded frame). In frame mode an empty list 
 to empty code without error, because the node then simply keeps its base behaviour, a
 `source` step is refused at any position with a step-indexed message, and
 `join`/`concat` references are checked against the surface's eligible input names.
+Every surface but the transform keeps its steps in its own config, beside its other
+settings, while they still render its body: parsing renders them against the
+function's parameter names and compares the result with the code extracted from the
+body, as programs (the same syntax tree and comments, a comment's trailing whitespace
+aside), so a body saved in an earlier layout, quoting or call spelling keeps them; a
+different body, or one that is not empty while the steps cannot be rendered, discards
+them (the body was edited by hand), recording a `steps_discarded` reason in the node's
+editor state and logging a warning; an empty body with unrenderable steps keeps them,
+which is how such a surface's incomplete step list is saved. A config whose `steps`
+value is not a list fails the parse with a `ConfigError`.
 Explore is the one stepped type with no config folder: its steps travel as a `steps=`
-decorator argument beside its overview, pivot and chart cards, are reconciled against
-the body exactly as a sidecar's are, and leave no discarded sidecar when a
-hand edit discards them (there is no file to retire).
+decorator argument beside its overview, pivot and chart cards, and are reconciled
+against the body the same way.
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as
@@ -563,7 +589,8 @@ appear anywhere after the source step (anywhere at all in frame mode). Its state
 the low-code steps: `df` is the current frame, `pl` is available, and earlier
 Define variable values can be used. Assign transformations back to `df`; later
 steps consume that frame. Multiline expressions, comments, local helpers and
-control flow are supported. Blank or comment-only snippets, invalid Python, and
+control flow are supported. A snippet may hold only comments and blank lines, which is
+how a comment at the end of a body is kept. Blank snippets, invalid Python, and
 node-level `return`, `yield`, `await`, or loop control outside a loop fail with the
 offending step index; returns inside helper functions are allowed. Validation
 compiles but never executes authored code; frame validation models `df` already

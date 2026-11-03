@@ -103,7 +103,8 @@ describe("stepProblem", () => {
   it("accepts nested expressions up to the renderer's depth and refuses them in literal-only positions", () => {
     const nested = (depth: number): Operand => {
       let operand: Operand = { kind: "literal", type: "number", value: 1 }
-      for (let i = 0; i < depth; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: "+", right: { kind: "literal", type: "number", value: 1 } } }
+      // Alternating operators: a chain of one operator would count as one level.
+      for (let i = 0; i < depth; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: i % 2 ? "-" : "+", right: { kind: "literal", type: "number", value: 1 } } }
       return operand
     }
     const withOperand = (operand: Operand): Step => ({ id: "w", kind: "with_column", name: "n", expr: { type: "operand", operand } })
@@ -120,6 +121,34 @@ describe("stepProblem", () => {
     expect(stepProblem({ id: "v", kind: "variable", name: "x", value: nested(1) })).toMatch(/plain value/)
     expect(stepProblem({ id: "f", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [nested(1)] } })).toMatch(/function arguments/)
     expect(stepProblem({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value: { kind: "expr", expr: { type: "nope" } } }] })).toMatch(/unknown expression type/)
+  })
+
+  it("counts a chain of one operator as one level, like the renderer", () => {
+    type Binary = Extract<Step, { kind: "with_column" }>["expr"]
+    const chain = (terms: number, op: "+" | "-" | "*" | "/" | "//" | "%" | "**", side: "left" | "right" = "left"): Binary => {
+      let expr: Binary = { type: "binary", left: col("c0"), op, right: col("c1") }
+      for (let i = 2; i < terms; i += 1) {
+        const nested: Operand = { kind: "expr", expr }
+        expr = side === "left" ? { type: "binary", left: nested, op, right: col(`c${i}`) } : { type: "binary", left: col(`c${i}`), op, right: nested }
+      }
+      return expr
+    }
+    const step = (expr: Binary): Step => ({ id: "w", kind: "with_column", name: "t", expr })
+    for (const op of ["+", "-", "*", "/", "//", "%"] as const) expect(stepProblem(step(chain(20, op)))).toBeNull()
+    // A right-nested chain keeps every group, and `**` chains are bracketed: each counts.
+    expect(stepProblem(step(chain(14, "+", "right")))).toMatch(/nests more than 12 levels/)
+    expect(stepProblem(step(chain(14, "**")))).toMatch(/nests more than 12 levels/)
+    // A twenty-term sum still fits under eleven enclosing functions.
+    let deep: Binary = chain(20, "+")
+    for (let i = 0; i < 11; i += 1) deep = { type: "function", fn: "abs", operand: { kind: "expr", expr: deep }, args: [] }
+    expect(stepProblem(step(deep))).toBeNull()
+  })
+
+  it("keeps a statement step's comment and refuses one on a code step", () => {
+    expect(stepProblem({ id: "l", kind: "limit", n: 5, comment: "# keep five\n" })).toBeNull()
+    expect(canonicalStep({ id: "f", kind: "filter", match: "all", conditions: [], comment: "# x\n" })).toMatchObject({ comment: "# x\n" })
+    expect(stepProblem({ id: "l", kind: "limit", n: 5, comment: 3 } as never)).toMatch(/malformed comment/)
+    expect(stepProblem({ id: "c", kind: "free_code", code: "x = 1", comment: "# x\n" } as never)).toMatch(/malformed comment/)
   })
 
   it("accepts reshaping steps and dtype selectors and summarises them", () => {
@@ -149,7 +178,8 @@ describe("stepProblem", () => {
   it("counts filter and fill nesting from the nested expression, like the renderer", () => {
     const nested = (depth: number): Operand => {
       let operand: Operand = { kind: "literal", type: "number", value: 1 }
-      for (let i = 0; i < depth; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: "+", right: { kind: "literal", type: "number", value: 1 } } }
+      // Alternating operators: a chain of one operator would count as one level.
+      for (let i = 0; i < depth; i += 1) operand = { kind: "expr", expr: { type: "binary", left: operand, op: i % 2 ? "-" : "+", right: { kind: "literal", type: "number", value: 1 } } }
       return operand
     }
     const filter = (value: Operand): Step => ({ id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "gt", value }] })

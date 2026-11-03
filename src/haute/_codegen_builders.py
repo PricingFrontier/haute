@@ -636,9 +636,10 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
         keyword_parameters, logical_source_names, node_id=node.id, node_label=node.data.label
     )
     if isinstance(steps, list):
-        # The sidecar owns the steps; the body is their rendering against the
-        # generated parameter names, or the incomplete placeholder when they
-        # cannot be rendered yet (the save warns which step is incomplete).
+        # The body is the steps' rendering against the generated parameter
+        # names, the one place they are kept (READ-22), or the incomplete
+        # placeholder when they cannot be rendered yet: the save keeps the step
+        # list in ``.haute.json`` and warns which step is incomplete.
         try:
             code = render_polars_steps(steps, logical_source_names, start="input").code
         except PolarsStepError:
@@ -650,13 +651,8 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
             node_id=node.id,
             node_label=node.data.label,
         )
-    keywords: list[tuple[str, object]]
-    if isinstance(steps, list):
-        # The sidecar holds every setting of a stepped transform, its column
-        # settings included, so the decorator names only it.
-        keywords = [("config", config_path_for_node(NodeType.POLARS, _func_name(node)).as_posix())]
-    else:
-        keywords = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
+    # Its column settings are keywords, stepped or not (READ-22).
+    keywords: list[tuple[str, object]] = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
     if input_mapping is not None:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.
@@ -667,7 +663,10 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
     # state to save, so the body is valid Python that keeps the inputs bound
     # and fails loudly if run; save warns about it, and the placeholder
     # round-trips back to "no code" in the editor.
-    body = _transform_body(code) if code else _unindented(INCOMPLETE_TRANSFORM_BODY)
+    # A step list that cannot be rendered yet says so (READ-22); a transform with no code
+    # and no steps has none yet.
+    placeholder = INCOMPLETE_STEPS_BODY if isinstance(steps, list) else INCOMPLETE_TRANSFORM_BODY
+    body = _transform_body(code) if code else _unindented(placeholder)
     return NodeSource(
         "polars",
         tuple(keywords),

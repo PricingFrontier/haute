@@ -330,23 +330,34 @@ class TestKeywordOnlyParameterConservation:
         assert document.capabilities.can_save is False
         assert main.read_bytes() == before
 
-    def test_a_stepped_transform_refuses_a_keyword_only_parameter(self, tmp_path: Path) -> None:
-        sidecar = tmp_path / "config" / "polars" / "scaled.json"
-        sidecar.parent.mkdir(parents=True)
-        sidecar.write_text(
-            '{"steps": [{"id": "s", "kind": "source", "input": "source"}]}', encoding="utf-8"
+    def test_a_body_that_rebuilds_as_steps_keeps_its_keyword_only_parameters(
+        self, tmp_path: Path
+    ) -> None:
+        """A transform's steps are rebuilt from its code (READ-22), so a body that starts from
+        its input rebuilds as steps; its keyword-only parameters still survive parse, save
+        and every run, as for any transform written as code."""
+        from haute.codegen import graph_to_code
+
+        source = _SCALED.replace(
+            '    df = source.with_columns(y=pl.col("x") * factor, label=pl.lit(label))\n',
+            "    df = source\n"
+            '    df = df.with_columns(y=pl.col("x") * factor, label=pl.lit(label))\n',
         )
-        main = _write(
-            tmp_path,
-            "main.py",
-            _SCALED.replace(
-                "@pipeline.polars\ndef scaled(",
-                '@pipeline.polars(config="config/polars/scaled.json")\ndef scaled(',
-            ),
+        original = parse_pipeline_source(source, source_file="main.py")
+        scaled = next(node for node in original.nodes if node.id == "scaled")
+        assert scaled.data.config["keyword_parameters"] == [
+            {"name": "factor", "default": 1.2},
+            {"name": "label", "default": "rated"},
+        ]
+        regenerated = graph_to_code(original, pipeline_name="m", preamble=original.preamble)
+        assert '*, factor=1.2, label="rated") -> pl.LazyFrame:' in regenerated
+        reparsed = parse_pipeline_source(regenerated, source_file="main.py")
+        assert graph_to_code(reparsed, pipeline_name="m", preamble=reparsed.preamble) == (
+            regenerated
         )
-        with pytest.raises(ParseError, match="Transform built from steps") as refused:
-            parse_pipeline_file(main)
-        assert refused.value.context["line"] == 16
+        expected = {"x": 100.0, "y": 120.0, "label": "rated"}
+        assert _canvas_row(reparsed) == expected
+        assert _live_row(regenerated, tmp_path) == expected
 
     @pytest.mark.parametrize(
         ("signature", "refused"),

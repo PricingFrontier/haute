@@ -409,16 +409,14 @@ Out of scope (owned by neighbouring components):
 
 **Stepped transforms.** When a transform config carries `steps`, `_gen_transform` renders
 the body with the shared step renderer against the generated parameter names instead of
-`config["code"]`, references the node's `config/polars/<name>.json` sidecar through the
-decorator `config=` keyword, and on a render failure emits the same incomplete placeholder
-body that a code-less transform emits; the save warning for incomplete transforms then
-names the failing step. A stepped node that also carries `inputMapping` is rejected
+`config["code"]`, writes its column settings as decorator keywords as for any transform
+(its steps live in that body alone, READ-22), and on a render failure emits the same
+incomplete placeholder body that a code-less transform emits; the save then keeps the
+step list in `.haute.json` (`unfinished_steps`) and its warning for incomplete
+transforms names the failing step. A stepped node that also carries `inputMapping` is rejected
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
-the rendered code exactly, which is what lets the parser tell a hand-edited body from a
-rendered one; the parser compares the two as programs (the same syntax tree and
-comments, against both the current rendering and the renderer's earlier call spelling
-of the same steps), so a body in an earlier layout, quoting or spelling of the same
-steps is not an edit.
+the rendered code exactly, which is what lets the parser rebuild each step from the
+statement it rendered (`lift_steps`), any other statement loading as code.
 
 **Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score,
 Scenario Expander or Explore config carries `steps`, the node is a hook and its generator

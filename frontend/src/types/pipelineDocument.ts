@@ -329,11 +329,10 @@ function parsePosition(value: unknown, field: string): { x: number; y: number } 
 
 function parseEditorState(value: unknown, field: string): NodeEditorState {
   const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["steps_error", "steps_discarded", "discarded_sidecar"])
+  exactKeys(object, field, ["steps_error", "steps_discarded"])
   return {
     steps_error: nullableString(object, "steps_error", field),
     steps_discarded: nullableString(object, "steps_discarded", field),
-    discarded_sidecar: nullableString(object, "discarded_sidecar", field),
   }
 }
 

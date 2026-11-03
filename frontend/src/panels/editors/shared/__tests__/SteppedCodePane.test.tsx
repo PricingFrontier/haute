@@ -175,7 +175,6 @@ describe("SteppedCodePane", () => {
         editor={{
           steps_error: null,
           steps_discarded: "Steps were discarded because the function body no longer matches the rendered steps.",
-          discarded_sidecar: null,
         }}
         onUpdate={vi.fn()}
         inputSources={[]}

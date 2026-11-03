@@ -1769,18 +1769,6 @@ class SavePipelineService:
             self._stage_write(out_path, json_content, touched)
 
     @staticmethod
-    def _discarded_sidecars_recursive(graph: PipelineGraph) -> list[str]:
-        """Relative sidecar paths the parser found discarded (``editor.discarded_sidecar``)."""
-        found: list[str] = []
-        scoped = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
-        for scoped_graph in scoped:
-            for node in scoped_graph.nodes:
-                rel = node.data.editor.discarded_sidecar
-                if rel:
-                    found.append(rel.replace("\\", "/"))
-        return found
-
-    @staticmethod
     def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
         for definition in (graph.submodels or {}).values():
             yield definition.graph
@@ -1983,14 +1971,6 @@ class SavePipelineService:
             return {}
         try:
             prev = self._collect_node_configs_recursive(disk_graph)
-            # A polars sidecar whose steps were discarded on parse (the body
-            # was hand-edited) is no longer collected from the graph, but this
-            # pipeline still owns the file: keep it in the baseline so the
-            # stale sweep retires it.
-            for rel in self._discarded_sidecars_recursive(disk_graph):
-                path = (self._pipeline_root / rel).resolve()
-                if rel not in prev and is_contained(self._pipeline_root, path) and path.is_file():
-                    prev[rel] = path.read_text(encoding="utf-8")
             # A declared constants file that loads is this pipeline's to retire
             # when its last constant goes; one that fails to load is left alone.
             constants_path = self._pipeline_root / GLOBAL_CONSTANTS_FILE

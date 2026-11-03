@@ -15,7 +15,7 @@ pipeline = haute.Pipeline(
 def policies(): ...
 
 
-@pipeline.polars(config="config/polars/premium.json")
+@pipeline.polars
 def premium(factored: pl.LazyFrame) -> pl.LazyFrame:
     df = factored
     # Apply the vehicle factor to the base rate

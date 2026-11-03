@@ -33,6 +33,9 @@ class SidecarModel(BaseModel):
     * ``sources`` — ordered list of available data sources for this
       pipeline (``"live"`` is always first).
     * ``active_source`` — which source is currently selected in the UI.
+    * ``unfinished_steps`` — a transform's whole step list, by node, while one of
+      its steps is unfinished (READ-22): its body is then the raising
+      placeholder, and the steps live nowhere else until they are complete.
 
     Every optional field has a sensible default so sparse sidecars still
     parse.  That current-shape defaulting contract is pinned by
@@ -53,6 +56,7 @@ class SidecarModel(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     managed_parent: str | None = None
+    unfinished_steps: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _active_source_must_be_in_sources(self) -> SidecarModel:

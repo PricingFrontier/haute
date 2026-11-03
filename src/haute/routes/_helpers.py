@@ -760,6 +760,28 @@ def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
     return dict(result) if isinstance(result, dict) else {}
 
 
+def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
+    """*nodes* with each transform saved with an unfinished step list given its steps
+    from the sidecar (READ-22): one whose body is the placeholder, which loads with no
+    code and no steps. An entry for any other node is ignored; the next save drops it."""
+    if not isinstance(unfinished, dict) or not unfinished:
+        return nodes
+    given: list[GraphNode] = []
+    for node in nodes:
+        steps = unfinished.get(node.id)
+        config = node.data.config
+        if (
+            node.data.nodeType == NodeType.POLARS
+            and isinstance(steps, list)
+            and not config.get("code")
+            and "steps" not in config
+        ):
+            given.append(node.with_config({**config, "steps": steps}))
+        else:
+            given.append(node)
+    return given
+
+
 def _sidecar_position_key(node: GraphNode) -> str:
     """Return the node identity that the parser will restore on reload.
 
@@ -837,6 +859,17 @@ def save_sidecar(
     # see spurious sidecar keys appear.  This is pinned by
     # ``test_route_helpers.py::test_default_source_not_saved``.
     model_kwargs: dict[str, Any] = {"positions": positions}
+    # A transform whose steps cannot be rendered yet is saved with the raising
+    # placeholder, so its step list is kept here until it is complete (READ-22).
+    unfinished = {
+        _sidecar_position_key(node): node.data.config["steps"]
+        for node in graph.nodes
+        if node.data.nodeType == NodeType.POLARS
+        and isinstance(node.data.config.get("steps"), list)
+        and node.data.editor.steps_error is not None
+    }
+    if unfinished:
+        model_kwargs["unfinished_steps"] = dict(sorted(unfinished.items()))
     if graph.sources and graph.sources != ["live"]:
         model_kwargs["sources"] = graph.sources
     if graph.active_source and graph.active_source != "live":
@@ -1008,6 +1041,9 @@ def parse_pipeline_to_graph(
         position = positions.get(node.id)
         if position is not None:
             node.position = position
+    graph = graph.model_copy(
+        update={"nodes": with_unfinished_steps(graph.nodes, sidecar.get("unfinished_steps"))}
+    )
 
     # Populate source state from sidecar
     raw_sources = _normalise_sidecar_sources(sidecar.get("sources"))
@@ -1036,12 +1072,15 @@ def parse_pipeline_to_graph(
         child_graph = definition.graph
         child_sidecar = load_sidecar(child_path)
         child_positions = _normalise_sidecar_positions(child_sidecar.get("positions"))
-        child_nodes = [
-            node.model_copy(update={"position": child_positions[node.id]})
-            if node.id in child_positions
-            else node
-            for node in child_graph.nodes
-        ]
+        child_nodes = with_unfinished_steps(
+            [
+                node.model_copy(update={"position": child_positions[node.id]})
+                if node.id in child_positions
+                else node
+                for node in child_graph.nodes
+            ],
+            child_sidecar.get("unfinished_steps"),
+        )
         child_graph = child_graph.model_copy(
             update={
                 "nodes": child_nodes,

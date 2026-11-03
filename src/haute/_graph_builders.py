@@ -164,14 +164,20 @@ def _resolve_node_skeleton(
         # Code extraction reports lines within the node's code; name the node.
         exc.context.setdefault("node_id", skeleton.authored_id)
         raise
+    # A transform names no steps file (READ-22): its steps are rebuilt from its code.
     keyword_parameters = keyword_parameters_from_signature(
         skeleton.arguments,
         node_type=node_type,
-        stepped="config" in decorator_kwargs,
+        stepped=False,
         node_id=skeleton.authored_id,
     )
     if keyword_parameters:
-        config = {**config, KEYWORD_PARAMETERS_KEY: keyword_parameters}
+        # A transform with keyword-only parameters is written as code and stays code: its
+        # steps would leave them nowhere to live.
+        config = {
+            **{key: value for key, value in config.items() if key != "steps"},
+            KEYWORD_PARAMETERS_KEY: keyword_parameters,
+        }
     return {
         "func_name": skeleton.authored_id,
         "node_type": node_type,

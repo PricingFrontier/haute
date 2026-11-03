@@ -107,7 +107,8 @@ describe("editor identity resolution", () => {
           alias: null,
           collision: null,
           function_name: "node_class_cafe",
-          config_reference: "config/polars/node_class_cafe.json",
+          // A transform has no sidecar (READ-22), so no config reference.
+          config_reference: null,
           default_input_name: "node_class_cafe",
           source_handle_input_names: {},
         },
@@ -129,9 +130,10 @@ describe("editor identity resolution", () => {
     expect(resolvedNodes[0].data).toMatchObject({
       _functionName: "node_class_cafe",
       _defaultInputName: "node_class_cafe",
-      _configReference: "config/polars/node_class_cafe.json",
       _sourceHandleInputNames: {},
     })
+    expect(resolvedNodes[0].data).not.toHaveProperty("_configReference")
+    expect(resolvedNodes[1].data).toMatchObject({ _configReference: "config/quote_input/quotes.json" })
 
     const edges: Edge[] = [
       { id: "ordinary-edge", source: "ordinary", target: "target" },

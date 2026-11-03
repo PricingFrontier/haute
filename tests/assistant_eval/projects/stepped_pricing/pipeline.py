@@ -15,7 +15,7 @@ def quotes() -> pl.LazyFrame:
     return df
 
 
-@pipeline.polars(config="config/polars/risk_features.json")
+@pipeline.polars
 def risk_features(quotes: pl.LazyFrame) -> pl.LazyFrame:
     df = quotes
     # Flag experienced drivers

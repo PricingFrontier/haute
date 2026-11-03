@@ -28,6 +28,7 @@ from hypothesis import given, reject
 from hypothesis import strategies as st
 
 from haute._polars_steps import (
+    _CHAIN_OPERATORS,
     _COMPARISON_OPERATORS,
     _MEMBERSHIP_OPERATORS,
     _NO_VALUE_OPERATORS,
@@ -338,9 +339,21 @@ def concats(draw: st.DrawFn, variables: tuple[str, ...], depth: int) -> Step:
     return expr
 
 
+@st.composite
+def chains(draw: st.DrawFn, variables: tuple[str, ...]) -> Step:
+    """A chain of one operator, two to twenty terms long, nested on the left."""
+    op = draw(st.sampled_from(sorted(_CHAIN_OPERATORS)))
+    terms = draw(st.lists(operands(variables, 0), min_size=2, max_size=20))
+    expr: Step = {"type": "binary", "left": terms[0], "op": op, "right": terms[1]}
+    for term in terms[2:]:
+        expr = {"type": "binary", "left": {"kind": "expr", "expr": expr}, "op": op, "right": term}
+    return expr
+
+
 def expressions(variables: tuple[str, ...], depth: int) -> Strategy:
     """Any expression; an operand nests a further expression only above depth 0."""
     return st.one_of(
+        chains(variables),
         annotated(operands(variables, depth).map(lambda o: {"type": "operand", "operand": o})),
         annotated(
             st.fixed_dictionaries(
@@ -532,17 +545,33 @@ RENDERED = (
     "factor = 2",
     'df = df.with_columns(pl.col("a").cast(pl.Int64))',
 )
-TRIVIA = ("# a comment", "", "    # an indented comment")
+TRIVIA = ("# a comment", "", "    # an indented comment", "#: a doc comment")
+#: A step's comment: one to three comment or blank lines, each ending in a newline.
+comments = st.lists(st.sampled_from(TRIVIA), min_size=1, max_size=3).map(
+    lambda lines: "".join(f"{line}\n" for line in lines)
+)
 
 
 @st.composite
 def free_codes(draw: st.DrawFn) -> Step:
-    lines: list[str] = []
+    """Authored code, or (one time in four) only comments and blank lines."""
+    if draw(st.integers(0, 3)) == 0:
+        lines = draw(st.lists(st.sampled_from(TRIVIA), max_size=2))
+        lines.insert(draw(st.integers(0, len(lines))), draw(st.sampled_from(TRIVIA[::2])))
+        return {"kind": "free_code", "code": "\n".join(lines)}
+    lines = []
     for _ in range(draw(st.integers(1, 3))):
         lines.extend(draw(st.lists(st.sampled_from(TRIVIA), max_size=2)))
         lines.append(draw(st.sampled_from(UNRECOGNISED + RENDERED)))
     lines.extend(draw(st.lists(st.sampled_from(TRIVIA[:1]), max_size=1)))
     return {"kind": "free_code", "code": "\n".join(lines)}
+
+
+def commented(draw: st.DrawFn, step: Step) -> Step:
+    """*step*, a structured one sometimes with a comment above it."""
+    if step["kind"] == "free_code" or draw(st.integers(0, 2)):
+        return step
+    return {**step, "comment": draw(comments)}
 
 
 def variables_step(name: str) -> Strategy:
@@ -631,9 +660,9 @@ def programs(draw: st.DrawFn) -> tuple[NodeType, list[Step]]:
     """A chain: the start, some variables, then any mix of the other step kinds."""
     node_type = draw(st.sampled_from(NODE_TYPES))
     edges = STEPPED_NODE_TYPES[node_type].inputs == "edges"
-    steps = starts(node_type)
+    steps = [commented(draw, start) for start in starts(node_type)]
     names = tuple(draw(distinct(st.sampled_from(VARIABLES), 0, 2)))
-    steps.extend(draw(variables_step(name)) for name in names)
+    steps.extend(commented(draw, draw(variables_step(name))) for name in names)
     body = [
         kind
         for kind in STEP_KINDS
@@ -642,7 +671,7 @@ def programs(draw: st.DrawFn) -> tuple[NodeType, list[Step]]:
     # Code steps are weighted up so that code mixes with steps in most chains.
     kinds = st.sampled_from([*body, "free_code", "free_code", "free_code"])
     for _ in range(draw(st.integers(0, 5))):
-        steps.append(draw(STEPS[draw(kinds)](names)))
+        steps.append(commented(draw, draw(STEPS[draw(kinds)](names))))
     return node_type, numbered(steps)
 
 
@@ -660,8 +689,9 @@ def test_each_step_kind_alone_rebuilds_from_its_code(kind: str, data: st.DataObj
             continue
         if kind in INPUT_KINDS and STEPPED_NODE_TYPES[node_type].inputs != "edges":
             continue
-        body = [] if kind == "source" else [data.draw(STEPS[kind](()))]
+        body = [] if kind == "source" else [commented(data.draw, data.draw(STEPS[kind](())))]
         lead = [{"kind": "source", "input": "quotes"}] if kind == "source" else starts(node_type)
+        lead = [commented(data.draw, start) for start in lead]
         rebuild_or_reject(node_type, numbered([*lead, *body]))
 
 
@@ -990,51 +1020,131 @@ def test_membership_numbers_rebuild_as_their_number_type_writes_them() -> None:
     assert [type(v) for v in values[0] + values[1]] == [int, int, float, float]
 
 
-def test_a_comment_belongs_to_the_statement_below_it() -> None:
-    """A step has no place for a comment, so a statement with one above it stays code."""
+def test_a_comment_belongs_to_the_step_below_it() -> None:
+    """Comment lines above a step, wherever they were written, become its comment."""
+    steps = [
+        {**SOURCE, "comment": "# Quotes, as priced\n"},
+        {"kind": "free_code", "code": "total = 1 + 2\n# keep five rows"},
+        {"kind": "limit", "n": 5, "comment": "\n# then the first five\n"},
+        {"kind": "limit", "n": 3},
+    ]
+    assert rebuilt(steps) == [
+        {**SOURCE, "comment": "# Quotes, as priced\n"},
+        {"kind": "free_code", "code": "total = 1 + 2"},
+        {"kind": "limit", "n": 5, "comment": "# keep five rows\n\n# then the first five\n"},
+        {"kind": "limit", "n": 3},
+    ]
+
+
+def test_a_hand_edit_to_one_statement_keeps_the_other_steps_and_comments() -> None:
     steps = [
         SOURCE,
-        {"kind": "free_code", "code": "total = 1 + 2\n# keep five rows"},
+        {"kind": "limit", "n": 5, "comment": "# keep five\n"},
+        {"kind": "drop", "columns": ["a"], "comment": "# no a\n"},
+        {"kind": "unique", "columns": [], "keep": "any"},
+    ]
+    code = render_node_steps(NodeType.POLARS, numbered(steps)).code
+    edited = code.replace("df = df.head(5)", "df = df.head(5).with_row_index()")
+    lifted = lift_steps(NodeType.POLARS, edited)
+    assert [{k: v for k, v in s.items() if k != "id"} for s in lifted] == [
+        SOURCE,
+        {"kind": "free_code", "code": "# keep five\ndf = df.head(5).with_row_index()"},
+        steps[2],
+        steps[3],
+    ]
+    assert render_node_steps(NodeType.POLARS, lifted).code == edited
+
+
+def test_a_comment_at_the_end_stays_at_the_end_and_the_last_step_stays_a_step() -> None:
+    steps = [SOURCE, {"kind": "free_code", "code": "df = df.head(5)\n\n# the end"}]
+    assert rebuilt(steps)[1:] == [
         {"kind": "limit", "n": 5},
-        {"kind": "limit", "n": 3},
+        {"kind": "free_code", "code": "\n# the end"},
+    ]
+    # After code, the comment joins its code step, as adjacent code does.
+    code_last = [SOURCE, {"kind": "free_code", "code": "total = 1 + 2\n# the end"}]
+    assert rebuilt(code_last)[1:] == code_last[1:]
+
+
+def test_a_comment_only_code_step_before_a_step_is_that_step_s_comment() -> None:
+    steps = [
+        SOURCE,
+        {"kind": "free_code", "code": "# a note"},
+        {"kind": "limit", "n": 5},
+        {"kind": "free_code", "code": "# before code"},
+        {"kind": "free_code", "code": "total = 1 + 2"},
     ]
     assert rebuilt(steps)[1:] == [
-        {"kind": "free_code", "code": "total = 1 + 2\n# keep five rows\ndf = df.head(5)"},
-        {"kind": "limit", "n": 3},
+        {"kind": "limit", "n": 5, "comment": "# a note\n"},
+        {"kind": "free_code", "code": "# before code\ntotal = 1 + 2"},
     ]
 
 
-def test_a_comment_at_the_end_stays_at_the_end() -> None:
-    steps = [SOURCE, {"kind": "free_code", "code": "df = df.head(5)\n# the end"}]
-    assert rebuilt(steps)[1:] == [{"kind": "free_code", "code": "df = df.head(5)\n# the end"}]
-
-
-def test_a_blank_line_above_a_statement_keeps_it_as_code() -> None:
+def test_a_blank_line_above_a_statement_is_its_comment() -> None:
     steps = [SOURCE, {"kind": "free_code", "code": "total = 1 + 2\n\ndf = df.head(5)"}]
-    assert rebuilt(steps)[1:] == [{"kind": "free_code", "code": "total = 1 + 2\n\ndf = df.head(5)"}]
-
-
-def test_a_variable_kept_as_code_defines_nothing_for_the_steps_after_it() -> None:
-    steps = [
-        SOURCE,
-        {"kind": "free_code", "code": "total = 1 + 2\n# the rate"},
-        {"kind": "variable", "name": "rate", "value": literal("number", 2)},
-        {"kind": "with_column", "name": "r", "expr": {"type": "operand", "operand": var("rate")}},
-        {"kind": "limit", "n": 1},
+    assert rebuilt(steps)[1:] == [
+        {"kind": "free_code", "code": "total = 1 + 2"},
+        {"kind": "limit", "n": 5, "comment": "\n"},
     ]
-    assert [step["kind"] for step in rebuilt(steps)] == ["source", "free_code", "limit"]
 
 
-def test_a_variable_defined_twice_keeps_the_second_as_code() -> None:
+def test_a_comment_that_is_not_ruff_s_stays_code() -> None:
+    """A comment line ending in whitespace is no step's comment; its statement stays code."""
+    code = "df = quotes\n# trailing space \ndf = df.head(5)"
+    with pytest.raises(StepLiftError, match="do not render the code exactly"):
+        lift_steps(NodeType.POLARS, code)
+
+
+def test_a_variable_whose_statement_stays_code_defines_nothing_after_it() -> None:
+    code = 'df = quotes\nrate = 2  # two\ndf = df.with_columns(pl.lit(rate).alias("r"))'
+    lifted = lift_steps(NodeType.POLARS, code)
+    assert [step["kind"] for step in lifted] == ["source", "free_code"]
+
+
+def test_a_variable_the_code_above_already_assigns_is_refused_and_rebuilt_as_code() -> None:
     steps = [
         SOURCE,
         {"kind": "free_code", "code": "rate = 2"},
         {"kind": "variable", "name": "rate", "value": literal("number", 3)},
     ]
-    assert rebuilt(steps)[1:] == [
-        {"kind": "variable", "name": "rate", "value": literal("number", 2)},
-        {"kind": "free_code", "code": "rate = 3"},
-    ]
+    with pytest.raises(PolarsStepError, match="Variable 'rate' is already assigned"):
+        canonical_steps(NodeType.POLARS, numbered(steps))
+    # Written by hand, the second assignment is code either way.
+    for first in ("rate = 2", "rate = round(2.5)", "for rate in range(2):\n    pass"):
+        lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{first}\nrate = 3")
+        assert lifted[-1] == {
+            "id": f"free_code-{len(lifted)}",
+            "kind": "free_code",
+            "code": "rate = 3" if first == "rate = 2" else f"{first}\nrate = 3",
+        }
+
+
+def test_a_twenty_term_sum_is_one_step_and_round_trips() -> None:
+    expr: Step = {"type": "binary", "left": col("c0"), "op": "+", "right": col("c1")}
+    for index in range(2, 20):
+        nested = {"kind": "expr", "expr": expr}
+        expr = {"type": "binary", "left": nested, "op": "+", "right": col(f"c{index}")}
+    steps = [SOURCE, {"kind": "with_column", "name": "total", "expr": expr}]
+    assert rebuilt(steps)[1] == steps[1]
+    code = render_node_steps(NodeType.POLARS, numbered(steps)).code
+    lifted = lift_steps(NodeType.POLARS, code)
+    assert len(lifted) == 2
+    assert render_node_steps(NodeType.POLARS, lifted).code == code
+
+
+def test_a_twenty_deep_mix_of_operators_written_by_hand_stays_code() -> None:
+    """The renderer refuses twenty levels of mixed operators, so their code is not a step."""
+    formula = 'pl.col("c0")'
+    for index in range(1, 21):
+        formula = f'{formula} {"+-"[index % 2]} pl.col("c{index}")'
+    code = f'df = quotes\ndf = df.with_columns(({formula}).alias("t"))'
+    assert [step["kind"] for step in lift_steps(NodeType.POLARS, code)] == ["source", "free_code"]
+
+
+def test_a_body_ending_in_newlines_rebuilds_as_without_them() -> None:
+    code = render_node_steps(NodeType.POLARS, numbered([SOURCE, {"kind": "limit", "n": 2}])).code
+    assert lift_steps(NodeType.POLARS, code + "\n\n") == lift_steps(NodeType.POLARS, code)
+    assert lift_steps(NodeType.DATA_INPUT, "\n") == []
 
 
 def test_a_frame_surface_rebuilds_its_start_as_code() -> None:
@@ -1049,8 +1159,8 @@ def test_a_frame_surface_rebuilds_its_start_as_code() -> None:
     [
         (NodeType.POLARS, "df = (", "not valid Python"),
         (NodeType.POLARS, "", "does not rebuild"),
-        (NodeType.POLARS, "# start\ndf = quotes", "does not rebuild"),
-        (NodeType.DATA_INPUT, "df = df.head(1)\n", "do not render the code exactly"),
+        (NodeType.POLARS, "x = 1\ndf = quotes", "does not rebuild"),
+        (NodeType.DATA_INPUT, "df = df.head(1)  ", "do not render the code exactly"),
         (NodeType.DATA_INPUT, "return df", "does not rebuild"),
     ],
 )

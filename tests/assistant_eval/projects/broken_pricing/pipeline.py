@@ -12,7 +12,7 @@ pipeline = haute.Pipeline(
 def quotes(): ...
 
 
-@pipeline.polars(config="config/polars/rating_features.json")
+@pipeline.polars
 def rating_features(quotes: pl.LazyFrame) -> pl.LazyFrame:
     df = quotes
     # Derive the vehicle's age from its year of manufacture

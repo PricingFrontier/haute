@@ -104,24 +104,30 @@ export type Expr =
   | { type: "sum_horizontal"; parts: Operand[]; text?: string }
 
 export type StepBase = { id: string }
+/**
+ * A step that renders one statement. `comment` is the comment and blank lines
+ * written above that statement, verbatim, each line ending in a newline. The
+ * editor shows no control for it and keeps it through every edit of the step.
+ */
+export type StatementStep = StepBase & { comment?: string }
 
-export type SourceStep = StepBase & { kind: "source"; input: string }
-export type FilterStep = StepBase & { kind: "filter"; match: MatchMode; conditions: Condition[] }
-export type WithColumnStep = StepBase & { kind: "with_column"; name: string; expr: Expr }
+export type SourceStep = StatementStep & { kind: "source"; input: string }
+export type FilterStep = StatementStep & { kind: "filter"; match: MatchMode; conditions: Condition[] }
+export type WithColumnStep = StatementStep & { kind: "with_column"; name: string; expr: Expr }
 /** Named columns plus every other column of the listed types (at least one of either). */
-export type SelectStep = StepBase & { kind: "select"; columns: string[]; dtypes?: CastDtype[] }
-export type DropStep = StepBase & { kind: "drop"; columns: string[]; dtypes?: CastDtype[] }
-export type RenameStep = StepBase & { kind: "rename"; renames: Array<{ from: string; to: string }> }
+export type SelectStep = StatementStep & { kind: "select"; columns: string[]; dtypes?: CastDtype[] }
+export type DropStep = StatementStep & { kind: "drop"; columns: string[]; dtypes?: CastDtype[] }
+export type RenameStep = StatementStep & { kind: "rename"; renames: Array<{ from: string; to: string }> }
 /** One column's new type; a text column becoming a Date or Datetime records its text's `format`. */
 export type CastEntry = { column: string; dtype: CastDtype; format?: string }
 /** `strict: false` makes a value that does not convert missing instead of failing the run. */
-export type CastStep = StepBase & { kind: "cast"; casts: CastEntry[]; strict: boolean }
-export type SortStep = StepBase & {
+export type CastStep = StatementStep & { kind: "cast"; casts: CastEntry[]; strict: boolean }
+export type SortStep = StatementStep & {
   kind: "sort"
   keys: OrderKey[]
   nullsLast: boolean
 }
-export type UniqueStep = StepBase & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
+export type UniqueStep = StatementStep & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
 export type ColumnAggregation = {
   column: string
   agg: Aggregation
@@ -140,12 +146,12 @@ export type DtypeAggregation = {
 }
 export type AggregationSpec = ColumnAggregation | DtypeAggregation
 /** An empty `keys` list summarises the whole frame into one row. */
-export type GroupByStep = StepBase & {
+export type GroupByStep = StatementStep & {
   kind: "group_by"
   keys: string[]
   aggregations: AggregationSpec[]
 }
-export type JoinStep = StepBase & {
+export type JoinStep = StatementStep & {
   kind: "join"
   input: string
   how: JoinHow
@@ -157,17 +163,17 @@ export type JoinStep = StepBase & {
   /** Output row order, always stated: Polars 2 keeps a join's order only when told to. */
   maintainOrder: JoinMaintainOrder
 }
-export type ConcatStep = StepBase & { kind: "concat"; inputs: string[]; how: "vertical" | "diagonal" }
-export type FillNullStep = StepBase & {
+export type ConcatStep = StatementStep & { kind: "concat"; inputs: string[]; how: "vertical" | "diagonal" }
+export type FillNullStep = StatementStep & {
   kind: "fill_null"
   columns: string[]
   fill: { kind: "value"; value: Operand } | { kind: "strategy"; strategy: FillStrategy }
 }
-export type LimitStep = StepBase & { kind: "limit"; n: number }
+export type LimitStep = StatementStep & { kind: "limit"; n: number }
 /** One output column per entry: the `values` aggregate over rows whose `on` column equals `value`. */
 export type PivotColumn = { value: LiteralOperand; name: string }
 export type PivotAggregation = "sum" | "mean" | "min" | "max" | "median" | "first" | "last" | "count" | "len"
-export type PivotStep = StepBase & {
+export type PivotStep = StatementStep & {
   kind: "pivot"
   index: string[]
   on: string
@@ -175,14 +181,14 @@ export type PivotStep = StepBase & {
   values: string
   agg: PivotAggregation
 }
-export type UnpivotStep = StepBase & {
+export type UnpivotStep = StatementStep & {
   kind: "unpivot"
   on: string[]
   index: string[]
   variableName: string
   valueName: string
 }
-export type VariableStep = StepBase & { kind: "variable"; name: string; value: LiteralOperand }
+export type VariableStep = StatementStep & { kind: "variable"; name: string; value: LiteralOperand }
 /** Authored Python statements run against the current frame. */
 export type FreeCodeStep = StepBase & { kind: "free_code"; code: string }
 

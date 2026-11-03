@@ -21,7 +21,7 @@ def batch_quotes(): ...
 def policies(quotes, batch_quotes): ...
 
 
-@pipeline.polars(config="config/polars/rating_features.json")
+@pipeline.polars
 def rating_features(policies: pl.LazyFrame) -> pl.LazyFrame:
     df = policies
     # Derive the driver's age at inception and the vehicle value in thousands

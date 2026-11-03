@@ -490,6 +490,14 @@ describe("PolarsStepsEditor", () => {
     expect(screen.getByRole("button", { name: "Add step" })).toBeEnabled()
   })
 
+  it("keeps the comment above the start step when its input changes", () => {
+    const spy = vi.fn()
+    const commented = { ...source, input: "removed", comment: "# Quotes, as priced\n" }
+    render(<Harness initial={{ steps: [commented, limit] }} inputSources={[quotes]} spy={spy} />)
+    fireEvent.change(screen.getByLabelText("Start from input"), { target: { value: "quotes" } })
+    expect(lastSteps(spy)).toEqual([{ ...commented, input: "quotes" }, limit])
+  })
+
   it("writes the chosen start input when the node has several inputs", async () => {
     const spy = vi.fn()
     const frames: InputSource[] = ["output_1", "output_2"].map((name) => ({
