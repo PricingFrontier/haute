@@ -33,7 +33,7 @@ def project(tmp_path: Path) -> Path:
 
 def _sourced(source: dict[str, str], kind: str = "str") -> dict[str, Any]:
     form = copy.deepcopy(FORM)
-    column = column_of(form, "t_policy", "c_state")
+    column = column_of(form, "policy", "state")
     column.update(type=kind, options=[], options_source=source)
     return form
 
@@ -46,8 +46,8 @@ def _write(project: Path, form: dict[str, Any]) -> dict[str, bytes]:
 
 def _state_options(project: Path) -> list[str]:
     spec = read_form_document(config(project)).spec
-    table = next(t for t in spec.data_schema.tables if t.id == "t_policy")
-    return next(c for c in table.columns if c.id == "c_state").options
+    table = next(t for t in spec.data_schema.tables if t.name == "policy")
+    return next(c for c in table.columns if c.name == "state").options
 
 
 def test_a_schema_file_holds_the_reference_and_reading_fills_the_values(project: Path) -> None:
@@ -80,8 +80,8 @@ def test_a_form_read_at_an_older_revision_uses_that_revisions_params(project: Pa
     past = form_at_ref(config(project), "HEAD")
 
     assert past is not None
-    table = next(t for t in past.data_schema.tables if t.id == "t_policy")
-    assert next(c for c in table.columns if c.id == "c_state").options == ["CA", "NY"]
+    table = next(t for t in past.data_schema.tables if t.name == "policy")
+    assert next(c for c in table.columns if c.name == "state").options == ["CA", "NY"]
     assert _state_options(project) == ["TX"]
 
 

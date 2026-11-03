@@ -61,8 +61,8 @@ export function addTo(form: FormSpec, widget: Widget, page = 0, at = 0): void {
 /** The components of a sheet's section, the first of the first sheet unless said otherwise. */
 export const widgetsOf = (form: FormSpec, page = 0, at = 0): Widget[] => form.pages[page].sections[at].widgets
 
-export const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
-  id,
+/** A column known by `name` in its table (READ-23), of text with nothing set unless `overrides` says otherwise. */
+export const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
@@ -84,8 +84,8 @@ export const column = (id: string, name: string, overrides: Partial<SchemaColumn
   ...overrides,
 })
 
-export const table = (id: string, name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
-  id,
+/** A one-row input table known by `name` in the form (READ-23), holding no columns unless `overrides` says otherwise. */
+export const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
   name,
   role: "input",
   rows: "one",
@@ -95,8 +95,8 @@ export const table = (id: string, name: string, overrides: Partial<SchemaTable> 
 
 /** Haute's quote_details table, as every form holds it, its columns labelled by name in `labels`. */
 export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =>
-  table(QUOTE_DETAILS_NAME, QUOTE_DETAILS_NAME, {
-    columns: QUOTE_DETAILS_COLUMNS.map(([id, name, type]) => column(id, name, { type, label: labels[name] ?? "" })),
+  table(QUOTE_DETAILS_NAME, {
+    columns: QUOTE_DETAILS_COLUMNS.map(([name, type]) => column(name, { type, label: labels[name] ?? "" })),
   })
 
 export const sheetForm = (): FormSpec => ({
@@ -105,21 +105,21 @@ export const sheetForm = (): FormSpec => ({
   theme: { ...BLANK_THEME },
   schema: {
     tables: [
-      table("policy", "policy", { columns: [column("policy.state", "state", { options: ["CA", "NY"], required: true }), column("policy.year", "year", { type: "int" })] }),
-      table("equipment", "equipment", {
+      table("policy", { columns: [column("state", { options: ["CA", "NY"], required: true }), column("year", { type: "int" })] }),
+      table("equipment", {
         rows: "many",
-        columns: [column("equipment.item", "item", { key: true }), column("equipment.value", "value", { type: "float" })],
+        columns: [column("item", { key: true }), column("value", { type: "float" })],
       }),
-      table("premiums", "premiums", {
+      table("premiums", {
         role: "output",
         rows: "many",
-        columns: [column("premiums.item", "item", { key: true }), column("premiums.premium", "premium", { type: "float" })],
+        columns: [column("item", { key: true }), column("premium", { type: "float" })],
       }),
     ],
   },
   pages: [
     sheet("p1", "Sheet 1", [
-      { number: null, id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w_boxes", type: "collection", x: 16, y: 16, w: 400, h: 120, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [], fields: [{ table: "policy", column: "state" }], show_when: { match: "all", conditions: [] } },
       { number: null,
         id: "w_grid",
         type: "tableInput",
@@ -131,7 +131,7 @@ export const sheetForm = (): FormSpec => ({
         rows: 3,
         ...TABLE_OPTIONS,
         column_looks: [],
-        fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
+        fields: [{ table: "equipment", column: "item" }, { table: "equipment", column: "value" }],
         show_when: { match: "all", conditions: [] },
       },
     ]),
@@ -148,11 +148,11 @@ export const sheetForm = (): FormSpec => ({
 export const hiddenPerilsForm = (): FormSpec => {
   const form = sheetForm()
   form.schema.tables.push(
-    table("coverage", "coverage", {
+    table("coverage", {
       rows: "many",
       columns: [
-        column("coverage.peril", "peril", { key: true, options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
-        column("coverage.limit", "limit", { type: "float" }),
+        column("peril", { key: true, options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
+        column("limit", { type: "float" }),
       ],
     }),
   )
@@ -170,9 +170,9 @@ export const hiddenPerilsForm = (): FormSpec => {
     fields: [{ table: "coverage", column: shown }],
     show_when: showWhen,
   })
-  const in1900: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "equals", values: ["1900"], field: null, days: 0 }] }
-  addTo(form, grid("w_perils", "coverage.peril", 380, in1900))
-  addTo(form, grid("w_limits", "coverage.limit", 520, ALWAYS))
+  const in1900: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "year", op: "equals", values: ["1900"], field: null, days: 0 }] }
+  addTo(form, grid("w_perils", "peril", 380, in1900))
+  addTo(form, grid("w_limits", "limit", 520, ALWAYS))
   return form
 }
 
@@ -214,8 +214,8 @@ export const headingWidget = (id: string, text: string, overrides: Partial<Headi
  */
 export const coverForm = (): FormSpec => {
   const form = sheetForm()
-  form.schema.tables[0].columns.push(column("policy.cover", "cover", { type: "bool" }))
-  fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "policy.cover" })
+  form.schema.tables[0].columns.push(column("cover", { type: "bool" }))
+  fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "cover" })
   form.pages[1] = sheet(
     "p2",
     "Cover",
@@ -228,12 +228,12 @@ export const coverForm = (): FormSpec => {
         w: 400,
         h: 120,
         title: "Year",
-        fields: [{ table: "policy", column: "policy.year" }],
+        fields: [{ table: "policy", column: "year" }],
         show_when: { match: "all", conditions: [] },
         columns: 2, ...COLLECTION_OPTIONS, column_looks: [], spacers: [],
       },
     ],
-    { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] },
+    { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] },
   )
   return form
 }
@@ -252,7 +252,7 @@ export const sectionedForm = (): FormSpec => {
     section("s_flood", [{ ...grid, y: 16 }], {
       title: "Flood",
       height: 232,
-      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] },
+      show_when: { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] },
     }),
     section("s_notes", [note], { title: "Notes", height: 72 }),
   ]

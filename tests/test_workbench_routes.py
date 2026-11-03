@@ -28,7 +28,7 @@ from tests._workbench_helpers import FORM, enable, form_files, write_form
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_, **rest}
+    return {"name": name, "type": type_, **rest}
 
 
 def form(*tables: dict[str, Any], sample: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -47,14 +47,12 @@ def section(id_: str, *widgets: dict[str, Any]) -> dict[str, Any]:
 
 
 POLICY = {
-    "id": "t1",
     "name": "policy_details",
     "role": "input",
     "rows": "one",
     "columns": [column("state", options=["CA", "NY"]), column("exposure", "float")],
 }
 PRICING = {
-    "id": "t2",
     "name": "pricing_output",
     "role": "output",
     "rows": "one",
@@ -69,8 +67,8 @@ DETAILS = {
     "rows": "one",
     "columns": [
         {"name": name, "type": type_}
-        for column_id, name, type_ in QUOTE_DETAILS_COLUMNS
-        if column_id not in QUOTE_DETAILS_STORE_ONLY
+        for name, type_ in QUOTE_DETAILS_COLUMNS
+        if name not in QUOTE_DETAILS_STORE_ONLY
     ],
 }
 
@@ -167,7 +165,8 @@ def test_a_project_without_the_table_has_no_workbench(project: Path) -> None:
 def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None:
     enable(project)
     write_form(
-        project, form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "$1,000"}]})
+        project,
+        form(POLICY, PRICING, sample={"policy_details": [{"state": "NY", "exposure": "$1,000"}]}),
     )
 
     assert client().get("/api/workbench").json() == {
@@ -242,8 +241,9 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     body = served()
     # Every field is served, defaults included; Haute's quote_details table first.
     assert body["form"]["schema"]["tables"][0]["name"] == "quote_details"
+    # A table and a column are known by their names: neither holds an id (READ-23).
+    assert "id" not in body["form"]["schema"]["tables"][1]
     assert body["form"]["schema"]["tables"][1]["columns"][3] == {
-        "id": "c_exposure",
         "name": "exposure",
         "type": "float",
         "label": "",
@@ -509,9 +509,9 @@ def test_a_form_the_folder_cannot_hold_is_refused_naming_each_reason(project: Pa
     write_form(project, form(POLICY))
     body = served()
     before = files_of(project)
-    clashing = {**POLICY, "id": "t3", "name": "Policy_Details"}
+    clashing = {**POLICY, "name": "Policy_Details"}
     # A name the quote store keeps for itself, which it could not hold beside its own.
-    reserved = {**POLICY, "id": "t4", "name": "haute_extras"}
+    reserved = {**POLICY, "name": "haute_extras"}
     unnamed_sheet = {"id": "p2", "title": "***", "width": 1280, "sections": [section("s2")]}
     unholdable = {
         **body["form"],
@@ -535,18 +535,14 @@ def test_a_form_the_folder_cannot_hold_is_refused_naming_each_reason(project: Pa
 def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
     project: Path,
 ) -> None:
-    # A look kept for a name the schema did not hold, and the column renamed to that name
-    # since: written, both looks would be that column's, which no read takes.
+    # A field shown twice in one component, with a look of its own: its file writes the
+    # look at each place the field is, which reads back as two looks for one column, which no
+    # read takes.
     enable(project)
     write_form(project, form(POLICY))
     body = served()
     before = files_of(project)
-    policy = {
-        **POLICY,
-        "columns": [{**POLICY["columns"][0], "name": "region"}, POLICY["columns"][1]],
-    }
-    kept = {"table": "t1", "column": "?region"}
-    state = {"table": "t1", "column": "c_state"}
+    state = {"table": "policy_details", "column": "state"}
     looks = {
         "id": "collection_c1c1",
         "type": "collection",
@@ -554,11 +550,11 @@ def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
         "y": 0,
         "w": 720,
         "h": 120,
-        "fields": [kept, state],
-        "column_looks": [{**kept, "bold": True}, {**state, "header_color": "#2563EB"}],
+        "fields": [state, state],
+        "column_looks": [{**state, "bold": True}],
     }
     unsaved = {
-        **form(policy),
+        **form(POLICY),
         "pages": [
             {"id": "p", "title": "Sheet 1", "width": 1280, "sections": [section("s", looks)]}
         ],
@@ -572,7 +568,7 @@ def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
         "its files would not read back as a form: rating/workbench is not a workbench form: "
         "sheets/sheet_1.json: "
     ), detail
-    assert "two looks for t1.c_state" in detail, detail
+    assert "two looks for policy_details.state" in detail, detail
     assert files_of(project) == before
 
 
@@ -709,8 +705,9 @@ def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
     write_form(project, form(POLICY))
     body = served()
     before = files_of(project)
-    # The analyst names a table of their own quote_details, which is Haute's.
-    theirs = {"id": "t_mine", "name": "quote_details", "role": "input", "columns": []}
+    # The analyst names a table of their own quote_details: a table is known by its name
+    # (READ-23), so it is taken for Haute's, whose structure it does not have.
+    theirs = {"name": "quote_details", "role": "output", "columns": [column("premium", "float")]}
     sent = {**form(POLICY), "schema": {"tables": [POLICY, theirs]}}
 
     refused = save(sent, body["revision"])
@@ -719,7 +716,9 @@ def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
     [error] = refused.json()["detail"]
     assert error["loc"] == ["body", "form"]
     assert error["msg"] == (
-        "Value error, quote_details is Haute's own table of a quote's details: name yours otherwise"
+        "Value error, quote_details is Haute's: a one-row input table of the columns "
+        f"{', '.join(name for name, _ in QUOTE_DETAILS_COLUMNS)}, in that order, whose "
+        "structure is not changed"
     )
     # Neither the form refused nor the context its message already says.
     assert "input" not in error and "ctx" not in error
@@ -819,7 +818,7 @@ def test_a_params_file_s_header_and_a_column_s_values_are_served(project: Path) 
 def test_a_file_that_is_not_utf8_answers_409_naming_it(project: Path) -> None:
     enable(project)
     write_form(project, form(POLICY))
-    (project / FORM / "schema" / "policy_details.json").write_bytes(b'{"id": "\xff\xfe"}')
+    (project / FORM / "schema" / "policy_details.json").write_bytes(b'{"role": "\xff\xfe"}')
 
     for route in ("/api/workbench/tables", "/api/workbench/form"):
         response = client().get(route)
@@ -866,7 +865,7 @@ def test_the_tables_of_an_unsaved_form_are_served_without_writing_it(project: Pa
     enable(project)
     write_form(project, form(POLICY))
     before = files_of(project)
-    unsaved = form({**POLICY, "name": "policy"}, PRICING, sample={"t1": [{"c_state": "CA"}]})
+    unsaved = form({**POLICY, "name": "policy"}, PRICING, sample={"policy": [{"state": "CA"}]})
 
     posted = client().post("/api/workbench/tables", json={"form": unsaved})
 
@@ -890,9 +889,9 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
     policy = {**POLICY, "columns": [*POLICY["columns"], column("bi_cover", "bool")]}
     # The second sheet shows only while the box on the first is ticked.
     shown = {"id": "w_policy", "type": "collection", "x": 0, "y": 0, "w": 720, "h": 120}
-    typed = {"c_state": "CA", "c_exposure": "1,000", "c_bi_cover": False}
+    typed = {"state": "CA", "exposure": "1,000", "bi_cover": False}
     unsaved = {
-        **form(policy, sample={"t1": [typed]}),
+        **form(policy, sample={"policy_details": [typed]}),
         "pages": [
             {
                 "id": "p_main",
@@ -904,8 +903,8 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                         {
                             **shown,
                             "fields": [
-                                {"table": "t1", "column": "c_state"},
-                                {"table": "t1", "column": "c_bi_cover"},
+                                {"table": "policy_details", "column": "state"},
+                                {"table": "policy_details", "column": "bi_cover"},
                             ],
                         },
                     )
@@ -915,7 +914,9 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                 "id": "p_bi",
                 "title": "Business interruption",
                 "show_when": {
-                    "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                    "conditions": [
+                        {"table": "policy_details", "column": "bi_cover", "op": "ticked"}
+                    ]
                 },
                 "width": 1280,
                 "sections": [
@@ -924,7 +925,7 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                         {
                             **shown,
                             "id": "w_bi",
-                            "fields": [{"table": "t1", "column": "c_exposure"}],
+                            "fields": [{"table": "policy_details", "column": "exposure"}],
                         },
                     )
                 ],
@@ -1065,8 +1066,9 @@ def _store_sql(spec: dict[str, Any], start: str = "branch") -> Any:
 
 
 def _exposure_named(name: str) -> dict[str, Any]:
-    """POLICY with its exposure column, the same by id, under *name*."""
-    return {**POLICY, "columns": [POLICY["columns"][0], column(name, "float", id="c_exposure")]}
+    """POLICY with its exposure column renamed *name*: to the quote store, a column removed
+    and another added, as a column is known by its name (READ-23)."""
+    return {**POLICY, "columns": [POLICY["columns"][0], column(name, "float")]}
 
 
 def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: Path) -> None:
@@ -1092,9 +1094,13 @@ def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: P
         ("prod", "sqlserver"),
     ]
     test, prod = (each["sql"] for each in body["environments"])
-    # The column renamed by its id, in each engine's own SQL; nothing made afresh.
-    assert "ALTER TABLE policy_details RENAME exposure TO haute_tmp_" in test
-    assert "EXEC sp_rename 'policy_details.exposure', haute_tmp_" in prod
+    # The column renamed is one added and one kept with its values (READ-23), in each
+    # engine's own SQL, from the default branch's form; nothing renamed or made afresh.
+    assert "ALTER TABLE policy_details ADD COLUMN value" in test
+    assert "ALTER TABLE policy_details ADD value" in prod
+    for sql in (test, prod):
+        assert "-- ALTER TABLE policy_details DROP COLUMN exposure" in sql
+    assert "RENAME" not in test and "sp_rename" not in prod
     assert "CREATE TABLE" not in test + prod
     assert "exposure_feature" not in test + prod
     assert "exposure_disk" not in test + prod
@@ -1220,22 +1226,24 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
     write_form(project, form(POLICY))
     database = _dev_database(project, form(POLICY))
     tables = _catalogue().json()["tables"]
-    # The form's exposure is renamed: with no default branch, the analyst pairs the two.
+    # The form's exposure is renamed: compared by name, value is missing and exposure is
+    # the database's own, until the analyst pairs the two.
     renamed = form(_exposure_named("value"))
 
     unpaired = _compare(renamed, tables).json()
-    assert {"table": POLICY["id"], "column": "c_exposure", "kind": "missing"}.items() <= next(
-        each for each in unpaired["differences"] if each["column"] == "c_exposure"
+    assert {"table": "policy_details", "column": "value", "kind": "missing"}.items() <= next(
+        each for each in unpaired["differences"] if each["column"] == "value"
     ).items()
     assert {
         "table": "policy_details",
         "column": "exposure",
-        "table_id": POLICY["id"],
+        "form_table": "policy_details",
         "quotes": 0,
     } in (unpaired["extras"])
     assert not unpaired["matches"]
+    assert "branch" not in unpaired
 
-    pairing = {"table": POLICY["id"], "column": "c_exposure", "was": "exposure"}
+    pairing = {"table": "policy_details", "column": "value", "was": "exposure"}
     paired = _compare(renamed, tables, [pairing])
     assert paired.status_code == 200, paired.text
     body = paired.json()

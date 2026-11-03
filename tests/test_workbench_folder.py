@@ -33,7 +33,6 @@ from haute._workbench_folder import (
     folder_files,
     folder_revision,
     form_folder_lock,
-    is_unresolved,
     read_folder,
     read_form_document,
     render_folder_file,
@@ -42,6 +41,7 @@ from haute._workbench_folder import (
 )
 from haute._workbench_folder_files import SheetFile
 from haute._workbench_form import (
+    IDENTITY_COLUMNS,
     IDENTITY_NAMES,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
@@ -50,6 +50,8 @@ from haute._workbench_form import (
     SchemaTable,
     WorkbenchFormError,
     blank_form,
+    identity_clashes,
+    render_form,
     with_quote_details,
 )
 from haute._workbench_tables import sample_quote
@@ -62,7 +64,7 @@ GOLDEN = Path(__file__).parent / "fixtures" / "workbench_folder"
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_, **rest}
+    return {"name": name, "type": type_, **rest}
 
 
 def place(x: int, y: int, w: int, h: int) -> dict[str, int]:
@@ -79,31 +81,19 @@ def lines(*text: str) -> str:
 # in capitals whose column gives it a row per value, and a one-row output table; two sheets,
 # the second shown while a one-row condition holds, holding Collections, Tables, a Chart, a
 # Heading, an Import and an Export, every kind of condition and column looks; the sheets'
-# colour set; and a sample, an empty row first in each many-row table.
+# colour set; and a sample, an empty row first in each many-row table. Tables and columns are
+# known by their names (READ-23); a sheet, a section and a component hold no id, as their
+# files hold none, each component its number in its section (READ-24).
 QUOTE_DETAILS = {
-    "id": "quote_details",
     "name": "quote_details",
     "role": "input",
     "rows": "one",
     "columns": [
-        {
-            "id": "qd_option",
-            "name": "quote_option",
-            "type": "int",
-            "number_format": "number",
-            "decimal_places": 0,
-        },
-        {
-            "id": "qd_insured",
-            "name": "insured",
-            "type": "str",
-            "label": "Insured name",
-            "required": True,
-        },
+        {"name": "quote_option", "type": "int", "number_format": "number", "decimal_places": 0},
+        {"name": "insured", "type": "str", "label": "Insured name", "required": True},
     ],
 }
 POLICY = {
-    "id": "t_policy",
     "name": "policy",
     "role": "input",
     "rows": "one",
@@ -123,7 +113,6 @@ POLICY = {
     ],
 }
 LAYERS = {
-    "id": "t_layers",
     "name": "layers",
     "role": "input",
     "rows": "many",
@@ -134,7 +123,6 @@ LAYERS = {
     ],
 }
 PERILS = {
-    "id": "t_perils",
     "name": "BR_Perils",
     "role": "input",
     "rows": "many",
@@ -144,7 +132,6 @@ PERILS = {
     ],
 }
 PRICING = {
-    "id": "t_pricing",
     "name": "pricing",
     "role": "output",
     "rows": "one",
@@ -153,22 +140,30 @@ PRICING = {
     ],
 }
 
-STATE = {"table": "t_policy", "column": "c_state"}
-EXPOSURE = {"table": "t_policy", "column": "c_exposure"}
-PREMIUM = {"table": "t_pricing", "column": "c_premium"}
-LAYER = {"table": "t_layers", "column": "c_layer"}
-LIMIT = {"table": "t_layers", "column": "c_limit"}
-LAYER_NAME = {"table": "t_layers", "column": "c_layer_name"}
-PERIL = {"table": "t_perils", "column": "c_peril"}
-RATE = {"table": "t_perils", "column": "c_rate"}
+STATE = {"table": "policy", "column": "state"}
+EXPOSURE = {"table": "policy", "column": "exposure"}
+PREMIUM = {"table": "pricing", "column": "premium"}
+LAYER = {"table": "layers", "column": "layer"}
+LIMIT = {"table": "layers", "column": "limit"}
+LAYER_NAME = {"table": "layers", "column": "layer_name"}
+PERIL = {"table": "BR_Perils", "column": "peril"}
+RATE = {"table": "BR_Perils", "column": "rate"}
+
+#: The test project's components by the ids the form gives them as it is read (READ-24): its
+#: sheet's name, its section's title and its number in the section.
+POLICY_BOXES = "br_coverages/Cover/1"
+LAYERS_GRID = "br_coverages/Cover/2"
+LIMITS_CHART = "br_coverages/Cover/3"
+PERILS_GRID = "br_coverages/Perils/2"
+IMPORTER = "br_coverages/Perils/3"
+EXPORTER = "br_coverages/Perils/4"
 
 COVER = {
-    "id": "section_cv01",
     "title": "Cover",
     "height": 400,
     "widgets": [
         {
-            "id": "collection_k3f9",
+            "number": 1,
             "type": "collection",
             **place(16, 16, 720, 120),
             "title": "Policy",
@@ -186,8 +181,8 @@ COVER = {
                         "match": "all",
                         "conditions": [
                             {
-                                "table": "t_layers",
-                                "where": [{"column": "c_limit", "op": "filled"}],
+                                "table": "layers",
+                                "where": [{"column": "limit", "op": "filled"}],
                                 "op": "at_least",
                                 "count": 1,
                             }
@@ -197,7 +192,7 @@ COVER = {
             ],
         },
         {
-            "id": "table_l4y5",
+            "number": 2,
             "type": "tableInput",
             **place(16, 152, 720, 200),
             "title": "Layers",
@@ -208,16 +203,16 @@ COVER = {
                 "match": "any",
                 "conditions": [
                     {
-                        "table": "t_layers",
+                        "table": "layers",
                         "rows": "any",
-                        "where": [{"column": "c_limit", "op": "above", "values": ["0"]}],
+                        "where": [{"column": "limit", "op": "above", "values": ["0"]}],
                     }
                 ],
             },
             "column_looks": [{**LIMIT, "width": 120}],
         },
         {
-            "id": "chart_c6h7",
+            "number": 3,
             "type": "chart",
             **place(760, 16, 480, 280),
             "title": "Limits",
@@ -228,7 +223,6 @@ COVER = {
     ],
 }
 PERILS_SECTION = {
-    "id": "section_pr01",
     "title": "Perils",
     "height": 240,
     # Shown while at least one of a group holds: a one-row condition, or a total.
@@ -240,9 +234,9 @@ PERILS_SECTION = {
                 "conditions": [
                     {**STATE, "op": "one_of", "values": ["CA", "NY"]},
                     {
-                        "table": "t_perils",
+                        "table": "BR_Perils",
                         "total": "sum",
-                        "column": "c_rate",
+                        "column": "rate",
                         "where": [],
                         "op": "below",
                         "value": "10",
@@ -253,7 +247,7 @@ PERILS_SECTION = {
     },
     "widgets": [
         {
-            "id": "heading_h8d9",
+            "number": 1,
             "type": "heading",
             **place(16, 8, 480, 40),
             # Typed outside ASCII.
@@ -262,14 +256,14 @@ PERILS_SECTION = {
             "size": "large",
         },
         {
-            "id": "table_p2r3",
+            "number": 2,
             "type": "tableInput",
             **place(16, 56, 720, 160),
             "title": "Perils",
             "fields": [PERIL, RATE],
         },
         {
-            "id": "import_i1m2",
+            "number": 3,
             "type": "import",
             **place(760, 56, 160, 32),
             "label": "Import perils",
@@ -279,21 +273,21 @@ PERILS_SECTION = {
                 "query": "select * from perils where state = :state",
                 "parameters": [{"name": "state", **STATE}],
             },
-            "table": "t_perils",
+            "table": "BR_Perils",
             "mode": "update",
-            "column_names": [{"column": "c_rate", "name": "Rate %"}],
+            "column_names": [{"column": "rate", "name": "Rate %"}],
         },
         {
-            "id": "export_e3x4",
+            "number": 4,
             "type": "export",
             **place(760, 104, 160, 32),
             "label": "Export",
             "target": {
                 "format": "sql",
                 "connection": "warehouse",
-                "table_names": [{"table": "t_layers", "name": "quote_layers"}],
+                "table_names": [{"table": "layers", "name": "quote_layers"}],
             },
-            "tables": ["t_layers", "t_pricing"],
+            "tables": ["layers", "pricing"],
         },
     ],
 }
@@ -303,14 +297,8 @@ FORM: dict[str, Any] = {
     "theme": {"sheet_color": "#1E293B"},
     "schema": {"tables": [QUOTE_DETAILS, POLICY, LAYERS, PERILS, PRICING]},
     "pages": [
+        {"title": "BR Coverages", "width": 1280, "sections": [COVER, PERILS_SECTION]},
         {
-            "id": "sheet_cv01",
-            "title": "BR Coverages",
-            "width": 1280,
-            "sections": [COVER, PERILS_SECTION],
-        },
-        {
-            "id": "sheet_qs01",
             "title": "Quote & Summary!",
             "width": 960,
             "show_when": {
@@ -319,12 +307,11 @@ FORM: dict[str, Any] = {
             },
             "sections": [
                 {
-                    "id": "section_sm01",
                     "title": "Summary",
                     "height": 160,
                     "widgets": [
                         {
-                            "id": "collection_s5m6",
+                            "number": 1,
                             "type": "collection",
                             **place(16, 16, 400, 96),
                             "fields": [PREMIUM],
@@ -335,10 +322,10 @@ FORM: dict[str, Any] = {
         },
     ],
     "sample": {
-        "t_policy": [{"c_state": "NY", "c_exposure": "250,000", "c_renewal": True}],
+        "policy": [{"state": "NY", "exposure": "250,000", "renewal": True}],
         # Each typed in another order than the table's columns.
-        "t_layers": [{}, {"c_layer_name": "Primary", "c_limit": "1000000"}],
-        "t_perils": [{}, {"c_rate": "2.5"}],
+        "layers": [{}, {"layer_name": "Primary", "limit": "1000000"}],
+        "BR_Perils": [{}, {"rate": "2.5"}],
     },
 }
 
@@ -362,13 +349,14 @@ FORM_FILES = [
 
 # A form whose every setting is at its default: a table and a column given only what says
 # what they are, and a component of each kind given nothing else but the settings that have
-# no default.
+# no default. Its sheet, section and components hold the ids the editor gives them and its
+# components no number, as the editor's sends before READ-24 did: the save numbers them.
 MINIMAL: dict[str, Any] = {
     "name": "m",
     "schema": {
         "tables": [
-            {"id": "t_a", "name": "a", "columns": [{"id": "c_x", "name": "x"}]},
-            {"id": "t_b", "name": "b", "role": "output", "columns": [{"id": "c_y", "name": "y"}]},
+            {"name": "a", "columns": [{"name": "x"}]},
+            {"name": "b", "role": "output", "columns": [{"name": "y"}]},
         ]
     },
     "pages": [
@@ -416,7 +404,8 @@ MINIMAL: dict[str, Any] = {
     ],
 }
 
-#: The minimal form's files, as the folder format says to write them.
+#: The minimal form's files, as the folder format says to write them: no id anywhere, each
+#: component numbered in its section and its box in the layout keyed by that number.
 MINIMAL_FILES = {
     "form.json": lines(
         "{",
@@ -435,59 +424,47 @@ MINIMAL_FILES = {
     "schema/quote_details.json": lines("{", '  "columns": []', "}"),
     "schema/a.json": lines(
         "{",
-        '  "id": "t_a",',
         '  "role": "input",',
         '  "rows": "one",',
         '  "columns": [',
-        "    {",
-        '      "id": "c_x",',
-        '      "name": "x",',
-        '      "type": "str"',
-        "    }",
+        '    {"name": "x", "type": "str"}',
         "  ]",
         "}",
     ),
     "schema/b.json": lines(
         "{",
-        '  "id": "t_b",',
         '  "role": "output",',
         '  "rows": "one",',
         '  "columns": [',
-        "    {",
-        '      "id": "c_y",',
-        '      "name": "y",',
-        '      "type": "str"',
-        "    }",
+        '    {"name": "y", "type": "str"}',
         "  ]",
         "}",
     ),
     "sheets/sheet_1.json": lines(
         "{",
-        '  "id": "sheet_m001",',
         '  "title": "Sheet 1",',
         '  "sections": [',
         "    {",
-        '      "id": "section_m001",',
         '      "title": "Section 1",',
         '      "components": [',
         "        {",
-        '          "id": "table_m001",',
+        '          "number": 1,',
         '          "type": "table"',
         "        },",
         "        {",
-        '          "id": "collection_m001",',
+        '          "number": 2,',
         '          "type": "collection"',
         "        },",
         "        {",
-        '          "id": "chart_m001",',
+        '          "number": 3,',
         '          "type": "chart"',
         "        },",
         "        {",
-        '          "id": "heading_m001",',
+        '          "number": 4,',
         '          "type": "heading"',
         "        },",
         "        {",
-        '          "id": "import_m001",',
+        '          "number": 5,',
         '          "type": "import",',
         '          "label": "",',
         '          "source": {',
@@ -499,7 +476,7 @@ MINIMAL_FILES = {
         '          "column_names": []',
         "        },",
         "        {",
-        '          "id": "export_m001",',
+        '          "number": 6,',
         '          "type": "export",',
         '          "label": "",',
         '          "target": {',
@@ -519,15 +496,15 @@ MINIMAL_FILES = {
         "{",
         '  "width": 1280,',
         '  "sections": {',
-        '    "section_m001": {',
+        '    "Section 1": {',
         '      "height": 560,',
         '      "components": {',
-        '        "table_m001": {"x": 0, "y": 0, "w": 100, "h": 100},',
-        '        "collection_m001": {"x": 100, "y": 0, "w": 100, "h": 100},',
-        '        "chart_m001": {"x": 200, "y": 0, "w": 100, "h": 100},',
-        '        "heading_m001": {"x": 300, "y": 0, "w": 100, "h": 100},',
-        '        "import_m001": {"x": 0, "y": 100, "w": 100, "h": 40},',
-        '        "export_m001": {"x": 100, "y": 100, "w": 100, "h": 40}',
+        '        "1": {"x": 0, "y": 0, "w": 100, "h": 100},',
+        '        "2": {"x": 100, "y": 0, "w": 100, "h": 100},',
+        '        "3": {"x": 200, "y": 0, "w": 100, "h": 100},',
+        '        "4": {"x": 300, "y": 0, "w": 100, "h": 100},',
+        '        "5": {"x": 0, "y": 100, "w": 100, "h": 40},',
+        '        "6": {"x": 100, "y": 100, "w": 100, "h": 40}',
         "      }",
         "    }",
         "  }",
@@ -551,7 +528,7 @@ def config(project: Path) -> WorkbenchConfig:
 
 def spec_of(form: dict[str, Any]) -> FormSpec:
     """*form* as the editor holds it: checked, Haute's quote_details and the quote's identity
-    in it."""
+    in it, each sheet, section and component given its id."""
     return with_quote_details(FormSpec.model_validate(form))
 
 
@@ -601,21 +578,23 @@ def refusal(project: Path) -> WorkbenchFormError:
     return caught.value
 
 
-def table_of(form: dict[str, Any], table_id: str) -> dict[str, Any]:
-    return next(table for table in form["schema"]["tables"] if table["id"] == table_id)
+def table_of(form: dict[str, Any], table: str) -> dict[str, Any]:
+    return next(item for item in form["schema"]["tables"] if item["name"] == table)
 
 
-def column_of(form: dict[str, Any], table_id: str, column_id: str) -> dict[str, Any]:
-    return next(item for item in table_of(form, table_id)["columns"] if item["id"] == column_id)
+def column_of(form: dict[str, Any], table: str, name: str) -> dict[str, Any]:
+    return next(item for item in table_of(form, table)["columns"] if item["name"] == name)
 
 
 def widget_of(form: dict[str, Any], widget_id: str) -> dict[str, Any]:
+    """*form*'s component of *widget_id*: the id the form gives it as it is read, its sheet's
+    name, its section's title and its number."""
     return next(
         widget
         for page in form["pages"]
         for section in page["sections"]
         for widget in section["widgets"]
-        if widget["id"] == widget_id
+        if f"{sheet_name(page['title'])}/{section['title']}/{widget.get('number')}" == widget_id
     )
 
 
@@ -633,12 +612,54 @@ def ref(thing: Any) -> tuple[str, str]:
     return thing.table, thing.column
 
 
-def renamed(form: dict[str, Any], table_id: str, name: str, column_id: str = "") -> dict[str, Any]:
-    """*form* with a table, or a column of it, renamed as the editor renames it: the name
-    changes, and every reference, held by id, follows."""
+def _held(value: Any) -> Iterator[dict[str, Any]]:
+    """Every object *value* holds, itself included."""
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _held(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _held(item)
+
+
+def renamed(form: dict[str, Any], table: str, name: str, column: str = "") -> dict[str, Any]:
+    """*form* with a table, or a column of it, renamed as the editor renames it (READ-23): the
+    name changes, and so does every use of the old one in the sheets and the sample's keys."""
     form = copy.deepcopy(form)
-    target = column_of(form, table_id, column_id) if column_id else table_of(form, table_id)
-    target["name"] = name
+    if column:
+        column_of(form, table, column)["name"] = name
+    else:
+        table_of(form, table)["name"] = name
+    for held in _held(form["pages"]):
+        if not column:
+            if held.get("table") == table:
+                held["table"] = name
+            # An Export names its tables in a list.
+            if isinstance(held.get("tables"), list):
+                held["tables"] = [name if item == table else item for item in held["tables"]]
+            continue
+        if held.get("table") != table:
+            continue
+        if held.get("column") == column:
+            held["column"] = name
+        # A list's tests and an Import's column names name a column of their table bare, as
+        # a test against another field of the list does.
+        for bare in [*held.get("where", []), *held.get("column_names", [])]:
+            if bare.get("column") == column:
+                bare["column"] = name
+            if bare.get("field") == column:
+                bare["field"] = name
+    rows = form.get("sample", {})
+    if table not in rows:
+        return form
+    if not column:
+        rows[name] = rows.pop(table)
+    else:
+        rows[table] = [
+            {name if key == column else key: value for key, value in row.items()}
+            for row in rows.get(table, [])
+        ]
     return form
 
 
@@ -676,7 +697,11 @@ def test_the_blank_form_round_trips_through_its_folder(project: Path) -> None:
         "sheets/sheet_1.json",
         "sheets/sheet_1.layout.json",
     ]
-    assert read_form_document(config(project)).spec == spec
+    read = read_form_document(config(project)).spec
+    # The files hold no id: read, the sheet takes its file's name and the section its title
+    # on it (READ-24), the ids the editor gave them gone; the rest is the blank form.
+    assert render_form(read) == render_form(spec)
+    assert (read.pages[0].id, read.pages[0].sections[0].id) == ("sheet_1", "sheet_1/Section 1")
 
 
 def test_the_folder_holds_its_index_a_file_per_table_two_per_sheet_and_a_sample_per_table_with_rows(
@@ -700,7 +725,7 @@ def test_the_folder_holds_its_index_a_file_per_table_two_per_sheet_and_a_sample_
     assert list(index) == ["version", "name", "theme", "schema", "sheets"]
     # A table whose sample holds no rows at all has no file.
     emptied = copy.deepcopy(FORM)
-    emptied["sample"]["t_layers"] = []
+    emptied["sample"]["layers"] = []
     assert sorted(files_of(emptied, project)) == [
         path for path in FORM_FILES if path != "sample/layers.json"
     ]
@@ -750,21 +775,26 @@ def test_each_file_is_utf8_json_with_lf_line_ends_two_space_indents_and_one_item
     sheet = text(files, "sheets/br_coverages.json")
     assert '"text": "Équipement"'.encode() in files["sheets/br_coverages.json"]
     assert "\\u00c9" not in sheet
-    # A list of numbers on one line, a list of text one item a line.
-    assert '\n          "spacers": [1]\n' in sheet
+    # A schema file's column on one line (READ-10), lists of text in it too.
     assert (
-        '"values": [\n                  "CA",\n                  "NY"\n                ]' in sheet
-    )
-    assert '"options": [\n        "CA",\n        "NY"\n      ],' in text(
-        files, "schema/policy.json"
-    )
-    # Every field a line of its own.
+        '\n    {"name": "state", "type": "str", "label": "State", "required": true, '
+        '"options": ["CA", "NY"], "default_value": "CA"},\n'
+    ) in text(files, "schema/policy.json")
+    # A show-when condition on one line wherever its rule sits, a group of them too, the lists
+    # in it with it.
     assert (
-        '"fields": [\n            "policy.state",\n            "policy.exposure",\n'
-        '            "pricing.premium"\n          ],'
+        '\n          {"match": "any", "conditions": [{"column": "policy.state", "op": "one_of", '
+        '"values": ["CA", "NY"]}, {"table": "BR_Perils", "total": "sum", '
     ) in sheet
-    # A layout entry on one line.
-    assert '\n        "table_l4y5": {"x": 16, "y": 152, "w": 720, "h": 200},\n' in text(
+    # Every field a line of its own, a gap a null in its place and a field with a look of its
+    # own an object there (READ-31).
+    assert ('"fields": [\n            {\n              "field": "policy.state",\n') in sheet
+    assert (
+        '\n            null,\n            "policy.exposure",\n            "pricing.premium"\n'
+        "          ],"
+    ) in sheet
+    # A layout entry on one line, keyed by the component's number in its section (READ-24).
+    assert '\n        "2": {"x": 16, "y": 152, "w": 720, "h": 200},\n' in text(
         files, "sheets/br_coverages.layout.json"
     )
 
@@ -774,15 +804,16 @@ def test_the_identity_columns_and_quote_details_structure_are_never_written(
 ) -> None:
     files = write_form(project, FORM)
 
-    for path in ("schema/policy.json", "schema/layers.json", "schema/br_perils.json"):
+    for path in (
+        "schema/policy.json",
+        "schema/layers.json",
+        "schema/br_perils.json",
+        "schema/pricing.json",
+    ):
         written = json.loads(files[path])["columns"]
-        assert not {item["id"] for item in written} & IDENTITY_NAMES, path
-        assert not {item["name"] for item in written} & {"quote_reference", "quote_option"}
-    assert not {item["id"] for item in json.loads(files["schema/pricing.json"])["columns"]} & (
-        IDENTITY_NAMES
-    )
+        assert not {item["name"] for item in written} & IDENTITY_NAMES, path
     # quote_details' file holds only what the project gives its columns, by name, in Haute's
-    # order: never its id, role, rows, or a column's id or type.
+    # order: never its role, rows, or a column's type.
     assert json.loads(files["schema/quote_details.json"]) == {
         "columns": [
             {"name": "quote_option", "number_format": "number", "decimal_places": 0},
@@ -792,24 +823,21 @@ def test_the_identity_columns_and_quote_details_structure_are_never_written(
     # Read, the form holds them all, as Haute gives them.
     spec = read_form_document(config(project)).spec
     details, policy = spec.data_schema.tables[:2]
-    assert [(item.id, item.name, item.type) for item in details.columns] == list(
-        QUOTE_DETAILS_COLUMNS
-    )
-    assert [(item.id, item.name, item.type) for item in policy.columns[:2]] == [
-        ("quote_reference", "quote_reference", "str"),
-        ("quote_option", "quote_option", "int"),
-    ]
+    assert [(item.name, item.type) for item in details.columns] == list(QUOTE_DETAILS_COLUMNS)
+    assert [(item.name, item.type) for item in policy.columns[:2]] == list(IDENTITY_COLUMNS)
 
 
 def test_a_managed_quote_details_column_keeps_its_number_format(project: Path) -> None:
     # quote_option is the underwriter app's to set, and takes no rule; how it shows is the
     # project's.
-    assert "qd_option" in QUOTE_DETAILS_MANAGED
+    assert "quote_option" in QUOTE_DETAILS_MANAGED
     write_form(project, FORM)
 
     spec = read_form_document(config(project)).spec
 
-    option = next(item for item in spec.data_schema.tables[0].columns if item.id == "qd_option")
+    option = next(
+        item for item in spec.data_schema.tables[0].columns if item.name == "quote_option"
+    )
     assert (option.number_format, option.decimal_places) == ("number", 0)
 
 
@@ -822,7 +850,7 @@ def test_an_output_column_s_file_holds_no_rule_but_required(project: Path) -> No
     # A form whose output column holds a rule is one the folder cannot hold: refused naming
     # the column and the rule, rather than the rule dropped.
     ruled = copy.deepcopy(FORM)
-    column_of(ruled, "t_pricing", "c_premium").update(required=True, min=0.0)
+    column_of(ruled, "pricing", "premium").update(required=True, min=0.0)
     with pytest.raises(FormFolderNameError) as caught:
         files_of(ruled, project)
     assert len(caught.value.problems) == 1
@@ -831,11 +859,11 @@ def test_an_output_column_s_file_holds_no_rule_but_required(project: Path) -> No
     # Required is what marking a quote final checks, in an output column as in an input: it
     # is written and read back.
     required = copy.deepcopy(FORM)
-    column_of(required, "t_pricing", "c_premium").update(required=True)
+    column_of(required, "pricing", "premium").update(required=True)
     write_form(project, required)
     spec = read_form_document(config(project)).spec
-    pricing = next(table for table in spec.data_schema.tables if table.id == "t_pricing")
-    assert next(column for column in pricing.columns if column.id == "c_premium").required
+    pricing = next(table for table in spec.data_schema.tables if table.name == "pricing")
+    assert next(column for column in pricing.columns if column.name == "premium").required
 
 
 def test_files_name_tables_and_columns_by_name(project: Path) -> None:
@@ -844,11 +872,16 @@ def test_files_name_tables_and_columns_by_name(project: Path) -> None:
     sheet = json.loads(files["sheets/br_coverages.json"])
     collection, table, chart = sheet["sections"][0]["components"]
     _heading, _perils, importer, exporter = sheet["sections"][1]["components"]
-    # A column as table.column in a field, a Chart's category, a column look, a one-row
-    # condition and a query parameter.
-    assert collection["fields"] == ["policy.state", "policy.exposure", "pricing.premium"]
+    # A column as table.column in a field, a field with a look of its own, a Chart's
+    # category, a one-row condition and a query parameter.
+    assert collection["fields"][0]["field"] == "policy.state"
+    assert collection["fields"][1:] == [None, "policy.exposure", "pricing.premium"]
     assert chart["category"] == "layers.layer_name"
-    assert table["column_looks"] == [{"column": "layers.limit", "width": 120}]
+    assert table["fields"] == [
+        "layers.layer",
+        {"field": "layers.limit", "width": 120},
+        "layers.layer_name",
+    ]
     assert sheet["sections"][1]["show_when"]["conditions"][0]["conditions"][0] == {
         "column": "policy.state",
         "op": "one_of",
@@ -862,7 +895,7 @@ def test_files_name_tables_and_columns_by_name(project: Path) -> None:
         "rows": "any",
         "where": [{"column": "limit", "op": "above", "values": ["0"]}],
     }
-    assert collection["column_looks"][0]["show_when"]["conditions"][0] == {
+    assert collection["fields"][0]["show_when"]["conditions"][0] == {
         "table": "layers",
         "where": [{"column": "limit", "op": "filled"}],
         "op": "at_least",
@@ -883,10 +916,10 @@ def test_files_name_tables_and_columns_by_name(project: Path) -> None:
     # An Export names its tables by name, a database's table names too.
     assert exporter["tables"] == ["layers", "pricing"]
     assert exporter["target"]["table_names"] == [{"table": "layers", "name": "quote_layers"}]
-    # No id of a table or column is written in a sheet.
-    for identifier in ("t_policy", "t_layers", "t_perils", "t_pricing", "c_state", "c_limit"):
-        assert identifier not in text(files, "sheets/br_coverages.json")
-        assert identifier not in text(files, "sheets/quote_summary.json")
+    # No id is written anywhere: neither a table's nor a column's (READ-23), nor a sheet's, a
+    # section's or a component's (READ-24).
+    for path, data in files.items():
+        assert b'"id"' not in data, path
 
 
 # -- The revision ------------------------------------------------------------------------
@@ -907,8 +940,8 @@ def test_the_same_files_read_as_the_same_revision(project: Path) -> None:
 def _hand_edit(folder: Path) -> None:
     replace_in(
         folder / "schema/layers.json",
-        '"name": "limit",\n',
-        '"name": "limit",\n      "label": "Limit",\n',
+        '{"name": "limit", "type": "float"}',
+        '{"name": "limit", "type": "float", "label": "Limit"}',
     )
 
 
@@ -989,20 +1022,20 @@ def test_a_label_changed_writes_one_file_and_a_component_moved_one_layout_file(
     before = files_of(FORM, project)
 
     relabelled = copy.deepcopy(FORM)
-    column_of(relabelled, "t_layers", "c_limit")["label"] = "Limit"
+    column_of(relabelled, "layers", "limit")["label"] = "Limit"
     moved = copy.deepcopy(FORM)
-    widget_of(moved, "chart_c6h7").update(x=744, y=24)
-    widget_of(moved, "collection_k3f9").update(h=128)
+    widget_of(moved, LIMITS_CHART).update(x=744, y=24)
+    widget_of(moved, POLICY_BOXES).update(h=128)
 
     assert changes(before, files_of(relabelled, project)) == (["schema/layers.json"], [])
     assert changes(before, files_of(moved, project)) == (["sheets/br_coverages.layout.json"], [])
 
 
-def test_a_column_renamed_changes_its_name_every_reference_and_its_sample_key_and_keeps_its_id(
+def test_a_column_renamed_changes_its_name_every_reference_and_its_sample_key(
     project: Path,
 ) -> None:
     before = files_of(FORM, project)
-    region = renamed(FORM, "t_policy", "region", "c_state")
+    region = renamed(FORM, "policy", "region", "state")
 
     after = files_of(region, project)
 
@@ -1015,9 +1048,10 @@ def test_a_column_renamed_changes_its_name_every_reference_and_its_sample_key_an
         ],
         [],
     )
-    # The id stays beside the new name.
+    # A column is known by its name alone (READ-23): its line is as it was under the new
+    # name, and every reference and sample key takes the new name with it.
     assert text(after, "schema/policy.json") == text(before, "schema/policy.json").replace(
-        '"id": "c_state",\n      "name": "state",', '"id": "c_state",\n      "name": "region",'
+        '{"name": "state",', '{"name": "region",'
     )
     for sheet in ("sheets/br_coverages.json", "sheets/quote_summary.json"):
         assert text(after, sheet) == text(before, sheet).replace(
@@ -1026,16 +1060,17 @@ def test_a_column_renamed_changes_its_name_every_reference_and_its_sample_key_an
     assert text(after, "sample/policy.json") == text(before, "sample/policy.json").replace(
         '"state":', '"region":'
     )
-    # Read back, every reference holds the column's id still.
+    # Read back, every reference names the column by its new name.
     put(form_folder(project), after)
     spec = read_form_document(config(project)).spec
     assert spec == spec_of(region)
-    assert ref(component(spec, "collection_k3f9").fields[0]) == ("t_policy", "c_state")
+    assert ref(component(spec, POLICY_BOXES).fields[0]) == ("policy", "region")
+    assert unresolved_references(spec) == []
 
 
 def test_a_table_renamed_moves_its_schema_and_sample_files(project: Path) -> None:
     before = files_of(FORM, project)
-    cover_layers = renamed(FORM, "t_layers", "cover_layers")
+    cover_layers = renamed(FORM, "layers", "cover_layers")
 
     after = files_of(cover_layers, project)
 
@@ -1048,7 +1083,7 @@ def test_a_table_renamed_moves_its_schema_and_sample_files(project: Path) -> Non
         ],
         ["sample/layers.json", "schema/layers.json"],
     )
-    # The files move whole: a table's file holds its id, not its name, which is the index's.
+    # The files move whole: a table's file holds no name, which is the index's, and no id.
     assert after["schema/cover_layers.json"] == before["schema/layers.json"]
     assert after["sample/cover_layers.json"] == before["sample/layers.json"]
     assert json.loads(after["form.json"])["schema"] == [
@@ -1071,7 +1106,7 @@ def test_a_case_only_table_rename_changes_the_index_entry_and_no_file_s_name(
     project: Path,
 ) -> None:
     before = files_of(FORM, project)
-    capitals = renamed(FORM, "t_layers", "Layers")
+    capitals = renamed(FORM, "layers", "Layers")
 
     after = files_of(capitals, project)
 
@@ -1084,7 +1119,7 @@ def test_a_case_only_table_rename_changes_the_index_entry_and_no_file_s_name(
     assert spec.data_schema.tables[2].name == "Layers"
 
 
-def test_a_sheet_retitled_moves_its_two_files_and_its_index_entry_and_keeps_its_id(
+def test_a_sheet_retitled_moves_its_two_files_and_its_index_entry_and_takes_its_new_name(
     project: Path,
 ) -> None:
     before = files_of(FORM, project)
@@ -1104,7 +1139,11 @@ def test_a_sheet_retitled_moves_its_two_files_and_its_index_entry_and_keeps_its_
     )
     put(form_folder(project), after)
     spec = read_form_document(config(project)).spec
-    assert (spec.pages[0].id, spec.pages[0].title) == ("sheet_cv01", "Coverages")
+    # A sheet is known by its file's name (READ-24), and its parts by it: read, they take the
+    # new one.
+    assert spec == spec_of(retitled)
+    assert (spec.pages[0].id, spec.pages[0].title) == ("coverages", "Coverages")
+    assert spec.pages[0].sections[0].widgets[0].id == "coverages/Cover/1"
 
 
 def test_a_table_deleted_deletes_its_two_files(project: Path) -> None:
@@ -1113,11 +1152,11 @@ def test_a_table_deleted_deletes_its_two_files(project: Path) -> None:
     # uses of it go with it, and so do its sample rows.
     deleted = copy.deepcopy(FORM)
     deleted["schema"]["tables"].remove(PERILS)
-    widget_of(deleted, "table_p2r3")["fields"] = []
-    widget_of(deleted, "import_i1m2").update(table=None, column_names=[])
+    widget_of(deleted, PERILS_GRID)["fields"] = []
+    widget_of(deleted, IMPORTER).update(table=None, column_names=[])
     group = deleted["pages"][0]["sections"][1]["show_when"]["conditions"][0]
     group["conditions"] = group["conditions"][:1]
-    del deleted["sample"]["t_perils"]
+    del deleted["sample"]["BR_Perils"]
 
     after = files_of(deleted, project)
 
@@ -1129,37 +1168,40 @@ def test_a_table_deleted_deletes_its_two_files(project: Path) -> None:
     assert read_form_document(config(project)).spec == spec_of(deleted)
 
 
-def test_a_column_deleted_and_made_again_under_its_name_takes_a_new_id(project: Path) -> None:
+def test_a_column_deleted_and_made_again_under_its_name_is_the_column_that_name_names(
+    project: Path,
+) -> None:
     write_form(project, FORM)
     # As the editor removes a column: what shows it and its sample values go with it. Made
-    # again under the same name, the column is a new one with an id of its own.
+    # again under the same name, a whole number now, it is the column its name names: a table
+    # and a column are known by their names (READ-23).
     remade = copy.deepcopy(FORM)
-    layers = table_of(remade, "t_layers")
-    layers["columns"] = [item for item in layers["columns"] if item["id"] != "c_layer_name"]
-    layers["columns"].append({**column("layer_name"), "id": "c_layer_name_2"})
-    widget_of(remade, "table_l4y5")["fields"] = [LAYER, LIMIT]
-    widget_of(remade, "chart_c6h7")["category"] = None
-    del remade["sample"]["t_layers"][1]["c_layer_name"]
+    layers = table_of(remade, "layers")
+    layers["columns"] = [item for item in layers["columns"] if item["name"] != "layer_name"]
+    layers["columns"].append(column("layer_name", "int"))
+    widget_of(remade, LAYERS_GRID)["fields"] = [LAYER, LIMIT]
+    widget_of(remade, LIMITS_CHART)["category"] = None
+    del remade["sample"]["layers"][1]["layer_name"]
 
     after = files_of(remade, project)
 
     written = json.loads(after["schema/layers.json"])["columns"]
-    assert [(item["id"], item["name"]) for item in written] == [
-        ("c_layer", "layer"),
-        ("c_limit", "limit"),
-        ("c_layer_name_2", "layer_name"),
+    assert [(item["name"], item["type"]) for item in written] == [
+        ("layer", "int"),
+        ("limit", "float"),
+        ("layer_name", "int"),
     ]
     put(form_folder(project), after)
-    # The name written by hand again, as a Chart's category, binds the new column, never
-    # the old id.
+    # The name written by hand again, as a Chart's category, is the column of that name.
     replace_in(
         form_folder(project) / "sheets/br_coverages.json",
         '"chart_type": "line"\n',
         '"category": "layers.layer_name",\n          "chart_type": "line"\n',
     )
     spec = read_form_document(config(project)).spec
-    assert ref(component(spec, "chart_c6h7").category) == ("t_layers", "c_layer_name_2")
-    assert [item.id for item in spec.data_schema.tables[2].columns][-1] == "c_layer_name_2"
+    assert ref(component(spec, LIMITS_CHART).category) == ("layers", "layer_name")
+    assert spec.data_schema.tables[2].columns[-1].type == "int"
+    assert unresolved_references(spec) == []
 
 
 def test_a_default_written_by_hand_reads_as_that_setting_and_is_left_out_at_the_next_save(
@@ -1170,9 +1212,8 @@ def test_a_default_written_by_hand_reads_as_that_setting_and_is_left_out_at_the_
 
     replace_in(
         folder / "schema/layers.json",
-        '"name": "limit",\n      "type": "float"\n',
-        '"name": "limit",\n      "type": "float",\n      "required": false,\n'
-        '      "use_grouping": true\n',
+        '{"name": "limit", "type": "float"}',
+        '{"name": "limit", "type": "float", "required": false, "use_grouping": true}',
     )
     replace_in(
         folder / "sheets/br_coverages.json",
@@ -1233,8 +1274,8 @@ def test_a_sample_keeps_its_rows_places_so_an_index_and_a_preset_give_them_as_be
         assert {name: quote[name] for name in priced} == priced
     # Without the empty row, they would be the first row's.
     dropped = copy.deepcopy(FORM)
-    for table_id in ("t_layers", "t_perils"):
-        dropped["sample"][table_id] = dropped["sample"][table_id][1:]
+    for table in ("layers", "BR_Perils"):
+        dropped["sample"][table] = dropped["sample"][table][1:]
     quote = sample_quote(spec_of(dropped))
     assert quote["layers"] == [{"layer": 1, "limit": 1000000.0, "layer_name": "Primary"}]
     assert quote["BR_Perils"] == [{"peril": "Fire", "rate": 2.5}, {"peril": "Flood"}]
@@ -1254,9 +1295,9 @@ def test_a_sample_value_under_an_unknown_column_is_kept_through_a_save_and_price
 
     spec = read_form_document(config(project)).spec
 
-    # Kept under an unresolved id, which no column of the schema binds to.
-    assert spec.sample["t_policy"] == [
-        {"c_state": "NY", "c_exposure": "250,000", "c_renewal": True, "?colour": "red"}
+    # Kept as written, under a name no column of the table has.
+    assert spec.sample["policy"] == [
+        {"state": "NY", "exposure": "250,000", "renewal": True, "colour": "red"}
     ]
     assert sample_quote(spec) == sample_quote(spec_of(FORM))
     assert "colour" not in sample_quote(spec)["policy"]
@@ -1265,7 +1306,7 @@ def test_a_sample_value_under_an_unknown_column_is_kept_through_a_save_and_price
     # An unrelated save, a label changed, writes it back as it was.
     relabelled = spec.model_copy(deep=True)
     relabelled.data_schema.tables[2].columns[3].label = "Limit"
-    assert relabelled.data_schema.tables[2].columns[3].id == "c_limit"
+    assert relabelled.data_schema.tables[2].columns[3].name == "limit"
     after = form_files(relabelled, folder)
     assert after["sample/policy.json"] == edited
     assert changes(on_disk(folder), after) == (["schema/layers.json"], [])
@@ -1283,38 +1324,18 @@ def _colour_kept(project: Path) -> FormSpec:
     return read_form_document(config(project)).spec
 
 
-def test_a_column_made_under_a_kept_sample_name_takes_its_value_at_the_next_read(
-    project: Path,
-) -> None:
+def test_a_column_made_under_a_kept_sample_name_takes_its_value(project: Path) -> None:
     spec = _colour_kept(project)
     added = spec.model_copy(deep=True)
-    policy = next(table for table in added.data_schema.tables if table.id == "t_policy")
-    policy.columns.append(SchemaColumn(id="c_colour", name="colour", type="str"))
+    policy = next(table for table in added.data_schema.tables if table.name == "policy")
+    policy.columns.append(SchemaColumn(name="colour", type="str"))
 
+    # A sample row holds its values by column name (READ-23): the value is the column's as
+    # the column takes the name, as a reference written to a name a column takes later is.
+    assert sample_quote(added)["policy"]["colour"] == "red"
     put(form_folder(project), form_files(added, form_folder(project)))
-
-    # Bound by its name, as a reference written to a name a column takes later is.
-    assert read_form_document(config(project)).spec.sample["t_policy"] == [
-        {"c_state": "NY", "c_exposure": "250,000", "c_renewal": True, "c_colour": "red"}
-    ]
-
-
-def test_a_row_that_would_hold_a_name_twice_is_refused_rather_than_one_value_lost(
-    project: Path,
-) -> None:
-    # The column renamed to the kept name: its own value and the kept one, one name.
-    spec = _colour_kept(project)
-    renamed_state = spec.model_copy(deep=True)
-    policy = next(table for table in renamed_state.data_schema.tables if table.id == "t_policy")
-    next(column for column in policy.columns if column.id == "c_state").name = "colour"
-
-    with pytest.raises(FormFolderNameError) as caught:
-        form_files(renamed_state, form_folder(project))
-
-    assert caught.value.problems == [
-        "row 1 of sample/policy.json would hold colour twice: the column's value and one kept "
-        "from when the schema had no column of that name; give the column another name, or "
-        "take that value out of the file"
+    assert read_form_document(config(project)).spec.sample["policy"] == [
+        {"state": "NY", "exposure": "250,000", "renewal": True, "colour": "red"}
     ]
 
 
@@ -1340,10 +1361,10 @@ class Reference:
 
 COVER_AT = ("sections", 0, "components")
 PERILS_AT = ("sections", 1, "components")
-#: The Table of layers' condition on its rows, the count in the Collection's look, and the
-#: total in the Perils section's group.
+#: The Table of layers' condition on its rows, the count in the look of the Collection's first
+#: field, and the total in the Perils section's group.
 ROWS_AT = (*COVER_AT, 1, "show_when", "conditions", 0)
-COUNT_AT = (*COVER_AT, 0, "column_looks", 0, "show_when", "conditions", 0)
+COUNT_AT = (*COVER_AT, 0, "fields", 0, "show_when", "conditions", 0)
 TOTAL_AT = ("sections", 1, "show_when", "conditions", 0, "conditions", 1)
 
 
@@ -1352,27 +1373,28 @@ def _rows(condition: Any) -> tuple[str, list[str]]:
 
 
 def _import(spec: FormSpec) -> tuple[str | None, list[str]]:
-    button = component(spec, "import_i1m2")
+    button = component(spec, IMPORTER)
     return button.table, [named.column for named in button.column_names]
 
 
 def _export(spec: FormSpec) -> tuple[list[str], list[str]]:
-    button = component(spec, "export_e3x4")
+    button = component(spec, EXPORTER)
     return button.tables, [named.table for named in button.target.table_names]
 
 
 REFERENCES: dict[str, Reference] = {
+    # The Collection's second field: its first has a look of its own, then comes its gap.
     "a field": Reference(
         "sheets/br_coverages.json",
         {
-            "unknown column": {(*COVER_AT, 0, "fields", 1): "policy.exposur"},
-            "unknown table": {(*COVER_AT, 0, "fields", 1): "polcy.exposure"},
+            "unknown column": {(*COVER_AT, 0, "fields", 2): "policy.exposur"},
+            "unknown table": {(*COVER_AT, 0, "fields", 2): "polcy.exposure"},
         },
-        lambda spec: ref(component(spec, "collection_k3f9").fields[1]),
+        lambda spec: ref(component(spec, POLICY_BOXES).fields[1]),
         {
-            "known": ("t_policy", "c_exposure"),
-            "unknown column": ("t_policy", "?exposur"),
-            "unknown table": ("?polcy", "?exposure"),
+            "known": ("policy", "exposure"),
+            "unknown column": ("policy", "exposur"),
+            "unknown table": ("polcy", "exposure"),
         },
         "Policy",
     ),
@@ -1382,11 +1404,11 @@ REFERENCES: dict[str, Reference] = {
             "unknown column": {(*COVER_AT, 2, "category"): "layers.layer_nam"},
             "unknown table": {(*COVER_AT, 2, "category"): "layerz.layer_name"},
         },
-        lambda spec: ref(component(spec, "chart_c6h7").category),
+        lambda spec: ref(component(spec, LIMITS_CHART).category),
         {
-            "known": ("t_layers", "c_layer_name"),
-            "unknown column": ("t_layers", "?layer_nam"),
-            "unknown table": ("?layerz", "?layer_name"),
+            "known": ("layers", "layer_name"),
+            "unknown column": ("layers", "layer_nam"),
+            "unknown table": ("layerz", "layer_name"),
         },
         "Limits",
     ),
@@ -1398,30 +1420,24 @@ REFERENCES: dict[str, Reference] = {
         },
         lambda spec: ref(spec.pages[1].show_when.conditions[0]),
         {
-            "known": ("t_policy", "c_state"),
-            "unknown column": ("t_policy", "?stat"),
-            "unknown table": ("?polcy", "?state"),
+            "known": ("policy", "state"),
+            "unknown column": ("policy", "stat"),
+            "unknown table": ("polcy", "state"),
         },
         None,
     ),
-    # A look is for a column its component shows: the field and the look name it together.
+    # A look is for a column its component shows: the field and its look are one entry.
     "a column look": Reference(
         "sheets/br_coverages.json",
         {
-            "unknown column": {
-                (*COVER_AT, 1, "fields", 1): "layers.limt",
-                (*COVER_AT, 1, "column_looks", 0, "column"): "layers.limt",
-            },
-            "unknown table": {
-                (*COVER_AT, 1, "fields", 1): "layerz.limit",
-                (*COVER_AT, 1, "column_looks", 0, "column"): "layerz.limit",
-            },
+            "unknown column": {(*COVER_AT, 1, "fields", 1, "field"): "layers.limt"},
+            "unknown table": {(*COVER_AT, 1, "fields", 1, "field"): "layerz.limit"},
         },
-        lambda spec: ref(component(spec, "table_l4y5").column_looks[0]),
+        lambda spec: ref(component(spec, LAYERS_GRID).column_looks[0]),
         {
-            "known": ("t_layers", "c_limit"),
-            "unknown column": ("t_layers", "?limt"),
-            "unknown table": ("?layerz", "?limit"),
+            "known": ("layers", "limit"),
+            "unknown column": ("layers", "limt"),
+            "unknown table": ("layerz", "limit"),
         },
         "Layers",
     ),
@@ -1431,11 +1447,11 @@ REFERENCES: dict[str, Reference] = {
             "unknown column": {(*PERILS_AT, 2, "source", "parameters", 0, "column"): "policy.stat"},
             "unknown table": {(*PERILS_AT, 2, "source", "parameters", 0, "column"): "polcy.state"},
         },
-        lambda spec: ref(component(spec, "import_i1m2").source.parameters[0]),
+        lambda spec: ref(component(spec, IMPORTER).source.parameters[0]),
         {
-            "known": ("t_policy", "c_state"),
-            "unknown column": ("t_policy", "?stat"),
-            "unknown table": ("?polcy", "?state"),
+            "known": ("policy", "state"),
+            "unknown column": ("policy", "stat"),
+            "unknown table": ("polcy", "state"),
         },
         "Import perils",
     ),
@@ -1445,11 +1461,11 @@ REFERENCES: dict[str, Reference] = {
             "unknown column": {(*ROWS_AT, "where", 0, "column"): "limt"},
             "unknown table": {(*ROWS_AT, "table"): "layerz"},
         },
-        lambda spec: _rows(component(spec, "table_l4y5").show_when.conditions[0]),
+        lambda spec: _rows(component(spec, LAYERS_GRID).show_when.conditions[0]),
         {
-            "known": ("t_layers", ["c_limit"]),
-            "unknown column": ("t_layers", ["?limt"]),
-            "unknown table": ("?layerz", ["?limit"]),
+            "known": ("layers", ["limit"]),
+            "unknown column": ("layers", ["limt"]),
+            "unknown table": ("layerz", ["limit"]),
         },
         "Layers",
     ),
@@ -1459,13 +1475,11 @@ REFERENCES: dict[str, Reference] = {
             "unknown column": {(*COUNT_AT, "where", 0, "column"): "limt"},
             "unknown table": {(*COUNT_AT, "table"): "layerz"},
         },
-        lambda spec: _rows(
-            component(spec, "collection_k3f9").column_looks[0].show_when.conditions[0]
-        ),
+        lambda spec: _rows(component(spec, POLICY_BOXES).column_looks[0].show_when.conditions[0]),
         {
-            "known": ("t_layers", ["c_limit"]),
-            "unknown column": ("t_layers", ["?limt"]),
-            "unknown table": ("?layerz", ["?limit"]),
+            "known": ("layers", ["limit"]),
+            "unknown column": ("layers", ["limt"]),
+            "unknown table": ("layerz", ["limit"]),
         },
         "Policy",
     ),
@@ -1477,9 +1491,9 @@ REFERENCES: dict[str, Reference] = {
         },
         lambda spec: ref(spec.pages[0].sections[1].show_when.conditions[0].conditions[1]),
         {
-            "known": ("t_perils", "c_rate"),
-            "unknown column": ("t_perils", "?rait"),
-            "unknown table": ("?BR_Perilz", "?rate"),
+            "known": ("BR_Perils", "rate"),
+            "unknown column": ("BR_Perils", "rait"),
+            "unknown table": ("BR_Perilz", "rate"),
         },
         "Perils",
     ),
@@ -1491,9 +1505,9 @@ REFERENCES: dict[str, Reference] = {
         },
         _import,
         {
-            "known": ("t_perils", ["c_rate"]),
-            "unknown column": ("t_perils", ["?rait"]),
-            "unknown table": ("?BR_Perilz", ["?rate"]),
+            "known": ("BR_Perils", ["rate"]),
+            "unknown column": ("BR_Perils", ["rait"]),
+            "unknown table": ("BR_Perilz", ["rate"]),
         },
         "Import perils",
     ),
@@ -1508,8 +1522,8 @@ REFERENCES: dict[str, Reference] = {
         },
         _export,
         {
-            "known": (["t_layers", "t_pricing"], ["t_layers"]),
-            "unknown table": (["?layerz", "t_pricing"], ["?layerz"]),
+            "known": (["layers", "pricing"], ["layers"]),
+            "unknown table": (["layerz", "pricing"], ["layerz"]),
         },
         "Export",
     ),
@@ -1521,14 +1535,6 @@ def _word(name: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
 
 
-def _flat(value: Any) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
-    else:
-        for item in value:
-            yield from _flat(item)
-
-
 @pytest.mark.parametrize(
     ("kind", "case"),
     [
@@ -1537,13 +1543,14 @@ def _flat(value: Any) -> Iterator[str]:
         for case in reference.expected
     ],
 )
-def test_each_reference_is_written_by_name_and_read_by_id_an_unknown_name_unresolved(
+def test_each_reference_is_written_and_read_by_name_an_unknown_one_kept_as_written(
     project: Path, kind: str, case: str
 ) -> None:
     reference = REFERENCES[kind]
     files = write_form(project, FORM)
     sheet = json.loads(files[reference.file])
-    for spot, name in reference.edits.get(case, {}).items():
+    written = reference.edits.get(case, {})
+    for spot, name in written.items():
         set_at(sheet, spot, name)
     edited = render_folder_file(SheetFile.model_validate(sheet))
     if case == "known":
@@ -1552,20 +1559,15 @@ def test_each_reference_is_written_by_name_and_read_by_id_an_unknown_name_unreso
 
     spec = read_form_document(config(project)).spec
 
-    held = reference.held(spec)
-    assert held == reference.expected[case]
-    # An unresolved id is the name as written after a "?", which binds to no column.
-    unknown = sorted({identifier[1:] for identifier in _flat(held) if is_unresolved(identifier)})
-    assert all(
-        identifier.startswith("?") == is_unresolved(identifier) for identifier in _flat(held)
-    )
-    assert bool(unknown) == (case != "known")
+    # Read as the names it spells (READ-23), one the schema does not hold kept as written.
+    assert reference.held(spec) == reference.expected[case]
     # Written back as it was: the name as the file spelt it.
     assert form_files(spec, form_folder(project))[reference.file] == edited
     # And named, with its file and its place, for a build or a deploy to refuse; nothing
     # else is.
+    unknown = set(written.values())
     found = unresolved_references(spec)
-    assert bool(found) == bool(unknown)
+    assert bool(found) == bool(unknown) == (case != "known")
     for name in unknown:
         assert any(
             entry.startswith(reference.file)
@@ -1581,25 +1583,20 @@ def test_a_test_against_another_field_is_written_by_name_with_its_days_and_read_
     project: Path,
 ) -> None:
     form = json.loads(json.dumps(FORM))
-    table_of(form, "t_policy")["columns"] += [
-        {"id": "c_start", "name": "start", "type": "date"},
-        {"id": "c_end", "name": "end", "type": "date"},
-    ]
-    table_of(form, "t_layers")["columns"].append(
-        {"id": "c_retention", "name": "retention", "type": "float"}
-    )
+    table_of(form, "policy")["columns"] += [column("start", "date"), column("end", "date")]
+    table_of(form, "layers")["columns"].append(column("retention", "float"))
     later = {
-        **{"table": "t_policy", "column": "c_end", "op": "above", "values": []},
-        "field": {"table": "t_policy", "column": "c_start"},
+        **{"table": "policy", "column": "end", "op": "above", "values": []},
+        "field": {"table": "policy", "column": "start"},
         "days": 365,
     }
     insured = {
-        **{"table": "t_policy", "column": "c_state", "op": "contains", "values": []},
-        "field": {"table": "quote_details", "column": "qd_insured"},
+        **{"table": "policy", "column": "state", "op": "contains", "values": []},
+        "field": {"table": "quote_details", "column": "insured"},
         "days": 0,
     }
-    above = {"column": "c_limit", "op": "above", "values": [], "field": "c_retention", "days": 0}
-    layers = {"table": "t_layers", "rows": "any", "where": [above]}
+    above = {"column": "limit", "op": "above", "values": [], "field": "retention", "days": 0}
+    layers = {"table": "layers", "rows": "any", "where": [above]}
     form["pages"][0]["show_when"] = {"match": "any", "conditions": [later, insured, layers]}
 
     files = write_form(project, form)
@@ -1618,7 +1615,7 @@ def test_a_test_against_another_field_is_written_by_name_with_its_days_and_read_
     ]
     assert read_form_document(config(project)).spec == spec_of(form)
 
-    # A field the schema does not hold is unresolved, and named for a build or a deploy.
+    # A field the schema does not hold is kept as written, and named for a build or a deploy.
     sheet = json.loads(files["sheets/br_coverages.json"])
     sheet["show_when"]["conditions"][0]["field"] = "policy.started"
     sheet["show_when"]["conditions"][2]["where"][0]["field"] = "retained"
@@ -1627,6 +1624,7 @@ def test_a_test_against_another_field_is_written_by_name_with_its_days_and_read_
         {"sheets/br_coverages.json": render_folder_file(SheetFile.model_validate(sheet))},
     )
     spec = read_form_document(config(project)).spec
+    assert spec.pages[0].show_when.conditions[0].field.column == "started"
     found = unresolved_references(spec)
     assert any(_word("policy.started").search(entry) for entry in found), found
     assert any(_word("retained").search(entry) for entry in found), found
@@ -1636,20 +1634,21 @@ def test_a_reference_never_binds_through_a_column_s_old_name(project: Path) -> N
     write_form(project, FORM)
     folder = form_folder(project)
 
-    # Renamed by hand in its schema file alone, the column keeps its id; the sheets and the
-    # sample still name it state, which the schema no longer holds.
-    replace_in(folder / "schema/policy.json", '"name": "state"', '"name": "region"')
+    # Renamed by hand in its schema file alone, the column is region; the sheets and the
+    # sample still name state, which the schema no longer holds, each kept as written.
+    replace_in(folder / "schema/policy.json", '{"name": "state",', '{"name": "region",')
     spec = read_form_document(config(project)).spec
 
     policy = spec.data_schema.tables[1]
-    assert [item.name for item in policy.columns if item.id == "c_state"] == ["region"]
-    assert ref(component(spec, "collection_k3f9").fields[0]) == ("t_policy", "?state")
-    assert ref(component(spec, "collection_k3f9").column_looks[0]) == ("t_policy", "?state")
-    assert ref(spec.pages[1].show_when.conditions[0]) == ("t_policy", "?state")
-    assert ref(component(spec, "import_i1m2").source.parameters[0]) == ("t_policy", "?state")
-    assert spec.sample["t_policy"] == [{"?state": "NY", "c_exposure": "250,000", "c_renewal": True}]
+    assert [item.name for item in policy.columns[2:]] == ["region", "exposure", "renewal"]
+    assert ref(component(spec, POLICY_BOXES).fields[0]) == ("policy", "state")
+    assert ref(component(spec, POLICY_BOXES).column_looks[0]) == ("policy", "state")
+    assert ref(spec.pages[1].show_when.conditions[0]) == ("policy", "state")
+    assert ref(component(spec, IMPORTER).source.parameters[0]) == ("policy", "state")
+    assert spec.sample["policy"] == [{"state": "NY", "exposure": "250,000", "renewal": True}]
+    assert "region" not in sample_quote(spec)["policy"]
     found = unresolved_references(spec)
-    assert all(_word("state").search(entry) for entry in found), found
+    assert found and all(_word("policy.state").search(entry) for entry in found), found
     for file, place in [
         ("sheets/br_coverages.json", "Policy"),
         ("sheets/br_coverages.json", "Perils"),
@@ -1659,32 +1658,15 @@ def test_a_reference_never_binds_through_a_column_s_old_name(project: Path) -> N
         assert any(
             entry.startswith(file) and (place is None or place in entry) for entry in found
         ), (file, place, found)
-    # A column later named state, made anew, resolves them at the next read.
+    # A column named state again, made anew, is the one they name at the next read.
     replace_in(
         folder / "schema/policy.json",
-        '"type": "bool"\n    }\n',
-        '"type": "bool"\n    },\n    {\n      "id": "c_state_2",\n      "name": "state",\n'
-        '      "type": "str"\n    }\n',
+        '{"name": "renewal", "type": "bool"}\n',
+        '{"name": "renewal", "type": "bool"},\n    {"name": "state", "type": "str"}\n',
     )
     spec = read_form_document(config(project)).spec
-    assert ref(component(spec, "collection_k3f9").fields[0]) == ("t_policy", "c_state_2")
-    assert ref(spec.pages[1].show_when.conditions[0]) == ("t_policy", "c_state_2")
-    assert spec.sample["t_policy"][0]["c_state_2"] == "NY"
     assert unresolved_references(spec) == []
-
-
-@pytest.mark.parametrize("given", ["table", "column"])
-def test_a_form_refuses_a_table_or_column_id_starting_with_a_question_mark(given: str) -> None:
-    form = copy.deepcopy(MINIMAL)
-    table = form["schema"]["tables"][0]
-    if given == "table":
-        table["id"] = "?a"
-    else:
-        table["columns"][0]["id"] = "?x"
-    identifier = "?a" if given == "table" else "?x"
-
-    with pytest.raises(ValidationError, match=re.escape(f"The id '{identifier}' starts with '?'")):
-        FormSpec.model_validate(form)
+    assert sample_quote(spec)["policy"]["state"] == "NY"
 
 
 # -- What a read refuses -----------------------------------------------------------------
@@ -1736,7 +1718,8 @@ def _both(*edits: Callable[[Path], None]) -> Callable[[Path], None]:
 _NOT_PART = "is not part of the form: list it in form.json or remove it"
 _NO_INPUT = "is the sample of no input table: rename it after its table or remove it"
 _LAYOUT = "sheets/br_coverages.layout.json"
-_CHART_AT = '"chart_c6h7": {"x": 760, "y": 16, "w": 480, "h": 280}'
+#: The Chart's box in the layout file, keyed by its number in its section (READ-24).
+_CHART_AT = '"3": {"x": 760, "y": 16, "w": 480, "h": 280}'
 _OUTPUT_RULES = [
     ("min", "0"),
     ("max", "1"),
@@ -1784,7 +1767,7 @@ READ_REFUSALS = [
         id="an unlisted file",
     ),
     pytest.param(
-        _write("schema/claims.json", b'{\n  "id": "t_claims"\n}\n'),
+        _write("schema/claims.json", b'{\n  "role": "input"\n}\n'),
         f"{FOLDER}/schema/claims.json {_NOT_PART}",
         (),
         None,
@@ -1857,14 +1840,14 @@ READ_REFUSALS = [
         id="a sheet file name not in lower case",
     ),
     pytest.param(
-        _write("schema/layers.json", b'{\n  "id": "t_l\xffayers"\n}\n'),
+        _write("schema/layers.json", b'{\n  "role": "inp\xffut"\n}\n'),
         f"{FOLDER}/schema/layers.json is not UTF-8",
         (),
         UnicodeDecodeError,
         id="a file not UTF-8",
     ),
     pytest.param(
-        _write("schema/layers.json", b'{\n  "id": "t_layers",\n'),
+        _write("schema/layers.json", b'{\n  "role": "input",\n'),
         f"{FOLDER}/schema/layers.json is not JSON",
         (),
         json.JSONDecodeError,
@@ -1886,7 +1869,9 @@ READ_REFUSALS = [
     ),
     pytest.param(
         _edit(
-            "schema/layers.json", '"type": "float"\n', '"type": "float",\n      "colour": "red"\n'
+            "schema/layers.json",
+            '{"name": "limit", "type": "float"}',
+            '{"name": "limit", "type": "float", "colour": "red"}',
         ),
         f"{FOLDER}/schema/layers.json: columns.1.colour: ",
         (),
@@ -1906,30 +1891,17 @@ READ_REFUSALS = [
     ),
     pytest.param(
         _edit(_LAYOUT, '"height": 400,\n', '"height": 400,\n      "depth": 3,\n'),
-        f"{FOLDER}/{_LAYOUT}: sections.section_cv01.depth: ",
+        f"{FOLDER}/{_LAYOUT}: sections.Cover.depth: ",
         (),
         ValidationError,
         id="an unknown key in a layout file",
-    ),
-    pytest.param(
-        _edit(
-            "schema/layers.json",
-            '"columns": [\n',
-            '"columns": [\n    {\n      "id": "quote_reference",\n'
-            '      "name": "quote_reference",\n      "type": "str"\n    },\n',
-        ),
-        f"{FOLDER}/schema/layers.json: ",
-        ("quote_reference",),
-        ValidationError,
-        id="an identity column written",
     ),
     pytest.param(
         # As a merge keeping two branches' columns can: the sheets would name one of them.
         _edit(
             "schema/layers.json",
             '"columns": [\n',
-            '"columns": [\n    {\n      "id": "c_limit_2",\n'
-            '      "name": "limit",\n      "type": "float"\n    },\n',
+            '"columns": [\n    {"name": "limit", "type": "float"},\n',
         ),
         f"{FOLDER}/schema/layers.json: ",
         ("two columns are named limit",),
@@ -1937,10 +1909,37 @@ READ_REFUSALS = [
         id="two columns of one name",
     ),
     pytest.param(
+        # A column is known by its name whatever its case (READ-23).
         _edit(
-            "schema/quote_details.json",
-            '"name": "insured",\n',
-            '"name": "insured",\n      "type": "int",\n',
+            "schema/layers.json",
+            '"columns": [\n',
+            '"columns": [\n    {"name": "Limit", "type": "float"},\n',
+        ),
+        f"{FOLDER}/schema/layers.json: ",
+        ("two columns are named Limit and limit", "whatever its case"),
+        ValidationError,
+        id="two columns of one name by case",
+    ),
+    pytest.param(
+        # A schema file holds no id (READ-23): one an earlier Haute wrote is refused.
+        _edit(
+            "schema/layers.json", '"role": "input",\n', '"id": "t_layers",\n  "role": "input",\n'
+        ),
+        f"{FOLDER}/schema/layers.json: id: ",
+        (),
+        ValidationError,
+        id="a table's id",
+    ),
+    pytest.param(
+        _edit("schema/layers.json", '{"name": "limit",', '{"id": "c_limit", "name": "limit",'),
+        f"{FOLDER}/schema/layers.json: columns.1.id: ",
+        (),
+        ValidationError,
+        id="a column's id",
+    ),
+    pytest.param(
+        _edit(
+            "schema/quote_details.json", '{"name": "insured",', '{"name": "insured", "type": "int",'
         ),
         f"{FOLDER}/schema/quote_details.json: columns.1.type: ",
         (),
@@ -1950,8 +1949,8 @@ READ_REFUSALS = [
     pytest.param(
         _edit(
             "schema/quote_details.json",
-            '"name": "insured",\n',
-            '"name": "insured",\n      "id": "qd_insured",\n',
+            '{"name": "insured",',
+            '{"name": "insured", "id": "qd_insured",',
         ),
         f"{FOLDER}/schema/quote_details.json: columns.1.id: ",
         (),
@@ -1961,9 +1960,8 @@ READ_REFUSALS = [
     pytest.param(
         _edit(
             "schema/quote_details.json",
-            '"required": true\n    }\n',
-            '"required": true\n    },\n'
-            '    {\n      "name": "stage",\n      "required": true\n    }\n',
+            '"required": true}\n',
+            '"required": true},\n    {"name": "stage", "required": true}\n',
         ),
         f"{FOLDER}/schema/quote_details.json: ",
         ("stage", "required"),
@@ -1973,9 +1971,8 @@ READ_REFUSALS = [
     pytest.param(
         _edit(
             "schema/quote_details.json",
-            '"required": true\n    }\n',
-            '"required": true\n    },\n'
-            '    {\n      "name": "colour",\n      "label": "Colour"\n    }\n',
+            '"required": true}\n',
+            '"required": true},\n    {"name": "colour", "label": "Colour"}\n',
         ),
         f"{FOLDER}/schema/quote_details.json: columns.2.name: ",
         (),
@@ -1986,8 +1983,8 @@ READ_REFUSALS = [
         pytest.param(
             _edit(
                 "schema/pricing.json",
-                '"label": "Premium",\n',
-                f'"label": "Premium",\n      "{key}": {value},\n',
+                '"label": "Premium", ',
+                f'"label": "Premium", "{key}": {value}, ',
             ),
             f"{FOLDER}/schema/pricing.json: ",
             ("premium", key),
@@ -1997,45 +1994,41 @@ READ_REFUSALS = [
         for key, value in _OUTPUT_RULES
     ],
     pytest.param(
-        _edit(
-            _LAYOUT,
-            _CHART_AT,
-            _CHART_AT + ',\n        "chart_zzzz": {"x": 0, "y": 0, "w": 10, "h": 10}',
-        ),
+        _edit(_LAYOUT, _CHART_AT, _CHART_AT + ',\n        "9": {"x": 0, "y": 0, "w": 10, "h": 10}'),
         f"{FOLDER}/{_LAYOUT} ",
-        ("chart_zzzz",),
+        ("places component 9", "'Cover'"),
         None,
         id="a layout entry for a component the section does not hold",
     ),
     pytest.param(
         _edit_json(
             _LAYOUT,
-            lambda data: data["sections"].update(section_zz01={"height": 10, "components": {}}),
+            lambda data: data["sections"].update(Exclusions={"height": 10, "components": {}}),
         ),
         f"{FOLDER}/{_LAYOUT} ",
-        ("section_zz01",),
+        ("Exclusions",),
         None,
         id="a layout entry for a section the sheet does not hold",
     ),
     pytest.param(
         _edit(_LAYOUT, ",\n        " + _CHART_AT, ""),
         f"{FOLDER}/{_LAYOUT} ",
-        ("chart_c6h7",),
+        ('leaves out the Chart "Limits" (number 3)',),
         None,
         id="a component without a layout entry",
     ),
     pytest.param(
         # Named by its kind as the editor names it, though the files call a Table "table".
-        _edit(_LAYOUT, '        "table_l4y5": {"x": 16, "y": 152, "w": 720, "h": 200},\n', ""),
+        _edit(_LAYOUT, '        "2": {"x": 16, "y": 152, "w": 720, "h": 200},\n', ""),
         f"{FOLDER}/{_LAYOUT} ",
-        ('leaves out the Table "Layers" (table_l4y5)',),
+        ('leaves out the Table "Layers" (number 2)',),
         None,
         id="a Table without a layout entry",
     ),
     pytest.param(
-        _edit_json(_LAYOUT, lambda data: data["sections"].pop("section_pr01")),
+        _edit_json(_LAYOUT, lambda data: data["sections"].pop("Perils")),
         f"{FOLDER}/{_LAYOUT} ",
-        ("section_pr01",),
+        ("the section 'Perils'",),
         None,
         id="a section without a layout entry",
     ),
@@ -2083,7 +2076,7 @@ READ_REFUSALS = [
     ),
     pytest.param(
         _edit(_LAYOUT, '"x": 760, "y": 16,', '"x": 760.5, "y": 16,'),
-        f"{FOLDER}/{_LAYOUT}: sections.section_cv01.components.chart_c6h7.x: ",
+        f"{FOLDER}/{_LAYOUT}: sections.Cover.components.3.x: ",
         (),
         ValidationError,
         id="a layout number not whole",
@@ -2094,13 +2087,6 @@ READ_REFUSALS = [
         ("quote_details",),
         None,
         id="an index not leading with quote_details",
-    ),
-    pytest.param(
-        _edit("schema/layers.json", '"id": "t_layers",', '"id": "?layers",'),
-        f"{FOLDER} ",
-        ("?layers",),
-        ValidationError,
-        id="a table id starting with a question mark",
     ),
 ]
 
@@ -2125,6 +2111,38 @@ def test_a_folder_that_cannot_be_read_as_a_form_is_refused_naming_the_file_and_t
         assert isinstance(error.__cause__, cause)
 
 
+def test_a_column_written_under_an_identity_name_is_the_table_s_own_and_named_a_clash(
+    project: Path,
+) -> None:
+    write_form(project, FORM)
+    # Written by hand at the head of a table's file, under a name Haute keeps for the quote's
+    # identity: read, it is the table's own column, which keeps the identity from leading the
+    # table (READ-23), a clash the schema's problems name rather than a file refused.
+    _edit(
+        "schema/layers.json",
+        '"columns": [\n',
+        '"columns": [\n    {"name": "quote_reference", "type": "int"},\n',
+    )(form_folder(project))
+    edited = on_disk(form_folder(project))
+
+    spec = read_form_document(config(project)).spec
+
+    layers = next(table for table in spec.data_schema.tables if table.name == "layers")
+    assert [(item.name, item.type) for item in layers.columns] == [
+        ("quote_reference", "int"),
+        ("layer", "int"),
+        ("limit", "float"),
+        ("layer_name", "str"),
+    ]
+    assert identity_clashes(spec) == [
+        "layers.quote_reference has a name Haute keeps for the quote's identity in every "
+        "table: rename it, and the table takes quote_reference and quote_option at the next "
+        "save"
+    ]
+    # Written back as it was.
+    assert form_files(spec, form_folder(project)) == edited
+
+
 def test_two_index_entries_differing_only_in_case_name_the_table(project: Path) -> None:
     write_form(project, FORM)
     _edit("form.json", '"pricing"\n', '"pricing",\n    "Layers"\n')(form_folder(project))
@@ -2139,23 +2157,20 @@ REQUIRED_KEYS = [
     ("form.json", ("name",), "name"),
     ("form.json", ("schema",), "schema"),
     ("form.json", ("sheets",), "sheets"),
-    ("schema/policy.json", ("id",), "id"),
     ("schema/policy.json", ("role",), "role"),
     ("schema/policy.json", ("rows",), "rows"),
     ("schema/policy.json", ("columns",), "columns"),
-    ("schema/policy.json", ("columns", 0, "id"), "columns.0.id"),
     ("schema/policy.json", ("columns", 0, "name"), "columns.0.name"),
     ("schema/policy.json", ("columns", 0, "type"), "columns.0.type"),
-    ("sheets/br_coverages.json", ("id",), "id"),
     ("sheets/br_coverages.json", ("title",), "title"),
     ("sheets/br_coverages.json", ("sections",), "sections"),
-    ("sheets/br_coverages.json", ("sections", 0, "id"), "sections.0.id"),
     ("sheets/br_coverages.json", ("sections", 0, "title"), "sections.0.title"),
     ("sheets/br_coverages.json", ("sections", 0, "components"), "sections.0.components"),
+    # A component is known by its number in its section (READ-24).
     (
         "sheets/br_coverages.json",
-        ("sections", 0, "components", 0, "id"),
-        "sections.0.components.0.collection.id",
+        ("sections", 0, "components", 0, "number"),
+        "sections.0.components.0.collection.number",
     ),
     (
         "sheets/br_coverages.json",
@@ -2164,13 +2179,13 @@ REQUIRED_KEYS = [
     ),
     (_LAYOUT, ("width",), "width"),
     (_LAYOUT, ("sections",), "sections"),
-    (_LAYOUT, ("sections", "section_cv01", "height"), "sections.section_cv01.height"),
-    (_LAYOUT, ("sections", "section_cv01", "components"), "sections.section_cv01.components"),
+    (_LAYOUT, ("sections", "Cover", "height"), "sections.Cover.height"),
+    (_LAYOUT, ("sections", "Cover", "components"), "sections.Cover.components"),
     *[
         (
             _LAYOUT,
-            ("sections", "section_cv01", "components", "collection_k3f9", number),
-            f"sections.section_cv01.components.collection_k3f9.{number}",
+            ("sections", "Cover", "components", "1", number),
+            f"sections.Cover.components.1.{number}",
         )
         for number in ("x", "y", "w", "h")
     ],
@@ -2208,9 +2223,7 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_on_read_and_said(
     write_form(project, FORM)
     folder = form_folder(project)
     # A merge or a hand edit leaves the Chart below its section's foot and past its sheet.
-    replace_in(
-        folder / _LAYOUT, _CHART_AT, '"chart_c6h7": {"x": 900, "y": 200, "w": 480, "h": 280}'
-    )
+    replace_in(folder / _LAYOUT, _CHART_AT, '"3": {"x": 900, "y": 200, "w": 480, "h": 280}')
     edited = on_disk(folder)
 
     document = read_form_document(config(project))
@@ -2224,40 +2237,6 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_on_read_and_said(
     assert "1280" in document.repairs[1] and "1380" in document.repairs[1]
     # The files are left as they were until the form is saved.
     assert on_disk(folder) == edited
-
-
-@pytest.mark.parametrize(
-    ("edits", "identifier"),
-    [
-        pytest.param(
-            [("sheets/br_coverages.json", "table_p2r3"), (_LAYOUT, "table_p2r3")],
-            "table_l4y5",
-            id="two components",
-        ),
-        pytest.param(
-            [
-                ("sheets/quote_summary.json", "section_sm01"),
-                ("sheets/quote_summary.layout.json", "section_sm01"),
-            ],
-            "section_cv01",
-            id="two sections",
-        ),
-        pytest.param([("schema/br_perils.json", "t_perils")], "t_layers", id="two tables"),
-        pytest.param([("schema/layers.json", "c_limit")], "c_layer", id="two columns of a table"),
-    ],
-)
-def test_one_id_given_to_two_things_is_refused_naming_the_id(
-    project: Path, edits: list[tuple[str, str]], identifier: str
-) -> None:
-    # A merge that keeps two branches' components, or a block copied by hand.
-    write_form(project, FORM)
-    for path, old in edits:
-        replace_in(form_folder(project) / path, f'"{old}"', f'"{identifier}"')
-
-    error = refusal(project)
-
-    assert error.message.startswith(f"{FOLDER} "), error.message
-    assert _word(identifier).search(error.message), error.message
 
 
 def _link_directory(target: Path, link: Path) -> None:
@@ -2289,37 +2268,37 @@ def test_a_link_in_the_form_folder_to_a_folder_outside_the_project_is_refused(
 # -- Names the folder cannot hold --------------------------------------------------------
 
 
+def _renamed_in_place(table: str, name: str, column: str = "") -> Callable[[dict[str, Any]], None]:
+    """A change renaming a table, or a column of it, as the editor does: every use of the old
+    name and the sample's keys take the new one, so the name is all that is wrong."""
+    return lambda form: form.update(renamed(form, table, name, column))
+
+
 NAME_REFUSALS = [
     pytest.param(
         lambda form: form["schema"]["tables"].append(
-            {"id": "t_layers_2", "name": "Layers", "rows": "many", "columns": []}
+            {"name": "Layers", "rows": "many", "columns": []}
         ),
         ("layers", "Layers"),
         id="two tables of one name by case",
     ),
     pytest.param(
-        lambda form: table_of(form, "t_layers")["columns"].append(
-            {**column("limit", "float"), "id": "c_limit_2"}
-        ),
+        lambda form: table_of(form, "layers")["columns"].append(column("limit", "float")),
         ("layers", "limit"),
         id="two columns of one name",
     ),
     pytest.param(
-        lambda form: table_of(form, "t_layers").update(name="cover layers"),
+        _renamed_in_place("layers", "cover layers"),
         ("cover layers",),
         id="a table name not an identifier",
     ),
     pytest.param(
-        lambda form: column_of(form, "t_layers", "c_layer_name").update(name="2nd_name"),
+        _renamed_in_place("layers", "2nd_name", "layer_name"),
         ("2nd_name",),
         id="a column name not an identifier",
     ),
-    pytest.param(
-        lambda form: table_of(form, "t_policy").update(name="con"), ("con",), id="con as a table"
-    ),
-    pytest.param(
-        lambda form: table_of(form, "t_policy").update(name="COM1"), ("COM1",), id="COM1 as a table"
-    ),
+    pytest.param(_renamed_in_place("policy", "con"), ("con",), id="con as a table"),
+    pytest.param(_renamed_in_place("policy", "COM1"), ("COM1",), id="COM1 as a table"),
     pytest.param(
         lambda form: form["pages"][1].update(title="con"), ("con",), id="con as a sheet's name"
     ),
@@ -2332,7 +2311,8 @@ NAME_REFUSALS = [
         id="a title of no letters or digits",
     ),
     pytest.param(
-        lambda form: form["pages"][1].update(title="br-coverages"),
+        # Retitled in the editor, which holds the id the sheet was read with.
+        lambda form: form["pages"][1].update(id="quote_summary", title="br-coverages"),
         ("BR Coverages", "br-coverages"),
         id="two titles of one name",
     ),
@@ -2360,9 +2340,8 @@ def test_a_name_the_folder_cannot_hold_is_refused_naming_it_and_nothing_is_writt
 
 
 def test_every_name_the_folder_cannot_hold_is_listed(tmp_path: Path) -> None:
-    form = copy.deepcopy(FORM)
-    table_of(form, "t_policy")["name"] = "con"
-    table_of(form, "t_layers")["columns"].append({**column("limit", "float"), "id": "c_limit_2"})
+    form = renamed(FORM, "policy", "con")
+    table_of(form, "layers")["columns"].append(column("limit", "float"))
     form["pages"][1]["title"] = "COM1"
 
     with pytest.raises(FormFolderNameError) as caught:
@@ -2456,7 +2435,7 @@ def test_a_reader_in_another_process_waits_on_a_save_and_reads_the_saved_form_wh
 ) -> None:
     folder = form_folder(project)
     before = write_form(project, FORM)
-    region = renamed(FORM, "t_policy", "region", "c_state")
+    region = renamed(FORM, "policy", "region", "state")
     after = files_of(region, project)
     # The rename writes four files; read between the first and the second, the form would
     # hold a sample naming a column the schema does not hold yet.
@@ -2547,7 +2526,7 @@ def test_a_read_that_a_lockless_writer_changes_reads_again_and_answers_one_side_
 ) -> None:
     folder = form_folder(project)
     before = write_form(project, FORM)
-    region = renamed(FORM, "t_policy", "region", "c_state")
+    region = renamed(FORM, "policy", "region", "state")
     after = files_of(region, project)
     order = changes(before, after)[0]
     listings: list[dict[str, Any]] = []

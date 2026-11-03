@@ -12,8 +12,7 @@ import type { PricedRows, RowsByTable } from "../sheetValues"
 import { quotedSchema, sheetVisibility } from "../sheetVisibility"
 import { addWidget, BLANK_THEME, COLLECTION_OPTIONS, createWidget, TABLE_OPTIONS, type SampleRow } from "../workbenchForm"
 
-const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
-  id,
+const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
@@ -35,14 +34,14 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   ...overrides,
 })
 
-const table = (id: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({ id, name: id, role: "input", rows: "one", columns: [], ...overrides })
+const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({ name, role: "input", rows: "one", columns: [], ...overrides })
 
 const pounds = { type: "float", number_format: "currency_gbp" } as const
 
 const always: ShowWhen = { match: "all", conditions: [] }
 const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
 
-const field = (tableId: string, columnId: string): FieldRef => ({ table: tableId, column: columnId })
+const field = (table: string, column: string): FieldRef => ({ table, column })
 
 /**
  * A motor form: the policy (one row) and its quote (an output, one row); equipment (many
@@ -59,40 +58,40 @@ const motorForm = (): FormSpec => ({
     tables: [
       table("policy", {
         columns: [
-          column("state", "state"),
-          column("sum_insured", "sum_insured", pounds),
-          column("excess", "excess", { ...pounds, label: "Excess" }),
-          column("cover", "cover", { type: "bool" }),
+          column("state"),
+          column("sum_insured", pounds),
+          column("excess", { ...pounds, label: "Excess" }),
+          column("cover", { type: "bool" }),
         ],
       }),
       table("quote", {
         role: "output",
-        columns: [column("premium", "premium", pounds), column("tax", "tax", { type: "float" })],
+        columns: [column("premium", pounds), column("tax", { type: "float" })],
       }),
       table("equipment", {
         rows: "many",
         columns: [
-          column("row", "row_number", { type: "int", index: true }),
-          column("item", "item", { key: true }),
-          column("value", "value", pounds),
-          column("count", "count", { type: "int" }),
-          column("new", "new", { type: "bool" }),
-          column("note", "note"),
+          column("row_number", { type: "int", index: true }),
+          column("item", { key: true }),
+          column("value", pounds),
+          column("count", { type: "int" }),
+          column("new", { type: "bool" }),
+          column("note"),
         ],
       }),
       table("premiums", {
         role: "output",
         rows: "many",
-        columns: [column("item", "item", { key: true }), column("premium", "premium", pounds)],
+        columns: [column("item", { key: true }), column("premium", pounds)],
       }),
       table("fees", {
         role: "output",
         rows: "many",
-        columns: [column("item", "item", { key: true }), column("fee", "fee", pounds)],
+        columns: [column("item", { key: true }), column("fee", pounds)],
       }),
       table("vehicles", {
         rows: "many",
-        columns: [column("reg", "reg", { key: true }), column("value", "value", pounds)],
+        columns: [column("reg", { key: true }), column("value", pounds)],
       }),
     ],
   },
@@ -121,7 +120,7 @@ const motorForm = (): FormSpec => ({
               title: "Equipment",
               rows: 3,
               ...TABLE_OPTIONS,
-              fields: [field("equipment", "row"), field("equipment", "item"), field("equipment", "value"), field("equipment", "count"), field("equipment", "new")],
+              fields: [field("equipment", "row_number"), field("equipment", "item"), field("equipment", "value"), field("equipment", "count"), field("equipment", "new")],
               show_when: always,
             },
             { number: null, id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
@@ -176,7 +175,7 @@ describe("a Chart of one-row tables", () => {
   })
 
   it("leaves out a field it cannot plot, a text column or an index, and one whose rows do not line up", () => {
-    const { spec, widget } = charted([field("policy", "state"), field("policy", "sum_insured"), field("equipment", "row"), field("equipment", "value")])
+    const { spec, widget } = charted([field("policy", "state"), field("policy", "sum_insured"), field("equipment", "row_number"), field("equipment", "value")])
     const data = sheetChartData(spec.schema, widget, valuesOf(spec, { policy: [{ state: "CA", sum_insured: "100" }], equipment: [{ item: "Crane", value: "5" }] }))
     expect(data.categories).toEqual(["Sum insured"])
     expect(data.series[0].values).toEqual([100])
@@ -202,7 +201,7 @@ describe("a Chart of many-row tables", () => {
 
   it("counts a row typed into any of its input tables keyed alike, the others' values gaps on it", () => {
     const form = motorForm()
-    form.schema.tables.push(table("cover", { rows: "many", columns: [column("item", "item", { key: true }), column("excess", "excess", pounds)] }))
+    form.schema.tables.push(table("cover", { rows: "many", columns: [column("item", { key: true }), column("excess", pounds)] }))
     const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
     const spec = addWidget(form, "s1", widget)
     // Row 1 is typed into equipment alone, row 2 into cover alone, side by side as a Table's grid has them.
@@ -249,7 +248,7 @@ describe("a Chart of many-row tables", () => {
     expect(names(field("equipment", "value"))).toEqual(["£5,000.00", "lots", "—"])
     expect(names(field("equipment", "new"))).toEqual(["Yes", "No", "No"])
     // An index numbers the rows as the grid does.
-    expect(names(field("equipment", "row"))).toEqual(["1", "2", "3"])
+    expect(names(field("equipment", "row_number"))).toEqual(["1", "2", "3"])
   })
 
   it("names its rows by an output column as an output cell shows it, a dash where the price has none", () => {
@@ -265,7 +264,7 @@ describe("a Chart of many-row tables", () => {
   })
 
   it("leaves out a field it cannot plot and a field whose rows do not line up", () => {
-    const { spec, widget } = charted([field("equipment", "item"), field("equipment", "row"), field("equipment", "value"), field("vehicles", "value"), field("policy", "sum_insured")])
+    const { spec, widget } = charted([field("equipment", "item"), field("equipment", "row_number"), field("equipment", "value"), field("vehicles", "value"), field("policy", "sum_insured")])
     const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment, vehicles: [{ reg: "AB12", value: "9" }], policy: [{ sum_insured: "1" }] }))
     expect(data.series.map(({ key }) => key)).toEqual(["equipment:value"])
   })
@@ -361,7 +360,7 @@ type Drawn = {
   series: DrawnSeries[]
 }
 
-const pounds2 = column("p", "p", pounds)
+const pounds2 = column("p", pounds)
 
 /** Equipment's values and premiums over two rows, in pounds. */
 const twoSeries: ChartData = {

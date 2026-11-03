@@ -23,10 +23,10 @@ from tests.test_quote_book import ANA, FORM, HAUTE, RELEASE, Clock, document, op
 
 
 def _without(form: FormSpec, removed: dict[str, set[str]]) -> FormSpec:
-    """*form* with the named columns of each table (by id) removed."""
+    """*form* with the named columns of each table, by its name, removed."""
     tables = []
     for table in form.data_schema.tables:
-        drop = removed.get(table.id, set())
+        drop = removed.get(table.name, set())
         tables.append(
             table.model_copy(update={"columns": [c for c in table.columns if c.name not in drop]})
         )
@@ -35,9 +35,7 @@ def _without(form: FormSpec, removed: dict[str, set[str]]) -> FormSpec:
 
 
 #: The form after mileage left vehicles, telematics left policy and referred left premium.
-NEW = _without(
-    FORM, {"t_vehicles": {"mileage"}, "t_policy": {"telematics"}, "t_premium": {"referred"}}
-)
+NEW = _without(FORM, {"vehicles": {"mileage"}, "policy": {"telematics"}, "premium": {"referred"}})
 
 
 @pytest.fixture(params=backends())
@@ -59,7 +57,7 @@ def _open(store: Target, form: FormSpec) -> QuoteBook:
 
 def _vehicles(*mileages: str | None) -> list[dict[str, Any]]:
     return [
-        {"c_reg": f"REG{index}", "c_value": "1000", **({"c_mileage": m} if m else {})}
+        {"reg": f"REG{index}", "value": "1000", **({"mileage": m} if m else {})}
         for index, m in enumerate(mileages, 1)
     ]
 
@@ -75,8 +73,8 @@ def before(store: Target) -> tuple[str, int]:
             at=book.now(),
             reference="K-1",
             values=values(
-                t_vehicles=_vehicles("100", "200", "300"),
-                t_policy=[{"c_region": "north", "c_drivers": "2", "c_telematics": True}],
+                vehicles=_vehicles("100", "200", "300"),
+                policy=[{"region": "north", "drivers": "2", "telematics": True}],
             ),
         ).quote
         book.save(
@@ -86,8 +84,8 @@ def before(store: Target) -> tuple[str, int]:
             version=quote.version,
             actor=ANA,
             values=values(
-                t_vehicles=_vehicles("100", "200", "300"),
-                t_policy=[{"c_region": "north", "c_drivers": "2", "c_telematics": True}],
+                vehicles=_vehicles("100", "200", "300"),
+                policy=[{"region": "north", "drivers": "2", "telematics": True}],
             ),
             priced=PricedOutputs(RELEASE, document()),
             at=book.now(),
@@ -118,13 +116,13 @@ def test_an_opened_quote_carries_its_kept_values_and_a_save_keeps_them(
 ) -> None:
     with _open(store, NEW) as book:
         opened = book.read(*before)
-        vehicles = opened.values["t_vehicles"]
+        vehicles = opened.values["vehicles"]
         assert [json.loads(row[KEPT_KEY]) for row in vehicles] == [
             {"mileage": 100},
             {"mileage": 200},
             {"mileage": 300},
         ]
-        assert json.loads(opened.values["t_policy"][0][KEPT_KEY]) == {"telematics": True}
+        assert json.loads(opened.values["policy"][0][KEPT_KEY]) == {"telematics": True}
 
         _save(book, before, opened.values)
 
@@ -138,7 +136,7 @@ def test_deleting_a_row_keeps_each_remaining_rows_own_value(
 ) -> None:
     with _open(store, NEW) as book:
         rows = book.read(*before).values
-        rows["t_vehicles"] = [row for i, row in enumerate(rows["t_vehicles"]) if i != deleted]
+        rows["vehicles"] = [row for i, row in enumerate(rows["vehicles"]) if i != deleted]
         saved = _save(book, before, rows)
         _save(book, before, saved.values)
 
@@ -152,7 +150,7 @@ def test_an_inserted_row_holds_no_kept_value_and_the_others_keep_theirs(
 ) -> None:
     with _open(store, NEW) as book:
         rows = book.read(*before).values
-        rows["t_vehicles"].insert(1, {"c_reg": "NEW", "c_value": "500"})
+        rows["vehicles"].insert(1, {"reg": "NEW", "value": "500"})
         saved = _save(book, before, rows)
         _save(book, before, saved.values)
 
@@ -179,7 +177,7 @@ def test_a_replayed_save_answers_the_rows_with_their_kept_values(
 
     assert replayed is not None
     assert replayed.values == first.values
-    assert json.loads(replayed.values["t_vehicles"][2][KEPT_KEY]) == {"mileage": 300}
+    assert json.loads(replayed.values["vehicles"][2][KEPT_KEY]) == {"mileage": 300}
 
 
 @pytest.mark.parametrize(
@@ -191,7 +189,7 @@ def test_the_save_refuses_a_kept_value_for_a_form_column_an_unknown_column_or_a_
 ) -> None:
     with _open(store, NEW) as book:
         rows = book.read(*before).values
-        rows["t_vehicles"][0][KEPT_KEY] = json.dumps(carried)
+        rows["vehicles"][0][KEPT_KEY] = json.dumps(carried)
         with pytest.raises(QuoteValuesError, match=named):
             _save(book, before, rows)
     assert _mileages(store) == [("REG1", 100), ("REG2", 200), ("REG3", 300)]

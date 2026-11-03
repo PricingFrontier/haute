@@ -104,17 +104,14 @@ def held_tables(graph: PipelineGraph) -> WorkbenchTables:
 
 
 def form_table(
-    tid: str, name: str, role: str, *columns: tuple[str, str], many: bool = False
+    name: str, role: str, *columns: tuple[str, str], many: bool = False
 ) -> dict[str, Any]:
-    """A schema table of a form, *tid* its id and each column's id ``c_`` and its name."""
+    """A schema table of a form, known by its *name*, each column by its name in it."""
     return {
-        "id": tid,
         "name": name,
         "role": role,
         "rows": "many" if many else "one",
-        "columns": [
-            {"id": f"c_{column}", "name": column, "type": kind} for column, kind in columns
-        ],
+        "columns": [{"name": column, "type": kind} for column, kind in columns],
     }
 
 
@@ -122,7 +119,7 @@ def tables_form(
     tables: list[dict[str, Any]], sample: dict[str, Any] | None = None, *, name: str = "x"
 ) -> FormSpec:
     """A form of one blank sheet whose schema holds *tables* (:func:`form_table`), with
-    *sample* by table and column id, each value as typed, and Haute's ``quote_details``."""
+    *sample* by table and column name, each value as typed, and Haute's ``quote_details``."""
     return with_quote_details(
         FormSpec.model_validate(
             {

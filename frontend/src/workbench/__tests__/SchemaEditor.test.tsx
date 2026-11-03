@@ -41,8 +41,7 @@ const paramsFolder = (...names: string[]): ProjectFolderResponse => ({
   })),
 })
 
-const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
-  id,
+const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
@@ -64,8 +63,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   ...overrides,
 })
 
-const table = (id: string, name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
-  id,
+const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
   name,
   role: "input",
   rows: "one",
@@ -90,15 +88,15 @@ const form = (...tables: SchemaTable[]): FormSpec => ({
   sample: {},
 })
 
-const POLICY = table("t_policy", "policy_details", {
+const POLICY = table("policy_details", {
   columns: [
-    column("c_state", "state", { options: ["CA", "NY"], options_source: { file: "states.csv", column: "state" } }),
-    column("c_exposure", "exposure", { type: "float" }),
+    column("state", { options: ["CA", "NY"], options_source: { file: "states.csv", column: "state" } }),
+    column("exposure", { type: "float" }),
   ],
 })
-const LAYERS = table("t_layers", "layers", {
+const LAYERS = table("layers", {
   rows: "many",
-  columns: [column("c_layer", "layer", { type: "int", key: true }), column("c_limit", "limit", { type: "float" })],
+  columns: [column("layer", { type: "int", key: true }), column("limit", { type: "float" })],
 })
 
 function load(spec: FormSpec): void {
@@ -125,7 +123,7 @@ const tableNames = () => screen.getAllByRole("textbox", { name: "Table name" }).
 const tableNameField = (name: string) => within(tableNamed(name)).getByRole("textbox", { name: "Table name" })
 /** The grip a table, its header's, or a column is dragged by, or null while it cannot move. */
 const tableGrip = (name: string) => within(tableNamed(name)).queryAllByTitle("Drag to move")[0] ?? null
-const columnGrip = (id: string) => within(screen.getByTestId(`schema-column-${id}`)).queryByTitle("Drag to move")
+const columnGrip = (name: string) => within(screen.getByTestId(`schema-column-${name}`)).queryByTitle("Drag to move")
 
 /** Drag `grip` onto `target` and let go. */
 function dragOnto(grip: HTMLElement, target: HTMLElement): void {
@@ -310,12 +308,12 @@ describe("SchemaEditor", () => {
   })
 
   it("drags a table or a column by its grip, never quote_details, a table's index or a column into another table", () => {
-    const indexed = table("t_layers", "layers", {
+    const indexed = table("layers", {
       rows: "many",
       columns: [
-        column("c_row", "row_number", { type: "int", index: true, key: true }),
-        column("c_layer", "layer", { type: "int" }),
-        column("c_limit", "limit", { type: "float" }),
+        column("row_number", { type: "int", index: true, key: true }),
+        column("layer", { type: "int" }),
+        column("limit", { type: "float" }),
       ],
     })
     load(form(detailsTable(), POLICY, indexed))
@@ -328,18 +326,18 @@ describe("SchemaEditor", () => {
     dragOnto(tableGrip("policy_details")!, tableNamed("quote_details"))
     expect(tableNames()).toEqual(["quote_details", "layers", "policy_details"])
 
-    dragOnto(columnGrip("c_limit")!, screen.getByTestId("schema-column-c_layer"))
+    dragOnto(columnGrip("limit")!, screen.getByTestId("schema-column-layer"))
     expect(columnNames("layers")).toEqual(["row_number", "limit", "layer"])
     // The index has no grip, and nothing dropped on it moves above it.
-    expect(columnGrip("c_row")).toBeNull()
-    dragOnto(columnGrip("c_layer")!, screen.getByTestId("schema-column-c_row"))
+    expect(columnGrip("row_number")).toBeNull()
+    dragOnto(columnGrip("layer")!, screen.getByTestId("schema-column-row_number"))
     expect(columnNames("layers")).toEqual(["row_number", "limit", "layer"])
     // A column dropped on another table's column stays in its own table.
-    dragOnto(columnGrip("c_exposure")!, screen.getByTestId("schema-column-c_layer"))
+    dragOnto(columnGrip("exposure")!, screen.getByTestId("schema-column-layer"))
     expect(columnNames("policy_details")).toEqual(["state", "exposure"])
     expect(columnNames("layers")).toEqual(["row_number", "limit", "layer"])
     // quote_details' columns have no grips.
-    expect(columnGrip("qd_reference")).toBeNull()
+    expect(columnGrip("quote_reference")).toBeNull()
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
   })
 
@@ -365,8 +363,8 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
     commit(screen.getByRole("textbox", { name: "Label of exposure" }), "Exposure ($)")
     fireEvent.click(screen.getByRole("checkbox", { name: "exposure is required" }))
-    commit(screen.getByTestId("schema-column-c_exposure-min"), "0")
-    commit(screen.getByTestId("schema-column-c_exposure-max"), "lots")
+    commit(screen.getByTestId("schema-column-exposure-min"), "0")
+    commit(screen.getByTestId("schema-column-exposure-max"), "lots")
 
     expect(current().schema.tables[0].columns[1]).toMatchObject({
       label: "Exposure ($)",
@@ -374,14 +372,14 @@ describe("SchemaEditor", () => {
       min: 0,
       max: null,
     })
-    expect(screen.getByTestId("schema-column-c_exposure-max-error")).toHaveTextContent("Enter a number.")
+    expect(screen.getByTestId("schema-column-exposure-max-error")).toHaveTextContent("Enter a number.")
     expect(within(tableNamed("policy_details")).getByText("required · 0 to …")).toBeInTheDocument()
     // Allowed values come from a params file alone: none are typed in.
     expect(screen.queryByRole("textbox", { name: "Allowed values of exposure" })).toBeNull()
   })
 
   it("reads a column's allowed values from a CSV in the params folder, its file then its column, as one undo step", async () => {
-    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state")] })))
+    load(form(table("policy_details", { columns: [column("state")] })))
     vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("sic_codes.csv", "notes.txt", "old", "LEGACY.CSV"))
     vi.mocked(fetchParamFile).mockImplementation(async (_file, column) => ({
       columns: ["occupancy", "sic_name"],
@@ -428,9 +426,9 @@ describe("SchemaEditor", () => {
     load(
       form(
         POLICY,
-        table("t_cover", "coverage", {
+        table("coverage", {
           rows: "many",
-          columns: [column("c_zone", "zone", { options: ["N", "S"], options_source: { file: "zones.csv", column: "zone" }, row_per_value: true }), column("c_peril", "peril", { key: true, ...perils }), column("c_limit", "limit", { type: "float" })],
+          columns: [column("zone", { options: ["N", "S"], options_source: { file: "zones.csv", column: "zone" }, row_per_value: true }), column("peril", { key: true, ...perils }), column("limit", { type: "float" })],
         }),
       ),
     )
@@ -458,7 +456,7 @@ describe("SchemaEditor", () => {
 
   it("takes a column's row for each value away with its allowed values, and names a second column giving a table's rows", async () => {
     const perils = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }
-    load(form(table("t_cover", "coverage", { rows: "many", columns: [column("c_peril", "peril", { key: true, ...perils }), column("c_zone", "zone", { ...perils })] })))
+    load(form(table("coverage", { rows: "many", columns: [column("peril", { key: true, ...perils }), column("zone", { ...perils })] })))
     render(<SchemaEditor />)
 
     expect(within(tableNamed("coverage")).getByText('Table "coverage" has a row for each value of peril, so zone gives it none')).toBeInTheDocument()
@@ -470,7 +468,7 @@ describe("SchemaEditor", () => {
   })
 
   it("names allowed values typed in, as an older form holds them, among its table's problems", () => {
-    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state", { options: ["CA", "NY"] })] })))
+    load(form(table("policy_details", { columns: [column("state", { options: ["CA", "NY"] })] })))
     render(<SchemaEditor />)
 
     expect(
@@ -479,7 +477,7 @@ describe("SchemaEditor", () => {
   })
 
   it("shows allowed values typed in as a choice of their own, which the blank choice takes away though no params file is there", () => {
-    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state", { options: ["CA", "NY"] })] })))
+    load(form(table("policy_details", { columns: [column("state", { options: ["CA", "NY"] })] })))
     render(<SchemaEditor />)
 
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of state" }))
@@ -494,8 +492,8 @@ describe("SchemaEditor", () => {
   })
 
   it("drops a read of the values that the column's source changed under, as an undo changes it", async () => {
-    load(form(table("t_policy", "policy_details", { columns: [column("c_state", "state", { options: ["B1"], options_source: { file: "b.csv", column: "state" } })] })))
-    useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "t_policy", "c_state", { options: ["A1"], options_source: { file: "a.csv", column: "state" } }))
+    load(form(table("policy_details", { columns: [column("state", { options: ["B1"], options_source: { file: "b.csv", column: "state" } })] })))
+    useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "policy_details", "state", { options: ["A1"], options_source: { file: "a.csv", column: "state" } }))
     let answer: (values: string[]) => void = () => {}
     vi.mocked(fetchParamFile).mockImplementation((_file, name) =>
       name === undefined ? Promise.resolve({ columns: ["state"], values: [] }) : new Promise((resolve) => (answer = (values) => resolve({ columns: ["state"], values }))),
@@ -512,8 +510,8 @@ describe("SchemaEditor", () => {
   })
 
   it("reads a column's values from its file again, and says why the file cannot give them", async () => {
-    load(form(table("t_policy", "policy_details", {
-      columns: [column("c_state", "state", { options: ["Food"], options_source: { file: "sic_codes.csv", column: "sic_name" } })],
+    load(form(table("policy_details", {
+      columns: [column("state", { options: ["Food"], options_source: { file: "sic_codes.csv", column: "sic_name" } })],
     })))
     vi.mocked(fetchParamFile).mockResolvedValue({ columns: ["sic_name"], values: ["Food", "Hangars"] })
     render(<SchemaEditor />)
@@ -531,7 +529,7 @@ describe("SchemaEditor", () => {
   })
 
   it("shows a column's help, placeholder and number format, each saved as it commits", () => {
-    load(form(POLICY, table("t_out", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float" })] })))
+    load(form(POLICY, table("pricing", { role: "output", columns: [column("premium", { type: "float" })] })))
     render(<SchemaEditor />)
 
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
@@ -563,7 +561,7 @@ describe("SchemaEditor", () => {
 
     // A True/false or a Date column takes help but no placeholder.
     cleanup()
-    load(form(table("t_flags", "flags", { columns: [column("c_ok", "ok", { type: "bool" }), column("c_on", "on", { type: "date" })] })))
+    load(form(table("flags", { columns: [column("ok", { type: "bool" }), column("on", { type: "date" })] })))
     render(<SchemaEditor />)
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of ok" }))
     expect(screen.getByRole("textbox", { name: "Help of ok" })).toBeInTheDocument()
@@ -574,21 +572,21 @@ describe("SchemaEditor", () => {
   })
 
   it("offers Required on an output column as on an input one, and keeps it as a table is made an output", () => {
-    load(form(POLICY, table("t_out", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float" })] })))
+    load(form(POLICY, table("pricing", { role: "output", columns: [column("premium", { type: "float" })] })))
     render(<SchemaEditor />)
 
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of premium" }))
     fireEvent.click(screen.getByRole("checkbox", { name: "premium is required" }))
     expect(current().schema.tables[1].columns[0].required).toBe(true)
-    expect(screen.getByTestId("schema-column-c_premium-summary")).toHaveTextContent(/^required$/)
+    expect(screen.getByTestId("schema-column-premium-summary")).toHaveTextContent(/^required$/)
     // The rules only typing takes, an output takes none of.
-    expect(screen.queryByTestId("schema-column-c_premium-min")).toBeNull()
+    expect(screen.queryByTestId("schema-column-premium-min")).toBeNull()
     expect(screen.queryByRole("textbox", { name: "Placeholder of premium" })).toBeNull()
 
     // An input column made an output keeps whether it is required, and loses the rest.
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
     fireEvent.click(screen.getByRole("checkbox", { name: "exposure is required" }))
-    commit(screen.getByTestId("schema-column-c_exposure-min"), "0")
+    commit(screen.getByTestId("schema-column-exposure-min"), "0")
     fireEvent.change(screen.getByRole("combobox", { name: "Role of policy_details" }), { target: { value: "output" } })
     expect(current().schema.tables[0].columns[1]).toMatchObject({ required: true, min: null })
     expect(screen.getByRole("checkbox", { name: "exposure is required" })).toBeChecked()
@@ -603,7 +601,7 @@ describe("SchemaEditor", () => {
           { name: "saved_at", kind: "datetime" },
           { name: "priced_release", kind: "str" },
         ],
-        t_layers: [{ name: "quote_row", kind: "int" }],
+        layers: [{ name: "quote_row", kind: "int" }],
       },
     })
     render(<SchemaEditor />)
@@ -615,7 +613,7 @@ describe("SchemaEditor", () => {
     expect(within(version).getByTitle("Integer")).toBeInTheDocument()
     expect(within(within(details).getByTestId("schema-store-column-saved_at")).getByTitle("Date and time")).toBeInTheDocument()
     // After the table's own columns, and none of them.
-    expect(version.previousElementSibling).toHaveAttribute("data-testid", "schema-column-qd_haute_version")
+    expect(version.previousElementSibling).toHaveAttribute("data-testid", "schema-column-haute_version")
     expect(columnNames("quote_details")).not.toContain("quote_version")
     // Read only: no field, button or menu of their own.
     for (const name of ["quote_version", "saved_at", "priced_release"]) {
@@ -637,7 +635,7 @@ describe("SchemaEditor", () => {
   it("asks before removing a column or a table a sheet shows, and takes it off the sheet", async () => {
     const shown = form(POLICY, LAYERS)
     shown.pages[0].sections[0].widgets = [
-      { number: null, id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy_details", column: "state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(shown)
     render(<SchemaEditor />)
@@ -663,10 +661,10 @@ describe("SchemaEditor", () => {
 
   it("asks before removing a column or a table a condition tests, and takes the condition with it", async () => {
     const tested = form(POLICY, LAYERS)
-    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
+    const condition = { table: "policy_details", column: "state", op: "filled" as const, values: [], field: null, days: 0 }
     tested.pages[0].show_when = { match: "all", conditions: [condition] }
     tested.pages[0].sections[0].widgets = [
-      { number: null, id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t_policy", column: "c_state" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w", type: "collection", x: 0, y: 0, w: 400, h: 100, title: "Policy", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy_details", column: "state" }], show_when: { match: "all", conditions: [] } },
     ]
     load(tested)
     render(<SchemaEditor />)
@@ -686,27 +684,27 @@ describe("SchemaEditor", () => {
 
   it("asks before removing a column or a table an Import or an Export uses, and takes it out of them", async () => {
     const used = form(POLICY, LAYERS)
-    const condition = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
+    const condition = { table: "policy_details", column: "state", op: "filled" as const, values: [], field: null, days: 0 }
     used.pages[0].show_when = { match: "all", conditions: [condition] }
     used.pages[0].sections[0].widgets = [
-      { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }), id: "w_in", table: "t_policy", column_names: [{ column: "c_state", name: "State" }] },
-      { ...createWidget("export", { x: 176, y: 0, w: 160, h: 40 }), id: "w_out", tables: ["t_policy"] },
+      { ...createWidget("import", { x: 0, y: 0, w: 160, h: 40 }), id: "w_in", table: "policy_details", column_names: [{ column: "state", name: "State" }] },
+      { ...createWidget("export", { x: 176, y: 0, w: 160, h: 40 }), id: "w_out", tables: ["policy_details"] },
     ]
     load(used)
     render(<SchemaEditor />)
-    const policyColumns = () => current().schema.tables.find((t) => t.name === "t_policy")!.columns.map((c) => c.name)
+    const policyColumns = () => current().schema.tables.find((t) => t.name === "policy_details")!.columns.map((c) => c.name)
 
     // The Import reads exposure by its own name and the Export writes it with its table.
     fireEvent.click(screen.getByRole("button", { name: "Remove column exposure" }))
     expect(asked()?.text).toBe("Used by 2 Imports and Exports; removing it takes it out of them too.")
     await answerQuestion(null)
-    expect(policyColumns()).toContain("c_exposure")
+    expect(policyColumns()).toContain("exposure")
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column state" }))
     expect(asked()?.text).toBe("Tested by the conditions of 1 sheet, section or component and used by 2 Imports and Exports; removing it takes it out of them too.")
     await answerQuestion("confirm")
-    expect(policyColumns()).not.toContain("c_state")
-    expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ table: "t_policy", column_names: [] })
+    expect(policyColumns()).not.toContain("state")
+    expect(current().pages[0].sections[0].widgets[0]).toMatchObject({ table: "policy_details", column_names: [] })
 
     fireEvent.click(screen.getByRole("button", { name: "Delete table policy_details" }))
     expect(asked()?.text).toBe("Its columns are used by 2 Imports and Exports; deleting it takes them out of them too.")
@@ -716,8 +714,8 @@ describe("SchemaEditor", () => {
 
   it("counts a section whose conditions test a column or a table in the confirmation, and takes those conditions out of it", async () => {
     const tested = form(POLICY, LAYERS)
-    const state = { table: "t_policy", column: "c_state", op: "filled" as const, values: [], field: null, days: 0 }
-    const exposure = { table: "t_policy", column: "c_exposure", op: "above" as const, values: ["100"], field: null, days: 0 }
+    const state = { table: "policy_details", column: "state", op: "filled" as const, values: [], field: null, days: 0 }
+    const exposure = { table: "policy_details", column: "exposure", op: "above" as const, values: ["100"], field: null, days: 0 }
     tested.pages[0].show_when = { match: "all", conditions: [state] }
     tested.pages[0].sections.push({ id: "section_2", title: "Section 2", height: 160, show_when: { match: "all", conditions: [state, exposure] }, widgets: [] })
     load(tested)
@@ -784,9 +782,9 @@ describe("SchemaEditor", () => {
   })
 
   it("asks before removing an index a sheet shows", async () => {
-    const indexed = form(POLICY, { ...LAYERS, columns: [column("c_row", "row_number", { type: "int", index: true }), ...LAYERS.columns] })
+    const indexed = form(POLICY, { ...LAYERS, columns: [column("row_number", { type: "int", index: true }), ...LAYERS.columns] })
     indexed.pages[0].sections[0].widgets = [
-      { number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 400, h: 100, title: "Layers", rows: 3, ...TABLE_OPTIONS, fields: [{ table: "t_layers", column: "c_row" }], show_when: { match: "all", conditions: [] } },
+      { number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 400, h: 100, title: "Layers", rows: 3, ...TABLE_OPTIONS, fields: [{ table: "layers", column: "row_number" }], show_when: { match: "all", conditions: [] } },
     ]
     load(indexed)
     render(<SchemaEditor />)
@@ -806,7 +804,7 @@ describe("SchemaEditor", () => {
         ReturnType<typeof useDocumentStatusStore.getState>["capabilities"]
       >,
     })
-    load(form(table("t_class", "class", { rows: "many", columns: [column("c_a", "a")] })))
+    load(form(table("class", { rows: "many", columns: [column("a")] })))
     render(<SchemaEditor />)
 
     const block = tableNamed("class")
@@ -841,8 +839,8 @@ describe("SchemaEditor", () => {
   })
 
   it("starts a new quote with a one-row input column's default, taken as its cells take a value", () => {
-    const flags = table("t_flags", "flags", { columns: [column("c_ok", "ok", { type: "bool" }), column("c_on", "on", { type: "date" })] })
-    load(form(POLICY, LAYERS, flags, table("t_out", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float" })] })))
+    const flags = table("flags", { columns: [column("ok", { type: "bool" }), column("on", { type: "date" })] })
+    load(form(POLICY, LAYERS, flags, table("pricing", { role: "output", columns: [column("premium", { type: "float" })] })))
     render(<SchemaEditor />)
 
     // Typed, trimmed; and named in the table's problems while its rules refuse it.
@@ -866,7 +864,7 @@ describe("SchemaEditor", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Format of exposure" }), { target: { value: "percent" } })
     expect(exposure).toHaveValue("17.5%")
     // Its allowed values in its format too, each still the value as written.
-    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "t_policy", "c_exposure", { options: ["0.1", "0.175"] })))
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "policy_details", "exposure", { options: ["0.1", "0.175"] })))
     const allowed = screen.getByRole("combobox", { name: "Default of exposure" })
     expect([...allowed.querySelectorAll("option")].map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
       ["", ""],
@@ -916,44 +914,44 @@ describe("SchemaEditor", () => {
   it("sums a column up under its name: its range and default in its format, and a number's format in any table", () => {
     load(
       form(
-        table("t_cover", "cover", {
+        table("cover", {
           columns: [
-            column("c_sum", "sum_insured", { type: "float", required: true, min: 0, max: 1000000, default_value: "250000", number_format: "currency_gbp", decimal_places: 2 }),
-            column("c_rate", "loss_ratio", { type: "float", min: 0, max: 1, number_format: "percent", decimal_places: 1, use_grouping: false }),
-            column("c_count", "claims", { type: "int", default_value: "3" }),
-            column("c_flood", "flood", { type: "bool", default_value: true }),
-            column("c_region", "region", { default_value: "north" }),
-            column("c_note", "note"),
+            column("sum_insured", { type: "float", required: true, min: 0, max: 1000000, default_value: "250000", number_format: "currency_gbp", decimal_places: 2 }),
+            column("loss_ratio", { type: "float", min: 0, max: 1, number_format: "percent", decimal_places: 1, use_grouping: false }),
+            column("claims", { type: "int", default_value: "3" }),
+            column("flood", { type: "bool", default_value: true }),
+            column("region", { default_value: "north" }),
+            column("note"),
           ],
         }),
-        table("t_pricing", "pricing", { role: "output", columns: [column("c_premium", "premium", { type: "float", number_format: "number", decimal_places: 2 })] }),
-        table("t_items", "items", {
+        table("pricing", { role: "output", columns: [column("premium", { type: "float", number_format: "number", decimal_places: 2 })] }),
+        table("items", {
           rows: "many",
-          columns: [column("c_row", "row_number", { type: "int", index: true, number_format: "number" }), column("c_value", "value", { type: "float", default_value: "5" })],
+          columns: [column("row_number", { type: "int", index: true, number_format: "number" }), column("value", { type: "float", default_value: "5" })],
         }),
       ),
     )
     render(<SchemaEditor />)
     const summary = (id: string) => screen.queryByTestId(`schema-column-${id}-summary`)
 
-    expect(summary("c_sum")).toHaveTextContent("required · £0.00 to £1,000,000.00 · default £250,000.00 · £ GBP, 2 decimals")
+    expect(summary("sum_insured")).toHaveTextContent("required · £0.00 to £1,000,000.00 · default £250,000.00 · £ GBP, 2 decimals")
     // A percent is the value times 100.
-    expect(summary("c_rate")).toHaveTextContent("0.0% to 100.0% · Percentage, 1 decimal, no separators")
+    expect(summary("loss_ratio")).toHaveTextContent("0.0% to 100.0% · Percentage, 1 decimal, no separators")
     // General with automatic decimals shows numbers as typed, and says nothing of its format.
-    expect(summary("c_count")).toHaveTextContent(/^default 3$/)
-    expect(summary("c_flood")).toHaveTextContent(/^default ticked$/)
-    expect(summary("c_region")).toHaveTextContent(/^default north$/)
-    expect(summary("c_note")).toBeNull()
+    expect(summary("claims")).toHaveTextContent(/^default 3$/)
+    expect(summary("flood")).toHaveTextContent(/^default ticked$/)
+    expect(summary("region")).toHaveTextContent(/^default north$/)
+    expect(summary("note")).toBeNull()
     // An output column has no rules, but its format.
-    expect(summary("c_premium")).toHaveTextContent(/^Number, 2 decimals$/)
+    expect(summary("premium")).toHaveTextContent(/^Number, 2 decimals$/)
     // Neither the index's format nor a default in a many-row table, which takes none.
-    expect(summary("c_row")).toBeNull()
-    expect(summary("c_value")).toBeNull()
+    expect(summary("row_number")).toBeNull()
+    expect(summary("value")).toBeNull()
 
     // On its own line under the name, not beside it.
-    const row = screen.getByTestId("schema-column-c_sum")
-    expect(within(summary("c_sum")!).queryByRole("textbox")).toBeNull()
-    expect(summary("c_sum")!.previousElementSibling).toContainElement(within(row).getByRole("textbox", { name: "Column name" }))
+    const row = screen.getByTestId("schema-column-sum_insured")
+    expect(within(summary("sum_insured")!).queryByRole("textbox")).toBeNull()
+    expect(summary("sum_insured")!.previousElementSibling).toContainElement(within(row).getByRole("textbox", { name: "Column name" }))
   })
 
   it("opens again as it was left: its tables collapsed, a column's label and rules open, and scrolled where it was", () => {
@@ -972,7 +970,7 @@ describe("SchemaEditor", () => {
   })
 
   it("searches the fields: the columns whose name or label holds the text, whatever its case, in the tables holding one, open", () => {
-    load(form(POLICY, { ...LAYERS, columns: [...LAYERS.columns, column("c_excess", "excess", { label: "Policy Excess" })] }))
+    load(form(POLICY, { ...LAYERS, columns: [...LAYERS.columns, column("excess", { label: "Policy Excess" })] }))
     const { unmount } = render(<SchemaEditor />)
     fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))
     const search = screen.getByRole("textbox", { name: "Search fields" })
@@ -1019,7 +1017,7 @@ describe("SchemaEditor", () => {
     expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
     expect(within(layers).queryByLabelText("Add index to layers")).toBeNull()
     expect(tableGrip("layers")).toBeNull()
-    expect(columnGrip("c_limit")).toBeNull()
+    expect(columnGrip("limit")).toBeNull()
     const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]
     fireEvent.keyDown(last, { key: "Enter" })
     fireEvent.keyDown(last, { key: "ArrowUp", altKey: true })
@@ -1047,7 +1045,7 @@ describe("SchemaEditor", () => {
     expect(within(layers).queryByLabelText("Add index to layers")).toBeNull()
     expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()
     expect(tableGrip("layers")).toBeNull()
-    expect(columnGrip("c_limit")).toBeNull()
+    expect(columnGrip("limit")).toBeNull()
 
     // Enter in the last column's name adds none, and Alt+Up moves neither a column nor a table.
     const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]

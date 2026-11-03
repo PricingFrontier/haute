@@ -84,10 +84,10 @@ describe("WidgetBody", () => {
     // The state is required, and says so to a screen reader.
     expect(screen.getByRole("combobox", { name: "State" })).toHaveAttribute("aria-required", "true")
     fireEvent.change(screen.getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
-    expect(currentForm().sample.policy).toEqual([{ "policy.state": "NY" }])
+    expect(currentForm().sample.policy).toEqual([{ state: "NY" }])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
 
-    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" }))
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "year" }))
     cleanup()
     renderBody("w_boxes")
     const year = screen.getByRole("textbox", { name: "Year" })
@@ -95,7 +95,7 @@ describe("WidgetBody", () => {
     fireEvent.change(year, { target: { value: "2021" } })
     expect(currentForm().sample).toEqual({})
     fireEvent.blur(year)
-    expect(currentForm().sample.policy).toEqual([{ "policy.year": "2021" }])
+    expect(currentForm().sample.policy).toEqual([{ year: "2021" }])
   })
 
   it("types the sample into a Table's grid row by row, keeping the rows it starts with, inserting and deleting rows in every table it shows", () => {
@@ -106,21 +106,21 @@ describe("WidgetBody", () => {
     const item = screen.getByRole("textbox", { name: "Item row 2" })
     fireEvent.change(item, { target: { value: "Crane" } })
     fireEvent.keyDown(item, { key: "Enter" })
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }, {}])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
 
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 3" }), "Insert", "Insert Row Below")
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }, {}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(5)
 
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Row")
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{ item: "Crane" }, {}, {}])
     expect(screen.getAllByRole("row")).toHaveLength(4)
 
     // Below the rows it starts with; deleting the last starts it again.
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 3" }), "Delete Row")
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 2" }), "Delete Row")
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }])
+    expect(currentForm().sample.equipment).toEqual([{ item: "Crane" }])
     expect(screen.getAllByRole("row")).toHaveLength(2)
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Row")
     expect(currentForm().sample.equipment).toEqual([])
@@ -136,14 +136,14 @@ describe("WidgetBody", () => {
   })
 
   it("inserts rows above and below a row through its right-click menu, one or as many as typed, each as one undo step, and deletes it, in every table the grid shows", () => {
-    let form = addSchemaTable(sheetForm(), table("hire", "hire", { rows: "many", columns: [column("hire.days", "days", { type: "int" })] }))
-    form = toggleField(form, "w_grid", { table: "hire", column: "hire.days" })
-    form.sample = { equipment: [{ "equipment.item": "Crane" }, { "equipment.item": "Lift" }], hire: [{ "hire.days": "1" }, { "hire.days": "2" }] }
+    let form = addSchemaTable(sheetForm(), table("hire", { rows: "many", columns: [column("days", { type: "int" })] }))
+    form = toggleField(form, "w_grid", { table: "hire", column: "days" })
+    form.sample = { equipment: [{ item: "Crane" }, { item: "Lift" }], hire: [{ days: "1" }, { days: "2" }] }
     loadForm(form)
     renderBody("w_grid")
     const item = (row: number) => screen.getByRole("textbox", { name: `Item row ${row}` })
-    const items = () => currentForm().sample.equipment.map((row) => row["equipment.item"] ?? "")
-    const days = () => currentForm().sample.hire.map((row) => row["hire.days"] ?? "")
+    const items = () => currentForm().sample.equipment.map((row) => row.item ?? "")
+    const days = () => currentForm().sample.hire.map((row) => row.days ?? "")
     const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
 
     // Its menu at the right-click, Insert opening a menu of its own.
@@ -242,7 +242,7 @@ describe("WidgetBody", () => {
 
   it("shows every row the values hold once they hold any, fewer than the grid starts with too, a grid of fixed rows never fewer than those", () => {
     const form = sheetForm()
-    form.sample = { equipment: [{ "equipment.item": "Crane" }] }
+    form.sample = { equipment: [{ item: "Crane" }] }
     loadForm(form)
     renderBody("w_grid")
     expect(screen.getAllByRole("row")).toHaveLength(2)
@@ -255,13 +255,13 @@ describe("WidgetBody", () => {
   })
 
   it("shows the rows a column gives its table whatever the grid starts with, each value as text, and writes them all as a value is typed", () => {
-    const given = updateSchemaColumn(sheetForm(), "equipment", "equipment.item", {
+    const given = updateSchemaColumn(sheetForm(), "equipment", "item", {
       options: ["Crane", "Digger", "Lift", "Hoist"],
       options_source: { file: "plant.csv", column: "item" },
       row_per_value: true,
     })
     // A value held for the lift, as a quote opened or a refresh may leave it.
-    given.sample = { equipment: [{ "equipment.item": "Lift", "equipment.value": "3" }] }
+    given.sample = { equipment: [{ item: "Lift", value: "3" }] }
     loadForm(updateWidget(given, "w_grid", { rows: 2 }))
     renderBody("w_grid")
     const bodyRows = () => screen.getAllByRole("row").slice(1)
@@ -276,10 +276,10 @@ describe("WidgetBody", () => {
     fireEvent.change(value, { target: { value: "5000" } })
     fireEvent.blur(value)
     expect(currentForm().sample.equipment).toEqual([
-      { "equipment.item": "Crane", "equipment.value": "5000" },
-      { "equipment.item": "Digger" },
-      { "equipment.item": "Lift", "equipment.value": "3" },
-      { "equipment.item": "Hoist" },
+      { item: "Crane", value: "5000" },
+      { item: "Digger" },
+      { item: "Lift", value: "3" },
+      { item: "Hoist" },
     ])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
     cleanup()
@@ -291,25 +291,25 @@ describe("WidgetBody", () => {
     fireEvent.change(quoted, { target: { value: "70" } })
     fireEvent.blur(quoted)
     expect(useWorkbenchPreviewStore.getState().quote.equipment).toEqual([
-      { "equipment.item": "Crane" },
-      { "equipment.item": "Digger", "equipment.value": "70" },
-      { "equipment.item": "Lift" },
-      { "equipment.item": "Hoist" },
+      { item: "Crane" },
+      { item: "Digger", value: "70" },
+      { item: "Lift" },
+      { item: "Hoist" },
     ])
   })
 
   it("shows every row of a table whose rows differ beside the rows a column gives, a table's cells past its own rows taking no typing", () => {
-    let given = updateSchemaColumn(sheetForm(), "equipment", "equipment.item", {
+    let given = updateSchemaColumn(sheetForm(), "equipment", "item", {
       options: ["Crane", "Lift"],
       options_source: { file: "plant.csv", column: "item" },
       row_per_value: true,
     })
-    given = addSchemaTable(given, table("hire", "hire", { rows: "many", columns: [column("hire.item", "item", { key: true }), column("hire.days", "days", { type: "int" })] }))
-    given = toggleField(given, "w_grid", { table: "hire", column: "hire.days" })
+    given = addSchemaTable(given, table("hire", { rows: "many", columns: [column("item", { key: true }), column("days", { type: "int" })] }))
+    given = toggleField(given, "w_grid", { table: "hire", column: "days" })
     // The equipment's index, numbering its own rows alone.
-    given = addSchemaColumn(given, "equipment", { ...column("equipment.row", "row_number", { type: "int" }), index: true }, 0)
-    given = toggleField(given, "w_grid", { table: "equipment", column: "equipment.row" })
-    given.sample = { hire: [{ "hire.days": "1" }, { "hire.days": "2" }, { "hire.days": "3" }] }
+    given = addSchemaColumn(given, "equipment", { ...column("row_number", { type: "int" }), index: true }, 0)
+    given = toggleField(given, "w_grid", { table: "equipment", column: "row_number" })
+    given.sample = { hire: [{ days: "1" }, { days: "2" }, { days: "3" }] }
     loadForm(given)
     renderBody("w_grid")
 
@@ -340,7 +340,7 @@ describe("WidgetBody", () => {
     cleanup()
 
     const form = updateWidget(sheetForm(), "w_grid", { row_numbers: false, density: "comfortable", gridlines: "all", striped: false, fixed_rows: true })
-    form.sample = { equipment: [{ "equipment.item": "A" }, {}, {}, { "equipment.item": "D" }] }
+    form.sample = { equipment: [{ item: "A" }, {}, {}, { item: "D" }] }
     loadForm(form)
     renderBody("w_grid")
     expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Item", "Value"])
@@ -357,10 +357,10 @@ describe("WidgetBody", () => {
     cleanup()
 
     // No gridlines: no line between the rows, nor before an output column.
-    loadForm(updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" }), "w_grid", { gridlines: "none" }))
+    loadForm(updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" }), "w_grid", { gridlines: "none" }))
     renderBody("w_grid")
     expect(bodyRows()[0].style.borderBottom).toBe("")
-    expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.borderLeft).toBe("")
+    expect(screen.getByTestId("priced-premiums:premium-1").style.borderLeft).toBe("")
   })
 
   it("draws a Table's header as written by default, in capitals as its options say, and a Table without its frame", () => {
@@ -384,7 +384,7 @@ describe("WidgetBody", () => {
   })
 
   it("draws a Table transposed, its fields down its side and its rows across, typed, inserted and deleted as its rows are", () => {
-    const form = updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" }), "w_grid", { transposed: true, header: "caps" })
+    const form = updateWidget(toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" }), "w_grid", { transposed: true, header: "caps" })
     loadForm(form)
     renderBody("w_grid")
     const lines = () => screen.getAllByRole("row")
@@ -400,14 +400,14 @@ describe("WidgetBody", () => {
     // Shaded every other line and lined between them as drawn, an output field ruled off above its line.
     expect(lines()[1]).toHaveClass("even:bg-[var(--chip-rest)]")
     expect(lines()[1].style.borderBottom).toBe("1px solid var(--border-subtle)")
-    expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.borderTop).toBe("1px solid var(--border)")
+    expect(screen.getByTestId("priced-premiums:premium-1").style.borderTop).toBe("1px solid var(--border)")
     expect(cellOf("Value row 1")?.style.borderTop).toBe("")
 
     // Typed, inserted and deleted as its rows are, the menu saying what it does as drawn.
     const item = screen.getByRole("textbox", { name: "Item row 2" })
     fireEvent.change(item, { target: { value: "Crane" } })
     fireEvent.keyDown(item, { key: "Enter" })
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }, {}])
     // The menu opens on a row's number as on its cells.
     fromRowMenu(within(lines()[0]).getAllByRole("columnheader")[3], "Insert")
     expect(within(screen.getByRole("menu", { name: "Column 3" })).getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual([
@@ -419,18 +419,18 @@ describe("WidgetBody", () => {
       "Delete Column",
     ])
     fireEvent.click(screen.getByRole("menuitem", { name: "Insert Column Right" }))
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }, {}, {}])
     expect(within(lines()[0]).getAllByRole("columnheader")).toHaveLength(5)
-    fromRowMenu(screen.getByTestId("priced-premiums:premiums.premium-1"), "Insert", "Insert Multiple Columns Left")
+    fromRowMenu(screen.getByTestId("priced-premiums:premium-1"), "Insert", "Insert Multiple Columns Left")
     expect(screen.getByRole("dialog", { name: "Insert Columns Left" })).toBeInTheDocument()
     fireEvent.change(screen.getByRole("spinbutton", { name: "Columns" }), { target: { value: "2" } })
     fireEvent.click(screen.getByRole("button", { name: "Insert" }))
-    expect(currentForm().sample.equipment).toEqual([{}, {}, {}, { "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, {}, {}, { item: "Crane" }, {}, {}])
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 2" }), "Delete Column")
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 1" }), "Delete Column")
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }, {}, {}])
     fromRowMenu(within(lines()[0]).getAllByRole("columnheader")[1], "Delete Column")
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{ item: "Crane" }, {}, {}])
     cleanup()
 
     // Unnumbered, nothing goes above the fields, the menu opening on their cells.
@@ -451,10 +451,10 @@ describe("WidgetBody", () => {
   })
 
   it("heads a Table's fields side by side in a schema group with one cell naming it, over their labels or beside them transposed", () => {
-    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
-    form = updateSchemaColumn(form, "equipment", "equipment.item", { group: "Asset" })
-    form = updateSchemaColumn(form, "equipment", "equipment.value", { group: "Asset" })
-    form = updateSchemaColumn(form, "premiums", "premiums.premium", { group: "Price" })
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" })
+    form = updateSchemaColumn(form, "equipment", "item", { group: "Asset" })
+    form = updateSchemaColumn(form, "equipment", "value", { group: "Asset" })
+    form = updateSchemaColumn(form, "premiums", "premium", { group: "Price" })
     const headerRows = () => screen.getAllByRole("row").filter((row) => row.closest("thead") !== null)
     const spans = (row: HTMLElement) => [...row.children].map((cell) => [cell.textContent, (cell as HTMLTableCellElement).colSpan])
 
@@ -477,7 +477,7 @@ describe("WidgetBody", () => {
     cleanup()
 
     // A field in no group has a blank cell of its own; with no field in a group, no row.
-    loadForm(updateSchemaColumn(grouped, "equipment", "equipment.item", { group: "" }))
+    loadForm(updateSchemaColumn(grouped, "equipment", "item", { group: "" }))
     renderBody("w_grid")
     expect(spans(headerRows()[0])).toEqual([["", 1], ["", 1], ["Asset", 1], ["Price", 1]])
     cleanup()
@@ -525,7 +525,7 @@ describe("WidgetBody", () => {
 
 
   it("draws a Collection as its options say: its labels beside its boxes, compact boxes and no frame", () => {
-    loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" }))
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premium" }))
     const box = () => screen.getByRole("combobox", { name: "State" })
     const field = () => box().closest("[title]") as HTMLElement
     const { container } = renderBody("w_boxes")
@@ -533,7 +533,7 @@ describe("WidgetBody", () => {
     // By default each label above its box, comfortable boxes, in its frame.
     expect(field()).toHaveClass("flex-col")
     expect(box()).toHaveClass("h-9")
-    expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveClass("h-9")
+    expect(screen.getByTestId("priced-premiums:premium")).toHaveClass("h-9")
     expect((container.firstElementChild as HTMLElement).style.border).toBe("1px solid var(--border)")
     cleanup()
 
@@ -545,14 +545,14 @@ describe("WidgetBody", () => {
     expect(field().firstElementChild).toHaveTextContent("State")
     // Compact boxes, an output's too, and closer together.
     expect(box()).toHaveClass("h-7")
-    expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveClass("h-7")
+    expect(screen.getByTestId("priced-premiums:premium")).toHaveClass("h-7")
     expect(field().parentElement).toHaveClass("gap-y-2")
     expect(framed.style.border).toBe("")
   })
 
   it("draws a Collection's own look over the sheets' colours, its text, its labels, its boxes and its frame, and a field's own look over the Collection's", () => {
-    const state = { table: "policy", column: "policy.state" }
-    const premium = { table: "premiums", column: "premiums.premium" }
+    const state = { table: "policy", column: "state" }
+    const premium = { table: "premiums", column: "premium" }
     let form = toggleField(sheetForm(), "w_boxes", premium)
     form.theme = { ...BLANK_THEME, border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626" }
     form = updateWidget(form, "w_boxes", {
@@ -575,9 +575,9 @@ describe("WidgetBody", () => {
     })
     loadForm(form)
     const { container } = renderBody("w_boxes")
-    const label = () => screen.getByTestId("label-policy:policy.state")
+    const label = () => screen.getByTestId("label-policy:state")
     const box = () => screen.getByRole("combobox", { name: "State" })
-    const output = () => screen.getByTestId("priced-premiums:premiums.premium")
+    const output = () => screen.getByTestId("priced-premiums:premium")
 
     // Its frame in its own colour and weight, the rule under its title in its colour.
     const root = container.firstElementChild as HTMLElement
@@ -618,7 +618,7 @@ describe("WidgetBody", () => {
     expect(label()).toHaveStyle({ background: "#DC2626", color: "#000000" })
     expect(label().firstElementChild).toHaveStyle({ textAlign: "center" })
     expect(box()).toHaveStyle({ background: "#D1D5DB", color: "#059669", fontWeight: "600", textAlign: "right" })
-    expect(screen.getByTestId("label-premiums:premiums.premium").firstElementChild).toHaveStyle({ textAlign: "left" })
+    expect(screen.getByTestId("label-premiums:premium").firstElementChild).toHaveStyle({ textAlign: "left" })
     expect(output()).toHaveStyle({ background: "#FFFFFF", color: "#000000", justifyContent: "flex-start" })
     cleanup()
 
@@ -632,13 +632,13 @@ describe("WidgetBody", () => {
   })
 
   it("sets a Collection's labels and boxes to their widths: a box of a set width leaves the rest to its label, and sits under its label as its field aligns", () => {
-    const state = { table: "policy", column: "policy.state" }
-    const premium = { table: "premiums", column: "premiums.premium" }
+    const state = { table: "policy", column: "state" }
+    const premium = { table: "premiums", column: "premium" }
     const base = updateWidget(toggleField(sheetForm(), "w_boxes", premium), "w_boxes", { labels: "beside" })
-    const label = () => screen.getByTestId("label-policy:policy.state")
+    const label = () => screen.getByTestId("label-policy:state")
     // The box an input's control sits in, and an output's box.
     const box = () => screen.getByRole("combobox", { name: "State" }).parentElement as HTMLElement
-    const output = () => screen.getByTestId("priced-premiums:premiums.premium")
+    const output = () => screen.getByTestId("priced-premiums:premium")
     const draw = (patch: WidgetPatch, form = base) => {
       cleanup()
       loadForm(updateWidget(form, "w_boxes", patch))
@@ -673,7 +673,7 @@ describe("WidgetBody", () => {
   })
 
   it("places a Collection's tick box across its box as its field aligns", () => {
-    const cover = { table: "policy", column: "policy.cover" }
+    const cover = { table: "policy", column: "cover" }
     loadForm(setColumnLook(updateWidget(coverForm(), "w_boxes", { box_width: 48 }), "w_boxes", cover, { align: "center" }))
     renderBody("w_boxes")
     const tick = screen.getByRole("checkbox", { name: "Cover" })
@@ -684,9 +684,9 @@ describe("WidgetBody", () => {
   it("leaves a gap across a Collection's whole width where each of its spacers sits, the fields after it starting a new row", () => {
     // State, cover and year, two across, a spacer after State and two after the last field.
     const fields = [
-      { table: "policy", column: "policy.state" },
-      { table: "policy", column: "policy.cover" },
-      { table: "policy", column: "policy.year" },
+      { table: "policy", column: "state" },
+      { table: "policy", column: "cover" },
+      { table: "policy", column: "year" },
     ]
     loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [1, 3, 3] }))
     renderBody("w_boxes")
@@ -710,10 +710,10 @@ describe("WidgetBody", () => {
   })
 
   it("closes a Collection up in Preview around a field that hides, a spacer going with the fields after it, and fades the field while building, its eye naming its conditions", () => {
-    const year = { table: "policy", column: "policy.year" }
-    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
+    const year = { table: "policy", column: "year" }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
     const base = coverForm()
-    const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
+    const fields = [{ table: "policy", column: "state" }, { table: "policy", column: "cover" }, year]
     loadForm(setColumnLook(updateWidget(base, "w_boxes", { fields, spacers: [2] }), "w_boxes", year, { show_when: covered }))
     render(<SheetCanvas />)
     const boxes = () => screen.getByTestId("sheet-widget-w_boxes")
@@ -735,7 +735,7 @@ describe("WidgetBody", () => {
 
   it("names a field its sheet's file gives a name the schema doesn't hold, read as an unresolved id, while building", () => {
     // policy.region in the file, which the schema doesn't hold, reads as "?region".
-    const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "?region" }]
+    const fields = [{ table: "policy", column: "state" }, { table: "policy", column: "?region" }]
     loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [] }))
     render(<SheetCanvas />)
     const boxes = () => screen.getByTestId("sheet-widget-w_boxes")
@@ -746,7 +746,7 @@ describe("WidgetBody", () => {
 
   it("names a field whose column is gone while building, a column Haute makes no more among them, and leaves it out in Preview", () => {
     // A field on quote_details' valid_until, which an earlier Haute made, beside the state.
-    const fields = [{ table: "policy", column: "policy.state" }, { table: "quote_details", column: "qd_valid_until" }]
+    const fields = [{ table: "policy", column: "state" }, { table: "quote_details", column: "qd_valid_until" }]
     loadForm(updateWidget(coverForm(), "w_boxes", { fields, spacers: [1] }))
     render(<SheetCanvas />)
     const boxes = () => screen.getByTestId("sheet-widget-w_boxes")
@@ -762,14 +762,14 @@ describe("WidgetBody", () => {
   })
 
   it("leaves a Table's column that hides out of its grid in Preview, transposed its line, its rows still moving with every table it shows", () => {
-    const value = { table: "equipment", column: "equipment.value" }
-    const note = { table: "extras", column: "extras.note" }
-    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
+    const value = { table: "equipment", column: "value" }
+    const note = { table: "extras", column: "note" }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
     const base = coverForm()
-    base.schema.tables.push(table("extras", "extras", { rows: "many", columns: [column("extras.item", "item", { key: true }), column("extras.note", "note")] }))
-    let form = updateWidget(base, "w_grid", { fields: [{ table: "equipment", column: "equipment.item" }, value, note] })
+    base.schema.tables.push(table("extras", { rows: "many", columns: [column("item", { key: true }), column("note")] }))
+    let form = updateWidget(base, "w_grid", { fields: [{ table: "equipment", column: "item" }, value, note] })
     form = setColumnLook(setColumnLook(form, "w_grid", value, { show_when: covered }), "w_grid", note, { show_when: covered })
-    loadForm({ ...form, sample: { equipment: [{ "equipment.item": "Crane" }, { "equipment.item": "Lift" }], extras: [{ "extras.note": "first" }, { "extras.note": "second" }] } })
+    loadForm({ ...form, sample: { equipment: [{ item: "Crane" }, { item: "Lift" }], extras: [{ note: "first" }, { note: "second" }] } })
     render(<SheetCanvas />)
     const grid = () => screen.getByTestId("sheet-widget-w_grid")
 
@@ -781,8 +781,8 @@ describe("WidgetBody", () => {
     expect(within(grid()).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item"])
     // A row deleted goes from every table the grid shows, the one whose columns all hide too.
     fromRowMenu(within(grid()).getByRole("textbox", { name: "Item row 1" }), "Delete Row")
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Lift" }])
-    expect(currentForm().sample.extras).toEqual([{ "extras.note": "second" }])
+    expect(currentForm().sample.equipment).toEqual([{ item: "Lift" }])
+    expect(currentForm().sample.extras).toEqual([{ note: "second" }])
 
     // Transposed, the field's line goes.
     act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_grid", { transposed: true })))
@@ -790,10 +790,10 @@ describe("WidgetBody", () => {
   })
 
   it("draws the components in the sheets' colours: the font, the borders, the backgrounds and the input and output cells' fills", () => {
-    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
-    form = toggleField(form, "w_boxes", { table: "premiums", column: "premiums.premium" })
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" })
+    form = toggleField(form, "w_boxes", { table: "premiums", column: "premium" })
     addTo(form, headingWidget("w_head", "Equipment schedule", { description: "By item" }))
-    form.sample = { equipment: [{ "equipment.item": "Crane" }] }
+    form.sample = { equipment: [{ item: "Crane" }] }
     form.theme = { ...BLANK_THEME, background_color: "#059669", border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626", output_cell_color: "#9333EA" }
     loadForm(form)
     useWorkbenchPricingStore.setState({
@@ -818,7 +818,7 @@ describe("WidgetBody", () => {
     expect(item.closest("tr")?.style.borderBottom).toBe(border)
     // The input cells' fill on its input cells, the output cells' on its output cells, its value in the font.
     expect(item.closest("td")).toHaveStyle({ background: "#DC2626" })
-    const premium = screen.getByTestId("priced-premiums:premiums.premium-1")
+    const premium = screen.getByTestId("priced-premiums:premium-1")
     expect(premium).toHaveStyle({ background: "#9333EA", color: "#2563EB" })
     expect(premium.style.borderLeft).toBe(border)
     cleanup()
@@ -829,7 +829,7 @@ describe("WidgetBody", () => {
     expect(state).toHaveStyle({ background: "#DC2626", color: "#2563EB" })
     expect(state.style.border).toBe(border)
     expect(state.closest("[title]")?.firstElementChild).toHaveStyle({ color: "#2563EB" })
-    const output = screen.getByTestId("priced-premiums:premiums.premium")
+    const output = screen.getByTestId("priced-premiums:premium")
     expect(output).toHaveStyle({ background: "#9333EA" })
     expect(output.style.border).toBe(border)
     cleanup()
@@ -855,15 +855,15 @@ describe("WidgetBody", () => {
     const unframed = renderBody("w_grid").container.firstElementChild as HTMLElement
     expect(unframed.style.border).toBe("")
     expect(unframed.style.background).toBe("")
-    expect(screen.getByTestId("priced-premiums:premiums.premium-1").style.background).toBe("var(--workbench-output-cell-bg)")
+    expect(screen.getByTestId("priced-premiums:premium-1").style.background).toBe("var(--workbench-output-cell-bg)")
     expect(screen.getAllByRole("columnheader")[1].style.boxShadow).toBe("inset 0 -1px 0 var(--border-bright)")
     expect(screen.getAllByRole("rowgroup")[0].style.background).toBe("var(--bg-elevated)")
   })
 
   it("draws a Table's own look over the sheets' colours, its lines, its header, its text and its frame, and a column's own look over the Table's", () => {
-    const value = { table: "equipment", column: "equipment.value" }
-    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
-    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "5" }] }
+    const value = { table: "equipment", column: "value" }
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" })
+    form.sample = { equipment: [{ item: "Crane", value: "5" }] }
     form.theme = { ...BLANK_THEME, border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626" }
     form = updateWidget(form, "w_grid", {
       gridlines: "all",
@@ -923,17 +923,17 @@ describe("WidgetBody", () => {
     cleanup()
 
     // An output column's own fill over its shade.
-    loadForm(setColumnLook(form, "w_grid", { table: "premiums", column: "premiums.premium" }, { cell_color: "#FFFFFF", bold: true }))
+    loadForm(setColumnLook(form, "w_grid", { table: "premiums", column: "premium" }, { cell_color: "#FFFFFF", bold: true }))
     renderBody("w_grid")
-    expect(screen.getByTestId("priced-premiums:premiums.premium-1")).toHaveStyle({ background: "#FFFFFF", fontWeight: "600", fontSize: "14px" })
+    expect(screen.getByTestId("priced-premiums:premium-1")).toHaveStyle({ background: "#FFFFFF", fontWeight: "600", fontSize: "14px" })
     cleanup()
 
     // An index's numbers in its column's own font, which they take over their muted grey;
     // a group's name in the header's weight, as its labels are.
     const indexed = sheetForm()
-    indexed.schema.tables[1].columns.unshift(column("equipment.row", "row", { type: "int", index: true }))
+    indexed.schema.tables[1].columns.unshift(column("row", { type: "int", index: true }))
     indexed.schema.tables[1].columns[1].group = "Asset"
-    const index = { table: "equipment", column: "equipment.row" }
+    const index = { table: "equipment", column: "row" }
     loadForm(updateWidget(setColumnLook(toggleField(indexed, "w_grid", index), "w_grid", index, { font_color: "#DC2626" }), "w_grid", { groups: true, header_bold: false }))
     renderBody("w_grid")
     expect(within(screen.getAllByRole("row")[2]).getAllByRole("cell")[3]).toHaveStyle({ color: "#DC2626" })
@@ -942,8 +942,8 @@ describe("WidgetBody", () => {
   })
 
   it("turns a Table's labels as its header says, wraps them, fits the grid to its columns' widths, and draws a column's look along its line transposed", () => {
-    const item = { table: "equipment", column: "equipment.item" }
-    const value = { table: "equipment", column: "equipment.value" }
+    const item = { table: "equipment", column: "item" }
+    const value = { table: "equipment", column: "value" }
     const label = () => screen.getAllByRole("columnheader")[1]
     const turned = () => within(label()).getByText("Item")
     // Level by default, cut off across its column.
@@ -1024,8 +1024,8 @@ describe("WidgetBody", () => {
 
   it("gives a checkbox's cell in a grid its row's height at either density", () => {
     const form = sheetForm()
-    form.schema.tables[1].columns.push(column("equipment.insured", "insured", { type: "bool" }))
-    const grid = toggleField(form, "w_grid", { table: "equipment", column: "equipment.insured" })
+    form.schema.tables[1].columns.push(column("insured", { type: "bool" }))
+    const grid = toggleField(form, "w_grid", { table: "equipment", column: "insured" })
     loadForm(grid)
     renderBody("w_grid")
     expect(screen.getByRole("checkbox", { name: "Insured row 1" }).closest("td")).toHaveClass("h-7")
@@ -1042,8 +1042,8 @@ describe("WidgetBody", () => {
     expect(options("State").map((option) => option.textContent)).toEqual(["", "CA", "NY"])
     cleanup()
 
-    let form = updateSchemaColumn(sheetForm(), "policy", "policy.state", { placeholder: "Pick a state" })
-    form = updateSchemaColumn(form, "equipment", "equipment.value", { options: ["1000", "250000"], number_format: "currency_gbp", decimal_places: 0 })
+    let form = updateSchemaColumn(sheetForm(), "policy", "state", { placeholder: "Pick a state" })
+    form = updateSchemaColumn(form, "equipment", "value", { options: ["1000", "250000"], number_format: "currency_gbp", decimal_places: 0 })
     loadForm(form)
     renderBody("w_boxes")
     expect(options("State")[0]).toHaveTextContent("Pick a state")
@@ -1057,14 +1057,14 @@ describe("WidgetBody", () => {
       ["250000", "£250,000"],
     ])
     fireEvent.change(screen.getByRole("combobox", { name: "Value row 1" }), { target: { value: "250000" } })
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.value": "250000" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{ value: "250000" }, {}, {}])
   })
 
   it("shows what pricing the sample gave an output box, dimmed once the sample has moved on", () => {
-    const form = toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" })
+    const form = toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premium" })
     loadForm(form)
     const { rerender } = renderBody("w_boxes")
-    const box = () => screen.getByTestId("priced-premiums:premiums.premium")
+    const box = () => screen.getByTestId("priced-premiums:premium")
     expect(box()).toHaveTextContent("—")
 
     useWorkbenchPricingStore.setState({ price: { basis: previewBasis(form), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
@@ -1083,25 +1083,25 @@ describe("WidgetBody", () => {
     expect(box()).not.toHaveAttribute("data-stale")
 
     // In its column's format, once it has one.
-    loadForm(updateSchemaColumn(currentForm(), "premiums", "premiums.premium", { number_format: "currency_gbp" }))
+    loadForm(updateSchemaColumn(currentForm(), "premiums", "premium", { number_format: "currency_gbp" }))
     useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1234.5 }] } } })
     rerender(body("w_boxes"))
     expect(box()).toHaveTextContent("£1,234.50")
   })
 
   it("shows numbers in their column's format, a cell as typed while typing, and a column's placeholder and help", () => {
-    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
-    form = updateSchemaColumn(form, "equipment", "equipment.value", { number_format: "number", decimal_places: 0, help: "Replacement value" })
-    form = updateSchemaColumn(form, "equipment", "equipment.item", { placeholder: "e.g. Crane" })
-    form = updateSchemaColumn(form, "premiums", "premiums.premium", { number_format: "currency_gbp" })
-    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "1234567.4" }, {}, {}] }
+    let form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" })
+    form = updateSchemaColumn(form, "equipment", "value", { number_format: "number", decimal_places: 0, help: "Replacement value" })
+    form = updateSchemaColumn(form, "equipment", "item", { placeholder: "e.g. Crane" })
+    form = updateSchemaColumn(form, "premiums", "premium", { number_format: "currency_gbp" })
+    form.sample = { equipment: [{ item: "Crane", value: "1234567.4" }, {}, {}] }
     loadForm(form)
     useWorkbenchPricingStore.setState({
       price: { basis: previewBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 1234.5 }] } },
     })
     const { rerender } = renderBody("w_grid")
 
-    const premium = screen.getByTestId("priced-premiums:premiums.premium-1")
+    const premium = screen.getByTestId("priced-premiums:premium-1")
     expect(premium).toHaveTextContent("£1,234.50")
     // An output column is lined off from the inputs and tinted green.
     expect(premium.style.borderLeft).toBe("1px solid var(--border)")
@@ -1114,7 +1114,7 @@ describe("WidgetBody", () => {
     expect(value).toHaveValue("1234567.4")
     fireEvent.change(value, { target: { value: "2500" } })
     fireEvent.blur(value)
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.item": "Crane", "equipment.value": "2500" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{ item: "Crane", value: "2500" }, {}, {}])
     expect(value).toHaveValue("2,500")
 
     expect(screen.getByRole("textbox", { name: "Item row 2" })).toHaveAttribute("placeholder", "e.g. Crane")
@@ -1122,7 +1122,7 @@ describe("WidgetBody", () => {
 
     // A number column's placeholder shows in its format while it is a number, as written while not.
     const hint = (placeholder: string, options: string[] = []) => {
-      loadForm(updateSchemaColumn(currentForm(), "equipment", "equipment.value", { placeholder, options }))
+      loadForm(updateSchemaColumn(currentForm(), "equipment", "value", { placeholder, options }))
       rerender(body("w_grid"))
     }
     hint("2500000")
@@ -1134,22 +1134,22 @@ describe("WidgetBody", () => {
   })
 
   it("takes a percent as the fraction typed, 0.125, and shows it as 12.5% once typed", () => {
-    loadForm(updateSchemaColumn(sheetForm(), "equipment", "equipment.value", { number_format: "percent", decimal_places: 1 }))
+    loadForm(updateSchemaColumn(sheetForm(), "equipment", "value", { number_format: "percent", decimal_places: 1 }))
     renderBody("w_grid")
     const value = screen.getByRole("textbox", { name: "Value row 1" })
 
     fireEvent.focus(value)
     fireEvent.change(value, { target: { value: "0.125" } })
     fireEvent.blur(value)
-    expect(currentForm().sample.equipment).toEqual([{ "equipment.value": "0.125" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{ value: "0.125" }, {}, {}])
     expect(value).toHaveValue("12.5%")
     fireEvent.focus(value)
     expect(value).toHaveValue("0.125")
   })
 
   it("shows a Table's output columns matched to its rows by key, as the server typed the keys", () => {
-    const form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premiums.premium" })
-    form.sample = { equipment: [{ "equipment.item": "Crane" }, {}, { "equipment.item": "Paver" }] }
+    const form = toggleField(sheetForm(), "w_grid", { table: "premiums", column: "premium" })
+    form.sample = { equipment: [{ item: "Crane" }, {}, { item: "Paver" }] }
     loadForm(form)
     useWorkbenchPricingStore.setState({
       price: {
@@ -1159,7 +1159,7 @@ describe("WidgetBody", () => {
       },
     })
     renderBody("w_grid")
-    const cell = (row: number) => screen.getByTestId(`priced-premiums:premiums.premium-${row}`)
+    const cell = (row: number) => screen.getByTestId(`priced-premiums:premium-${row}`)
 
     expect(cell(1)).toHaveTextContent("10")
     expect(cell(2)).toHaveTextContent("—")
@@ -1185,14 +1185,14 @@ describe("WidgetBody", () => {
       id: "w_results",
       title: "Premiums",
       fields: [
-        { table: "premiums", column: "premiums.item" },
-        { table: "premiums", column: "premiums.premium" },
+        { table: "premiums", column: "item" },
+        { table: "premiums", column: "premium" },
       ],
     }
     addTo(form, results)
     loadForm(form)
     const { rerender } = renderBody("w_results")
-    const cell = (name: string, row: number) => screen.queryByTestId(`priced-premiums:premiums.${name}-${row}`)
+    const cell = (name: string, row: number) => screen.queryByTestId(`priced-premiums:${name}-${row}`)
 
     // Nothing priced: its three starting rows, each cell a dash, so it reads as not yet connected.
     expect(cell("premium", 3)).toHaveTextContent("—")
@@ -1217,17 +1217,17 @@ describe("WidgetBody", () => {
   })
 
   it("keeps a Table of output columns alone on its first field's rows in Preview while that field hides", () => {
-    const premium = { table: "premiums", column: "premiums.premium" }
-    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
+    const premium = { table: "premiums", column: "premium" }
+    const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
     const form = coverForm()
     form.schema.tables.push(
-      table("fees", "fees", { role: "output", rows: "many", columns: [column("fees.item", "item", { key: true }), column("fees.fee", "fee", { type: "float" })] }),
+      table("fees", { role: "output", rows: "many", columns: [column("item", { key: true }), column("fee", { type: "float" })] }),
     )
     addTo(form, {
       ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }),
       id: "w_results",
       title: "Premiums",
-      fields: [premium, { table: "fees", column: "fees.item" }, { table: "fees", column: "fees.fee" }],
+      fields: [premium, { table: "fees", column: "item" }, { table: "fees", column: "fee" }],
     })
     loadForm(setColumnLook(form, "w_results", premium, { show_when: covered }))
     useWorkbenchViewStore.setState({ mode: "preview" })
@@ -1248,26 +1248,26 @@ describe("WidgetBody", () => {
 
     // The premium's column goes, but the fees stay lined up with the premiums' rows.
     expect(grid.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["#", "Item", "Fee"])
-    expect([1, 2, 3].map((row) => screen.queryByTestId(`priced-fees:fees.fee-${row}`)?.textContent)).toEqual(["100", "200", undefined])
+    expect([1, 2, 3].map((row) => screen.queryByTestId(`priced-fees:fee-${row}`)?.textContent)).toEqual(["100", "200", undefined])
   })
 
   it("takes a date once it is committed, one edit, not as each digit of its year is typed", () => {
-    const form = toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" })
-    loadForm(updateSchemaColumn(form, "policy", "policy.year", { type: "date" }))
+    const form = toggleField(sheetForm(), "w_boxes", { table: "policy", column: "year" })
+    loadForm(updateSchemaColumn(form, "policy", "year", { type: "date" }))
     useWorkbenchViewStore.setState({ mode: "preview" })
     renderBody("w_boxes")
     const year = screen.getByLabelText("Year")
 
     for (const value of ["0002-01-01", "0020-01-01", "0202-01-01", "2026-01-01"]) fireEvent.change(year, { target: { value } })
-    expect(currentForm().sample.policy?.[0]?.["policy.year"]).toBeUndefined()
+    expect(currentForm().sample.policy?.[0]?.year).toBeUndefined()
     fireEvent.blur(year)
 
-    expect(currentForm().sample.policy[0]["policy.year"]).toBe("2026-01-01")
+    expect(currentForm().sample.policy[0].year).toBe("2026-01-01")
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
   })
 
   it("shows a held value its select no longer allows, and a tick in a column since retyped, each marked", () => {
-    loadForm(toggleField({ ...sheetForm(), sample: { policy: [{ "policy.state": "TX", "policy.year": true }] } }, "w_boxes", { table: "policy", column: "policy.year" }))
+    loadForm(toggleField({ ...sheetForm(), sample: { policy: [{ state: "TX", year: true }] } }, "w_boxes", { table: "policy", column: "year" }))
     useWorkbenchViewStore.setState({ mode: "preview" })
     renderBody("w_boxes")
 
@@ -1280,7 +1280,7 @@ describe("WidgetBody", () => {
   })
 
   it("marks the cells that break their column's rules once anything is typed, as the sample is typed in Preview", () => {
-    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" }))
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "year" }))
     useWorkbenchViewStore.setState({ mode: "preview" })
     const { rerender } = renderBody("w_boxes")
 
@@ -1302,38 +1302,38 @@ describe("WidgetBody", () => {
 
   it("marks nothing in the underwriter app's quote while its only value is in a row its table's rows leave out, the column giving them hidden", () => {
     loadForm(hiddenPerilsForm())
-    useWorkbenchPreviewStore.setState({ quote: { coverage: [{ "coverage.peril": "NW", "coverage.limit": "5000" }] } })
+    useWorkbenchPreviewStore.setState({ quote: { coverage: [{ peril: "NW", limit: "5000" }] } })
     const { rerender } = renderBody("w_boxes", "quote")
     expect(screen.getByRole("combobox", { name: "State" })).not.toHaveAttribute("aria-invalid")
 
-    act(() => useWorkbenchPreviewStore.setState({ quote: { coverage: [{ "coverage.peril": "EQ", "coverage.limit": "5000" }] } }))
+    act(() => useWorkbenchPreviewStore.setState({ quote: { coverage: [{ peril: "EQ", limit: "5000" }] } }))
     rerender(body("w_boxes", "quote"))
     expect(screen.getByRole("combobox", { name: "State" })).toHaveAttribute("aria-invalid", "true")
   })
 
   it("types the underwriter app's quote apart from the sample, without history, its cells marked once anything is typed, and shows its price", () => {
-    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "policy.year" }))
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "policy", column: "year" }))
     const { rerender } = renderBody("w_boxes", "quote")
 
     const year = screen.getByRole("textbox", { name: "Year" })
     fireEvent.change(year, { target: { value: "2021" } })
     fireEvent.blur(year)
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.year": "2021" }] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ year: "2021" }] })
     expect(currentForm().sample).toEqual({})
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
     rerender(body("w_boxes", "quote"))
     expect(screen.getByRole("combobox", { name: "State" })).toHaveAttribute("title", "Required")
 
     // An output box shows the quote's price, not the sample's.
-    loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premiums.premium" }))
+    loadForm(toggleField(sheetForm(), "w_boxes", { table: "premiums", column: "premium" }))
     useWorkbenchPricingStore.setState({ price: { basis: previewBasis(currentForm()), sample: {}, tables: { premiums: [{ premium: 1 }] } } })
     useWorkbenchPreviewStore.setState({
-      quote: { policy: [{ "policy.state": "CA" }] },
-      price: { basis: valuesBasis(currentForm().schema, new Set(), { policy: [{ "policy.state": "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
+      quote: { policy: [{ state: "CA" }] },
+      price: { basis: valuesBasis(currentForm().schema, new Set(), { policy: [{ state: "CA" }] }), sample: {}, tables: { premiums: [{ premium: 777 }] } },
     })
     cleanup()
     renderBody("w_boxes", "quote")
-    expect(screen.getByTestId("priced-premiums:premiums.premium")).toHaveTextContent("777")
+    expect(screen.getByTestId("priced-premiums:premium")).toHaveTextContent("777")
   })
 
   it("keeps the rows the underwriter app's quote's grid starts with as the first value is typed into it, and inserts and deletes its rows", () => {
@@ -1343,18 +1343,18 @@ describe("WidgetBody", () => {
     const item = screen.getByRole("textbox", { name: "Item row 1" })
     fireEvent.change(item, { target: { value: "Crane" } })
     fireEvent.keyDown(item, { key: "Enter" })
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{ "equipment.item": "Crane" }, {}, {}] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{ item: "Crane" }, {}, {}] })
     expect(screen.getAllByRole("row")).toHaveLength(4)
 
     fromRowMenu(item, "Insert", "Insert Row Above")
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{}, { "equipment.item": "Crane" }, {}, {}] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{}, { item: "Crane" }, {}, {}] })
     fromRowMenu(screen.getByRole("textbox", { name: "Item row 3" }), "Delete Row")
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{}, { "equipment.item": "Crane" }, {}] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ equipment: [{}, { item: "Crane" }, {}] })
     expect(currentForm().sample).toEqual({})
   })
 
   it("while building draws a component's cells as a new quote's, empty and inert, so a press on one is its frame's", () => {
-    loadForm({ ...sheetForm(), sample: { policy: [{ "policy.state": "NY" }] } })
+    loadForm({ ...sheetForm(), sample: { policy: [{ state: "NY" }] } })
     render(<SheetCanvas />)
     const frame = screen.getByTestId("sheet-widget-w_boxes")
     const cell = within(frame).getByRole("combobox", { name: "State" })
@@ -1377,7 +1377,7 @@ describe("WidgetBody", () => {
   it("while building draws a new quote holding its columns' defaults, Preview the sample as typed", () => {
     const form = sheetForm()
     form.schema.tables[0].columns[0].default_value = "CA"
-    loadForm({ ...form, sample: { policy: [{ "policy.state": "NY" }] } })
+    loadForm({ ...form, sample: { policy: [{ state: "NY" }] } })
     render(<SheetCanvas />)
 
     expect(within(screen.getByTestId("sheet-widget-w_boxes")).getByRole("combobox", { name: "State" })).toHaveValue("CA")
@@ -1491,7 +1491,7 @@ describe("WidgetBody", () => {
   })
 
   it("shows the underwriter app's quote held read only with its cells taking no typing and no rows inserted or deleted", () => {
-    act(() => useWorkbenchPreviewStore.getState().open({ policy: [{ "policy.state": "NY" }], equipment: [{ "equipment.item": "Crane" }] }, null, true))
+    act(() => useWorkbenchPreviewStore.getState().open({ policy: [{ state: "NY" }], equipment: [{ item: "Crane" }] }, null, true))
     const { unmount } = renderBody("w_boxes", "quote")
     expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
     unmount()
@@ -1499,8 +1499,8 @@ describe("WidgetBody", () => {
     renderBody("w_grid", "quote")
     expect(screen.getByRole("textbox", { name: "Item row 1" })).toBeDisabled()
     expectNoRowMenu(screen.getByRole("textbox", { name: "Item row 1" }))
-    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", "CA"))
-    expect(useWorkbenchPreviewStore.getState().quote.policy[0]["policy.state"]).toBe("NY")
+    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "state", "CA"))
+    expect(useWorkbenchPreviewStore.getState().quote.policy[0].state).toBe("NY")
   })
 })
 

@@ -42,7 +42,7 @@ HAUTE = "9.9.9"
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_, **rest}
+    return {"name": name, "type": type_, **rest}
 
 
 FORM = with_quote_details(
@@ -52,7 +52,6 @@ FORM = with_quote_details(
             "schema": {
                 "tables": [
                     {
-                        "id": "t_policy",
                         "name": "policy",
                         "rows": "one",
                         "columns": [
@@ -63,7 +62,6 @@ FORM = with_quote_details(
                         ],
                     },
                     {
-                        "id": "t_vehicles",
                         "name": "vehicles",
                         "rows": "many",
                         "columns": [
@@ -74,7 +72,6 @@ FORM = with_quote_details(
                         ],
                     },
                     {
-                        "id": "t_premium",
                         "name": "premium",
                         "role": "output",
                         "rows": "one",
@@ -84,7 +81,6 @@ FORM = with_quote_details(
                         ],
                     },
                     {
-                        "id": "t_vehicle_premium",
                         "name": "vehicle_premium",
                         "role": "output",
                         "rows": "many",
@@ -145,14 +141,14 @@ def op() -> str:
 
 
 def values(**tables: Any) -> dict[str, Any]:
-    """Cells by table and column id: a fully keyed motor quote, with *tables* over it."""
+    """Cells by table and column name: a fully keyed motor quote, with *tables* over it."""
     base: dict[str, Any] = {
-        "quote_details": [{"qd_quote_name": "Fleet", "qd_insured": "Acme Haulage"}],
-        "t_policy": [{"c_region": "north", "c_drivers": "2", "c_start": "2026-11-01"}],
-        "t_vehicles": [
-            {"c_reg": "AB12 CDE", "c_value": "£12,500", "c_garaged": True},
+        "quote_details": [{"quote_name": "Fleet", "insured": "Acme Haulage"}],
+        "policy": [{"region": "north", "drivers": "2", "start": "2026-11-01"}],
+        "vehicles": [
+            {"reg": "AB12 CDE", "value": "£12,500", "garaged": True},
             {},
-            {"c_reg": "XY34 ZZZ", "c_value": "8000", "c_mileage": "9007199254740993"},
+            {"reg": "XY34 ZZZ", "value": "8000", "mileage": "9007199254740993"},
         ],
     }
     return {**base, **tables}
@@ -227,7 +223,7 @@ def test_saving_again_replaces_the_quotes_rows_and_an_unpriced_save_keeps_no_pri
     book: QuoteBook, store: Target
 ) -> None:
     quote = save(book, make(book))
-    one_vehicle = values(t_vehicles=[{"c_reg": "AB12 CDE", "c_value": "12500"}])
+    one_vehicle = values(vehicles=[{"reg": "AB12 CDE", "value": "12500"}])
 
     saved = save(book, quote, priced=False, values=one_vehicle)
 
@@ -244,8 +240,8 @@ def test_a_value_not_of_its_columns_type_refuses_the_whole_save_naming_each_cell
 ) -> None:
     quote = make(book)
     misfits = values(
-        t_policy=[{"c_region": "north", "c_drivers": "two"}],
-        t_vehicles=[{"c_reg": "A", "c_value": "1"}, {}, {"c_reg": "B", "c_mileage": "lots"}],
+        policy=[{"region": "north", "drivers": "two"}],
+        vehicles=[{"reg": "A", "value": "1"}, {}, {"reg": "B", "mileage": "lots"}],
     )
 
     with pytest.raises(QuoteValuesError) as refused:
@@ -263,12 +259,12 @@ def test_nothing_else_a_quotes_cells_or_outputs_hold_refuses_a_save(
     book: QuoteBook, store: Target
 ) -> None:
     # An empty required input, a value below its column's minimum and a non-finite output.
-    quote = make(book, values=values(t_policy=[{"c_drivers": "0"}]))
+    quote = make(book, values=values(policy=[{"drivers": "0"}]))
 
     saved = save(
         book,
         quote,
-        values=values(t_policy=[{"c_drivers": "0"}]),
+        values=values(policy=[{"drivers": "0"}]),
         document=document(total=float("nan")),
     )
 
@@ -378,7 +374,7 @@ def test_a_key_reused_for_another_quote_or_person_is_refused(book: QuoteBook) ->
 def test_mark_final_needs_a_price_of_the_running_release_and_every_required_value(
     book: QuoteBook,
 ) -> None:
-    quote = make(book, values=values(t_policy=[{"c_region": "north"}]))
+    quote = make(book, values=values(policy=[{"region": "north"}]))
     unpriced = save(book, quote, priced=False)
     with pytest.raises(QuoteNotReadyError, match="is not priced"):
         book.finalise("A-1", 1, version=unpriced.version, actor=ANA, release=RELEASE)
@@ -386,7 +382,7 @@ def test_mark_final_needs_a_price_of_the_running_release_and_every_required_valu
     priced = save(
         book,
         unpriced,
-        values=values(t_policy=[{"c_region": "north"}]),
+        values=values(policy=[{"region": "north"}]),
         document=document(total=None),
     )
     with pytest.raises(QuoteNotReadyError, match="not this one, release-2"):
@@ -405,16 +401,16 @@ def test_mark_final_needs_a_price_of_the_running_release_and_every_required_valu
     [
         # Filled in two rows and empty in the third.
         (
-            [{"c_reg": "A", "c_value": "1"}, {"c_reg": "B", "c_value": "2"}, {"c_reg": "C"}],
+            [{"reg": "A", "value": "1"}, {"reg": "B", "value": "2"}, {"reg": "C"}],
             False,
             ["vehicles row 3.Value"],
         ),
         # A table without rows passes.
         ([], False, []),
         # Zero is a value.
-        ([{"c_reg": "A", "c_value": "0"}], False, []),
+        ([{"reg": "A", "value": "0"}], False, []),
         # A required True/false output holding null refuses it; false passes.
-        ([{"c_reg": "A", "c_value": "1"}], None, ["premium.Referred"]),
+        ([{"reg": "A", "value": "1"}], None, ["premium.Referred"]),
     ],
     ids=["a row empty", "no rows", "zero", "a null tick"],
 )
@@ -422,7 +418,7 @@ def test_a_required_column_holds_a_value_in_every_row(
     book: QuoteBook, vehicles: list[dict[str, Any]], referred: Any, missing: list[str]
 ) -> None:
     quote = save(
-        book, make(book), values=values(t_vehicles=vehicles), document=document(referred=referred)
+        book, make(book), values=values(vehicles=vehicles), document=document(referred=referred)
     )
 
     if missing:
@@ -437,7 +433,7 @@ def test_a_required_column_holds_a_value_in_every_row(
 
 
 def test_text_of_spaces_alone_is_no_value(book: QuoteBook) -> None:
-    spaces = values(t_policy=[{"c_region": "   ", "c_drivers": "2"}])
+    spaces = values(policy=[{"region": "   ", "drivers": "2"}])
     quote = save(book, make(book, values=spaces), values=spaces)
 
     with pytest.raises(QuoteNotReadyError) as not_ready:
@@ -514,8 +510,8 @@ def test_references_are_one_only_when_they_are_the_same_case_included(
         with pytest.raises(QuoteStoreError):
             make(book, bad)
     # Saving one leaves the other's rows as they were, whatever the engine's collation.
-    save(book, upper, values=values(t_policy=[{"c_region": "north", "c_drivers": "2"}]))
-    save(book, lower, values=values(t_policy=[{"c_region": "south", "c_drivers": "3"}]))
+    save(book, upper, values=values(policy=[{"region": "north", "drivers": "2"}]))
+    save(book, lower, values=values(policy=[{"region": "south", "drivers": "3"}]))
     assert sql(
         store,
         "SELECT quote_reference, region, drivers FROM policy WHERE quote_reference "
@@ -564,13 +560,11 @@ def test_a_quote_opens_with_its_cells_as_text_and_its_rows_in_their_places(
 
     opened = book.read("A-1", 1)
 
-    assert opened.values["t_policy"] == [
-        {"c_region": "north", "c_drivers": "2", "c_start": "2026-11-01"}
-    ]
-    assert opened.values["t_vehicles"] == [
-        {"c_reg": "AB12 CDE", "c_value": "12500", "c_garaged": True},
+    assert opened.values["policy"] == [{"region": "north", "drivers": "2", "start": "2026-11-01"}]
+    assert opened.values["vehicles"] == [
+        {"reg": "AB12 CDE", "value": "12500", "garaged": True},
         {},
-        {"c_reg": "XY34 ZZZ", "c_value": "8000", "c_mileage": "9007199254740993"},
+        {"reg": "XY34 ZZZ", "value": "8000", "mileage": "9007199254740993"},
     ]
     assert opened.dropped == []
 
@@ -635,7 +629,6 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
                     "schema": {
                         "tables": [
                             {
-                                "id": "t_perils",
                                 "name": "perils",
                                 "rows": "many",
                                 "columns": [
@@ -659,9 +652,7 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
         haute_version=HAUTE,
         sign_in=sign_in,
     ) as wide:
-        typed = {
-            "t_perils": [{"c_peril": "AOP", "c_limit": "100"}, {"c_peril": "EQ", "c_limit": "50"}]
-        }
+        typed = {"perils": [{"peril": "AOP", "limit": "100"}, {"peril": "EQ", "limit": "50"}]}
         wide.create(operation=op(), actor=ANA, values=typed, at=wide.now(), reference="P-1")
 
     # The allowed values are the form's rules, not its structure: the tables stay as they are.
@@ -674,7 +665,7 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
     ) as narrow:
         opened = narrow.read("P-1", 1)
 
-    assert opened.values["t_perils"] == [{"c_peril": "AOP", "c_limit": "100"}]
+    assert opened.values["perils"] == [{"peril": "AOP", "limit": "100"}]
     assert opened.dropped == ["perils row 2 (EQ)"]
 
 
@@ -687,10 +678,8 @@ def _identity(quote: Any) -> tuple[str, int]:
 
 def test_the_quotes_page_lists_searches_counts_and_pages(book: QuoteBook) -> None:
     for number in range(1, 4):
-        make(
-            book, f"Q-{number}", values=values(quote_details=[{"qd_insured": f"Insured {number}"}])
-        )
-    jo = make(book, "JO-1", values=values(quote_details=[{"qd_insured": "Zed"}]))
+        make(book, f"Q-{number}", values=values(quote_details=[{"insured": f"Insured {number}"}]))
+    jo = make(book, "JO-1", values=values(quote_details=[{"insured": "Zed"}]))
     book.assign("JO-1", 1, version=jo.version, actor=ANA, assignee=JO)
 
     mine = book.page(actor=ANA, view="mine")

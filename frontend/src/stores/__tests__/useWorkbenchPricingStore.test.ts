@@ -23,8 +23,7 @@ import useSettingsStore from "../useSettingsStore"
 import useWorkbenchFormStore from "../useWorkbenchFormStore"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS, previewBasis } from "../useWorkbenchPricingStore"
 
-const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaColumn => ({
-  id,
+const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   name,
   type,
   label: "",
@@ -44,8 +43,8 @@ const column = (id: string, name: string, type: SchemaColumn["type"]): SchemaCol
   options_source: null,
   row_per_value: false,
 })
-const policy: SchemaTable = { id: "t1", name: "policy_details", role: "input", rows: "one", columns: [column("c1", "exposure", "float")] }
-const pricing: SchemaTable = { id: "t2", name: "pricing_output", role: "output", rows: "one", columns: [column("c2", "model_premium", "float")] }
+const policy: SchemaTable = { name: "policy_details", role: "input", rows: "one", columns: [column("exposure", "float")] }
+const pricing: SchemaTable = { name: "pricing_output", role: "output", rows: "one", columns: [column("model_premium", "float")] }
 const form: FormSpec = {
   version: 1,
   name: "t",
@@ -60,7 +59,7 @@ const form: FormSpec = {
       sections: [{ id: "section_1", title: "Section 1", height: 560, show_when: { match: "all", conditions: [] }, widgets: [] }],
     },
   ],
-  sample: { t1: [{ c1: "100000" }] },
+  sample: { policy_details: [{ exposure: "100000" }] },
 }
 
 const priced = (premium: number | null): PricedSample => ({ tables: { pricing_output: [{ model_premium: premium }] } })
@@ -68,7 +67,7 @@ const priced = (premium: number | null): PricedSample => ({ tables: { pricing_ou
 /** What the server makes of a form: here, its sample's exposure as typed. */
 const workbenchOf = (spec: FormSpec): WorkbenchTablesResponse => ({
   tables: [],
-  sample: { policy_details: { exposure: spec.sample.t1?.[0]?.c1 } },
+  sample: { policy_details: { exposure: spec.sample.policy_details?.[0]?.exposure } },
   response_tables: [],
   store_columns: {},
 })
@@ -96,7 +95,7 @@ function pricerOnRequest() {
   return { pricer, asked }
 }
 
-const type = (value: string) => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "t1", 0, "c1", value))
+const type = (value: string) => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy_details", 0, "exposure", value))
 
 describe("useWorkbenchPricingStore", () => {
   beforeEach(() => {
@@ -241,15 +240,15 @@ describe("useWorkbenchPricingStore", () => {
     useWorkbenchPricingStore.getState().setPricer(pricer)
     useWorkbenchPricingStore.setState({ price: { basis: "b", sample: {}, tables: priced(1).tables }, error: "x" })
     // Nothing typed, or only a value in a column since removed.
-    for (const sample of [{}, { t1: [{ gone: "1" }] }] as FormSpec["sample"][]) {
+    for (const sample of [{}, { policy_details: [{ gone: "1" }] }] as FormSpec["sample"][]) {
       useWorkbenchFormStore.setState({ form: { ...form, sample } })
       await useWorkbenchPricingStore.getState().priceNow()
       expect(pricer).not.toHaveBeenCalled()
       expect(useWorkbenchPricingStore.getState()).toMatchObject({ price: null, error: null })
     }
     // The exposure's box on a sheet that shows only once it is 0: hidden, it is nothing typed.
-    const hiding = { match: "all" as const, conditions: [{ table: "t1", column: "c1", op: "equals" as const, values: ["0"], field: null, days: 0 }] }
-    const exposure = { id: "w", number: null, type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "t1", column: "c1" }], show_when: { match: "all" as const, conditions: [] } }
+    const hiding = { match: "all" as const, conditions: [{ table: "policy_details", column: "exposure", op: "equals" as const, values: ["0"], field: null, days: 0 }] }
+    const exposure = { id: "w", number: null, type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy_details", column: "exposure" }], show_when: { match: "all" as const, conditions: [] } }
     const [sheet] = form.pages
     useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...sheet, show_when: hiding, sections: [{ ...sheet.sections[0], widgets: [exposure] }] }] } })
     await useWorkbenchPricingStore.getState().priceNow()
@@ -261,11 +260,11 @@ describe("useWorkbenchPricingStore", () => {
     useWorkbenchPricingStore.getState().setPricer(pricer)
     const perils = hiddenPerilsForm()
     // A limit held for NW, which the perils no longer hold.
-    useWorkbenchFormStore.setState({ form: { ...perils, sample: { coverage: [{ "coverage.peril": "NW", "coverage.limit": "5000" }] } } })
+    useWorkbenchFormStore.setState({ form: { ...perils, sample: { coverage: [{ peril: "NW", limit: "5000" }] } } })
     await useWorkbenchPricingStore.getState().priceNow()
     expect(pricer).not.toHaveBeenCalled()
 
-    useWorkbenchFormStore.setState({ form: { ...perils, sample: { coverage: [{ "coverage.peril": "EQ", "coverage.limit": "5000" }] } } })
+    useWorkbenchFormStore.setState({ form: { ...perils, sample: { coverage: [{ peril: "EQ", limit: "5000" }] } } })
     await useWorkbenchPricingStore.getState().priceNow()
     expect(pricer).toHaveBeenCalledTimes(1)
   })

@@ -23,7 +23,7 @@ import { IndexControl } from "./IndexControl"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
 
 /** The quote_details columns the app sets, by name, in order: "a, b and c". */
-const appSetNames = QUOTE_DETAILS_COLUMNS.filter(([id]) => QUOTE_DETAILS_MANAGED.has(id)).map(([, name]) => name)
+const appSetNames = QUOTE_DETAILS_COLUMNS.map(([name]) => name).filter((name) => QUOTE_DETAILS_MANAGED.has(name))
 const APP_SET = `${appSetNames.slice(0, -1).join(", ")} and ${appSetNames[appSetNames.length - 1]}`
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [

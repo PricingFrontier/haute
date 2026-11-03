@@ -14,6 +14,7 @@ from haute._quote_store._schema import (
     ACTIVITY_TABLE,
     STORE_COLUMN_NAMES,
     STORE_COLUMNS,
+    _named,
     store_columns,
     store_schema,
     structure,
@@ -41,23 +42,20 @@ def form(*tables: dict[str, Any]) -> FormSpec:
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_, **rest}
+    return {"name": name, "type": type_, **rest}
 
 
 POLICY = {
-    "id": "t_policy",
     "name": "policy",
     "rows": "one",
     "columns": [column("region"), column("drivers", "int"), column("start", "date")],
 }
 VEHICLES = {
-    "id": "t_vehicles",
     "name": "vehicles",
     "rows": "many",
     "columns": [column("reg", key=True), column("value", "float"), column("garaged", "bool")],
 }
 PREMIUM = {
-    "id": "t_premium",
     "name": "premium",
     "role": "output",
     "rows": "one",
@@ -74,7 +72,7 @@ def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() ->
         "vehicles",
         "premium",
     ]
-    policy = schema.by_id("t_policy").table
+    policy = schema.by_name("policy").table
     assert [column.name for column in policy.columns] == [
         "quote_reference",
         "quote_option",
@@ -90,7 +88,7 @@ def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() ->
         "drivers": BigInteger,
         "start": Date,
     }
-    vehicles = schema.by_id("t_vehicles").table
+    vehicles = schema.by_name("vehicles").table
     assert {column.name: type(column.type) for column in vehicles.columns}["value"] is Double
     assert {column.name: type(column.type) for column in vehicles.columns}["garaged"] is Boolean
     # Every column of the project's own may be null, so a draft saves with it empty; the
@@ -105,15 +103,15 @@ def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() ->
 def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> None:
     schema = store_schema(form(POLICY, VEHICLES, PREMIUM))
 
-    def key(table_id: str) -> list[str]:
-        return [column.name for column in schema.by_id(table_id).table.primary_key.columns]
+    def key(name: str) -> list[str]:
+        return [column.name for column in schema.by_name(name).table.primary_key.columns]
 
     assert key("quote_details") == ["quote_reference", "quote_option"]
-    assert key("t_policy") == ["quote_reference", "quote_option"]
-    assert key("t_vehicles") == ["quote_reference", "quote_option", "quote_row"]
-    assert key("t_premium") == ["quote_reference", "quote_option"]
-    for table_id in ("t_policy", "t_vehicles", "t_premium"):
-        [foreign] = schema.by_id(table_id).table.foreign_key_constraints
+    assert key("policy") == ["quote_reference", "quote_option"]
+    assert key("vehicles") == ["quote_reference", "quote_option", "quote_row"]
+    assert key("premium") == ["quote_reference", "quote_option"]
+    for name in ("policy", "vehicles", "premium"):
+        [foreign] = schema.by_name(name).table.foreign_key_constraints
         assert [element.target_fullname for element in foreign.elements] == [
             "quote_details.quote_reference",
             "quote_details.quote_option",
@@ -141,22 +139,22 @@ def test_quote_details_holds_the_forms_columns_then_the_stores_own() -> None:
     assert "quote_name" not in required and "insured" not in required
 
 
-def test_a_tables_constraints_are_named_by_its_stable_id_so_a_rename_keeps_them() -> None:
-    before = store_schema(form(VEHICLES)).by_id("t_vehicles").table
-    after = store_schema(form({**VEHICLES, "name": "cars"})).by_id("t_vehicles").table
+def test_a_tables_constraints_are_named_from_its_name_when_it_is_made() -> None:
+    vehicles = store_schema(form(VEHICLES)).by_name("vehicles").table
+    # Renamed, it is another table, made under its new name (READ-23).
+    cars = store_schema(form({**VEHICLES, "name": "cars"})).by_name("cars").table
 
-    assert after.name == "cars"
-    assert before.primary_key.name == after.primary_key.name
-    assert [c.name for c in before.foreign_key_constraints] == [
-        c.name for c in after.foreign_key_constraints
-    ]
+    assert vehicles.primary_key.name == _named("pk", "vehicles")
+    assert [c.name for c in vehicles.foreign_key_constraints] == [_named("fk", "vehicles")]
+    assert cars.primary_key.name == _named("pk", "cars")
+    assert [c.name for c in cars.foreign_key_constraints] == [_named("fk", "cars")]
 
 
 def test_each_tables_columns_the_form_does_not_hold_are_named_with_what_they_hold() -> None:
     kept = store_columns(form(POLICY, VEHICLES, PREMIUM))
 
-    assert list(kept) == ["quote_details", "t_vehicles"]
-    assert kept["t_vehicles"] == [("quote_row", "int")]
+    assert list(kept) == ["quote_details", "vehicles"]
+    assert kept["vehicles"] == [("quote_row", "int")]
     assert [name for name, _ in kept["quote_details"]] == [name for name, _, _ in STORE_COLUMNS]
     assert dict(kept["quote_details"])["note_at"] == "datetime"
 

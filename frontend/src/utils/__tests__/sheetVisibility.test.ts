@@ -79,7 +79,7 @@ describe("sheetVisibility, held to the shared cases", () => {
     expect(sections.map((section) => section.id).filter((id) => !visibility.sections.has(id)).sort(byText)).toEqual(testCase.hidden_sections)
     expect(widgets.map((widget) => widget.id).filter((id) => !visibility.widgets.has(id)).sort(byText)).toEqual(testCase.hidden_widgets)
     // The fields of the components that show, but those the case says hide.
-    const hiding = new Set((testCase.hidden_fields ?? []).map(([widget, table, columnId]) => fieldKey(widget, table, columnId)))
+    const hiding = new Set((testCase.hidden_fields ?? []).map(([widget, table, columnName]) => fieldKey(widget, table, columnName)))
     const fields = widgets.flatMap((widget) =>
       visibility.widgets.has(widget.id) && (widget.type === "tableInput" || widget.type === "collection")
         ? widget.fields.map((field) => fieldKey(widget.id, field.table, field.column))
@@ -95,8 +95,7 @@ describe("sheetVisibility, held to the shared cases", () => {
   })
 })
 
-const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
-  id,
+const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
@@ -119,30 +118,29 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
 })
 
 const ALWAYS: ShowWhen = { match: "all", conditions: [] }
-const ticked = (table: string, columnId: string): Condition => ({ table, column: columnId, op: "ticked", values: [], field: null, days: 0 })
+const ticked = (table: string, columnName: string): Condition => ({ table, column: columnName, op: "ticked", values: [], field: null, days: 0 })
 const when = (...conditions: ShowWhen["conditions"]): ShowWhen => ({ match: "all", conditions })
 
 const policy: SchemaTable = {
-  id: "t_policy",
   name: "policy",
   role: "input",
   rows: "one",
   columns: [
-    column("c_bi", "bi", { type: "bool" }),
-    column("c_motor", "motor", { type: "bool" }),
-    column("c_class", "class"),
-    column("c_years", "years", { type: "int" }),
-    column("c_si", "sum_insured", { type: "float" }),
-    column("c_start", "start", { type: "date" }),
+    column("bi", { type: "bool" }),
+    column("motor", { type: "bool" }),
+    column("class"),
+    column("years", { type: "int" }),
+    column("sum_insured", { type: "float" }),
+    column("start", { type: "date" }),
   ],
 }
-const items: SchemaTable = { id: "t_items", name: "items", role: "input", rows: "many", columns: [column("c_item", "item")] }
+const items: SchemaTable = { name: "items", role: "input", rows: "many", columns: [column("item")] }
 /** `items` with an index, which nothing is typed into, and a number column, which a total takes. */
 const valued: SchemaTable = {
   ...items,
-  columns: [column("c_row", "row", { type: "int", index: true }), ...items.columns, column("c_value", "value", { type: "float" })],
+  columns: [column("row", { type: "int", index: true }), ...items.columns, column("value", { type: "float" })],
 }
-const premium: SchemaTable = { id: "t_out", name: "premium", role: "output", rows: "one", columns: [column("c_premium", "premium", { type: "float" })] }
+const premium: SchemaTable = { name: "premium", role: "output", rows: "one", columns: [column("premium", { type: "float" })] }
 
 const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({ number: null,
   id,
@@ -153,7 +151,7 @@ const collection = (id: string, fields: [string, string][], showWhen: ShowWhen =
   w: 720,
   h: 120,
   columns: 3, ...COLLECTION_OPTIONS,
-  fields: fields.map(([table, columnId]) => ({ table, column: columnId })),
+  fields: fields.map(([table, columnName]) => ({ table, column: columnName })),
   show_when: showWhen,
 })
 /** A section holding `widgets`, as tall as they reach. */
@@ -179,36 +177,35 @@ const formOf = (pages: Page[], tables: SchemaTable[] = [policy, items, premium])
 
 describe("withPrice", () => {
   const counts: SchemaTable = {
-    id: "t_premium",
     name: "premium",
     role: "output",
     rows: "one",
-    columns: [column("c_count", "referral_count", { type: "int" }), column("c_adequacy", "rate_adequacy", { type: "float" })],
+    columns: [column("referral_count", { type: "int" }), column("rate_adequacy", { type: "float" })],
   }
-  const reasons: SchemaTable = { id: "t_reasons", name: "reasons", role: "output", rows: "many", columns: [column("c_reason", "reason")] }
+  const reasons: SchemaTable = { name: "reasons", role: "output", rows: "many", columns: [column("reason")] }
   const on = (condition: Partial<Condition>): ShowWhen => ({
     match: "all",
-    conditions: [{ table: "t_premium", column: "c_count", op: "above", values: ["0"], field: null, days: 0, ...condition }],
+    conditions: [{ table: "premium", column: "referral_count", op: "above", values: ["0"], field: null, days: 0, ...condition }],
   })
   const referred = on({})
   const rect = { x: 0, y: 0, w: 400, h: 120 }
-  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect), id, fields: [{ table: "t_reasons", column: "c_reason" }], show_when: showWhen })
-  const anyReason: ShowWhen = { match: "all", conditions: [{ table: "t_reasons", rows: "any", where: [{ column: "c_reason", op: "filled", values: [], field: null, days: 0 }] }] }
+  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect), id, fields: [{ table: "reasons", column: "reason" }], show_when: showWhen })
+  const anyReason: ShowWhen = { match: "all", conditions: [{ table: "reasons", rows: "any", where: [{ column: "reason", op: "filled", values: [], field: null, days: 0 }] }] }
   const heading = (id: string, showWhen: ShowWhen): Widget => ({ ...createWidget("heading", { ...rect, h: 40 }), id, text: "Check the rate", show_when: showWhen })
   const summary: Widget = {
-    ...(collection("w_summary", [["t_premium", "c_count"], ["t_premium", "c_adequacy"]]) as Extract<Widget, { type: "collection" }>),
-    column_looks: [{ table: "t_premium", column: "c_adequacy", ...PLAIN_COLUMN_LOOK, show_when: referred }],
+    ...(collection("w_summary", [["premium", "referral_count"], ["premium", "rate_adequacy"]]) as Extract<Widget, { type: "collection" }>),
+    column_looks: [{ table: "premium", column: "rate_adequacy", ...PLAIN_COLUMN_LOOK, show_when: referred }],
   }
   const inputBox: Widget = {
-    ...(collection("w_inputs", [["t_policy", "c_bi"]], referred) as Extract<Widget, { type: "collection" }>),
-    column_looks: [{ table: "t_policy", column: "c_bi", ...PLAIN_COLUMN_LOOK, show_when: referred }],
+    ...(collection("w_inputs", [["policy", "bi"]], referred) as Extract<Widget, { type: "collection" }>),
+    column_looks: [{ table: "policy", column: "bi", ...PLAIN_COLUMN_LOOK, show_when: referred }],
   }
   const form = formOf(
     [
       sectioned("p", [
-        section("s_policy", [collection("w_policy", [["t_policy", "c_class"]])]),
+        section("s_policy", [collection("w_policy", [["policy", "class"]])]),
         section("s_referrals", [grid("w_reasons")], referred),
-        section("s_notes", [heading("w_note", on({ column: "c_adequacy", op: "below", values: ["1"] }))]),
+        section("s_notes", [heading("w_note", on({ column: "rate_adequacy", op: "below", values: ["1"] }))]),
         section("s_listed", [grid("w_listed", anyReason)]),
         section("s_summary", [summary]),
       ]),
@@ -226,7 +223,7 @@ describe("withPrice", () => {
     return {
       sections: ["s_referrals", "s_notes", "s_listed", "p_inputs:s_inputs"].filter((id) => !shown.sections.has(id.split(":").at(-1) as string)),
       widgets: ["w_reasons", "w_note", "w_listed", "w_inputs"].filter((id) => !shown.widgets.has(id)),
-      adequacy: !shown.fields.has(fieldKey("w_summary", "t_premium", "c_adequacy")),
+      adequacy: !shown.fields.has(fieldKey("w_summary", "premium", "rate_adequacy")),
       pages: ["p", "p_inputs"].filter((id) => !shown.pages.has(id)),
       hidden: shown.hidden,
     }
@@ -251,13 +248,13 @@ describe("withPrice", () => {
     for (const price of [null, priced(0, 2, [])]) {
       const shown = withPrice(form, {}, rounds, price)
       expect([shown.pages.has("p_inputs"), shown.sections.has("s_inputs"), shown.widgets.has("w_inputs")]).toEqual([true, true, true])
-      expect(shown.fields.has(fieldKey("w_inputs", "t_policy", "c_bi"))).toBe(true)
+      expect(shown.fields.has(fieldKey("w_inputs", "policy", "bi"))).toBe(true)
       expect(shown.hidden).toBe(rounds.hidden)
     }
   })
 
   it("is the visibility itself while no condition is on the price", () => {
-    const plain = formOf([page("p", [collection("w_policy", [["t_policy", "c_class"]])])], [policy, counts])
+    const plain = formOf([page("p", [collection("w_policy", [["policy", "class"]])])], [policy, counts])
     const visibility = sheetVisibility(plain, {})
     expect(withPrice(plain, {}, visibility, null)).toBe(visibility)
   })
@@ -266,12 +263,12 @@ describe("withPrice", () => {
     const [main, inputs] = form.pages
     expect(takesNothingTyped(form, main.sections[1])).toBe(true)
     expect(takesNothingTyped(form, main.sections[2].widgets[0])).toBe(true)
-    expect(takesNothingTyped(form, { table: "t_premium", column: "c_count" })).toBe(true)
-    expect(takesNothingTyped(form, { table: "t_policy", column: "c_bi" })).toBe(false)
+    expect(takesNothingTyped(form, { table: "premium", column: "referral_count" })).toBe(true)
+    expect(takesNothingTyped(form, { table: "policy", column: "bi" })).toBe(false)
     expect(takesNothingTyped(form, main)).toBe(false)
     expect(takesNothingTyped(form, inputs)).toBe(false)
     expect(takesNothingTyped(form, inputs.sections[0])).toBe(false)
-    expect(takesNothingTyped(form, { ...createWidget("chart", rect), fields: [{ table: "t_policy", column: "c_si" }] })).toBe(true)
+    expect(takesNothingTyped(form, { ...createWidget("chart", rect), fields: [{ table: "policy", column: "sum_insured" }] })).toBe(true)
     expect(takesNothingTyped(form, { ...createWidget("export", rect) })).toBe(false)
   })
 })
@@ -284,7 +281,7 @@ describe("quoteEligible", () => {
     schema: {
       tables: typedQuotes.form.schema.tables.map((table) => ({
         ...table,
-        columns: table.columns.map(({ id, name, ...set }) => column(id, name, set as Partial<SchemaColumn>)),
+        columns: table.columns.map(({ name, ...set }) => column(name, set as Partial<SchemaColumn>)),
       })) as SchemaTable[],
     },
     pages: typedQuotes.form.pages.map((sheet) =>
@@ -296,37 +293,37 @@ describe("quoteEligible", () => {
   }
 
   it.each(typedQuotes.cases)("says whether $name is typed as the server does", ({ values, locked, typed }) => {
-    const appSet = new Set(locked.map(([table, columnId]) => columnKey(table, columnId)))
+    const appSet = new Set(locked.map(([table, columnName]) => columnKey(table, columnName)))
     expect(quoteEligible(form, values as RowsByTable, appSet)).toBe(typed)
   })
 })
 
 describe("sheetVisibility", () => {
   const form = formOf([
-    page("p_main", [collection("w_main", [["t_policy", "c_bi"]])]),
-    page("p_bi", [collection("w_bi", [["t_policy", "c_class"]])], when(ticked("t_policy", "c_bi"))),
+    page("p_main", [collection("w_main", [["policy", "bi"]])]),
+    page("p_bi", [collection("w_bi", [["policy", "class"]])], when(ticked("policy", "bi"))),
   ])
 
   it("gives the same answer for the same form and values, and decides afresh for new values", () => {
-    const rows: RowsByTable = { t_policy: [{ c_bi: true }] }
+    const rows: RowsByTable = { policy: [{ bi: true }] }
     const first = sheetVisibility(form, rows)
     expect(sheetVisibility(form, rows)).toBe(first)
     // Values are told apart by object, as each edit makes new ones: alike but new is decided afresh.
     expect(sheetVisibility(form, { ...rows })).not.toBe(first)
     expect([first.pages.has("p_bi"), first.sections.has("s_p_bi"), first.widgets.has("w_bi")]).toEqual([true, true, true])
 
-    const unticked = sheetVisibility(form, { t_policy: [{ c_bi: false }] })
+    const unticked = sheetVisibility(form, { policy: [{ bi: false }] })
     expect(unticked).not.toBe(first)
     // The sheet's section and the component in it are hidden with it.
     expect([unticked.pages.has("p_bi"), unticked.sections.has("s_p_bi"), unticked.widgets.has("w_bi")]).toEqual([false, false, false])
-    expect([...unticked.hidden]).toEqual([columnKey("t_policy", "c_class")])
+    expect([...unticked.hidden]).toEqual([columnKey("policy", "class")])
   })
 })
 
 describe("quotedSchema", () => {
   it("removes the hidden columns alone, and is the schema itself when nothing is hidden", () => {
     const schema = { tables: [policy, items] }
-    const quoted = quotedSchema(schema, new Set([columnKey("t_policy", "c_class"), columnKey("t_policy", "c_start")]))
+    const quoted = quotedSchema(schema, new Set([columnKey("policy", "class"), columnKey("policy", "start")]))
     expect(quoted.tables[0]).toEqual({ ...policy, columns: [policy.columns[0], policy.columns[1], policy.columns[3], policy.columns[4]] })
     expect(quoted.tables[1]).toBe(items)
     expect(schema.tables[0]).toBe(policy)
@@ -335,14 +332,13 @@ describe("quotedSchema", () => {
 
   it("keeps quote_details whole whatever the sheets hide, but for the columns the store keeps alone", () => {
     const details: SchemaTable = {
-      id: "quote_details",
       name: "quote_details",
       role: "input",
       rows: "one",
-      columns: [column("qd_quote_name", "quote_name"), column("qd_stage", "stage"), column("qd_insured", "insured")],
+      columns: [column("quote_name"), column("stage"), column("insured")],
     }
-    const quoted = quotedSchema({ tables: [details] }, new Set([columnKey("quote_details", "qd_quote_name")]))
-    expect(quoted.tables[0].columns.map((each) => each.name)).toEqual(["qd_quote_name", "qd_insured"])
+    const quoted = quotedSchema({ tables: [details] }, new Set([columnKey("quote_details", "quote_name")]))
+    expect(quoted.tables[0].columns.map((each) => each.name)).toEqual(["quote_name", "insured"])
   })
 })
 
@@ -418,254 +414,254 @@ describe("valueFits", () => {
 describe("conditionFault", () => {
   const form = formOf([page("p", [])])
   const fault = (condition: Partial<Condition>): string | null =>
-    conditionFault(form, { table: "t_policy", column: "c_class", op: "equals", values: ["Motor"], field: null, days: 0, ...condition })
+    conditionFault(form, { table: "policy", column: "class", op: "equals", values: ["Motor"], field: null, days: 0, ...condition })
 
   it("is null for a condition that fits", () => {
     expect(fault({})).toBeNull()
-    expect(fault({ column: "c_bi", op: "ticked", values: [], field: null, days: 0 })).toBeNull()
-    expect(fault({ column: "c_start", op: "at_least", values: ["2026-01-01"], field: null, days: 0 })).toBeNull()
+    expect(fault({ column: "bi", op: "ticked", values: [], field: null, days: 0 })).toBeNull()
+    expect(fault({ column: "start", op: "at_least", values: ["2026-01-01"], field: null, days: 0 })).toBeNull()
   })
 
   it("names the first fault: the column, the test, the number of values, then each value", () => {
-    expect(fault({ column: "c_gone" })).toBe("tests a column that is no longer in the schema")
-    expect(fault({ table: "t_gone" })).toBe("tests a column that is no longer in the schema")
+    expect(fault({ column: "gone" })).toBe("tests a column that is no longer in the schema")
+    expect(fault({ table: "gone" })).toBe("tests a column that is no longer in the schema")
     // An output's column is tested on the price, against values typed alone.
-    expect(fault({ table: "t_out", column: "c_premium", values: ["100"] })).toBeNull()
-    expect(fault({ table: "t_out", column: "c_premium", values: [], field: { table: "t_policy", column: "c_si" } })).toBe(
+    expect(fault({ table: "premium", column: "premium", values: ["100"] })).toBeNull()
+    expect(fault({ table: "premium", column: "premium", values: [], field: { table: "policy", column: "sum_insured" } })).toBe(
       "tests premium, a part of the price, against another field: the price is tested against values typed alone",
     )
-    expect(fault({ table: "t_items", column: "c_item" })).toBe("tests item, which is in a table with many rows")
-    expect(fault({ column: "c_bi", op: "above", values: ["1"], field: null, days: 0 })).toBe('tests bi with "is greater than", which a True/false column cannot take')
+    expect(fault({ table: "items", column: "item" })).toBe("tests item, which is in a table with many rows")
+    expect(fault({ column: "bi", op: "above", values: ["1"], field: null, days: 0 })).toBe('tests bi with "is greater than", which a True/false column cannot take')
     expect(fault({ op: "above" })).toBe('tests class with "is greater than", which a Text column cannot take')
-    expect(fault({ column: "c_years", op: "ticked" })).toBe('tests years with "is ticked", which an Integer column cannot take')
-    expect(fault({ column: "c_si", op: "ticked" })).toBe('tests sum_insured with "is ticked", which a Decimal column cannot take')
-    expect(fault({ column: "c_start", op: "one_of" })).toBe('tests start with "is one of", which a Date column cannot take')
+    expect(fault({ column: "years", op: "ticked" })).toBe('tests years with "is ticked", which an Integer column cannot take')
+    expect(fault({ column: "sum_insured", op: "ticked" })).toBe('tests sum_insured with "is ticked", which a Decimal column cannot take')
+    expect(fault({ column: "start", op: "one_of" })).toBe('tests start with "is one of", which a Date column cannot take')
     expect(fault({ values: [] })).toBe("needs a value for its test of class")
     expect(fault({ op: "one_of", values: [], field: null, days: 0 })).toBe("needs a value for its test of class")
     expect(fault({ op: "filled" })).toBe('tests class with "is filled", which takes no value')
     expect(fault({ values: ["Motor", "Fleet"] })).toBe('tests class with "equals", which takes one value')
     expect(fault({ op: "one_of", values: ["Motor", " "], field: null, days: 0 })).toBe("has a blank value for class")
-    expect(fault({ column: "c_years", values: ["2.5"] })).toBe('tests years against "2.5", which isn\'t a whole number')
-    expect(fault({ column: "c_si", values: ["lots"] })).toBe('tests sum_insured against "lots", which isn\'t a number')
-    expect(fault({ column: "c_start", op: "below", values: ["01/05/2026"], field: null, days: 0 })).toBe('tests start against "01/05/2026", which isn\'t a day written YYYY-MM-DD')
+    expect(fault({ column: "years", values: ["2.5"] })).toBe('tests years against "2.5", which isn\'t a whole number')
+    expect(fault({ column: "sum_insured", values: ["lots"] })).toBe('tests sum_insured against "lots", which isn\'t a number')
+    expect(fault({ column: "start", op: "below", values: ["01/05/2026"], field: null, days: 0 })).toBe('tests start against "01/05/2026", which isn\'t a day written YYYY-MM-DD')
   })
 
   it("faults a test against another field by the field, then the test, then its values and days", () => {
-    const against = (column: string, table = "t_policy") => ({ field: { table, column }, values: [] })
-    expect(fault({ ...against("c_class"), column: "c_class" })).toBeNull()
-    expect(fault({ ...against("c_start"), column: "c_start", op: "above", days: -30 })).toBeNull()
-    expect(fault(against("c_gone"))).toBe("tests class against a field that is no longer in the schema")
-    expect(fault(against("c_premium", "t_out"))).toBe("tests class against premium, which is in an output table")
-    expect(fault(against("c_item", "t_items"))).toBe("tests class against item, which is in a table with many rows")
-    expect(fault({ ...against("c_class"), op: "filled" })).toBe('tests class with "is filled" against class, where it takes no value')
-    expect(fault({ ...against("c_class"), op: "one_of" })).toBe('tests class with "is one of" against class, where it takes values typed')
-    expect(fault({ ...against("c_class"), values: ["Motor"] })).toBe("tests class against both a value typed and class")
-    expect(fault(against("c_years"))).toBe("tests class against years, which isn't a Text column")
-    expect(fault({ ...against("c_class"), days: 3 })).toBe("adds days to class, which isn't a Date column")
-    expect(fault({ column: "c_start", op: "above", values: ["2026-01-01"], days: 3 })).toBe("adds days to its test of start without another Date to add them to")
+    const against = (column: string, table = "policy") => ({ field: { table, column }, values: [] })
+    expect(fault({ ...against("class"), column: "class" })).toBeNull()
+    expect(fault({ ...against("start"), column: "start", op: "above", days: -30 })).toBeNull()
+    expect(fault(against("gone"))).toBe("tests class against a field that is no longer in the schema")
+    expect(fault(against("premium", "premium"))).toBe("tests class against premium, which is in an output table")
+    expect(fault(against("item", "items"))).toBe("tests class against item, which is in a table with many rows")
+    expect(fault({ ...against("class"), op: "filled" })).toBe('tests class with "is filled" against class, where it takes no value')
+    expect(fault({ ...against("class"), op: "one_of" })).toBe('tests class with "is one of" against class, where it takes values typed')
+    expect(fault({ ...against("class"), values: ["Motor"] })).toBe("tests class against both a value typed and class")
+    expect(fault(against("years"))).toBe("tests class against years, which isn't a Text column")
+    expect(fault({ ...against("class"), days: 3 })).toBe("adds days to class, which isn't a Date column")
+    expect(fault({ column: "start", op: "above", values: ["2026-01-01"], days: 3 })).toBe("adds days to its test of start without another Date to add them to")
 
-    const every: RowsCondition = { table: "t_items", rows: "any", where: [{ column: "c_value", op: "above", values: [], field: "c_value", days: 0 }] }
+    const every: RowsCondition = { table: "items", rows: "any", where: [{ column: "value", op: "above", values: [], field: "value", days: 0 }] }
     const numbered = formOf([page("p", [])], [policy, valued, premium])
     expect(conditionFault(numbered, every)).toBeNull()
-    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "c_gone" }] })).toBe("tests value against a column that is no longer in the schema")
-    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "c_row" }] })).toBe("tests value against row, the index, which nothing is typed into")
-    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "c_item" }] })).toBe("tests value against item, which isn't a Decimal column")
+    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "gone" }] })).toBe("tests value against a column that is no longer in the schema")
+    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "row" }] })).toBe("tests value against row, the index, which nothing is typed into")
+    expect(conditionFault(numbered, { ...every, where: [{ ...every.where[0], field: "item" }] })).toBe("tests value against item, which isn't a Decimal column")
   })
 
   it("faults a condition on a table's rows by its table, then each test of a row as a one-row table's condition", () => {
-    const filledItem: RowTest = { column: "c_item", op: "filled", values: [], field: null, days: 0 }
-    const every: RowsCondition = { table: "t_items", rows: "every", where: [filledItem] }
+    const filledItem: RowTest = { column: "item", op: "filled", values: [], field: null, days: 0 }
+    const every: RowsCondition = { table: "items", rows: "every", where: [filledItem] }
     expect(conditionFault(form, every)).toBeNull()
-    expect(conditionFault(form, { ...every, table: "t_policy" })).toBe("tests the rows of policy, which has one row")
-    expect(conditionFault(form, { ...every, table: "t_out" })).toBe("tests the rows of premium, which has one row")
-    expect(conditionFault(form, { ...every, table: "t_gone" })).toBe("tests the rows of a table that is no longer in the schema")
+    expect(conditionFault(form, { ...every, table: "policy" })).toBe("tests the rows of policy, which has one row")
+    expect(conditionFault(form, { ...every, table: "premium" })).toBe("tests the rows of premium, which has one row")
+    expect(conditionFault(form, { ...every, table: "gone" })).toBe("tests the rows of a table that is no longer in the schema")
     // Its second test is checked as its first.
     const second = (test: Partial<RowTest>) => conditionFault(form, { ...every, where: [filledItem, { ...filledItem, ...test }] })
     expect(second({ op: "ticked" })).toBe('tests item with "is ticked", which a Text column cannot take')
     expect(second({ op: "equals" })).toBe("needs a value for its test of item")
-    expect(second({ column: "c_gone" })).toBe("tests a column that is no longer in the schema")
+    expect(second({ column: "gone" })).toBe("tests a column that is no longer in the schema")
     const numbered = formOf([page("p", [])], [policy, valued, premium])
-    expect(conditionFault(numbered, { ...every, where: [{ column: "c_row", op: "filled", values: [], field: null, days: 0 }] })).toBe("tests row, the index, which nothing is typed into")
+    expect(conditionFault(numbered, { ...every, where: [{ column: "row", op: "filled", values: [], field: null, days: 0 }] })).toBe("tests row, the index, which nothing is typed into")
   })
 
   it("faults a count by its table and its tests, and a total by its column and its number too", () => {
-    const count: RowCount = { table: "t_items", where: [], op: "at_least", count: 2 }
+    const count: RowCount = { table: "items", where: [], op: "at_least", count: 2 }
     expect(conditionFault(form, count)).toBeNull()
-    expect(conditionFault(form, { ...count, table: "t_policy" })).toBe("counts the rows of policy, which has one row")
-    expect(conditionFault(form, { ...count, table: "t_out" })).toBe("counts the rows of premium, which has one row")
-    expect(conditionFault(form, { ...count, table: "t_gone" })).toBe("counts the rows of a table that is no longer in the schema")
-    expect(conditionFault(form, { ...count, where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }] })).toBe("needs a value for its test of item")
+    expect(conditionFault(form, { ...count, table: "policy" })).toBe("counts the rows of policy, which has one row")
+    expect(conditionFault(form, { ...count, table: "premium" })).toBe("counts the rows of premium, which has one row")
+    expect(conditionFault(form, { ...count, table: "gone" })).toBe("counts the rows of a table that is no longer in the schema")
+    expect(conditionFault(form, { ...count, where: [{ column: "item", op: "equals", values: [], field: null, days: 0 }] })).toBe("needs a value for its test of item")
 
     const priced = formOf([page("p", [])], [policy, valued, premium])
-    const sum: RowTotal = { table: "t_items", total: "sum", column: "c_value", where: [], op: "above", value: "£1,000" }
+    const sum: RowTotal = { table: "items", total: "sum", column: "value", where: [], op: "above", value: "£1,000" }
     expect(conditionFault(priced, sum)).toBeNull()
-    expect(conditionFault(priced, { ...sum, table: "t_out" })).toBe("totals the rows of premium, which has one row")
-    expect(conditionFault(priced, { ...sum, column: "c_item" })).toBe("totals item, which is not a number column")
-    expect(conditionFault(priced, { ...sum, column: "c_row" })).toBe("totals row, the index, which nothing is typed into")
-    expect(conditionFault(priced, { ...sum, column: "c_gone" })).toBe("totals a column that is no longer in the schema")
+    expect(conditionFault(priced, { ...sum, table: "premium" })).toBe("totals the rows of premium, which has one row")
+    expect(conditionFault(priced, { ...sum, column: "item" })).toBe("totals item, which is not a number column")
+    expect(conditionFault(priced, { ...sum, column: "row" })).toBe("totals row, the index, which nothing is typed into")
+    expect(conditionFault(priced, { ...sum, column: "gone" })).toBe("totals a column that is no longer in the schema")
     expect(conditionFault(priced, { ...sum, value: " " })).toBe("needs a number to compare its total of value with")
     expect(conditionFault(priced, { ...sum, value: "lots" })).toBe('compares its total of value with "lots", which isn\'t a number')
   })
 })
 
 describe("neverShown", () => {
-  const motorBox = collection("w_motor", [["t_policy", "c_motor"]])
+  const motorBox = collection("w_motor", [["policy", "motor"]])
   /** A Table or a Collection with each of `shown` a field shown as its `show_when` says. */
   const withFields = (widget: Widget, shown: [string, string, ShowWhen][]): Widget =>
     widget.type === "collection" || widget.type === "tableInput"
-      ? { ...widget, column_looks: shown.map(([table, columnId, showWhen]) => ({ table, column: columnId, ...PLAIN_COLUMN_LOOK, show_when: showWhen })) }
+      ? { ...widget, column_looks: shown.map(([table, columnName, showWhen]) => ({ table, column: columnName, ...PLAIN_COLUMN_LOOK, show_when: showWhen })) }
       : widget
 
   it("reports a field shown by its own value, but not one shown by another field of its component", () => {
-    const own = ticked("t_policy", "c_bi")
+    const own = ticked("policy", "bi")
     const cover = collection("w_cover", [
-      ["t_policy", "c_bi"],
-      ["t_policy", "c_motor"],
-      ["t_policy", "c_class"],
+      ["policy", "bi"],
+      ["policy", "motor"],
+      ["policy", "class"],
     ])
-    const form = formOf([page("p_main", [withFields(cover, [["t_policy", "c_bi", when(own)], ["t_policy", "c_class", when(ticked("t_policy", "c_motor"))]])])])
-    expect([...neverShown(form)]).toEqual([[fieldKey("w_cover", "t_policy", "c_bi"), own]])
+    const form = formOf([page("p_main", [withFields(cover, [["policy", "bi", when(own)], ["policy", "class", when(ticked("policy", "motor"))]])])])
+    expect([...neverShown(form)]).toEqual([[fieldKey("w_cover", "policy", "bi"), own]])
   })
 
   it("reports two fields each waiting on the other, and not a field waiting on one that shows with it elsewhere", () => {
     const cover = collection("w_cover", [
-      ["t_policy", "c_bi"],
-      ["t_policy", "c_motor"],
+      ["policy", "bi"],
+      ["policy", "motor"],
     ])
     const waiting = withFields(cover, [
-      ["t_policy", "c_bi", when(ticked("t_policy", "c_motor"))],
-      ["t_policy", "c_motor", when(ticked("t_policy", "c_bi"))],
+      ["policy", "bi", when(ticked("policy", "motor"))],
+      ["policy", "motor", when(ticked("policy", "bi"))],
     ])
     expect([...neverShown(formOf([page("p_main", [waiting])]))]).toEqual([
-      [fieldKey("w_cover", "t_policy", "c_bi"), ticked("t_policy", "c_motor")],
-      [fieldKey("w_cover", "t_policy", "c_motor"), ticked("t_policy", "c_bi")],
+      [fieldKey("w_cover", "policy", "bi"), ticked("policy", "motor")],
+      [fieldKey("w_cover", "policy", "motor"), ticked("policy", "bi")],
     ])
     // The motor box shown on another component as well, the bi field can show again, and so the motor field.
     expect(neverShown(formOf([page("p_main", [waiting, motorBox])])).size).toBe(0)
   })
 
   it("leaves a field of a component that can never show to its component, and counts no field that cannot show again", () => {
-    const own = ticked("t_policy", "c_bi")
-    const never = withFields(collection("w_never", [["t_policy", "c_class"]], when(ticked("t_policy", "c_motor"))), [["t_policy", "c_class", when(own)]])
+    const own = ticked("policy", "bi")
+    const never = withFields(collection("w_never", [["policy", "class"]], when(ticked("policy", "motor"))), [["policy", "class", when(own)]])
     // The motor box hidden by its own value: a section waiting on it waits on a field that cannot show again.
-    const motorField = withFields(motorBox, [["t_policy", "c_motor", when(ticked("t_policy", "c_motor"))]])
-    const form = formOf([sectioned("p_main", [section("s_main", [never, motorField, collection("w_bi", [["t_policy", "c_bi"]])]), section("s_motor", [], when(ticked("t_policy", "c_motor")))])])
+    const motorField = withFields(motorBox, [["policy", "motor", when(ticked("policy", "motor"))]])
+    const form = formOf([sectioned("p_main", [section("s_main", [never, motorField, collection("w_bi", [["policy", "bi"]])]), section("s_motor", [], when(ticked("policy", "motor")))])])
     expect([...neverShown(form)]).toEqual([
-      ["w_never", ticked("t_policy", "c_motor")],
-      [fieldKey("w_motor", "t_policy", "c_motor"), ticked("t_policy", "c_motor")],
-      ["s_motor", ticked("t_policy", "c_motor")],
+      ["w_never", ticked("policy", "motor")],
+      [fieldKey("w_motor", "policy", "motor"), ticked("policy", "motor")],
+      ["s_motor", ticked("policy", "motor")],
     ])
   })
 
   it("reports a sheet shown by a box on the very sheet, in any of its sections, with the condition it waits on", () => {
-    const waits = ticked("t_policy", "c_bi")
-    const form = formOf([page("p_main", []), sectioned("p_bi", [section("s_limits", []), section("s_bi", [collection("w_bi", [["t_policy", "c_bi"]])])], when(waits))])
+    const waits = ticked("policy", "bi")
+    const form = formOf([page("p_main", []), sectioned("p_bi", [section("s_limits", []), section("s_bi", [collection("w_bi", [["policy", "bi"]])])], when(waits))])
     expect([...neverShown(form)]).toEqual([["p_bi", waits]])
   })
 
   it("reports a section shown by a box in the very section, but not one shown by a box in another section of its sheet", () => {
-    const waits = ticked("t_policy", "c_bi")
-    const own = formOf([sectioned("p_main", [section("s_main", [motorBox]), section("s_bi", [collection("w_bi", [["t_policy", "c_bi"]])], when(waits))])])
+    const waits = ticked("policy", "bi")
+    const own = formOf([sectioned("p_main", [section("s_main", [motorBox]), section("s_bi", [collection("w_bi", [["policy", "bi"]])], when(waits))])])
     expect([...neverShown(own)]).toEqual([["s_bi", waits]])
 
     const elsewhere = formOf([
-      sectioned("p_main", [section("s_main", [collection("w_main", [["t_policy", "c_bi"]])]), section("s_bi", [collection("w_bi", [["t_policy", "c_class"]])], when(waits))]),
+      sectioned("p_main", [section("s_main", [collection("w_main", [["policy", "bi"]])]), section("s_bi", [collection("w_bi", [["policy", "class"]])], when(waits))]),
     ])
     expect(neverShown(elsewhere).size).toBe(0)
   })
 
   it("reports two sheets each waiting on a box on the other", () => {
     const form = formOf([
-      page("p_a", [collection("w_a", [["t_policy", "c_bi"]])], when(ticked("t_policy", "c_motor"))),
-      page("p_b", [collection("w_b", [["t_policy", "c_motor"]])], when(ticked("t_policy", "c_bi"))),
+      page("p_a", [collection("w_a", [["policy", "bi"]])], when(ticked("policy", "motor"))),
+      page("p_b", [collection("w_b", [["policy", "motor"]])], when(ticked("policy", "bi"))),
     ])
     expect([...neverShown(form)]).toEqual([
-      ["p_a", ticked("t_policy", "c_motor")],
-      ["p_b", ticked("t_policy", "c_bi")],
+      ["p_a", ticked("policy", "motor")],
+      ["p_b", ticked("policy", "bi")],
     ])
   })
 
   it("does not report what a box on a sheet that always shows could show, or any with one condition reachable", () => {
     const form = formOf([
       page("p_main", [motorBox]),
-      page("p_motor", [collection("w_x", [["t_policy", "c_class"]])], when(ticked("t_policy", "c_motor"))),
-      page("p_any", [collection("w_bi", [["t_policy", "c_bi"]])], { match: "any", conditions: [ticked("t_policy", "c_bi"), ticked("t_policy", "c_motor")] }),
+      page("p_motor", [collection("w_x", [["policy", "class"]])], when(ticked("policy", "motor"))),
+      page("p_any", [collection("w_bi", [["policy", "bi"]])], { match: "any", conditions: [ticked("policy", "bi"), ticked("policy", "motor")] }),
     ])
     expect(neverShown(form).size).toBe(0)
   })
 
   it("leaves a component on a sheet that can never show to its sheet, and reports a component waiting on itself", () => {
-    const own = ticked("t_policy", "c_bi")
+    const own = ticked("policy", "bi")
     const form = formOf([
-      page("p_main", [collection("w_self", [["t_policy", "c_bi"]], when(own))]),
-      page("p_never", [collection("w_never", [["t_policy", "c_class"]], when(own))], when(ticked("t_policy", "c_motor"))),
+      page("p_main", [collection("w_self", [["policy", "bi"]], when(own))]),
+      page("p_never", [collection("w_never", [["policy", "class"]], when(own))], when(ticked("policy", "motor"))),
     ])
     expect([...neverShown(form)]).toEqual([
       ["w_self", own],
-      ["p_never", ticked("t_policy", "c_motor")],
+      ["p_never", ticked("policy", "motor")],
     ])
   })
 
   it("leaves a component in a section that can never show to its section, and a section on a sheet that can never show to its sheet", () => {
-    const own = ticked("t_policy", "c_bi")
+    const own = ticked("policy", "bi")
     const inSection = formOf([
       sectioned("p_main", [
-        section("s_main", [collection("w_self", [["t_policy", "c_bi"]], when(own))]),
-        section("s_never", [collection("w_never", [["t_policy", "c_class"]], when(own))], when(ticked("t_policy", "c_motor"))),
+        section("s_main", [collection("w_self", [["policy", "bi"]], when(own))]),
+        section("s_never", [collection("w_never", [["policy", "class"]], when(own))], when(ticked("policy", "motor"))),
       ]),
     ])
     expect([...neverShown(inSection)]).toEqual([
       ["w_self", own],
-      ["s_never", ticked("t_policy", "c_motor")],
+      ["s_never", ticked("policy", "motor")],
     ])
 
-    const onSheet = formOf([page("p_main", []), sectioned("p_never", [section("s_waiting", [], when(own))], when(ticked("t_policy", "c_motor")))])
-    expect([...neverShown(onSheet)]).toEqual([["p_never", ticked("t_policy", "c_motor")]])
+    const onSheet = formOf([page("p_main", []), sectioned("p_never", [section("s_waiting", [], when(own))], when(ticked("policy", "motor")))])
+    expect([...neverShown(onSheet)]).toEqual([["p_never", ticked("policy", "motor")]])
   })
 
   it("reports a sheet waiting on a group's condition, with that condition", () => {
-    const waits = ticked("t_policy", "c_bi")
-    const form = formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], { match: "all", conditions: [{ match: "any", conditions: [waits] }] })])
+    const waits = ticked("policy", "bi")
+    const form = formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["policy", "bi"]])], { match: "all", conditions: [{ match: "any", conditions: [waits] }] })])
     expect([...neverShown(form)]).toEqual([["p_bi", waits]])
 
-    const reachable = { match: "all" as const, conditions: [{ match: "any" as const, conditions: [waits, ticked("t_policy", "c_motor")] }] }
-    expect(neverShown(formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], reachable)])).size).toBe(0)
+    const reachable = { match: "all" as const, conditions: [{ match: "any" as const, conditions: [waits, ticked("policy", "motor")] }] }
+    expect(neverShown(formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["policy", "bi"]])], reachable)])).size).toBe(0)
   })
 
   it("reports a sheet needing at least more conditions than it can reach, with the one it waits on", () => {
-    const own = ticked("t_policy", "c_bi")
+    const own = ticked("policy", "bi")
     const atLeast = (match: number) =>
-      formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["t_policy", "c_bi"]])], { match, conditions: [ticked("t_policy", "c_motor"), own] })])
+      formOf([page("p_main", [motorBox]), page("p_bi", [collection("w_bi", [["policy", "bi"]])], { match, conditions: [ticked("policy", "motor"), own] })])
     expect([...neverShown(atLeast(2))]).toEqual([["p_bi", own]])
     expect(neverShown(atLeast(1)).size).toBe(0)
   })
 
   it("reaches a count through any of its table's columns on a component outside it, and reports one only on itself", () => {
-    const count: RowCount = { table: "t_items", where: [], op: "at_least", count: 1 }
-    const own = formOf([page("p_main", [motorBox]), page("p_items", [collection("w_items", [["t_items", "c_item"]])], when(count))])
+    const count: RowCount = { table: "items", where: [], op: "at_least", count: 1 }
+    const own = formOf([page("p_main", [motorBox]), page("p_items", [collection("w_items", [["items", "item"]])], when(count))])
     expect([...neverShown(own)]).toEqual([["p_items", count]])
 
-    const elsewhere = formOf([page("p_main", [collection("w_items", [["t_items", "c_item"]])]), page("p_more", [motorBox], when(count))])
+    const elsewhere = formOf([page("p_main", [collection("w_items", [["items", "item"]])]), page("p_more", [motorBox], when(count))])
     expect(neverShown(elsewhere).size).toBe(0)
   })
 
   it("reaches a condition on rows only while each column it tests is on a component outside it", () => {
     const tested: RowsCondition = {
-      table: "t_items",
+      table: "items",
       rows: "any",
       where: [
-        { column: "c_item", op: "filled", values: [], field: null, days: 0 },
-        { column: "c_value", op: "filled", values: [], field: null, days: 0 },
+        { column: "item", op: "filled", values: [], field: null, days: 0 },
+        { column: "value", op: "filled", values: [], field: null, days: 0 },
       ],
     }
     const onMain = (fields: [string, string][]) =>
-      formOf([page("p_main", [motorBox, collection("w_items", fields)]), page("p_more", [collection("w_more", [["t_policy", "c_class"]])], when(tested))], [policy, valued, premium])
-    expect([...neverShown(onMain([["t_items", "c_item"]]))]).toEqual([["p_more", tested]])
-    expect(neverShown(onMain([["t_items", "c_item"], ["t_items", "c_value"]])).size).toBe(0)
+      formOf([page("p_main", [motorBox, collection("w_items", fields)]), page("p_more", [collection("w_more", [["policy", "class"]])], when(tested))], [policy, valued, premium])
+    expect([...neverShown(onMain([["items", "item"]]))]).toEqual([["p_more", tested]])
+    expect(neverShown(onMain([["items", "item"], ["items", "value"]])).size).toBe(0)
   })
 
   it("leaves out a sheet whose condition does not fit, as that is reported already", () => {
-    const form = formOf([page("p_main", [motorBox]), page("p_bad", [], when({ table: "t_policy", column: "c_gone", op: "ticked", values: [], field: null, days: 0 }))])
+    const form = formOf([page("p_main", [motorBox]), page("p_bad", [], when({ table: "policy", column: "gone", op: "ticked", values: [], field: null, days: 0 }))])
     expect(neverShown(form).size).toBe(0)
   })
 })
@@ -674,118 +670,118 @@ describe("the editor's steps", () => {
   const form = formOf([page("p", [])])
 
   it("starts a condition on the first one-row input table's first column, else in any row of a many-row one's, or none without one", () => {
-    expect(newCondition(form)).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [], field: null, days: 0 })
+    expect(newCondition(form)).toEqual({ table: "policy", column: "bi", op: "ticked", values: [], field: null, days: 0 })
     expect(newCondition(formOf([page("p", [])], [items, premium, { ...policy, columns: [] }]))).toEqual({
-      table: "t_items",
+      table: "items",
       rows: "any",
-      where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }],
+      where: [{ column: "item", op: "equals", values: [], field: null, days: 0 }],
     })
     // A many-row table's index takes no typing, so it is never tested.
-    const numbered = { ...items, columns: [column("c_row", "row", { type: "int", index: true })] }
+    const numbered = { ...items, columns: [column("row", { type: "int", index: true })] }
     expect(newCondition(formOf([page("p", [])], [numbered, premium, { ...policy, columns: [] }]))).toBeNull()
   })
 
   it("moves a condition to another column, its test and values kept while they fit", () => {
-    const years: Condition = { table: "t_policy", column: "c_years", op: "above", values: ["3"], field: null, days: 0 }
-    expect(withConditionColumn(form, years, "t_policy", "c_si")).toEqual({ table: "t_policy", column: "c_si", op: "above", values: ["3"], field: null, days: 0 })
+    const years: Condition = { table: "policy", column: "years", op: "above", values: ["3"], field: null, days: 0 }
+    expect(withConditionColumn(form, years, "policy", "sum_insured")).toEqual({ table: "policy", column: "sum_insured", op: "above", values: ["3"], field: null, days: 0 })
     // A Text column does not take "above": the test becomes its first, and the value, which fits it, is kept.
-    expect(withConditionColumn(form, years, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: ["3"], field: null, days: 0 })
-    expect(withConditionColumn(form, years, "t_policy", "c_bi")).toEqual({ table: "t_policy", column: "c_bi", op: "ticked", values: [], field: null, days: 0 })
-    const fraction: Condition = { table: "t_policy", column: "c_si", op: "equals", values: ["2.5"], field: null, days: 0 }
-    expect(withConditionColumn(form, fraction, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [], field: null, days: 0 })
-    expect(() => withConditionColumn(form, years, "t_policy", "c_gone")).toThrow(/c_gone/)
-    expect(years).toEqual({ table: "t_policy", column: "c_years", op: "above", values: ["3"], field: null, days: 0 })
+    expect(withConditionColumn(form, years, "policy", "class")).toEqual({ table: "policy", column: "class", op: "equals", values: ["3"], field: null, days: 0 })
+    expect(withConditionColumn(form, years, "policy", "bi")).toEqual({ table: "policy", column: "bi", op: "ticked", values: [], field: null, days: 0 })
+    const fraction: Condition = { table: "policy", column: "sum_insured", op: "equals", values: ["2.5"], field: null, days: 0 }
+    expect(withConditionColumn(form, fraction, "policy", "years")).toEqual({ table: "policy", column: "years", op: "equals", values: [], field: null, days: 0 })
+    expect(() => withConditionColumn(form, years, "policy", "gone")).toThrow(/gone/)
+    expect(years).toEqual({ table: "policy", column: "years", op: "above", values: ["3"], field: null, days: 0 })
   })
 
   it("moves a condition to a table's rows and back, keeping its test of a column of that table", () => {
-    const years: Condition = { table: "t_policy", column: "c_years", op: "equals", values: ["3"], field: null, days: 0 }
+    const years: Condition = { table: "policy", column: "years", op: "equals", values: ["3"], field: null, days: 0 }
     // Another table's rows start in any row with a test of their first column.
-    expect(withConditionRowsOf(form, years, "t_items")).toEqual({ table: "t_items", rows: "any", where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }] })
+    expect(withConditionRowsOf(form, years, "items")).toEqual({ table: "items", rows: "any", where: [{ column: "item", op: "equals", values: [], field: null, days: 0 }] })
     // A one-row table's condition on a table switched to many rows becomes a test of a row as it is.
-    const switched: Condition = { table: "t_items", column: "c_item", op: "filled", values: [], field: null, days: 0 }
-    expect(withConditionRowsOf(form, switched, "t_items")).toEqual({ table: "t_items", rows: "any", where: [{ column: "c_item", op: "filled", values: [], field: null, days: 0 }] })
-    const every: RowsCondition = { table: "t_items", rows: "every", where: [{ column: "c_item", op: "filled", values: [], field: null, days: 0 }] }
-    expect(withConditionRowsOf(form, every, "t_items")).toBe(every)
-    expect(() => withConditionRowsOf(formOf([page("p", [])], [policy, { ...items, columns: [] }]), years, "t_items")).toThrow(/t_items/)
+    const switched: Condition = { table: "items", column: "item", op: "filled", values: [], field: null, days: 0 }
+    expect(withConditionRowsOf(form, switched, "items")).toEqual({ table: "items", rows: "any", where: [{ column: "item", op: "filled", values: [], field: null, days: 0 }] })
+    const every: RowsCondition = { table: "items", rows: "every", where: [{ column: "item", op: "filled", values: [], field: null, days: 0 }] }
+    expect(withConditionRowsOf(form, every, "items")).toBe(every)
+    expect(() => withConditionRowsOf(formOf([page("p", [])], [policy, { ...items, columns: [] }]), years, "items")).toThrow(/items/)
 
     // Back to a one-row table's column, its test of that column kept, else its first test of a row's.
-    expect(withConditionColumn(form, every, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "filled", values: [], field: null, days: 0 })
+    expect(withConditionColumn(form, every, "policy", "class")).toEqual({ table: "policy", column: "class", op: "filled", values: [], field: null, days: 0 })
     const onPolicy: RowsCondition = {
-      table: "t_policy",
+      table: "policy",
       rows: "any",
       where: [
-        { column: "c_si", op: "above", values: ["9"], field: null, days: 0 },
-        { column: "c_class", op: "equals", values: ["Motor"], field: null, days: 0 },
+        { column: "sum_insured", op: "above", values: ["9"], field: null, days: 0 },
+        { column: "class", op: "equals", values: ["Motor"], field: null, days: 0 },
       ],
     }
-    expect(withConditionColumn(form, onPolicy, "t_policy", "c_class")).toEqual({ table: "t_policy", column: "c_class", op: "equals", values: ["Motor"], field: null, days: 0 })
-    const count: RowCount = { table: "t_items", where: [], op: "at_least", count: 1 }
-    expect(withConditionColumn(form, count, "t_policy", "c_years")).toEqual({ table: "t_policy", column: "c_years", op: "equals", values: [], field: null, days: 0 })
+    expect(withConditionColumn(form, onPolicy, "policy", "class")).toEqual({ table: "policy", column: "class", op: "equals", values: ["Motor"], field: null, days: 0 })
+    const count: RowCount = { table: "items", where: [], op: "at_least", count: 1 }
+    expect(withConditionColumn(form, count, "policy", "years")).toEqual({ table: "policy", column: "years", op: "equals", values: [], field: null, days: 0 })
   })
 
   it("moves a test against another field to its table's rows and back, keeping the field while it is a column of the table", () => {
-    const cover: SchemaTable = { id: "t_cover", name: "cover", role: "input", rows: "one", columns: [column("c_from", "from", { type: "date" })] }
-    const dated: SchemaTable = { ...policy, columns: [...policy.columns, column("c_end", "end", { type: "date" })] }
+    const cover: SchemaTable = { name: "cover", role: "input", rows: "one", columns: [column("from", { type: "date" })] }
+    const dated: SchemaTable = { ...policy, columns: [...policy.columns, column("end", { type: "date" })] }
     const one = formOf([page("p", [])], [dated, cover, premium])
     // The table switched to many rows since the condition was made.
     const many = formOf([page("p", [])], [{ ...dated, rows: "many" }, cover, premium])
-    const later: Condition = { table: "t_policy", column: "c_end", op: "above", values: [], field: { table: "t_policy", column: "c_start" }, days: 365 }
-    const anyLater: RowsCondition = { table: "t_policy", rows: "any", where: [{ column: "c_end", op: "above", values: [], field: "c_start", days: 365 }] }
-    expect(withConditionRowsOf(many, later, "t_policy")).toEqual(anyLater)
+    const later: Condition = { table: "policy", column: "end", op: "above", values: [], field: { table: "policy", column: "start" }, days: 365 }
+    const anyLater: RowsCondition = { table: "policy", rows: "any", where: [{ column: "end", op: "above", values: [], field: "start", days: 365 }] }
+    expect(withConditionRowsOf(many, later, "policy")).toEqual(anyLater)
     // A field of another table is no column of these rows.
-    expect(withConditionRowsOf(many, { ...later, field: { table: "t_cover", column: "c_from" } }, "t_policy")).toEqual({
+    expect(withConditionRowsOf(many, { ...later, field: { table: "cover", column: "from" } }, "policy")).toEqual({
       ...anyLater,
-      where: [{ column: "c_end", op: "above", values: [], field: null, days: 0 }],
+      where: [{ column: "end", op: "above", values: [], field: null, days: 0 }],
     })
     // Switched back to one row, the column of the row is that column of the table.
-    expect(withConditionColumn(one, anyLater, "t_policy", "c_end")).toEqual(later)
+    expect(withConditionColumn(one, anyLater, "policy", "end")).toEqual(later)
     // A column is never tested against itself, nor a one-row table's against a column of many rows.
-    expect(withConditionColumn(one, anyLater, "t_policy", "c_start")).toEqual({ table: "t_policy", column: "c_start", op: "above", values: [], field: null, days: 0 })
-    expect(withConditionColumn(many, anyLater, "t_cover", "c_from")).toEqual({ table: "t_cover", column: "c_from", op: "above", values: [], field: null, days: 0 })
+    expect(withConditionColumn(one, anyLater, "policy", "start")).toEqual({ table: "policy", column: "start", op: "above", values: [], field: null, days: 0 })
+    expect(withConditionColumn(many, anyLater, "cover", "from")).toEqual({ table: "cover", column: "from", op: "above", values: [], field: null, days: 0 })
   })
 
   it("gives a condition on rows which rows, keeping its tests", () => {
     const priced = formOf([page("p", [])], [policy, valued, premium])
-    const filledItem: RowTest = { column: "c_item", op: "filled", values: [], field: null, days: 0 }
-    const any: RowsCondition = { table: "t_items", rows: "any", where: [filledItem] }
+    const filledItem: RowTest = { column: "item", op: "filled", values: [], field: null, days: 0 }
+    const any: RowsCondition = { table: "items", rows: "any", where: [filledItem] }
     expect(withListKind(priced, any, "every")).toEqual({ ...any, rows: "every" })
     const count = withListKind(priced, any, "count")
-    expect(count).toEqual({ table: "t_items", where: [filledItem], op: "at_least", count: 1 })
+    expect(count).toEqual({ table: "items", where: [filledItem], op: "at_least", count: 1 })
     expect(withListKind(priced, count, "count")).toBe(count)
     const sum = withListKind(priced, count, "sum")
-    expect(sum).toEqual({ table: "t_items", total: "sum", column: "c_value", where: [filledItem], op: "above", value: "" })
+    expect(sum).toEqual({ table: "items", total: "sum", column: "value", where: [filledItem], op: "above", value: "" })
     expect(withListKind(priced, { ...(sum as RowTotal), value: "5" }, "max")).toEqual({ ...sum, value: "5", total: "max" })
     // Any or every row from a count without tests starts with a test of the table's first column.
-    expect(withListKind(priced, { table: "t_items", where: [], op: "equals", count: 0 }, "every")).toEqual({
-      table: "t_items",
+    expect(withListKind(priced, { table: "items", where: [], op: "equals", count: 0 }, "every")).toEqual({
+      table: "items",
       rows: "every",
-      where: [{ column: "c_item", op: "equals", values: [], field: null, days: 0 }],
+      where: [{ column: "item", op: "equals", values: [], field: null, days: 0 }],
     })
     // Without a column to test, or a number column to total, there is none to start.
     expect(() => withListKind(form, any, "sum")).toThrow(/number column/)
     const bare = formOf([page("p", [])], [policy, { ...items, columns: [] }])
-    expect(() => withListKind(bare, { table: "t_items", where: [], op: "equals", count: 0 }, "any")).toThrow(/t_items/)
-    expect(totalColumns(valued).map((column) => column.name)).toEqual(["c_value"])
-    expect(newRowTest(valued)).toEqual({ column: "c_item", op: "equals", values: [], field: null, days: 0 })
+    expect(() => withListKind(bare, { table: "items", where: [], op: "equals", count: 0 }, "any")).toThrow(/items/)
+    expect(totalColumns(valued).map((column) => column.name)).toEqual(["value"])
+    expect(newRowTest(valued)).toEqual({ column: "item", op: "equals", values: [], field: null, days: 0 })
     expect(newRowTest({ ...valued, columns: [valued.columns[0]] })).toBeNull()
   })
 
   it("moves a test of a row to another column of its table, its test and values kept while they fit", () => {
     const priced = formOf([page("p", [])], [policy, valued, premium])
-    expect(withTestColumn(priced, "t_items", { column: "c_item", op: "equals", values: ["3"], field: null, days: 0 }, "c_value")).toEqual({ column: "c_value", op: "equals", values: ["3"], field: null, days: 0 })
-    expect(withTestColumn(priced, "t_items", { column: "c_item", op: "equals", values: ["Pump"], field: null, days: 0 }, "c_value")).toEqual({ column: "c_value", op: "equals", values: [], field: null, days: 0 })
-    expect(() => withTestColumn(priced, "t_items", { column: "c_item", op: "filled", values: [], field: null, days: 0 }, "c_gone")).toThrow(/c_gone/)
+    expect(withTestColumn(priced, "items", { column: "item", op: "equals", values: ["3"], field: null, days: 0 }, "value")).toEqual({ column: "value", op: "equals", values: ["3"], field: null, days: 0 })
+    expect(withTestColumn(priced, "items", { column: "item", op: "equals", values: ["Pump"], field: null, days: 0 }, "value")).toEqual({ column: "value", op: "equals", values: [], field: null, days: 0 })
+    expect(() => withTestColumn(priced, "items", { column: "item", op: "filled", values: [], field: null, days: 0 }, "gone")).toThrow(/gone/)
   })
 
   it("gives a condition another test, its values kept while their number and the column take them", () => {
-    const oneOf: Condition = { table: "t_policy", column: "c_years", op: "one_of", values: ["2.5", "3", "4"], field: null, days: 0 }
-    const years = policy.columns.find((candidate) => candidate.name === "c_years")
+    const oneOf: Condition = { table: "policy", column: "years", op: "one_of", values: ["2.5", "3", "4"], field: null, days: 0 }
+    const years = policy.columns.find((candidate) => candidate.name === "years")
     expect(withConditionTest(years, oneOf, "filled").values).toEqual([])
     expect(withConditionTest(years, oneOf, "equals").values).toEqual([])
     expect(withConditionTest(years, { ...oneOf, values: ["3", "4"] }, "equals")).toEqual({ ...oneOf, op: "equals", values: ["3"], field: null, days: 0 })
     expect(withConditionTest(years, oneOf, "not_one_of").values).toEqual(["3", "4"])
     // A test whose column is gone keeps its values by number alone.
-    const gone: Condition = { table: "t_policy", column: "c_gone", op: "one_of", values: ["a", "b"], field: null, days: 0 }
+    const gone: Condition = { table: "policy", column: "gone", op: "one_of", values: ["a", "b"], field: null, days: 0 }
     expect(withConditionTest(undefined, gone, "equals").values).toEqual(["a"])
     expect(withConditionTest(undefined, gone, "not_one_of").values).toEqual(["a", "b"])
     expect(withConditionTest(undefined, gone, "empty").values).toEqual([])

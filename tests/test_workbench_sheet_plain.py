@@ -16,7 +16,15 @@ import pytest
 
 from haute._workbench_folder import read_form_document
 from tests._workbench_helpers import enable, form_folder
-from tests.test_workbench_folder import FORM, config, files_of, put, spec_of, widget_of
+from tests.test_workbench_folder import (
+    FORM,
+    POLICY_BOXES,
+    config,
+    files_of,
+    put,
+    spec_of,
+    widget_of,
+)
 
 SHEET = "sheets/br_coverages.json"
 
@@ -59,7 +67,7 @@ def test_a_gap_is_null_at_its_place_in_fields(
     project: Path, spacers: list[int], shape: list[str | None]
 ) -> None:
     form = copy.deepcopy(FORM)
-    collection = widget_of(form, "collection_k3f9")
+    collection = widget_of(form, POLICY_BOXES)
     collection["spacers"] = spacers
     collection["column_looks"] = []
 
@@ -87,7 +95,7 @@ def test_match_is_all_any_or_at_least_on_a_show_when_and_a_group(
         section
         for page in form["pages"]
         for section in page["sections"]
-        if section["id"] == "section_pr01"
+        if section["title"] == "Perils"
     )
     section["show_when"]["match"] = match
     section["show_when"]["conditions"][0]["match"] = match

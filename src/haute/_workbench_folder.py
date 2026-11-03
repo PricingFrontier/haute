@@ -154,20 +154,15 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
         if folded in seen:
             problems.append(f"the tables {seen[folded]!r} and {table.name!r} share a name")
         seen[folded] = table.name
-        names: dict[str, str] = {}
+        names: set[str] = set()
         for column in table.columns:
             if not re.fullmatch(NAME_PATTERN, column.name):
                 problems.append(f"{table.name}'s column name {column.name!r} is not an identifier")
-            # A column is known by its name in its table, whatever its case (READ-23).
-            folded = column.name.casefold()
-            if folded in names:
-                problems.append(
-                    f"{table.name} has two columns named {names[folded]!r} and {column.name!r}"
-                    if names[folded] != column.name
-                    else f"{table.name} has two columns named {column.name!r}"
-                )
-            names[folded] = column.name
-        # Each table is a table of its name in the quote store too.
+            if column.name in names:
+                problems.append(f"{table.name} has two columns named {column.name!r}")
+            names.add(column.name)
+        # Each table is a table of its name in the quote store too, which also refuses two
+        # columns whose names differ only in case: a column is known by its name (READ-23).
         problems.extend(
             store_name_problems(table.name, table.rows, [column.name for column in table.columns])
         )

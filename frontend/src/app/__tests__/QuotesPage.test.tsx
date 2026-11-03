@@ -162,7 +162,7 @@ describe("QuotesPage", () => {
 
   it("opens a quote from its row, and duplicates one in the New quote window over the list", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2, version: 3 })]))
-    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ qd_insured: "Acme" }] } }))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ insured: "Acme" }] } }))
     show()
 
     fireEvent.click(await screen.findByTestId("quote-row-ABC 1/2"))

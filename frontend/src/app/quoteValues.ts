@@ -108,10 +108,10 @@ export const withoutAppDetails = (values: Values): Values => withAppDetails(valu
 export function appDetails(form: FormSpec, details: WorkbenchAppQuote["details"]): Values {
   if (!form.schema.tables.some((table) => table.name === QUOTE_DETAILS_NAME)) return {}
   const row: SampleRow = {}
-  for (const [id, name] of QUOTE_DETAILS_COLUMNS) {
+  for (const [name] of QUOTE_DETAILS_COLUMNS) {
     const value = details[name]
-    if (!QUOTE_DETAILS_MANAGED.has(id) || value === undefined || value === null || value === false || value === "") continue
-    row[id] = value === true ? true : String(value)
+    if (!QUOTE_DETAILS_MANAGED.has(name) || value === undefined || value === null || value === false || value === "") continue
+    row[name] = value === true ? true : String(value)
   }
   return { [QUOTE_DETAILS_NAME]: [row] }
 }

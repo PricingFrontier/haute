@@ -78,7 +78,7 @@ def test_a_browser_graph_runs_on_the_forms_tables_read_anew_for_each_request(
 
     # A hand edit of the form folder reaches the next request, past any cached result: the
     # sample a node runs on is in its cache key.
-    workbench_project(project, FORM_TABLES, {"t_policy": [{"c_state": "CA", "c_limit": "5"}]})
+    workbench_project(project, FORM_TABLES, {"policy": [{"state": "CA", "limit": "5"}]})
     assert _preview_policy(client)["preview"] == [{**_POLICY, "state": "CA", "limit": 5}]
 
 
@@ -86,7 +86,7 @@ def test_the_form_a_pricing_posts_is_run_in_place_of_the_folders(project: Path) 
     from haute.server import app
 
     folder = {path.name: path.read_bytes() for path in (project / "workbench").rglob("*.json")}
-    unsaved = tables_form(FORM_TABLES, {"t_policy": [{"c_state": "TX", "c_limit": "7"}]})
+    unsaved = tables_form(FORM_TABLES, {"policy": [{"state": "TX", "limit": "7"}]})
 
     previewed = _preview_policy(
         TestClient(app), workbench_form=unsaved.model_dump(mode="json", by_alias=True)

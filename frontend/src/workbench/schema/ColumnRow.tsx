@@ -13,7 +13,7 @@ import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
-import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, nameTaken, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
+import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, nameTaken, QUOTE_DETAILS_MANAGED, sampleHolds, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { DatabaseMark } from "../StoreCompare"
 import { ColumnDetails } from "./ColumnDetails"
@@ -135,6 +135,10 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
             if (name === column.name) return
             if (nameTaken(table.columns.map((other) => other.name), name, column.name)) {
               addToast("error", `${table.name} already has a column named ${name}`)
+              return
+            }
+            if (sampleHolds(form, table.name, name)) {
+              addToast("error", `The sample already holds values under ${name} in ${table.name}`)
               return
             }
             set({ name })

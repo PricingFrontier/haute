@@ -218,6 +218,14 @@ const folded = (name: string): string => name.toLowerCase()
 export const nameTaken = (names: readonly string[], name: string, own: string): boolean =>
   names.some((other) => other !== own && folded(other) === folded(name))
 
+/**
+ * Whether a sample row of the table `tableName` holds a value under `name`, one kept from a
+ * column the schema no longer has: a column renamed to it would take that row's value over
+ * its own, so the rename is refused rather than one value lost (READ-23).
+ */
+export const sampleHolds = (spec: FormSpec, tableName: string, name: string): boolean =>
+  (spec.sample[tableName] ?? []).some((row) => name in row)
+
 /** `sum_insured` as "Sum insured": what a column is called until it has a label. */
 export const readableName = (name: string): string =>
   name.replace(/_+/g, " ").trim().replace(/^./, (c) => c.toUpperCase())
@@ -595,7 +603,9 @@ export const updateSchemaColumn = (
   patch: Partial<SchemaColumn>,
 ): FormSpec =>
   isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId }) ||
-  (patch.name !== undefined && nameTaken(schemaTableOf(spec, tableId).columns.map((column) => column.name), patch.name, columnId))
+  (patch.name !== undefined &&
+    patch.name !== columnId &&
+    (nameTaken(schemaTableOf(spec, tableId).columns.map((column) => column.name), patch.name, columnId) || sampleHolds(spec, tableId, patch.name)))
     ? spec
     : edit(spec, (draft) => {
         Object.assign(schemaColumnOf(schemaTableOf(draft, tableId), columnId), patch)

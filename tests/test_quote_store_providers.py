@@ -9,6 +9,7 @@ and privileges, and a release started apart from its project signing in as it de
 
 from __future__ import annotations
 
+import json
 import struct
 import uuid
 from collections.abc import Iterator
@@ -46,6 +47,7 @@ from haute._quote_store._providers import (
     missing_privileges,
     server_url,
 )
+from haute._quote_store._rows import KEPT_KEY
 from haute._quote_store._schema import store_schema, structure
 from haute._quote_store._store import make_engine, reaching
 from haute._sandbox import _get_project_root, set_project_root
@@ -81,12 +83,12 @@ def form(*tables: dict[str, Any]) -> FormSpec:
     )
 
 
-def column(name: str, type_: str = "str", id_: str | None = None) -> dict[str, Any]:
-    return {"id": id_ or f"c_{name}", "name": name, "type": type_}
+def column(name: str, type_: str = "str") -> dict[str, Any]:
+    return {"name": name, "type": type_}
 
 
 def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
-    return {"id": f"t_{name}", "name": name, "rows": rows, "columns": list(columns)}
+    return {"name": name, "rows": rows, "columns": list(columns)}
 
 
 POLICY = table(
@@ -363,7 +365,7 @@ def test_the_store_types_are_pinned_on_sql_server_the_identity_exact_in_every_ta
     def ddl(table: Any, dialect: Any) -> str:
         return str(CreateTable(table).compile(dialect=dialect))
 
-    policy = ddl(schema.by_id("t_policy").table, mssql.dialect())
+    policy = ddl(schema.by_name("policy").table, mssql.dialect())
     assert "CREATE TABLE pricing.policy" in policy
     assert "quote_reference NVARCHAR(80) COLLATE Latin1_General_100_BIN2 NOT NULL" in policy
     for pinned in (
@@ -382,7 +384,7 @@ def test_the_store_types_are_pinned_on_sql_server_the_identity_exact_in_every_ta
     assert "quote_reference NVARCHAR(80) COLLATE Latin1_General_100_BIN2 NOT NULL" in activity
     assert "activity_id INTEGER NOT NULL IDENTITY" in activity
 
-    on_postgresql = ddl(schema.by_id("t_policy").table, postgresql.dialect())
+    on_postgresql = ddl(schema.by_name("policy").table, postgresql.dialect())
     for pinned in (
         "quote_reference VARCHAR(40) NOT NULL",
         "region TEXT",
@@ -496,8 +498,6 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         table(
             "policy",
             column("region"),
-            column("left"),
-            column("right"),
             column("code"),
             column("drivers", "int"),
             column("telematics", "bool"),
@@ -508,43 +508,32 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         book.create(
             operation="operation-0001",
             actor="ana",
-            values={
-                "t_policy": [
-                    {
-                        "c_region": "north",
-                        "c_left": "L",
-                        "c_right": "R",
-                        "c_code": "42",
-                        "c_drivers": "2",
-                    }
-                ]
-            },
+            values={"policy": [{"region": "north", "code": "42", "drivers": "2"}]},
             at=book.now(),
             reference="A-1",
         )
 
-    # A change of case, a swap of two names, a Text column made an Integer and an Integer a
-    # Decimal in place, a column added and one removed, which the SQL keeps.
+    # region renamed area, which is one column added beside region kept (READ-23), a Text
+    # column made an Integer and an Integer a Decimal in place, a column added and one
+    # removed, which the SQL keeps.
     changed = form(
         table(
             "policy",
-            column("Region", id_="c_region"),
-            column("right", id_="c_left"),
-            column("left", id_="c_right"),
+            column("area"),
             column("code", "int"),
             column("drivers", "float"),
             column("seats", "int"),
         )
     )
     written = server.sql(changed, base, sql_schema="pricing")
+    assert "-- ALTER TABLE pricing.policy DROP COLUMN region;" in written
     assert "-- ALTER TABLE pricing.policy DROP COLUMN telematics;" in written
     server.script(written)
 
-    # Every value kept, read with plain SQL under the names the form gives them.
+    # Every value kept, read with plain SQL under the names the tables hold.
     assert server.read(
-        'SELECT quote_reference, "Region", "left", "right", code, drivers, seats, telematics '
-        "FROM pricing.policy"
-    ) == [("A-1", "north", "R", "L", 42, 2.0, None, 0)]
+        "SELECT quote_reference, region, area, code, drivers, seats, telematics FROM pricing.policy"
+    ) == [("A-1", "north", None, 42, 2.0, None, 0)]
     types = dict(
         server.read(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = "
@@ -556,9 +545,12 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         if server.backend == "postgresql"
         else {"code": "bigint", "drivers": "float"}
     )
-    # The started app opens the tables as they are, in their schema.
+    # The started app opens the tables as they are, in their schema, the removed column's
+    # value carried with the quote.
     with open_book(server.url, changed, environment=TEST, haute_version="1", **where) as book:
-        assert book.read("A-1", 1).values["t_policy"][0]["c_code"] == "42"
+        row = book.read("A-1", 1).values["policy"][0]
+        assert row["code"] == "42"
+        assert json.loads(row[KEPT_KEY])["region"] == "north"
 
 
 def _columns_in_order(server: Target, owner: str, table_name: str) -> str:
@@ -626,16 +618,17 @@ def test_a_script_runs_on_the_server_whole_or_not_at_all(server: Target) -> None
         book.create(
             operation="operation-0001",
             actor="ana",
-            values={"t_policy": [{"c_region": "north", "c_code": "x1"}]},
+            values={"policy": [{"region": "north", "code": "x1"}]},
             at=book.now(),
             reference="A-1",
         )
-    changed = form(table("policy", column("area", id_="c_region"), column("code", "int")))
+    # code made an Integer, then area added.
+    changed = form(table("policy", column("code", "int"), column("area")))
     script = server.sql(changed, base, sql_schema="pricing")
     names = _columns_in_order(server, "pricing", "policy")
 
-    # A value that does not convert stops the retype after the rename: nothing is left changed
-    # and nothing left open.
+    # A value that does not convert stops the retype: nothing is left changed and nothing left
+    # open.
     with _script_run(server, script) as (raw, raised):
         assert raised is not None
         assert not _left_open(server, raw)
@@ -646,8 +639,8 @@ def test_a_script_runs_on_the_server_whole_or_not_at_all(server: Target) -> None
         "code",
     ]
 
-    # A column the SQL side added since takes the rename's name: the rename fails part way,
-    # after its first phase, and the script leaves nothing changed and nothing open.
+    # A column the SQL side added since takes the added column's name: the script fails part
+    # way, after the retype, and leaves nothing changed and nothing open.
     server.run("UPDATE pricing.policy SET code = '7'", "ALTER TABLE pricing.policy ADD area BIGINT")
     with _script_run(server, script) as (raw, raised):
         assert raised is not None
@@ -665,7 +658,7 @@ def test_a_script_runs_on_the_server_whole_or_not_at_all(server: Target) -> None
     with _script_run(server, script) as (raw, raised):
         assert raised is None and not _left_open(server, raw)
     with open_book(server.url, changed, environment=TEST, haute_version="1", **where) as book:
-        assert book.read("A-1", 1).values["t_policy"][0]["c_code"] == "7"
+        assert book.read("A-1", 1).values["policy"][0]["code"] == "7"
 
 
 def test_a_sign_in_the_server_refuses_closes_the_quotes_naming_no_server_or_user(

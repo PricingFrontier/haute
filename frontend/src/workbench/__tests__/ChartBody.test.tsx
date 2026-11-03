@@ -48,8 +48,8 @@ class MockResizeObserver {
 
 /** What a new option replaces whole rather than merges. */
 const REPLACED = ["series", "xAxis", "yAxis", "grid", "legend"]
-const VALUE: FieldRef = { table: "equipment", column: "equipment.value" }
-const PREMIUM: FieldRef = { table: "premiums", column: "premiums.premium" }
+const VALUE: FieldRef = { table: "equipment", column: "value" }
+const PREMIUM: FieldRef = { table: "premiums", column: "premium" }
 
 /** `sheetForm` with a Chart, w_chart, plotting `fields` in its first sheet's section. */
 function chartForm(fields: FieldRef[], options: Partial<ChartOptions> & { title?: string } = {}): FormSpec {
@@ -119,7 +119,7 @@ describe("ChartBody", () => {
 
   it("draws a Chart once in its host and merges each new option into it, replacing what a change of type drops", async () => {
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "100" }] }
+    form.sample = { equipment: [{ item: "Crane", value: "100" }] }
     loadForm(form)
     renderChart()
 
@@ -129,9 +129,9 @@ describe("ChartBody", () => {
     expect(setOption).toHaveBeenLastCalledWith(expect.objectContaining({ series: [expect.objectContaining({ data: [100] })] }), { replaceMerge: REPLACED })
 
     // Each value typed moves the series in the same chart.
-    typeSample("equipment", 0, "equipment.value", "250")
+    typeSample("equipment", 0, "value", "250")
     await waitFor(() => expect(plotted()).toEqual([[250]]))
-    typeSample("equipment", 1, "equipment.value", "400")
+    typeSample("equipment", 1, "value", "400")
     await waitFor(() => expect(plotted()).toEqual([[250, 400]]))
     expect(setOption).toHaveBeenLastCalledWith(expect.any(Object), { replaceMerge: REPLACED })
     expect(createComboChart).toHaveBeenCalledTimes(1)
@@ -166,7 +166,7 @@ describe("ChartBody", () => {
 
   it("says why a pie cannot be drawn, a value below 0 or every value 0, making no chart until it can be", async () => {
     const form = chartForm([VALUE], { chart_type: "pie" })
-    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "100" }, { "equipment.item": "Drill", "equipment.value": "-20" }] }
+    form.sample = { equipment: [{ item: "Crane", value: "100" }, { item: "Drill", value: "-20" }] }
     loadForm(form)
     renderChart()
 
@@ -175,11 +175,11 @@ describe("ChartBody", () => {
     await act(async () => {})
     expect(createComboChart).not.toHaveBeenCalled()
 
-    typeSample("equipment", 1, "equipment.value", "20")
+    typeSample("equipment", 1, "value", "20")
     await waitFor(() => expect(plotted()).toEqual([[expect.objectContaining({ value: 100 }), expect.objectContaining({ value: 20 })]]))
 
-    typeSample("equipment", 0, "equipment.value", "0")
-    typeSample("equipment", 1, "equipment.value", "0")
+    typeSample("equipment", 0, "value", "0")
+    typeSample("equipment", 1, "value", "0")
     expect(screen.getByText("Every value is 0, so there is no pie to draw")).toBeInTheDocument()
     expect(screen.queryByTestId("chart-host-w_chart")).not.toBeInTheDocument()
     expect(dispose).toHaveBeenCalledTimes(1)
@@ -187,15 +187,15 @@ describe("ChartBody", () => {
 
   it("gives a screen reader its values as a table: each category and each value in its column's format", async () => {
     const form = updateSchemaColumn(
-      chartForm([VALUE], { title: "Values insured", category: { table: "equipment", column: "equipment.item" } }),
+      chartForm([VALUE], { title: "Values insured", category: { table: "equipment", column: "item" } }),
       "equipment",
-      "equipment.value",
+      "value",
       { number_format: "currency_gbp" },
     )
     form.sample = {
       equipment: [
-        { "equipment.item": "Crane", "equipment.value": "1000" },
-        { "equipment.item": "Paver", "equipment.value": "2500.5" },
+        { item: "Crane", value: "1000" },
+        { item: "Paver", value: "2500.5" },
       ],
     }
     loadForm(form)
@@ -212,9 +212,9 @@ describe("ChartBody", () => {
 
   it("plots nothing on a new quote while building, the sample in Preview, and the underwriter app's quote in the app", async () => {
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.value": "100" }] }
+    form.sample = { equipment: [{ value: "100" }] }
     loadForm(form)
-    useWorkbenchPreviewStore.setState({ quote: { equipment: [{ "equipment.value": "300" }] } })
+    useWorkbenchPreviewStore.setState({ quote: { equipment: [{ value: "300" }] } })
 
     renderChart("new")
     expect(screen.getByText("Nothing to chart yet")).toBeInTheDocument()
@@ -247,7 +247,7 @@ describe("ChartBody", () => {
     expect(figure).toHaveStyle({ opacity: "1" })
 
     // The sample has moved on since it was priced.
-    typeSample("policy", 0, "policy.state", "CA")
+    typeSample("policy", 0, "state", "CA")
     expect(figure).toHaveAttribute("data-stale", "true")
     expect(figure).toHaveStyle({ opacity: "0.5" })
 
@@ -259,7 +259,7 @@ describe("ChartBody", () => {
 
   it("resizes the chart as its host does", async () => {
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.value": "100" }] }
+    form.sample = { equipment: [{ value: "100" }] }
     loadForm(form)
     renderChart()
     await waitFor(() => expect(createComboChart).toHaveBeenCalled())
@@ -270,7 +270,7 @@ describe("ChartBody", () => {
 
   it("draws a new chart when the page's theme changes, disposing the old one", async () => {
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.value": "100" }] }
+    form.sample = { equipment: [{ value: "100" }] }
     loadForm(form)
     renderChart()
     await waitFor(() => expect(setOption).toHaveBeenCalledTimes(1))
@@ -289,7 +289,7 @@ describe("ChartBody", () => {
       throw new Error("The chart runtime could not be loaded")
     })
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.value": "100" }] }
+    form.sample = { equipment: [{ value: "100" }] }
     loadForm(form)
     renderChart()
 
@@ -301,19 +301,19 @@ describe("ChartBody", () => {
       throw new Error("Unknown series type")
     })
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.value": "100" }] }
+    form.sample = { equipment: [{ value: "100" }] }
     loadForm(form)
     renderChart()
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Unknown series type")
-    typeSample("equipment", 0, "equipment.value", "200")
+    typeSample("equipment", 0, "value", "200")
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
     expect(plotted()).toEqual([[200]])
   })
 
   it("disposes the chart when it is unmounted", async () => {
     const form = chartForm([VALUE])
-    form.sample = { equipment: [{ "equipment.value": "100" }] }
+    form.sample = { equipment: [{ value: "100" }] }
     loadForm(form)
     const view = renderChart()
     await waitFor(() => expect(createComboChart).toHaveBeenCalled())

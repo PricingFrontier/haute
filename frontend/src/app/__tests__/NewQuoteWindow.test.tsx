@@ -77,7 +77,7 @@ describe("NewQuoteWindow", () => {
   })
 
   it("asks for the reference and the details the underwriter types, in the table's order, each drawn as a Collection draws it", () => {
-    form = formWith({ qd_broker: { options: ["Marsh", "Aon"] }, qd_insured: { placeholder: "Company name" } })
+    form = formWith({ broker: { options: ["Marsh", "Aon"] }, insured: { placeholder: "Company name" } })
     useAppStore.setState({ form })
     shown()
 
@@ -85,9 +85,9 @@ describe("NewQuoteWindow", () => {
 
     expect(screen.getByRole("dialog", { name: "New quote" })).toBeInTheDocument()
     const labels = within(windowShown()).getAllByTestId(/^label-quote_details:/).map((label) => label.dataset.testid?.slice("label-quote_details:".length))
-    expect(labels).toEqual(["qd_reference", "qd_quote_name", "qd_insured", "qd_broker", "qd_inception_date", "qd_expiry_date", "qd_is_renewal"])
+    expect(labels).toEqual(["quote_reference", "quote_name", "insured", "broker", "inception_date", "expiry_date", "is_renewal"])
     // The reference is always required, and typed here though the sheets keep it read only.
-    expect(within(windowShown()).getByTestId("label-quote_details:qd_reference")).toHaveTextContent("Quote reference *")
+    expect(within(windowShown()).getByTestId("label-quote_details:quote_reference")).toHaveTextContent("Quote reference *")
     expect(field("Quote reference")).toBeEnabled()
     expect(field("Quote reference")).toHaveFocus()
     expect(field("Broker").tagName).toBe("SELECT")
@@ -97,7 +97,7 @@ describe("NewQuoteWindow", () => {
   })
 
   it("keeps Create off until the reference fits, a required detail left empty for marking the quote final to ask for", () => {
-    form = formWith({ qd_insured: { required: true } })
+    form = formWith({ insured: { required: true } })
     useAppStore.setState({ form })
     shown()
     act(() => store().openNew())
@@ -117,13 +117,13 @@ describe("NewQuoteWindow", () => {
     key("Insured", "   ")
 
     // Insured is required: its star says so, but only Mark final asks for it.
-    expect(within(windowShown()).getByTestId("label-quote_details:qd_insured")).toHaveTextContent("Insured *")
+    expect(within(windowShown()).getByTestId("label-quote_details:insured")).toHaveTextContent("Insured *")
     expect(create()).toBeEnabled()
     expect(field("Insured")).not.toHaveAttribute("aria-invalid")
   })
 
   it("marks the reference left empty when Create is pressed from it being typed in, then sends what it holds, a required detail left empty", async () => {
-    form = formWith({ qd_insured: { required: true } })
+    form = formWith({ insured: { required: true } })
     useAppStore.setState({ form })
     vi.mocked(createAppQuote).mockResolvedValue(made())
     shown()
@@ -152,7 +152,7 @@ describe("NewQuoteWindow", () => {
   })
 
   it("makes the quote with its reference and details over a new quote's defaults, and takes it to its own address", async () => {
-    form = formWith({ qd_quote_name: { default_value: "Fleet" } })
+    form = formWith({ quote_name: { default_value: "Fleet" } })
     form.schema.tables[1].columns[0].default_value = "NY"
     useAppStore.setState({ form })
     vi.mocked(createAppQuote).mockResolvedValue(made())
@@ -173,8 +173,8 @@ describe("NewQuoteWindow", () => {
     expect(body).not.toHaveProperty("shown")
     // The default of a column in another one-row input table is held as a new quote holds it.
     expect(body.values).toEqual({
-      policy: [{ "policy.state": "NY" }],
-      quote_details: [{ qd_quote_name: "Fleet", qd_insured: "Acme", qd_inception_date: "2026-11-01" }],
+      policy: [{ state: "NY" }],
+      quote_details: [{ quote_name: "Fleet", insured: "Acme", inception_date: "2026-11-01" }],
     })
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
     expect(readKeptCreation(KEPT)).toBeNull()
@@ -290,7 +290,7 @@ describe("NewQuoteWindow", () => {
 
     expect(await screen.findByTestId("new-quote-unknown")).toHaveTextContent("No answer came, so ABC-1 may have been made.")
     // What is typed after it was sent is not what it sends.
-    act(() => store().setDetail("qd_insured", "Other"))
+    act(() => store().setDetail("insured", "Other"))
     expect(field("Insured")).toBeDisabled()
     fireEvent.click(screen.getByTestId("new-quote-try-again"))
     await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalledTimes(2))
@@ -310,7 +310,7 @@ describe("NewQuoteWindow", () => {
     const bodies = vi.mocked(createAppQuote).mock.calls
     expect(bodies[1]).toEqual(bodies[0])
     expect(bodies[2]).toEqual(bodies[0])
-    expect(bodies[0][0].values.quote_details).toEqual([{ qd_insured: "Acme" }])
+    expect(bodies[0][0].values.quote_details).toEqual([{ insured: "Acme" }])
     expect(readKeptCreation(KEPT)).toBeNull()
   })
 
@@ -333,7 +333,7 @@ describe("NewQuoteWindow", () => {
   })
 
   it("fills a renewal from the quote as it is kept, its reference blank and is_renewal ticked, and makes it from that quote", async () => {
-    const values = { policy: [{ "policy.state": "CA" }], quote_details: [{ qd_reference: "Q-000001", qd_option: "1", qd_stage: "final", qd_insured: "Acme" }] }
+    const values = { policy: [{ state: "CA" }], quote_details: [{ quote_reference: "Q-000001", quote_option: "1", stage: "final", insured: "Acme" }] }
     vi.mocked(openAppQuote).mockResolvedValue(answer({ stage: "final" }, { values, dropped: ["equipment row 2 (Crane)"] }))
     vi.mocked(createAppQuote).mockResolvedValue(made({ reference: "DEF-2", relation: "renewal" }))
     shown()
@@ -353,7 +353,7 @@ describe("NewQuoteWindow", () => {
     const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
     expect([source, reference]).toEqual([{ reference: "Q-000001", option: 1, relation: "renewal" }, "DEF-2"])
     // Without the details the app set for its source, which are not the new quote's.
-    expect(body.values).toEqual({ policy: [{ "policy.state": "CA" }], quote_details: [{ qd_insured: "Acme", qd_is_renewal: true }] })
+    expect(body.values).toEqual({ policy: [{ state: "CA" }], quote_details: [{ insured: "Acme", is_renewal: true }] })
   })
 
   it("says why the quote to fill it from could not be read, and makes nothing", async () => {
@@ -394,7 +394,7 @@ describe("NewQuoteWindow", () => {
     const filling = store().openDerived(origin)
     act(() => store().close())
     await act(async () => {
-      reading(answer({}, { values: { policy: [{ "policy.state": "CA" }] } }))
+      reading(answer({}, { values: { policy: [{ state: "CA" }] } }))
       await filling
     })
     expect(store().shown).toBeNull()
@@ -450,9 +450,9 @@ describe("NewQuoteWindow", () => {
     expect(windowFields(sheetForm())).toEqual([])
 
     const details = detailsTable()
-    details.columns = details.columns.filter((column) => column.name !== "qd_reference")
+    details.columns = details.columns.filter((column) => column.name !== "quote_reference")
     const fields = windowFields({ ...sheetForm(), schema: { tables: [details] } })
-    expect(fields.map((field) => field.found?.column.name)).not.toContain("qd_reference")
+    expect(fields.map((field) => field.found?.column.name)).not.toContain("quote_reference")
     expect(windowProblems([{ key: "gone", found: null }, ...fields], "", {})).toEqual({})
   })
 

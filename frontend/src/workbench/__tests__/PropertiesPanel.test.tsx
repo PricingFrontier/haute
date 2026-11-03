@@ -40,7 +40,7 @@ function sectionOf(id: string): Section {
 /** `sheetForm` with a row-number index on equipment and a Chart, w_chart, plotting `fields`. */
 function chartForm(fields: FieldRef[]): FormSpec {
   const form = sheetForm()
-  form.schema.tables[1].columns.unshift(column("equipment.row", "row", { type: "int", index: true }))
+  form.schema.tables[1].columns.unshift(column("row", { type: "int", index: true }))
   addTo(form, chartWidget("w_chart", fields))
   return form
 }
@@ -136,7 +136,7 @@ describe("PropertiesPanel", () => {
 
   it("starts a Table's grid in the sample again at the rows it is given, keeping every value typed, each one undo step", () => {
     const form = sheetForm()
-    form.sample = { equipment: [{}, { "equipment.item": "Crane" }, {}, {}, {}] }
+    form.sample = { equipment: [{}, { item: "Crane" }, {}, {}, {}] }
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -150,14 +150,14 @@ describe("PropertiesPanel", () => {
     // Fewer: the empty rows after the last typed go, down to it.
     setRows("1")
     expect(grid()).toMatchObject({ rows: 1 })
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }])
     // More: empty rows make them up.
     setRows("4")
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }, {}, {}])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }, {}, {}])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
     act(() => useWorkbenchFormStore.getState().undo())
     expect(grid()).toMatchObject({ rows: 1 })
-    expect(currentForm().sample.equipment).toEqual([{}, { "equipment.item": "Crane" }])
+    expect(currentForm().sample.equipment).toEqual([{}, { item: "Crane" }])
   })
 
   it("sets a Table's fixed rows, transposed, and its look, its groups too, and a Collection's look, each with its own", () => {
@@ -294,12 +294,12 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(state).getByRole("button", { name: "Colour #000000 for State's font" }))
     fireEvent.change(within(state).getByRole("combobox", { name: "State's label align" }), { target: { value: "center" } })
     fireEvent.change(within(state).getByRole("combobox", { name: "State's align" }), { target: { value: "right" } })
-    type("column-width-policy:policy.state", "64")
+    type("column-width-policy:state", "64")
     fireEvent.click(within(state).getByRole("checkbox", { name: "Bold" }))
     expect(boxes().column_looks).toEqual([
       {
         table: "policy",
-        column: "policy.state",
+        column: "state",
         header_color: "#2563EB",
         header_font_color: "#FFFFFF",
         header_align: "center",
@@ -460,17 +460,17 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(item).getByRole("checkbox", { name: "Bold" }))
 
     // A width is a whole number of pixels from 24 to 1000, blank for as wide as the grid makes it.
-    const width = screen.getByTestId("column-width-equipment:equipment.item")
+    const width = screen.getByTestId("column-width-equipment:item")
     expect(width).toHaveAttribute("placeholder", "Auto")
     fireEvent.change(width, { target: { value: "10" } })
     fireEvent.blur(width)
-    expect(screen.getByTestId("column-width-equipment:equipment.item-error")).toHaveTextContent("Enter a whole number from 24 to 1000.")
+    expect(screen.getByTestId("column-width-equipment:item-error")).toHaveTextContent("Enter a whole number from 24 to 1000.")
     fireEvent.change(width, { target: { value: "120" } })
     fireEvent.blur(width)
     expect(looks()).toEqual([
       {
         table: "equipment",
-        column: "equipment.item",
+        column: "item",
         header_color: "#2563EB",
         header_font_color: "#FFFFFF",
         header_align: "left",
@@ -494,7 +494,7 @@ describe("PropertiesPanel", () => {
     // Transposed, a column has no width.
     act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_grid", { transposed: true })))
     rerender(<PropertiesPanel />)
-    expect(screen.queryByTestId("column-width-equipment:equipment.item")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("column-width-equipment:item")).not.toBeInTheDocument()
 
     fireEvent.click(within(item).getByRole("button", { name: "Clear" }))
     expect(looks()).toEqual([])
@@ -515,7 +515,7 @@ describe("PropertiesPanel", () => {
 
     fireEvent.click(within(item).getByRole("button", { name: "Add condition" }))
     expect(looks()).toHaveLength(1)
-    expect(looks()[0]).toMatchObject({ column: "equipment.item", bold: false, show_when: { match: "all" } })
+    expect(looks()[0]).toMatchObject({ column: "item", bold: false, show_when: { match: "all" } })
     expect(looks()[0].show_when.conditions).toHaveLength(1)
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(undone + 1)
     // Marked in the list with an eye naming its conditions, and with no dot: its look is the Table's.
@@ -548,7 +548,7 @@ describe("PropertiesPanel", () => {
     // Nothing to chart: no settings until it plots a field.
     expect(screen.queryByRole("region", { name: "Chart" })).not.toBeInTheDocument()
 
-    loadForm(chartForm([{ table: "equipment", column: "equipment.value" }]))
+    loadForm(chartForm([{ table: "equipment", column: "value" }]))
     select("w_chart")
     rerender(<PropertiesPanel />)
     expect(screen.queryByRole("region", { name: "Layout" })).not.toBeInTheDocument()
@@ -560,8 +560,8 @@ describe("PropertiesPanel", () => {
     expect(rows).toHaveValue("")
     expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment", "premiums"])
     expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value", "Item", "Premium"])
-    fireEvent.change(rows, { target: { value: JSON.stringify(["equipment", "equipment.item"]) } })
-    expect(chart()).toMatchObject({ category: { table: "equipment", column: "equipment.item" } })
+    fireEvent.change(rows, { target: { value: JSON.stringify(["equipment", "item"]) } })
+    expect(chart()).toMatchObject({ category: { table: "equipment", column: "item" } })
     expect(undoSteps()).toBe(1)
     fireEvent.change(rows, { target: { value: "" } })
     expect(chart()).toMatchObject({ category: null })
@@ -584,7 +584,7 @@ describe("PropertiesPanel", () => {
     expect(within(settings).getByRole("checkbox", { name: "Data labels" })).toBeEnabled()
 
     // Plotting a one-row table, its one row is not labelled.
-    loadForm(chartForm([{ table: "policy", column: "policy.year" }]))
+    loadForm(chartForm([{ table: "policy", column: "year" }]))
     select("w_chart")
     rerender(<PropertiesPanel />)
     expect(screen.getByRole("combobox", { name: "Chart type" })).toBeInTheDocument()
@@ -610,7 +610,7 @@ describe("PropertiesPanel", () => {
 
     // Once it plots a one-row column, the many-row tables do not line up with it.
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show policy year" }))
-    expect(chart().fields).toEqual([{ table: "policy", column: "policy.year" }])
+    expect(chart().fields).toEqual([{ table: "policy", column: "year" }])
     expect(screen.getByTestId("fields-table-policy")).toHaveStyle({ opacity: "1" })
     const equipment = screen.getByTestId("fields-table-equipment")
     expect(equipment).toHaveStyle({ opacity: "0.5" })
@@ -628,23 +628,23 @@ describe("PropertiesPanel", () => {
     expect(within(fields).queryByTestId("fields-table-policy")).not.toBeInTheDocument()
     expect(within(fields).getByText("2/2")).toBeInTheDocument()
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show premiums premium" }))
-    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.item", "equipment.value", "premiums.premium"])
+    expect(grid().fields.map((field) => field.column)).toEqual(["item", "value", "premium"])
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show equipment item" }))
-    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.value", "premiums.premium"])
+    expect(grid().fields.map((field) => field.column)).toEqual(["value", "premium"])
     expect(screen.getByText("2 shown")).toBeInTheDocument()
   })
 
   it("never offers the quote's reference and option among a component's fields", () => {
     const form = sheetForm()
     const [equipment] = form.schema.tables.filter((candidate) => candidate.name === "equipment")
-    equipment.columns.unshift(column("quote_reference", "reference"), column("quote_option", "option", { type: "int" }))
+    equipment.columns.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
     const fields = screen.getByRole("region", { name: "Fields" })
 
-    expect(within(fields).queryByRole("checkbox", { name: "Show equipment reference" })).toBeNull()
-    expect(within(fields).queryByRole("checkbox", { name: "Show equipment option" })).toBeNull()
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment quote_reference" })).toBeNull()
+    expect(within(fields).queryByRole("checkbox", { name: "Show equipment quote_option" })).toBeNull()
     // Counted out of what can be shown, and not found by a search.
     expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/2")).toBeInTheDocument()
     fireEvent.change(within(fields).getByRole("textbox", { name: "Search fields" }), { target: { value: "option" } })
@@ -653,7 +653,7 @@ describe("PropertiesPanel", () => {
 
   it("greys out a table whose rows do not line up with the fields already chosen", () => {
     const form = sheetForm()
-    form.schema.tables.push(table("claims", "claims", { rows: "many", columns: [column("claims.id", "id", { key: true })] }))
+    form.schema.tables.push(table("claims", { rows: "many", columns: [column("id", { key: true })] }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -667,7 +667,7 @@ describe("PropertiesPanel", () => {
 
   it("searches the fields as the schema is searched: only the columns matching, by name, label or readable name, each table open, kept as the panes change", () => {
     const form = sheetForm()
-    form.schema.tables[1].columns.push(column("equipment.sum_insured", "sum_insured", { type: "float", label: "" }))
+    form.schema.tables[1].columns.push(column("sum_insured", { type: "float", label: "" }))
     form.schema.tables[2].columns[1].label = "Annual cost"
     loadForm(form)
     select("w_grid")
@@ -691,7 +691,7 @@ describe("PropertiesPanel", () => {
     fireEvent.change(search, { target: { value: "sum insured" } })
     expect(checkboxes()).toEqual(["Show equipment sum_insured"])
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show equipment sum_insured" }))
-    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.item", "equipment.value", "equipment.sum_insured"])
+    expect(grid().fields.map((field) => field.column)).toEqual(["item", "value", "sum_insured"])
     fireEvent.change(search, { target: { value: "zzz" } })
     expect(within(fields).getByText("No fields match")).toBeInTheDocument()
     expect(checkboxes()).toEqual([])
@@ -717,10 +717,10 @@ describe("PropertiesPanel", () => {
     const rows = within(order).getAllByRole("listitem")
     expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["1. Item", "2. Value"])
     fireEvent.keyDown(rows[0], { key: "ArrowDown", altKey: true })
-    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.value", "equipment.item"])
+    expect(grid().fields.map((field) => field.column)).toEqual(["value", "item"])
 
     fireEvent.click(within(order).getByRole("button", { name: "Stop showing Value" }))
-    expect(grid().fields.map((field) => field.column)).toEqual(["equipment.item"])
+    expect(grid().fields.map((field) => field.column)).toEqual(["item"])
     // A Table has no spacers.
     expect(screen.queryByRole("button", { name: "Add spacer" })).not.toBeInTheDocument()
   })
@@ -728,7 +728,7 @@ describe("PropertiesPanel", () => {
   it("puts spacers among a Collection's fields: added after the last, moved by the keys with the focus or dragged, and removed, each one undo step", () => {
     // The policy's boxes showing its state, cover and year.
     const form = coverForm()
-    fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "policy.year" })
+    fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "year" })
     loadForm(form)
     select("w_boxes")
     render(<PropertiesPanel />)
@@ -795,7 +795,7 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(showWhen).getByRole("button", { name: "Add condition" }))
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 value" }), { target: { value: "NY" } })
 
-    expect(grid().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] })
+    expect(grid().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
   })
 
@@ -868,7 +868,7 @@ describe("PropertiesPanel", () => {
     expect(within(showWhen).getByText("Always")).toBeInTheDocument()
     fireEvent.click(within(showWhen).getByRole("button", { name: "Add condition" }))
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 value" }), { target: { value: "NY" } })
-    expect(heading().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] })
+    expect(heading().show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] })
     expect(undoSteps()).toBe(8)
   })
 
@@ -890,7 +890,7 @@ describe("PropertiesPanel", () => {
 
     const showWhen = screen.getByRole("region", { name: "Show when" })
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "not_ticked" } })
-    expect(sheet().show_when.conditions).toEqual([{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }])
+    expect(sheet().show_when.conditions).toEqual([{ table: "policy", column: "cover", op: "not_ticked", values: [], field: null, days: 0 }])
 
     act(() => useWorkbenchViewStore.getState().select("w_year"))
     showPane("Display")
@@ -1016,9 +1016,9 @@ describe("PropertiesPanel", () => {
 
     // Its own conditions, apart from its sheet's and its components'.
     const showWhen = screen.getByRole("region", { name: "Show when" })
-    expect(within(showWhen).getByRole("combobox", { name: "Condition 1 column" })).toHaveValue("policy:policy.cover")
+    expect(within(showWhen).getByRole("combobox", { name: "Condition 1 column" })).toHaveValue("policy:cover")
     fireEvent.change(within(showWhen).getByRole("combobox", { name: "Condition 1 test" }), { target: { value: "not_ticked" } })
-    expect(sectionOf("s_flood").show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }] })
+    expect(sectionOf("s_flood").show_when).toEqual({ match: "all", conditions: [{ table: "policy", column: "cover", op: "not_ticked", values: [], field: null, days: 0 }] })
     expect(currentForm().pages[0].show_when.conditions).toEqual([])
     expect(grid().show_when.conditions).toEqual([])
     expect(undoSteps()).toBe(2)
@@ -1207,7 +1207,7 @@ describe("PropertiesPanel", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Rows" }), { target: { value: "update" } })
     expect(screen.getByRole("textbox", { name: "Value is read from" })).toHaveAttribute("placeholder", "value")
     commit("Value is read from", "Sum insured")
-    expect(imported()).toMatchObject({ table: "equipment", mode: "update", column_names: [{ column: "equipment.value", name: "Sum insured" }] })
+    expect(imported()).toMatchObject({ table: "equipment", mode: "update", column_names: [{ column: "value", name: "Sum insured" }] })
     commit("Value is read from", "")
     expect(imported().column_names).toEqual([])
     // A one-row table takes its first row: no Rows.
@@ -1228,15 +1228,15 @@ describe("PropertiesPanel", () => {
     fireEvent.click(screen.getByRole("radio", { name: "SQL" }))
     commit("Connection", "policy_db")
     commit("Query", "select value from items where state = :state")
-    fireEvent.change(screen.getByRole("combobox", { name: ":state column" }), { target: { value: "policy:policy.state" } })
+    fireEvent.change(screen.getByRole("combobox", { name: ":state column" }), { target: { value: "policy:state" } })
     expect(imported().source).toEqual({
       format: "sql",
       connection: "policy_db",
       query: "select value from items where state = :state",
-      parameters: [{ name: "state", table: "policy", column: "policy.state" }],
+      parameters: [{ name: "state", table: "policy", column: "state" }],
     })
     // Only a one-row input table's columns are offered.
-    expect(choices(screen.getByRole("combobox", { name: ":state column" })).map(([value]) => value)).toEqual(["", "policy:policy.state", "policy:policy.year"])
+    expect(choices(screen.getByRole("combobox", { name: ":state column" })).map(([value]) => value)).toEqual(["", "policy:state", "policy:year"])
 
     showPane("Display")
     commit("Label", "Look up the policy")

@@ -47,13 +47,13 @@ describe("values", () => {
 
   it("put back on the sheets keep each row's values in store columns the form dropped", () => {
     const kept = JSON.stringify({ mileage: 100 })
-    const values: Values = { equipment: [{ "equipment.item": "Crane", gone: "x", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] }
-    expect(onSheets(sheetForm(), values)).toEqual({ equipment: [{ "equipment.item": "Crane", [KEPT_KEY]: kept }, { "equipment.item": "Van" }] })
+    const values: Values = { equipment: [{ item: "Crane", gone: "x", [KEPT_KEY]: kept }, { item: "Van" }] }
+    expect(onSheets(sheetForm(), values)).toEqual({ equipment: [{ item: "Crane", [KEPT_KEY]: kept }, { item: "Van" }] })
   })
 
   it("show a saved quote's price for the values as they are, and none unpriced", () => {
     const form = sheetForm()
-    const values = { policy: [{ "policy.state": "NY" }] }
+    const values = { policy: [{ state: "NY" }] }
     const price = savedPrice(form, values, { premiums: [{ premium: 1 }] }, { policy: { state: "NY" } })
     expect(price).toMatchObject({ tables: { premiums: [{ premium: 1 }] }, sample: { policy: { state: "NY" } } })
     expect(price?.basis).toEqual(expect.any(String))
@@ -85,19 +85,19 @@ describe("a quote's identity and the details the app sets", () => {
 
     // The underwriter's own, quote_name, are not the app's.
     expect(appDetails(form, details)).toEqual({
-      quote_details: [{ qd_reference: "ABC-1", qd_option: "2", qd_stage: "final", qd_assignee: "jo@example.com", qd_created_date: "2026-10-12", qd_created_by: "ana@example.com" }],
+      quote_details: [{ quote_reference: "ABC-1", quote_option: "2", stage: "final", assignee: "jo@example.com", created_date: "2026-10-12", created_by: "ana@example.com" }],
     })
-    expect(appDetails(form, { archived: true }).quote_details).toEqual([{ qd_archived: true }])
+    expect(appDetails(form, { archived: true }).quote_details).toEqual([{ archived: true }])
     // Sheets without quote_details take none.
     expect(appDetails(sheetForm(), details)).toEqual({})
   })
 
   it("takes the details the app set for a quote out of values a quote is made from", () => {
-    expect(withoutAppDetails({ policy: [{ a: "1" }], quote_details: [{ qd_reference: "ABC-1", qd_stage: "draft", qd_insured: "Acme" }] })).toEqual({
+    expect(withoutAppDetails({ policy: [{ a: "1" }], quote_details: [{ quote_reference: "ABC-1", stage: "draft", insured: "Acme" }] })).toEqual({
       policy: [{ a: "1" }],
-      quote_details: [{ qd_insured: "Acme" }],
+      quote_details: [{ insured: "Acme" }],
     })
-    expect(withoutAppDetails({ quote_details: [{ qd_reference: "ABC-1" }] })).toEqual({})
+    expect(withoutAppDetails({ quote_details: [{ quote_reference: "ABC-1" }] })).toEqual({})
   })
 })
 
@@ -279,7 +279,7 @@ describe("a kept creation", () => {
     form_revision: "rev-9",
     release: "rel-1",
     reference: "ABC-1",
-    values: { quote_details: [{ qd_insured: "Acme" }] },
+    values: { quote_details: [{ insured: "Acme" }] },
     source: null,
     title: "New quote",
   }
@@ -305,10 +305,10 @@ describe("a kept creation", () => {
 
 describe("asRenewal", () => {
   it("ticks is_renewal in the details carried, the rest as they were", () => {
-    expect(asRenewal({ policy: [{ a: "1" }], quote_details: [{ qd_insured: "Acme" }] })).toEqual({
+    expect(asRenewal({ policy: [{ a: "1" }], quote_details: [{ insured: "Acme" }] })).toEqual({
       policy: [{ a: "1" }],
-      quote_details: [{ qd_insured: "Acme", qd_is_renewal: true }],
+      quote_details: [{ insured: "Acme", is_renewal: true }],
     })
-    expect(asRenewal({})).toEqual({ quote_details: [{ qd_is_renewal: true }] })
+    expect(asRenewal({})).toEqual({ quote_details: [{ is_renewal: true }] })
   })
 })

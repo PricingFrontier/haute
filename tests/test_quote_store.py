@@ -40,12 +40,11 @@ def form(*tables: dict[str, Any]) -> FormSpec:
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_, **rest}
+    return {"name": name, "type": type_, **rest}
 
 
-POLICY = {"id": "t_policy", "name": "policy", "rows": "one", "columns": [column("region")]}
+POLICY = {"name": "policy", "rows": "one", "columns": [column("region")]}
 VEHICLES = {
-    "id": "t_vehicles",
     "name": "vehicles",
     "rows": "many",
     "columns": [column("reg", key=True), column("value", "float")],

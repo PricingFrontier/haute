@@ -179,11 +179,11 @@ describe("PageTabs", () => {
     expect(within(screen.getByRole("tab", { name: "Sheet 1" })).queryByRole("img")).not.toBeInTheDocument()
 
     // The sample is Preview's: while building the sheets are a new quote's.
-    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "cover", true)))
     expect(cover()).toHaveAttribute("data-hidden", "true")
 
     // A new quote holds its defaults: cover starting ticked shows the sheet.
-    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "policy", "policy.cover", { default_value: true })))
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateSchemaColumn(spec, "policy", "cover", { default_value: true })))
     expect(cover()).not.toHaveAttribute("data-hidden")
   })
 
@@ -199,7 +199,7 @@ describe("PageTabs", () => {
   it("marks a sheet whose conditions have a problem, naming it", () => {
     const form = coverForm()
     // Tested on the sheet it shows alone: once hidden, nothing could show the sheet again.
-    form.pages[1].show_when.conditions = [{ table: "policy", column: "policy.year", op: "above", values: ["2020"], field: null, days: 0 }]
+    form.pages[1].show_when.conditions = [{ table: "policy", column: "year", op: "above", values: ["2020"], field: null, days: 0 }]
     loadForm(form)
     render(<PageTabs />)
 
@@ -212,18 +212,18 @@ describe("PageTabs", () => {
     render(<PageTabs />)
 
     expect(tabs()).toEqual([["Sheet 1", "true"]])
-    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "cover", true)))
     expect(tabs()).toEqual([["Sheet 1", "false"], ["Cover", "true"]])
     expect(screen.queryByRole("img")).not.toBeInTheDocument()
   })
 
   it("in the underwriter app offers the sheets its quote shows, not the sample's", () => {
-    loadForm(withSampleCell(coverForm(), "policy", 0, "policy.cover", true))
+    loadForm(withSampleCell(coverForm(), "policy", 0, "cover", true))
     useWorkbenchViewStore.setState({ mode: "preview", underwriterApp: true, pageId: "p2" })
     render(<PageTabs />)
 
     expect(tabs()).toEqual([["Sheet 1", "true"]])
-    act(() => useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } }))
+    act(() => useWorkbenchPreviewStore.setState({ quote: { policy: [{ cover: true }] } }))
     expect(tabs()).toEqual([["Sheet 1", "false"], ["Cover", "true"]])
   })
 })

@@ -37,19 +37,18 @@ const TABLES: WorkbenchCatalogueTable[] = [
 
 const COMPARED: WorkbenchStoreCompareResponse = {
   differences: [
-    { table: "policy", column: "policy.state", kind: "missing", message: "the database has no state" },
-    { table: "policy", column: "policy.year", kind: "type", message: "the database holds it as TEXT, not BIGINT (3 quotes hold values in it)" },
+    { table: "policy", column: "state", kind: "missing", message: "the database has no state" },
+    { table: "policy", column: "year", kind: "type", message: "the database holds it as TEXT, not BIGINT (3 quotes hold values in it)" },
     { table: "equipment", column: null, kind: "missing", message: "the database has no equipment" },
     { table: null, column: null, kind: "missing", message: "the database has no haute_activity" },
   ],
   extras: [
-    { table: "policy", column: "region", table_id: "policy", quotes: 3 },
-    { table: "policy", column: "legacy", table_id: "policy", quotes: null },
+    { table: "policy", column: "region", form_table: "policy", quotes: 3 },
+    { table: "policy", column: "legacy", form_table: "policy", quotes: null },
   ],
   renames: [],
   matches: false,
   sql: "BEGIN;\nALTER TABLE policy ADD COLUMN state TEXT;\nCOMMIT;\n",
-  branch: null,
 }
 
 const open = () => {
@@ -80,10 +79,10 @@ describe("Compare", () => {
 
     choose("dev")
 
-    expect(await screen.findByTestId("database-mark-policy-policy.state")).toHaveTextContent("missing")
+    expect(await screen.findByTestId("database-mark-policy-state")).toHaveTextContent("missing")
     expect(fetchStoreCatalogue).toHaveBeenCalledWith("dev")
     expect(fetchStoreCompare).toHaveBeenCalledWith(useWorkbenchFormStore.getState().form, "dev", TABLES, [])
-    const typed = screen.getByTestId("database-mark-policy-policy.year")
+    const typed = screen.getByTestId("database-mark-policy-year")
     expect(typed).toHaveTextContent("type")
     expect(typed).toHaveAttribute("title", expect.stringContaining("3 quotes hold values in it"))
     expect(screen.getByTestId("database-mark-equipment")).toHaveTextContent("missing")
@@ -100,13 +99,13 @@ describe("Compare", () => {
     choose("dev")
 
     expect(await screen.findByText("The dev database matches the form.")).toBeInTheDocument()
-    expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("database-mark-policy-state")).not.toBeInTheDocument()
   })
 
   it("compares the form again as it changes without reading the database again", async () => {
     open()
     choose("dev")
-    await screen.findByTestId("database-mark-policy-policy.state")
+    await screen.findByTestId("database-mark-policy-state")
 
     useWorkbenchFormStore.getState().change((form) => updateSchemaTable(form, "equipment", { name: "kit" }))
 
@@ -122,14 +121,14 @@ describe("Compare", () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({
       ...COMPARED,
       extras: [],
-      renames: [{ table: "policy", column: "policy.state", was: "region" }],
+      renames: [{ table: "policy", column: "state", was: "region" }],
     })
 
-    fireEvent.change(pairing, { target: { value: "policy.state" } })
+    fireEvent.change(pairing, { target: { value: "state" } })
 
     await waitFor(() =>
       expect(fetchStoreCompare).toHaveBeenLastCalledWith(expect.anything(), "dev", TABLES, [
-        { table: "policy", column: "policy.state", was: "region" },
+        { table: "policy", column: "state", was: "region" },
       ]),
     )
     const renamed = await screen.findByRole("region", { name: "Renamed" })
@@ -146,13 +145,13 @@ describe("Compare", () => {
     vi.mocked(fetchStoreCompare).mockImplementation((_form, _environment, _tables, renames) => Promise.resolve({ ...COMPARED, renames }))
     open()
     choose("dev")
-    await screen.findByTestId("database-mark-policy-policy.state")
-    useStoreCompareStore.getState().pair({ table: "policy", column: "policy.state", was: "region" })
+    await screen.findByTestId("database-mark-policy-state")
+    useStoreCompareStore.getState().pair({ table: "policy", column: "state", was: "region" })
 
     fireEvent.click(screen.getByRole("button", { name: "Read the dev database again" }))
 
     await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2))
-    expect(useStoreCompareStore.getState().renames).toEqual([{ table: "policy", column: "policy.state", was: "region" }])
+    expect(useStoreCompareStore.getState().renames).toEqual([{ table: "policy", column: "state", was: "region" }])
   })
 
   it("says why the database could not be read, marking nothing", async () => {
@@ -164,7 +163,7 @@ describe("Compare", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("connections.toml has no [prod] connection")
     expect(fetchStoreCompare).not.toHaveBeenCalled()
-    expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("database-mark-policy-state")).not.toBeInTheDocument()
   })
 
   it("says why the form could not be compared, the database read", async () => {
@@ -174,18 +173,18 @@ describe("Compare", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("A column name is refused.")
     expect(fetchStoreCatalogue).toHaveBeenCalledTimes(1)
-    expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("database-mark-policy-state")).not.toBeInTheDocument()
   })
 
   it("compares with nothing once Compare is set back to none, and reads nothing again without an environment", async () => {
     open()
     choose("dev")
-    await screen.findByTestId("database-mark-policy-policy.state")
+    await screen.findByTestId("database-mark-policy-state")
 
     choose("")
 
     expect(screen.queryByTestId("store-compare")).not.toBeInTheDocument()
-    expect(screen.queryByTestId("database-mark-policy-policy.state")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("database-mark-policy-state")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Read the .* database again/ })).not.toBeInTheDocument()
     expect(useStoreCompareStore.getState()).toMatchObject({ environment: null, read: { status: "idle" }, renames: [] })
     useStoreCompareStore.getState().readAgain()
@@ -195,7 +194,7 @@ describe("Compare", () => {
   it("closes the comparison with the pane", async () => {
     const shown = open()
     choose("dev")
-    await screen.findByTestId("database-mark-policy-policy.state")
+    await screen.findByTestId("database-mark-policy-state")
 
     shown.unmount()
 
@@ -204,18 +203,18 @@ describe("Compare", () => {
 
   it("replaces conflicting pairings, drops pairings the comparison rejects, and ignores superseded reads and comparisons", async () => {
     const store = useStoreCompareStore.getState()
-    store.pair({ table: "policy", column: "policy.state", was: "region" })
-    store.pair({ table: "equipment", column: "equipment.make", was: "brand" })
+    store.pair({ table: "policy", column: "state", was: "region" })
+    store.pair({ table: "equipment", column: "make", was: "brand" })
     // Replacing by form column and by database column keeps other tables' pairings.
-    store.pair({ table: "policy", column: "policy.state", was: "territory" })
-    store.pair({ table: "policy", column: "policy.year", was: "territory" })
+    store.pair({ table: "policy", column: "state", was: "territory" })
+    store.pair({ table: "policy", column: "year", was: "territory" })
     expect(useStoreCompareStore.getState().renames).toEqual([
-      { table: "equipment", column: "equipment.make", was: "brand" },
-      { table: "policy", column: "policy.year", was: "territory" },
+      { table: "equipment", column: "make", was: "brand" },
+      { table: "policy", column: "year", was: "territory" },
     ])
-    store.unpair("policy", "policy.year")
+    store.unpair("policy", "year")
     expect(useStoreCompareStore.getState().renames).toEqual([
-      { table: "equipment", column: "equipment.make", was: "brand" },
+      { table: "equipment", column: "make", was: "brand" },
     ])
 
     // Superseded catalogue read (both success and failure) is ignored after reset.
@@ -242,7 +241,7 @@ describe("Compare", () => {
 
     store.choose("dev")
     await waitFor(() => expect(useStoreCompareStore.getState().read.status).toBe("read"))
-    store.pair({ table: "policy", column: "policy.state", was: "region" })
+    store.pair({ table: "policy", column: "state", was: "region" })
     const form = useWorkbenchFormStore.getState().form!
     store.compare(form)
     store.compare(form)

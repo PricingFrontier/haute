@@ -24,24 +24,19 @@ def _table(
 ) -> dict[str, Any]:
     """An output table as a form document holds it."""
     return {
-        "id": f"t_{name}",
         "name": name,
         "role": "output",
         "rows": rows,
-        "columns": [
-            {"id": f"c_{column}", "name": column, "type": "float", "key": column in keys}
-            for column in columns
-        ],
+        "columns": [{"name": column, "type": "float", "key": column in keys} for column in columns],
     }
 
 
 def _form(*tables: dict[str, Any]) -> dict[str, Any]:
     policy = {
-        "id": "t1",
         "name": "policy_details",
         "role": "input",
         "rows": "one",
-        "columns": [{"id": "c_exposure", "name": "exposure", "type": "float"}],
+        "columns": [{"name": "exposure", "type": "float"}],
     }
     return {"version": 1, "name": "x", "schema": {"tables": [policy, *tables]}}
 
