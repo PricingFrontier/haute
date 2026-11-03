@@ -400,7 +400,13 @@ no longer has; and `InputSource` in
   the models' order, `ensure_ascii=False`, a list of numbers or a layout entry, a schema
   file's column and a show-when condition each on one line (the one printer,
   `src/haute/_json_files.py::render_json`),
-  other lists one item a line, LF and a final newline. A golden folder in the tests pins
+  other lists one item a line, LF and a final newline. A sheet file writes a sheet's
+  parts plainly (READ-31): a Collection's `spacers` as a `null` in `fields` at each gap's
+  place (two in a row a wider gap, first or last as a spacer allows), a field with a
+  `column_looks` entry of its own as an object holding `field` and its settings in its
+  place in `fields` (a Table's too), and a `match` that is a number, on a `show_when` or
+  a group, as `at_least`; reading turns each back into the model's `spacers`,
+  `column_looks` and `match`, and refuses a rule giving both. A golden folder in the tests pins
   the bytes of the test project's form and the `FormSpec` it reads as.
 - **`FormSpec`** (`src/haute/_workbench_form.py`): `version` (the literal 1), `name`,
   `theme` (a `Theme`, the sheets' colours: `sheet_color`, `background_color`,

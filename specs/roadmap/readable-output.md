@@ -50,7 +50,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-25 | Planned | P2 | A column's sourced allowed values are stored only as a reference to their parameter file. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
-| READ-31 | Planned | P3 | Gaps, conditions and appearance on a sheet are written where a reader looks for them. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
@@ -322,28 +321,6 @@ The owner judged that the complexity isn't worth it.
 
 **Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_banding_config.py`;
 `src/haute/assistant/_catalog.py`.
-
-### READ-31 — A sheet's gaps, conditions and appearance are written plainly
-**Why:**
-- `"spacers": [3, 5]` counts fields, so a field inserted by hand moves the gap silently.
-- `"match": 2` means "at least 2".
-- `column_looks` repeats each field's name.
-
-**Plan:**
-- **Gaps:** each gap is a `null` in `fields`, at its place. Two in a row make a wider gap, and a gap may come first or last, as `spacers` allows today.
-- **Conditions:** `match` keeps `"all"` and `"any"`, and a number becomes `"at_least": n` in its place, for a whole `show_when` and for a group alike.
-- **Appearance:** a field with an appearance of its own is written as an object holding the field and its settings, in its place in `fields`.
-
-**Acceptance:**
-- Round-trip tests for:
-  - a gap first, last and doubled;
-  - `all`, `any` and `at_least` on a `show_when` and on a group;
-  - a field with and without its own appearance.
-- The workbench fixture converts to the same sheet.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_workbench_form.py::CollectionWidget`; `src/haute/_workbench_form.py::ConditionGroup`.
 
 ### READ-33 — A column or table renamed against the default branch keeps its values
 **Why:** After `READ-23`, a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.

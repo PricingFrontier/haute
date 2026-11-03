@@ -170,9 +170,31 @@ _ONE_CONDITION_FILE = (
 SingleConditionFile = Annotated[_ONE_CONDITION_FILE, Discriminator(_condition_kind)]
 
 
+#: How many of a rule's conditions must hold, as a file writes it (READ-31): ``match`` says
+#: all or any, and ``at_least`` a number of them in its place.
+_AtLeast = Annotated[int, Strict(), Field(ge=1)]
+
+
+def _one_match(match: object, at_least: object, where: str) -> None:
+    if at_least is not None and match is not None:
+        raise ValueError(f"{where} gives both match and at_least: give one of them")
+
+
 class ConditionGroupFile(_File):
-    match: Match
+    match: Literal["all", "any"] | None = None
+    at_least: _AtLeast | None = None
     conditions: list[SingleConditionFile] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _match_or_at_least(self) -> ConditionGroupFile:
+        _one_match(self.match, self.at_least, "a group")
+        if self.match is None and self.at_least is None:
+            raise ValueError("a group needs match (all or any) or at_least")
+        return self
+
+    @property
+    def counted(self) -> Match:
+        return self.at_least if self.at_least is not None else self.match or "all"
 
 
 ShowWhenEntryFile = Annotated[
@@ -182,8 +204,18 @@ ShowWhenEntryFile = Annotated[
 
 
 class ShowWhenFile(_File):
-    match: Match = "all"
+    match: Literal["all", "any"] = "all"
+    at_least: _AtLeast | None = None
     conditions: list[ShowWhenEntryFile] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _match_or_at_least(self) -> ShowWhenFile:
+        _one_match(None if self.match == "all" else self.match, self.at_least, "a show_when")
+        return self
+
+    @property
+    def counted(self) -> Match:
+        return self.at_least if self.at_least is not None else self.match
 
 
 _SHOW_WHEN = (ShowWhenFile, Field(default_factory=ShowWhenFile))
@@ -199,6 +231,7 @@ if TYPE_CHECKING:
     # mypy cannot follow: to it each is ``Any``, while pydantic and every reader at run time
     # see the model itself.
     ColumnLookFile = Any
+    FieldLookFile = Any
     TableComponentFile = Any
     CollectionComponentFile = Any
     ChartComponentFile = Any
@@ -219,19 +252,35 @@ else:
         drop=frozenset({"table"}),
         replace={"column": (Dotted, ...), "show_when": _SHOW_WHEN},
     )
-    _COMPONENT_LOOKS = {
-        "fields": (list[Dotted], Field(default_factory=list)),
-        "show_when": _SHOW_WHEN,
-        "column_looks": (list[ColumnLookFile], Field(default_factory=list)),
-    }
+    FieldLookFile = create_model(
+        "FieldLookFile",
+        __base__=_File,
+        field=(Dotted, ...),
+        **{
+            name: (info.annotation, info)
+            for name, info in ColumnLook.model_fields.items()
+            if name not in ("table", "column", "show_when")
+        },
+        show_when=_SHOW_WHEN,
+    )
     TableComponentFile = _derived(
         "TableComponentFile",
         TableInputWidget,
-        drop=PLACEMENT,
-        replace={"type": (Literal["table"], ...), **_COMPONENT_LOOKS},
+        drop=PLACEMENT | {"column_looks"},
+        replace={
+            "type": (Literal["table"], ...),
+            "fields": (list[Dotted | FieldLookFile], Field(default_factory=list)),
+            "show_when": _SHOW_WHEN,
+        },
     )
     CollectionComponentFile = _derived(
-        "CollectionComponentFile", CollectionWidget, drop=PLACEMENT, replace=_COMPONENT_LOOKS
+        "CollectionComponentFile",
+        CollectionWidget,
+        drop=PLACEMENT | {"column_looks", "spacers"},
+        replace={
+            "fields": (list[Dotted | FieldLookFile | None], Field(default_factory=list)),
+            "show_when": _SHOW_WHEN,
+        },
     )
     ChartComponentFile = _derived(
         "ChartComponentFile",

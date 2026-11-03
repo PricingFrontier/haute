@@ -11,15 +11,8 @@
           "type": "collection",
           "title": "Policy",
           "fields": [
-            "policy.state",
-            "policy.exposure",
-            "pricing.premium"
-          ],
-          "columns": 2,
-          "labels": "beside",
-          "column_looks": [
             {
-              "column": "policy.state",
+              "field": "policy.state",
               "header_color": "#2563EB",
               "bold": true,
               "show_when": {
@@ -27,9 +20,13 @@
                   {"table": "layers", "where": [{"column": "limit", "op": "filled"}], "op": "at_least", "count": 1}
                 ]
               }
-            }
+            },
+            null,
+            "policy.exposure",
+            "pricing.premium"
           ],
-          "spacers": [1]
+          "columns": 2,
+          "labels": "beside"
         },
         {
           "id": "table_l4y5",
@@ -37,7 +34,10 @@
           "title": "Layers",
           "fields": [
             "layers.layer",
-            "layers.limit",
+            {
+              "field": "layers.limit",
+              "width": 120
+            },
             "layers.layer_name"
           ],
           "show_when": {
@@ -46,13 +46,7 @@
               {"table": "layers", "rows": "any", "where": [{"column": "limit", "op": "above", "values": ["0"]}]}
             ]
           },
-          "rows": 5,
-          "column_looks": [
-            {
-              "column": "layers.limit",
-              "width": 120
-            }
-          ]
+          "rows": 5
         },
         {
           "id": "chart_c6h7",
@@ -70,7 +64,7 @@
       "id": "section_pr01",
       "title": "Perils",
       "show_when": {
-        "match": 1,
+        "at_least": 1,
         "conditions": [
           {"match": "any", "conditions": [{"column": "policy.state", "op": "one_of", "values": ["CA", "NY"]}, {"table": "BR_Perils", "total": "sum", "column": "rate", "where": [], "op": "below", "value": "10"}]}
         ]

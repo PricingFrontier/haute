@@ -50,7 +50,7 @@ from haute._cache import canonical_json
 from haute._config_io import is_windows_reserved_filename
 from haute._file_lock import FileLock
 from haute._hashing import content_hash_bytes
-from haute._json_files import ANY, JsonPath, OneLine, at, render_json_bytes
+from haute._json_files import ANY, JsonPath, at, render_json_bytes
 from haute._workbench_config import WorkbenchConfig
 from haute._workbench_folder_files import (
     DETAILS_ANY,
@@ -281,21 +281,41 @@ def _a_condition(path: JsonPath) -> bool:
 _SCHEMA_ONE_LINE = at(("columns", ANY))
 
 
-def render_folder_file(value: BaseModel | list[Any], *, one_line: OneLine | None = None) -> bytes:
+def _never(_path: JsonPath) -> bool:
+    return False
+
+
+def render_folder_file(value: BaseModel | list[Any]) -> bytes:
     """A file's bytes: a model with each setting at its default left out, or a list, written
-    by the one printer (:mod:`haute._json_files`): the records *one_line* names, and a layout
-    box or any other run of numbers alone, on one line each."""
+    by the one printer (:mod:`haute._json_files`): a schema file's columns and a sheet's
+    show-when conditions, and a layout box or any other run of numbers alone, on one line
+    each, whoever writes the file."""
     data = (
         value.model_dump(mode="json", exclude_defaults=True, by_alias=True)
         if isinstance(value, BaseModel)
         else value
     )
-    return render_json_bytes(data, one_line=one_line or (lambda _path: False))
+    one_line = (
+        _a_condition
+        if isinstance(value, SheetFile)
+        else _SCHEMA_ONE_LINE
+        if isinstance(value, TableFile | QuoteDetailsFile)
+        else _never
+    )
+    return render_json_bytes(data, one_line=one_line)
+
+
+def _counted_file(match: Any) -> dict[str, Any]:
+    """How many of a rule's conditions must hold, as a file writes it (READ-31): ``match``
+    for all or any, ``at_least`` for a number of them."""
+    if isinstance(match, int) and not isinstance(match, bool):
+        return {"at_least": match}
+    return {"match": match}
 
 
 def _show_when_file(show_when: Any, names: _Names) -> dict[str, Any]:
     return {
-        "match": show_when.match,
+        **_counted_file(show_when.match),
         "conditions": [_entry_file(entry, names) for entry in show_when.conditions],
     }
 
@@ -304,7 +324,7 @@ def _entry_file(entry: Any, names: _Names) -> dict[str, Any]:
     kind = _condition_kind(entry)
     if kind == "group":
         return {
-            "match": entry.match,
+            **_counted_file(entry.match),
             "conditions": [_entry_file(item, names) for item in entry.conditions],
         }
     if kind == "one":
@@ -347,17 +367,12 @@ def _component_file(widget: Any, names: _Names) -> dict[str, Any]:
     data["show_when"] = _show_when_file(widget.show_when, names)
     if widget.type == "tableInput":
         data["type"] = "table"
-    if widget.type in ("tableInput", "collection", "chart"):
+    if widget.type == "chart":
         data["fields"] = [names.dotted(field.table, field.column) for field in widget.fields]
     if widget.type in ("tableInput", "collection"):
-        data["column_looks"] = [
-            {
-                **look.model_dump(mode="json", exclude={"table", "column", "show_when"}),
-                "column": names.dotted(look.table, look.column),
-                "show_when": _show_when_file(look.show_when, names),
-            }
-            for look in widget.column_looks
-        ]
+        data["fields"] = _fields_file(widget, names)
+        data.pop("column_looks", None)
+        data.pop("spacers", None)
     if widget.type == "chart" and widget.category is not None:
         data["category"] = names.dotted(widget.category.table, widget.category.column)
     if widget.type == "import":
@@ -381,6 +396,35 @@ def _component_file(widget: Any, names: _Names) -> dict[str, Any]:
                 for named in widget.target.table_names
             ]
     return data
+
+
+def _fields_file(widget: Any, names: _Names) -> list[Any]:
+    """A Table's or a Collection's fields as its file writes them (READ-31): each field as
+    ``table.column``, a field with a look of its own as an object holding the field and its
+    settings, in its place, and each of a Collection's gaps as ``null`` where it sits."""
+    looks = {(look.table, look.column): look for look in widget.column_looks}
+    entries: list[Any] = []
+    for field in widget.fields:
+        dotted = names.dotted(field.table, field.column)
+        look = looks.get((field.table, field.column))
+        entries.append(
+            dotted
+            if look is None
+            else {
+                "field": dotted,
+                **look.model_dump(mode="json", exclude={"table", "column", "show_when"}),
+                "show_when": _show_when_file(look.show_when, names),
+            }
+        )
+    gaps = list(getattr(widget, "spacers", []))
+    placed: list[Any] = []
+    for index, entry in enumerate(entries):
+        while gaps and gaps[0] == index:
+            placed.append(None)
+            gaps.pop(0)
+        placed.append(entry)
+    placed.extend(None for _ in gaps)
+    return placed
 
 
 def _sheet_and_layout(page: Any, names: _Names) -> tuple[SheetFile, LayoutFile]:
@@ -521,11 +565,11 @@ def folder_files(spec: FormSpec, folder: Path) -> dict[str, bytes]:
             if table.id == QUOTE_DETAILS_ID
             else _table_file_model(table, names.missing)
         )
-        files[_table_file(table.name)] = render_folder_file(model, one_line=_SCHEMA_ONE_LINE)
+        files[_table_file(table.name)] = render_folder_file(model)
     for page in spec.pages:
         sheet, layout = _sheet_and_layout(page, names)
         sheet_path, layout_path = _sheet_files(sheet_name(page.title))
-        files[sheet_path] = render_folder_file(sheet, one_line=_a_condition)
+        files[sheet_path] = render_folder_file(sheet)
         files[layout_path] = render_folder_file(layout)
     inputs = {table.id: table for table in tables if table.role == "input"}
     for table_id, rows in spec.sample.items():
@@ -681,7 +725,7 @@ def _entry(entry: Any, names: _Names) -> dict[str, Any]:
     kind = _condition_kind(entry)
     if kind == "group":
         return {
-            "match": entry.match,
+            "match": entry.counted,
             "conditions": [_entry(item, names) for item in entry.conditions],
         }
     if kind == "one":
@@ -719,7 +763,7 @@ def _entry(entry: Any, names: _Names) -> dict[str, Any]:
 
 def _show_when(show_when: ShowWhenFile, names: _Names) -> dict[str, Any]:
     return {
-        "match": show_when.match,
+        "match": show_when.counted,
         "conditions": [_entry(item, names) for item in show_when.conditions],
     }
 
@@ -731,17 +775,32 @@ def _component(component: Any, rect: RectFile, names: _Names) -> dict[str, Any]:
     kind = component.type
     if kind == "table":
         data["type"] = "tableInput"
-    if kind in ("table", "collection", "chart"):
+    if kind == "chart":
         data["fields"] = [names.ref(field) for field in component.fields]
     if kind in ("table", "collection"):
-        data["column_looks"] = [
-            {
-                **look.model_dump(mode="json", exclude={"column", "show_when"}),
-                **names.ref(look.column),
-                "show_when": _show_when(look.show_when, names),
-            }
-            for look in component.column_looks
-        ]
+        fields: list[dict[str, Any]] = []
+        looks: list[dict[str, Any]] = []
+        gaps: list[int] = []
+        for entry in component.fields:
+            if entry is None:
+                gaps.append(len(fields))
+                continue
+            if isinstance(entry, str):
+                fields.append(names.ref(entry))
+                continue
+            ref = names.ref(entry.field)
+            fields.append(ref)
+            looks.append(
+                {
+                    **entry.model_dump(mode="json", exclude={"field", "show_when"}),
+                    **ref,
+                    "show_when": _show_when(entry.show_when, names),
+                }
+            )
+        data["fields"] = fields
+        data["column_looks"] = looks
+        if kind == "collection":
+            data["spacers"] = gaps
     if kind == "chart" and component.category is not None:
         data["category"] = names.ref(component.category)
     if kind == "import":
