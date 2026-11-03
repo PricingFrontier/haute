@@ -48,7 +48,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
 | READ-24 | Planned | P2 | A sheet, its sections and their components are identified by file name, title and number, not random ids. |
 | READ-25 | Planned | P2 | A column's sourced allowed values are stored only as a reference to their parameter file. |
-| READ-26 | Planned | P2 | A rating table is written as a grid, one row of the table per line. |
 | READ-27 | Planned | P3 | Banding is written as a list of bands, each with its upper edge and its label. |
 | READ-28 | Planned | P3 | Constants are a map from name to value, and constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
@@ -267,38 +266,6 @@ The owner judged that the complexity isn't worth it.
 
 **Evidence:** `src/haute/_workbench_params.py::with_param_options`;
 `src/haute/_workbench_folder.py::form_at_ref`; `src/haute/_workbench_app.py`.
-
-### READ-26 — A rating table is written as a grid
-**Why:** Each cell of a rating table is an object over 5 lines, so a 4 by 4 table is 97 lines. Changing one band's label touches 38 lines. In the investigated pull request:
-- filling 16 rates took one 82-line hunk;
-- an outlier of 0.25 among rates of 0.015 to 0.05 could not be seen;
-- a change of factor order that also reset four rates came in a 62-line diff.
-
-**Plan:**
-- **The grid:**
-  - `factors` lists the table's factors in order (up to three, today's limit);
-  - `columns` lists the levels of the last factor;
-  - `rows` holds one line per combination of the other factors: their levels first, then one rate per column.
-  - With one factor there is no `columns`, and each row is a level and its rate.
-- **Missing cells and values:**
-  - a cell with no entry is `null`, and a lookup there misses and follows `onMissing`;
-  - a rate of 0 is a rate.
-- **What is kept:** levels keep their JSON type, so `25` and `"25"` stay distinct. `factorDtypes`, the outputs and the other table settings stay beside the grid.
-- **`defaultValue`** is written as a number, next to `onMissing`, so it is clear which applies.
-- **Conversion:** a table with duplicate entries is already refused (see the [rating specification](../rating/high-level.md)), so it converts only once fixed.
-- **Contract:** replace the row-array contract in the [rating specification](../rating/high-level.md).
-
-**Acceptance:**
-- The grid round-trips one, two and three factors, sparse tables, typed levels and every table setting.
-- Tests tell a missing cell, a zero and the default apart.
-- Changing one rate changes one line.
-- The reference pipeline prices the same after conversion.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_rating.py::rating_table_lookup`;
-`src/haute/_rating_step_config.py::normalise_rating_step_config`;
-`frontend/src/panels/editors/rating/ratingTableUtils.ts::buildCartesianEntries`.
 
 ### READ-27 — Banding is written as a list of bands
 **Why:** Breakpoint banding is stored as a map from each band's upper edge to its label. Reading it takes knowledge of that convention, and the open-ended top band is spelled `"": "9-10"`.

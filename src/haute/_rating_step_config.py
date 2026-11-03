@@ -237,6 +237,159 @@ def refuse_levels_equal_under_factor_dtypes(config: dict[str, Any]) -> None:
             continue
 
 
+# ---------------------------------------------------------------------------
+# The sidecar's grid (READ-26)
+# ---------------------------------------------------------------------------
+
+#: The conversion a rating sidecar still in the row-array form needs.
+GRID_CONVERSION = "scripts/one_off/read_26_rating_grid.py"
+
+
+def _level_key(level: Any) -> str:
+    """A level's identity as written: ``25`` and ``"25"`` stay distinct."""
+    return json.dumps(level, sort_keys=True)
+
+
+def _numeric_default(value: Any) -> Any:
+    """A ``defaultValue`` written as text, written as the number it is; anything else as is."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    try:
+        number = float(value)
+    except ValueError:
+        return value
+    if not math.isfinite(number):
+        return value
+    return (
+        int(number)
+        if number.is_integer() and "." not in value and "e" not in value.lower()
+        else number
+    )
+
+
+def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
+    """*table* as its sidecar writes it: ``rows`` (and ``columns``) in place of ``entries``.
+
+    With one factor each row is a level and its rate. With more, ``columns`` lists the
+    last factor's levels in the order the entries first give them, and each row holds one
+    combination of the other factors, in that order, then one rate per column, ``null``
+    where no entry is. A rate of 0 is a rate. Levels keep their JSON type.
+    """
+    result = {key: value for key, value in table.items() if key != "entries"}
+    if "defaultValue" in result:
+        result["defaultValue"] = _numeric_default(result["defaultValue"])
+    entries = table.get("entries")
+    factors = table.get("factors") or []
+    if not isinstance(entries, list) or not factors:
+        return result
+    if len(factors) == 1:
+        (factor,) = factors
+        result["rows"] = [[entry[factor], entry["value"]] for entry in entries]
+        return result
+    *leading, last = factors
+    columns: dict[str, Any] = {}
+    rows: dict[str, list[Any]] = {}
+    cells: dict[tuple[str, str], Any] = {}
+    for entry in entries:
+        column = _level_key(entry[last])
+        columns.setdefault(column, entry[last])
+        row = _level_key([entry[factor] for factor in leading])
+        rows.setdefault(row, [entry[factor] for factor in leading])
+        cells[(row, column)] = entry["value"]
+    result["columns"] = list(columns.values())
+    result["rows"] = [
+        [*levels, *(cells.get((row, column)) for column in columns)] for row, levels in rows.items()
+    ]
+    return result
+
+
+def entries_from_grid(table: dict[str, Any], table_index: int) -> dict[str, Any]:
+    """*table* as its sidecar holds it, its grid read back into ``entries``: a ``null`` cell
+    no entry. A table in the old row-array form is refused, naming the conversion."""
+    context = _table_context(table_index)
+    if "entries" in table:
+        raise ConfigSettingError(
+            f"{context} is in the row-array form rating tables had before they were written as "
+            f"a grid. Convert the project's rating sidecars with {GRID_CONVERSION}.",
+            setting="tables",
+        )
+    result = {key: value for key, value in table.items() if key not in ("columns", "rows")}
+    rows = table.get("rows")
+    if rows is None:
+        if "columns" in table:
+            raise ConfigSettingError(f"{context} has columns but no rows", setting="tables")
+        return result
+    factors = table.get("factors")
+    if not isinstance(factors, list) or not factors:
+        raise ConfigSettingError(f"{context}.factors must be a non-empty list", setting="tables")
+    if not isinstance(rows, list):
+        raise ConfigSettingError(f"{context}.rows must be a list", setting="tables")
+    entries: list[dict[str, Any]] = []
+    if len(factors) == 1:
+        (factor,) = factors
+        if "columns" in table:
+            raise ConfigSettingError(
+                f"{context} has one factor, so its rows are a level and a rate, with no columns",
+                setting="tables",
+            )
+        for row_index, row in enumerate(rows):
+            if not isinstance(row, list) or len(row) != 2:
+                raise ConfigSettingError(
+                    f"{context}.rows[{row_index}] must be a level and its rate", setting="tables"
+                )
+            if row[1] is not None:
+                entries.append({factor: row[0], RATE_KEY: row[1]})
+        result["entries"] = entries
+        return result
+    columns = table.get("columns")
+    if not isinstance(columns, list):
+        raise ConfigSettingError(
+            f"{context}.columns must list the levels of its last factor", setting="tables"
+        )
+    *leading, last = factors
+    width = len(leading) + len(columns)
+    for row_index, row in enumerate(rows):
+        if not isinstance(row, list) or len(row) != width:
+            raise ConfigSettingError(
+                f"{context}.rows[{row_index}] must hold {len(leading)} level(s) and "
+                f"{len(columns)} rate(s)",
+                setting="tables",
+            )
+        levels = dict(zip(leading, row[: len(leading)], strict=True))
+        for column, rate in zip(columns, row[len(leading) :], strict=True):
+            if rate is not None:
+                entries.append({**levels, last: column, RATE_KEY: rate})
+    result["entries"] = entries
+    return result
+
+
+def compact_rating_config_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """A validated rating-step config with each table written as its grid."""
+    tables = config.get("tables")
+    if not isinstance(tables, list):
+        return config
+    return {
+        **config,
+        "tables": [
+            grid_from_entries(table) if isinstance(table, dict) else table for table in tables
+        ],
+    }
+
+
+def expand_rating_config_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """A rating-step sidecar with each table's grid read back into its entries."""
+    tables = config.get("tables")
+    if not isinstance(tables, list):
+        return config
+    return {
+        **config,
+        "tables": [
+            entries_from_grid(table, index) if isinstance(table, dict) else table
+            for index, table in enumerate(tables)
+        ],
+    }
+
+
 def validate_unique_rating_table_outputs(tables: list[dict[str, Any]]) -> None:
     """Reject table outputs that would overwrite and then be combined twice."""
     first_index_by_output: dict[str, int] = {}

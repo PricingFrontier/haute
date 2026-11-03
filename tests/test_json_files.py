@@ -38,7 +38,7 @@ def test_the_printer_writes_named_records_and_numbers_on_one_line() -> None:
     )
 
 
-def test_a_rating_step_sidecar_orders_its_tables_and_writes_an_entry_a_line() -> None:
+def test_a_rating_step_sidecar_orders_its_tables_and_writes_a_grid_row_a_line() -> None:
     config = {
         "tables": [
             {
@@ -56,14 +56,12 @@ def test_a_rating_step_sidecar_orders_its_tables_and_writes_an_entry_a_line() ->
         '  "tables": [\n'
         "    {\n"
         '      "name": "Region",\n'
-        '      "factors": [\n'
-        '        "region"\n'
-        "      ],\n"
+        '      "factors": ["region"],\n'
         '      "outputColumn": "region_factor",\n'
         '      "defaultValue": null,\n'
-        '      "entries": [\n'
-        '        {"region": "north", "value": 1.1},\n'
-        '        {"region": "south", "value": 0.9}\n'
+        '      "rows": [\n'
+        '        ["north", 1.1],\n'
+        '        ["south", 0.9]\n'
         "      ]\n"
         "    }\n"
         "  ]\n"

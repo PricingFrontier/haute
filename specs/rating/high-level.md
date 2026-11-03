@@ -23,9 +23,9 @@ In scope:
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs with a required fixed finite numeric
   base value using `multiply` / `add` / `min` / `max`.
-- Config normalisation: rating-table entries persist only in one canonical
-  ordered row-array shape. Categorical and breakpoints banding rules retain
-  their compact key/value-map sidecar shape.
+- Config normalisation: in memory a rating table's entries are one canonical
+  ordered row array; its sidecar writes them as a grid (below). Categorical and
+  breakpoints banding rules retain their compact key/value-map sidecar shape.
 - The dtype-faithful canonical string form of a rating-table factor key
   (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
   with trace enrichment and the optimiser's ratebook save/apply path so every
@@ -139,8 +139,7 @@ Out of scope (owned by neighbouring components):
 - Lookup keys are materialised into collision-free temporary columns for the
   join. The source factor columns are never overwritten and therefore never
   need a lossy string-to-original-dtype revert.
-- Multiple entries sharing the same factor key keep the *last* one (matches
-  the intent of "later edits win" in the entry list).
+- Multiple entries sharing the same factor key are refused (below).
 - After the table stage, `combinedOutputs` combine every materialised table
   output column of the step with a required fixed finite numeric `baseValue`
   using `multiply`, `add`, `min`, or `max`. A table that never materialised its
@@ -195,13 +194,23 @@ Out of scope (owned by neighbouring components):
   a save/apply dtype mismatch before constructing a lookup. This prevents a
   dtype boundary from becoming an accepted neutral miss. Agreement is pinned by
   one real-Polars fixture matrix shared by runtime, trace, and optimiser tests.
-- **Lossless canonical rating sidecars.** Rating-table entries persist as
-  ordered row arrays rather than JSON object-key maps. JSON object keys erase
-  the distinction between values such as numeric `25.0` and the string label
-  `"25.0"`, so nested maps are not a lossless canonical format. Table order,
-  factor order, entry order,
-  scalar identity, outputs, defaults, miss policy, and optional
-  `factorDtypes` metadata survive a canonical save/load round trip.
+- **A rating sidecar writes each table as a grid (READ-26).** `factors` lists
+  the table's factors in order (up to three); with one factor there is no
+  `columns` and each line of `rows` is a level and its rate; with more,
+  `columns` lists the last factor's levels and each line of `rows` holds one
+  combination of the other factors, its levels first, then one rate per
+  column. A cell with no entry is `null`, and a lookup there misses and follows
+  the table's miss policy; a rate of 0 is a rate. Levels keep their JSON type,
+  so `25` and `"25"` stay distinct (JSON object keys would erase that, so the
+  grid uses arrays). `defaultValue` is written as a number next to `onMissing`,
+  and `factorDtypes`, the outputs and the other settings stay beside the grid,
+  each line of which is one line of the file, so changing one rate changes one
+  line. `_rating_step_config.compact_rating_config_for_sidecar` writes the grid
+  and `expand_rating_config_from_sidecar` reads it back into the entries the
+  editor and the engine work with; a sidecar still in the row-array form is
+  refused, naming its one-off conversion. Table order, factor order, scalar
+  identity, outputs, defaults, miss policy and `factorDtypes` survive a save and
+  load; entries come back in the grid's row-major order.
 - **Two entries for the same levels are refused, never resolved.** A rating
   table holding two entries whose levels are equal once converted to the factor
   columns' types is refused by the shared lookup every run path uses, naming the

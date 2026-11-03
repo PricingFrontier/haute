@@ -35,6 +35,8 @@ from haute._io import utf8_decode_failure
 from haute._json_files import ANY, at, render_json
 from haute._logging import get_logger
 from haute._rating_step_config import (
+    compact_rating_config_for_sidecar,
+    expand_rating_config_from_sidecar,
     normalise_rating_step_config,
     refuse_levels_equal_under_factor_dtypes,
 )
@@ -155,7 +157,8 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
     if node_type == NodeType.BANDING:
         return expand_banding_config_from_sidecar(config)
     if node_type == NodeType.RATING_STEP:
-        return normalise_rating_step_config(config)
+        # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
+        return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
     return config
 
 
@@ -190,7 +193,7 @@ def _prepare_config_for_sidecar(
     if node_type == NodeType.RATING_STEP:
         normalised = normalise_rating_step_config(filtered)
         refuse_levels_equal_under_factor_dtypes(normalised)
-        return normalised
+        return compact_rating_config_for_sidecar(normalised)
     return filtered
 
 
@@ -210,11 +213,15 @@ _RATING_TABLE_KEYS = (
     "outputColumn",
     "onMissing",
     "defaultValue",
-    "entries",
+    "columns",
+    "rows",
 )
 
-#: A sidecar's records written on one line each: a rating table's entries.
-_SIDECAR_ONE_LINE = at(("tables", ANY, "entries", ANY))
+#: A sidecar's records written on one line each: a rating table's factors, its columns and
+#: each row of its grid (READ-26).
+_SIDECAR_ONE_LINE = at(
+    ("tables", ANY, "factors"), ("tables", ANY, "columns"), ("tables", ANY, "rows", ANY)
+)
 
 
 def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
@@ -224,19 +231,8 @@ def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
 
 
 def _rating_table_record(table: Any) -> Any:
-    """A rating table in its sidecar's key order: each entry its factors, in the table's
-    order, then its value."""
-    if not isinstance(table, dict):
-        return table
-    factors = [factor for factor in table.get("factors") or [] if isinstance(factor, str)]
-    ordered = _ordered(table, _RATING_TABLE_KEYS)
-    entries = ordered.get("entries")
-    if isinstance(entries, list):
-        ordered["entries"] = [
-            _ordered(entry, [*factors, "value"]) if isinstance(entry, dict) else entry
-            for entry in entries
-        ]
-    return ordered
+    """A rating table in its sidecar's key order, its grid last."""
+    return _ordered(table, _RATING_TABLE_KEYS) if isinstance(table, dict) else table
 
 
 def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label: str) -> str:

@@ -100,6 +100,8 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     same key and all match `25.0`. An entry that cannot be converted to the
     column's type fails the run rather than silently never matching, for
     example `"25.0"` on an integer column or a malformed date on a date column.
+    Two entries that become the same key are refused, naming the table and the
+    levels, rather than one of them silently winning.
 
     On a text column, entries are matched exactly as written, and matching is
     case-sensitive: if your data has `"London"` but your table has `"london"`,
@@ -113,9 +115,9 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | The tables | `tables`: a list with one object per table |
     | **FACTORS** | `tables[].factors`: the input columns to match on, at most 3 |
     | **OUTPUT COLUMN** | `tables[].outputColumn` |
-    | **DEFAULT** | `tables[].defaultValue`, as text such as `"1.0"` (absent when empty) |
+    | **DEFAULT** | `tables[].defaultValue`, a number such as `1.0` (absent when empty) |
     | **ON MISS** | `tables[].onMissing`: `"error"` (**Stop the run**, also what an absent key means) or `"neutral"` (**Leave empty**) |
-    | The relativities | `tables[].entries`: one object per combination of levels, holding a value for each factor and the looked-up `value` |
+    | The relativities | a grid: with one factor, `tables[].rows` holds a line per level, the level and its relativity; with two or three, `tables[].columns` lists the last factor's levels and each line of `tables[].rows` holds the other factors' levels, then a relativity per column, `null` where there is no entry |
     | The combined outputs | `combinedOutputs`: a list with one object per combined output |
     | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
     | **OPERATION** | `combinedOutputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
