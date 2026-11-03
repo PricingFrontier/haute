@@ -37,7 +37,7 @@ import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import (
     BaseModel,
@@ -52,6 +52,9 @@ from haute._file_lock import FileLock
 from haute._hashing import content_hash_bytes
 from haute._json_files import ANY, JsonPath, at, render_json_bytes
 from haute._workbench_config import WorkbenchConfig
+
+if TYPE_CHECKING:
+    from haute._workbench_params import ParamValues
 from haute._workbench_folder_files import (
     DETAILS_ANY,
     DETAILS_TYPED,
@@ -471,6 +474,10 @@ def _table_file_model(table: SchemaTable, problems: list[str]) -> TableFile:
         if column.id in IDENTITY_IDS:
             continue
         data = column.model_dump(mode="json")
+        if table.role == "input" and column.options_source is not None:
+            # Its values are its params file's, read with the form (READ-25): only the
+            # reference is written.
+            data["options"] = []
         if table.role == "output":
             for key in INPUT_ONLY:
                 if data.pop(key) != SchemaColumn.model_fields[key].get_default(
@@ -935,10 +942,16 @@ def folder_index(config: WorkbenchConfig, files: Mapping[str, bytes]) -> IndexFi
 
 
 def form_from_files(
-    config: WorkbenchConfig, files: Mapping[str, bytes]
+    config: WorkbenchConfig,
+    files: Mapping[str, bytes],
+    read_params: ParamValues | None = None,
 ) -> tuple[FormSpec, tuple[str, ...]]:
     """The form *files* hold, with what reading it grew; a :class:`WorkbenchFormError`
-    naming the file and the place for anything the folder does not hold as it should."""
+    naming the file and the place for anything the folder does not hold as it should. Each
+    column whose allowed values come from a params file is given them by *read_params*, the
+    files at the form's own revision, the working tree's unless it says otherwise (READ-25)."""
+    from haute._workbench_params import fill_sourced_options, working_tree_param_values
+
     index = folder_index(config, files)
 
     details: QuoteDetailsFile = _parse(
@@ -980,6 +993,8 @@ def form_from_files(
             for name, table in parsed_tables
         ]
     )
+
+    fill_sourced_options(tables, read_params or working_tree_param_values(config.project_root))
 
     pages: list[dict[str, Any]] = []
     for name in index.sheets:
@@ -1074,7 +1089,10 @@ def form_at_ref(config: WorkbenchConfig, ref: str) -> FormSpec | None:
         if shown.returncode != 0:
             raise WorkbenchFormError(f"{name} could not be read at {ref}", path=name)
         files[name.removeprefix(folder)] = shown.stdout
-    spec, _ = form_from_files(config, files)
+    from haute._workbench_params import param_values_at
+
+    # A past revision's form reads its params files at that revision, never the working tree.
+    spec, _ = form_from_files(config, files, param_values_at(root, ref))
     return spec
 
 

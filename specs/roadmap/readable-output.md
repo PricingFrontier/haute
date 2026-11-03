@@ -47,7 +47,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
 | READ-24 | Planned | P2 | A sheet, its sections and their components are identified by file name, title and number, not random ids. |
-| READ-25 | Planned | P2 | A column's sourced allowed values are stored only as a reference to their parameter file. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
@@ -243,26 +242,6 @@ The owner judged that the complexity isn't worth it.
 **Evidence:** `src/haute/_workbench_folder.py::_sheet_and_layout`; `src/haute/_workbench_folder.py::_page`;
 `src/haute/_workbench_folder_files.py::LayoutFile`; `src/haute/_workbench_folder_files.py::SectionFile`;
 `frontend/src/utils/workbenchForm.ts`.
-
-### READ-25 — Sourced allowed values are stored only as a reference
-**Why:** A column with `options_source` also carries a copy of the values from its parameter file. In the investigated pull request, that means 24 columns, 213 lines and all 51 state codes, with numbers stored as text. Adding a value changes two files, or leaves the schema out of date.
-
-**Plan:**
-- Write only `options_source` for a sourced column. Allowed values typed into the form, with no source, stay as typed; `WB-38` owns their shape.
-- Fill sourced values on read through one reader, from the parameter file at the same git revision as the form, when comparing revisions and when building a release.
-- A missing file or column, or a value invalid for the column's type, is refused, naming the file and the column. A historical read never fills values from the working tree.
-- A release ships the values filled in, as it already refreshes them.
-
-**Acceptance:**
-- The schema files hold no copied values.
-- The editor, Preview and a built release show the parameter file's values.
-- A form read at an older revision uses that revision's parameter file, which differs from the working tree in the test.
-- A missing file, a missing column and an invalid value are each refused.
-
-**Dependencies:** `READ-20`; `WB-38` in the [workbench roadmap](workbench.md) for values with no source.
-
-**Evidence:** `src/haute/_workbench_params.py::with_param_options`;
-`src/haute/_workbench_folder.py::form_at_ref`; `src/haute/_workbench_app.py`.
 
 ### READ-28 — Constants that only formulas read become global constants
 **Why:** A Constant node's sidecar is a map from name to value ([pipeline-config](../pipeline-config/high-level.md)). In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.

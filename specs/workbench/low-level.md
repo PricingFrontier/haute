@@ -406,7 +406,13 @@ no longer has; and `InputSource` in
   `column_looks` entry of its own as an object holding `field` and its settings in its
   place in `fields` (a Table's too), and a `match` that is a number, on a `show_when` or
   a group, as `at_least`; reading turns each back into the model's `spacers`,
-  `column_looks` and `match`, and refuses a rule giving both. A golden folder in the tests pins
+  `column_looks` and `match`, and refuses a rule giving both. A schema file writes a
+  sourced column's `options_source` alone, never a copy of its values (READ-25): reading
+  fills `options` from the params file at the form's own revision
+  (`_workbench_params.fill_sourced_options`, the working tree's for the folder on disk,
+  `param_values_at` for `form_at_ref`, which never reads the working tree), refusing a
+  missing file, a missing column or a value the column's type does not hold, naming the
+  file and the column; a release ships the values filled in. A golden folder in the tests pins
   the bytes of the test project's form and the `FormSpec` it reads as.
 - **`FormSpec`** (`src/haute/_workbench_form.py`): `version` (the literal 1), `name`,
   `theme` (a `Theme`, the sheets' colours: `sheet_color`, `background_color`,
