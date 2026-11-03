@@ -92,7 +92,7 @@ import {
 } from "../../generated/api-contracts.input-cache.validators.mjs"
 import { validateOutputAssembleDryRunResponse } from "../../generated/api-contracts.output.validators.mjs"
 
-// The input-cache and output responses are checked by their generated validators (API-R03).
+// The input-cache and output responses are checked by their generated validators.
 const parseInputCacheSnapshotResponse = (value: unknown) =>
   expectGeneratedContract("InputCacheSnapshotStatusResponse", validateInputCacheSnapshotStatusResponse, value)
 const parseOutputAssembleDryRunResponse = (value: unknown) =>
@@ -228,7 +228,7 @@ function executionMetricsFixture() {
 }
 
 // The preview, its inputs and JSON-cache inference are checked by their generated
-// validators (API-R03); the preview's execution metrics through the shared module.
+// validators; the preview's execution metrics through the shared module.
 const parsePreviewNodeResponse = (value: unknown, validateMetrics: ExecutionMetricsValidator) =>
   previewFromContract(
     expectGeneratedContract("PreviewNodeResponse", validatePreviewNodeResponse, value),
@@ -242,7 +242,7 @@ const parseJsonCacheSchemaInferenceResponse = (value: unknown) =>
 const parseTraceResponse = (value: unknown) =>
   traceFromContract(expectGeneratedContract("TraceResponse", validateTraceResponse, value))
 
-// The save and the submodel actions are checked by their generated validators (API-R03),
+// The save and the submodel actions are checked by their generated validators,
 // a graph they answer with read as the editor's.
 const parseSavePipelineResponse = (value: unknown) =>
   expectGeneratedContract("SavePipelineResponse", validateSavePipelineResponse, value)
@@ -253,8 +253,8 @@ const parseSubmodelGraphResponse = (value: unknown) =>
 const parseDissolveSubmodelResponse = (value: unknown) =>
   withPipelineGraph(expectGeneratedContract("DissolveSubmodelResponse", validateDissolveSubmodelResponse, value))
 
-// Explore and factor responses are checked by their generated validators
-// (API-R03); the pivot responses then get the UI's member-key and matrix checks.
+// Explore and factor responses are checked by their generated validators; the
+// pivot responses then get the UI's member-key and matrix checks.
 const parseExplorePivotRunResponse = (value: unknown) =>
   explorePivotRunFromContract(
     expectGeneratedContract("ExplorePivotRunResponse", validateExplorePivotRunResponse, value),
@@ -274,7 +274,7 @@ const parseNodeDataProfileResponse = (value: unknown) =>
 const parseRatingLevelsResponse = (value: unknown) =>
   expectGeneratedContract("RatingLevelsResponse", validateRatingLevelsResponse, value)
 
-// Optimiser responses are checked by their generated validators (API-R03);
+// Optimiser responses are checked by their generated validators;
 // the UI then keeps one summary per frontier point and parses execution
 // metrics with the shared parser. A frontier and an auto-range result reach
 // the browser inside their job status, so they are checked through it.
@@ -347,7 +347,7 @@ const sessionStatus = (value: unknown) =>
 const browseFiles = (value: unknown) =>
   expectGeneratedContract("BrowseFilesResponse", validateBrowseFilesResponse, value)
 
-// MLflow responses are checked by their generated validators (API-R03).
+// MLflow responses are checked by their generated validators.
 const mlflowDestinations = (value: unknown) =>
   expectGeneratedContract("MlflowDestinationsResponse", validateMlflowDestinationsResponse, value)
 const mlflowSettings = (value: unknown) =>

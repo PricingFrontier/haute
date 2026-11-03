@@ -212,8 +212,7 @@ Already tracked before this review and not repeated: the `cwd`-captured sandbox
 root used by the deploy modules, the underwriter app and the server
 (`PCFG-R04`); the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
-the hand-maintained
-browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
+the cwd-dependent resolvers in the routes and the
 parser (`PCFG-R04`), the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
 event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
@@ -224,8 +223,7 @@ their budget
 assistant's current-directory project root (`PCFG-R04`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the
-browser's hand-written contract mirrors (`API-R03`) and the dead
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
