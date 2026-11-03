@@ -135,6 +135,31 @@ def _isolate_repository_source_cache(
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _isolate_repository_source_proofs(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Path]:
+    """Keep durable source-proof records out of the working tree between tests too.
+
+    ``source_proof_records`` gives each test its own record directory, but only
+    while that test runs. A background thread an earlier test left running (an
+    optimiser setup, a training preparation) can still sign a source after its
+    test ends, when the module's own root, ``<repo>/.haute_cache/source_proofs``,
+    is back in force; whether it does depends on timing, so the write-sandbox
+    census would see the repository written by some runs and not others.
+    Records made outside any test go to a per-session directory instead.
+    """
+    from haute._json_shred import _source_proof
+
+    root = tmp_path_factory.mktemp("source-proofs-between-tests")
+    patch = pytest.MonkeyPatch()
+    patch.setattr(_source_proof, "_proof_record_root", lambda: root)
+    try:
+        yield root
+    finally:
+        patch.undo()
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolate_repository_mlflow_store(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[Path]:
@@ -558,6 +583,7 @@ def source_proof_records(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
+    _isolate_repository_source_proofs: Path,
 ) -> Path:
     """Keep durable source-proof records in this test's own directory.
 
