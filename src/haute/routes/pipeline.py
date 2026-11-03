@@ -65,6 +65,7 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
+from haute._output_assembler import OutputMappingSchemaError
 from haute._path_resolution import (
     RuntimePathError,
     resolve_node_input_path,
@@ -282,6 +283,16 @@ _TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
         (ContractMismatchError.__module__, ContractMismatchError.__name__),
         (ContractColumnsMissingError.__module__, ContractColumnsMissingError.__name__),
         (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
+    }
+)
+# A dry-run's contract failures, which it answers 422 in a thread, answered the same out of a
+# worker, by exact identity.
+_OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES = frozenset(
+    {
+        (ContractMismatchError.__module__, ContractMismatchError.__name__),
+        (ContractColumnsMissingError.__module__, ContractColumnsMissingError.__name__),
+        (OutputMappingSchemaError.__module__, OutputMappingSchemaError.__name__),
+        (ConfigError.__module__, ConfigError.__name__),
     }
 )
 # What each of the trace's refusals answers: 409 when the clicked row has changed since
@@ -873,6 +884,11 @@ def _raise_interactive_remote_http_error(
             raise HTTPException(status_code=400, detail=exc.remote_message) from None
         if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
             raise HTTPException(status_code=404, detail=exc.remote_message) from None
+    if (
+        operation == "output_assemble_dry_run"
+        and identity in _OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES
+    ):
+        raise HTTPException(status_code=422, detail=exc.remote_message) from None
     if operation == "pipeline_trace":
         if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
             raise HTTPException(status_code=422, detail=exc.remote_message) from None

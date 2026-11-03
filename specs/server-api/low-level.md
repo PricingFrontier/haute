@@ -286,7 +286,7 @@ when a path/query/body fails model validation):
 | `DELETE /api/project-files/content` | Query `place`, `path`, `revision` | `ProjectFileDeleteResponse {path, git_sha, identity_required, warnings, uncaptured}`; 412 `file_changed`, 404 `file_missing`, 403 `read_only`, 400 `invalid_path` |
 | `GET /api/model-file` | Required query `path` (project-relative) | `ModelFileInspectionResponse {model_path, flavor, label, task?, features, categorical_features, offset_column?, offset_link?, contract_path?}` from `inspect_model_file`; a `ConfigError` or `FeatureMismatchError` (missing file, unsupported suffix, undeclared offset, contract mismatch) is 400 with its message; a path outside the project is the shared runtime-path refusal (403) |
 | `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
-| `GET /api/schema` | Required query `path`; optional `format` and `arguments` (a JSON object, only with `format`) read the file as that Data Input format's scanner would, without the `schema` argument; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`; invalid/unsafe XML, arguments without a format or not a JSON object, an unknown format and arguments the scanner rejects are 400 |
+| `GET /api/schema` | Required query `path`; optional `format` and `arguments` (a JSON object, only with `format`) read the file as that Data Input format's scanner would, without the `schema` argument; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`; a file read as Parquet (by `format`, else by its `.parquet` suffix) takes `row_count` from its metadata, and one read as another format is never read as Parquet whatever its name; invalid/unsafe XML, arguments without a format or not a JSON object, an unknown format and arguments the scanner rejects are 400 |
 | `POST /api/input-cache/build` | Canonical `dataInput` config and source identity (no build profile: the server chooses), `refresh` | Starts or joins a cache-generation build and returns its job identity, `joined`, `forced` (whether that build re-reads the source) and `build_class`. A running build is joinable only while it is not being cancelled, and a forced (`refresh=true`) request joins only another forced build; an ordinary request joins either. A request that may not join the build holding its key is answered at once with `status: "blocked"` and that build's `job_id` (never held inside the request), so the client waits for it without owning it and asks again. `DELETE /api/input-cache/jobs/{job_id}` requests cancellation under the same lock, so no request joins a build in the same interleaving as its cancellation. A new build reads its time limit (the pipeline time limit) before its job is registered, so an invalid pipeline settings file answers 409 and registers nothing; one the build's admission meets fails the job with the file's message (`error_code: "pipeline_settings_invalid"`). |
 | `POST /api/input-cache/status` | Canonical `dataInput` config | Current published-generation readiness, freshness, metadata, and active job. It reads through `input_snapshot_read_status`, which reports `building` from a running build or this process's preparation of the snapshot before touching the store, and otherwise the store's verified status; the assistant's data check uses the same helper's metadata-only form |
 | `POST /api/input-cache/clear` | Canonical `dataInput` config | Clears published cache generations when no active lease prevents deletion |
@@ -296,7 +296,7 @@ when a path/query/body fails model validation):
 | `POST /api/utility` | `UtilityCreateRequest {name, content=""}` | `UtilityWriteResponse {status="ok", name, module, import_line, content, revision, git_sha, identity_required, warnings, uncaptured}`, `content` and `revision` read after the ledger capture, whose git hooks may rewrite the file; 409 `file_exists` for a file that appeared since the name check |
 | `PUT /api/utility/{module}` | `UtilityWriteRequest {content, revision}` | `UtilityWriteResponse`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing written) |
 | `DELETE /api/utility/{module}` | Module path, query `revision` | `UtilityDeleteResponse {status="ok", module, git_sha, identity_required, warnings, uncaptured}`; 404 when the file is missing, 412 `file_changed` when its revision is not the request's (nothing deleted) |
-| `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], row_limit=100 (1..10000), source="live"}` | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
+| `POST /api/output-assemble/dry-run` | `OutputAssembleDryRunRequest {graph, node_id, output_mapping=[], row_limit=100 (1..10000), source="live"}`; a graph without `source_file` takes the pipeline `haute.toml` names (`_ensure_source_file`) before its input paths are checked | `OutputAssembleDryRunResponse {status: "ok"|"error", document=[], row_count=0, error=null}` |
 
 `TraceResultResponse` requires `omissions`, `correlation_diagnostics`, `generated_at`, and
 `execution_origin`; these are not compatibility defaults. Each successful step requires a
@@ -714,8 +714,9 @@ A write first checks everything it can before reading the body: the path and pla
 length (411; 413 above `VERSIONED_FILE_LIMIT_BYTES` in the pipeline place), the hosted
 refusal for the local place (`databricks_app_environment()`), the `.gitignore` rule that
 would ignore the target (`_git.ignore_rule`, 409 `ignored` naming the rule and the anchored
-spelling that fixes it), and `ensure_disk_headroom` (507) after creating the target's parent
-folder inside the place. It records the working branch, then streams the body chunk by chunk
+spelling that fixes it), and `ensure_disk_headroom` (507) on the target's nearest existing
+folder, refusing a target inside a file (400 `invalid_path`). It creates no folder: a refused
+upload leaves none behind. It records the working branch, then streams the body chunk by chunk
 to a staging file in `.haute/uploads/` (checked with `ordinary_path_problem(private=True)`
 before and after the folder is made, 409 `staging_unavailable` through a link), each chunk
 written off the event loop. Making the staging file removes the `.upload` files in that
@@ -728,7 +729,7 @@ staging file and leaves the target untouched. It then publishes under `save_lock
 worker thread, the repository's `repository_mutation` lock, as the form's save does:
 the working branch must be the one recorded (409 `branch_changed`), the path is checked again,
 the target must be absent (409 `file_exists`) or carry the confirmed revision (412
-`file_changed`), and `_file_ops.publish_staged_file` renames the staging file into place,
+`file_changed`), the target's parent folders are created, and `_file_ops.publish_staged_file` renames the staging file into place,
 without replacing a file that appeared since (create) or with the bounded Windows retry
 (replace, 409 `file_in_use` when it is exhausted). A pipeline-place write is then captured with
 `capture_save_in_ledger` (message `Added <path>` or `Replaced <path>`); a capture that cannot
@@ -816,7 +817,9 @@ stored analyses. An invalid API-input port is `node_data_point_invalid` (400) on
 job, so a memory limit and a changed-data contract error are distinguishable from the message
 alone. Every resource failure carries `error_code` `memory_limit` with the execution payload as
 `error_detail`, whether the execution reported the limit, admission refused it, or the parent
-killed the worker over its RSS limit.
+killed the worker over its RSS limit. A refusal raised in the server process (admission, or a
+limit the parent measured) records `memory_limit_user_message` for the job's label as its
+message and error.
 
 ### Cache usage
 
@@ -1148,7 +1151,7 @@ later write and cleanup checks still compare against the captured identities.
 | `TraceRequestError` family | trace | 409 / 400 / 404 | Mapped by type (`_TRACE_REFUSAL_STATUS`), by the `error_code` a worker's payload carries for an exact remote type: `trace_row_mismatch` and `trace_row_ambiguous` 409 (the preview is refreshed), `trace_row_out_of_range` and `trace_target_unsupported` (a multi-frame target, a Workbench Output table the trace cannot take) 400, `trace_target_not_found` 404. The detail is the message. |
 | `WorkbenchTablesError`, `WorkbenchInputError` | workbench tables; preview execution | 422 | A workbench node's tables the pipeline cannot take, or a Workbench Input with no port or a sample or request that does not fit its tables; the tables route and the preview worker (which maps a remote error by its exact class) answer the public payload. |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
-| `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
+| `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). Out of a pool worker, the dry-run answers this, `ConfigError`, `ContractMismatchError` and `ContractColumnsMissingError` by exact remote identity (`_OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES`) with the same 422 and the worker's message, as it does in a thread. |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | any synchronous route (application handler) | 507 | Payload is `exc.to_payload()`, nested under `detail`, through `memory_limit_http_exception`; training and the optimiser pass an operation noun that adds the curated `message`. |
 | Public contract errors (closed set below) | any synchronous route (application handler) | 422 / 507 / 409 | Routes that also log or order them against a broader clause keep an explicit clause with the same mapping. |
 | `PipelineSettingsError` | any route (application handler); background jobs | 409 / failed job | `.haute/pipeline-settings.json` is unreadable or invalid. The detail is the error's message, which names the file and the key; a job records the same message as its error, with `error_code: "pipeline_settings_invalid"`. Raised wherever the settings are read, so admission refuses before any work starts; a route that answers its own config `ValueError`s with 400 (the optimiser's timeout checks) lets this one through to the 409. |

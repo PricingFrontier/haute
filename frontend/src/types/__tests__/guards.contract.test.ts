@@ -691,6 +691,16 @@ describe("API response guards", () => {
     expect(parsed.error).toBe("contract mismatch")
   })
 
+  it("keeps the preview's notes", () => {
+    const parsed = parsePreviewNodeResponse({
+      status: "ok",
+      node_id: "n1",
+      notes: ["Showing the first 100 rows."],
+    })
+
+    expect(parsed.notes).toEqual(["Showing the first 100 rows."])
+  })
+
   it("parses valid per-node statuses into the closed union", () => {
     const parsed = parsePreviewNodeResponse({
       status: "ok",

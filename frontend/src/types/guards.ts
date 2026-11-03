@@ -1438,6 +1438,7 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     ),
     execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
     seed_plan: optionalArray("parsePreviewNodeResponse", obj, "seed_plan", parsePreviewSeedPlanEntry),
+    notes: optionalStringArray("parsePreviewNodeResponse", obj, "notes"),
   }
 }
 
