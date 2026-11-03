@@ -681,7 +681,7 @@ def score_graph_lazy(
 def _with_answer_per_row(graph: PipelineGraph, output_node_id: str) -> PipelineGraph:
     """*graph* with its response keeping one top-level object per row: a batch answered as
     one frame, each row answering its own quote, even where two answers coincide."""
-    from haute._output_assembler import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
+    from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
 
     nodes = [
         node.with_config({**node.data.config, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True})

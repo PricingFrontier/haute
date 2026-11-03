@@ -16,7 +16,7 @@ from haute._submodel_paths import (
     validate_submodel_definition_id,
 )
 from haute._types import NodeType, PipelineGraph, SubmodelInstanceConfig
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 from haute.routes._helpers import (
     load_pipeline_editor_document,
     load_sidecar_positions,
@@ -74,6 +74,23 @@ def _load_parent_document(source_file: str) -> tuple[Path, Path, str]:
     if editor_document.source_revision is None:
         raise RuntimeError("Ready parent pipeline did not produce a source revision.")
     return project_root, parent_path, editor_document.source_revision
+
+
+def _require_valid_configs(graph: PipelineGraph) -> None:
+    """Refuse a request graph holding a config its node type's model refuses.
+
+    The route answers with the graph it transforms, so a config the browser's
+    generated contract refuses must never reach the response.
+    """
+    from haute._config_validation import CONFIG_REFUSALS, validate_graph_configs
+
+    try:
+        validate_graph_configs(graph)
+    except ParseError:
+        # A removed node-level reuse form: the application's 400, as before the check.
+        raise
+    except CONFIG_REFUSALS as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 def _require_current_revision(source_revision: str, base_revision: str) -> None:
@@ -171,6 +188,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
         _require_parent_source_file(body.source_file)
         project_root, parent_path, source_revision = _load_parent_document(body.source_file)
         _require_current_revision(source_revision, body.base_revision)
+        _require_valid_configs(body.graph)
 
         # Reject reserved device names at creation, before the graph is
         # transformed: a submodel named ``NUL`` would mint ``modules/NUL.py``,
@@ -260,6 +278,7 @@ async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeIns
         _require_parent_source_file(body.source_file)
         project_root, parent_path, revision = _load_parent_document(body.source_file)
         _require_current_revision(revision, body.base_revision)
+        _require_valid_configs(body.graph)
         graph = body.graph.model_copy(
             update={
                 "preamble": body.preamble,
@@ -415,6 +434,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
         _require_parent_source_file(body.source_file)
         project_root, parent_path, source_revision = _load_parent_document(body.source_file)
         _require_current_revision(source_revision, body.base_revision)
+        _require_valid_configs(body.graph)
 
         graph = body.graph.model_copy(
             update={

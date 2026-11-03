@@ -530,9 +530,10 @@ def resolve_data_input_from_config(
     code uses the same anchor as canvas execution.
     """
     from haute._config_io import load_node_config
+    from haute._types import NodeType
 
     base = _base_path(base_dir)
-    config = load_node_config(config_path, base_dir=base)
+    config = load_node_config(config_path, base_dir=base, node_type=NodeType.DATA_INPUT)
     configured_path = config.get("path")
     if project_root is not None and isinstance(configured_path, (str, Path)) and configured_path:
         from haute._path_resolution import resolve_node_input_path

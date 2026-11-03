@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from copy import deepcopy
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 
@@ -333,6 +335,78 @@ class TrainingConfigError(HauteValidationError):
     """
 
 
+#: The evaluation settings the editor writes blank until the author picks them: a group or
+#: temporal split's column and a temporal boundary.
+_EVALUATION_TEXT_SETTINGS: tuple[tuple[str, ...], ...] = (
+    ("group_column",),
+    ("date_column",),
+    ("validation", "start"),
+    ("test", "start"),
+)
+
+
+def blank_evaluation_settings(raw: Any) -> list[str]:
+    """The settings an evaluation holds blank (``""``), as paths under ``evaluation``.
+
+    A blank one is unfinished, not malformed: the config saves, its completeness
+    names each, and the evaluation's rules are checked once none is blank.
+    """
+    if not isinstance(raw, Mapping):
+        return []
+    blank = []
+    for path in _EVALUATION_TEXT_SETTINGS:
+        value: Any = raw
+        for part in path:
+            value = value.get(part) if isinstance(value, Mapping) else None
+        if value == "":
+            blank.append(".".join(("evaluation", *path)))
+    return blank
+
+
+def evaluation_with_blanks_filled(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """*raw* with each blank setting (:func:`blank_evaluation_settings`) given a stand-in its
+    rules accept, so every other value is checked while the blanks wait for the author.
+
+    A blank column takes a placeholder name. A blank temporal boundary takes a date one
+    day either side of the boundary that is set, so the rule that the validation starts
+    before the test holds, or a fixed day when none is.
+    """
+    filled = deepcopy(dict(raw))
+    for key in ("group_column", "date_column"):
+        if filled.get(key) == "":
+            filled[key] = "_"
+    validation = filled.get("validation")
+    test = filled.get("test")
+    validation_start = validation.get("start") if isinstance(validation, dict) else None
+    test_start = test.get("start") if isinstance(test, dict) else None
+    if validation_start == "" or test_start == "":
+        if validation_start == "":
+            validation_start = (
+                _day_beside(test_start, -1) if test_start not in (None, "") else "2000-01-01"
+            )
+        if test_start == "":
+            test_start = (
+                _day_beside(validation_start, 1) if validation_start is not None else "2000-01-02"
+            )
+        if isinstance(validation, dict) and "start" in validation:
+            filled["validation"] = {**validation, "start": validation_start}
+        if isinstance(test, dict) and "start" in test:
+            filled["test"] = {**test, "start": test_start}
+    return filled
+
+
+def _day_beside(boundary: object, days: int) -> object:
+    """The day *days* from an ISO *boundary*; a boundary that does not parse is kept, so
+    its own rule refuses it."""
+    if not isinstance(boundary, str):
+        return boundary
+    try:
+        parsed = datetime.fromisoformat(boundary.replace("Z", "+00:00"))
+    except ValueError:
+        return boundary
+    return (parsed + timedelta(days=days)).isoformat()
+
+
 def parse_evaluation_config(raw: Any) -> dict[str, Any]:
     """Validate and canonicalise the required public evaluation object."""
     if raw is None:
@@ -352,11 +426,26 @@ def parse_tuning_config(
     *,
     algorithm: str,
     base_params: Mapping[str, Any],
-    evaluation: Mapping[str, Any],
+    evaluation: Mapping[str, Any] | None,
     configured_metrics: list[str],
 ) -> dict[str, Any] | None:
-    """Validate and canonicalise the optional public tuning object."""
+    """Validate and canonicalise the optional public tuning object.
+
+    *evaluation* ``None`` (not chosen yet) checks every rule that does not need it
+    and returns ``None``: the split's rules wait for an evaluation.
+    """
     if raw is None:
+        return None
+    if evaluation is None:
+        try:
+            TuningConfig.check_own_rules(
+                raw,
+                algorithm=algorithm,
+                base_params=base_params,
+                configured_metrics=configured_metrics,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TrainingConfigError(f"Invalid tuning config: {exc}") from exc
         return None
     try:
         evaluation_config = EvaluationConfig.from_plain_data(evaluation)
@@ -521,21 +610,6 @@ def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
     selected = set(selected_feature_columns(config))
     effective = {name: direction for name, direction in constraints.items() if name in selected}
     return effective or None
-
-
-_REMOVED_EVALUATION_FIELDS = ("split", "cross_validation")
-
-
-def reject_removed_evaluation_fields(config: Mapping[str, Any]) -> None:
-    """Reject the removed top-level split fields, naming their replacement."""
-    removed = [key for key in _REMOVED_EVALUATION_FIELDS if key in config]
-    if removed:
-        names = " and ".join(repr(key) for key in removed)
-        raise TrainingConfigError(
-            f"The modelling config field{'s' if len(removed) > 1 else ''} {names} "
-            f"{'were' if len(removed) > 1 else 'was'} removed; use the versioned "
-            "'evaluation' object."
-        )
 
 
 def training_objective_issue(config: Mapping[str, Any]) -> str | None:
@@ -708,7 +782,6 @@ def build_training_job_kwargs(
     if objective_issue is not None:
         raise TrainingConfigError(objective_issue)
     variance_power = config.get("var_power") if glm else config.get("variance_power")
-    reject_removed_evaluation_fields(config)
     feature_issue = feature_selection_issue(config)
     if feature_issue is not None:
         raise TrainingConfigError(feature_issue)

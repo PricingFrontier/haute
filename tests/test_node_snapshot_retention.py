@@ -24,7 +24,7 @@ import haute._source_cache as source_cache_module
 from haute._chunked_writes import write_parts
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
-from haute._node_config_recovery import _DISCRIMINANTS
+from haute._node_config_models import NODE_CONFIG_MODELS, branch_values
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
@@ -1126,7 +1126,9 @@ def test_marker_input_providers_match_data_input_types_and_exclude_node_output(
     from haute._json_shred._snapshots import API_INPUT_PROVIDER
 
     # Every Data Input type, plus the tables of a structured API Input.
-    expected_data_inputs = _DISCRIMINANTS[NodeType.DATA_INPUT][1] | {API_INPUT_PROVIDER}
+    expected_data_inputs = branch_values(NODE_CONFIG_MODELS[NodeType.DATA_INPUT]) | {
+        API_INPUT_PROVIDER
+    }
     assert source_cache_module.NODE_OUTPUT_PROVIDER not in expected_data_inputs
     assert source_cache_module.KNOWN_INPUT_PROVIDERS == expected_data_inputs
 

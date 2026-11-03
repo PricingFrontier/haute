@@ -2271,7 +2271,8 @@ class TestEstimateEndpoint:
         ("algorithm", "device", "message"),
         [
             ("lightgbm", "gpu", "LightGBM trains on CPU only"),
-            ("xgboost", "cuda", 'device must be "cpu" or "gpu"'),
+            # The config model's device Literal refuses an unknown device first.
+            ("xgboost", "cuda", "setting 'device': Input should be 'cpu' or 'gpu'"),
         ],
     )
     def test_train_refuses_a_bad_device_before_preparation_with_explicit_metrics(

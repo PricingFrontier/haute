@@ -358,7 +358,9 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
         )
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "repair_action_unsupported"
-        assert "Unknown inputType" in response.json()["detail"]["message"]
+        message = response.json()["detail"]["message"]
+        assert "setting 'inputType'" in message
+        assert "does not match any of the expected tags" in message
     assert {p: p.read_bytes() for p in before} == before
 
 
@@ -504,6 +506,22 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
             {"analysis_columns": ["__haute_rank"]},
             "reserved '__haute_' prefix",
             id="optimiser-analysis-reserved-prefix",
+        ),
+        # The Quote Response's mapping rules raise their own error type, not a ConfigError.
+        pytest.param(
+            NodeType.OUTPUT,
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "in",
+                        "source_column": "id",
+                        "output_path": "$[0].id",
+                        "enabled": True,
+                    }
+                ]
+            },
+            "output path must start with '$[:]'",
+            id="quote-response-output-path",
         ),
     ],
 )

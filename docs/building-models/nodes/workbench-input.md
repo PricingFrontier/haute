@@ -41,6 +41,19 @@ A Workbench Input needs the project's workbench: in a project whose workbench is
 
     The pipeline reads a request, and its previews and `run()` the sample, into one dataframe per table. `haute deploy` and `haute app build` read the workbench's files once and carry the tables in what they build, never the sample. Deploying takes the request's shape from the tables too, so it needs no sample file, and never reads `sample`: it checks the pipeline on one quote with nothing filled in, one row of nulls per table under the reference `PREVIEW` and option 1, so a node that can't take a null stops the deploy as it stops a preview of a table with no values. A served request is read from the records as they were sent, so a value that doesn't fit answers the request with a 422 naming it, and a quote may leave a table out. On Databricks, the model's signature lists each table as an object, or a list of objects, of any values: the node reads the request's tables and columns itself, so a column the tables don't name is left unread there as it is everywhere else.
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Quote Input](quote-input.md)  - the entry point whose tables you build from a sample file

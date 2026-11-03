@@ -107,6 +107,29 @@ Writing a scored dataset to parquet:
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `arguments` | map of text to any JSON value | Arguments passed to the Polars write or sink call, by parameter name. |
+    | `mode` | `"sink"` or `"write"` | Whether the frame is streamed to the destination (`sink`) or collected and written (`write`). With `outputType` `"file"`, `"database"`, `"lakehouse"`. |
+    | `outputType` | `"file"` | The destination: a file. |
+    | `format` | text | The file format, such as `parquet` or `csv`. With `outputType` `"file"`, `"database"`, `"lakehouse"`. |
+    | `path` | text | The file written, relative to the project root or absolute. With `outputType` `"file"`, `"lakehouse"`. |
+    | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `outputType` `"database"`. |
+    | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `outputType` `"database"`. |
+    | `table` | text | The table written. With `outputType` `"database"`, `"databricks"`. |
+    | `http_path` | text | The SQL warehouse's HTTP path. With `outputType` `"databricks"`. |
+    | `write_mode` | `"overwrite"` or `"append"` | Whether a load replaces the table's rows or adds to them. With `outputType` `"databricks"`. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Quote Response](output.md)  - define the API response for live pricing

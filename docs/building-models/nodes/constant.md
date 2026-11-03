@@ -101,6 +101,22 @@ The constants are saved in `config/global_constants.json`, beside the node setti
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `values` | list of object | The values, one column each. |
+    | `values[].name` | text | The column the value is written to. |
+    | `values[].value` | text or number or `true` or `false` or `null` | The value, read as a number where it is one and kept as it is otherwise. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Edge Join](edge-join.md)  - to join the constants onto your data without a Transform node

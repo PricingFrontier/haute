@@ -378,9 +378,27 @@ class NodeRegistry:
         delegate to this method.
         """
 
-        from haute._config_validation import reject_removed_node_reuse_kwargs
+        from haute._config_validation import (
+            reject_removed_node_reuse_kwargs,
+            validate_node_config,
+        )
 
         reject_removed_node_reuse_kwargs(config)
+        declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
+        if declared_type in (NodeType.EDGE_JOIN, NodeType.EXPLORE):
+            # Their settings are the decorator's keywords, held to the config model's
+            # keys and shape as the parse holds the same keywords in a file.
+            from haute._contracts import declared_contract_json
+
+            declared = {key: value for key, value in config.items() if key != "_node_type"}
+            if declared.get("contract") is not None:
+                declared["contract"] = declared_contract_json(declared["contract"])
+            validate_node_config(
+                declared_type,
+                declared,
+                require_complete=False,
+                at_run=True,
+            )
 
         def _register(f: Callable) -> Callable:
             node_type = NodeType(config.get("_node_type", NodeType.POLARS))

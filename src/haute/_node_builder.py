@@ -52,13 +52,24 @@ def wrap_builder(
         source_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> NodeFnResult:
+        from haute._builders import check_node_config_for_run
+
+        # Checked before interception, so an intercepted build reads only a config its
+        # model accepts too, and once: the base builder is told it is checked.
+        check_node_config_for_run(node)
         names = source_names if source_names is not None else []
         ids = source_ids if source_ids is not None else []
         if hooks.before_build is not None:
             result = hooks.before_build(node, names, ids, **kwargs)
             if result is not None:
                 return result
-        return base(node, source_names=source_names, source_ids=source_ids, **kwargs)
+        return base(
+            node,
+            source_names=source_names,
+            source_ids=source_ids,
+            config_checked=True,
+            **kwargs,
+        )
 
     return wrapped
 

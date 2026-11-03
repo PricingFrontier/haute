@@ -96,7 +96,6 @@ def test_trace_uses_the_same_originating_dtype(case: RatingKeyCase) -> None:
 
 def test_trace_refuses_to_infer_a_rating_factor_dtype() -> None:
     table = {
-        "name": "float32",
         "factors": ["factor"],
         "outputColumn": "rate",
         "entries": [{"factor": "0.1", "value": 2.0}],
@@ -378,7 +377,6 @@ def test_unsupported_factor_dtype_fails_before_lookup(dtype: pl.DataType) -> Non
         value = {"x": 1}
     frame = pl.DataFrame({"factor": pl.Series("factor", [value], dtype=dtype)})
     table = {
-        "name": "unsupported",
         "factors": ["factor"],
         "outputColumn": "rate",
         "entries": [{"factor": value, "value": 2.0}],
@@ -461,7 +459,6 @@ def test_date_entries_reject_other_spellings_on_both_paths(entry: str) -> None:
 
 def _duration_entry_table(entry: str) -> dict[str, Any]:
     return {
-        "name": "durations",
         "factors": ["factor"],
         "outputColumn": "rate",
         "entries": [{"factor": entry, "value": 2.0}],

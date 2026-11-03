@@ -18,7 +18,6 @@ Reviewed at `main` @ `9319b11d`. The review read the code and changed none of it
 The code is careful and defensive, and its failure semantics are explicit. The main problem is **accumulated machinery**: several generations of mechanisms for the same concern coexist, and a lot of bespoke infrastructure re-implements things that Polars, FastAPI, Pydantic or a hard memory cap already provide. The top items still open:
 
 1. **The hand-maintained API contract is the top churn source.** `schemas.py`, `api/types.ts`, `types/guards.ts` and `api/client.ts` are the four most-changed files over the last three months. A Pydantic-to-TS generator already exists but covers only two pilots. (§5.1)
-2. **Node config is an untyped `dict[str, Any]`.** The shared validator is strict for only 3 of 19 node types; the rest are validated piecemeal. (§5.4)
 
 Of the strategic simplifications in §4, the one still open is folding the four overlapping reuse mechanisms (§4.7).
 
@@ -78,12 +77,6 @@ Of the strategic simplifications in §4, the one still open is folding the four 
 - These four files are the top churn set: `schemas.py` has 74 commits in 3 months, `api/types.ts` 69, `guards.ts` 61 and `client.ts` 55.
 - FastAPI already emits OpenAPI. Extend the existing generator, or use `openapi-typescript` with a validator generator, to cover every response model. Keep handwritten code only for cross-field semantics that genuinely belong in the UI.
 
-### 5.4 Typed node configs — HIGH
-- `NodeData.config` is `dict[str, Any]` (`_types.py:1012`).
-- `validate_node_config` (`_config_validation.py:377`) is strict only for Data Input, Data Output and Banding.
-- Every other type is checked by scattered hand-written validators: in the save service, `_optimiser_service._validate_config` (`:4628`), `_training_lifecycle._validate_config` (`:1139`), the recovery validators and the runtime builders.
-- Per-node Pydantic models, discriminated by `nodeType`, would give one validation boundary and one source for the generated frontend types (§5.1).
-
 ---
 
 ## 7. Tests
@@ -104,5 +97,4 @@ owns no work; the packages carry the plan, acceptance and evidence.
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([engineering quality](engineering-quality.md)) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
-| §5.4 Typed node configs | `PCFG-R07` ([pipeline config](pipeline-config.md)) |
 | §7 Test organisation | `ENGQ-R05` ([engineering quality](engineering-quality.md)) |

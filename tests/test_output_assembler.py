@@ -1444,7 +1444,7 @@ def test_a_deployed_batch_keeps_one_top_level_object_per_row() -> None:
 
 
 def test_the_deploy_scorer_s_key_keeps_the_output_node_s_rows_apart() -> None:
-    from haute._output_assembler import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
+    from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
 
     mapping = [
         {"source_port": "quotes", "source_column": "id", "output_path": "$[:].id", "enabled": True}

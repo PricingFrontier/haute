@@ -860,7 +860,9 @@ import type {
   PipelineGraph as CanonicalPipelineGraph,
 } from "../generated/api-contracts.generated"
 
-/** A canonical graph node with every field the server sends. */
+/** A canonical graph node with every field the server sends. The generated node data is
+ *  a union tagged by `nodeType`, its config typed by that type's config model; a test
+ *  passes any config, so the factory asserts the branch its arguments name. */
 export function makeCanonicalNode(
   id: string,
   nodeType: CanonicalNodeType = "polars",
@@ -876,7 +878,7 @@ export function makeCanonicalNode(
       nodeType,
       config,
       editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
-    },
+    } as unknown as CanonicalGraphNode["data"],
   }
 }
 

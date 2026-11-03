@@ -590,7 +590,6 @@ def test_rating_step_run_matches_executor_batch(tmp_path):
         {
             "tables": [
                 {
-                    "name": "Region Factor",
                     "factors": ["region"],
                     "outputColumn": "region_factor",
                     "entries": [

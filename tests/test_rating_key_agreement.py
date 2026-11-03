@@ -64,7 +64,6 @@ class TestEngineKeyNormalisation:
         config = {
             "tables": [
                 {
-                    "name": "Age",
                     "factors": ["age"],
                     "outputColumn": "f",
                     "entries": [
@@ -83,7 +82,6 @@ class TestEngineKeyNormalisation:
     def test_float_entry_keys_match_int_frame_column(self) -> None:
         """Numeric entry keys (JSON floats) must match an integer column."""
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": 25.0, "value": 2.0}],
@@ -93,7 +91,6 @@ class TestEngineKeyNormalisation:
 
     def test_float_entry_keys_match_float_frame_column(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": 25.0, "value": 2.0}, {"age": 30.5, "value": 3.0}],
@@ -103,7 +100,6 @@ class TestEngineKeyNormalisation:
 
     def test_int_column_still_matches_string_keys(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": "25", "value": 2.0}],
@@ -114,7 +110,6 @@ class TestEngineKeyNormalisation:
     def test_non_integer_floats_match_their_string_form(self) -> None:
         """HEAD already matched these; the fix must not regress them."""
         table = {
-            "name": "Score",
             "factors": ["score"],
             "outputColumn": "f",
             "entries": [{"score": "1.5", "value": 10.0}, {"score": "0.1", "value": 20.0}],
@@ -124,7 +119,6 @@ class TestEngineKeyNormalisation:
 
     def test_negative_zero_collapses_to_zero(self) -> None:
         table = {
-            "name": "Z",
             "factors": ["z"],
             "outputColumn": "f",
             "entries": [{"z": "0", "value": 5.0}],
@@ -134,7 +128,6 @@ class TestEngineKeyNormalisation:
 
     def test_negative_int_like_float_matches(self) -> None:
         table = {
-            "name": "T",
             "factors": ["t"],
             "outputColumn": "f",
             "entries": [{"t": "-3", "value": 7.0}],
@@ -145,7 +138,6 @@ class TestEngineKeyNormalisation:
     def test_large_int_like_float_within_int64_matches(self) -> None:
         """1e16 is integral and Int64-representable: collapses to digits."""
         table = {
-            "name": "Big",
             "factors": ["b"],
             "outputColumn": "f",
             "entries": [{"b": "10000000000000000", "value": 1.0}],
@@ -156,7 +148,6 @@ class TestEngineKeyNormalisation:
     def test_int_like_float_beyond_int64_keeps_float_form(self) -> None:
         """Beyond the Int64 range, keys keep the engine's float formatting."""
         table = {
-            "name": "Huge",
             "factors": ["h"],
             "outputColumn": "f",
             "entries": [{"h": "1e+300", "value": 1.0}],
@@ -167,7 +158,6 @@ class TestEngineKeyNormalisation:
     def test_numeric_string_entry_is_coerced_through_float_dtype(self) -> None:
         """An entry scalar is interpreted in the originating factor dtype."""
         table = {
-            "name": "Verbatim",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": "25.0", "value": 2.0}],
@@ -177,7 +167,6 @@ class TestEngineKeyNormalisation:
 
     def test_float32_int_like_column_matches_string_keys(self) -> None:
         table = {
-            "name": "F32",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": "25", "value": 2.0}],
@@ -193,7 +182,6 @@ class TestEngineKeyNormalisation:
         promoted = str(pl.Series("s", [0.1], dtype=pl.Float32).cast(pl.Float64)[0])
         assert promoted == "0.10000000149011612"
         table = {
-            "name": "F32",
             "factors": ["score"],
             "outputColumn": "f",
             "entries": [{"score": promoted, "value": 9.0}],
@@ -205,7 +193,6 @@ class TestEngineKeyNormalisation:
     def test_float32_shortest_decimal_string_matches_natively(self) -> None:
         """Entry strings are cast to Float32 before native-width formatting."""
         table = {
-            "name": "F32",
             "factors": ["score"],
             "outputColumn": "f",
             "entries": [{"score": "0.1", "value": 9.0}],
@@ -216,7 +203,6 @@ class TestEngineKeyNormalisation:
 
     def test_boolean_factor_column_matches_and_is_preserved(self) -> None:
         table = {
-            "name": "B",
             "factors": ["b"],
             "outputColumn": "f",
             "entries": [{"b": "true", "value": 2.0}],
@@ -346,7 +332,6 @@ class TestFloat32AndCrossDtypeAgreement:
         save_series = pl.Series("age", [25], dtype=save_dtype)
         entry_key = normalise_rating_key(save_series.item(), save_dtype)
         table = {
-            "name": "X",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [{"age": entry_key, "value": 2.0}],
@@ -372,7 +357,6 @@ class TestFloat32AndCrossDtypeAgreement:
             save_dtype,
         )
         table = {
-            "name": "X",
             "factors": ["s"],
             "outputColumn": "f",
             "entries": [{"s": entry_key, "value": 2.0}],
@@ -399,14 +383,13 @@ class TestDedupOnCanonicalKeys:
         coerced = pl.DataFrame(entries)
         assert coerced.schema["age"] == pl.String
         assert coerced["age"].to_list() == ["25", "25"]
-        table = {"name": "Age", "factors": ["age"], "outputColumn": "f", "entries": entries}
+        table = {"factors": ["age"], "outputColumn": "f", "entries": entries}
         out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
         assert out.height == 1  # no fan-out
         assert out["f"].to_list() == [2.0]  # last-authored entry wins
 
     def test_target_dtype_aliases_dedup_after_coercion_keep_last(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [
@@ -428,7 +411,6 @@ class TestDedupOnCanonicalKeys:
         form a duplicate group.  unique(keep="last") keeps the last-authored
         entry — this pins keep="last"; keep="first" would return 1.0."""
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [
@@ -442,7 +424,6 @@ class TestDedupOnCanonicalKeys:
 
     def test_canonical_collision_agrees_with_trace_enrichment(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -463,7 +444,6 @@ class TestDecimalFactorScale:
         from decimal import Decimal
 
         table = {
-            "name": "Money",
             "factors": ["amount"],
             "outputColumn": "f",
             "entries": [{"amount": "25.50", "value": 3.0}],
@@ -476,7 +456,6 @@ class TestDecimalFactorScale:
         from decimal import Decimal
 
         table = {
-            "name": "Money",
             "factors": ["amount"],
             "outputColumn": "f",
             "entries": [{"amount": "25.5", "value": 3.0}],
@@ -496,7 +475,6 @@ class TestSidecarKeyCanonicalisation:
         config = {
             "tables": [
                 {
-                    "name": "Age",
                     "factors": ["age"],
                     "outputColumn": "f",
                     "entries": [{"age": 25.0, "value": 2.0}],
@@ -511,7 +489,6 @@ class TestSidecarKeyCanonicalisation:
         config = {
             "tables": [
                 {
-                    "name": "Age",
                     "factors": ["age"],
                     "outputColumn": "f",
                     "entries": [{"age": 25.0, "value": 2.0}],
@@ -548,7 +525,6 @@ class TestTemporalFactorColumns:
         self, series: pl.Series, entry_value: str
     ) -> None:
         table = {
-            "name": "Inception Rating",
             "factors": ["inception"],
             "outputColumn": "f",
             "entries": [{"inception": entry_value, "value": 2.0}],
@@ -669,19 +645,16 @@ class TestRatebookSchemaCollection:
 
         tables = [
             {
-                "name": "age",
                 "factors": ["age"],
                 "outputColumn": "af",
                 "entries": [{"age": "25", "value": 1.1}],
             },
             {
-                "name": "region",
                 "factors": ["region"],
                 "outputColumn": "rf",
                 "entries": [{"region": "North", "value": 1.2}],
             },
             {
-                "name": "channel",
                 "factors": ["channel"],
                 "outputColumn": "cf",
                 "entries": [{"channel": "online", "value": 1.3}],
@@ -765,7 +738,6 @@ def assert_engine_and_enrichment_agree(
 class TestEnrichmentAgreesWithEngine:
     def test_int_like_floats_true_floats_and_miss(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -787,7 +759,6 @@ class TestEnrichmentAgreesWithEngine:
         entry key 25.0 vs frame value 25 — engine matches post-fix, and
         str()-based enrichment would report no_match."""
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -800,7 +771,6 @@ class TestEnrichmentAgreesWithEngine:
 
     def test_string_keys_regression_guard(self) -> None:
         table = {
-            "name": "Region",
             "factors": ["region"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -814,7 +784,6 @@ class TestEnrichmentAgreesWithEngine:
 
     def test_default_fill_reported_as_default(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "defaultValue": "1.0",
@@ -829,7 +798,6 @@ class TestEnrichmentAgreesWithEngine:
         must be reported as matched — possible only if key comparison uses
         the engine's canonical form."""
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "defaultValue": "1.0",
@@ -843,7 +811,6 @@ class TestEnrichmentAgreesWithEngine:
         """Engine: Boolean entries cast to "true"/"false". str(True) is
         "True" — the old enrichment disagreed with an engine match here."""
         table = {
-            "name": "Flag",
             "factors": ["flag"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -859,7 +826,6 @@ class TestEnrichmentAgreesWithEngine:
 
     def test_multi_factor_mixed_numeric_and_string(self) -> None:
         table = {
-            "name": "Two-way",
             "factors": ["age", "region"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -878,7 +844,6 @@ class TestEnrichmentAgreesWithEngine:
 
     def test_null_factor_value_never_matches(self) -> None:
         table = {
-            "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "onMissing": "neutral",
@@ -909,7 +874,6 @@ class TestTraceEndToEndAgreement:
         # Float64 ages: 25.0 must match the string key "25"; 99.0 misses.
         pl.DataFrame({"age": [25.0, 30.5, 99.0]}).write_parquet(data)
         table: dict[str, Any] = {
-            "name": "Age Factor",
             "factors": ["age"],
             "outputColumn": "age_factor",
             "entries": [

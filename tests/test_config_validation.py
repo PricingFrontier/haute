@@ -7,24 +7,19 @@ from typing import Any, Literal, get_type_hints
 import pytest
 
 from haute._config_validation import (
-    _UNIVERSAL_KEYS,
     VALID_KEYS,
     reject_unrecognized_config_keys,
     unrecognized_config_keys,
 )
-from haute._types import (
+from haute._explore_chart_contracts import ExploreChartConfig
+from haute._node_config_models import (
     MODEL_SCORE_CONFIG_KEYS,
     MODELLING_CONFIG_KEYS,
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    ContractDeclaration,
     EdgeJoinConfig,
-    ExploreChartAxes,
-    ExploreChartCategory,
-    ExploreChartConfig,
-    ExploreChartLegend,
-    ExploreChartSeriesOverride,
-    ExploreChartValueEncoding,
     ExploreConfig,
     ExploreOverviewConfig,
     ExplorePivotAxisPlacement,
@@ -36,11 +31,12 @@ from haute._types import (
     ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
     ModelScoreConfig,
-    NodeType,
+    NodeConfigBase,
     OptimiserApplyConfig,
     OptimiserConfig,
     TransformConfig,
 )
+from haute._types import NodeType
 from haute.errors import ConfigError
 from tests.conftest import make_output_config
 
@@ -77,6 +73,7 @@ class TestValidKeysRegistry:
             NodeType.OPTIMISER_APPLY,
             NodeType.CONSTANT,
             NodeType.SUBMODEL,
+            NodeType.SUBMODEL_PORT,
         }
         assert expected == set(VALID_KEYS.keys()), (
             f"Missing: {expected - set(VALID_KEYS.keys())}, "
@@ -150,10 +147,14 @@ class TestUnrecognizedConfigKeys:
             == []
         )
 
-    def test_body_code_is_not_a_config_key_but_editor_state_is_undeclared(self):
-        """The `.py` body code is not a persisted key; editor state belongs beside the
-        config (`NodeData.editor`), so an `_`-prefixed key in it is undeclared."""
-        assert unrecognized_config_keys(NodeType.BANDING, {"factors": [], "code": "df = df"}) == []
+    def test_code_is_declared_by_code_surfaces_and_editor_state_is_undeclared(self):
+        """A node type whose function may carry Polars code declares `code`, the
+        rendering of its body; one with no code surface does not. Editor state belongs
+        beside the config (`NodeData.editor`), so an `_`-prefixed key in it is undeclared."""
+        assert unrecognized_config_keys(NodeType.RATING_STEP, {"code": "df = df"}) == []
+        assert unrecognized_config_keys(NodeType.BANDING, {"factors": [], "code": "df = df"}) == [
+            "code"
+        ]
         assert unrecognized_config_keys(
             NodeType.BANDING, {"factors": [], "_columns": ["a"], "_nodeId": "n1"}
         ) == ["_columns", "_nodeId"]
@@ -164,8 +165,9 @@ class TestUnrecognizedConfigKeys:
             NodeType.OPTIMISER, {"mode": "online", "record_history": True}
         ) == ["record_history"]
 
-    def test_a_node_type_without_a_typed_dict_has_no_key_check(self):
-        assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"anything": 1}) == []
+    def test_a_submodel_port_declares_only_the_universal_keys(self):
+        assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"anything": 1}) == ["anything"]
+        assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"inputMapping": {}}) == []
 
     def test_reject_names_the_node_its_type_and_every_undeclared_key(self):
         with pytest.raises(
@@ -298,8 +300,9 @@ class TestSharedColumnSettingsUniversal:
     """Shared authored column settings are accepted consistently across nodes."""
 
     def test_shared_column_settings_in_universal_keys(self):
-        assert {"selected_columns", "column_renames"} <= _UNIVERSAL_KEYS
-        assert "categorical_levels" not in _UNIVERSAL_KEYS
+        universal = frozenset(NodeConfigBase.__annotations__)
+        assert {"selected_columns", "column_renames"} <= universal
+        assert "categorical_levels" not in universal
 
     @pytest.mark.parametrize("node_type", list(VALID_KEYS.keys()))
     @pytest.mark.parametrize(
@@ -331,22 +334,10 @@ class TestSharedColumnSettingsUniversal:
             "pivot_formulas": list[ExplorePivotFormula],
             "pivots": list[ExplorePivotPersistedConfig],
             "charts": list[ExploreChartConfig],
+            "inputMapping": dict[str, str],
+            "contract": ContractDeclaration,
             "selected_columns": list[str],
             "column_renames": dict[str, str],
-        }
-        assert get_type_hints(ExploreChartConfig) == {
-            "version": Literal[1],
-            "id": str,
-            "name": str,
-            "enabled": bool,
-            "pivot_id": str | None,
-            "kind": Literal["combo"],
-            "orientation": Literal["vertical", "horizontal"],
-            "category": ExploreChartCategory,
-            "value_encodings": list[ExploreChartValueEncoding],
-            "series_overrides": list[ExploreChartSeriesOverride],
-            "axes": ExploreChartAxes,
-            "legend": ExploreChartLegend,
         }
         assert get_type_hints(ExplorePivotConfig) == {
             "version": Literal[1],
@@ -491,7 +482,7 @@ class TestConfigKeyTupleAlignment:
 
     def test_modelling_keys_match_typed_dict(self):
         """Every key in MODELLING_CONFIG_KEYS should exist in ModellingConfig."""
-        from haute._types import ModellingConfig
+        from haute._node_config_models import ModellingConfig
 
         td_keys = set(ModellingConfig.__annotations__)
         for key in MODELLING_CONFIG_KEYS:
@@ -502,7 +493,7 @@ class TestConfigKeyTupleAlignment:
 
     def test_scenario_expander_keys_match_typed_dict(self):
         """Every key in SCENARIO_EXPANDER_CONFIG_KEYS should exist in ScenarioExpanderConfig."""
-        from haute._types import ScenarioExpanderConfig
+        from haute._node_config_models import ScenarioExpanderConfig
 
         td_keys = set(ScenarioExpanderConfig.__annotations__)
         for key in SCENARIO_EXPANDER_CONFIG_KEYS:
@@ -538,8 +529,8 @@ class TestOptimiserAnalysisConfig:
             ({"analysis_columns": [f"c{i}" for i in range(13)]}, "at most 12"),
             ({"analysis_columns": ["region", "region"]}, "duplicate"),
             ({"analysis_columns": ["region", ""]}, "non-empty"),
-            ({"analysis_columns": "region"}, "list of column names"),
-            ({"analysis_columns": [3]}, "non-empty"),
+            ({"analysis_columns": "region"}, "'analysis_columns': Input should be a valid list"),
+            ({"analysis_columns": [3]}, r"'analysis_columns\[0\]': Input should be a valid string"),
             ({"analysis_columns": ["quote_id"]}, "quote-id column"),
             ({"quote_id": "policy", "analysis_columns": ["policy"]}, "quote-id column"),
             ({"analysis_columns": ["__haute_x"]}, "reserved"),

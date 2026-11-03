@@ -3028,7 +3028,6 @@ class TestEnrichSingleTable:
         from haute._trace_enrichment import _enrich_single_table
 
         table = {
-            "name": "territory_factor",
             "factors": ["state", "vehicle_type"],
             "entries": [
                 {"state": "CA", "vehicle_type": "sedan", "value": 1.15},
@@ -3186,7 +3185,6 @@ class TestEnrichSingleTable:
         from haute._trace_enrichment import _enrich_single_table
 
         table = {
-            "name": "region_factor",
             "factors": ["region"],
             "entries": [
                 {"region": "north", "value": 1.1, "version": "old"},
@@ -3210,7 +3208,6 @@ class TestEnrichSingleTable:
         from haute._trace_enrichment import _enrich_single_table
 
         table = {
-            "name": "region_factor",
             "factors": ["region"],
             "entries": [{"region": "north", "value": 1.1}],
             "outputColumn": "region_factor",
@@ -3229,7 +3226,6 @@ class TestEnrichSingleTable:
         from haute._trace_enrichment import _enrich_single_table
 
         table = {
-            "name": "region_factor",
             "factors": ["region"],
             "entries": [{"region": "north", "value": 1.1}],
             "outputColumn": "region_factor",
@@ -3254,7 +3250,6 @@ class TestEnrichRatingStepRealConfig:
         config = {
             "tables": [
                 {
-                    "name": "region_factor",
                     "factors": ["region"],
                     "entries": [
                         {"region": "north", "value": 1.1},
@@ -3287,7 +3282,6 @@ class TestEnrichRatingStepRealConfig:
         config = {
             "tables": [
                 {
-                    "name": "vehicle_factor",
                     "factors": ["vehicle_age_band", "cover_type"],
                     "entries": [
                         {
@@ -3300,7 +3294,6 @@ class TestEnrichRatingStepRealConfig:
                     "defaultValue": "1.0",
                 },
                 {
-                    "name": "channel_factor",
                     "factors": ["channel"],
                     "entries": [{"channel": "direct", "value": 1.2}],
                     "outputColumn": "channel_factor",

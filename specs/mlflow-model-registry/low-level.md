@@ -125,8 +125,10 @@
   `version`, `alias`, `artifact_path`, `mlflow_destination`) and
   `FileModelSource` (`model_path`, as configured). All are frozen
   slotted dataclasses whose fields are named after the config keys they come
-  from, so the typed node-config models (`PCFG-R07`) absorb them as the Model
-  Scoring source slice rather than adding a second config model. A registered
+  from: the Model Score config model
+  ([pipeline config](../pipeline-config/low-level.md)) types those keys, and its
+  `check` parses the source through `parse_model_source` once its identifying
+  field is set, so the shape and the source have one definition each. A registered
   source carries `version` only when it names no `alias` (`"latest"` when the
   config names neither); a run source carries no version at all.
 - **`IncompleteModelSourceError(ConfigError)`** (`_model_source.py`) — a

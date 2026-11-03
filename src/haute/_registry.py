@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
-from haute._types import MODELLING_CONFIG_KEYS, NodeType
+from haute._node_config_models import MODELLING_CONFIG_KEYS
+from haute._types import NodeType
 
 if TYPE_CHECKING:
     from haute._codegen_builders import NodeSource

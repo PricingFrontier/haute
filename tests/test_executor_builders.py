@@ -21,6 +21,7 @@ from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
     LiveSwitchScenarioError,
+    NodeConfigError,
 )
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -182,11 +183,10 @@ class TestBuildConstant:
         assert "constant" in result.columns
         assert result["constant"].to_list() == [0]
 
-    def test_none_values_gives_default(self) -> None:
-        _, fn, _ = _build("constant", {"values": None})
-        result = fn().collect()
-        assert "constant" in result.columns
-        assert result["constant"].to_list() == [0]
+    def test_null_values_are_refused_when_built(self) -> None:
+        # ``values`` takes a list; null is not a cleared setting Haute writes.
+        with pytest.raises(NodeConfigError, match="setting 'values': Input should be a valid list"):
+            _build("constant", {"values": None})
 
     def test_missing_values_key_gives_default(self) -> None:
         _, fn, _ = _build("constant", {})
@@ -687,30 +687,20 @@ class TestBuildApiInput:
         tmp_path: Path,
         _widen_sandbox_root,
     ) -> None:
+        """A flat-file source read through the public reader declares its CSV's dtypes."""
+        from haute._io import read_data_source
+
         data_file = tmp_path / "input.csv"
         data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
-        node = _n(
-            {
-                "id": "n1",
-                "data": {
-                    "label": "CSV_Input",
-                    "nodeType": "apiInput",
-                    "config": {
-                        "path": str(data_file),
-                        "schema_overrides": {
-                            "quote_id": "String",
-                            "premium": "Float64",
-                        },
-                    },
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(
-            node,
-            execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
-        )
 
-        result = fn().collect()
+        result = read_data_source(
+            {
+                "sourceType": "flat_file",
+                "path": str(data_file),
+                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
+            },
+            profile=ExecutionProfile.OPTIMISER_SOLVE.value,
+        ).collect()
 
         assert result.schema["quote_id"] == pl.String
         assert result["quote_id"].to_list() == ["001"]
@@ -926,13 +916,11 @@ class TestBuildDataInputWithCode:
         assert frame.collect()["premium"].to_list() == [300.0]
         assert fn().collect()["premium"].to_list() == [300.0]
 
-    def test_an_unsaved_one_previews_empty_without_running_its_code(self) -> None:
-        _, fn, _ = _build("dataInput", {"code": "raise RuntimeError('ran')"})
-
-        scan, frame = fn.opened()
-
-        assert scan is None
-        assert frame.collect().shape == (0, 0)
+    def test_one_without_a_provider_is_refused_when_built_before_its_code_runs(self) -> None:
+        # The palette gives every Data Input its ``inputType``; a config without one
+        # is refused when the node is built, so its code never runs.
+        with pytest.raises(NodeConfigError, match="setting 'inputType'"):
+            _build("dataInput", {"code": "raise RuntimeError('ran')"})
 
 
 class TestBuildDataInputSelectedColumns:
@@ -1064,7 +1052,7 @@ class TestBuildDataSink:
     def test_passthrough(self) -> None:
         _, fn, is_source = _build(
             "dataOutput",
-            {"path": "out.parquet", "format": "parquet"},
+            {"outputType": "file", "path": "out.parquet", "format": "parquet"},
             source_names=["upstream"],
         )
         assert is_source is False

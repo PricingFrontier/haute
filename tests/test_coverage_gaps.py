@@ -45,38 +45,36 @@ class TestConfigValidationEdgeCases:
         )
         assert bad == ["_debug", "_internal_marker"]
 
-    def test_submodel_port_has_no_valid_keys(self):
-        """SUBMODEL_PORT is not in the TypedDict registry — returns []."""
+    def test_submodel_port_declares_only_the_universal_keys(self):
+        """A submodel port has no settings of its own: any other key is undeclared."""
         from haute._config_validation import VALID_KEYS, unrecognized_config_keys
+        from haute._node_config_models import NodeConfigBase
         from haute._types import NodeType
 
-        # SUBMODEL_PORT should not appear in VALID_KEYS (no TypedDict for it)
-        assert NodeType.SUBMODEL_PORT not in VALID_KEYS
+        assert VALID_KEYS[NodeType.SUBMODEL_PORT] == frozenset(NodeConfigBase.__annotations__)
 
-        # Therefore validation returns empty (nothing to validate against)
         bad = unrecognized_config_keys(
             NodeType.SUBMODEL_PORT,
             {"anything": 42, "goes": True},
         )
-        assert bad == []
+        assert bad == ["anything", "goes"]
 
-    def test_valid_keys_for_returns_none_for_unknown(self):
-        """_valid_keys_for with a type that has no TypedDict returns None."""
-        from haute._config_validation import _valid_keys_for
+    def test_every_node_type_has_valid_keys(self):
+        """Every node type has a config model, so none goes unvalidated."""
+        from haute._config_validation import VALID_KEYS
         from haute._types import NodeType
 
-        result = _valid_keys_for(NodeType.SUBMODEL_PORT)
-        assert result is None
+        assert set(VALID_KEYS) == set(NodeType)
 
-    def test_valid_keys_for_includes_universal_keys(self):
-        """_valid_keys_for merges TypedDict keys with universal keys."""
-        from haute._config_validation import _UNIVERSAL_KEYS, _valid_keys_for
-        from haute._types import NodeType
+    def test_valid_keys_include_universal_keys(self):
+        """Every node type's keys include the universal keys of NodeConfigBase."""
+        from haute._config_validation import VALID_KEYS
+        from haute._node_config_models import NodeConfigBase
 
-        keys = _valid_keys_for(NodeType.API_INPUT)
-        assert keys is not None
-        for uk in _UNIVERSAL_KEYS:
-            assert uk in keys
+        universal = frozenset(NodeConfigBase.__annotations__)
+        assert universal == {"inputMapping", "contract", "selected_columns", "column_renames"}
+        for node_type, keys in VALID_KEYS.items():
+            assert universal <= keys, node_type
 
     def test_column_renames_universal_key(self):
         """column_renames should be accepted for any node type."""

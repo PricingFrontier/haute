@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from haute._cache import GraphFingerprintMemo, canonical_json
+from haute._config_validation import validate_node_config
 from haute._databricks_credentials import DatabricksConfigError
 from haute._databricks_output import DatabricksWriteError
 from haute._editor_identities import (
@@ -96,7 +97,6 @@ from haute._polars_io_registry import (
     data_output_group,
     format_for_config,
     is_databricks_output,
-    validate_data_output_config,
 )
 from haute._polars_steps import (
     PolarsStepError,
@@ -697,8 +697,14 @@ def _prepare_data_output_request(
             detail=f"Node '{node_id}' is not a Data Output",
         )
     try:
-        config = validate_data_output_config(output_node.data.config)
-    except (PolarsIoConfigError, TypeError, ValueError):
+        config = validate_node_config(
+            NodeType.DATA_OUTPUT,
+            output_node.data.config,
+            require_complete=True,
+            persisted=False,
+            node_label=output_node.data.label,
+        )
+    except (ConfigError, PolarsIoConfigError, TypeError, ValueError):
         raise HTTPException(
             status_code=400,
             detail="Invalid Data Output configuration.",

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 from fastapi import APIRouter, HTTPException, status
 
+from haute._config_validation import validate_node_config
 from haute._credential_security import redact_sensitive_text
 from haute._env import int_env
 from haute._execution_admission import (
@@ -49,7 +50,7 @@ from haute._input_providers import (
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
-from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
+from haute._polars_io_registry import PolarsIoConfigError
 from haute._project_context import context_thread, current_project
 from haute._source_cache import (
     BuildClass,
@@ -60,6 +61,7 @@ from haute._source_cache import (
     SourceCacheStatus,
     SourceCacheStore,
 )
+from haute._types import NodeType
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerRemoteError,
@@ -70,6 +72,7 @@ from haute._worker_isolation import (
     isolated_worker_memory_detail,
     run_isolated_worker,
 )
+from haute.errors import ConfigError
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
     SingleFlightCoordinator,
@@ -163,8 +166,10 @@ def _safe_config(
     body: InputCacheSourceRequest,
 ) -> tuple[dict[str, Any], SourceCacheIdentity]:
     try:
-        config = validate_data_input_config(body.config)
-    except (PolarsIoConfigError, TypeError, ValueError):
+        config = validate_node_config(
+            NodeType.DATA_INPUT, body.config, require_complete=True, persisted=False
+        )
+    except (ConfigError, PolarsIoConfigError, TypeError, ValueError):
         raise HTTPException(
             status_code=400,
             detail="invalid_input_config: The Data Input configuration is invalid.",

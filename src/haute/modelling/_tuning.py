@@ -259,6 +259,66 @@ class TuningConfig:
         evaluation: EvaluationConfig,
         configured_metrics: Sequence[str],
     ) -> TuningConfig:
+        """Parse a tuning object against the evaluation its trials are scored by."""
+        (
+            schema_version,
+            trial_count,
+            seed,
+            metric,
+            parsed_space,
+            suggestion_order,
+            direction,
+        ) = cls._parse_own_rules(
+            raw, algorithm=algorithm, base_params=base_params, configured_metrics=configured_metrics
+        )
+        if evaluation.validation_fit_count == 0:
+            raise HauteValidationError("tuning requires single or cross-validation")
+        validation_fit_count = evaluation.validation_fit_count
+        trial_fit_count = trial_count * validation_fit_count
+        if trial_fit_count > MAX_TRIAL_FITS:
+            raise HauteValidationError(
+                f"tuning requires {trial_fit_count} trial fits; the maximum is {MAX_TRIAL_FITS}"
+            )
+        return cls(
+            schema_version=schema_version,
+            trial_count=trial_count,
+            seed=seed,
+            metric=metric,
+            search_space=parsed_space,
+            suggestion_order=suggestion_order,
+            direction=direction,
+            validation_fit_count=validation_fit_count,
+            trial_fit_count=trial_fit_count,
+            total_fit_count=trial_fit_count + 1,
+        )
+
+    @classmethod
+    def check_own_rules(
+        cls,
+        raw: Any,
+        *,
+        algorithm: str,
+        base_params: Mapping[str, Any],
+        configured_metrics: Sequence[str],
+    ) -> None:
+        """Hold a tuning object to every rule that does not need its evaluation.
+
+        A node whose evaluation is not chosen yet: the split's rules (a validation
+        fit, the trial-fit budget) wait for one, and what it lacks is reported apart.
+        """
+        cls._parse_own_rules(
+            raw, algorithm=algorithm, base_params=base_params, configured_metrics=configured_metrics
+        )
+
+    @classmethod
+    def _parse_own_rules(
+        cls,
+        raw: Any,
+        *,
+        algorithm: str,
+        base_params: Mapping[str, Any],
+        configured_metrics: Sequence[str],
+    ) -> tuple[int, int, int, str, dict[str, Any], tuple[str, ...], Any]:
         if not isinstance(raw, Mapping):
             raise HauteValidationError("tuning config must be an object")
         expected = {"schema_version", "seed", "metric", "search_space"} | (
@@ -271,9 +331,6 @@ class TuningConfig:
         descriptor = algorithm_descriptor(algorithm)
         if not descriptor.supports_tuning:
             raise HauteValidationError(f"{descriptor.label} does not support parameter tuning")
-        if evaluation.validation_fit_count == 0:
-            raise HauteValidationError("tuning requires single or cross-validation")
-
         trial_count = _exact_int(raw.get("trial_count", 20), "tuning.trial_count")
         if not MIN_TRIAL_COUNT <= trial_count <= MAX_TRIAL_COUNT:
             raise HauteValidationError(
@@ -314,24 +371,14 @@ class TuningConfig:
             parsed_space[name] = _parse_search_entry(name, entry)
         descriptor.validate_params(parsed_space, context="tuning.search_space")
         suggestion_order = _validate_conditions(parsed_space, base_params)
-
-        validation_fit_count = evaluation.validation_fit_count
-        trial_fit_count = trial_count * validation_fit_count
-        if trial_fit_count > MAX_TRIAL_FITS:
-            raise HauteValidationError(
-                f"tuning requires {trial_fit_count} trial fits; the maximum is {MAX_TRIAL_FITS}"
-            )
-        return cls(
-            schema_version=schema_version,
-            trial_count=trial_count,
-            seed=seed,
-            metric=metric,
-            search_space=parsed_space,
-            suggestion_order=suggestion_order,
-            direction=direction,
-            validation_fit_count=validation_fit_count,
-            trial_fit_count=trial_fit_count,
-            total_fit_count=trial_fit_count + 1,
+        return (
+            schema_version,
+            trial_count,
+            seed,
+            metric,
+            parsed_space,
+            suggestion_order,
+            direction,
         )
 
     def to_plain_data(self) -> dict[str, Any]:

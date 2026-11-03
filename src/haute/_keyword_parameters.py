@@ -16,7 +16,8 @@ import math
 from typing import Any
 
 from haute._executable_names import RESERVED_NAMES
-from haute._types import KeywordParameter, NodeType
+from haute._node_config_models import KeywordParameter
+from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 
 __all__ = [

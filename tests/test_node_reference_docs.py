@@ -4,7 +4,7 @@ The internal specification corpus has its own accuracy checks; these check the
 user-facing site. Every node type a user can add has exactly one page in the
 node reference, the navigation lists exactly those pages, and a page's
 "In the pipeline file" table names only keys the config validator accepts for
-that node type.
+that node type, and its generated config-keys table matches the node type's config model.
 """
 
 from __future__ import annotations
@@ -18,35 +18,14 @@ import yaml
 
 from haute._config_validation import FORM_GIVEN_KEYS, VALID_KEYS
 from haute._types import NodeType
+from scripts.generate_node_config_reference import NODE_REFERENCE_PAGES
+from scripts.generate_node_config_reference import main as generate_reference
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 NODE_REFERENCE = DOCS / "building-models" / "nodes"
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 
-# Every node type a user can add, and its one reference page.
-NODE_REFERENCE_PAGES: dict[NodeType, str] = {
-    NodeType.API_INPUT: "quote-input.md",
-    NodeType.WORKBENCH_INPUT: "workbench-input.md",
-    NodeType.WORKBENCH_OUTPUT: "workbench-output.md",
-    NodeType.DATA_INPUT: "data-input.md",
-    NodeType.DATA_OUTPUT: "data-output.md",
-    NodeType.CONSTANT: "constant.md",
-    NodeType.POLARS: "transform.md",
-    NodeType.EDGE_JOIN: "edge-join.md",
-    NodeType.BANDING: "banding.md",
-    NodeType.RATING_STEP: "rating-step.md",
-    NodeType.SCENARIO_EXPANDER: "scenario-expander.md",
-    NodeType.LIVE_SWITCH: "source-switch.md",
-    NodeType.MODELLING: "model-training.md",
-    NodeType.MODEL_SCORE: "model-score.md",
-    NodeType.EXTERNAL_FILE: "external-file.md",
-    NodeType.OPTIMISER: "optimiser.md",
-    NodeType.OPTIMISER_APPLY: "optimiser-apply.md",
-    NodeType.OUTPUT: "output.md",
-    NodeType.EXPLORE: "explore.md",
-    NodeType.SUBMODEL: "submodel.md",
-}
 # A submodel port is created with its submodel and documented on that page.
 NOT_AUTHORED_DIRECTLY = frozenset({NodeType.SUBMODEL_PORT})
 # Reference pages that document a feature rather than a node type.
@@ -204,3 +183,9 @@ def test_published_pages_use_no_retired_node_vocabulary() -> None:
     ]
 
     assert found == []
+
+
+@pytest.mark.meta
+def test_every_page_carries_its_generated_config_keys_table() -> None:
+    """Each page's config-keys table is what the node type's config model gives."""
+    assert generate_reference(["--check"]) == 0

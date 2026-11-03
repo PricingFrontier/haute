@@ -41,7 +41,9 @@ Submodel graph expansion and boundary rewiring are owned by
 **`_api_input_schema.py`**
 
 - `ColumnV2` and `TableV2` are total-false `TypedDict`s for
-  the wire/sidecar shape; a `date` column's optional `format` is its strftime
+  the wire/sidecar shape, closed and strict under Pydantic: the Quote Input's
+  config model types its `tables` with them
+  ([pipeline config](../pipeline-config/low-level.md)); a `date` column's optional `format` is its strftime
   pattern (ISO `%Y-%m-%d` when absent). `ColumnType` is exactly `int|float|str|bool|date`;
   `ColumnStatus` is exactly `Confirmed|Inferred`; optional `emit` and
   `selected` fields, when present, are exact booleans rather than truthy

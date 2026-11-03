@@ -70,6 +70,19 @@ A Workbench Output needs the project's workbench, as a [Workbench Input](workben
 
     Deploying refuses a connection to a table the workbench does not have.
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Workbench Input](workbench-input.md)  - the entry point whose tables the workbench defines

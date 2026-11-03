@@ -14,6 +14,7 @@ import {
 } from "../../generated/api-contracts.preview.validators.mjs"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { validateExecutionMetricsPayload } from "../../generated/api-contracts.execution-metrics.validators.mjs"
+import { validatePipelineGraph } from "../../generated/api-contracts.pipeline-graph.validators.mjs"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
@@ -247,11 +248,11 @@ const parseTraceResponse = (value: unknown) =>
 const parseSavePipelineResponse = (value: unknown) =>
   expectGeneratedContract("SavePipelineResponse", validateSavePipelineResponse, value)
 const parseSubmodelCreateResponse = (value: unknown) =>
-  withPipelineGraph(expectGeneratedContract("CreateSubmodelResponse", validateCreateSubmodelResponse, value))
+  withPipelineGraph(expectGeneratedContract("CreateSubmodelResponse", validateCreateSubmodelResponse, value), validatePipelineGraph)
 const parseSubmodelGraphResponse = (value: unknown) =>
-  withPipelineGraph(expectGeneratedContract("SubmodelGraphResponse", validateSubmodelGraphResponse, value))
+  withPipelineGraph(expectGeneratedContract("SubmodelGraphResponse", validateSubmodelGraphResponse, value), validatePipelineGraph)
 const parseDissolveSubmodelResponse = (value: unknown) =>
-  withPipelineGraph(expectGeneratedContract("DissolveSubmodelResponse", validateDissolveSubmodelResponse, value))
+  withPipelineGraph(expectGeneratedContract("DissolveSubmodelResponse", validateDissolveSubmodelResponse, value), validatePipelineGraph)
 
 // Explore and factor responses are checked by their generated validators; the
 // pivot responses then get the UI's member-key and matrix checks.

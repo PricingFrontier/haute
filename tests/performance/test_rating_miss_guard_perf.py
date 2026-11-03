@@ -184,7 +184,6 @@ def test_rating_miss_guard_records_representative_decision_evidence(
                 {
                     "tables": [
                         {
-                            "name": "semantic_oracle",
                             "factors": ["factor"],
                             "outputColumn": "rate",
                             "entries": [{"factor": "known", "value": 1.0}],

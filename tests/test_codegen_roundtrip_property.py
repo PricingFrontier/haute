@@ -53,7 +53,6 @@ from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code_multi
 from haute.parser import parse_pipeline_file
-from tests.conftest import make_output_config
 
 ROUNDTRIPPABLE_NODE_TYPES: frozenset[NodeType] = frozenset(NodeType) - {
     # These are structural containers in graph_to_code_multi, not standalone
@@ -222,7 +221,7 @@ def _capstone_root_graph(
                                 },
                                 {
                                     "name": "premium (gross)",
-                                    "path": "$[:]['premium (gross)']",
+                                    "path": "$[:].premium_gross",
                                     "type": "float",
                                     "selected": True,
                                 },
@@ -338,7 +337,6 @@ def _capstone_root_graph(
                 {
                     "tables": [
                         {
-                            "name": "Table {A}",
                             "factors": ["score_band"],
                             "outputColumn": "rate_factor",
                             "defaultValue": "1.0",
@@ -426,7 +424,25 @@ def _capstone_root_graph(
             output,
             "Output Node",
             NodeType.OUTPUT,
-            _opaque(make_output_config(["premium (gross)", "brace {field}", "quote_id"])),
+            # A response path names a JSON key, so each adversarial column fills an
+            # identifier-named field.
+            _opaque(
+                {
+                    "outputMapping": [
+                        {
+                            "source_port": "in",
+                            "source_column": column,
+                            "output_path": f"$[:].{field}",
+                            "enabled": True,
+                        }
+                        for column, field in (
+                            ("premium (gross)", "premium_gross"),
+                            ("brace {field}", "brace_field"),
+                            ("quote_id", "quote_id"),
+                        )
+                    ]
+                }
+            ),
             description="output " + description,
         ),
         _node(

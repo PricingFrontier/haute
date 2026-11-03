@@ -206,6 +206,35 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
+    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `sourceType` | `""` or `"run"` or `"registered"` or `"file"` | Where the model comes from; empty or absent when no source is chosen yet. |
+    | `model_path` | text | For a file source, the model file in the project, such as `models/freq.cbm`. |
+    | `experiment_name` | text | For a run source, the experiment's name, shown when the panel reopens. |
+    | `experiment_id` | text | For a run source, the MLflow experiment's id. |
+    | `run_id` | text | For a run source, the MLflow run whose model is scored. |
+    | `run_name` | text | For a run source, the run's name, shown when the panel reopens. |
+    | `artifact_path` | text | For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`. |
+    | `registered_model` | text | For a registered source, the registered model's name, such as `catalog.schema.model`. |
+    | `version` | text | For a registered source, the version scored, or `latest`; absent when `alias` is set. |
+    | `alias` | text | For a registered source, the alias whose version is scored, such as `champion`; excludes `version`. |
+    | `task` | `"regression"` or `"classification"` | Whether the model predicts a value or a class probability. |
+    | `output_column` | text | The column the prediction is written to; `prediction` when absent. |
+    | `feature_contract_path` | text | The feature contract the model scores under, when it is not beside the model. |
+    | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is the local folder. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Load File](external-file.md)  - for pickle, joblib and JSON objects you apply with your own code

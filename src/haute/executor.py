@@ -2015,9 +2015,15 @@ def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, 
     if output_node.data.nodeType != NodeType.DATA_OUTPUT:
         raise ValueError(f"Node '{output_node_id}' is not a Data Output")
 
-    from haute._polars_io_registry import validate_data_output_config
+    from haute._config_validation import validate_node_config
 
-    return validate_data_output_config(output_node.data.config)
+    return validate_node_config(
+        NodeType.DATA_OUTPUT,
+        output_node.data.config,
+        require_complete=True,
+        persisted=False,
+        node_label=output_node.data.label,
+    )
 
 
 def _data_output_required_columns(

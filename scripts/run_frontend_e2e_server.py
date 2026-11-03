@@ -240,7 +240,6 @@ _BROWSER_MIXED_BANDING_CONFIG = """{
 _BROWSER_RATING_CONFIG = """{
   "tables": [
     {
-      "name": "Browser three-factor relativity",
       "factors": [
         "proposer_age_band",
         "channel_band",

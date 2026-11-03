@@ -16,7 +16,7 @@ import haute._builders as builders
 from haute._builders import _build_node_fn
 from haute._registry import MODELLING_NODE_SEMANTICS
 from haute._types import GraphEdge
-from haute.errors import ExecutionError, LiveSwitchScenarioError
+from haute.errors import ExecutionError, LiveSwitchScenarioError, NodeConfigError
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
 from tests.conftest import make_output_config
@@ -80,10 +80,10 @@ class TestBuildConstantEdgeCases:
         assert result.columns == ["constant"]
         assert result.shape == (1, 1)
 
-    def test_none_values_handled(self) -> None:
-        _, fn, _ = _build("constant", {"values": None})
-        result = fn().collect()
-        assert "constant" in result.columns
+    def test_null_values_are_refused_when_built(self) -> None:
+        # ``values`` takes a list; null is not a cleared setting Haute writes.
+        with pytest.raises(NodeConfigError, match="setting 'values': Input should be a valid list"):
+            _build("constant", {"values": None})
 
     def test_numeric_string_coerced_to_float(self) -> None:
         _, fn, _ = _build("constant", {"values": [{"name": "pi", "value": "3.14"}]})

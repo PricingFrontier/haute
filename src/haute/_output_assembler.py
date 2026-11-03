@@ -343,12 +343,6 @@ def _rows_from_dataframe(
     return rows
 
 
-#: A private OUTPUT node config key the deploy scorer sets on its own graph copy for a
-#: batch answered as one frame: each row of the top level answers its own quote, so the
-#: top level keeps one object per row rather than merging rows whose fields are all equal.
-DEPLOY_ANSWER_PER_ROW_CONFIG_KEY = "__haute_deploy_answer_per_row"
-
-
 def _assemble_document(
     field_frames: dict[str, pl.LazyFrame],
     *,  # pragma: no mutate

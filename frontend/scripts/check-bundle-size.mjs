@@ -230,7 +230,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // editor-document, pipeline and assistant groups replace their hand parsers, the editor
 // document's loading with its first document instead of at startup. The complete bundle
 // falls to 1,753.3 KiB and the initial bundle to 289.5 KiB; 1,756 KiB keeps about 2.7 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1756
+// One config model per node type (PCFG-R07): a graph response checks each node's config
+// against its type's model, compiled once in the shared pipeline-graph validator module
+// rather than in each of the git and pipeline modules; the complete bundle is 1,775.8 KiB
+// (the initial bundle unchanged at 289.5 KiB); 1,778 KiB (approved).
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1778
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

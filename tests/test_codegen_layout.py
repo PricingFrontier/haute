@@ -148,7 +148,6 @@ _BANDING = {
 _RATING_STEP = {
     "tables": [
         {
-            "name": "Area",
             "factors": ["area"],
             "outputColumn": "area_factor",
             "defaultValue": "1.0",

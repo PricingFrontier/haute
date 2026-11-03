@@ -142,6 +142,26 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     }
     ```
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `factors` | list of object | The factors, each an input column, an output column and its bands. |
+    | `factors[].banding` | `"breakpoints"` or `"categorical"` | Whether the column is banded by numeric or date boundaries or by category. |
+    | `factors[].column` | text | The input column banded. |
+    | `factors[].outputColumn` | text | The column the band is written to. |
+    | `factors[].rules` | list of map of text to any JSON value or map of text to any JSON value | The bands: rule rows in the editor, or a map from each boundary or value to its band in the config file. |
+    | `factors[].default` | text or `null` | The band of a value no rule matches; `null` leaves it empty. |
+    | `factors[].rightClosed` | `true` or `false` | For breakpoints, whether each band includes its upper boundary (`true`, the default) or its lower one. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Rating Step](rating-step.md)  - look up factors by band

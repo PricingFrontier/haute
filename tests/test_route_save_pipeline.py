@@ -531,7 +531,7 @@ class TestValidateScenarioExpanderGridSize:
         [
             (None, "requires stepCount"),
             (0, "stepCount >= 1"),
-            (2.5, "whole number"),
+            (2.5, "Input should be a valid integer"),
         ],
     )
     def test_a_refused_save_names_the_setting_and_writes_nothing(
@@ -725,7 +725,7 @@ class TestValidateDeclaredConfigKeys:
         )
 
         with pytest.raises(RequestRefusedError) as exc_info:
-            SavePipelineService._validate_declared_config_keys(graph)
+            SavePipelineService._validate_node_configs(graph)
 
         assert exc_info.value.status_code == 400
         assert "_columns" in exc_info.value.detail

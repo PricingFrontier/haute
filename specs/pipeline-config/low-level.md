@@ -9,7 +9,9 @@
 | `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join, an Explore or a transform, from the decorator kwargs and function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
-| `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf`, and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
+| `src/haute/_node_config_models.py` | Each node type's config model: its config `TypedDict` (Quote Input, Workbench Input and Output, the Data Input and Data Output provider branches, Transform, Edge Join, Model Score, Banding, Rating Step, Quote Response, Explore, Load File, Source Switch, Model Training, Optimiser, Optimiser Apply, Scenario Expander, Constant, Submodel, Submodel Port) and the nested shapes it holds, each closed (`extra="forbid"`) and strict under Pydantic, with each key's description as its attribute docstring; `NodeConfigModel` (the node type, its shape, its `TypeAdapter`, its declared keys, and its `check`, `check_inputs` and `completeness` hooks into the engine's value rules); and `NODE_CONFIG_MODELS`, one per `NodeType`, complete at import. |
+| `scripts/generate_node_config_reference.py` | Writes each node reference page's config-keys table (`docs/building-models/nodes/*.md`, between `<!-- config-keys:start -->` and `<!-- config-keys:end -->` inside its "In the pipeline file" note) from the node type's config model: one row per key, a nested key under its parent's path (`factors[].banding`), its type in words and its attribute docstring, a provider branch's own key naming its branches, the universal keys last and a workbench node's form-given keys left out; `--check` fails when a page's table is stale. `NODE_REFERENCE_PAGES` is the one map from node type to page. |
+| `src/haute/_config_validation.py` | `validate_node_config`, the one validation boundary over `NODE_CONFIG_MODELS`, and `CONFIG_REFUSALS`, every error it raises for a refused config, which each boundary answers as the request's refusal; `VALID_KEYS` (each node type's declared keys, from its model), `unrecognized_config_keys` and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf`, and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
 | `src/haute/_keyword_parameters.py` | A code transform's keyword-only parameters: `keyword_parameters_from_signature` (the parse's record and located refusal), `validate_keyword_parameters` (a submitted config's contract), `reject_input_named_keyword_parameters` (codegen and the builder) and `keyword_parameter_values` (the values a run binds). |
 | `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
@@ -107,11 +109,80 @@
   shared by the modelling runtime/codegen pair. Both builders consume this one
   declaration; no other node type inherits the policy without a cross-path
   result contract.
-- **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, precomputed
-  at import time from each node type's config `TypedDict.__annotations__` plus
-  `_UNIVERSAL_KEYS` (`inputMapping`, `selected_columns`, `column_renames`, `contract` —
-  keys any node type may legitimately carry; `instanceOf` belongs to a submodel occurrence's
-  config alone).
+- **Config shapes** (`_node_config_models.py`) — one config `TypedDict` per node type (the
+  Data Input and Data Output types a union of provider branches tagged by `inputType` /
+  `outputType`), every one inheriting `NodeConfigBase`, which declares the universal keys any
+  node type may carry: `inputMapping` (logical to connected input names), `contract` (the
+  column-contract annotation, `"opaque"` or `{inputs, outputs, inputs_by_parent?}` with lists
+  of column names; the parse and the live decorator hold a declared contract, whatever spelling
+  declared it (`Contract(...)`, an `(inputs, outputs)` pair, a dict of tuples or sets), in that
+  JSON form, `_contracts.declared_contract_json`, a list keeping its authored order and a set
+  sorted),
+  `selected_columns` and `column_renames`. A code-surface type (Transform, Data Input, Load
+  File, Rating Step, Model Score, Scenario Expander, Explore) also declares `code`.
+  `instanceOf` belongs to a submodel occurrence's config alone. Each shape and nested shape
+  carries `__pydantic_config__` = `ConfigDict(extra="forbid", strict=True,
+  use_attribute_docstrings=True)`: an undeclared key, a value of another type (a bool for an
+  integer, a string for a number, an integer where a whole number is not meant), and a value
+  outside a `Literal` enumeration are refused; an integer is a valid number. A key's type is
+  the one its engine already requires: a `Literal` only where the engine refuses every other
+  value, and `""` in it where the editor writes `""` for "not chosen" (a Data Input's `mode`, a
+  Model Score's or Optimiser Apply's `sourceType`, an Optimiser Apply's `optimiser_mode`). Every
+  key is optional unless the shape marks it `Required` (a provider branch's tag; an Edge
+  Join's `maintainOrder` is required by its join rules, whose refusal names the values it
+  takes, and a submodel occurrence's identity by its instance rules):
+  an absent key is an unset setting, and a key holds `null` only where its type says so, which
+  is exactly where Haute writes `null` for a cleared setting: a banding factor's `default`, a
+  rating table's `defaultValue`, a pivot placement's `decimal_places` and
+  `color_scale_split_by` and its options' `sort_by`, a Quote Input table's `displayPath` and
+  `row_id_column` and a column's `levels`, an Edge Join's `validate` and `coalesce` (its "Not set"), and Model Training's
+  `tuning`, `loss_function`, `regularization`, `alpha`, `max_iter`, `tol`,
+  `robust_standard_errors`, `theta`, `var_power`, `variance_power`, `offset`,
+  `monotone_constraints` and `row_limit` (each written by an editor control that clears to
+  `null`, or by a cleared number input, which JSON writes as `null`). An MLflow destination is
+  `"databricks"` or `"server"`; `""` and an absent key mean the local folder. The shapes
+  are read by the engine code that handles a config (`_keyword_parameters.py`, the Explore
+  pivot service, the Quote Input schema codec), so the model and the code's types are one
+  definition.
+- **`NodeConfigModel`** (frozen dataclass, `_node_config_models.py`) — `node_type`, `shape`,
+  `adapter` (its `TypeAdapter`), `keys` (the top-level keys any of its branches declares),
+  `check(config)` (the engine's value rules beyond the shape, refusing malformed values:
+  `_polars_io_registry.validate_data_input_config` / `validate_data_output_config` with
+  `require_complete=False`, `_rating.validate_banding_config`,
+  `_rating_step_config.normalise_rating_step_config` and
+  `_rating.normalise_combined_outputs`, `_output_assembler.validate_v2_output_mapping`, the Explore overview,
+  pivot and chart validators, `_edge_join.build_edge_join_kwargs`,
+  `_node_apply.scenario_step_count`, `_node_apply.constant_frame`'s name rules,
+  `_keyword_parameters.validate_keyword_parameters`, Model Training's pure rules
+  (`modelling/_train_config`: `validate_modelling_config_values`, `parse_evaluation_config` for a present `evaluation`, each setting the Split pane leaves blank given a stand-in its rules accept (`evaluation_with_blanks_filled`) so every other value is checked,
+  `parse_tuning_config` for a present `tuning`, checked whether or not an evaluation is chosen
+  (its one rule that needs the split, a validation fit, waits for one), and
+  `validate_training_device`, which refuses a
+  GPU on a CPU-only family), `validate_optimiser_analysis_config`, the Optimiser's reserved
+  constraint names (`RESERVED_OPTIMISER_CONSTRAINT_NAMES`, which moves here from the optimiser
+  service) and positive solver controls, the registered-model alias rule,
+  `_model_source.parse_model_source` once a source's identifying field is set, Optimiser
+  Apply's `sourceType` for an `artifact_path`, and a Source Switch's non-empty scenario names), `check_inputs(config, input_names)` (the rules
+  that need the node's connected input names: the Optimiser's and Optimiser Apply's exact input
+  selectors) and `completeness(config, input_names)` (what an unfinished but valid config lacks
+  before the node can run: a Data Input/Output provider's locator, a Model Score's or Optimiser
+  Apply's model for its chosen source, a Load File's path or `fileType`, a Quote Input's tables
+  that `_api_input_schema.validate_v2_schema` refuses (a run applies it in full before it reads a
+  request), a Transform's code or a
+  stepped node's steps that do not render, a Quote Response's `outputMapping`, Model Training's
+  target, objective (`training_objective_issue`) and, for a tree family, features
+  (`feature_selection_issue`) and its evaluation's blank settings, the Optimiser's objective and a
+  ratebook's factor groups, and a
+  Source Switch scenario mapped from an input no longer connected; an input with no scenario is
+  not a gap: the editor removes an input set to `-` from the map, and a switch none of whose
+  inputs is mapped passes its first input through),
+  each `None` for a type without such rules. Training keeps only the checks that need the
+  node's materialised input schema, and an absent `algorithm` trains CatBoost, as before.
+  **`NODE_CONFIG_MODELS`**
+  (`dict[NodeType, NodeConfigModel]`) holds one per `NodeType`; a type with none is an import
+  error. The node specification (`PCFG-R09`) reads its config model from this mapping.
+- **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, each node
+  type's `NodeConfigModel.keys`, including the universal keys.
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
   map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
   node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
@@ -304,39 +375,94 @@ fixed. It reads a sidecar-backed node's settings as the parser does
 (`src/haute/_recovery_sources.py::read_raw_node_settings`): from the sidecar alone, with each
 other decorator keyword reported as a removed field and never written over the sidecar
 (`contract=` stays on the decorator). It converts no spelling: a `source_type` key is an
-unknown key like any other. For a candidate that still loads, every error-level engine issue that survives the
-reconciliation (a required value the engine will not invent, a value the engine refuses) is reported, for
-every node type, as a completeness entry on the target: the issue's field path (`/` for a
-whole-config issue), its code and the engine's own message, beside the Data Input/Output
-provider gaps; the node panel shows them with the recover summary. The recover applies and the
-node is visibly unfinished, like a declared-incomplete Data Input; Reset remains the explicit
-replacement with palette defaults. A candidate that cannot load (for example an unknown
-provider branch) is refused as before. Omitted settings stay absent: recover never fills an
-absent field from `node_defaults.json` and never takes a default from another provider branch
-(an invalid present value may take its own branch's audited default).
+unknown key like any other. A present value the config model's shape refuses is reconciled
+field by field (a nested shape key by key, a list item by item). A value its `check` refuses (a
+`stepCount` of `0`, a breakpoint that is not a boundary) is repaired as narrowly as the refusal
+can be isolated: a refused list or map keeps every entry the check does not refuse *at that
+setting* when the entry stands alone in it and loses each it does (reported `removed`, with its
+original value), so one malformed banding factor never takes a valid sibling with it, and a
+refusal another setting draws (an invalid combined output beside a valid rating table) is that
+setting's, repaired in its turn; a refused scalar takes its own branch's
+palette default where that default passes (`defaulted`, with a warning) and is otherwise
+removed (`needs_input`). A top-level field the saved configuration lacks takes its
+palette default, reported as `defaulted`, when the palette belongs to the configuration's branch
+(an Edge Join's absent `maintainOrder` the order of its join type), as a new node would; a stepped
+node's absent `steps` stays absent, and recover never takes a default from another provider branch
+([node recovery actions](../server-api/node-recovery-actions.md)). The candidate must then pass
+the model's shape and `check`, so a recovered config always loads: one that does not (an unknown
+provider branch, a rule across a list's entries such as two factors writing one column, which no
+single entry fails) is refused, nothing is written,
+and Reset remains the explicit replacement with palette defaults. For a candidate that passes,
+every `completeness` gap (a required value the engine will not invent) is reported as a
+completeness entry on the target: the gap's field path, its code and the engine's own message,
+beside the Data Input/Output provider gaps; the node panel shows them with the recover summary.
+The recover applies and the node is visibly unfinished, like a declared-incomplete Data Input.
 
-**Save refuses a config the executor cannot build.** Save runs
-`src/haute/_config_validation.py::validate_node_config` with `require_complete=False` for every
-node type whose builder has a required setting, for Modelling, whose configured values
-must be trainable, and for a transform, whose keyword-only parameters must be ones its
-signature can carry, on each authored config. A required setting with a legitimate incomplete
-form stays saveable, because refusing to save unfinished work is worse than the deferred
-error; one without is refused with a 400 naming the node and the setting, before anything is
-written. The node-scoped save runs the same validator on the proposed config and keeps its own
-refusal: a 409 `repair_action_unsupported` saying the proposed settings are not loadable, with
-nothing written, whether the validator raises a `ValueError` or a `ConfigError` (a Model Score
-naming both a version and an alias, Optimiser analysis columns that include the quote id or
-use the reserved prefix).
+**One validation boundary.**
+`src/haute/_config_validation.py::validate_node_config(node_type, config, *,
+require_complete=False, persisted=True, node_label=None, input_names=None, at_run=False,
+shape_only=False)` holds a config to its node type's
+`NodeConfigModel`, in this order: the removed-key refusals (`reject_removed_config_keys`, whose
+messages name the replacement, Model Training's `split` and `cross_validation` among them), the form-given keys when `persisted`
+(`reject_form_given_keys`: a run's Workbench config holds its form's tables, a persisted one
+never does), the undeclared keys (`reject_unrecognized_config_keys`, context
+`unrecognized_config_keys`), the shape (the model's `TypeAdapter`), `check`, `check_inputs`
+when the connected `input_names` are given, and `completeness` when `require_complete`. Two
+flags narrow it: `at_run` (a run) leaves `check` to a node type whose builder applies it as its
+first step (`NodeConfigModel.builder_checks`, the Rating Step alone: its builder normalises
+its tables and combined outputs before anything else, unfinished steps included, once per
+build, which a deployed endpoint does per request, and checking them twice would double that
+cost), and `shape_only` checks the keys and the shape alone. A
+shape refusal is a `NodeConfigError` whose `setting` is the refused value's path in the config
+(`factors[0].banding`, `tables[1].entries`; recovery locates the field by it) and whose message
+names the node (its label, else its type), the path, and Pydantic's reason. A hook
+raises the engine's own error (`PolarsIoConfigError`, `ConfigError`, `NodeConfigError`,
+`TrainingConfigError`, `ApiInputSchemaError`, `OutputMappingSchemaError`), unchanged. It
+returns a copy of the config: validation never adds, removes, reorders or converts a value, so
+a sidecar, an execution fingerprint and a cache key read the config the author wrote.
 
-| Node type | Required setting | Incomplete form | At save |
-|---|---|---|---|
-| Data Input / Data Output | provider locator (`path`, table, ...) | yes: empty locator, reported as completeness | saved |
-| Banding | factor/rule structure | no | refused when malformed |
-| Scenario Expander | `stepCount` | no: a new node carries an explicit count | refused when missing or invalid |
-| Model Score | `run_id` / `registered_model` / `model_path` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
-| Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
-| Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, and `loss_function` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
-| Transform | `keyword_parameters` records with a literal default and a usable name, never beside `steps` | no: a transform without parameters has no such key | refused when malformed |
+Every boundary calls it, and no boundary has a per-type list:
+
+| Boundary | Call |
+|---|---|
+| Parse (`_config_builder._resolve_node_config`, every node of the pipeline and its submodels) | `require_complete=False` |
+| Save (`SavePipelineService.validate_graph`, every node of the root graph and each embedded submodel graph, with each node's connected input names) | `require_complete=False`; a refusal is a 400 naming the node, before anything is staged |
+| Node-scoped save (`apply_scoped_node_save`) | `require_complete=False`; an undeclared key keeps its 400 `node_config_undeclared_keys`, any other refusal its 409 `repair_action_unsupported` |
+| Sidecar write (`_config_io._prepare_config_for_sidecar`) | `require_complete=False`, a backstop: save has refused such a graph already |
+| Recovery (`_node_config_recovery.validate_recovery_config`, `reconcile_config`) | the model's shape per field, then its hooks; see below |
+| Building a node to run it: `_builders._build_node_fn` (preview, trace, run, training and optimiser input, the assistant's data check) and `_node_builder.wrap_builder`, which checks before its interception hook and tells the base builder the config is checked, so a deploy scorer's intercepted build is checked once | `persisted=False`, `require_complete=False`, `at_run=True`: the whole model, the Rating Step's `check` applied by its builder as its first step; a builder reports an incomplete setting when it runs, as before. `persisted=False` also admits the deploy scorer's private transport keys on its annotated graph copy (`_contracts.DEPLOY_PRIVATE_CONFIG_KEYS`): on a Model Score, the served model's required and optional input columns, and on a file-sourced Optimiser Apply, its artifact's input columns, each a list of distinct non-empty column names; and on a Quote Response, `__haute_deploy_answer_per_row` (`true`: a batch answered as one frame keeps one answer per row). A persisted config never holds them, and a key admitted on one node type is undeclared on another |
+| A standalone run: `_config_io.load_node_config`, which every configured node's run reads its sidecar through (passing its node type, since a sidecar may sit in any folder), a passthrough's too (Model Training, Data Output and a declaration-only Load File, whose sidecar a run reads only to check it), and the live decorator's keywords for an Edge Join or an Explore at registration | `require_complete=False`, `at_run=True`: the same refusal a build gives, before any data or object file is read; a missing sidecar fails the run |
+| A route that answers with a graph it transformed rather than saved (`routes/submodel.py`: create a submodel, create an instance, dissolve) | `validate_graph_configs`: the request graph's every node, its embedded submodel graphs included, as persisted (so no private key reaches a response), `shape_only=True`: a refusal is a 422 naming the node (a removed node-level reuse form, `instanceOf`, stays the application's 400), so a response never carries a config whose keys or shape its model refuses; the save that follows holds it to the whole model |
+| An action on one node's config: training start, an optimiser solve, estimate or frontier auto-range, an input-cache build, a Data Output write | `require_complete=True` (`persisted=False` for a request's config): a malformed value, then the first thing the config lacks (`completeness`), refuses the action with the model's message (400; a training or optimiser start answers it as an invalid request) before any data is read; training then derives its default metrics and checks the materialised input schema |
+
+A config that is legitimately unfinished therefore saves, and one that is malformed is refused
+wherever it first appears:
+
+| Node type | Unfinished form (saved; `completeness` names it) | Refused as malformed |
+|---|---|---|
+| Data Input / Data Output | an absent or empty provider locator (`path`, table, query, ...) | a value the provider branch, format, mode or Polars call does not accept |
+| Model Score | a `sourceType` picked before its `run_id` / `registered_model` / `model_path` | an unknown `sourceType`; both `version` and `alias` |
+| Optimiser Apply | a `sourceType` picked before its run, registered model or file | an unknown `sourceType`; an `artifact_path` without a `sourceType`; both `version` and `alias` |
+| Load File | an absent or empty `path` | a `fileType` other than `pickle`, `json` or `joblib` |
+| Quote Input | tables the v2 schema rules refuse: a table or column not yet named, a path still to set, a label not yet unique (the panel shows each row) | a value of the wrong type (the shape) |
+| Transform | no code, or steps that do not yet render | `keyword_parameters` not records with a literal default and a usable name, or beside `steps` |
+| Model Training | `{}`; an unset target, algorithm or objective; an evaluation setting the Split pane leaves blank (`modelling/_train_config.blank_evaluation_settings`: a group or date column, a temporal boundary) | an untrainable `algorithm`, GLM `family`/`link`/solver setting or `loss_function` |
+| Optimiser | an unset objective | an unknown `mode`; a reserved constraint name; a solver control that is not positive; more than twelve or reserved analysis columns |
+| Source Switch | a scenario mapped from an input no longer connected | a scenario that is not a non-empty string |
+| Banding, Rating Step, Quote Response, Explore, Scenario Expander, Constant, Edge Join | none | anything their engine rules refuse (a boundary, a rating row, a mapping path, a pivot, a grid size, a duplicate constant name, a join without keys); a Rating Step's `baseValue` is the editor's text of a number or a number |
+
+`timeout` and `auto_range_timeout` are not config keys: training and the optimiser read their
+time limits from the pipeline settings alone.
+
+**Recovery reads the model.** `_node_config_recovery` walks the model's shape field by field:
+a top-level key the model does not declare is an unknown field (removed from the candidate,
+kept in the evidence), each declared field is reconciled against its annotation (a nested
+shape key by key, a list item by item, a map entry by entry), and a value is valid when the
+annotation's strict `TypeAdapter` accepts it. A discriminant (`inputType`, `outputType`,
+`sourceType`, `algorithm`, `mode`) is the tag of the model's union or its `Literal`; an unknown
+one is never replaced with a default. The engine issues of a candidate are the model's `check`,
+`check_inputs` and `completeness` refusals, each at the setting it names. Recovery keeps no
+rule of its own for any node type.
 
 Modelling's malformed-value check is
 `src/haute/modelling/_train_config.py::validate_modelling_config_values`, the pure check
@@ -374,11 +500,11 @@ Edge Join's `baseInput`/`joinInput` and Optimiser's `scored_input`/`factors_inpu
 silent write-time migration. A Quote Response's removed `outputFormat` (the response document is
 always JSON) is refused the same way wherever a config is parsed, saved or read, naming the key to
 remove. Each accepted config is then filtered through
-`_prepare_config_for_sidecar` (strips `code` and the `contract` annotation, which lives on the
-decorator so a sidecar copy could only go stale, and refuses any other key outside
-`VALID_KEYS`, an underscore-prefixed one included, with `ConfigError` through
-`reject_unrecognized_config_keys` — a backstop, because save validation has already refused
-such a graph — then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
+`_prepare_config_for_sidecar` (holds the config to its model through `validate_node_config` —
+a backstop, because save validation has already refused such a graph, so an undeclared key, an
+underscore-prefixed one included, or a malformed value never reaches a file — then strips
+`code` and the `contract` annotation, which lives on the decorator so a sidecar copy could
+only go stale, then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}` through `node_config_json`: the config record's own keys
 sorted, two-space indentation, non-ASCII text unescaped and a closing newline. Recover, Reset
 and the node-scoped save write their sidecar through the same function, so both save paths
@@ -391,8 +517,9 @@ in the document resolves to the same file, which keeps it. Each node's `config=`
 on its own (`_candidate_from_ast`), so another keyword the parse cannot evaluate never hides
 which file a node names. Nested user mappings keep their
 order, since they are data. Rating-step canonicalisation always emits ordered entry rows.
-Banding canonicalisation removes underscore-prefixed properties from factor records and
-expanded rule records, which is where the editor's rule-row `_id` sits. Compact category maps are data and retain those
+Banding canonicalisation removes underscore-prefixed properties from expanded rule records,
+which is where the editor's rule-row `_id` sits; a factor record holds only its declared keys,
+so one the model has refused never reaches it. Compact category maps are data and retain those
 same keys. All other nested dictionaries and payloads retain user keys verbatim, including
 underscore-prefixed schema fields, inline records, rating factors and row metadata, feature
 maps, constraints, and category declarations. Serialization does not mutate the input graph.
@@ -822,15 +949,14 @@ it on the reading node instead of aborting the walk, and every other run propaga
   lacking one, first; given one anyway, the builder raises `ValueError` rather than reading
   it as a transform and giving it a `code` config.
 - `unrecognized_config_keys(node_type, config)` returns, sorted, every top-level key that is
-  not `_`-prefixed, not `code`, and not declared for the node type.
+  not declared for the node type (`code` is declared by the code-surface types alone, and an
+  underscore-prefixed key is undeclared like any other).
   `reject_unrecognized_config_keys(node_type, config, node_label=...)` raises `ConfigError`
-  naming the node, its type and those keys (context `unrecognized_config_keys`). Both run
-  after the config builder assembles a parsed node's config and at the sidecar write
-  boundary. Before the per-type validators, they also run for every node of the root graph
-  and every embedded submodel graph through `SavePipelineService.validate_graph`, before a
-  save stages any file (HTTP 400). The node-scoped save (`apply_scoped_node_save`, HTTP 400
-  `node_config_undeclared_keys`) runs them too, because code generation would otherwise
-  keep only the declared keys of a code-only node.
+  naming the node, its type and those keys (context `unrecognized_config_keys`).
+  `validate_node_config` runs it before the shape, so every boundary refuses an undeclared
+  key with this message; the node-scoped save maps it to HTTP 400
+  `node_config_undeclared_keys`, because code generation would otherwise keep only the
+  declared keys of a code-only node.
 - Windows-reserved device filenames (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`)
   are matched on the stem before the first dot, casefolded, with trailing dots/spaces
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
@@ -848,9 +974,8 @@ it on the reading node instead of aborting the walk, and every other run propaga
   text, not an AST/import check, so the string appearing in a comment or docstring would
   false-positive; an `OSError` reading one candidate file is silently skipped rather than
   failing discovery for the whole directory.
-- The undeclared-key check does not apply to a `NodeType` absent from `VALID_KEYS` (e.g.
-  `SUBMODEL_PORT`, which has no `TypedDict` to anchor it on); such configs get only the
-  code/internal-key stripping, with no key-level check.
+- Every `NodeType` has a config model, `SUBMODEL_PORT` included: a submodel port is a
+  structural node whose config declares only the universal keys.
 - Config read/write accepts only each node type's current schema. It neither
   classifies nor upgrades earlier emitted fields; where a canonical normaliser
   exists, both paths call it directly rather than a migration-named wrapper.
@@ -881,13 +1006,20 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; a sidecar
   that is not UTF-8, naming the file and the first byte that is not; a decorator keyword
   beside `config=` and `contract=` on a sidecar-backed node, naming the node and the
-  keywords; sidecar content failing schema validation; a config key the node type does not declare
-  (`reject_unrecognized_config_keys`, at parse and at the sidecar write boundary); a
+  keywords; a config key the node type does not declare (`reject_unrecognized_config_keys`,
+  through `validate_node_config` at every boundary); a
   folder-backed node type used without `config=`;
   `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
-  misconfiguration (a non-string or unsupported `sourceType`, or a blank
-  `run_id`/`registered_model`/`model_path` for the declared source); project
+  misconfiguration (a blank `run_id`/`registered_model`/`model_path` for the declared source
+  when the node runs); project
   root not found, or found without a surrounding git repository.
+- **`NodeConfigError`** (`haute.errors`) from the config model — a config value its node
+  type's model refuses: a value of another type, one outside its enumeration, `null` where the
+  key does not take it, or a nested key a nested shape does not declare. Its `setting` is the
+  value's path in the config (`factors[0].banding`), and its message names the node, the path
+  and the reason. Raised by `validate_node_config` wherever a config is parsed, saved,
+  recovered, written or built; a preview of a node holding one answers HTTP 422
+  `node_config_invalid`.
 - **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
   Explore-node topology violations (`_graph_shape.py`); a pipeline or submodel source that is
   not UTF-8, naming the file and the byte with its line and column.
@@ -1056,6 +1188,51 @@ API and real JSON round-trips rather than mocks:
   behaviour, and alignment between the decorator kwargs of the three types
   `_build_node_config` builds and the config keys it produces
   (`TestBuildNodeConfigProducesValidKeys`, `TestConfigKeyTupleAlignment`).
+- **`test_node_config_models.py`** — `NODE_CONFIG_MODELS` has a model for every `NodeType`,
+  each shape closed and strict with a description on every key; every palette default
+  (`node_defaults.json`) passes its shape, and every one but the Edge Join's (a new join has
+  no keys until the user picks them) passes the whole model; every sidecar and decorator config
+  of the bundled example projects, the assistant's example pipelines and the test fixture
+  projects validates; per node type, a value of the wrong type, one outside its enumeration,
+  `null` where the key does not take it, and an undeclared nested key are refused with a
+  `NodeConfigError` whose `setting` is the value's path, and each key that takes `null` accepts
+  it; validation returns the config unchanged (an integer in a number field stays an integer,
+  key order is kept); Model Training's `check` refuses a malformed `evaluation`, a `tuning`
+  its family cannot run and a GPU on a CPU-only family, and its `completeness` names a missing
+  target, objective and tree features, a malformed `tuning` is refused with no `evaluation`
+  chosen and a valid one passes (its trial-fit budget waits for the split); a Source Switch with no input mapped passes, one with an empty
+  scenario is refused (a build of it too, though the empty scenario is on an inactive input),
+  and a build of a Rating Step with a malformed table and unfinished steps refuses the table,
+  and one mapping a disconnected input is unfinished.
+- **Boundaries** (`test_node_config_models.py` and each boundary's own module) — each refuses
+  one malformed config of a type it did not check before: the parse a malformed banding
+  sidecar (`test_pipeline_recovery.py`: the node opens unavailable with the model's message),
+  the save a Quote Response with an invalid mapping path and a Source Switch with an empty
+  scenario (400, nothing written), the node-scoped save an Optimiser Apply with an unknown
+  `sourceType` (409), a preview of a request graph with a wrong-typed value (422
+  `node_config_invalid` on that node), a standalone `Pipeline.run()` of a pipeline whose
+  Constant sidecar holds a non-text `name`, or whose Model Training, Data Output or
+  declaration-only Load File sidecar is missing or malformed (refused before any data is read),
+  each action start on an unfinished config (training without a target, a solve without an
+  objective, a Data Output write without a path: refused with the gap's message), and a submodel
+  route given a graph with an undeclared key (422); and each still accepts the unfinished
+  forms (an incomplete Model Score source saves, which the save-time contract derivation used
+  to refuse). Clearing each editor control that writes `null` saves, reparses and reloads. The
+  deploy scorer's private keys pass on a built node and are refused at save, and a deployed
+  multi-quote request answered as one frame keeps one answer per row even where two answers
+  coincide. `timeout` in a Model Training or Optimiser config is an undeclared key.
+- **Recovery** (`test_pipeline_repair_actions.py`, `test_node_config_recovery.py`) — Recover
+  settings on a `stepCount` of `0` takes the palette's `21`, reported `defaulted` with a
+  warning, and writes a config that loads; on two banding factors, one valid and one with a
+  boundary that is not a number, keeps the valid one, removes the other and reports exactly
+  that; on a Rating Step with a valid table, a table whose value is not a number and a combined
+  output with no column, keeps the valid table and removes the other two; on an unknown provider
+  branch, or two factors writing one output column, it is refused
+  and writes nothing; an Edge Join without `maintainOrder` takes its join type's order; an issue
+  the model's `completeness` names is reported as a completeness entry.
+- **`test_node_reference_docs.py`** — beside the page checks below, every node page's
+  generated config-keys table matches what `scripts/generate_node_config_reference.py`
+  writes from the models (`--check`).
 - **`test_parser_helpers.py`** — AST extraction (`TestExtractDecoratedNodes`),
   function-body extraction keeping the comments above the first statement and none from a
   multi-line signature (`TestFunctionBodySource`), decorator kwarg parsing, `_build_node_config`

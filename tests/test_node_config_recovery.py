@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -8,7 +9,6 @@ from haute._edge_join import build_edge_join_kwargs
 from haute._model_source import parse_model_source
 from haute._node_apply import constant_frame, scenario_step_count, validate_external_file_config
 from haute._node_config_recovery import (
-    node_config_schema,
     reconcile_config,
     validate_recovery_config,
 )
@@ -76,10 +76,32 @@ def test_validation_uses_exact_live_switch_input_names() -> None:
     issues = validate_recovery_config(
         NodeType.LIVE_SWITCH, {"input_scenario_map": {"wrong": "live"}}, input_names=["quotes"]
     )
+    # An input with no scenario is not a gap: the editor removes an input set to "-", and a
+    # switch none of whose inputs is mapped passes its first input through.
     assert {(issue.path, issue.code) for issue in issues} == {
-        ("/input_scenario_map/quotes", "required"),
         ("/input_scenario_map/wrong", "invalid_reference"),
     }
+
+
+@pytest.mark.parametrize(
+    ("config", "path", "allowed"),
+    [
+        ({"how": "asof", "on": ["quote_id"], "maintainOrder": "left"}, "/how", "'cross'"),
+        (
+            {"how": "left", "on": ["quote_id"], "validate": "1:x", "maintainOrder": "left"},
+            "/validate",
+            "'m:m'",
+        ),
+    ],
+    ids=["edge-join-asof", "edge-join-validate"],
+)
+def test_a_value_outside_its_enumeration_is_the_models_refusal(
+    config: dict[str, Any], path: str, allowed: str
+) -> None:
+    """The model refuses it before the engine, naming the values the key takes."""
+    issues = validate_recovery_config(NodeType.EDGE_JOIN, config)
+    assert [(issue.path, issue.code) for issue in issues] == [(path, "invalid_value")]
+    assert allowed in issues[0].message
 
 
 def _engine_refusal(check: Callable[[], object]) -> str:
@@ -93,22 +115,6 @@ def _engine_refusal(check: Callable[[], object]) -> str:
 @pytest.mark.parametrize(
     ("node_type", "config", "check", "path", "code"),
     [
-        pytest.param(
-            NodeType.EDGE_JOIN,
-            {"how": "asof", "on": ["quote_id"], "maintainOrder": "left"},
-            build_edge_join_kwargs,
-            "/how",
-            "invalid_value",
-            id="edge-join-asof",
-        ),
-        pytest.param(
-            NodeType.EDGE_JOIN,
-            {"how": "left", "on": ["quote_id"], "validate": "1:x", "maintainOrder": "left"},
-            build_edge_join_kwargs,
-            "/validate",
-            "invalid_value",
-            id="edge-join-validate",
-        ),
         pytest.param(
             NodeType.EDGE_JOIN,
             {"how": "left", "maintainOrder": "left"},
@@ -182,8 +188,13 @@ def test_a_constant_name_that_is_not_text_is_an_issue_not_a_crash(name: object) 
     assert [(issue.path, issue.code) for issue in issues if issue.severity == "error"] == [
         ("/values", "invalid_value")
     ]
+    # Recover takes the palette's name for the entry, as for any invalid nested value.
     recovered = reconcile_config(NodeType.CONSTANT, config)
-    assert any(issue.path == "/values" for issue in recovered.issues)
+    assert recovered.config["values"] == [{"name": "constant_1", "value": "1"}]
+    assert any(
+        change.path == "/values/0/name" and change.outcome == "defaulted"
+        for change in recovered.changes
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,7 +220,7 @@ def test_recovery_refuses_nothing_the_engine_runs(
         (NodeType.BANDING, {"factors": [None], "future": True}, None),
         (NodeType.EDGE_JOIN, {"how": "asof", "on": [1]}, None),
         (NodeType.LIVE_SWITCH, {"input_scenario_map": {"a/b": ""}}, ["quotes"]),
-        (NodeType.LIVE_SWITCH, {}, None),
+        (NodeType.LIVE_SWITCH, {"input_scenario_map": {"quotes": 3}}, None),
         (NodeType.SCENARIO_EXPANDER, {"stepCount": "many"}, None),
         (NodeType.CONSTANT, {"values": [{"name": "a"}, {"name": "a"}]}, None),
         (NodeType.EXTERNAL_FILE, {"fileType": "catboost"}, None),
@@ -230,14 +241,6 @@ def test_every_issue_path_is_a_json_pointer(
     assert all(issue.path == "" or issue.path.startswith("/") for issue in issues), [
         issue.path for issue in issues
     ]
-
-
-def test_every_node_type_has_a_recovery_schema() -> None:
-    assert {node_type.value for node_type in NodeType} == {
-        node_type.value
-        for node_type in NodeType
-        if node_config_schema(node_type)["type"] == "object"
-    }
 
 
 def test_nested_factor_preserves_valid_sibling_when_one_leaf_is_bad() -> None:
@@ -417,7 +420,18 @@ def test_structured_contract_is_accepted() -> None:
         (NodeType.LIVE_SWITCH, {"input_scenario_map": {"df": "live"}}, ["df"]),
         (
             NodeType.MODELLING,
-            {"target": "y", "algorithm": "catboost", "loss_function": "RMSE"},
+            {
+                "target": "y",
+                "algorithm": "catboost",
+                "loss_function": "RMSE",
+                "feature_columns": ["x"],
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 42,
+                    "validation": {"method": "single", "size": 0.2},
+                },
+            },
             None,
         ),
         (
@@ -569,11 +583,14 @@ def test_recover_never_fills_from_another_branch_palette(
     assert not [change for change in result.changes if change.outcome == "defaulted"]
 
 
-def test_recover_missing_required_locator_is_incomplete_not_an_error() -> None:
+def test_recover_missing_required_locator_is_a_gap_not_a_refusal() -> None:
+    """A missing locator is what the config lacks: reported as required, never refused."""
     raw = {"inputType": "file", "format": "parquet", "mode": "read", "arguments": {}, "code": ""}
     result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
     assert "path" not in result.config
-    assert not [issue for issue in result.issues if issue.severity == "error"]
+    assert [(issue.path, issue.code) for issue in result.issues if issue.severity == "error"] == [
+        ("/path", "required")
+    ]
 
 
 def test_reset_still_seeds_the_full_palette_default() -> None:

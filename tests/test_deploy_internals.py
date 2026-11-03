@@ -2946,7 +2946,7 @@ class TestScoreGraphOptimiserApplyRemap:
                                 "run_id": "run_abc",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
-                                "mlflow_destination": "local",
+                                "mlflow_destination": "server",
                             },
                         },
                     },
@@ -2989,7 +2989,7 @@ class TestScoreGraphOptimiserApplyRemap:
                 output_node_id="out",
             )
 
-        assert mock_load.call_args.kwargs["destination"] == "local"
+        assert mock_load.call_args.kwargs["destination"] == "server"
 
 
 class TestScoreGraphModelScoreRemap:

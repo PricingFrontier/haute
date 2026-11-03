@@ -59,7 +59,6 @@ def _age_region_config(**age_table_extra: Any) -> dict[str, Any]:
     return {
         "tables": [
             {
-                "name": "Age Factor",
                 "factors": ["age_band"],
                 "outputColumn": "age_factor",
                 "entries": [
@@ -69,7 +68,6 @@ def _age_region_config(**age_table_extra: Any) -> dict[str, Any]:
                 **age_table_extra,
             },
             {
-                "name": "Region Factor",
                 "factors": ["region"],
                 "outputColumn": "region_factor",
                 "entries": [
@@ -129,7 +127,6 @@ class TestMissFailsLoudByDefault:
         config = {
             "tables": [
                 {
-                    "name": "T",
                     "factors": ["band"],
                     "outputColumn": "out",
                     "entries": [{"band": "A", "value": 2.0}],
@@ -150,11 +147,7 @@ class TestMissFailsLoudByDefault:
 
     def test_missing_keys_capped_in_message(self) -> None:
         entries = [{"k": f"present_{i}", "value": 1.0} for i in range(3)]
-        config = {
-            "tables": [
-                {"name": "Caps", "factors": ["k"], "outputColumn": "out", "entries": entries}
-            ]
-        }
+        config = {"tables": [{"factors": ["k"], "outputColumn": "out", "entries": entries}]}
         frame_keys = [f"absent_{i:02d}" for i in range(25)]
         lf = pl.DataFrame({"k": frame_keys}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
@@ -171,7 +164,6 @@ class TestMissFailsLoudByDefault:
         config = {
             "tables": [
                 {
-                    "name": "Two-way",
                     "factors": ["region", "tier"],
                     "outputColumn": "out",
                     "entries": [{"region": "North", "tier": "gold", "value": 1.0}],
@@ -190,7 +182,6 @@ class TestMissFailsLoudByDefault:
         config = {
             "tables": [
                 {
-                    "name": "T",
                     "factors": ["band"],
                     "outputColumn": "out",
                     "defaultValue": "N/A",
@@ -226,7 +217,6 @@ class TestMissFailsLoudByDefault:
         config = {
             "tables": [
                 {
-                    "name": "T",
                     "factors": ["band"],
                     "outputColumn": "out",
                     "entries": [{"band": "A", "value": 2.0}],
@@ -315,7 +305,6 @@ class TestOptInNeutral:
         config = {
             "tables": [
                 {
-                    "name": "T",
                     "factors": ["band"],
                     "outputColumn": "out",
                     "onMissing": "neutral",
@@ -374,7 +363,6 @@ class TestOptInNeutral:
 class TestApplyRatingTableMissGuard:
     def test_direct_call_raises_on_miss(self) -> None:
         table = {
-            "name": "Direct",
             "factors": ["k"],
             "outputColumn": "out",
             "entries": [{"k": "a", "value": 1.0}],
@@ -385,7 +373,6 @@ class TestApplyRatingTableMissGuard:
 
     def test_direct_call_neutral_keeps_null(self) -> None:
         table = {
-            "name": "Direct",
             "factors": ["k"],
             "outputColumn": "out",
             "onMissing": "neutral",

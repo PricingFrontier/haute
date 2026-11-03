@@ -7,7 +7,7 @@ It makes an editable candidate and explains every value it could not retain.
 
 from __future__ import annotations
 
-import ast
+import functools
 import math
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
@@ -15,52 +15,16 @@ from dataclasses import dataclass
 from types import UnionType
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
-from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
+from pydantic import BaseModel, TypeAdapter, ValidationError
+
 from haute._config_io import palette_default_config
-from haute._config_validation import (
-    _TYPED_DICT_BY_NODE_TYPE,
-    FORM_GIVEN_KEYS,
-    VALID_KEYS,
-    validate_optimiser_input_selectors,
-)
+from haute._config_validation import CONFIG_REFUSALS, FORM_GIVEN_KEYS, VALID_KEYS
 from haute._contracts import Contract
-from haute._edge_join import build_edge_join_kwargs
-from haute._explore_charts import validate_explore_charts
-from haute._explore_overview import validate_explore_overview
-from haute._explore_pivots import validate_explore_pivot_state
-from haute._model_source import MODEL_SOURCE_TYPES, parse_model_source
-from haute._node_apply import constant_frame, scenario_step_count, validate_external_file_config
-from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
-from haute._polars_io_registry import (
-    PolarsIoConfigError,
-    validate_data_input_config,
-    validate_data_output_config,
-)
-from haute._polars_steps import (
-    DEFAULT_JOIN_ORDER,
-    PolarsStepError,
-    is_stepped_config,
-    render_polars_steps,
-    stepped_surface_for,
-)
-from haute._rating import validate_banding_config
-from haute._rating_step_config import normalise_rating_step_config
+from haute._node_config_models import NODE_CONFIG_MODELS, branch_values, shape_variants
+from haute._polars_steps import DEFAULT_JOIN_ORDER
 from haute._recovery_schemas import RecoveryFieldChange, RecoveryIssue
-from haute._types import (
-    DATA_INPUT_CONFIG_TYPES,
-    DATA_OUTPUT_CONFIG_TYPES,
-    BandingFactor,
-    NodeType,
-    RatingTable,
-)
-from haute.errors import ConfigError, HauteError
-from haute.modelling._descriptors import DESCRIPTORS
-from haute.modelling._train_config import (
-    TrainingConfigError,
-    parse_evaluation_config,
-    parse_tuning_config,
-    training_objective_issue,
-)
+from haute._types import NodeType
+from haute.errors import HauteError
 
 
 @dataclass(frozen=True)
@@ -70,30 +34,15 @@ class ConfigRecoveryResult:
     issues: list[RecoveryIssue]
 
 
-_UNIVERSAL = {
-    "inputMapping": dict[str, str],
-    "selected_columns": list[str],
-    "column_renames": dict[str, str],
-    "contract": Any,
-}
 _STRUCTURAL = {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
-_DISCRIMINANTS = {
-    NodeType.DATA_INPUT: ("inputType", {"file", "database", "lakehouse", "databricks", "inline"}),
-    NodeType.DATA_OUTPUT: ("outputType", {"file", "database", "lakehouse", "databricks"}),
-    NodeType.MODEL_SCORE: ("sourceType", {"run", "registered", "file"}),
-    NodeType.MODELLING: ("algorithm", set(DESCRIPTORS)),
-    NodeType.OPTIMISER: ("mode", {"online", "ratebook"}),
-    NodeType.OPTIMISER_APPLY: ("sourceType", {"file", "run", "registered"}),
-}
 
 
-def _typed_dicts(node_type: NodeType) -> tuple[type, ...]:
-    if node_type is NodeType.DATA_INPUT:
-        return tuple(DATA_INPUT_CONFIG_TYPES)
-    if node_type is NodeType.DATA_OUTPUT:
-        return tuple(DATA_OUTPUT_CONFIG_TYPES)
-    item = _TYPED_DICT_BY_NODE_TYPE.get(node_type)
-    return () if item is None else (item,)
+def _discriminant(node_type: NodeType) -> tuple[str, frozenset[str]] | None:
+    """The key selecting the config model's branch, and the values it takes."""
+    model = NODE_CONFIG_MODELS[node_type]
+    if model.discriminant is None:
+        return None
+    return model.discriminant, branch_values(model)
 
 
 def _hints(td: type) -> dict[str, Any]:
@@ -102,40 +51,22 @@ def _hints(td: type) -> dict[str, Any]:
 
 
 def _field_hints(node_type: NodeType, raw: dict[str, Any]) -> dict[str, Any]:
-    result = dict(_UNIVERSAL)
-    variants = _typed_dicts(node_type)
-    if node_type is NodeType.DATA_INPUT:
-        selected = next(
-            (
-                td
-                for td in variants
-                if _hints(td).get("inputType")
-                and raw.get("inputType") in get_args(_hints(td)["inputType"])
-            ),
-            None,
+    """Each top-level key the node type's config model declares, with its annotation.
+
+    For a Data Input/Output the branch *raw*'s discriminant names, or every branch.
+    """
+    variants = shape_variants(NODE_CONFIG_MODELS[node_type].shape)
+    discriminant = _discriminant(node_type)
+    if len(variants) > 1 and discriminant is not None:
+        selected = tuple(
+            variant
+            for variant in variants
+            if raw.get(discriminant[0]) in get_args(_hints(variant).get(discriminant[0]))
         )
-        variants = (selected,) if selected else variants
-    elif node_type is NodeType.DATA_OUTPUT:
-        selected = next(
-            (
-                td
-                for td in variants
-                if _hints(td).get("outputType")
-                and raw.get("outputType") in get_args(_hints(td)["outputType"])
-            ),
-            None,
-        )
-        variants = (selected,) if selected else variants
-    for td in variants:
-        result.update(_hints(td))
-    # The public TypedDict deliberately leaves these sidecar rows broad for
-    # backwards compatibility. Recovery needs their declared leaf shapes.
-    if node_type is NodeType.BANDING:
-        result["factors"] = list[BandingFactor]
-    if node_type is NodeType.RATING_STEP:
-        result["tables"] = list[RatingTable]
-    if node_type is NodeType.CONSTANT:
-        result["values"] = list[dict[str, Any]]
+        variants = selected or variants
+    result: dict[str, Any] = {}
+    for variant in variants:
+        result.update(_hints(variant))
     # A workbench node is given these from the form where it runs; a config holding them,
     # as an earlier Haute's copies, has them removed as retired fields.
     for key in FORM_GIVEN_KEYS.get(node_type, frozenset()):
@@ -179,6 +110,12 @@ def _valid(value: Any, annotation: Any) -> bool:
                 for key, item in value.items()
             )
         )
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        try:
+            annotation.model_validate(value)
+        except ValidationError:
+            return False
+        return True
     if annotation is bool:
         return type(value) is bool
     if annotation is int:
@@ -190,57 +127,25 @@ def _valid(value: Any, annotation: Any) -> bool:
     return isinstance(value, annotation) if isinstance(annotation, type) else True
 
 
-def _schema(annotation: Any) -> dict[str, Any]:
-    origin, args = get_origin(annotation), get_args(annotation)
-    if annotation is Any:
-        return {}
-    if annotation is type(None):
-        return {"type": "null"}
-    if origin is Literal:
-        return {"enum": list(args)}
-    if origin is list:
-        return {"type": "array", "items": _schema(args[0]) if args else {}}
-    if origin is dict:
-        return {"type": "object", "additionalProperties": _schema(args[1]) if len(args) > 1 else {}}
-    if origin in (UnionType, __import__("typing").Union):
-        return {"anyOf": [_schema(item) for item in args]}
-    if _is_typed_dict(annotation):
-        hints = _hints(annotation)
-        return {
-            "type": "object",
-            "properties": {key: _schema(value) for key, value in hints.items()},
-            "required": sorted(annotation.__required_keys__),
-        }
-    return {
-        "type": {str: "string", int: "integer", float: "number", bool: "boolean"}.get(
-            annotation, "object"
+@functools.cache
+def _adapter(annotation: Any) -> TypeAdapter[Any]:
+    return TypeAdapter(annotation)
+
+
+def _shape_reason(value: Any, annotation: Any) -> str:
+    """Why *value* does not fit *annotation*, in the config model's own words."""
+    try:
+        _adapter(annotation).validate_python(value, strict=True)
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False)
+        first = max(errors, key=lambda error: len(error["loc"]))
+        where = "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}" for part in first["loc"]
         )
-    }
-
-
-def node_config_schema(node_type: NodeType) -> dict[str, Any]:
-    """Expose the persisted configuration shape without turning it into a loader."""
-    if node_type in _STRUCTURAL:
-        return {
-            "type": "object",
-            "properties": {
-                key: {"type": "string"} for key in ("definition_id", "file", "name", "instance_of")
-            },
-            "additionalProperties": True,
-            "x-recovery-structural": True,
-        }
-    hints = _field_hints(node_type, {})
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {key: _schema(value) for key, value in hints.items()},
-        "additionalProperties": False,
-    }
-    if node_type in (NodeType.DATA_INPUT, NodeType.DATA_OUTPUT):
-        schema["x-variants"] = [_schema(td) for td in _typed_dicts(node_type)]
-    discriminant = _DISCRIMINANTS.get(node_type)
-    if discriminant:
-        schema["x-discriminant"] = {"field": discriminant[0], "values": sorted(discriminant[1])}
-    return schema
+        return f"{first['msg']}{f' (at {where.lstrip(chr(46))})' if where else ''}."
+    except TypeError:
+        pass
+    return "Value does not match its declared shape."
 
 
 def _issue(
@@ -392,16 +297,6 @@ def _reconcile_value(
     return _UNRECOVERED
 
 
-_ENGINE_REFUSALS = (
-    ApiInputSchemaError,
-    OutputMappingSchemaError,
-    PolarsIoConfigError,
-    ConfigError,
-    TrainingConfigError,
-    ValueError,
-)
-
-
 def _refused_setting(node_type: NodeType, exc: BaseException) -> str | None:
     """The one setting an engine refusal names, or ``None`` for a whole-config refusal.
 
@@ -427,7 +322,7 @@ def _engine_issues(
     """The engine's own refusal of *config*, with its message, at the setting it names."""
     try:
         check()
-    except _ENGINE_REFUSALS as exc:
+    except CONFIG_REFUSALS as exc:
         # The wording the engine's own public error contract gives the refusal.
         message = exc.to_payload()["message"] if isinstance(exc, HauteError) else str(exc)
         setting = _refused_setting(node_type, exc)
@@ -438,164 +333,39 @@ def _engine_issues(
     return []
 
 
+def gap_pointer(path: str) -> str:
+    """A config path (``input_scenario_map.quotes``, ``factors[0].banding``) as a JSON pointer."""
+    pointer = ""
+    for part in path.replace("]", "").replace("[", ".").split("."):
+        if part:
+            pointer = _pointer(pointer, part)
+    return pointer
+
+
 def _validator_issues(
     node_type: NodeType, config: dict[str, Any], input_names: Sequence[str] | None
 ) -> list[RecoveryIssue]:
-    """The engine's refusals of *config*, from the validators the engine itself runs.
+    """The config model's refusals of *config* and what it still lacks.
 
-    Every path is a JSON pointer into the config. The rules written here are for
-    the node types whose engine has no validator to call.
+    The model's ``check`` and ``check_inputs`` refusals at the setting each names;
+    when they pass, every ``completeness`` gap. Every path is a JSON pointer into
+    the config.
     """
+    model = NODE_CONFIG_MODELS[node_type]
     issues: list[RecoveryIssue] = []
-
-    def engine(check: Callable[[], object]) -> None:
-        issues.extend(_engine_issues(node_type, config, check))
-
-    if node_type == NodeType.API_INPUT and "tables" in config:  # the Quote Input alone
-        engine(lambda: validate_v2_schema(config))
-    elif node_type is NodeType.DATA_INPUT:
-        # Missing locators are completeness, not a recovery error.
-        engine(lambda: validate_data_input_config(config, require_complete=False))
-    elif node_type is NodeType.DATA_OUTPUT:
-        engine(lambda: validate_data_output_config(config, require_complete=False))
-    elif node_type is NodeType.BANDING:
-        engine(lambda: validate_banding_config(config))
-    elif node_type is NodeType.RATING_STEP:
-        engine(lambda: normalise_rating_step_config(config))
-    elif node_type is NodeType.EXPLORE:
-
-        def explore() -> None:
-            validate_explore_overview(config.get("overview", {}), context="recovery")
-            validate_explore_pivot_state(
-                config.get("pivot_formulas", []), config.get("pivots", []), context="recovery"
-            )
-            validate_explore_charts(config.get("charts", []), context="recovery")
-
-        engine(explore)
-    elif node_type is NodeType.OUTPUT:
-        engine(lambda: validate_v2_output_mapping(config.get("outputMapping", [])))
-    elif node_type is NodeType.MODELLING and "evaluation" in config:
-
-        def modelling() -> None:
-            evaluation = parse_evaluation_config(config["evaluation"])
-            parse_tuning_config(
-                config.get("tuning"),
-                algorithm=str(config.get("algorithm", "")),
-                base_params=config.get("params", {}),
-                evaluation=evaluation,
-                configured_metrics=config.get("metrics", []),
-            )
-
-        engine(modelling)
-    elif node_type in (NodeType.OPTIMISER, NodeType.OPTIMISER_APPLY) and input_names is not None:
-        engine(
-            lambda: validate_optimiser_input_selectors(
-                node_type, config, input_names, node_label="recovery"
-            )
-        )
-    if issues:
-        # A refused structure leaves nothing for the field rules below to judge.
+    if model.check is not None:
+        check = model.check
+        issues.extend(_engine_issues(node_type, config, lambda: check(config)))
+    if not issues and input_names is not None and model.check_inputs is not None:
+        check_inputs = model.check_inputs
+        issues.extend(_engine_issues(node_type, config, lambda: check_inputs(config, input_names)))
+    if issues or model.completeness is None:
+        # A refused value leaves nothing for completeness to judge.
         return issues
-    if node_type is NodeType.EDGE_JOIN:
-        engine(lambda: build_edge_join_kwargs(config))
-    elif node_type is NodeType.SCENARIO_EXPANDER:
-        engine(lambda: scenario_step_count(config))
-    elif node_type is NodeType.CONSTANT:
-        engine(lambda: constant_frame(config.get("values") or []))
-    elif node_type is NodeType.EXTERNAL_FILE:
-        engine(lambda: validate_external_file_config(config))
-    elif node_type is NodeType.MODEL_SCORE and config.get("sourceType") in MODEL_SOURCE_TYPES:
-        engine(lambda: parse_model_source(config))
-    if node_type is NodeType.LIVE_SWITCH:
-        mapping = config.get("input_scenario_map")
-        if not isinstance(mapping, dict):
-            issues.append(
-                _issue("/input_scenario_map", "required", "A live switch needs a scenario map.")
-            )
-        elif input_names is not None:
-            for name in input_names:
-                if name not in mapping:
-                    issues.append(
-                        _issue(
-                            _pointer("/input_scenario_map", name),
-                            "required",
-                            "Every connected input needs a scenario mapping.",
-                        )
-                    )
-            for name, scenario in mapping.items():
-                if name not in input_names or not isinstance(scenario, str) or not scenario:
-                    issues.append(
-                        _issue(
-                            _pointer("/input_scenario_map", name),
-                            "invalid_reference",
-                            "Mapping must use an exact connected input and a non-empty scenario.",
-                        )
-                    )
-    if is_stepped_config(node_type, config):
-        # The steps are rendered here: a raw sidecar candidate is not node
-        # data, so no derived steps error comes with it. An ``edges`` surface's
-        # references can only be checked when the caller knows the connected
-        # input names.
-        surface = stepped_surface_for(node_type)
-        eligible: list[str] | None = (
-            [] if surface.inputs == "none" else (None if input_names is None else list(input_names))
-        )
-        try:
-            render_polars_steps(config["steps"], eligible, start=surface.start)
-        except PolarsStepError as exc:
-            issues.append(_issue("/steps", "incomplete", str(exc)))
-    elif node_type is NodeType.POLARS and (
-        not isinstance(config.get("code"), str) or not config["code"].strip()
-    ):
-        issues.append(_issue("/code", "required", "Polars code must be non-empty."))
-    elif node_type is NodeType.POLARS:
-        try:
-            ast.parse(config["code"])
-        except SyntaxError as exc:
-            issues.append(_issue("/code", "invalid_syntax", exc.msg))
-    if node_type is NodeType.OPTIMISER_APPLY:
-        source = config.get("sourceType")
-        source_field = (
-            "run_id"
-            if source == "run"
-            else "registered_model"
-            if source == "registered"
-            else "artifact_path"
-        )
-        if source and (not isinstance(config.get(source_field), str) or not config[source_field]):
-            issues.append(
-                _issue(
-                    _pointer("", source_field),
-                    "required",
-                    f"{source_field} is required for {source}.",
-                )
-            )
-    if node_type is NodeType.MODELLING:
-        for field in ("target", "algorithm"):
-            if not isinstance(config.get(field), str) or not config[field]:
-                issues.append(_issue(_pointer("", field), "required", f"{field} is required."))
-        if config.get("algorithm") in DESCRIPTORS:
-            objective_problem = training_objective_issue(config)
-            if objective_problem:
-                issues.append(_issue("", "incomplete_objective", objective_problem))
-    if node_type is NodeType.OPTIMISER:
-        if not isinstance(config.get("objective"), str) or not config["objective"]:
-            issues.append(_issue("/objective", "required", "Optimiser objective is required."))
-        for field in ("max_iter", "frontier_steps", "max_cd_iterations"):
-            if field in config and (type(config[field]) is not int or config[field] <= 0):
-                issues.append(
-                    _issue(
-                        _pointer("", field), "invalid_value", "Control must be a positive integer."
-                    )
-                )
-        for field in ("tolerance", "cd_tolerance"):
-            if field in config and (type(config[field]) not in (int, float) or config[field] <= 0):
-                issues.append(
-                    _issue(
-                        _pointer("", field), "invalid_value", "Tolerance must be a positive number."
-                    )
-                )
-    return issues
+    return [
+        _issue(gap_pointer(gap.path), gap.code, gap.message)
+        for gap in model.completeness(config, input_names)
+    ]
 
 
 def validate_recovery_config(
@@ -624,12 +394,10 @@ def validate_recovery_config(
             )
         elif not _valid(value, hints[key]):
             issues.append(
-                _issue(
-                    _pointer("", key), "invalid_value", "Value does not match its declared shape."
-                )
+                _issue(_pointer("", key), "invalid_value", _shape_reason(value, hints[key]))
             )
             has_shape_errors = True
-    discriminant = _DISCRIMINANTS.get(node_type)
+    discriminant = _discriminant(node_type)
     if discriminant:
         value = config.get(discriminant[0])
         if not isinstance(value, str) or value not in discriminant[1]:
@@ -663,7 +431,7 @@ def _palette_is_branch_of(
     node_type: NodeType, source: dict[str, Any], defaults: dict[str, Any]
 ) -> bool:
     """Whether the palette default describes *source*'s branch, so it may fill its gaps."""
-    discriminant = _DISCRIMINANTS.get(node_type)
+    discriminant = _discriminant(node_type)
     if discriminant and source.get(discriminant[0]) != defaults.get(discriminant[0]):
         return False
     return all(
@@ -698,7 +466,7 @@ def reconcile_config(
         )
     defaults = palette_default_config(node_type)
     source = {} if reset else deepcopy(raw)
-    default_discriminant = _DISCRIMINANTS.get(node_type)
+    default_discriminant = _discriminant(node_type)
     if (
         not reset
         and default_discriminant
@@ -709,7 +477,7 @@ def reconcile_config(
         # it to fill a different existing provider's fields.
         defaults = {}
     candidate = defaults if reset else {}
-    discriminant = _DISCRIMINANTS.get(node_type)
+    discriminant = _discriminant(node_type)
     discriminant_field = discriminant[0] if discriminant else None
     invalid_discriminant = bool(
         discriminant_field
@@ -788,5 +556,128 @@ def reconcile_config(
             changes.append(
                 RecoveryFieldChange(path=_pointer("", key), outcome="defaulted", reason=reason)
             )
+    candidate = _replace_refused_values(node_type, candidate, defaults, changes, issues)
     issues.extend(validate_recovery_config(node_type, candidate))
     return ConfigRecoveryResult(candidate, changes, issues)
+
+
+def _replace_refused_values(
+    node_type: NodeType,
+    candidate: dict[str, Any],
+    defaults: Mapping[str, Any],
+    changes: list[RecoveryFieldChange],
+    issues: list[RecoveryIssue],
+) -> dict[str, Any]:
+    """Treat a value the model's engine rules refuse as an invalid value, as narrowly as
+    the refusal can be isolated.
+
+    A refused list or map keeps every entry that passes on its own and loses each that
+    does not, reported ``removed`` with its original value; a refused scalar takes its
+    branch's palette default where that passes (``defaulted``) and is otherwise removed
+    (``needs_input``). What cannot be isolated (a rule across entries, a refusal of the
+    whole config) is left in the candidate, which then fails the model, and the recover
+    is refused rather than discarding valid settings beside it.
+    """
+    check = NODE_CONFIG_MODELS[node_type].check
+    if check is None:
+        return candidate
+
+    def refusal(config: dict[str, Any]) -> Exception | None:
+        try:
+            check(config)
+        except CONFIG_REFUSALS as exc:
+            return exc
+        return None
+
+    for _ in range(len(candidate) + 1):
+        exc = refusal(candidate)
+        if exc is None:
+            return candidate
+        setting = _refused_setting(node_type, exc)
+        key = None if setting is None else setting.replace("[", ".").split(".")[0]
+        if key is None or key not in candidate:
+            return candidate
+        value = candidate[key]
+        path = _pointer("", key)
+        if isinstance(value, list | dict):
+            kept = _isolate_refused_entries(
+                node_type, key, value, candidate, refusal, path, changes, issues
+            )
+            if kept is None:
+                return candidate
+            candidate[key] = kept
+            continue
+        # The refusal's outcome replaces what the shape walk recorded for the value.
+        changes[:] = [change for change in changes if change.path != path]
+        default = defaults.get(key)
+        if default is not None and default != value and not isinstance(default, list | dict):
+            candidate[key] = deepcopy(default)
+            changes.append(
+                RecoveryFieldChange(
+                    path=path,
+                    outcome="defaulted",
+                    reason="The value was refused; replaced with the audited default.",
+                )
+            )
+            issues.append(
+                _issue(path, "invalid_value", f"{exc} The audited default replaced it.", "warning")
+            )
+            continue
+        candidate.pop(key)
+        changes.append(
+            RecoveryFieldChange(
+                path=path,
+                outcome="needs_input",
+                reason=f"Refused value has no safe default; original: {_short_repr(value)}",
+            )
+        )
+        issues.append(_issue(path, "invalid_value", str(exc)))
+    return candidate
+
+
+def _isolate_refused_entries(
+    node_type: NodeType,
+    key: str,
+    value: list[Any] | dict[str, Any],
+    candidate: dict[str, Any],
+    refusal: Callable[[dict[str, Any]], Exception | None],
+    path: str,
+    changes: list[RecoveryFieldChange],
+    issues: list[RecoveryIssue],
+) -> list[Any] | dict[str, Any] | None:
+    """*value* without the entries the engine refuses on their own, or ``None``.
+
+    An entry is refused when, alone in its collection, the engine refuses it *at this
+    setting*: a refusal another setting draws (an invalid sibling field) or the whole
+    config draws is not the entry's, so the entry is kept. ``None`` when no entry is
+    refused: the refusal is across entries and the caller cannot isolate it.
+    """
+    items: list[tuple[Any, Any]] = (
+        list(enumerate(value)) if isinstance(value, list) else list(value.items())
+    )
+    refused: dict[Any, Exception] = {}
+    for position, item in items:
+        alone = [item] if isinstance(value, list) else {position: item}
+        exc = refusal({**candidate, key: alone})
+        if exc is None:
+            continue
+        setting = _refused_setting(node_type, exc)
+        if setting is not None and setting.replace("[", ".").split(".")[0] == key:
+            refused[position] = exc
+    if not refused:
+        return None
+    for position, exc in refused.items():
+        entry_path = _pointer(path, position)
+        original = value[position] if isinstance(value, list) else value[position]
+        changes.append(
+            RecoveryFieldChange(
+                path=entry_path,
+                outcome="removed",
+                reason="The entry was refused and excluded from the candidate; "
+                f"original: {_short_repr(original)}",
+            )
+        )
+        issues.append(_issue(entry_path, "invalid_value", str(exc), "warning"))
+    if isinstance(value, list):
+        return [item for position, item in enumerate(value) if position not in refused]
+    return {name: item for name, item in value.items() if name not in refused}

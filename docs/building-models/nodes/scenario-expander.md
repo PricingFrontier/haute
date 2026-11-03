@@ -66,6 +66,27 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
     | **COLUMNS** tab | `selected_columns` |
 
+    <!-- config-keys:start -->
+
+    Every key the config may hold:
+
+    | Key | Type | Description |
+    |---|---|---|
+    | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
+    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `quote_id` | text | The column identifying each quote. |
+    | `column_name` | text | The column the grid value is written to, such as `scenario_value`. |
+    | `min_value` | number | The grid's first value. |
+    | `max_value` | number | The grid's last value. |
+    | `stepCount` | whole number | The number of grid values, at least 1. |
+    | `step_column` | text | The column the grid position (from 0) is written to, such as `scenario_index`. |
+    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
+    | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
+    | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |
+
+    <!-- config-keys:end -->
+
 **See also:**
 
 - [Optimisation](optimiser.md)  - find the best price subject to constraints

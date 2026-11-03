@@ -1,5 +1,94 @@
 {
   "$defs": {
+    "ApiInputConfig": {
+      "additionalProperties": false,
+      "description": "A Quote Input: the request's sample file and the tables read from it.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "path": {
+          "description": "The sample request file, relative to the project root (a JSON, JSONL, NDJSON, XML or flat\nfile).",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "tables": {
+          "description": "For a structured request file, the tables read from it: each a path into the document, a\nlabel, and its columns.",
+          "items": {
+            "$ref": "#/$defs/TableV2"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "title": "ApiInputConfig",
+      "type": "object"
+    },
+    "ApiInputNodeData": {
+      "description": "A apiInput node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ApiInputConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "apiInput",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "ApiInputNodeData",
+      "type": "object"
+    },
     "AssistantBuildPlan": {
       "additionalProperties": false,
       "description": "The stages a multi-stage request is built in, in order, as the chat's checklist.",
@@ -1053,6 +1142,116 @@
       "title": "AssistantUsage",
       "type": "object"
     },
+    "BandingConfig": {
+      "additionalProperties": false,
+      "description": "A Banding node: one or more factors banded from input columns.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "factors": {
+          "description": "The factors, each an input column, an output column and its bands.",
+          "items": {
+            "$ref": "#/$defs/BandingFactor"
+          },
+          "title": "Factors",
+          "type": "array"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "title": "BandingConfig",
+      "type": "object"
+    },
+    "BandingFactor": {
+      "additionalProperties": false,
+      "description": "One factor of a Banding node: an input column mapped to bands.",
+      "properties": {
+        "banding": {
+          "description": "Whether the column is banded by numeric or date boundaries or by category.",
+          "enum": [
+            "breakpoints",
+            "categorical"
+          ],
+          "title": "Banding",
+          "type": "string"
+        },
+        "column": {
+          "description": "The input column banded.",
+          "title": "Column",
+          "type": "string"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The band of a value no rule matches; `null` leaves it empty.",
+          "title": "Default"
+        },
+        "outputColumn": {
+          "description": "The column the band is written to.",
+          "title": "Outputcolumn",
+          "type": "string"
+        },
+        "rightClosed": {
+          "description": "For breakpoints, whether each band includes its upper boundary (`true`, the default) or its\nlower one.",
+          "title": "Rightclosed",
+          "type": "boolean"
+        },
+        "rules": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          ],
+          "description": "The bands: rule rows in the editor, or a map from each boundary or value to its band in the\nconfig file.",
+          "title": "Rules"
+        }
+      },
+      "title": "BandingFactor",
+      "type": "object"
+    },
     "BandingHistogramBin": {
       "description": "One `[lower, upper)` interval of a numeric distribution, the last closed.",
       "properties": {
@@ -1076,6 +1275,41 @@
         "count"
       ],
       "title": "BandingHistogramBin",
+      "type": "object"
+    },
+    "BandingNodeData": {
+      "description": "A banding node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/BandingConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "banding",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "BandingNodeData",
       "type": "object"
     },
     "BandingStatsResponse": {
@@ -2673,6 +2907,92 @@
       "title": "ColumnName",
       "type": "object"
     },
+    "ColumnV2": {
+      "additionalProperties": false,
+      "description": "One column entry inside ``tables[].columns[]``.",
+      "properties": {
+        "format": {
+          "description": "A date column's strftime pattern for its source values; ISO `%Y-%m-%d` when absent.",
+          "title": "Format",
+          "type": "string"
+        },
+        "key": {
+          "description": "Whether the column serves as a key of its table; the run never reads it.",
+          "title": "Key",
+          "type": "boolean"
+        },
+        "levels": {
+          "anyOf": [
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The values a categorical column takes, or `null` when it has none listed.",
+          "title": "Levels"
+        },
+        "name": {
+          "description": "The column's name in the table.",
+          "title": "Name",
+          "type": "string"
+        },
+        "origin": {
+          "description": "Where the column came from: `inferred`, `inherited` from a parent table's key, or `manual`;\nthe run never reads it.",
+          "enum": [
+            "inferred",
+            "inherited",
+            "manual"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "path": {
+          "description": "The JSONPath its values are read from, under the table's path.",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected": {
+          "description": "Whether the column is part of the table the node reads.",
+          "title": "Selected",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "Whether the type was `Confirmed` by hand or `Inferred` from the sample.",
+          "enum": [
+            "Confirmed",
+            "Inferred"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "type": {
+          "description": "The column's type: `int`, `float`, `str`, `bool` or `date`.",
+          "enum": [
+            "int",
+            "float",
+            "str",
+            "bool",
+            "date"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "ColumnV2",
+      "type": "object"
+    },
     "Condition": {
       "additionalProperties": false,
       "description": "A test of the value in a one-row table's column, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
@@ -2791,6 +3111,191 @@
         "conditions"
       ],
       "title": "ConditionGroup",
+      "type": "object"
+    },
+    "ConstantConfig": {
+      "additionalProperties": false,
+      "description": "A Constant node: a one-row frame of named values.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "values": {
+          "description": "The values, one column each.",
+          "items": {
+            "$ref": "#/$defs/ConstantValue"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "title": "ConstantConfig",
+      "type": "object"
+    },
+    "ConstantNodeData": {
+      "description": "A constant node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ConstantConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "constant",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "ConstantNodeData",
+      "type": "object"
+    },
+    "ConstantValue": {
+      "additionalProperties": false,
+      "description": "One value of a Constant node; an entry without a name is skipped.",
+      "properties": {
+        "name": {
+          "description": "The column the value is written to.",
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The value, read as a number where it is one and kept as it is otherwise.",
+          "title": "Value"
+        }
+      },
+      "title": "ConstantValue",
+      "type": "object"
+    },
+    "ContractColumns": {
+      "additionalProperties": false,
+      "description": "A declared column contract: the columns a node reads and produces.",
+      "properties": {
+        "inputs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The columns the node reads from its input, or `null` when they are not known.",
+          "title": "Inputs"
+        },
+        "inputs_by_parent": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a node with several inputs, the columns it reads from each input, by node id.",
+          "title": "Inputs By Parent"
+        },
+        "outputs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The columns the node produces, or `null` when they are not known.",
+          "title": "Outputs"
+        }
+      },
+      "required": [
+        "inputs",
+        "outputs"
+      ],
+      "title": "ContractColumns",
       "type": "object"
     },
     "CreateNodeInstanceResponse": {
@@ -2947,6 +3452,852 @@
         "delimiter"
       ],
       "title": "CsvImport",
+      "type": "object"
+    },
+    "DataInputDatabaseConfig": {
+      "additionalProperties": false,
+      "description": "A Data Input reading a database query.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "connection": {
+          "description": "The named connection in `connections.toml`; exactly one of `connection` and `uri`.",
+          "title": "Connection",
+          "type": "string"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "const": "database",
+          "description": "The format of a database read: `database`.",
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "inputType": {
+          "const": "database",
+          "description": "The provider: a database.",
+          "title": "Inputtype",
+          "type": "string"
+        },
+        "query": {
+          "description": "The SQL query whose rows the node reads.",
+          "title": "Query",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "uri": {
+          "description": "A credential-free database URI; exactly one of `connection` and `uri`.",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputType"
+      ],
+      "title": "DataInputDatabaseConfig",
+      "type": "object"
+    },
+    "DataInputDatabricksConfig": {
+      "additionalProperties": false,
+      "description": "A Data Input reading a Databricks table.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "http_path": {
+          "description": "The SQL warehouse's HTTP path.",
+          "title": "Http Path",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "inputType": {
+          "const": "databricks",
+          "description": "The provider: Databricks.",
+          "title": "Inputtype",
+          "type": "string"
+        },
+        "query": {
+          "description": "A SQL query to read instead of the whole table.",
+          "title": "Query",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "table": {
+          "description": "The table, as `catalog.schema.table`.",
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputType"
+      ],
+      "title": "DataInputDatabricksConfig",
+      "type": "object"
+    },
+    "DataInputFileConfig": {
+      "additionalProperties": false,
+      "description": "A Data Input reading a file.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "description": "The file format, such as `parquet`, `csv` or `ndjson`.",
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "inputType": {
+          "const": "file",
+          "description": "The provider: a file.",
+          "title": "Inputtype",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "",
+            "read",
+            "scan"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "path": {
+          "description": "The file, relative to the project root or absolute.",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "inputType"
+      ],
+      "title": "DataInputFileConfig",
+      "type": "object"
+    },
+    "DataInputInlineConfig": {
+      "additionalProperties": false,
+      "description": "A Data Input holding its rows inline.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "const": "records",
+          "description": "The format of inline rows: `records`.",
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "inputType": {
+          "const": "inline",
+          "description": "The provider: rows held in the config.",
+          "title": "Inputtype",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "",
+            "read",
+            "scan"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "records": {
+          "description": "The rows, each an object from column name to value.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Records",
+          "type": "array"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "inputType"
+      ],
+      "title": "DataInputInlineConfig",
+      "type": "object"
+    },
+    "DataInputLakehouseConfig": {
+      "additionalProperties": false,
+      "description": "A Data Input reading a lakehouse table.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "description": "The table format: `delta` or `iceberg`.",
+          "enum": [
+            "delta",
+            "iceberg"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "inputType": {
+          "const": "lakehouse",
+          "description": "The provider: a lakehouse table.",
+          "title": "Inputtype",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "",
+            "read",
+            "scan"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "path": {
+          "description": "The table's location.",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "inputType"
+      ],
+      "title": "DataInputLakehouseConfig",
+      "type": "object"
+    },
+    "DataInputNodeData": {
+      "description": "A dataInput node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DataInputFileConfig"
+            },
+            {
+              "$ref": "#/$defs/DataInputDatabaseConfig"
+            },
+            {
+              "$ref": "#/$defs/DataInputLakehouseConfig"
+            },
+            {
+              "$ref": "#/$defs/DataInputDatabricksConfig"
+            },
+            {
+              "$ref": "#/$defs/DataInputInlineConfig"
+            }
+          ],
+          "title": "Config"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "dataInput",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "DataInputNodeData",
+      "type": "object"
+    },
+    "DataOutputDatabaseConfig": {
+      "additionalProperties": false,
+      "description": "A Data Output writing a database table.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "connection": {
+          "description": "The named connection in `connections.toml`; exactly one of `connection` and `uri`.",
+          "title": "Connection",
+          "type": "string"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "const": "database",
+          "description": "The format of a database write: `database`.",
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "mode": {
+          "enum": [
+            "sink",
+            "write"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "outputType": {
+          "const": "database",
+          "description": "The destination: a database.",
+          "title": "Outputtype",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "table": {
+          "description": "The table written.",
+          "title": "Table",
+          "type": "string"
+        },
+        "uri": {
+          "description": "A credential-free database URI; exactly one of `connection` and `uri`.",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outputType"
+      ],
+      "title": "DataOutputDatabaseConfig",
+      "type": "object"
+    },
+    "DataOutputDatabricksConfig": {
+      "additionalProperties": false,
+      "description": "A Data Output loading a Databricks table.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "http_path": {
+          "description": "The SQL warehouse's HTTP path.",
+          "title": "Http Path",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "outputType": {
+          "const": "databricks",
+          "description": "The destination: Databricks.",
+          "title": "Outputtype",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "table": {
+          "description": "The table, as `catalog.schema.table`.",
+          "title": "Table",
+          "type": "string"
+        },
+        "write_mode": {
+          "description": "Whether a load replaces the table's rows or adds to them.",
+          "enum": [
+            "overwrite",
+            "append"
+          ],
+          "title": "Write Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outputType"
+      ],
+      "title": "DataOutputDatabricksConfig",
+      "type": "object"
+    },
+    "DataOutputFileConfig": {
+      "additionalProperties": false,
+      "description": "A Data Output writing a file.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "description": "The file format, such as `parquet` or `csv`.",
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "mode": {
+          "enum": [
+            "sink",
+            "write"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "outputType": {
+          "const": "file",
+          "description": "The destination: a file.",
+          "title": "Outputtype",
+          "type": "string"
+        },
+        "path": {
+          "description": "The file written, relative to the project root or absolute.",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "outputType"
+      ],
+      "title": "DataOutputFileConfig",
+      "type": "object"
+    },
+    "DataOutputLakehouseConfig": {
+      "additionalProperties": false,
+      "description": "A Data Output writing a lakehouse table.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "format": {
+          "description": "The table format: `delta` or `iceberg`.",
+          "enum": [
+            "delta",
+            "iceberg"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "mode": {
+          "enum": [
+            "sink",
+            "write"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "outputType": {
+          "const": "lakehouse",
+          "description": "The destination: a lakehouse table.",
+          "title": "Outputtype",
+          "type": "string"
+        },
+        "path": {
+          "description": "The table's location.",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "outputType"
+      ],
+      "title": "DataOutputLakehouseConfig",
+      "type": "object"
+    },
+    "DataOutputNodeData": {
+      "description": "A dataOutput node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DataOutputFileConfig"
+            },
+            {
+              "$ref": "#/$defs/DataOutputDatabaseConfig"
+            },
+            {
+              "$ref": "#/$defs/DataOutputLakehouseConfig"
+            },
+            {
+              "$ref": "#/$defs/DataOutputDatabricksConfig"
+            }
+          ],
+          "title": "Config"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "dataOutput",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "DataOutputNodeData",
       "type": "object"
     },
     "DispersionEstimateResponse": {
@@ -3135,6 +4486,188 @@
         "definition_id"
       ],
       "title": "DissolveSubmodelResponse",
+      "type": "object"
+    },
+    "EdgeJoinConfig": {
+      "additionalProperties": false,
+      "description": "An Edge Join: joins its `join` input onto its `base` input.",
+      "properties": {
+        "coalesce": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether key columns of the same name are merged into one; `null` leaves it to the join\ntype, as Polars does.",
+          "title": "Coalesce"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "how": {
+          "description": "The join type.",
+          "enum": [
+            "inner",
+            "left",
+            "right",
+            "full",
+            "semi",
+            "anti",
+            "cross"
+          ],
+          "title": "How",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "leftOn": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "The key column or columns on the base input.",
+          "title": "Lefton"
+        },
+        "maintainOrder": {
+          "description": "Which input's row order the result keeps; required, which the engine's join rules\ncheck with the values it takes.",
+          "enum": [
+            "none",
+            "left",
+            "right",
+            "left_right",
+            "right_left"
+          ],
+          "title": "Maintainorder",
+          "type": "string"
+        },
+        "on": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "The key column or columns both inputs share; or use `leftOn` and `rightOn`.",
+          "title": "On"
+        },
+        "rightOn": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "The key column or columns on the join input, matched in order with `leftOn`.",
+          "title": "Righton"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "suffix": {
+          "description": "The suffix added to a join-input column whose name the base input already has.",
+          "title": "Suffix",
+          "type": "string"
+        },
+        "validate": {
+          "anyOf": [
+            {
+              "enum": [
+                "1:1",
+                "1:m",
+                "m:1",
+                "m:m"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The cardinality the keys must have, checked when the join runs; `null` checks none.",
+          "title": "Validate"
+        }
+      },
+      "title": "EdgeJoinConfig",
+      "type": "object"
+    },
+    "EdgeJoinNodeData": {
+      "description": "A edgeJoin node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/EdgeJoinConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "edgeJoin",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "EdgeJoinNodeData",
       "type": "object"
     },
     "EditorIdentitiesResponse": {
@@ -6748,6 +8281,87 @@
       "title": "ExploreColumnStat",
       "type": "object"
     },
+    "ExploreConfig": {
+      "additionalProperties": false,
+      "description": "An Explore node: overview cards, pivots and charts over its input.",
+      "properties": {
+        "charts": {
+          "description": "The chart cards.",
+          "items": {
+            "$ref": "#/$defs/ExploreChartConfig"
+          },
+          "title": "Charts",
+          "type": "array"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "overview": {
+          "$ref": "#/$defs/ExploreOverviewConfig",
+          "description": "Which overview cards are shown."
+        },
+        "pivot_formulas": {
+          "description": "The formulas the node's pivots share.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotFormula"
+          },
+          "title": "Pivot Formulas",
+          "type": "array"
+        },
+        "pivots": {
+          "description": "The pivot cards.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotPersistedConfig"
+          },
+          "title": "Pivots",
+          "type": "array"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "title": "ExploreConfig",
+      "type": "object"
+    },
     "ExploreDataQualityIssue": {
       "properties": {
         "detail": {
@@ -6995,6 +8609,74 @@
       "title": "ExploreKeyCheck",
       "type": "object"
     },
+    "ExploreNodeData": {
+      "description": "A explore node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ExploreConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "explore",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "ExploreNodeData",
+      "type": "object"
+    },
+    "ExploreOverviewConfig": {
+      "additionalProperties": false,
+      "description": "Which overview cards an Explore node shows.",
+      "properties": {
+        "categorical_summary": {
+          "description": "Show the categorical summary card.",
+          "title": "Categorical Summary",
+          "type": "boolean"
+        },
+        "data_quality": {
+          "description": "Show the data quality card.",
+          "title": "Data Quality",
+          "type": "boolean"
+        },
+        "dataset_snapshot": {
+          "description": "Show the dataset snapshot card.",
+          "title": "Dataset Snapshot",
+          "type": "boolean"
+        },
+        "numeric_summary": {
+          "description": "Show the numeric summary card.",
+          "title": "Numeric Summary",
+          "type": "boolean"
+        },
+        "schema": {
+          "description": "Show the schema card.",
+          "title": "Schema",
+          "type": "boolean"
+        }
+      },
+      "title": "ExploreOverviewConfig",
+      "type": "object"
+    },
     "ExploreOverviewSummary": {
       "properties": {
         "categorical_summary": {
@@ -7013,6 +8695,61 @@
         "categorical_summary"
       ],
       "title": "ExploreOverviewSummary",
+      "type": "object"
+    },
+    "ExplorePivotAxisPlacement": {
+      "additionalProperties": false,
+      "description": "A field laid across a pivot's columns.",
+      "properties": {
+        "decimal_places": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Decimal places shown; `null` uses the format's default.",
+          "title": "Decimal Places"
+        },
+        "field": {
+          "description": "The column.",
+          "title": "Field",
+          "type": "string"
+        },
+        "id": {
+          "description": "The placement's id.",
+          "title": "Id",
+          "type": "string"
+        },
+        "number_format": {
+          "description": "How its values are shown.",
+          "enum": [
+            "general",
+            "number",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
+        "use_grouping": {
+          "description": "Whether thousands are grouped.",
+          "title": "Use Grouping",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "field",
+        "decimal_places",
+        "number_format",
+        "use_grouping"
+      ],
+      "title": "ExplorePivotAxisPlacement",
       "type": "object"
     },
     "ExplorePivotCell": {
@@ -7098,6 +8835,154 @@
         "dimensions"
       ],
       "title": "ExplorePivotFailure",
+      "type": "object"
+    },
+    "ExplorePivotFilterPlacement": {
+      "additionalProperties": false,
+      "description": "A field filtering a pivot to chosen members.",
+      "properties": {
+        "field": {
+          "description": "The column filtered.",
+          "title": "Field",
+          "type": "string"
+        },
+        "id": {
+          "description": "The placement's id.",
+          "title": "Id",
+          "type": "string"
+        },
+        "members": {
+          "description": "The members kept.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotMember"
+          },
+          "title": "Members",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "field",
+        "members"
+      ],
+      "title": "ExplorePivotFilterPlacement",
+      "type": "object"
+    },
+    "ExplorePivotFormula": {
+      "additionalProperties": false,
+      "description": "A formula over a pivot's values, shared by the node's pivots.",
+      "properties": {
+        "decimal_places": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Decimal places shown; `null` uses the format's default.",
+          "title": "Decimal Places"
+        },
+        "display_name": {
+          "description": "The formula's heading.",
+          "title": "Display Name",
+          "type": "string"
+        },
+        "expression": {
+          "description": "The formula, over values' references.",
+          "title": "Expression",
+          "type": "string"
+        },
+        "id": {
+          "description": "The formula's id.",
+          "title": "Id",
+          "type": "string"
+        },
+        "number_format": {
+          "description": "How its values are shown.",
+          "enum": [
+            "general",
+            "number",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
+        "reference": {
+          "description": "The name other formulas refer to it by.",
+          "title": "Reference",
+          "type": "string"
+        },
+        "use_grouping": {
+          "description": "Whether thousands are grouped.",
+          "title": "Use Grouping",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "reference",
+        "display_name",
+        "expression",
+        "decimal_places",
+        "number_format",
+        "use_grouping"
+      ],
+      "title": "ExplorePivotFormula",
+      "type": "object"
+    },
+    "ExplorePivotMember": {
+      "additionalProperties": false,
+      "description": "One member of a pivot filter, typed so dates and numbers keep their identity.",
+      "properties": {
+        "kind": {
+          "description": "The member's type.",
+          "enum": [
+            "null",
+            "string",
+            "boolean",
+            "integer",
+            "float",
+            "nan",
+            "date",
+            "datetime",
+            "time",
+            "decimal"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The member's value, as JSON holds a value of its type.",
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "ExplorePivotMember",
       "type": "object"
     },
     "ExplorePivotMemberKey": {
@@ -7220,6 +9105,41 @@
       "title": "ExplorePivotMembersResponse",
       "type": "object"
     },
+    "ExplorePivotOptions": {
+      "additionalProperties": false,
+      "description": "A pivot's totals and sorting.",
+      "properties": {
+        "column_grand_totals": {
+          "description": "Show a grand total column.",
+          "title": "Column Grand Totals",
+          "type": "boolean"
+        },
+        "row_grand_totals": {
+          "description": "Show a grand total row.",
+          "title": "Row Grand Totals",
+          "type": "boolean"
+        },
+        "sort_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The value rows are sorted by; `null` for none.",
+          "title": "Sort By"
+        }
+      },
+      "required": [
+        "row_grand_totals",
+        "column_grand_totals",
+        "sort_by"
+      ],
+      "title": "ExplorePivotOptions",
+      "type": "object"
+    },
     "ExplorePivotPath": {
       "properties": {
         "is_grand_total": {
@@ -7240,6 +9160,100 @@
         "is_grand_total"
       ],
       "title": "ExplorePivotPath",
+      "type": "object"
+    },
+    "ExplorePivotPersistedConfig": {
+      "additionalProperties": false,
+      "description": "One Explore pivot card as stored: shared formulas are selected by id.",
+      "properties": {
+        "columns": {
+          "description": "The fields laid across the columns.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotAxisPlacement"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "enabled": {
+          "description": "Whether the pivot is shown.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "filters": {
+          "description": "The filters.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotFilterPlacement"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "formulas": {
+          "description": "The shared formulas the pivot shows, by id.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Formulas",
+          "type": "array"
+        },
+        "id": {
+          "description": "The pivot's id.",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "The pivot's name.",
+          "title": "Name",
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/ExplorePivotOptions",
+          "description": "Its totals and sorting."
+        },
+        "rows": {
+          "description": "The fields laid down the rows.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotRowPlacement"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "value_order": {
+          "description": "The order its values and formulas are shown in, by id.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Value Order",
+          "type": "array"
+        },
+        "values": {
+          "description": "The aggregated values.",
+          "items": {
+            "$ref": "#/$defs/ExplorePivotValuePlacement"
+          },
+          "title": "Values",
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "description": "The pivot state's version.",
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "name",
+        "enabled",
+        "filters",
+        "columns",
+        "rows",
+        "values",
+        "formulas",
+        "value_order",
+        "options"
+      ],
+      "title": "ExplorePivotPersistedConfig",
       "type": "object"
     },
     "ExplorePivotResult": {
@@ -7355,6 +9369,66 @@
         "execution_metrics"
       ],
       "title": "ExplorePivotResult",
+      "type": "object"
+    },
+    "ExplorePivotRowPlacement": {
+      "additionalProperties": false,
+      "description": "A field laid down a pivot's rows.",
+      "properties": {
+        "decimal_places": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Decimal Places"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "number_format": {
+          "enum": [
+            "general",
+            "number",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
+        "sort": {
+          "description": "The order of its members.",
+          "enum": [
+            "ascending",
+            "descending"
+          ],
+          "title": "Sort",
+          "type": "string"
+        },
+        "use_grouping": {
+          "title": "Use Grouping",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "field",
+        "decimal_places",
+        "number_format",
+        "use_grouping",
+        "sort"
+      ],
+      "title": "ExplorePivotRowPlacement",
       "type": "object"
     },
     "ExplorePivotRunResponse": {
@@ -7539,6 +9613,123 @@
         "aggregation"
       ],
       "title": "ExplorePivotValueIdentity",
+      "type": "object"
+    },
+    "ExplorePivotValuePlacement": {
+      "additionalProperties": false,
+      "description": "An aggregated value shown in a pivot's cells.",
+      "properties": {
+        "aggregation": {
+          "description": "How the column is aggregated.",
+          "enum": [
+            "sum",
+            "count",
+            "average",
+            "min",
+            "max",
+            "median",
+            "distinct_count"
+          ],
+          "title": "Aggregation",
+          "type": "string"
+        },
+        "color_scale": {
+          "description": "The colour scale of its cells.",
+          "enum": [
+            "none",
+            "low_red_high_green",
+            "low_green_high_red"
+          ],
+          "title": "Color Scale",
+          "type": "string"
+        },
+        "color_scale_split_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The field the colour scale is computed within; `null` for the whole value.",
+          "title": "Color Scale Split By"
+        },
+        "decimal_places": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Decimal places shown; `null` uses the format's default.",
+          "title": "Decimal Places"
+        },
+        "display_name": {
+          "description": "The value's heading.",
+          "title": "Display Name",
+          "type": "string"
+        },
+        "field": {
+          "description": "The column aggregated.",
+          "title": "Field",
+          "type": "string"
+        },
+        "id": {
+          "description": "The placement's id.",
+          "title": "Id",
+          "type": "string"
+        },
+        "number_format": {
+          "description": "How its values are shown.",
+          "enum": [
+            "general",
+            "number",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur"
+          ],
+          "title": "Number Format",
+          "type": "string"
+        },
+        "reference": {
+          "description": "The name a formula refers to the value by.",
+          "title": "Reference",
+          "type": "string"
+        },
+        "sort_rows": {
+          "description": "Whether rows are sorted by this value.",
+          "enum": [
+            "none",
+            "ascending",
+            "descending"
+          ],
+          "title": "Sort Rows",
+          "type": "string"
+        },
+        "use_grouping": {
+          "description": "Whether thousands are grouped.",
+          "title": "Use Grouping",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "field",
+        "aggregation",
+        "reference",
+        "display_name",
+        "sort_rows",
+        "color_scale",
+        "color_scale_split_by",
+        "decimal_places",
+        "number_format",
+        "use_grouping"
+      ],
+      "title": "ExplorePivotValuePlacement",
       "type": "object"
     },
     "ExploreRelationship": {
@@ -7794,6 +9985,109 @@
         "tables"
       ],
       "title": "ExportWidget",
+      "type": "object"
+    },
+    "ExternalFileConfig": {
+      "additionalProperties": false,
+      "description": "A Load File node: loads an object from a file for its code to use.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "fileType": {
+          "description": "How the file is loaded.",
+          "enum": [
+            "pickle",
+            "json",
+            "joblib"
+          ],
+          "title": "Filetype",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "path": {
+          "description": "The file, relative to the project root.",
+          "title": "Path",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "title": "ExternalFileConfig",
+      "type": "object"
+    },
+    "ExternalFileNodeData": {
+      "description": "A externalFile node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ExternalFileConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "externalFile",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "ExternalFileNodeData",
       "type": "object"
     },
     "FieldRef": {
@@ -11094,6 +13388,136 @@
       "title": "JsonCacheInferResponse",
       "type": "object"
     },
+    "KeywordParameter": {
+      "additionalProperties": false,
+      "description": "One keyword-only parameter of a transform written as code, and its literal default.",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its literal default, which a run binds.",
+          "title": "Default"
+        },
+        "name": {
+          "description": "The parameter's name in the function signature.",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "default"
+      ],
+      "title": "KeywordParameter",
+      "type": "object"
+    },
+    "LiveSwitchConfig": {
+      "additionalProperties": false,
+      "description": "A Source Switch: routes one of its inputs by the run's source.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "input_scenario_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "For each connected input, the source that routes to it, such as `live` or `batch`.",
+          "title": "Input Scenario Map",
+          "type": "object"
+        },
+        "inputs": {
+          "description": "The connected inputs, in the order of the function's parameters (recorded by the parse).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "title": "LiveSwitchConfig",
+      "type": "object"
+    },
+    "LiveSwitchNodeData": {
+      "description": "A liveSwitch node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/LiveSwitchConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "liveSwitch",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "LiveSwitchNodeData",
+      "type": "object"
+    },
     "LogExperimentResponse": {
       "properties": {
         "backend": {
@@ -11869,27 +14293,149 @@
       "title": "ModelSaveDestinationResponse",
       "type": "object"
     },
-    "ModellingGpuStatusResponse": {
+    "ModelScoreConfig": {
       "additionalProperties": false,
-      "description": "GPU training capability per GPU-capable family (XGBoost CUDA).",
+      "description": "A Model Score: scores a model from a file, an MLflow run or a registered model.",
       "properties": {
-        "xgboost": {
-          "$ref": "#/$defs/GpuFamilyStatus"
+        "alias": {
+          "description": "For a registered source, the alias whose version is scored, such as `champion`; excludes\n`version`.",
+          "title": "Alias",
+          "type": "string"
+        },
+        "artifact_path": {
+          "description": "For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`.",
+          "title": "Artifact Path",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "experiment_id": {
+          "description": "For a run source, the MLflow experiment's id.",
+          "title": "Experiment Id",
+          "type": "string"
+        },
+        "experiment_name": {
+          "description": "For a run source, the experiment's name, shown when the panel reopens.",
+          "title": "Experiment Name",
+          "type": "string"
+        },
+        "feature_contract_path": {
+          "description": "The feature contract the model scores under, when it is not beside the model.",
+          "title": "Feature Contract Path",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "mlflow_destination": {
+          "description": "The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is\nthe local folder.",
+          "enum": [
+            "",
+            "databricks",
+            "server"
+          ],
+          "title": "Mlflow Destination",
+          "type": "string"
+        },
+        "model_path": {
+          "description": "For a file source, the model file in the project, such as `models/freq.cbm`.",
+          "title": "Model Path",
+          "type": "string"
+        },
+        "output_column": {
+          "description": "The column the prediction is written to; `prediction` when absent.",
+          "title": "Output Column",
+          "type": "string"
+        },
+        "registered_model": {
+          "description": "For a registered source, the registered model's name, such as `catalog.schema.model`.",
+          "title": "Registered Model",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "For a run source, the MLflow run whose model is scored.",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_name": {
+          "description": "For a run source, the run's name, shown when the panel reopens.",
+          "title": "Run Name",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "sourceType": {
+          "description": "Where the model comes from; empty or absent when no source is chosen yet.",
+          "enum": [
+            "",
+            "run",
+            "registered",
+            "file"
+          ],
+          "title": "Sourcetype",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "task": {
+          "description": "Whether the model predicts a value or a class probability.",
+          "enum": [
+            "regression",
+            "classification"
+          ],
+          "title": "Task",
+          "type": "string"
+        },
+        "version": {
+          "description": "For a registered source, the version scored, or `latest`; absent when `alias` is set.",
+          "title": "Version",
+          "type": "string"
         }
       },
-      "required": [
-        "xgboost"
-      ],
-      "title": "ModellingGpuStatusResponse",
+      "title": "ModelScoreConfig",
       "type": "object"
     },
-    "NodeData": {
-      "description": "Data payload for a single pipeline node.",
+    "ModelScoreNodeData": {
+      "description": "A modelScore node's data, its config typed by its config model.",
       "properties": {
         "config": {
-          "additionalProperties": true,
-          "title": "Config",
-          "type": "object"
+          "$ref": "#/$defs/ModelScoreConfig"
         },
         "description": {
           "default": "",
@@ -11905,8 +14451,9 @@
           "type": "string"
         },
         "nodeType": {
-          "$ref": "#/$defs/NodeType",
-          "default": "polars"
+          "const": "modelScore",
+          "title": "Nodetype",
+          "type": "string"
         }
       },
       "required": [
@@ -11916,8 +14463,520 @@
         "config",
         "editor"
       ],
-      "title": "NodeData",
+      "title": "ModelScoreNodeData",
       "type": "object"
+    },
+    "ModellingConfig": {
+      "additionalProperties": false,
+      "description": "A Model Training node: trains a model on its input.",
+      "properties": {
+        "algorithm": {
+          "description": "The model family: `catboost`, `glm`, `xgboost`, `lightgbm`, `ebm` or `tboost`; CatBoost when\nabsent.",
+          "title": "Algorithm",
+          "type": "string"
+        },
+        "alpha": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a GLM, the penalty strength; `null` chooses it by cross-validation.",
+          "title": "Alpha"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "cv_folds": {
+          "description": "For a GLM, the cross-validation folds that choose the penalty strength (2 to 20).",
+          "title": "Cv Folds",
+          "type": "integer"
+        },
+        "cv_seed": {
+          "description": "For a GLM, the seed of the cross-validation split.",
+          "title": "Cv Seed",
+          "type": "integer"
+        },
+        "cv_selection": {
+          "description": "For a GLM, which cross-validated strength is chosen: the minimum or one standard error above\nit.",
+          "enum": [
+            "min",
+            "1se"
+          ],
+          "title": "Cv Selection",
+          "type": "string"
+        },
+        "device": {
+          "description": "For XGBoost, whether it trains on the CPU or a GPU; the CPU when absent.",
+          "enum": [
+            "cpu",
+            "gpu"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "evaluation": {
+          "additionalProperties": true,
+          "description": "How the model is evaluated: the holdout or cross-validation split.",
+          "title": "Evaluation",
+          "type": "object"
+        },
+        "family": {
+          "description": "For a GLM, the error distribution, such as `poisson` or `gamma`.",
+          "title": "Family",
+          "type": "string"
+        },
+        "feature_columns": {
+          "description": "The columns the model trains on.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Feature Columns",
+          "type": "array"
+        },
+        "feature_weights": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "For each weighted feature, its weight in feature selection.",
+          "title": "Feature Weights",
+          "type": "object"
+        },
+        "fold_column": {
+          "description": "The column assigning rows to cross-validation folds.",
+          "title": "Fold Column",
+          "type": "string"
+        },
+        "id_columns": {
+          "description": "Columns identifying rows, kept with the predictions but never trained on.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Id Columns",
+          "type": "array"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "interactions": {
+          "description": "For a GLM, interaction terms between features.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Interactions",
+          "type": "array"
+        },
+        "intercept": {
+          "description": "For a GLM, whether the model has an intercept.",
+          "title": "Intercept",
+          "type": "boolean"
+        },
+        "l1_ratio": {
+          "description": "For an elastic-net GLM, the share of the L1 penalty, from 0 to 1.",
+          "title": "L1 Ratio",
+          "type": "number"
+        },
+        "link": {
+          "description": "For a GLM, the link function, such as `log`.",
+          "title": "Link",
+          "type": "string"
+        },
+        "loss_function": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The loss trained on, from the family's own losses; `null` takes the task's default.",
+          "title": "Loss Function"
+        },
+        "max_iter": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a GLM, the most solver iterations; `null` takes the solver's default.",
+          "title": "Max Iter"
+        },
+        "metrics": {
+          "description": "The evaluation metrics reported.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "mlflow_destination": {
+          "description": "The MLflow server or Databricks workspace a run is logged to; empty or absent is the local\nfolder.",
+          "enum": [
+            "",
+            "databricks",
+            "server"
+          ],
+          "title": "Mlflow Destination",
+          "type": "string"
+        },
+        "mlflow_experiment": {
+          "description": "The MLflow experiment a logged run goes to.",
+          "title": "Mlflow Experiment",
+          "type": "string"
+        },
+        "model_export_path": {
+          "description": "The Export pane's file path; empty or absent uses the default.",
+          "title": "Model Export Path",
+          "type": "string"
+        },
+        "monotone_constraints": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none.",
+          "title": "Monotone Constraints"
+        },
+        "name": {
+          "description": "The model's name, used for its run and exported file.",
+          "title": "Name",
+          "type": "string"
+        },
+        "offset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a GLM, the offset column; `null` for none.",
+          "title": "Offset"
+        },
+        "output_dir": {
+          "description": "The folder a trained model is written to.",
+          "title": "Output Dir",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "description": "The family's own parameters, by name.",
+          "title": "Params",
+          "type": "object"
+        },
+        "positive_class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "description": "For a binary classifier, the label trained as positive; `true` or `1` when absent.",
+          "title": "Positive Class"
+        },
+        "refit_on_development": {
+          "description": "Whether the final model is refit on all development rows (`true`, the default) or keeps the\nholdout fit.",
+          "title": "Refit On Development",
+          "type": "boolean"
+        },
+        "regularization": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a GLM, the penalty: `ridge`, `lasso` or `elastic_net`; empty or `null` for none.",
+          "title": "Regularization"
+        },
+        "robust_standard_errors": {
+          "anyOf": [
+            {
+              "enum": [
+                "HC0",
+                "HC1",
+                "HC2",
+                "HC3"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a GLM, the robust standard error type; `null` for model-based errors.",
+          "title": "Robust Standard Errors"
+        },
+        "row_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most rows trained on; `null` trains on every row.",
+          "title": "Row Limit"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "target": {
+          "description": "The column the model predicts.",
+          "title": "Target",
+          "type": "string"
+        },
+        "task": {
+          "description": "Whether the model predicts a value or a class.",
+          "enum": [
+            "regression",
+            "classification"
+          ],
+          "title": "Task",
+          "type": "string"
+        },
+        "terms": {
+          "additionalProperties": true,
+          "description": "For a GLM, each feature's term: linear, categorical, a spline or a banded factor.",
+          "title": "Terms",
+          "type": "object"
+        },
+        "theta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a negative binomial GLM, the dispersion; `null` when not set.",
+          "title": "Theta"
+        },
+        "tol": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a GLM, the solver's convergence tolerance; `null` takes the solver's default.",
+          "title": "Tol"
+        },
+        "tuning": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hyperparameter tuning settings; `null` or absent trains with `params` as set.",
+          "title": "Tuning"
+        },
+        "var_power": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a Tweedie GLM, the variance power (1 to 2); `null` when not set.",
+          "title": "Var Power"
+        },
+        "variance_power": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a Tweedie loss, the variance power; `null` when not set.",
+          "title": "Variance Power"
+        },
+        "weight": {
+          "description": "The column weighting each row, such as exposure.",
+          "title": "Weight",
+          "type": "string"
+        }
+      },
+      "title": "ModellingConfig",
+      "type": "object"
+    },
+    "ModellingGpuStatusResponse": {
+      "additionalProperties": false,
+      "description": "GPU training capability per GPU-capable family (XGBoost CUDA).",
+      "properties": {
+        "xgboost": {
+          "$ref": "#/$defs/GpuFamilyStatus"
+        }
+      },
+      "required": [
+        "xgboost"
+      ],
+      "title": "ModellingGpuStatusResponse",
+      "type": "object"
+    },
+    "ModellingNodeData": {
+      "description": "A modelling node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ModellingConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "modelling",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "ModellingNodeData",
+      "type": "object"
+    },
+    "NodeData": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ApiInputNodeData"
+        },
+        {
+          "$ref": "#/$defs/WorkbenchInputNodeData"
+        },
+        {
+          "$ref": "#/$defs/WorkbenchOutputNodeData"
+        },
+        {
+          "$ref": "#/$defs/DataInputNodeData"
+        },
+        {
+          "$ref": "#/$defs/DataOutputNodeData"
+        },
+        {
+          "$ref": "#/$defs/PolarsNodeData"
+        },
+        {
+          "$ref": "#/$defs/EdgeJoinNodeData"
+        },
+        {
+          "$ref": "#/$defs/ModelScoreNodeData"
+        },
+        {
+          "$ref": "#/$defs/BandingNodeData"
+        },
+        {
+          "$ref": "#/$defs/RatingStepNodeData"
+        },
+        {
+          "$ref": "#/$defs/OutputNodeData"
+        },
+        {
+          "$ref": "#/$defs/ExploreNodeData"
+        },
+        {
+          "$ref": "#/$defs/ExternalFileNodeData"
+        },
+        {
+          "$ref": "#/$defs/LiveSwitchNodeData"
+        },
+        {
+          "$ref": "#/$defs/ModellingNodeData"
+        },
+        {
+          "$ref": "#/$defs/OptimiserNodeData"
+        },
+        {
+          "$ref": "#/$defs/ScenarioExpanderNodeData"
+        },
+        {
+          "$ref": "#/$defs/OptimiserApplyNodeData"
+        },
+        {
+          "$ref": "#/$defs/ConstantNodeData"
+        },
+        {
+          "$ref": "#/$defs/SubmodelNodeData"
+        },
+        {
+          "$ref": "#/$defs/SubmodelPortNodeData"
+        }
+      ]
     },
     "NodeDataClearResponse": {
       "properties": {
@@ -12849,6 +15908,168 @@
       "title": "OptimiserAdjustmentWeighting",
       "type": "object"
     },
+    "OptimiserApplyConfig": {
+      "additionalProperties": false,
+      "description": "An Optimiser Apply node: applies a saved optimiser result to quotes.",
+      "properties": {
+        "alias": {
+          "description": "For a registered source, the alias whose version is applied; excludes `version`.",
+          "title": "Alias",
+          "type": "string"
+        },
+        "artifact_path": {
+          "description": "For a file source, the saved optimiser result; for an MLflow source, its path in the run's\nartifacts.",
+          "title": "Artifact Path",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "experiment_id": {
+          "description": "For a run source, the MLflow experiment's id.",
+          "title": "Experiment Id",
+          "type": "string"
+        },
+        "experiment_name": {
+          "description": "For a run source, the experiment's name, shown when the panel reopens.",
+          "title": "Experiment Name",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "mlflow_destination": {
+          "description": "The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is\nthe local folder.",
+          "enum": [
+            "",
+            "databricks",
+            "server"
+          ],
+          "title": "Mlflow Destination",
+          "type": "string"
+        },
+        "optimised_value_column": {
+          "description": "The column the chosen scenario value is written to.",
+          "title": "Optimised Value Column",
+          "type": "string"
+        },
+        "optimiser_mode": {
+          "description": "The mode of the applied result, when known.",
+          "enum": [
+            "",
+            "online",
+            "ratebook"
+          ],
+          "title": "Optimiser Mode",
+          "type": "string"
+        },
+        "ratebook_input": {
+          "description": "For a ratebook result, the connected input it is applied to, by its input name.",
+          "title": "Ratebook Input",
+          "type": "string"
+        },
+        "registered_model": {
+          "description": "For a registered source, the registered model's name.",
+          "title": "Registered Model",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "For a run source, the MLflow run holding the result.",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_name": {
+          "description": "For a run source, the run's name, shown when the panel reopens.",
+          "title": "Run Name",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "sourceType": {
+          "description": "Where the optimiser result comes from; empty or absent when none is chosen yet.",
+          "enum": [
+            "",
+            "file",
+            "run",
+            "registered"
+          ],
+          "title": "Sourcetype",
+          "type": "string"
+        },
+        "version": {
+          "description": "For a registered source, the version applied, or `latest`; absent when `alias` is set.",
+          "title": "Version",
+          "type": "string"
+        },
+        "version_column": {
+          "description": "The column the applied result's version is written to.",
+          "title": "Version Column",
+          "type": "string"
+        }
+      },
+      "title": "OptimiserApplyConfig",
+      "type": "object"
+    },
+    "OptimiserApplyNodeData": {
+      "description": "A optimiserApply node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/OptimiserApplyConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "optimiserApply",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "OptimiserApplyNodeData",
+      "type": "object"
+    },
     "OptimiserApplyRequest": {
       "additionalProperties": false,
       "description": "One page of the target's chosen scenarios (the Quotes explorer, OPT-V12).",
@@ -13037,6 +16258,177 @@
         "max"
       ],
       "title": "OptimiserCombinedFactorBounds",
+      "type": "object"
+    },
+    "OptimiserConfig": {
+      "additionalProperties": false,
+      "description": "An Optimiser node: chooses each quote's scenario under constraints.",
+      "properties": {
+        "analysis_columns": {
+          "description": "Up to 12 columns the result is broken down by; never given to the solver.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Analysis Columns",
+          "type": "array"
+        },
+        "analysis_input": {
+          "description": "The connected input the analysis columns come from; `data_input` when absent.",
+          "title": "Analysis Input",
+          "type": "string"
+        },
+        "banding_source": {
+          "description": "For a ratebook, the connected input giving the factors' bands.",
+          "title": "Banding Source",
+          "type": "string"
+        },
+        "cd_tolerance": {
+          "description": "For a ratebook, the coordinate-descent tolerance.",
+          "title": "Cd Tolerance",
+          "type": "number"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "constraints": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "description": "For each constrained column, its bound: `min`, `max`, `min_pct` or `max_pct`.",
+          "title": "Constraints",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "data_input": {
+          "description": "The connected input optimised, by its input name; may be absent with one input.",
+          "title": "Data Input",
+          "type": "string"
+        },
+        "factor_columns": {
+          "description": "For a ratebook, the factor groups the table is fitted over.",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Factor Columns",
+          "type": "array"
+        },
+        "frontier_ranges": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "description": "For each constraint swept by the frontier, its range.",
+          "title": "Frontier Ranges",
+          "type": "object"
+        },
+        "frontier_steps": {
+          "description": "The number of points on the frontier.",
+          "title": "Frontier Steps",
+          "type": "integer"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "max_cd_iterations": {
+          "description": "For a ratebook, the most coordinate-descent passes.",
+          "title": "Max Cd Iterations",
+          "type": "integer"
+        },
+        "max_iter": {
+          "description": "The most solver iterations.",
+          "title": "Max Iter",
+          "type": "integer"
+        },
+        "mlflow_destination": {
+          "description": "The MLflow server or Databricks workspace a result is logged to; empty or absent is the local\nfolder.",
+          "enum": [
+            "",
+            "databricks",
+            "server"
+          ],
+          "title": "Mlflow Destination",
+          "type": "string"
+        },
+        "mlflow_experiment": {
+          "description": "The MLflow experiment a logged result goes to.",
+          "title": "Mlflow Experiment",
+          "type": "string"
+        },
+        "mode": {
+          "description": "Whether each quote is optimised (`online`) or a factor table is fitted (`ratebook`).",
+          "enum": [
+            "online",
+            "ratebook"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "objective": {
+          "description": "The column the optimiser maximises.",
+          "title": "Objective",
+          "type": "string"
+        },
+        "quote_id": {
+          "description": "The column identifying each quote.",
+          "title": "Quote Id",
+          "type": "string"
+        },
+        "result_export_path": {
+          "description": "The Export pane's save path, relative to the project root.",
+          "title": "Result Export Path",
+          "type": "string"
+        },
+        "scenario_index": {
+          "description": "The column holding each scenario's grid position.",
+          "title": "Scenario Index",
+          "type": "string"
+        },
+        "scenario_value": {
+          "description": "The column holding each scenario's value.",
+          "title": "Scenario Value",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "tolerance": {
+          "description": "The solver's convergence tolerance.",
+          "title": "Tolerance",
+          "type": "number"
+        }
+      },
+      "title": "OptimiserConfig",
       "type": "object"
     },
     "OptimiserDiagnosticError": {
@@ -14103,6 +17495,41 @@
         "error"
       ],
       "title": "OptimiserMlflowLogResponse",
+      "type": "object"
+    },
+    "OptimiserNodeData": {
+      "description": "A optimiser node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/OptimiserConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "optimiser",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "OptimiserNodeData",
       "type": "object"
     },
     "OptimiserOnlineFrontierPoint": {
@@ -15541,6 +18968,55 @@
       "title": "OutputAssembleDryRunResponse",
       "type": "object"
     },
+    "OutputConfig": {
+      "additionalProperties": false,
+      "description": "A Quote Response: the JSON response document assembled from mapped columns.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "outputMapping": {
+          "description": "The mapping rows, each a column of an incoming frame and the response path it fills.",
+          "items": {
+            "$ref": "#/$defs/OutputMappingEntry"
+          },
+          "title": "Outputmapping",
+          "type": "array"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "title": "OutputConfig",
+      "type": "object"
+    },
     "OutputDestinationResponse": {
       "properties": {
         "format": {
@@ -15562,6 +19038,75 @@
         "suffix_mismatch"
       ],
       "title": "OutputDestinationResponse",
+      "type": "object"
+    },
+    "OutputMappingEntry": {
+      "additionalProperties": false,
+      "description": "One row of a Quote Response's mapping: a column and the response path it fills.",
+      "properties": {
+        "enabled": {
+          "description": "Whether the row is part of the response.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "output_path": {
+          "description": "The JSONPath in the response document the column fills, such as `$[:].premium`.",
+          "title": "Output Path",
+          "type": "string"
+        },
+        "source_column": {
+          "description": "The column whose values fill the path.",
+          "title": "Source Column",
+          "type": "string"
+        },
+        "source_port": {
+          "description": "The incoming frame the column comes from, by its input name.",
+          "title": "Source Port",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_port",
+        "source_column",
+        "output_path",
+        "enabled"
+      ],
+      "title": "OutputMappingEntry",
+      "type": "object"
+    },
+    "OutputNodeData": {
+      "description": "A output node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/OutputConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "output",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "OutputNodeData",
       "type": "object"
     },
     "Page": {
@@ -16754,6 +20299,41 @@
       "title": "PolarsFreeCodeColumnsResponse",
       "type": "object"
     },
+    "PolarsNodeData": {
+      "description": "A polars node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/TransformConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "polars",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "PolarsNodeData",
+      "type": "object"
+    },
     "PolarsStepsRenderResponse": {
       "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request.",
       "properties": {
@@ -17531,6 +21111,50 @@
       "title": "QueryParameter",
       "type": "object"
     },
+    "RatingCombinedOutput": {
+      "additionalProperties": false,
+      "description": "A column a Rating Step combines from its tables' values.",
+      "properties": {
+        "baseValue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "description": "The value the combination starts from: a number, or the editor's text of one.",
+          "title": "Basevalue"
+        },
+        "operation": {
+          "description": "How the tables' values are combined.",
+          "enum": [
+            "multiply",
+            "add",
+            "min",
+            "max"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "outputColumn": {
+          "description": "The combined column.",
+          "title": "Outputcolumn",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outputColumn",
+        "operation",
+        "baseValue"
+      ],
+      "title": "RatingCombinedOutput",
+      "type": "object"
+    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -17632,6 +21256,176 @@
         "columns"
       ],
       "title": "RatingLevelsResponse",
+      "type": "object"
+    },
+    "RatingStepConfig": {
+      "additionalProperties": false,
+      "description": "A Rating Step: rating tables looked up by factor and their combined outputs.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "combinedOutputs": {
+          "description": "Columns combined from the tables' values.",
+          "items": {
+            "$ref": "#/$defs/RatingCombinedOutput"
+          },
+          "title": "Combinedoutputs",
+          "type": "array"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "tables": {
+          "description": "The rating tables.",
+          "items": {
+            "$ref": "#/$defs/RatingTable"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "title": "RatingStepConfig",
+      "type": "object"
+    },
+    "RatingStepNodeData": {
+      "description": "A ratingStep node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/RatingStepConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "ratingStep",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "RatingStepNodeData",
+      "type": "object"
+    },
+    "RatingTable": {
+      "additionalProperties": false,
+      "description": "One table of a Rating Step: a value looked up by up to three factor columns.",
+      "properties": {
+        "defaultValue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The value of a factor combination the table does not hold; `null` for none.",
+          "title": "Defaultvalue"
+        },
+        "entries": {
+          "description": "The table's rows, each a level of every factor and its `value`.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "factorDtypes": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "description": "For each factor, the type its levels are read as.",
+          "title": "Factordtypes",
+          "type": "object"
+        },
+        "factors": {
+          "description": "The factor columns the table is keyed by, at most three.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Factors",
+          "type": "array"
+        },
+        "onMissing": {
+          "description": "With no default, whether a missing combination fails the run (`error`) or takes the neutral\nvalue (`neutral`).",
+          "enum": [
+            "error",
+            "neutral"
+          ],
+          "title": "Onmissing",
+          "type": "string"
+        },
+        "outputColumn": {
+          "description": "The column the looked-up value is written to.",
+          "title": "Outputcolumn",
+          "type": "string"
+        }
+      },
+      "title": "RatingTable",
       "type": "object"
     },
     "RecoveryGraphSnapshot": {
@@ -18542,6 +22336,124 @@
       "title": "SavePipelineResponse",
       "type": "object"
     },
+    "ScenarioExpanderConfig": {
+      "additionalProperties": false,
+      "description": "A Scenario Expander: one row per quote and grid value.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_name": {
+          "description": "The column the grid value is written to, such as `scenario_value`.",
+          "title": "Column Name",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "max_value": {
+          "description": "The grid's last value.",
+          "title": "Max Value",
+          "type": "number"
+        },
+        "min_value": {
+          "description": "The grid's first value.",
+          "title": "Min Value",
+          "type": "number"
+        },
+        "quote_id": {
+          "description": "The column identifying each quote.",
+          "title": "Quote Id",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "stepCount": {
+          "description": "The number of grid values, at least 1.",
+          "title": "Stepcount",
+          "type": "integer"
+        },
+        "step_column": {
+          "description": "The column the grid position (from 0) is written to, such as `scenario_index`.",
+          "title": "Step Column",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "title": "ScenarioExpanderConfig",
+      "type": "object"
+    },
+    "ScenarioExpanderNodeData": {
+      "description": "A scenarioExpander node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ScenarioExpanderConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "scenarioExpander",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "ScenarioExpanderNodeData",
+      "type": "object"
+    },
     "SchemaColumn": {
       "additionalProperties": false,
       "properties": {
@@ -19363,6 +23275,62 @@
       "title": "SqlImport",
       "type": "object"
     },
+    "SubmodelConfig": {
+      "additionalProperties": false,
+      "description": "A submodel occurrence: which definition it is, and its name in the pipeline.",
+      "properties": {
+        "alias": {
+          "description": "The occurrence's name in the pipeline.",
+          "title": "Alias",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "definitionId": {
+          "description": "The submodel definition this occurrence runs.",
+          "title": "Definitionid",
+          "type": "string"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "instanceOf": {
+          "description": "For an instance, the occurrence whose definition it shares.",
+          "title": "Instanceof",
+          "type": "string"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "title": "SubmodelConfig",
+      "type": "object"
+    },
     "SubmodelDefinition": {
       "additionalProperties": false,
       "description": "One shared, file-backed submodel definition and its public interface.",
@@ -19487,6 +23455,41 @@
       "title": "SubmodelInputPort",
       "type": "object"
     },
+    "SubmodelNodeData": {
+      "description": "A submodel node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/SubmodelConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "submodel",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "SubmodelNodeData",
+      "type": "object"
+    },
     "SubmodelOutputPort": {
       "additionalProperties": false,
       "description": "A public output backed by exactly one internal source.",
@@ -19504,6 +23507,82 @@
         "source"
       ],
       "title": "SubmodelOutputPort",
+      "type": "object"
+    },
+    "SubmodelPortConfig": {
+      "additionalProperties": false,
+      "description": "A submodel's input or output port: a structural node with no settings of its own.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        }
+      },
+      "title": "SubmodelPortConfig",
+      "type": "object"
+    },
+    "SubmodelPortNodeData": {
+      "description": "A submodelPort node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/SubmodelPortConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "submodelPort",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "SubmodelPortNodeData",
       "type": "object"
     },
     "TableInputWidget": {
@@ -19880,6 +23959,61 @@
         "name"
       ],
       "title": "TableName",
+      "type": "object"
+    },
+    "TableV2": {
+      "additionalProperties": false,
+      "description": "One table entry inside ``tables[]``.",
+      "properties": {
+        "columns": {
+          "description": "The table's columns.",
+          "items": {
+            "$ref": "#/$defs/ColumnV2"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "displayPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The path the editor shows for the table, or `null` to show `path`.",
+          "title": "Displaypath"
+        },
+        "emit": {
+          "description": "Whether the table is one of the node's outputs.",
+          "title": "Emit",
+          "type": "boolean"
+        },
+        "label": {
+          "description": "The table's name, which a connection's `source_port` names it by.",
+          "title": "Label",
+          "type": "string"
+        },
+        "path": {
+          "description": "The JSONPath of the table's rows in the request document, such as `$[:]`.",
+          "title": "Path",
+          "type": "string"
+        },
+        "row_id_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The column identifying each row, or `null` for none.",
+          "title": "Row Id Column"
+        }
+      },
+      "title": "TableV2",
       "type": "object"
     },
     "Theme": {
@@ -22001,6 +26135,67 @@
       "title": "TrainingFeatureSelectionDiagnosticPayload",
       "type": "object"
     },
+    "TransformConfig": {
+      "additionalProperties": false,
+      "description": "A Polars transform: code, or the steps it is rendered from.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "keyword_parameters": {
+          "description": "The keyword-only parameters of a transform written as code, each with its literal default.",
+          "items": {
+            "$ref": "#/$defs/KeywordParameter"
+          },
+          "title": "Keyword Parameters",
+          "type": "array"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "title": "TransformConfig",
+      "type": "object"
+    },
     "TuningReportPayload": {
       "additionalProperties": false,
       "description": "The tuning study as published; its invariants are checked where the\nplan, trials and report artifacts are produced and reloaded\n(``haute.modelling._tuning``), not here.",
@@ -23749,6 +27944,182 @@
       "title": "WorkbenchFormSaveResponse",
       "type": "object"
     },
+    "WorkbenchInputConfig": {
+      "additionalProperties": false,
+      "description": "A Workbench Input: given its tables and sample from the project's form wherever it runs.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "sample": {
+          "additionalProperties": true,
+          "description": "The form's sample quote, given to the node where it runs; never stored in its config file.",
+          "title": "Sample",
+          "type": "object"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "tables": {
+          "description": "The form's input tables, given to the node where it runs; never stored in its config file.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "title": "WorkbenchInputConfig",
+      "type": "object"
+    },
+    "WorkbenchInputNodeData": {
+      "description": "A workbenchInput node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/WorkbenchInputConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "workbenchInput",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "WorkbenchInputNodeData",
+      "type": "object"
+    },
+    "WorkbenchOutputConfig": {
+      "additionalProperties": false,
+      "description": "A Workbench Output: fills the form's response tables from its connected frames.",
+      "properties": {
+        "column_renames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Renames",
+          "type": "object"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "const": "opaque",
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/ContractColumns"
+            }
+          ],
+          "title": "Contract"
+        },
+        "inputMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inputmapping",
+          "type": "object"
+        },
+        "selected_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Columns",
+          "type": "array"
+        },
+        "tables": {
+          "description": "The form's response tables, given to the node where it runs; never stored in its config file.\n    ",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "title": "WorkbenchOutputConfig",
+      "type": "object"
+    },
+    "WorkbenchOutputNodeData": {
+      "description": "A workbenchOutput node's data, its config typed by its config model.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/WorkbenchOutputConfig"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "const": "workbenchOutput",
+          "title": "Nodetype",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "WorkbenchOutputNodeData",
+      "type": "object"
+    },
     "WorkbenchParamFileResponse": {
       "description": "A params file's header, and the distinct values of the column asked for: the allowed\nvalues a schema column copies in, ``[]`` while no column was asked for.",
       "properties": {
@@ -25228,7 +29599,6 @@
     "GitPushRejection",
     "GitMilestoneFork",
     "SaveCapture",
-    "PipelineGraph",
     "TrainResponse",
     "TrainStatusResponse",
     "ExplorePivotRunResponse",
@@ -25272,6 +29642,7 @@
     "SubmodelGraphResponse",
     "DissolveSubmodelResponse",
     "ExecutionMetricsPayload",
+    "PipelineGraph",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
     "WorkbenchFormResponse",
@@ -25424,8 +29795,7 @@
       "GitUpstreamStatusResponse",
       "GitPushRejection",
       "GitMilestoneFork",
-      "SaveCapture",
-      "PipelineGraph"
+      "SaveCapture"
     ],
     "input-cache": [
       "InputCacheBuildResponse",
@@ -25487,6 +29857,9 @@
       "SubmodelGraphResponse",
       "DissolveSubmodelResponse"
     ],
+    "pipeline-graph": [
+      "PipelineGraph"
+    ],
     "preview": [
       "PreviewNodeResponse",
       "PreviewInputsResponse",
@@ -25540,6 +29913,7 @@
     ]
   },
   "x-haute-shared-response-groups": [
-    "execution-metrics"
+    "execution-metrics",
+    "pipeline-graph"
   ]
 }

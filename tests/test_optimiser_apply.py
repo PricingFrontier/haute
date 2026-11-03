@@ -195,7 +195,7 @@ class TestOptimiserApplyDestinationPersistence:
         from haute.codegen import graph_to_code
         from haute.parser import parse_pipeline_source
 
-        graph = self._graph({"mlflow_destination": "local"})
+        graph = self._graph({"mlflow_destination": "server"})
         code = graph_to_code(graph)
 
         assert f'config="{self.APPLY_SIDECAR}"' in code
@@ -205,12 +205,12 @@ class TestOptimiserApplyDestinationPersistence:
         present_dir.mkdir()
         configs = self._write_sidecars(graph, present_dir)
         sidecar = json.loads(configs[self.APPLY_SIDECAR])
-        assert sidecar["mlflow_destination"] == "local"
+        assert sidecar["mlflow_destination"] == "server"
 
         parsed = parse_pipeline_source(code, _base_dir=present_dir)
         apply_node = {n.data.label: n for n in parsed.nodes}["apply_opt"]
         assert apply_node.data.nodeType == "optimiserApply"
-        assert apply_node.data.config.get("mlflow_destination") == "local"
+        assert apply_node.data.config.get("mlflow_destination") == "server"
 
     def test_absent_mlflow_destination_appears_on_neither_side(self, tmp_path):
         from haute.codegen import graph_to_code

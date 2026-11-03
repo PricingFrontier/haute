@@ -189,7 +189,7 @@ def test_a_save_holding_a_workbench_nodes_tables_is_refused(
     graph = PipelineGraph(nodes=[_node("node", node_type, config)])
 
     with pytest.raises(RequestRefusedError) as refused:
-        SavePipelineService._validate_declared_config_keys(graph)
+        SavePipelineService._validate_node_configs(graph)
 
     assert refused.value.status_code == 400
     assert says in refused.value.detail

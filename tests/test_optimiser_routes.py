@@ -644,26 +644,26 @@ class TestSolveRoute:
         assert data["status"] == "started"
         _poll_until_done(client, data["job_id"])
 
-    def test_solve_rejects_invalid_explicit_timeout(self, client, scored_data):
-        """Only positive explicit solve timeouts are accepted."""
-        graph = _make_optimiser_graph(scored_data, config={"timeout": 0})
+    @pytest.mark.parametrize("key", ["timeout", "auto_range_timeout"])
+    def test_solve_refuses_a_config_timeout(self, client, scored_data, key):
+        """The time limit comes from the pipeline settings; a config cannot set one."""
+        graph = _make_optimiser_graph(scored_data, config={key: 60})
 
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
 
         assert resp.status_code == 400
-        assert "timeout must be a positive integer" in resp.json()["detail"]
+        assert f"does not declare: {key!r}" in resp.json()["detail"]
 
     @pytest.mark.parametrize(
-        ("route", "config"),
+        "route",
         [
-            # The solve's own timeout check reads the optimisation time limit.
-            ("/api/optimiser/solve", None),
-            # With the solve timeout set, auto-range's own timeout check reads it.
-            ("/api/optimiser/frontier/auto-range/start", {"timeout": 60}),
+            # A solve and an auto-range each read the optimisation time limit.
+            "/api/optimiser/solve",
+            "/api/optimiser/frontier/auto-range/start",
         ],
     )
     def test_an_invalid_settings_file_answers_409_rather_than_a_config_error(
-        self, client, scored_data, monkeypatch, route, config
+        self, client, scored_data, monkeypatch, route
     ):
         """A broken settings file is the application's 409 with its message, not a 400."""
         from haute import _pipeline_settings
@@ -677,7 +677,7 @@ class TestSolveRoute:
             raise _pipeline_settings.PipelineSettingsError(message)
 
         monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", refuse)
-        graph = _make_optimiser_graph(scored_data, config=config)
+        graph = _make_optimiser_graph(scored_data)
 
         resp = client.post(route, json={"graph": graph, "node_id": "opt"})
 
@@ -5535,7 +5535,7 @@ class TestUnsupportedMode:
         graph = _make_optimiser_graph(scored_data, config={"mode": "quantum"})
         resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
         assert resp.status_code == 400
-        assert "quantum" in resp.json()["detail"]
+        assert "setting 'mode': Input should be 'online' or 'ratebook'" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -7312,7 +7312,7 @@ class TestValidateConfig:
         with pytest.raises(RequestRefusedError) as exc_info:
             OptimiserSolveService._validate_config({"objective": "income", "mode": "quantum"})
         assert exc_info.value.status_code == 400
-        assert "quantum" in exc_info.value.detail
+        assert "setting 'mode': Input should be 'online' or 'ratebook'" in exc_info.value.detail
 
     def test_ratebook_without_factor_columns_raises_400(self):
 
@@ -7350,22 +7350,26 @@ class TestValidateConfig:
         assert mode == "ratebook"
 
     def test_validate_config_max_iter_zero(self):
-        """max_iter=0 should not block validation — it is not checked by _validate_config."""
+        """A solver control must be positive: the node's config model refuses max_iter=0."""
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        mode = OptimiserSolveService._validate_config(
-            {"objective": "income", "mode": "online", "max_iter": 0}
-        )
-        assert mode == "online"
+        with pytest.raises(RequestRefusedError) as exc_info:
+            OptimiserSolveService._validate_config(
+                {"objective": "income", "mode": "online", "max_iter": 0}
+            )
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "Optimiser max_iter must be a positive integer."
 
     def test_validate_config_negative_tolerance(self):
-        """tolerance=-1 should not block validation — tolerance is not validated here."""
+        """A solver control must be positive: the node's config model refuses tolerance=-1."""
         from haute.routes._optimiser_service import OptimiserSolveService
 
-        mode = OptimiserSolveService._validate_config(
-            {"objective": "income", "mode": "online", "tolerance": -1}
-        )
-        assert mode == "online"
+        with pytest.raises(RequestRefusedError) as exc_info:
+            OptimiserSolveService._validate_config(
+                {"objective": "income", "mode": "online", "tolerance": -1}
+            )
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "Optimiser tolerance must be a positive number."
 
     def test_validate_config_empty_objective_string(self):
         """objective='' is treated as missing and should raise 400."""
@@ -12356,7 +12360,7 @@ class TestLaunchBackground:
     ):
         """An invalid limit in the settings file never silently removes the solve's limit."""
         from haute._pipeline_settings import PipelineSettingsError
-        from haute.routes._optimiser_service import _solve_timeout_from_config
+        from haute.routes._optimiser_service import _optimisation_time_limit
 
         (tmp_path / ".haute").mkdir()
         (tmp_path / ".haute" / "pipeline-settings.json").write_text(
@@ -12365,7 +12369,7 @@ class TestLaunchBackground:
         use_project(tmp_path)
 
         with pytest.raises(PipelineSettingsError, match="optimisation_time_limit_minutes"):
-            _solve_timeout_from_config({})
+            _optimisation_time_limit()
 
     @pytest.mark.parametrize("registered", [False, True])
     def test_a_launch_without_its_setup_context_fails_loudly(self, clean_job_store, registered):
@@ -12393,10 +12397,12 @@ class TestLaunchBackground:
                 context, config={}, quote_grid=MagicMock(), ratebook_factors_handle=None
             )
 
-    def test_background_sets_start_time_and_timeout(self, clean_job_store):
-        """_launch_background sets start_time and timeout on the job."""
+    def test_background_sets_start_time_and_timeout(self, clean_job_store, tmp_path):
+        """_launch_background sets start_time, and the settings' time limit, on the job."""
+        from haute._pipeline_settings import update_pipeline_settings
         from haute.routes._optimiser_service import OptimiserSolveService
 
+        update_pipeline_settings(tmp_path, {"optimisation_time_limit_minutes": 0.7})
         service = OptimiserSolveService(clean_job_store)
         job_id = clean_job_store.create_job(
             {
@@ -12407,12 +12413,11 @@ class TestLaunchBackground:
         )
 
         mock_grid = MagicMock()
-        config = {"timeout": 42}
 
         with patch("haute.routes._optimiser_service._solve_online"):
             service._launch_background(
                 setup_launch_context(service, job_id),
-                config=config,
+                config={},
                 quote_grid=mock_grid,
                 ratebook_factors_handle=None,
             )
