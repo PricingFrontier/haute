@@ -2609,3 +2609,21 @@ def test_the_golden_folder_reads_as_the_test_project_s_form(project: Path) -> No
     assert document.spec.model_dump(mode="json") == spec_of(FORM).model_dump(mode="json")
     assert document.revision == folder_revision(golden_files())
     assert document.repairs == ()
+
+
+@pytest.mark.parametrize("match", ["all", "any"])
+def test_a_show_when_giving_both_match_and_at_least_is_refused(match: str) -> None:
+    """Either says how many conditions must hold; ``all`` written out is given too."""
+    from pydantic import ValidationError
+
+    from haute._workbench_folder_files import ShowWhenFile
+
+    with pytest.raises(ValidationError, match="gives both match and at_least"):
+        ShowWhenFile.model_validate({"match": match, "at_least": 1, "conditions": []})
+
+
+def test_a_show_when_leaving_match_out_counts_its_at_least() -> None:
+    from haute._workbench_folder_files import ShowWhenFile
+
+    assert ShowWhenFile.model_validate({"at_least": 2, "conditions": []}).counted == 2
+    assert ShowWhenFile.model_validate({"conditions": []}).counted == "all"

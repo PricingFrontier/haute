@@ -208,7 +208,9 @@ class ShowWhenFile(_File):
 
     @model_validator(mode="after")
     def _match_or_at_least(self) -> ShowWhenFile:
-        _one_match(None if self.match == "all" else self.match, self.at_least, "a show_when")
+        # A match the file leaves out is all; one it writes, all included, is given.
+        given = self.match if "match" in self.model_fields_set else None
+        _one_match(given, self.at_least, "a show_when")
         return self
 
     @property
