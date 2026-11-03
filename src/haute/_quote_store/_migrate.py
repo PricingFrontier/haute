@@ -33,7 +33,7 @@ from sqlalchemy.types import TypeEngine
 
 from haute._quote_store._providers import PROVIDERS, Provider, name_problems
 from haute._quote_store._schema import StoreSchema, column_type, store_schema, structure
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
+from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
 StepKind = Literal[
     "create table",
@@ -74,14 +74,16 @@ _SCRIPT_TRANSACTIONS: Mapping[str, tuple[str, str]] = {
 @dataclass(frozen=True, slots=True)
 class Step:
     """One change a plan makes, or one thing it keeps: its kind, the table and column it
-    concerns by their names after it and by their ids, the name each had before when renamed,
+    concerns by their names after it and by the keys they are planned by (the form's name, or
+    ``database:`` and the database's for one the form does not have), the name each had
+    before when renamed,
     and how many quotes hold values in what it concerns (None when not counted)."""
 
     kind: StepKind
     table: str
-    table_id: str
+    table_key: str
     column: str | None = None
-    column_id: str | None = None
+    column_key: str | None = None
     was: str | None = None
     quotes: int | None = None
 
@@ -106,8 +108,8 @@ def _named(key: str) -> str:
     return f"haute_tmp_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:12]}"
 
 
-def _by_id(items: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {item["id"]: item for item in items}
+def _by_key(items: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {item["key"]: item for item in items}
 
 
 def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
@@ -123,21 +125,21 @@ def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
     """The tables and columns of *recorded* a plan to *form* says the quotes of: those the
     form removed, and those whose type, rows or role it changed."""
-    new = _by_id(form["tables"])
+    new = _by_key(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
-        after = new.get(table["id"])
+        after = new.get(table["key"])
         if after is None:
             # A table removed is counted whole.
-            wanted.add((table["id"], None))
+            wanted.add((table["key"], None))
             continue
         if (table["rows"], table["role"]) != (after["rows"], after["role"]):
-            wanted.add((table["id"], None))
-        columns = _by_id(after["columns"])
+            wanted.add((table["key"], None))
+        columns = _by_key(after["columns"])
         for column in table["columns"]:
-            changed = columns.get(column["id"])
+            changed = columns.get(column["key"])
             if changed is None or changed["type"] != column["type"]:
-                wanted.add((table["id"], column["id"]))
+                wanted.add((table["key"], column["key"]))
     return wanted
 
 
@@ -149,7 +151,7 @@ def plan(
     provider: Provider | None = None,
 ) -> Plan:
     """The plan bringing a database whose tables have the structure *recorded* (None for one
-    holding no store) to the structure of *form*, by stable id, given the *counts* of quotes
+    holding no store) to the structure of *form*, by key, given the *counts* of quotes
     holding values in each table and column :func:`wanted_counts` names (None when nothing
     was counted), on *provider*'s engine, which refuses a name longer than it keeps whole.
     Reads nothing else."""
@@ -171,22 +173,22 @@ def _plan(
     after = json.loads(json.dumps(form))
     if recorded is None:
         created = tuple(
-            Step("create table", table["name"], table["id"]) for table in form["tables"]
+            Step("create table", table["name"], table["key"]) for table in form["tables"]
         )
         return Plan(created, (), after, activity=True)
     steps: list[Step] = []
     refusals: list[str] = []
-    old = _by_id(recorded["tables"])
-    new = _by_id(form["tables"])
+    old = _by_key(recorded["tables"])
+    new = _by_key(form["tables"])
     recorded_after: list[dict[str, Any]] = []
     # The names the removed tables still hold, since the SQL drops none: no table of the form
     # may take one, made or renamed.
     removed_names = {
-        table["name"].casefold() for table in recorded["tables"] if table["id"] not in new
+        table["name"].casefold() for table in recorded["tables"] if table["key"] not in new
     }
 
     for table in form["tables"]:
-        before = old.get(table["id"])
+        before = old.get(table["key"])
         if before is None:
             if table["name"].casefold() in removed_names:
                 refusals.append(
@@ -194,13 +196,13 @@ def _plan(
                     "which the SQL keeps: rename one, or drop the removed table first"
                 )
                 continue
-            steps.append(Step("create table", table["name"], table["id"]))
+            steps.append(Step("create table", table["name"], table["key"]))
             recorded_after.append(table)
             continue
         if (before["rows"], before["role"]) != (table["rows"], table["role"]):
             # A table of other rows or another role: a step the SQL notes, whatever it holds.
-            quotes = _count(counts, (table["id"], None))
-            if table["id"] == QUOTE_DETAILS_ID:
+            quotes = _count(counts, (table["key"], None))
+            if table["key"] == QUOTE_DETAILS_NAME:
                 refusals.append("quote_details takes no change of its rows or role")
                 recorded_after.append(before)
             else:
@@ -208,7 +210,7 @@ def _plan(
                     Step(
                         "reshape table",
                         table["name"],
-                        table["id"],
+                        table["key"],
                         was=before["name"],
                         quotes=quotes,
                     )
@@ -224,15 +226,15 @@ def _plan(
             recorded_after.append(before)
             continue
         if before["name"] != table["name"]:
-            steps.append(Step("rename table", table["name"], table["id"], was=before["name"]))
+            steps.append(Step("rename table", table["name"], table["key"], was=before["name"]))
         columns_after = _plan_columns(table, before, counts, steps, refusals)
         recorded_after.append({**table, "columns": columns_after})
 
     for table in recorded["tables"]:
-        if table["id"] in new:
+        if table["key"] in new:
             continue
-        quotes = _count(counts, (table["id"], None))
-        steps.append(Step("keep table", table["name"], table["id"], quotes=quotes))
+        quotes = _count(counts, (table["key"], None))
+        steps.append(Step("keep table", table["name"], table["key"], quotes=quotes))
     return Plan(
         tuple(steps),
         tuple(refusals),
@@ -250,18 +252,18 @@ def _plan_columns(
 ) -> list[dict[str, Any]]:
     """The steps of one table both structures hold, column by column; the columns it holds
     after them."""
-    old = _by_id(before["columns"])
-    new = _by_id(table["columns"])
+    old = _by_key(before["columns"])
+    new = _by_key(table["columns"])
     # The names this table's removed columns still hold, since the SQL drops none: no column of
     # the form may take one, added or renamed.
     removed_names = {
-        column["name"].casefold() for column in before["columns"] if column["id"] not in new
+        column["name"].casefold() for column in before["columns"] if column["key"] not in new
     }
     after: list[dict[str, Any]] = []
     name = table["name"]
     for column in table["columns"]:
-        was = old.get(column["id"])
-        key: Key = (table["id"], column["id"])
+        was = old.get(column["key"])
+        key: Key = (table["key"], column["key"])
         if was is None:
             if column["name"].casefold() in removed_names:
                 refusals.append(
@@ -269,7 +271,7 @@ def _plan_columns(
                     "removes, which the SQL keeps: rename one, or drop the removed column first"
                 )
                 continue
-            steps.append(Step("add column", name, table["id"], column["name"], column["id"]))
+            steps.append(Step("add column", name, table["key"], column["name"], column["key"]))
             after.append(column)
             continue
         if was["name"] != column["name"] and column["name"].casefold() in removed_names:
@@ -285,34 +287,34 @@ def _plan_columns(
                 Step(
                     "rename column",
                     name,
-                    table["id"],
+                    table["key"],
                     column["name"],
-                    column["id"],
+                    column["key"],
                     was=was["name"],
                 )
             )
         if was["type"] != column["type"]:
             quotes = _count(counts, key)
-            if table["id"] == QUOTE_DETAILS_ID:
+            if table["key"] == QUOTE_DETAILS_NAME:
                 refusals.append(f"quote_details.{column['name']} takes no change of its type")
             else:
                 steps.append(
                     Step(
                         "retype column",
                         name,
-                        table["id"],
+                        table["key"],
                         column["name"],
-                        column["id"],
+                        column["key"],
                         quotes=quotes,
                     )
                 )
         after.append(column)
     for column in before["columns"]:
-        if column["id"] in new:
+        if column["key"] in new:
             continue
-        quotes = _count(counts, (table["id"], column["id"]))
+        quotes = _count(counts, (table["key"], column["key"]))
         steps.append(
-            Step("keep column", name, table["id"], column["name"], column["id"], quotes=quotes)
+            Step("keep column", name, table["key"], column["name"], column["key"], quotes=quotes)
         )
     return after
 
@@ -326,27 +328,27 @@ def _emit(operations: Operations, plan: Plan, schema: StoreSchema) -> None:
     owner = schema.metadata.schema
     renames = [step for step in steps if step.kind == "rename table" and step.was != step.table]
     for step in renames:
-        operations.rename_table(str(step.was), _named(step.table_id), schema=owner)
+        operations.rename_table(str(step.was), _named(step.table_key), schema=owner)
     for step in renames:
-        operations.rename_table(_named(step.table_id), step.table, schema=owner)
+        operations.rename_table(_named(step.table_key), step.table, schema=owner)
     columns = [step for step in steps if step.kind == "rename column" and step.was != step.column]
     for step in columns:
         operations.alter_column(
             step.table,
             str(step.was),
-            new_column_name=_named(f"{step.table_id}.{step.column_id}"),
+            new_column_name=_named(f"{step.table_key}.{step.column_key}"),
             schema=owner,
         )
     for step in columns:
         operations.alter_column(
             step.table,
-            _named(f"{step.table_id}.{step.column_id}"),
+            _named(f"{step.table_key}.{step.column_key}"),
             new_column_name=step.column,
             schema=owner,
         )
     for step in steps:
         if step.kind == "create table":
-            operations.impl.create_table(schema.by_id(step.table_id).table)
+            operations.impl.create_table(schema.by_name(step.table_key).table)
         elif step.kind == "add column":
             operations.add_column(step.table, _column(schema, step), schema=owner)
         elif step.kind == "retype column":
@@ -391,20 +393,20 @@ def _note(operations: Operations, text: str) -> None:
     impl.static_output(_commented(text))
 
 
-def _structure_table(structure: Mapping[str, Any] | None, table_id: str) -> dict[str, Any]:
-    """The table *structure* holds by the id *table_id*."""
+def _structure_table(structure: Mapping[str, Any] | None, table_key: str) -> dict[str, Any]:
+    """The table *structure* holds by the id *table_key*."""
     for table in (structure or {}).get("tables", []):
-        if table["id"] == table_id:
+        if table["key"] == table_key:
             return dict(table)
-    raise KeyError(table_id)
+    raise KeyError(table_key)
 
 
 def _structure_column(structure: Mapping[str, Any] | None, step: Step) -> dict[str, Any]:
     """The column *structure* holds by *step*'s ids."""
-    for column in _structure_table(structure, step.table_id)["columns"]:
-        if column["id"] == step.column_id:
+    for column in _structure_table(structure, step.table_key)["columns"]:
+        if column["key"] == step.column_key:
             return dict(column)
-    raise KeyError((step.table_id, step.column_id))
+    raise KeyError((step.table_key, step.column_key))
 
 
 def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, step: Step) -> None:
@@ -450,8 +452,8 @@ def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, st
 def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
     """A script's note on a table whose rows or role the form changed, which no statement
     changes: what the table was and is, and what it needs."""
-    was = _structure_table(plan.before, step.table_id)
-    now = _structure_table(plan.recorded, step.table_id)
+    was = _structure_table(plan.before, step.table_key)
+    now = _structure_table(plan.recorded, step.table_key)
     _note(
         operations,
         f"{step.table}{held(step.quotes, 'rows')} changes from an {was['role']} table of "
@@ -484,7 +486,7 @@ def _removed_note(operations: Operations, step: Step, owner: str | None) -> None
 
 def _column(schema: StoreSchema, step: Step) -> Column[Any]:
     """A fresh copy of the store's column *step* adds, nullable as every column a table gains."""
-    found = schema.by_id(step.table_id).table.c[str(step.column)]
+    found = schema.by_name(step.table_key).table.c[str(step.column)]
     return Column(found.name, found.type, nullable=True)
 
 

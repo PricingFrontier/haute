@@ -155,8 +155,8 @@ def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
         sample=tables.sample,
         response_tables=list(tables.response_tables),
         store_columns={
-            table_id: [WorkbenchStoreColumn(name=name, kind=kind) for name, kind in kept]
-            for table_id, kept in store_columns(spec).items()
+            table_name: [WorkbenchStoreColumn(name=name, kind=kind) for name, kind in kept]
+            for table_name, kept in store_columns(spec).items()
         },
     )
 
@@ -406,8 +406,6 @@ def _store_compare(
 
     spec = _checked_form(body.form)
     connection = connection_of(config, body.environment)
-    found = _default_branch_form(config)
-    branch, base = found if found is not None else (None, None)
     catalogue = Catalogue(
         tables=tuple(
             CatalogueTable(
@@ -435,7 +433,6 @@ def _store_compare(
         spec,
         catalogue,
         provider=provider,
-        base=base,
         renames=[Rename(each.table, each.column, each.was) for each in body.renames],
     )
     return WorkbenchStoreCompareResponse(
@@ -449,7 +446,7 @@ def _store_compare(
             WorkbenchStoreExtra(
                 table=each.table,
                 column=each.column,
-                table_id=each.table_id,
+                form_table=each.form_table,
                 quotes=each.quotes,
             )
             for each in comparison.extras
@@ -465,7 +462,6 @@ def _store_compare(
             PROVIDER_DIALECTS[provider.name],
             sql_schema=connection.schema,
         ),
-        branch=branch,
     )
 
 

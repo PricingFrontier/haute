@@ -23,7 +23,6 @@ from pydantic import (
 )
 
 from haute._workbench_form import (
-    IDENTITY_IDS,
     PARAMETER_NAME,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
@@ -78,8 +77,7 @@ DETAILS_ANY = (
     "use_grouping",
 )
 DETAILS_TYPED = ("required", "min", "max", "options", "options_source", "default_value")
-DETAILS_NAMES = tuple(name for _, name, _ in QUOTE_DETAILS_COLUMNS)
-DETAILS_IDS = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
+DETAILS_NAMES = tuple(name for name, _ in QUOTE_DETAILS_COLUMNS)
 
 
 class _File(BaseModel):
@@ -401,31 +399,29 @@ class LayoutFile(_File):
 
 
 class TableFile(_File):
-    """A table but its name, which is its index entry: each column named once, an output's
-    columns holding no rule, and none the quote's identity, which Haute gives every table."""
+    """A table but its name, which is its index entry: each column named once whatever its
+    case, and an output's columns holding no rule. The quote's identity, which Haute gives
+    every table, is written in none; a column of either name is the project's own, a clash
+    the schema's problems name (``haute._workbench_form.identity_clashes``)."""
 
-    id: str
     role: Literal["input", "output"]
     rows: Literal["one", "many"]
     columns: list[ColumnFile]
 
     @model_validator(mode="after")
     def _holds_its_own_columns(self) -> TableFile:
-        # A reference names a column by its name: two of one name, as a merge can leave
-        # them, would give the sheets one of them and silently not the other.
-        names: set[str] = set()
+        # A column is known by its name (READ-23): two of one name whatever their case, as a
+        # merge can leave them, would give the sheets one of them and not the other, and a
+        # database that ignores case one column for both.
+        names: dict[str, str] = {}
         for column in self.columns:
-            if column.name in names:
+            folded = column.name.casefold()
+            if folded in names:
                 raise ValueError(
-                    f"two columns are named {column.name}: each column of a table needs a "
-                    "name of its own"
+                    f"two columns are named {names[folded]} and {column.name}: each column of "
+                    "a table needs a name of its own, whatever its case"
                 )
-            names.add(column.name)
-            if column.id in IDENTITY_IDS:
-                raise ValueError(
-                    f"{column.name} is the quote's identity, which Haute holds in every "
-                    "table: remove it"
-                )
+            names[folded] = column.name
             if self.role == "output":
                 rules = [key for key in INPUT_ONLY if key in column.model_fields_set]
                 if rules:
@@ -450,7 +446,7 @@ class QuoteDetailsFile(_File):
         if names != [name for name in DETAILS_NAMES if name in names]:
             raise ValueError("the columns must be in Haute's order")
         for column in self.columns:
-            if DETAILS_IDS[column.name] in QUOTE_DETAILS_MANAGED:
+            if column.name in QUOTE_DETAILS_MANAGED:
                 given = [key for key in DETAILS_TYPED if key in column.model_fields_set]
                 if given:
                     raise ValueError(

@@ -636,7 +636,7 @@ describe("PropertiesPanel", () => {
 
   it("never offers the quote's reference and option among a component's fields", () => {
     const form = sheetForm()
-    const [equipment] = form.schema.tables.filter((candidate) => candidate.id === "equipment")
+    const [equipment] = form.schema.tables.filter((candidate) => candidate.name === "equipment")
     equipment.columns.unshift(column("quote_reference", "reference"), column("quote_option", "option", { type: "int" }))
     loadForm(form)
     select("w_grid")

@@ -1503,7 +1503,7 @@
     },
     "ColumnLook": {
       "additionalProperties": false,
-      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column id: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label as its component places its labels while ``header_align`` is, and\nover a Table's column as its values sit while the Table's is too, while ``width`` is\nNone, a Table's column as wide as the grid makes it and a Collection's box as wide as the\nCollection makes it, and shown with its component while ``show_when`` has no\nconditions.",
+      "description": "How one of a Table's columns, or one of a Collection's fields, looks and when it shows,\nits field by table and column name: each colour the component's own while None, its values\nplaced as its type puts them, or as the Collection places its boxes', while ``align`` is\n``auto``, its label as its component places its labels while ``header_align`` is, and\nover a Table's column as its values sit while the Table's is too, while ``width`` is\nNone, a Table's column as wide as the grid makes it and a Collection's box as wide as the\nCollection makes it, and shown with its component while ``show_when`` has no\nconditions.",
       "properties": {
         "align": {
           "default": "auto",
@@ -1628,7 +1628,7 @@
     },
     "ColumnName": {
       "additionalProperties": false,
-      "description": "A column of the table an Import fills, by id, and the name of the column it is read\nfrom in the file or the query's answer.",
+      "description": "A column of the table an Import fills, by name, and the name of the column it is read\nfrom in the file or the query's answer.",
       "properties": {
         "column": {
           "title": "Column",
@@ -1650,7 +1650,7 @@
     },
     "Condition": {
       "additionalProperties": false,
-      "description": "A test of the value in a one-row table's column, the column by table and column id.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
+      "description": "A test of the value in a one-row table's column, the column by table and column name.\n\nThe shape is all the file holds a condition to. Whether its column, test and values\nfit one another is ``haute._workbench_visibility.condition_fits``'s question, asked\nwhere conditions are tested: retyping a column can unfit a condition the form holds.",
       "properties": {
         "column": {
           "title": "Column",
@@ -6590,7 +6590,7 @@
     },
     "FieldRef": {
       "additionalProperties": false,
-      "description": "A schema column a widget shows, by table and column id, so a rename keeps it.",
+      "description": "A schema column a widget shows, by its table's name and its own (READ-23).",
       "properties": {
         "column": {
           "title": "Column",
@@ -14362,7 +14362,7 @@
     },
     "QueryParameter": {
       "additionalProperties": false,
-      "description": "A ``:name`` in an Import's query, given the value of a column by table and column id.",
+      "description": "A ``:name`` in an Import's query, given the value of a column by table and column name.",
       "properties": {
         "column": {
           "title": "Column",
@@ -14491,7 +14491,7 @@
     },
     "RowCount": {
       "additionalProperties": false,
-      "description": "How many of a many-row table's rows, by table id, pass all of its tests in the same\nrow: every row while it has none.",
+      "description": "How many of a many-row table's rows, by table name, pass all of its tests in the same\nrow: every row while it has none.",
       "properties": {
         "count": {
           "minimum": 0,
@@ -14533,7 +14533,7 @@
     },
     "RowTest": {
       "additionalProperties": false,
-      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it, and another column of the same row, by id, to\ntest against.",
+      "description": "A test a row of a many-row table must pass: a ``Condition``'s column, test and values,\nits table the condition's that holds it, and another column of the same row, by name,\nto test against.",
       "properties": {
         "column": {
           "title": "Column",
@@ -14600,7 +14600,7 @@
     },
     "RowTotal": {
       "additionalProperties": false,
-      "description": "A total of a number column's values in the rows of a many-row table, by table id,\npassing all of its tests in the same row, every row while it has none, tested against\na number typed as text.",
+      "description": "A total of a number column's values in the rows of a many-row table, by table name,\npassing all of its tests in the same row, every row while it has none, tested against\na number typed as text.",
       "properties": {
         "column": {
           "title": "Column",
@@ -14657,7 +14657,7 @@
     },
     "RowsCondition": {
       "additionalProperties": false,
-      "description": "A many-row table's rows, by table id, passing all of its tests in the same row: any\nof them, or every one, as ``rows`` says.",
+      "description": "A many-row table's rows, by table name, passing all of its tests in the same row: any\nof them, or every one, as ``rows`` says.",
       "properties": {
         "rows": {
           "enum": [
@@ -14795,10 +14795,6 @@
           "title": "Help",
           "type": "string"
         },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
         "index": {
           "default": false,
           "title": "Index",
@@ -14907,7 +14903,6 @@
         }
       },
       "required": [
-        "id",
         "name",
         "type",
         "label",
@@ -14975,10 +14970,6 @@
           "title": "Columns",
           "type": "array"
         },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
         "name": {
           "title": "Name",
           "type": "string"
@@ -15003,7 +14994,6 @@
         }
       },
       "required": [
-        "id",
         "name",
         "role",
         "rows",
@@ -15801,7 +15791,7 @@
     },
     "TableName": {
       "additionalProperties": false,
-      "description": "A table an Export writes to a database, by id, and the name of the table it is\nwritten to there.",
+      "description": "A table an Export writes to a database, by name, and the name of the table it is\nwritten to there.",
       "properties": {
         "name": {
           "minLength": 1,
@@ -19091,19 +19081,8 @@
       "type": "object"
     },
     "WorkbenchStoreCompareResponse": {
-      "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, the SQL that brings its tables to\nthe form, from what they hold, and the default branch whose form named renames, null\nwhen none did.",
+      "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, and the SQL that brings its tables\nto the form, from what they hold.",
       "properties": {
-        "branch": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Branch"
-        },
         "differences": {
           "items": {
             "$ref": "#/$defs/WorkbenchStoreDifference"
@@ -19139,14 +19118,13 @@
         "extras",
         "renames",
         "matches",
-        "sql",
-        "branch"
+        "sql"
       ],
       "title": "WorkbenchStoreCompareResponse",
       "type": "object"
     },
     "WorkbenchStoreDifference": {
-      "description": "A way the database differs from the form: the form's table and column by id (no table\nfor Haute's own haute_activity), its kind and what it is.",
+      "description": "A way the database differs from the form: the form's table and column by name (no table\nfor Haute's own haute_activity), its kind and what it is.",
       "properties": {
         "column": {
           "anyOf": [
@@ -19200,7 +19178,7 @@
       "type": "object"
     },
     "WorkbenchStoreExtra": {
-      "description": "A table of the store's, or a column of one of the form's tables, that the database\nholds and the form does not: its table's and its name there, the form's table's id when\nthe table is the form's, and the quotes holding values in it, None when the table lacks a\nquote identity column.",
+      "description": "A table of the store's, or a column of one of the form's tables, that the database\nholds and the form does not: its table's and its name there, the form's table's name when\nthe table is the form's, and the quotes holding values in it, None when the table lacks a\nquote identity column.",
       "properties": {
         "column": {
           "anyOf": [
@@ -19212,6 +19190,17 @@
             }
           ],
           "title": "Column"
+        },
+        "form_table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Form Table"
         },
         "quotes": {
           "anyOf": [
@@ -19228,30 +19217,19 @@
         "table": {
           "title": "Table",
           "type": "string"
-        },
-        "table_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Table Id"
         }
       },
       "required": [
         "table",
         "column",
-        "table_id",
+        "form_table",
         "quotes"
       ],
       "title": "WorkbenchStoreExtra",
       "type": "object"
     },
     "WorkbenchStoreRename": {
-      "description": "A column of the form's table ``table`` (by id), ``column`` (by id), that the database\nholds as ``was``: the analyst's pairing of the two as a rename.",
+      "description": "A column of the form's table ``table``, ``column``, both by name, that the database\nholds as ``was``: the analyst's pairing of the two as a rename.",
       "properties": {
         "column": {
           "maxLength": 512,

@@ -44,7 +44,6 @@ Each package states its formats in its owning specification before behaviour cha
 |---|---|---:|---|
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
 | READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
-| READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
 | READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
@@ -128,50 +127,6 @@ Each package states its formats in its owning specification before behaviour cha
 `src/haute/_codegen_builders.py`; `frontend/src/panels/editors/polarsSteps/formula.ts::additive`;
 `src/haute/assistant/_catalog.py`.
 
-### READ-23 — Workbench columns and tables are identified by their names
-**Why:** Every column in `schema/*.json` carries a random id (`"id": "c_818cc52f3c8b78a9"`, in two widths), and every table carries one too (`t_d7d9abf03a7cf621`). The sheets already refer to fields by name (`br_jobsites.limit`). The ids have these uses:
-- a comparison against the default branch treats a rename as a rename;
-- they key cells in memory;
-- they mark `quote_details`' store-only columns;
-- they go into the names Haute gives the store's constraints, indexes and the temporary names of a two-step rename;
-- they are part of the release form, whose bytes make the release's id.
-
-The owner judged that the complexity isn't worth it.
-
-**Plan:**
-- **The rule:** a table's name, whose lower-case form names its file, identifies it. Table names are unique ignoring case. A column's name identifies it within its table, and is also unique ignoring case.
-- **What changes:**
-  - remove the column and table ids from the form, the form folder, the release form and the editor;
-  - key cells, comparisons, `quote_details`' store-only columns and the editor's selection by name;
-  - derive constraint, index and temporary names from names;
-  - no id the editor keeps in memory reaches a file or a release, so building one form twice gives one release id.
-- **Existing stores keep their constraint and index names.** Haute names them only when it creates a table, and nothing looks them up by name afterwards. The implementation confirms this for every schema change and for the app's check.
-- **Renames:**
-  - a renamed column reads as a column removed and a column added, and a renamed table as a table removed and a table added;
-  - the store keeps the removed column, and quotes keep their values there through saves (the `$kept` field, [workbench](../workbench/high-level.md));
-  - the renamed column starts empty;
-  - the schema pane already pairs a renamed column with its column in the database, when comparing against a database;
-  - `READ-33` owns pairing against the default branch.
-- **One-off and contract changes:**
-  - The release id changes once, because the release form's bytes change.
-  - Replace the stable-id rationale in the [workbench specification](../workbench/high-level.md).
-  - `READ-20` removes the ids from existing forms.
-
-**Acceptance:**
-- No id remains in the form model, the folder files or a release form.
-- Building a form twice gives the same release id.
-- The store comparison, the cell reader and the store-only columns work by name.
-- A renamed column shows as one column removed and one added, and the old column keeps its values through a save.
-- Table or column names that differ only in case are refused.
-- A store created before the change opens and saves quotes, on SQLite and on a hosted engine.
-
-**Dependencies:** `READ-20`.
-
-**Evidence:** `src/haute/_workbench_form.py::_gives_each_its_own_id`;
-`src/haute/_quote_store/_schema.py::structure`; `src/haute/_quote_store/_schema.py::_named`;
-`src/haute/_quote_store/_rows.py::_row_cells`; `src/haute/_quote_store/_migrate.py::_plan_columns`;
-`src/haute/_workbench_tables.py`; `src/haute/_workbench_app.py`.
-
 ### READ-28 — Constants that only formulas read become global constants
 **Why:** A Constant node's sidecar is a map from name to value ([pipeline-config](../pipeline-config/high-level.md)). In the investigated pipeline, constants that only formulas read reach them through a cross join. That costs four nodes, four `connect()` calls, two sidecar entries and two positions.
 
@@ -231,13 +186,13 @@ The owner judged that the complexity isn't worth it.
 `src/haute/assistant/_catalog.py`.
 
 ### READ-33 — A column or table renamed against the default branch keeps its values
-**Why:** After `READ-23`, a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.
+**Why:** Workbench tables and columns are known by their names, so a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.
 
 **Plan:** If reopened, let the analyst pair a removed column with an added one when comparing against the default branch too, as the pane does against a database. The SQL then renames the column, or the table, so saved quotes keep their values in it.
 
 **Acceptance:** A column renamed and paired keeps every saved value, on SQLite and on the hosted engines.
 
-**Dependencies:** `READ-23`; the owner's decision to reopen it.
+**Dependencies:** The owner's decision to reopen it.
 
 **Evidence:** `src/haute/_quote_store/_migrate.py::_plan_columns`.
 

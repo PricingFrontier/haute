@@ -123,13 +123,13 @@ export function FieldGrid({
   const { rows: held, setCell, setRows, price, basis, problems, quoted, readOnly, locked } = useSheetValues()
   const oneRow = (found: Fillable) => found.table.rows === "one"
   const inputs = gridInputTables(rowFields)
-  const inputTables = inputs.map((table) => table.id)
+  const inputTables = inputs.map((table) => table.name)
   // The rows a column gives each table that has them, a row for each value: a grid showing one
   // shows every row its tables hold, none added or deleted.
   const givenRows = new Map(
     inputs.flatMap((table) => {
       const column = presetColumn(table)
-      return column === null ? [] : [[table.id, column.options.length] as const]
+      return column === null ? [] : [[table.name, column.options.length] as const]
     }),
   )
   const given = givenRows.size > 0
@@ -137,11 +137,11 @@ export function FieldGrid({
   // Each many-row output table of every field, whatever hides; showing no input table, their answer gives its rows once priced.
   const outputs = rowFields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
   const answered = inputs.length === 0 ? answeredOutputs(outputs, price) : null
-  const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].id)
+  const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].name)
   const count =
     answer !== undefined ? answer.length : given ? holding : holding === 0 ? rows : options.fixed_rows ? Math.max(rows, holding) : holding
   // A table a column gives its rows has no cells past them, beside a table whose rows differ.
-  const past = (found: NonNullable<Found>, row: number): boolean => row >= (givenRows.get(found.table.id) ?? Infinity)
+  const past = (found: NonNullable<Found>, row: number): boolean => row >= (givenRows.get(found.table.name) ?? Infinity)
   // Each input table's rows as the grid shows them.
   const shownRows = (id: string) => padRows(held[id] ?? [], count)
   // Its rows as shown are written whole until its tables hold rows, and always while a column gives them.
@@ -157,7 +157,7 @@ export function FieldGrid({
   // Each many-row output table's rows lined up with the grid's.
   const matched = answered ?? linedUpOutputs(inputs, outputs, held, count, price, quoted)
   const pricedAt = (found: NonNullable<Found>, row: number): unknown =>
-    found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.id)?.[row]?.[found.column.name]
+    found.table.rows === "one" ? price?.tables[found.table.name]?.[0]?.[found.column.name] : matched.get(found.table.name)?.[row]?.[found.column.name]
 
   const { row_numbers: numbered, gridlines, striped, transposed } = options
   // Rows are not inserted or deleted in a grid of fixed rows, of rows a column gives or of no input table, or while the values are read only.
@@ -252,9 +252,9 @@ export function FieldGrid({
     const text = valueText(look)
     const menuHere = transposed ? menuOn(row) : undefined
     const fade = fadedOf(key) ? HIDDEN_OPACITY : 1
-    if (found !== null && presetColumn(found.table)?.id === found.column.id) {
+    if (found !== null && presetColumn(found.table)?.name === found.column.name) {
       // The column giving its table's rows shows each row's value, and takes no typing.
-      const value = held[found.table.id]?.[row]?.[found.column.id]
+      const value = held[found.table.name]?.[row]?.[found.column.name]
       return (
         <td
           key={transposed ? row : key}
@@ -290,15 +290,15 @@ export function FieldGrid({
         >
           <Cell
             found={found}
-            value={held[found.table.id]?.[at]?.[found.column.id]}
-            onChange={(value) => setValue(found.table.id, at, found.column.id, value)}
+            value={held[found.table.name]?.[at]?.[found.column.name]}
+            onChange={(value) => setValue(found.table.name, at, found.column.name, value)}
             label={`${fieldLabel(found)} row ${row + 1}`}
             height={height}
             box={null}
             font={look.font_color ?? colours.font}
             textStyle={text}
-            problem={problems[cellKey(found.table.id, at, found.column.id)] ?? null}
-            disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
+            problem={problems[cellKey(found.table.name, at, found.column.name)] ?? null}
+            disabled={readOnly || locked.has(columnKey(found.table.name, found.column.name))}
           />
         </td>
       )

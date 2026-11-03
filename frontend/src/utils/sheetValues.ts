@@ -26,7 +26,7 @@ export const filled = (value: SampleValue | undefined): boolean =>
  * rows, in order.
  */
 export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boolean =>
-  row !== undefined && table.columns.some((column) => !column.index && filled(row[column.id]))
+  row !== undefined && table.columns.some((column) => !column.index && filled(row[column.name]))
 
 /**
  * The column giving a table a row for each of its allowed values: in a many-row input
@@ -55,7 +55,7 @@ export function presetRows(table: SchemaTable, rows: readonly SampleRow[]): read
   const placed: (SampleRow | undefined)[] = column.options.map(() => undefined)
   const loose: SampleRow[] = []
   for (const row of rows) {
-    const value = row[column.id]
+    const value = row[column.name]
     if (!filled(value)) {
       loose.push(row)
       continue
@@ -64,7 +64,7 @@ export function presetRows(table: SchemaTable, rows: readonly SampleRow[]): read
     if (place !== undefined && placed[place] === undefined) placed[place] = row
   }
   let next = 0
-  return column.options.map((value, place) => ({ ...(placed[place] ?? loose[next++] ?? {}), [column.id]: value }))
+  return column.options.map((value, place) => ({ ...(placed[place] ?? loose[next++] ?? {}), [column.name]: value }))
 }
 
 /** The values with each table a column gives a row for each value read as `presetRows` reads it; the values themselves while none has one. */
@@ -72,7 +72,7 @@ export function withPresetRows(schema: FormSchema, values: RowsByTable): RowsByT
   const tables = schema.tables.filter((table) => presetColumn(table) !== null)
   if (tables.length === 0) return values
   const read: Record<string, readonly SampleRow[]> = { ...values }
-  for (const table of tables) read[table.id] = presetRows(table, values[table.id] ?? [])
+  for (const table of tables) read[table.name] = presetRows(table, values[table.name] ?? [])
   return read
 }
 
@@ -89,7 +89,7 @@ const typingColumns = (table: SchemaTable): SchemaColumn[] => {
  * out gives values already read through `withPresetRows` of the whole schema.
  */
 const quotedRows = (table: SchemaTable, rows: RowsByTable): readonly SampleRow[] => {
-  const held = rows[table.id] ?? []
+  const held = rows[table.name] ?? []
   return table.rows === "one" ? held.slice(0, 1) : presetRows(table, held)
 }
 
@@ -115,9 +115,9 @@ export function newQuoteValues(schema: FormSchema): RowsByTable {
       const row: SampleRow = {}
       for (const column of table.columns) {
         const value = startingValue(table, column)
-        if (value !== null) row[column.id] = value
+        if (value !== null) row[column.name] = value
       }
-      if (Object.keys(row).length > 0) started[table.id] = [row]
+      if (Object.keys(row).length > 0) started[table.name] = [row]
     }
     values = started
     startingValues.set(schema, values)
@@ -139,7 +139,7 @@ export const quoteTyped = (schema: FormSchema, rows: RowsByTable): boolean =>
     if (table.role !== "input") return false
     const columns = typingColumns(table)
     return quotedRows(table, rows).some((row) =>
-      columns.some((column) => filled(row[column.id]) && row[column.id] !== startingValue(table, column)),
+      columns.some((column) => filled(row[column.name]) && row[column.name] !== startingValue(table, column)),
     )
   })
 
@@ -221,13 +221,13 @@ export function quoteProblems(schema: FormSchema, rows: RowsByTable): Record<str
   const problems: Record<string, string> = {}
   for (const table of schema.tables) {
     if (table.role !== "input") continue
-    const typed = rows[table.id] ?? []
+    const typed = rows[table.name] ?? []
     const checked = table.rows === "one" ? [typed[0] ?? {}] : typed
     checked.forEach((row, index) => {
       if (table.rows === "many" && !rowFilled(table, row)) return
       for (const column of table.columns) {
-        const problem = cellProblem(column, row[column.id])
-        if (problem !== null) problems[cellKey(table.id, index, column.id)] = problem
+        const problem = cellProblem(column, row[column.name])
+        if (problem !== null) problems[cellKey(table.name, index, column.name)] = problem
       }
     })
   }

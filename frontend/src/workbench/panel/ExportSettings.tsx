@@ -32,7 +32,7 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
   const change = useWorkbenchFormStore((s) => s.change)
   const { target } = widget
   const set = (patch: Parameters<typeof updateExportTarget>[2]) => change((spec) => updateExportTarget(spec, widget.id, patch))
-  const strays = widget.tables.filter((id) => !form.schema.tables.some((table) => table.id === id))
+  const strays = widget.tables.filter((id) => !form.schema.tables.some((table) => table.name === id))
   return (
     <ButtonPanes form={form} widget={widget}>
       <FormatToggle widget={widget} format={target.format} onChange={(format) => change((spec) => setExportFormat(spec, widget.id, format))} />
@@ -65,11 +65,11 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
       )}
       <Section title="Tables" aside={`${widget.tables.length} exported`}>
         {form.schema.tables.map((table) => {
-          const exported = widget.tables.includes(table.id)
+          const exported = widget.tables.includes(table.name)
           return (
-            <div key={table.id} className="flex items-center gap-2">
+            <div key={table.name} className="flex items-center gap-2">
               <div className="min-w-0 flex-1 font-mono">
-                <ConfigCheckbox label={table.name} checked={exported} onChange={() => change((spec) => toggleExportTable(spec, widget.id, table.id))} />
+                <ConfigCheckbox label={table.name} checked={exported} onChange={() => change((spec) => toggleExportTable(spec, widget.id, table.name))} />
               </div>
               <span className="text-[11px] font-semibold" style={{ color: table.role === "input" ? "var(--accent)" : "var(--success)" }}>
                 {table.role === "input" ? "Input" : "Output"}
@@ -77,9 +77,9 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
               {target.format === "sql" && exported && (
                 <CommittedTextField
                   aria-label={`${table.name} is written to`}
-                  value={target.table_names.find((named) => named.table === table.id)?.name ?? ""}
+                  value={target.table_names.find((named) => named.table === table.name)?.name ?? ""}
                   placeholder={table.name}
-                  onCommit={(name) => change((spec) => setTableName(spec, widget.id, table.id, name))}
+                  onCommit={(name) => change((spec) => setTableName(spec, widget.id, table.name, name))}
                   className={`${FIELD_CLASS} w-32 font-mono`}
                   style={INPUT_STYLE}
                 />

@@ -139,7 +139,7 @@ export type ColumnFill = { kind: "filled" | "missing" | "unknown" | "haute" } | 
  */
 export const carriesIdentity = (table: WorkbenchTable): boolean =>
   table.name !== "quote_details" &&
-  IDENTITY_COLUMNS.every(([, name, type], at) => table.columns[at]?.name === name && table.columns[at]?.type === type)
+  IDENTITY_COLUMNS.every(([name, type], at) => table.columns[at]?.name === name && table.columns[at]?.type === type)
 
 /**
  * How *table*'s column at *at* is filled: `haute` for the quote's identity, `missing` while

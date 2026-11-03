@@ -228,7 +228,7 @@ describe("ShowWhenEditor", () => {
 
   it("tests a row's column against another column of the same row", () => {
     const form = coverForm()
-    form.schema.tables.find((each) => each.id === "equipment")?.columns.push(column("equipment.limit", "limit", { type: "float" }))
+    form.schema.tables.find((each) => each.name === "equipment")?.columns.push(column("equipment.limit", "limit", { type: "float" }))
     loadForm(form)
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))

@@ -58,7 +58,7 @@ from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._quote_store._store import unreached
 from haute._workbench_app import Pricing
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate
-from haute._workbench_form import QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, FormSpec
+from haute._workbench_form import QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, FormSpec
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
     carries_identity,
@@ -103,8 +103,10 @@ PRICE_TOLERANCE = 1e-9
 #: why not.
 Pricer = Callable[[WorkbenchValues], Awaitable[Pricing]]
 
-#: The quote_details cells the app sets, by table and column id: no typing.
-_APP_SET_CELLS = frozenset((QUOTE_DETAILS_ID, column_id) for column_id in QUOTE_DETAILS_MANAGED)
+#: The quote_details cells the app sets, by table and column name: no typing.
+_APP_SET_CELLS = frozenset(
+    (QUOTE_DETAILS_NAME, column_name) for column_name in QUOTE_DETAILS_MANAGED
+)
 
 
 @dataclass(frozen=True)

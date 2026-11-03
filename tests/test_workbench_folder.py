@@ -42,7 +42,7 @@ from haute._workbench_folder import (
 )
 from haute._workbench_folder_files import SheetFile
 from haute._workbench_form import (
-    IDENTITY_IDS,
+    IDENTITY_NAMES,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
     FormSpec,
@@ -776,10 +776,10 @@ def test_the_identity_columns_and_quote_details_structure_are_never_written(
 
     for path in ("schema/policy.json", "schema/layers.json", "schema/br_perils.json"):
         written = json.loads(files[path])["columns"]
-        assert not {item["id"] for item in written} & IDENTITY_IDS, path
+        assert not {item["id"] for item in written} & IDENTITY_NAMES, path
         assert not {item["name"] for item in written} & {"quote_reference", "quote_option"}
     assert not {item["id"] for item in json.loads(files["schema/pricing.json"])["columns"]} & (
-        IDENTITY_IDS
+        IDENTITY_NAMES
     )
     # quote_details' file holds only what the project gives its columns, by name, in Haute's
     # order: never its id, role, rows, or a column's id or type.

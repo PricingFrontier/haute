@@ -42,9 +42,9 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
   const filtering = query !== ""
   // A column with no label is listed by its name made readable, which the search finds too.
   const matches = (column: SchemaColumn) => columnMatches(column, query) || readableName(column.name).toLowerCase().includes(query.toLowerCase())
-  // While searched, the columns of a table the search matches, by id; null while it is not.
+  // While searched, the columns of a table the search matches, by name; null while it is not.
   const matched = (table: SchemaTable): ReadonlySet<string> | null =>
-    filtering ? new Set(sheetColumns(table).filter(matches).map((column) => column.id)) : null
+    filtering ? new Set(sheetColumns(table).filter(matches).map((column) => column.name)) : null
   const shownTables = tables.map((table) => ({ table, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const kind = WIDGET_KINDS[widget.type]
@@ -166,14 +166,14 @@ export function FieldsSettings({ form, widget }: { form: FormSpec; widget: Field
                 {shownTables.length === 0 && <p style={{ color: "var(--text-muted)" }}>No fields match</p>}
                 {shownTables.map(({ table, shown }) => (
                   <TableFields
-                    key={table.id}
+                    key={table.name}
                     widget={widget}
                     table={table}
                     usable={grain === null || tableGrain(table) === grain}
                     plots={widget.type === "chart"}
                     matched={shown}
-                    collapsed={!filtering && collapsed.has(table.id)}
-                    onToggle={() => toggleCollapsed(table.id)}
+                    collapsed={!filtering && collapsed.has(table.name)}
+                    onToggle={() => toggleCollapsed(table.name)}
                   />
                 ))}
               </>

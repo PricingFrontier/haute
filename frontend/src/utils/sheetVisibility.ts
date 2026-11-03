@@ -7,7 +7,7 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { QUOTE_DETAILS_ID, QUOTE_DETAILS_STORE_ONLY, sheetColumns } from "./quoteIdentity"
+import { QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns } from "./quoteIdentity"
 import { isDay } from "./isoDate"
 import { filled, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
 
@@ -186,10 +186,10 @@ export function valueFits(column: SchemaColumn, value: string): boolean {
 }
 
 const tableOf = (schema: FormSchema, tableId: string): SchemaTable | undefined =>
-  schema.tables.find((table) => table.id === tableId)
+  schema.tables.find((table) => table.name === tableId)
 
 const columnOf = (schema: FormSchema, tableId: string, columnId: string): SchemaColumn | undefined =>
-  tableOf(schema, tableId)?.columns.find((column) => column.id === columnId)
+  tableOf(schema, tableId)?.columns.find((column) => column.name === columnId)
 
 const countFits = (test: ConditionTest, count: number): boolean => {
   const takes = CONDITION_TESTS[test].values
@@ -207,7 +207,7 @@ const countFits = (test: ConditionTest, count: number): boolean => {
 export function conditionFault(spec: FormSpec, condition: SingleCondition): string | null {
   const table = tableOf(spec.schema, condition.table)
   if (isListCondition(condition)) return listFault(table, condition)
-  const column = table?.columns.find((candidate) => candidate.id === condition.column)
+  const column = table?.columns.find((candidate) => candidate.name === condition.column)
   if (table === undefined || column === undefined) return "tests a column that is no longer in the schema"
   if (table.rows === "many") return `tests ${column.name}, which is in a table with many rows`
   const { field } = condition
@@ -222,7 +222,7 @@ export function conditionFault(spec: FormSpec, condition: SingleCondition): stri
  * or not in a one-row input table, which a condition's own column must be too.
  */
 function otherFault(column: SchemaColumn, table: SchemaTable | undefined, columnId: string): SchemaColumn | string {
-  const other = table?.columns.find((candidate) => candidate.id === columnId)
+  const other = table?.columns.find((candidate) => candidate.name === columnId)
   if (table === undefined || other === undefined) return `tests ${column.name} against a field that is no longer in the schema`
   if (table.role === "output") return `tests ${column.name} against ${other.name}, which is in an output table`
   if (table.rows === "many") return `tests ${column.name} against ${other.name}, which is in a table with many rows`
@@ -267,18 +267,18 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
   if (table === undefined) return `${verb} the rows of a table that is no longer in the schema`
   if (table.rows === "one") return `${verb} the rows of ${table.name}, which has one row`
   for (const test of condition.where) {
-    const column = table.columns.find((candidate) => candidate.id === test.column)
+    const column = table.columns.find((candidate) => candidate.name === test.column)
     if (column === undefined) return "tests a column that is no longer in the schema"
     if (column.index) return `tests ${column.name}, the index, which nothing is typed into`
     if (table.role === "output" && test.field !== null) return `tests ${column.name}, a part of the price, against another column: the price is tested against values typed alone`
-    const other = test.field === null ? null : table.columns.find((candidate) => candidate.id === test.field)
+    const other = test.field === null ? null : table.columns.find((candidate) => candidate.name === test.field)
     if (other === undefined) return `tests ${column.name} against a column that is no longer in the schema`
     if (other?.index) return `tests ${column.name} against ${other.name}, the index, which nothing is typed into`
     const fault = testFault(column, test, other)
     if (fault !== null) return fault
   }
   if (!isRowTotal(condition)) return null
-  const column = table.columns.find((candidate) => candidate.id === condition.column)
+  const column = table.columns.find((candidate) => candidate.name === condition.column)
   if (column === undefined) return "totals a column that is no longer in the schema"
   if (column.index) return `totals ${column.name}, the index, which nothing is typed into`
   if (column.type !== "int" && column.type !== "float") return `totals ${column.name}, which is not a number column`
@@ -459,7 +459,7 @@ const typedRows = (table: SchemaTable, rows: readonly Row[]): readonly Row[] => 
 
 /** The rows passing every test of a condition on a list's rows, in the same row, its columns fitting (`_passing_rows` on the server). */
 function passingRows(table: SchemaTable, where: readonly RowTest[], rows: readonly Row[]): readonly Row[] {
-  const types = new Map(table.columns.map((column) => [column.id, column.type]))
+  const types = new Map(table.columns.map((column) => [column.name, column.type]))
   // A condition that fits tests columns its table has, and against them.
   return rows.filter((row) => where.every((test) => passes(types.get(test.column) as ColumnType, test, row[test.column], test.field === null ? undefined : row[test.field])))
 }
@@ -473,7 +473,7 @@ function passingRows(table: SchemaTable, where: readonly RowTest[], rows: readon
  */
 function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]): number | null {
   // A total that fits takes a number column its table has.
-  const type = (table.columns.find((column) => column.id === condition.column) as SchemaColumn).type
+  const type = (table.columns.find((column) => column.name === condition.column) as SchemaColumn).type
   const numbers = rows.flatMap((row) => {
     const cell = row[condition.column]
     const text = typeof cell === "string" ? cell.trim() : ""
@@ -495,7 +495,7 @@ function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]):
 }
 
 /** The keys of a counted table's columns other than the index, any of which on a component that shows lets a count without tests hold. */
-const countedKeys = (table: SchemaTable): string[] => table.columns.filter((column) => !column.index).map((column) => columnKey(table.id, column.id))
+const countedKeys = (table: SchemaTable): string[] => table.columns.filter((column) => !column.index).map((column) => columnKey(table.name, column.name))
 
 /**
  * Tests conditions on `rows`, each fitting once and each many-row table's typed rows read once:
@@ -519,7 +519,7 @@ function conditionTester(spec: FormSpec, rows: RowsByTable) {
   const typedOf = (table: SchemaTable): readonly Row[] => {
     let held = typed.get(table)
     if (held === undefined) {
-      held = typedRows(table, rows[table.id] ?? [])
+      held = typedRows(table, rows[table.name] ?? [])
       typed.set(table, held)
     }
     return held
@@ -528,7 +528,7 @@ function conditionTester(spec: FormSpec, rows: RowsByTable) {
   /** Whether a fitting condition on a list's rows holds: each column it tests among `shown`, and its rows passing as it says. */
   const listHolds = (table: SchemaTable, condition: ListCondition, shown: ReadonlySet<string> | null): boolean => {
     const tested = listColumns(condition)
-    const showing = shown === null || (tested.length > 0 ? tested.every((id) => shown.has(columnKey(table.id, id))) : countedKeys(table).some((key) => shown.has(key)))
+    const showing = shown === null || (tested.length > 0 ? tested.every((id) => shown.has(columnKey(table.name, id))) : countedKeys(table).some((key) => shown.has(key)))
     if (!showing) return false
     const typed = typedOf(table)
     const passing = passingRows(table, condition.where, typed)
@@ -560,7 +560,7 @@ export const onPrice = (spec: Pick<FormSpec, "schema">, condition: SingleConditi
 /** A condition on the price on what takes values typed, as its problem says it: one never applied, since it would hide values still priced. */
 export function priceProblem(spec: Pick<FormSpec, "schema">, condition: SingleCondition): string {
   const table = tableOf(spec.schema, condition.table)
-  const tested = isListCondition(condition) ? `the rows of ${table?.name ?? "a missing table"}` : (table?.columns.find((column) => column.id === condition.column)?.name ?? "a missing column")
+  const tested = isListCondition(condition) ? `the rows of ${table?.name ?? "a missing table"}` : (table?.columns.find((column) => column.name === condition.column)?.name ?? "a missing column")
   return `tests ${tested}, a part of the price, which hides only what takes nothing typed: here it is never applied`
 }
 
@@ -612,7 +612,7 @@ function decide(spec: FormSpec, rows: RowsByTable): SheetVisibility {
   for (const table of spec.schema.tables) {
     if (table.role !== "input") continue
     for (const column of table.columns) {
-      const key = columnKey(table.id, column.id)
+      const key = columnKey(table.name, column.name)
       if (!column.index && onWidgets.has(key) && !shown.has(key)) hidden.add(key)
     }
   }
@@ -684,12 +684,12 @@ function priceRows(spec: FormSpec, price: PricedTables | null): RowsByTable {
   const read: Record<string, Row[]> = {}
   for (const table of spec.schema.tables) {
     if (table.role !== "output") continue
-    read[table.id] = (price?.tables[table.name] ?? []).map((answered) => {
+    read[table.name] = (price?.tables[table.name] ?? []).map((answered) => {
       const row: Record<string, Cell> = {}
       for (const column of table.columns) {
         const value = answered[column.name]
-        if (typeof value === "boolean") row[column.id] = value
-        else if (typeof value === "number" || typeof value === "string") row[column.id] = String(value)
+        if (typeof value === "boolean") row[column.name] = value
+        else if (typeof value === "number" || typeof value === "string") row[column.name] = String(value)
       }
       return row
     })
@@ -755,7 +755,7 @@ function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormS
   if (columns.size === 0) return schema
   let removed = false
   const tables = schema.tables.map((table) => {
-    const kept = table.columns.filter((column) => !columns.has(columnKey(table.id, column.id)))
+    const kept = table.columns.filter((column) => !columns.has(columnKey(table.name, column.name)))
     if (kept.length === table.columns.length) return table
     removed = true
     return { ...table, columns: kept }
@@ -764,10 +764,10 @@ function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormS
 }
 
 /** Whether a column, by `columnKey`, is one of quote_details, which a request holds whatever the sheets hide. */
-const ofDetails = (key: string): boolean => key.startsWith(`${QUOTE_DETAILS_ID}:`)
+const ofDetails = (key: string): boolean => key.startsWith(`${QUOTE_DETAILS_NAME}:`)
 
 /** The columns of quote_details no request holds (`QUOTE_DETAILS_STORE_ONLY`), by `columnKey`. */
-const STORE_ONLY_KEYS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_STORE_ONLY].map((id) => columnKey(QUOTE_DETAILS_ID, id)))
+const STORE_ONLY_KEYS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_STORE_ONLY].map((id) => columnKey(QUOTE_DETAILS_NAME, id)))
 
 /**
  * The schema without the columns no request holds, the quote's tables as the server reads
@@ -902,7 +902,7 @@ export const totalColumns = (table: SchemaTable): SchemaColumn[] =>
 /** A new test of a row for the editor: the table's first column but the index, its type's first test and no value; null without one. */
 export function newRowTest(table: SchemaTable): RowTest | null {
   const column = testableColumns(table)[0]
-  return column === undefined ? null : { column: column.id, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
+  return column === undefined ? null : { column: column.name, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
 }
 
 /** A field a test of one value may be tested against, with its table. */
@@ -923,7 +923,7 @@ export function testFields(schema: FormSchema, tableId: string, column: SchemaCo
   const tables = own.rows === "many" ? [own] : schema.tables.filter((table) => table.rows === "one" && table.role === "input")
   return tables.flatMap((table) =>
     testableColumns(table)
-      .filter((other) => other.type === column.type && !(table.id === tableId && other.id === column.id))
+      .filter((other) => other.type === column.type && !(table.name === tableId && other.name === column.name))
       .map((other) => ({ table, column: other })),
   )
 }
@@ -938,11 +938,11 @@ export function newCondition(spec: FormSpec): SingleCondition | null {
   const one = spec.schema.tables.find((table) => table.role === "input" && table.rows === "one" && testableColumns(table).length > 0)
   if (one !== undefined) {
     const column = testableColumns(one)[0]
-    return { table: one.id, column: column.id, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
+    return { table: one.name, column: column.name, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
   }
   for (const table of spec.schema.tables) {
     const test = table.role === "input" && table.rows === "many" ? newRowTest(table) : null
-    if (test !== null) return { table: table.id, rows: "any", where: [test] }
+    if (test !== null) return { table: table.name, rows: "any", where: [test] }
   }
   return null
 }
@@ -981,7 +981,7 @@ export function withConditionColumn(spec: FormSpec, condition: SingleCondition, 
   // The field it is tested against stays while this column may be tested against it.
   const field = kept?.field ?? null
   const against =
-    field !== null && CONDITION_TESTS[op].values === "one" && testFields(spec.schema, tableId, column).some((each) => each.table.id === field.table && each.column.id === field.column)
+    field !== null && CONDITION_TESTS[op].values === "one" && testFields(spec.schema, tableId, column).some((each) => each.table.name === field.table && each.column.name === field.column)
   return against ? { table: tableId, column: columnId, op, values: [], field, days: column.type === "date" ? (kept?.days ?? 0) : 0 } : { table: tableId, column: columnId, op, values, field: null, days: 0 }
 }
 
@@ -997,7 +997,7 @@ export function withConditionRowsOf(spec: FormSpec, condition: SingleCondition, 
     const { field } = condition
     const column = columnOf(spec.schema, tableId, condition.column)
     // A test of a row names the field it is tested against by its column alone, so a field of another table goes.
-    const against = field !== null && field.table === tableId && column !== undefined && testFields(spec.schema, tableId, column).some((each) => each.column.id === field.column)
+    const against = field !== null && field.table === tableId && column !== undefined && testFields(spec.schema, tableId, column).some((each) => each.column.name === field.column)
     const test: RowTest = against
       ? { column: condition.column, op: condition.op, values: [], field: field.column, days: column.type === "date" ? condition.days : 0 }
       : { column: condition.column, op: condition.op, values: field === null ? condition.values : [], field: null, days: 0 }
@@ -1027,7 +1027,7 @@ export function withListKind(spec: FormSpec, condition: ListCondition, kind: Row
   if (isRowTotal(condition)) return { ...condition, total: kind }
   const column = table === undefined ? undefined : totalColumns(table)[0]
   if (column === undefined) throw new Error(`Table "${tableId}" has no number column to total`)
-  return { table: tableId, total: kind, column: column.id, where, op: "above", value: "" }
+  return { table: tableId, total: kind, column: column.name, where, op: "above", value: "" }
 }
 
 /** A test of a row moved to another column of its table, keeping its test as `keptFor` keeps one. */
@@ -1035,7 +1035,7 @@ export function withTestColumn(spec: FormSpec, tableId: string, test: RowTest, c
   const column = columnOf(spec.schema, tableId, columnId)
   if (column === undefined) throw new Error(`Column "${columnId}" of table "${tableId}" is not in the schema`)
   const { op, values } = keptFor(column, test)
-  const against = test.field !== null && CONDITION_TESTS[op].values === "one" && testFields(spec.schema, tableId, column).some((each) => each.column.id === test.field)
+  const against = test.field !== null && CONDITION_TESTS[op].values === "one" && testFields(spec.schema, tableId, column).some((each) => each.column.name === test.field)
   return against ? { column: columnId, op, values: [], field: test.field, days: column.type === "date" ? test.days : 0 } : { column: columnId, op, values, field: null, days: 0 }
 }
 

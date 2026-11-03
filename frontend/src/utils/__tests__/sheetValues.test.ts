@@ -94,7 +94,7 @@ describe("a new quote", () => {
     ...policy,
     columns: [column("state", "state", { options: ["CA", "NY"], default_value: "NY" }), column("years", "years", { type: "int" }), column("vat", "vat", { type: "bool", default_value: true })],
   }
-  const listed: SchemaTable = { ...equipment, columns: equipment.columns.map((c) => (c.id === "item" ? { ...c, default_value: "Crane" } : c)) }
+  const listed: SchemaTable = { ...equipment, columns: equipment.columns.map((c) => (c.name === "item" ? { ...c, default_value: "Crane" } : c)) }
   const priced: SchemaTable = { ...premiums, rows: "one", columns: [column("premium", "premium", { type: "float", default_value: "100" })] }
   const schema = { tables: [detailed, listed, priced] }
 
@@ -148,7 +148,7 @@ describe("a row for each value", () => {
   }
 
   it("names the column giving a table its rows, the first that may", () => {
-    expect(presetColumn(coverage)?.id).toBe("peril")
+    expect(presetColumn(coverage)?.name).toBe("peril")
     expect(presetColumn(equipment)).toBeNull()
   })
 

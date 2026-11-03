@@ -29,7 +29,7 @@ from haute._json_safe import to_json_safe
 from haute._output_assembler import prune_document
 from haute._workbench_form import (
     IDENTITY_COLUMNS,
-    QUOTE_DETAILS_ID,
+    QUOTE_DETAILS_NAME,
     QUOTE_DETAILS_STORE_ONLY,
     ColumnType,
 )
@@ -60,7 +60,7 @@ _STORE_PREFIX = "haute_"
 #: What starts a table name SQLite keeps for its own tables.
 _SQLITE_PREFIX = "sqlite_"
 #: Haute's own columns whose names start as the store's do, by table and column name.
-_HAUTE_COLUMNS = frozenset({(QUOTE_DETAILS_ID, "haute_version")})
+_HAUTE_COLUMNS = frozenset({(QUOTE_DETAILS_NAME, "haute_version")})
 
 
 def store_name_problems(table: str, rows: str, columns: Sequence[str]) -> list[str]:
@@ -231,9 +231,7 @@ def port_tables(tables: Iterable[WorkbenchTable]) -> tuple[WorkbenchTable, ...]:
 
 #: The quote's identity at the head of a table, as a node's tables hold it: each column's
 #: name and type.
-IDENTITY_SHAPE: tuple[tuple[str, ColumnType], ...] = tuple(
-    (name, column_type) for _, name, column_type in IDENTITY_COLUMNS
-)
+IDENTITY_SHAPE: tuple[tuple[str, ColumnType], ...] = IDENTITY_COLUMNS
 
 
 def carries_identity(table: WorkbenchTable) -> bool:
@@ -241,7 +239,7 @@ def carries_identity(table: WorkbenchTable) -> bool:
     table the form makes but ``quote_details``, which holds the identity itself. A node's
     tables have no ids, so the columns are known by their place, names and types."""
     held = tuple((column.name, column.type) for column in table.columns[: len(IDENTITY_SHAPE)])
-    return table.name != QUOTE_DETAILS_ID and held == IDENTITY_SHAPE
+    return table.name != QUOTE_DETAILS_NAME and held == IDENTITY_SHAPE
 
 
 def request_columns(table: WorkbenchTable) -> list[WorkbenchColumn]:
@@ -297,7 +295,7 @@ def _tables(spec: FormSpec, role: str, *, owner: str) -> tuple[WorkbenchTable, .
 
 def _table(table: SchemaTable) -> WorkbenchTable:
     # quote_details' columns the store keeps alone (QUOTE_DETAILS_STORE_ONLY) are no port's.
-    store_only = QUOTE_DETAILS_STORE_ONLY if table.id == QUOTE_DETAILS_ID else frozenset()
+    store_only = QUOTE_DETAILS_STORE_ONLY if table.name == QUOTE_DETAILS_NAME else frozenset()
     return WorkbenchTable(
         name=table.name,
         rows=table.rows,
@@ -305,7 +303,7 @@ def _table(table: SchemaTable) -> WorkbenchTable:
         columns=[
             WorkbenchColumn(name=column.name, type="int" if column.index else column.type)
             for column in table.columns
-            if column.id not in store_only
+            if column.name not in store_only
         ],
     )
 
@@ -327,7 +325,7 @@ def sample_quote(
     take their column's type: a number typed with a currency sign or separators becomes a
     number, and an unticked box in a filled row is false. A value that isn't of its column's
     type stays as typed, for the Workbench Input to report. A cell of *untyped*, by table and
-    column id, is no typing either: the underwriter app's own details, which decide what the
+    column name, is no typing either: the underwriter app's own details, which decide what the
     sheets show as any value does, but are not the underwriter's.
     """
     # Imported here: the visibility rules read cells as this module types them.
@@ -349,21 +347,23 @@ def _quoted(
     for table in spec.data_schema.tables:
         if table.role != "input":
             continue
-        rows = preset_rows(table, spec.sample.get(table.id, []))
+        rows = preset_rows(table, spec.sample.get(table.name, []))
         if table.rows == "one":
             rows = rows[:1]
-        if table.id == QUOTE_DETAILS_ID:
+        if table.name == QUOTE_DETAILS_NAME:
             columns = [
-                column for column in table.columns if column.id not in QUOTE_DETAILS_STORE_ONLY
+                column for column in table.columns if column.name not in QUOTE_DETAILS_STORE_ONLY
             ]
         else:
-            columns = [column for column in table.columns if (table.id, column.id) not in hidden]
+            columns = [
+                column for column in table.columns if (table.name, column.name) not in hidden
+            ]
         given = preset_column(table)
         typed = typed or any(
-            _filled(row.get(column.id)) and not _starting(table, column, row.get(column.id))
+            _filled(row.get(column.name)) and not _starting(table, column, row.get(column.name))
             for row in rows
             for column in columns
-            if not column.index and column is not given and (table.id, column.id) not in untyped
+            if not column.index and column is not given and (table.name, column.name) not in untyped
         )
         # Numbered as the rows stand, from 1, so deleting a row renumbers those after it.
         numbered = [
@@ -463,7 +463,7 @@ def preset_rows(
     placed: list[Mapping[str, str | bool] | None] = [None] * len(column.options)
     loose: list[Mapping[str, str | bool]] = []
     for row in rows:
-        raw = row.get(column.id)
+        raw = row.get(column.name)
         if not _filled(raw):
             loose.append(row)
             continue
@@ -472,7 +472,7 @@ def preset_rows(
             placed[at] = row
     free = iter(loose)
     return [
-        {**(row if row is not None else next(free, {})), column.id: value}
+        {**(row if row is not None else next(free, {})), column.name: value}
         for row, value in zip(placed, column.options, strict=True)
     ]
 
@@ -482,11 +482,11 @@ def _record(
 ) -> dict[str, Any]:
     """Row *number*'s values in *columns* by column name, or nothing when nothing was typed
     in them."""
-    if not any(_filled(row.get(column.id)) for column in columns if not column.index):
+    if not any(_filled(row.get(column.name)) for column in columns if not column.index):
         return {}
     record: dict[str, Any] = {}
     for column in columns:
-        raw = row.get(column.id)
+        raw = row.get(column.name)
         if column.index:
             record[column.name] = number
         elif isinstance(raw, str) and raw.strip():

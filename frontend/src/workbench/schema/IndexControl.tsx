@@ -12,16 +12,16 @@ import { components, currentForm } from "./schemaText"
  * and option, holding each row's number, from 1 (`row_number` until renamed in its row, where it can also be made the
  * key). Unticked, it goes, asking first when a widget shows it.
  */
-export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaTable; onAdded: (id: string) => void }) {
+export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaTable; onAdded: (name: string) => void }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const index = table.columns.find((column) => column.index)
-  const uses = index ? fieldUses(form, table.id, index.id).length : 0
+  const uses = index ? fieldUses(form, table.name, index.name).length : 0
   // An index a sheet shows is removed once the question is answered yes.
   const remove = async () => {
     if (index === undefined) return
     const text = `The index is shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
     if (uses > 0 && !(await confirmed({ title: `Remove the index of ${table.name}?`, text, confirm: "Remove", danger: true }))) return
-    change((f) => removeSchemaColumn(f, table.id, index.id))
+    change((f) => removeSchemaColumn(f, table.name, index.name))
   }
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -30,9 +30,9 @@ export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: 
         checked={index !== undefined}
         onChange={(checked) => {
           if (checked) {
-            const column = createIndexColumn(currentForm(), table.id)
-            change((f) => addSchemaColumn(f, table.id, column, identityCount(table)))
-            onAdded(column.id)
+            const column = createIndexColumn(currentForm(), table.name)
+            change((f) => addSchemaColumn(f, table.name, column, identityCount(table)))
+            onAdded(column.name)
           } else void remove()
         }}
       />

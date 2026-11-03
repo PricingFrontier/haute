@@ -41,7 +41,7 @@ import {
   type Rect,
   type Size,
 } from "./sheetGeometry"
-import { IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
+import { blankColumn, IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
 import { canonicalJson } from "./canonicalJson"
 import { isDay } from "./isoDate"
 import { cellProblem, filled, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, type PricedRows, type RowsByTable } from "./sheetValues"
@@ -168,12 +168,6 @@ export type HeadingOptions = Pick<HeadingWidget, "size" | "align">
 export const TABLE_ROWS_MAX = 50
 export const COLLECTION_COLUMNS_MAX = 12
 
-/** A table's or a column's id: 64 random bits after `prefix`, `t` or `c`. */
-export function newId(prefix: string): string {
-  const bits = crypto.getRandomValues(new Uint8Array(8))
-  return `${prefix}_${Array.from(bits, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
-}
-
 /** What a sheet's part's id is made of after its kind. */
 const PART_ID_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -184,9 +178,9 @@ export type PartKind = "sheet" | "section" | "table" | Exclude<WidgetType, "tabl
 export const partKind = (type: WidgetType): PartKind => (type === "tableInput" ? "table" : type)
 
 /**
- * A sheet's, a section's or a component's id, as the form folder's files name it, so a
- * layout line says what it places: its kind, then `_` and four random lowercase letters or
- * digits, drawn again while `taken`, the form's own ids, holds it.
+ * A sheet's, a section's or a component's id, the editor's own, which no file holds
+ * (READ-24): its kind, then `_` and four random lowercase letters or digits, drawn again
+ * while `taken`, the form's own ids, holds it.
  */
 export function newPartId(kind: PartKind, taken: Iterable<string> = []): string {
   const used = new Set(taken)
@@ -205,14 +199,24 @@ export const formPartIds = (spec: FormSpec): string[] => [
   ...allWidgets(spec).map((widget) => widget.id),
 ]
 
-/** `base`, or `base_2`, `base_3`… until it is none of `taken`. */
+/** `base`, or `base_2`, `base_3`… until it is none of `taken`, whatever their case. */
 export function uniqueName(base: string, taken: Iterable<string>): string {
-  const used = new Set(taken)
-  if (!used.has(base)) return base
+  const used = new Set(Array.from(taken, folded))
+  if (!used.has(folded(base))) return base
   let n = 2
-  while (used.has(`${base}_${n}`)) n += 1
+  while (used.has(folded(`${base}_${n}`))) n += 1
   return `${base}_${n}`
 }
+
+/** A name as names are told apart: a table's or a column's is its own whatever its case (READ-23). */
+const folded = (name: string): string => name.toLowerCase()
+
+/**
+ * Whether `name` is another of `names`' whatever its case, `own` aside: a table and a column
+ * are known by their names, so a rename onto another's would make the two one (READ-23).
+ */
+export const nameTaken = (names: readonly string[], name: string, own: string): boolean =>
+  names.some((other) => other !== own && folded(other) === folded(name))
 
 /** `sum_insured` as "Sum insured": what a column is called until it has a label. */
 export const readableName = (name: string): string =>
@@ -260,24 +264,26 @@ function sectionIn(page: Page, id: string): Section {
 }
 
 function schemaTableOf(spec: FormSpec, id: string): SchemaTable {
-  const table = spec.schema.tables.find((candidate) => candidate.id === id)
+  const table = spec.schema.tables.find((candidate) => candidate.name === id)
   if (table === undefined) throw new Error(`The schema has no table ${id}`)
   return table
 }
 
 function schemaColumnOf(table: SchemaTable, id: string): SchemaColumn {
-  const column = table.columns.find((candidate) => candidate.id === id)
+  const column = table.columns.find((candidate) => candidate.name === id)
   if (column === undefined) throw new Error(`Table ${table.name} has no column ${id}`)
   return column
 }
 
-/** A new table, leading with the quote's reference and option, as every table but quote_details does. */
+/**
+ * A new table, leading with the quote's reference and option, as every table but
+ * quote_details does, named apart from every other whatever their case (READ-23).
+ */
 export const createSchemaTable = (spec: FormSpec): SchemaTable => ({
-  id: newId("t"),
   name: uniqueName("table", spec.schema.tables.map((table) => table.name)),
   role: "input",
   rows: "one",
-  columns: IDENTITY_COLUMNS.map(([id, name, type]) => blankColumn(id, name, type)),
+  columns: IDENTITY_COLUMNS.map(([name, type]) => blankColumn(name, type)),
 })
 
 /**
@@ -288,33 +294,9 @@ export const createSchemaTable = (spec: FormSpec): SchemaTable => ({
 export const createSchemaColumn = (spec: FormSpec, tableId: string, at?: number): SchemaColumn => {
   const { columns } = schemaTableOf(spec, tableId)
   const above = columns[(at ?? columns.length) - 1]
-  const type = above === undefined || above.index || isIdentityColumn(above) ? "str" : above.type
-  return blankColumn(newId("c"), uniqueName("column", columns.map((column) => column.name)), type)
-}
-
-/** A column of `type` with nothing of its own set. */
-function blankColumn(id: string, name: string, type: SchemaColumn["type"]): SchemaColumn {
-  return {
-    id,
-    name,
-    type,
-    label: "",
-    group: "",
-    key: false,
-    required: false,
-    min: null,
-    max: null,
-    options: [],
-    options_source: null,
-    row_per_value: false,
-    index: false,
-    help: "",
-    placeholder: "",
-    default_value: "",
-    number_format: "general",
-    decimal_places: null,
-    use_grouping: true,
-  }
+  const table = schemaTableOf(spec, tableId)
+  const type = above === undefined || above.index || isIdentityColumn(table, above) ? "str" : above.type
+  return blankColumn(uniqueName("column", columns.map((column) => column.name)), type)
 }
 
 /** A table's index: a column holding each row's number, from 1, as the rows stand. */
@@ -337,14 +319,81 @@ export const addSchemaTable = (spec: FormSpec, table: SchemaTable): FormSpec =>
  * output table.
  */
 export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<SchemaTable>): FormSpec =>
-  edit(spec, (draft) => {
-    const table = schemaTableOf(draft, id)
-    Object.assign(table, patch)
-    if (patch.role === "output") {
-      table.columns = table.columns.map((column) => ({ ...column, ...INPUT_ONLY_RULES }))
-      delete draft.sample[id]
+  patch.name !== undefined && nameTaken(spec.schema.tables.map((table) => table.name), patch.name, id)
+    ? spec
+    : edit(spec, (draft) => {
+        const table = schemaTableOf(draft, id)
+        Object.assign(table, patch)
+        if (patch.name !== undefined && patch.name !== id) renameTableUses(draft, id, patch.name)
+        if (patch.role === "output") {
+          table.columns = table.columns.map((column) => ({ ...column, ...INPUT_ONLY_RULES }))
+          delete draft.sample[table.name]
+        }
+      })
+
+/**
+ * Each use of the table `from` made a use of `to`, its new name (READ-23): its columns shown,
+ * labelling a Chart's rows and given a look, the conditions on it, what Imports and Exports
+ * use of it, and its sample rows.
+ */
+function renameTableUses(draft: FormSpec, from: string, to: string): void {
+  const renamed = (name: string): string => (name === from ? to : name)
+  const field = (ref: FieldRef): FieldRef => ({ ...ref, table: renamed(ref.table) })
+  for (const widget of allWidgets(draft)) {
+    if (showsFields(widget)) widget.fields = widget.fields.map(field)
+    if (widget.type === "chart" && widget.category !== null) widget.category = field(widget.category)
+    if (widget.type === "tableInput" || widget.type === "collection") {
+      widget.column_looks = widget.column_looks.map((look) => ({ ...look, table: renamed(look.table) }))
     }
+    if (widget.type === "import") {
+      if (widget.table !== null) widget.table = renamed(widget.table)
+      if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map((given) => ({ ...given, table: renamed(given.table) }))
+    } else if (widget.type === "export") {
+      widget.tables = widget.tables.map(renamed)
+      if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.map((named) => ({ ...named, table: renamed(named.table) }))
+    }
+  }
+  dropConditions(draft, (condition): SingleCondition =>
+    isListCondition(condition)
+      ? { ...condition, table: renamed(condition.table) }
+      : { ...condition, table: renamed(condition.table), field: condition.field === null ? null : field(condition.field) },
+  )
+  if (from in draft.sample) {
+    draft.sample[to] = draft.sample[from]
+    delete draft.sample[from]
+  }
+}
+
+/**
+ * Each use of the column `from` of the table `tableName` made a use of `to`, its new name
+ * (READ-23): where it is shown, labels a Chart's rows or has a look, what the conditions
+ * test of it, what Imports read of it or give a parameter, and its sample values.
+ */
+function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: string): void {
+  const own = (name: string): string => (name === from ? to : name)
+  const field = <T extends FieldRef>(ref: T): T => (ref.table === tableName && ref.column === from ? { ...ref, column: to } : ref)
+  for (const widget of allWidgets(draft)) {
+    if (showsFields(widget)) widget.fields = widget.fields.map(field)
+    if (widget.type === "chart" && widget.category !== null) widget.category = field(widget.category)
+    if (widget.type === "tableInput" || widget.type === "collection") widget.column_looks = widget.column_looks.map(field)
+    if (widget.type === "import") {
+      if (widget.table === tableName) widget.column_names = widget.column_names.map((named) => ({ ...named, column: own(named.column) }))
+      if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map(field)
+    }
+  }
+  dropConditions(draft, (condition): SingleCondition => {
+    if (!isListCondition(condition)) return { ...field(condition), field: condition.field === null ? null : field(condition.field) }
+    if (condition.table !== tableName) return condition
+    const where = condition.where.map((test) => ({ ...test, column: own(test.column), field: test.field === null ? null : own(test.field) }))
+    return isRowTotal(condition) ? { ...condition, where, column: own(condition.column) } : { ...condition, where }
   })
+  for (const row of draft.sample[tableName] ?? []) {
+    if (from in row) {
+      row[to] = row[from]
+      delete row[from]
+    }
+  }
+}
 
 /** The settings only an input column takes, each as a column without it holds it. */
 const INPUT_ONLY_RULES: Pick<SchemaColumn, "min" | "max" | "options" | "options_source" | "row_per_value" | "default_value"> = {
@@ -440,7 +489,7 @@ const dropConditions = (draft: FormSpec, keep: (condition: SingleCondition) => S
   }
 }
 
-/** The columns a condition tests, by table and column id: a one-row table's condition's own and the field it is tested against, or those of its table a list's tests of a row and its total test. */
+/** The columns a condition tests, by table and column name: a one-row table's condition's own and the field it is tested against, or those of its table a list's tests of a row and its total test. */
 const conditionColumns = (condition: SingleCondition): FieldRef[] =>
   isListCondition(condition)
     ? listColumns(condition).map((column) => ({ table: condition.table, column }))
@@ -474,7 +523,7 @@ function withoutColumn(condition: SingleCondition, tableId: string, columnId: st
  */
 export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
   edit(spec, (draft) => {
-    draft.schema.tables = draft.schema.tables.filter((table) => table.id !== id)
+    draft.schema.tables = draft.schema.tables.filter((table) => table.name !== id)
     dropFields(draft, (field) => field.table === id)
     dropConditions(draft, (condition) => (conditionTables(condition).includes(id) ? null : condition))
     for (const widget of allWidgets(draft)) dropButtonUses(widget, (table) => table === id, (field) => field.table === id)
@@ -489,7 +538,7 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
  */
 export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec => {
   const index = rows === "one" ? schemaTableOf(spec, id).columns.find((column) => column.index) : undefined
-  const without = index === undefined ? spec : removeSchemaColumn(spec, id, index.id)
+  const without = index === undefined ? spec : removeSchemaColumn(spec, id, index.name)
   return edit(without, (draft) => {
     const table = schemaTableOf(draft, id)
     table.rows = rows
@@ -509,7 +558,7 @@ export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable
 export const setRowPerValue = (spec: FormSpec, tableId: string, columnId: string, on: boolean): FormSpec =>
   edit(spec, (draft) => {
     for (const column of schemaTableOf(draft, tableId).columns) {
-      if (column.id === columnId) column.row_per_value = on
+      if (column.name === columnId) column.row_per_value = on
       else if (on) column.row_per_value = false
     }
   })
@@ -528,7 +577,7 @@ export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaC
 export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, to: number): FormSpec => {
   const table = schemaTableOf(spec, tableId)
   const { columns } = table
-  const from = columns.findIndex((column) => column.id === columnId)
+  const from = columns.findIndex((column) => column.name === columnId)
   const head = identityCount(table) + (columns[identityCount(table)]?.index ? 1 : 0)
   if (from === to || columns[from].index || from < head || to < head) return spec
   return edit(spec, (draft) => {
@@ -545,10 +594,12 @@ export const updateSchemaColumn = (
   columnId: string,
   patch: Partial<SchemaColumn>,
 ): FormSpec =>
-  isIdentityColumn({ id: columnId })
+  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId }) ||
+  (patch.name !== undefined && nameTaken(schemaTableOf(spec, tableId).columns.map((column) => column.name), patch.name, columnId))
     ? spec
     : edit(spec, (draft) => {
         Object.assign(schemaColumnOf(schemaTableOf(draft, tableId), columnId), patch)
+        if (patch.name !== undefined && patch.name !== columnId) renameColumnUses(draft, tableId, columnId, patch.name)
       })
 
 /** Whether a column of `type` can have allowed values: any but a tick box or a date. */
@@ -569,7 +620,7 @@ export const changeSchemaColumnType = (
   columnId: string,
   type: SchemaColumn["type"],
 ): FormSpec =>
-  isIdentityColumn({ id: columnId })
+  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId })
     ? spec
     : edit(spec, (draft) => {
         const column = schemaColumnOf(schemaTableOf(draft, tableId), columnId)
@@ -597,11 +648,11 @@ export const changeSchemaColumnType = (
  * identity stays.
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
-  isIdentityColumn({ id: columnId })
+  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId })
     ? spec
     : edit(spec, (draft) => {
         const table = schemaTableOf(draft, tableId)
-        table.columns = table.columns.filter((column) => column.id !== columnId)
+        table.columns = table.columns.filter((column) => column.name !== columnId)
         const gone = (field: FieldRef) => field.table === tableId && field.column === columnId
         dropFields(draft, gone)
         dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
@@ -623,8 +674,8 @@ export const fieldUses = (spec: FormSpec, tableId: string, columnId?: string): W
  * another, giving a parameter it or exporting it with its table.
  */
 export const buttonUses = (spec: FormSpec, tableId: string, columnId?: string): ButtonWidget[] => {
-  const table = spec.schema.tables.find((candidate) => candidate.id === tableId)
-  const read = new Set(table === undefined ? [] : importColumns(table).map((column) => column.id))
+  const table = spec.schema.tables.find((candidate) => candidate.name === tableId)
+  const read = new Set(table === undefined ? [] : importColumns(table).map((column) => column.name))
   return allWidgets(spec)
     .filter(isButton)
     .filter((widget) => {
@@ -650,8 +701,8 @@ export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string
 
 /** The schema table and column a field names, or null when it is no longer in the schema: of a form, or of the schema alone. */
 export function fieldColumn({ schema }: Pick<FormSpec, "schema">, field: FieldRef): { table: SchemaTable; column: SchemaColumn } | null {
-  const table = schema.tables.find((candidate) => candidate.id === field.table)
-  const column = table?.columns.find((candidate) => candidate.id === field.column)
+  const table = schema.tables.find((candidate) => candidate.name === field.table)
+  const column = table?.columns.find((candidate) => candidate.name === field.column)
   return table && column ? { table, column } : null
 }
 
@@ -669,8 +720,8 @@ export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
 export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
   ...new Map(
     fields.flatMap(({ found }) =>
-      found !== null && found.table.role === "input" && found.table.rows === "many" && !found.column.index && !isIdentityColumn(found.column)
-        ? [[found.table.id, found.table] as const]
+      found !== null && found.table.role === "input" && found.table.rows === "many" && !found.column.index && !isIdentityColumn(found.table, found.column)
+        ? [[found.table.name, found.table] as const]
         : [],
     ),
   ).values(),
@@ -1313,9 +1364,9 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
   const copy: Widget = { ...structuredClone(widget), id, number: null, ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)
-  dropButtonUses(copy, (table) => !spec.schema.tables.some((candidate) => candidate.id === table), gone)
+  dropButtonUses(copy, (table) => !spec.schema.tables.some((candidate) => candidate.name === table), gone)
   const keep = (condition: SingleCondition): SingleCondition | null => {
-    if (!conditionTables(condition).every((tableId) => spec.schema.tables.some((table) => table.id === tableId))) return null
+    if (!conditionTables(condition).every((tableId) => spec.schema.tables.some((table) => table.name === tableId))) return null
     let kept: SingleCondition | null = condition
     for (const field of conditionColumns(condition)) {
       if (kept !== null && gone(field)) kept = withoutColumn(kept, field.table, field.column)
@@ -1343,7 +1394,7 @@ export const tableGrain = (table: SchemaTable): string =>
           .filter((column) => column.key)
           .map((column) => column.name)
           .sort()
-          .join(",") || table.id
+          .join(",") || table.name
       }`
 
 /**
@@ -1360,8 +1411,8 @@ export function chartGrain(schema: FormSchema, widget: ChartWidget): string | nu
 }
 
 /** Whether a Chart can plot a column: a number column, other than an index, which numbers the rows, or the quote's option. */
-export const plottable = (column: SchemaColumn): boolean =>
-  (column.type === "int" || column.type === "float") && !column.index && !isIdentityColumn(column)
+export const plottable = (table: SchemaTable, column: SchemaColumn): boolean =>
+  (column.type === "int" || column.type === "float") && !column.index && !isIdentityColumn(table, column)
 
 /**
  * The columns that can label a Chart's rows: those of the many-row tables of its grain,
@@ -1600,7 +1651,7 @@ export function bindParameter(spec: FormSpec, id: string, name: string, field: F
 
 /** The columns of a table an Import fills: those an underwriter types, neither the quote's identity nor its index, nor in quote_details a column the app sets. */
 export const importColumns = (table: SchemaTable): SchemaColumn[] =>
-  sheetColumns(table).filter((column) => !column.index && !(table.id === QUOTE_DETAILS_ID && QUOTE_DETAILS_MANAGED.has(column.id)))
+  sheetColumns(table).filter((column) => !column.index && !(table.name === QUOTE_DETAILS_NAME && QUOTE_DETAILS_MANAGED.has(column.name)))
 
 /** The columns a query's parameter can be given: a one-row input table's. */
 export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.role === "input" && table.rows === "one" ? sheetColumns(table) : [])
@@ -1679,7 +1730,7 @@ export const fileNameTokens = (fileName: string): string[] => Array.from(fileNam
 
 /** A value typed into the sample: text, or a tick. The server types it by its column. */
 export type SampleValue = string | boolean
-/** A row of the sample, keyed by column id. */
+/** A row of the sample, keyed by column name. */
 export type SampleRow = Record<string, SampleValue>
 
 /** `rows` with one cell set, padded with empty rows up to it. */
@@ -1734,7 +1785,7 @@ const typedRows = (rows: readonly SampleRow[]): number => rows.reduce((last, row
  */
 export const setTableRows = (spec: FormSpec, widgetId: string, rows: number): FormSpec => {
   const next = updateWidget(spec, widgetId, { rows })
-  const tables = gridInputTables(shownFields(next.schema, widgetOf(next, widgetId))).map((table) => table.id)
+  const tables = gridInputTables(shownFields(next.schema, widgetOf(next, widgetId))).map((table) => table.name)
   const kept = Math.max(0, ...tables.map((id) => typedRows(next.sample[id] ?? [])))
   return edit(next, (draft) => {
     for (const id of tables) {
@@ -1785,11 +1836,11 @@ export function linedUpOutputs(
   if (price === null) return lined
   for (const output of outputs) {
     const input = inputs.find((table) => tableGrain(table) === tableGrain(output))
-    const read = quoted.tables.find((table) => table.id === input?.id)
-    if (input === undefined || read === undefined || lined.has(output.id)) continue
+    const read = quoted.tables.find((table) => table.name === input?.name)
+    if (input === undefined || read === undefined || lined.has(output.name)) continue
     const typed = price.sample[input.name]
-    const grid = Array.from({ length: count }, (_, row) => held[input.id]?.[row])
-    lined.set(output.id, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+    const grid = Array.from({ length: count }, (_, row) => held[input.name]?.[row])
+    lined.set(output.name, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
   }
   return lined
 }
@@ -1813,13 +1864,13 @@ export function answeredOutputs(
   const answer = price.tables[first.name] ?? []
   const keys = first.columns.filter((column) => column.key).map((column) => column.name)
   for (const table of outputs) {
-    if (lined.has(table.id)) continue
+    if (lined.has(table.name)) continue
     const own = price.tables[table.name] ?? []
     const matched = (row: Record<string, unknown>) =>
       keys.length === 0
         ? undefined
         : own.find((candidate) => keys.every((name) => keyedBy(row, name) && keyedBy(candidate, name) && String(candidate[name]) === String(row[name])))
-    lined.set(table.id, table.id === first.id ? [...answer] : answer.map(matched))
+    lined.set(table.name, table.name === first.name ? [...answer] : answer.map(matched))
   }
   return lined
 }
@@ -1915,7 +1966,7 @@ function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
   const problems: string[] = []
   const found = widget.fields.map((field) => fieldColumn(spec, field))
   for (const shown of found) {
-    if (shown === null || plottable(shown.column)) continue
+    if (shown === null || plottable(shown.table, shown.column)) continue
     const label = shown.column.label || readableName(shown.column.name)
     problems.push(`plots ${label}, which ${shown.column.index ? "numbers the rows" : "is not a number"}`)
   }
@@ -1939,15 +1990,15 @@ function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
  */
 function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
   const problems: string[] = []
-  const table = widget.table === null ? undefined : spec.schema.tables.find((candidate) => candidate.id === widget.table)
+  const table = widget.table === null ? undefined : spec.schema.tables.find((candidate) => candidate.name === widget.table)
   if (widget.table === null) problems.push("fills no table")
   else if (table === undefined) problems.push("fills a table that is no longer in the schema")
   else if (table.role === "output") problems.push("fills an output table, which pricing fills")
   else {
-    const typed = new Set(importColumns(table).map((column) => column.id))
-    const named = widget.column_names.map((entry) => table.columns.find((column) => column.id === entry.column))
+    const typed = new Set(importColumns(table).map((column) => column.name))
+    const named = widget.column_names.map((entry) => table.columns.find((column) => column.name === entry.column))
     if (named.includes(undefined)) problems.push("reads into a column that is no longer in the schema")
-    if (named.some((column) => column !== undefined && !typed.has(column.id))) problems.push("reads into a column an underwriter does not type")
+    if (named.some((column) => column !== undefined && !typed.has(column.name))) problems.push("reads into a column an underwriter does not type")
     if (widget.mode !== "update" && presetColumn(table) !== null) {
       problems.push(`${widget.mode === "replace" ? "replaces" : "adds to"} the rows of ${table.name}, which has a row for each allowed value; only Update by key keeps them`)
     }
@@ -1980,14 +2031,14 @@ function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
   const problems: string[] = []
   const { target, tables } = widget
   if (tables.length === 0) problems.push("exports no tables")
-  if (tables.some((id) => !spec.schema.tables.some((table) => table.id === id))) problems.push("exports a table that is no longer in the schema")
+  if (tables.some((id) => !spec.schema.tables.some((table) => table.name === id))) problems.push("exports a table that is no longer in the schema")
   if (target.format === "sql") {
     if (target.connection.trim() === "") problems.push("names no connection")
     return problems
   }
   if (target.format === "csv" && tables.length > 1) problems.push("exports more than one table to a CSV, which holds one")
   if (target.file_name.trim() === "") problems.push("has no file name")
-  const details = spec.schema.tables.find((table) => table.id === QUOTE_DETAILS_ID)
+  const details = spec.schema.tables.find((table) => table.name === QUOTE_DETAILS_NAME)
   for (const token of new Set(fileNameTokens(target.file_name))) {
     if (!details?.columns.some((column) => column.name === token)) problems.push(`names its file by {${token}}, which is not a column of quote_details`)
   }
@@ -2077,7 +2128,7 @@ function conditionProblems(
     const table = schemaTableOf(spec, condition.table)
     const tests: ColumnTest[] = isListCondition(condition) ? condition.where : [condition]
     for (const test of tests) {
-      const column = table.columns.find((candidate) => candidate.id === test.column) as SchemaColumn
+      const column = table.columns.find((candidate) => candidate.name === test.column) as SchemaColumn
       if (!column.options.length || !EQUALITY_TESTS.has(test.op)) continue
       for (const value of test.values) {
         if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
@@ -2092,12 +2143,12 @@ function conditionProblems(
       // A condition on rows that never shows again fits, so its table and the columns it tests are in the schema.
       const table = schemaTableOf(spec, waiting.table)
       const tested = listColumns(waiting)
-      const missing = tested.find((id) => !entered([columnKey(table.id, id)]))
+      const missing = tested.find((id) => !entered([columnKey(table.name, id)]))
       const keys = sheetColumns(table)
         .filter((column) => !column.index)
-        .map((column) => columnKey(table.id, column.id))
+        .map((column) => columnKey(table.name, column.name))
       if (missing !== undefined) {
-        problems.push(`waits on ${(table.columns.find((column) => column.id === missing) as SchemaColumn).name}, which is on no Table`)
+        problems.push(`waits on ${(table.columns.find((column) => column.name === missing) as SchemaColumn).name}, which is on no Table`)
       } else {
         problems.push(
           tested.length > 0 || entered(keys)
@@ -2153,9 +2204,9 @@ function testText(column: SchemaColumn | null | undefined, test: ColumnTest, oth
 
 /** A condition on a list's rows read as `conditionText` says. */
 function listText(spec: Pick<FormSpec, "schema">, condition: ListCondition): string {
-  const table = spec.schema.tables.find((candidate) => candidate.id === condition.table)
+  const table = spec.schema.tables.find((candidate) => candidate.name === condition.table)
   const name = table?.name ?? "a missing table"
-  const columnOf = (id: string) => table?.columns.find((column) => column.id === id)
+  const columnOf = (id: string) => table?.columns.find((column) => column.name === id)
   const tests = condition.where.map((test) => testText(columnOf(test.column), test, test.field === null ? null : columnOf(test.field))).join(" and ")
   if (isRowsCondition(condition)) return `${tests} in ${condition.rows} row of ${name}`
   const where = condition.where.length === 0 ? "" : ` where ${tests}`
@@ -2257,12 +2308,6 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
   const { tables } = spec.schema
   tables.forEach((table, index) => {
     const name = `Table "${table.name}"`
-    // Haute's own table is the one with its id; the server refuses any other by its name,
-    // in these words.
-    if (table.name === QUOTE_DETAILS_ID && table.id !== QUOTE_DETAILS_ID) {
-      problems.push({ tableId: table.id, message: QUOTE_DETAILS_REFUSAL })
-      return
-    }
     const issue = apiInputLabelIssueMessage(
       apiInputLabelIssue(
         table.name,
@@ -2270,20 +2315,20 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
         reservedLabels,
       ),
     )
-    if (issue !== null) problems.push({ tableId: table.id, message: `${name}: ${issue}` })
-    for (const problem of storeTableProblems(table)) problems.push({ tableId: table.id, message: `${name} ${problem}` })
-    if (!isQuoteDetails(table) && !table.columns.some(isIdentityColumn)) {
+    if (issue !== null) problems.push({ tableId: table.name, message: `${name}: ${issue}` })
+    for (const problem of storeTableProblems(table)) problems.push({ tableId: table.name, message: `${name} ${problem}` })
+    if (!isQuoteDetails(table) && identityCount(table) === 0) {
       for (const column of table.columns) {
-        if (IDENTITY_NAMES.has(column.name)) problems.push({ tableId: table.id, message: identityClash(table, column) })
+        if (IDENTITY_NAMES.has(column.name)) problems.push({ tableId: table.name, message: identityClash(table, column) })
       }
     }
     if (table.rows === "many" && !table.columns.some((column) => column.key)) {
-      problems.push({ tableId: table.id, message: `${name} has many rows, so it needs a key column` })
+      problems.push({ tableId: table.name, message: `${name} has many rows, so it needs a key column` })
     }
     const given = presetColumn(table)
     for (const column of table.columns) {
       if (given !== null && column !== given && column.row_per_value && !column.index && column.options.length > 0) {
-        problems.push({ tableId: table.id, message: `${name} has a row for each value of ${given.name}, so ${column.name} gives it none` })
+        problems.push({ tableId: table.name, message: `${name} has a row for each value of ${given.name}, so ${column.name} gives it none` })
       }
     }
     const columnNames = new Set<string>()
@@ -2292,31 +2337,31 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       const columnName = `Column "${column.name}" in ${name}`
       const nameProblem = columnNameProblem(column.name)
       if (nameProblem !== null) {
-        problems.push({ tableId: table.id, message: `${columnName} ${nameProblem}` })
+        problems.push({ tableId: table.name, message: `${columnName} ${nameProblem}` })
       } else if (columnNames.has(column.name)) {
-        problems.push({ tableId: table.id, message: `${columnName} repeats the name ${column.name}` })
+        problems.push({ tableId: table.name, message: `${columnName} repeats the name ${column.name}` })
       }
       columnNames.add(column.name)
-      for (const problem of storeColumnProblems(table, column, folded)) problems.push({ tableId: table.id, message: `${columnName} ${problem}` })
+      for (const problem of storeColumnProblems(table, column, folded)) problems.push({ tableId: table.name, message: `${columnName} ${problem}` })
       if (table.role !== "input" || column.index) continue
       if (!takesOptions(column.type) && column.options.length > 0) {
         const kind = column.type === "bool" ? "a tick box" : "a date"
-        problems.push({ tableId: table.id, message: `${columnName} allows values, which ${kind} cannot` })
+        problems.push({ tableId: table.name, message: `${columnName} allows values, which ${kind} cannot` })
       } else if (column.options.length > 0 && column.options_source === null) {
-        problems.push({ tableId: table.id, message: `${columnName} has allowed values typed in, not read from a params file` })
+        problems.push({ tableId: table.name, message: `${columnName} has allowed values typed in, not read from a params file` })
       }
       if (column.type === "int" || column.type === "float") {
         if (column.min !== null && column.max !== null && column.min > column.max) {
-          problems.push({ tableId: table.id, message: `${columnName} has a minimum above its maximum` })
+          problems.push({ tableId: table.name, message: `${columnName} has a minimum above its maximum` })
         }
         const bad = column.options.find((option) => !isNumber(option, column.type === "int"))
         const kind = column.type === "int" ? "a whole number" : "a number"
         if (bad !== undefined) {
-          problems.push({ tableId: table.id, message: `${columnName} allows "${bad}", which isn't ${kind}` })
+          problems.push({ tableId: table.name, message: `${columnName} allows "${bad}", which isn't ${kind}` })
         }
       }
       const refused = table.rows === "one" ? defaultProblem(column) : null
-      if (refused !== null) problems.push({ tableId: table.id, message: `${columnName} has a default its rules refuse: ${refused}` })
+      if (refused !== null) problems.push({ tableId: table.name, message: `${columnName} has a default its rules refuse: ${refused}` })
     }
   })
   return problems
@@ -2336,7 +2381,7 @@ function defaultProblem(column: SchemaColumn): string | null {
 
 // ── Haute's quote_details table ──────────────────────────────────────────
 
-export { QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED }
+export { QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED }
 export { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, type QuoteDetailName } from "./quoteIdentity"
 /** Why another table under its name is refused, in the server's words (`QUOTE_DETAILS_REFUSAL` in `src/haute/_workbench_form.py`). */
 export const QUOTE_DETAILS_REFUSAL = "quote_details is Haute's own table of a quote's details: name yours otherwise"
@@ -2346,4 +2391,4 @@ const identityClash = (table: SchemaTable, column: SchemaColumn): string =>
   `${table.name}.${column.name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`
 
 /** Whether `table` is Haute's quote_details table, whose structure the editor does not change. */
-export const isQuoteDetails = (table: Pick<SchemaTable, "id">): boolean => table.id === QUOTE_DETAILS_ID
+export const isQuoteDetails = (table: Pick<SchemaTable, "name">): boolean => table.name === QUOTE_DETAILS_NAME

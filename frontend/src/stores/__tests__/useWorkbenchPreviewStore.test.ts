@@ -162,7 +162,7 @@ describe("useWorkbenchPreviewStore", () => {
     const quotePricer = vi.fn<QuotePricer>(() => Promise.resolve(answered(1)))
     useWorkbenchPricingStore.setState({ quotePricer })
     const defaulted: FormSchema = {
-      tables: [{ ...covered.tables[0], columns: covered.tables[0].columns.map((c) => (c.id === "c3" ? { ...c, default_value: true } : c.id === "c4" ? { ...c, default_value: "Acme" } : c)) }, pricing],
+      tables: [{ ...covered.tables[0], columns: covered.tables[0].columns.map((c) => (c.name === "c3" ? { ...c, default_value: true } : c.name === "c4" ? { ...c, default_value: "Acme" } : c)) }, pricing],
     }
     useWorkbenchFormStore.setState({ form: { ...form, schema: defaulted } })
     store().open({ t1: [{ c3: true, c4: "Acme" }] }, null, false)

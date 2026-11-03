@@ -36,7 +36,7 @@ const made = (overrides: Parameters<typeof answer>[0] = {}) => answer({ referenc
 function formWith(set: Record<string, Partial<SchemaColumn>> = {}): FormSpec {
   const sheets = sheetForm()
   const details = detailsTable()
-  details.columns = details.columns.map((column) => ({ ...column, ...set[column.id] }))
+  details.columns = details.columns.map((column) => ({ ...column, ...set[column.name] }))
   return { ...sheets, schema: { tables: [details, ...sheets.schema.tables] } }
 }
 
@@ -450,9 +450,9 @@ describe("NewQuoteWindow", () => {
     expect(windowFields(sheetForm())).toEqual([])
 
     const details = detailsTable()
-    details.columns = details.columns.filter((column) => column.id !== "qd_reference")
+    details.columns = details.columns.filter((column) => column.name !== "qd_reference")
     const fields = windowFields({ ...sheetForm(), schema: { tables: [details] } })
-    expect(fields.map((field) => field.found?.column.id)).not.toContain("qd_reference")
+    expect(fields.map((field) => field.found?.column.name)).not.toContain("qd_reference")
     expect(windowProblems([{ key: "gone", found: null }, ...fields], "", {})).toEqual({})
   })
 

@@ -23,8 +23,8 @@ from haute._json_values import JsonValueError, json_value
 from haute._output_assembler import prune_document
 from haute._quote_store._store import MisfitCell, QuoteValuesError
 from haute._workbench_form import (
-    IDENTITY_IDS,
-    QUOTE_DETAILS_ID,
+    IDENTITY_NAMES,
+    QUOTE_DETAILS_NAME,
     Cell,
     FormSpec,
     SchemaColumn,
@@ -41,7 +41,7 @@ from haute._workbench_tables import (
     request_columns,
 )
 
-#: The values typed into the sheets: by table id, rows keyed by column id, as typed.
+#: The values typed into the sheets: by table name, rows keyed by column name, as typed.
 Values = dict[str, list[dict[str, Cell]]]
 #: A table's rows as the store holds them, by column name.
 Rows = list[dict[str, Any]]
@@ -55,7 +55,7 @@ _IDENTITY_NAMES = ("quote_reference", "quote_option")
 #: row through inserts and deletes, and a save writes it back. ``$`` starts no column's id or
 #: name, so it is never a cell.
 KEPT_KEY = "$kept"
-#: Each input table's kept columns, by table id, each by its name and kind.
+#: Each input table's kept columns, by table name, each by its name and kind.
 KeptColumns = Mapping[str, Sequence[tuple[str, str]]]
 
 
@@ -146,7 +146,7 @@ def input_rows(
     identity: tuple[str, int],
     kept: KeptColumns | None = None,
 ) -> dict[str, Rows]:
-    """Each input table's rows for *values*, by table id, as the store writes them: a one-row
+    """Each input table's rows for *values*, by table name, as the store writes them: a one-row
     table its one row, nulls where nothing is typed; a many-row table its typed rows, each
     under its number on the sheet. Refused (:class:`QuoteValuesError`), naming each cell, when
     any value is not of its column's type. With *kept*, the store's columns outside the form,
@@ -187,21 +187,21 @@ def input_rows(
             row["quote_option"] = option
             if many:
                 row[QUOTE_ROW] = sheet[place]
-            if kept is not None and table.id != QUOTE_DETAILS_ID:
-                typed = values.get(table.id) or []
+            if kept is not None and table.name != QUOTE_DETAILS_NAME:
+                typed = values.get(table.name) or []
                 index = sheet[place] - 1 if many else 0
                 source = typed[index] if 0 <= index < len(typed) else {}
                 # Every row names each kept column, a value or null: one insert writes them.
-                row.update(dict.fromkeys(name for name, _ in kept.get(table.id, ())))
+                row.update(dict.fromkeys(name for name, _ in kept.get(table.name, ())))
                 text = source.get(KEPT_KEY)
                 if text is not None:
                     row.update(
                         _kept_values(
-                            text, table, kept.get(table.id, ()), sheet[place] if many else None
+                            text, table, kept.get(table.name, ()), sheet[place] if many else None
                         )
                     )
             written.append(row)
-        rows[table.id] = written
+        rows[table.name] = written
     if misfits:
         named = "; ".join(str(cell) for cell in misfits)
         raise QuoteValuesError(
@@ -219,7 +219,7 @@ def _finite(value: Any) -> Any:
 def output_rows(
     form: FormSpec, document: Mapping[str, Any] | None, identity: tuple[str, int]
 ) -> dict[str, Rows]:
-    """Each output table's rows from the pricing's typed *document*, by table id: none when
+    """Each output table's rows from the pricing's typed *document*, by table name: none when
     the quote is saved unpriced; a value that is not finite as null; the quote's identity on
     every row of a table leading with it; a many-row table's rows numbered in the pricing's
     order."""
@@ -243,18 +243,18 @@ def output_rows(
             if table.rows == "many":
                 row[QUOTE_ROW] = place
             written.append(row)
-        rows[table.id] = written
+        rows[table.name] = written
     return rows
 
 
 def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
-    """The output tables held in *rows* (by table id) rendered as the pricing rendered them:
+    """The output tables held in *rows* (by table name) rendered as the pricing rendered them:
     each table's rows by name, without the store's row numbers, pruned and JSON-safe."""
     document: dict[str, Any] = {}
     for table in form.data_schema.tables:
         if table.role != "output":
             continue
-        held = sorted(rows.get(table.id, []), key=lambda row: row.get(QUOTE_ROW, 0))
+        held = sorted(rows.get(table.name, []), key=lambda row: row.get(QUOTE_ROW, 0))
         records = [{key: value for key, value in row.items() if key != QUOTE_ROW} for row in held]
         if table.rows == "many":
             document[table.name] = records
@@ -283,14 +283,14 @@ def _cell(value: Any) -> Cell | None:
 def _row_cells(
     table: SchemaTable, row: Mapping[str, Any], kept: Sequence[tuple[str, str]] = ()
 ) -> dict[str, Cell]:
-    details = table.id == QUOTE_DETAILS_ID
+    details = table.name == QUOTE_DETAILS_NAME
     cells: dict[str, Cell] = {}
     for column in table.columns:
-        if column.index or (not details and column.id in IDENTITY_IDS):
+        if column.index or (not details and column.name in IDENTITY_NAMES):
             continue
         cell = _cell(row.get(column.name))
         if cell is not None:
-            cells[column.id] = cell
+            cells[column.name] = cell
     carried = _kept_json(row, kept)
     if carried is not None:
         cells[KEPT_KEY] = carried
@@ -300,7 +300,7 @@ def _row_cells(
 def cells(
     form: FormSpec, rows: Mapping[str, Rows], kept: KeptColumns | None = None
 ) -> tuple[Values, list[str]]:
-    """The values *rows* (by table id) read back as on the sheets, and each row that no longer
+    """The values *rows* (by table name) read back as on the sheets, and each row that no longer
     fits them: a many-row table's rows in their places by ``quote_row``, a gap a blank row;
     a preset row whose value is no longer allowed left out and named as ``table row N
     (value)``. With *kept*, each row carries its values in the store's columns outside the
@@ -311,11 +311,11 @@ def cells(
     for table in form.data_schema.tables:
         if table.role != "input":
             continue
-        held = rows.get(table.id, [])
+        held = rows.get(table.name, [])
         if table.rows == "one":
-            row = _row_cells(table, held[0], kept.get(table.id, ())) if held else {}
+            row = _row_cells(table, held[0], kept.get(table.name, ())) if held else {}
             if row:
-                values[table.id] = [row]
+                values[table.name] = [row]
             continue
         given = preset_column(table)
         placed: dict[int, dict[str, Cell]] = {}
@@ -326,7 +326,7 @@ def cells(
                 if value is not None and value not in given.options:
                     dropped.append(f"{table.name} row {number} ({value})")
                     continue
-            placed[number] = _row_cells(table, row, kept.get(table.id, ()))
+            placed[number] = _row_cells(table, row, kept.get(table.name, ()))
         if placed:
-            values[table.id] = [placed.get(number, {}) for number in range(1, max(placed) + 1)]
+            values[table.name] = [placed.get(number, {}) for number in range(1, max(placed) + 1)]
     return values, dropped

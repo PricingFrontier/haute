@@ -42,7 +42,7 @@ from haute._workbench_app import (
     write_release,
 )
 from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
+from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec, with_quote_details
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
 from tests._store_servers import Target
@@ -79,7 +79,7 @@ def _priced_graph(spec: dict[str, Any]) -> PipelineGraph:
     details = next(
         table
         for table in input_tables(FormSpec.model_validate(spec))
-        if table.name == QUOTE_DETAILS_ID
+        if table.name == QUOTE_DETAILS_NAME
     )
     request = graph.nodes[0].data.config
     request["tables"] = [details.model_dump(mode="json"), *request["tables"]]

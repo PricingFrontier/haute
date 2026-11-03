@@ -16,7 +16,7 @@ import {
   findWidget,
   HEADING_OPTIONS,
   QUOTE_DETAILS_COLUMNS,
-  QUOTE_DETAILS_ID,
+  QUOTE_DETAILS_NAME,
   showsFields,
   TABLE_OPTIONS,
   type FieldsWidget,
@@ -95,7 +95,7 @@ export const table = (id: string, name: string, overrides: Partial<SchemaTable> 
 
 /** Haute's quote_details table, as every form holds it, its columns labelled by name in `labels`. */
 export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =>
-  table(QUOTE_DETAILS_ID, QUOTE_DETAILS_ID, {
+  table(QUOTE_DETAILS_NAME, QUOTE_DETAILS_NAME, {
     columns: QUOTE_DETAILS_COLUMNS.map(([id, name, type]) => column(id, name, { type, label: labels[name] ?? "" })),
   })
 

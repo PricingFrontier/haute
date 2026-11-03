@@ -694,7 +694,7 @@ describe("SchemaEditor", () => {
     ]
     load(used)
     render(<SchemaEditor />)
-    const policyColumns = () => current().schema.tables.find((t) => t.id === "t_policy")!.columns.map((c) => c.id)
+    const policyColumns = () => current().schema.tables.find((t) => t.name === "t_policy")!.columns.map((c) => c.name)
 
     // The Import reads exposure by its own name and the Export writes it with its table.
     fireEvent.click(screen.getByRole("button", { name: "Remove column exposure" }))

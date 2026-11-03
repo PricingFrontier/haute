@@ -342,7 +342,7 @@ describe("quotedSchema", () => {
       columns: [column("qd_quote_name", "quote_name"), column("qd_stage", "stage"), column("qd_insured", "insured")],
     }
     const quoted = quotedSchema({ tables: [details] }, new Set([columnKey("quote_details", "qd_quote_name")]))
-    expect(quoted.tables[0].columns.map((each) => each.id)).toEqual(["qd_quote_name", "qd_insured"])
+    expect(quoted.tables[0].columns.map((each) => each.name)).toEqual(["qd_quote_name", "qd_insured"])
   })
 })
 
@@ -765,7 +765,7 @@ describe("the editor's steps", () => {
     expect(() => withListKind(form, any, "sum")).toThrow(/number column/)
     const bare = formOf([page("p", [])], [policy, { ...items, columns: [] }])
     expect(() => withListKind(bare, { table: "t_items", where: [], op: "equals", count: 0 }, "any")).toThrow(/t_items/)
-    expect(totalColumns(valued).map((column) => column.id)).toEqual(["c_value"])
+    expect(totalColumns(valued).map((column) => column.name)).toEqual(["c_value"])
     expect(newRowTest(valued)).toEqual({ column: "c_item", op: "equals", values: [], field: null, days: 0 })
     expect(newRowTest({ ...valued, columns: [valued.columns[0]] })).toBeNull()
   })
@@ -779,7 +779,7 @@ describe("the editor's steps", () => {
 
   it("gives a condition another test, its values kept while their number and the column take them", () => {
     const oneOf: Condition = { table: "t_policy", column: "c_years", op: "one_of", values: ["2.5", "3", "4"], field: null, days: 0 }
-    const years = policy.columns.find((candidate) => candidate.id === "c_years")
+    const years = policy.columns.find((candidate) => candidate.name === "c_years")
     expect(withConditionTest(years, oneOf, "filled").values).toEqual([])
     expect(withConditionTest(years, oneOf, "equals").values).toEqual([])
     expect(withConditionTest(years, { ...oneOf, values: ["3", "4"] }, "equals")).toEqual({ ...oneOf, op: "equals", values: ["3"], field: null, days: 0 })

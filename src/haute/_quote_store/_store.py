@@ -42,7 +42,7 @@ from haute._workbench_config import (
     STORE_URL_ENV,
     WorkbenchError,
 )
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
+from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
 #: What places a hosted app's database and signs it in, as a refusal names it.
 HOST_VARIABLES = (
@@ -276,7 +276,7 @@ def _catalogue_differences(
     :func:`._catalogue.table_problems`); and a column of those tables the store does not
     write that takes no null, so no row could be inserted."""
     differences: list[str] = []
-    tables = [(stored.table, stored.form.id != QUOTE_DETAILS_ID) for stored in schema.tables]
+    tables = [(stored.table, stored.form.name != QUOTE_DETAILS_NAME) for stored in schema.tables]
     tables.append((schema.activity, False))
     for table, refers in tables:
         found = catalogue.table(table.name)
