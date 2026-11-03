@@ -66,7 +66,7 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
-from haute._node_specs import node_spec
+from haute._node_specs import known_node_spec
 from haute._output_assembler import OutputMappingSchemaError
 from haute._path_resolution import (
     RuntimePathError,
@@ -265,10 +265,8 @@ logger = get_logger(component="server.pipeline")
 
 def _is_occurrence(node_type: NodeType | str) -> bool:
     """Whether *node_type* is a submodel occurrence; an unknown type is not."""
-    try:
-        return node_spec(node_type).structural_role == "occurrence"
-    except KeyError:
-        return False
+    spec = known_node_spec(node_type)
+    return spec is not None and spec.structural_role == "occurrence"
 
 
 _PUBLIC_REMOTE_ERROR_CODES = {

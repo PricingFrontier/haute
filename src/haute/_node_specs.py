@@ -49,6 +49,7 @@ __all__ = [
     "RecomputeCost",
     "StepStart",
     "SteppedSurface",
+    "known_node_spec",
     "node_spec",
     "node_type_table",
 ]
@@ -517,6 +518,20 @@ def node_spec(node_type: NodeType | str) -> NodeSpec:
     except ValueError:
         raise KeyError(f"no node specification for {node_type!r}") from None
     return NODE_SPECS[key]
+
+
+def known_node_spec(value: object) -> NodeSpec | None:
+    """The specification of *value* when it names a node type, else ``None``.
+
+    For the places that legitimately meet a value that is not a node type: a
+    recovered file's node of a type this install does not know, or a ``str``
+    argument left unset. Everywhere a value is a validated ``NodeType``,
+    :func:`node_spec` is the lookup, and an unknown type is its ``KeyError``.
+    """
+    try:
+        return node_spec(str(value))
+    except KeyError:
+        return None
 
 
 def _types_where(test: Callable[[NodeSpec], bool]) -> frozenset[NodeType]:

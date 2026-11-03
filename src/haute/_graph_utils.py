@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from haute._node_specs import REQUEST_INPUT_KINDS, node_spec
+from haute._node_specs import REQUEST_INPUT_KINDS, known_node_spec
 
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode, PipelineGraph
@@ -175,10 +175,8 @@ def _sanitize_identifier_characters(label: str) -> str:
 def _structural_role(node_type: object) -> str | None:
     """The submodel part a node type is (``occurrence`` or ``port``); ``None`` for any
     other type, an unknown one included."""
-    try:
-        return node_spec(str(node_type)).structural_role
-    except KeyError:
-        return None
+    spec = known_node_spec(node_type)
+    return None if spec is None else spec.structural_role
 
 
 def edge_input_name(

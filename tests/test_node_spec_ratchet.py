@@ -43,6 +43,7 @@ from pathlib import Path
 import pytest
 
 from haute._node_type import NodeType
+from tests._source_files import source_files
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "haute"
 
@@ -424,31 +425,31 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
     # Input's tables are sent as apiInput), spelled as the types they were named after.
     ("schemas.py", "InputCacheSourceRequest", "dataInput", "literal:Tuple"): (
         1,
-        "the input-cache request's source kind",
+        "the input-cache request's read mode (a Workbench Input is read as apiInput)",
     ),
     ("schemas.py", "InputCacheSourceRequest", "apiInput", "literal:Tuple"): (
         1,
-        "the input-cache request's source kind",
+        "the input-cache request's read mode (a Workbench Input is read as apiInput)",
     ),
     ("schemas.py", "InputCacheSourceRequest", "dataInput", "literal:AnnAssign"): (
         1,
-        "the input-cache request's default source kind",
+        "the input-cache request's default read mode",
     ),
     ("routes/input_cache.py", "build_input_cache", "apiInput", "compare:body.node_type"): (
         1,
-        "the input-cache request's source kind",
+        "the input-cache request's read mode (a Workbench Input is read as apiInput)",
     ),
     ("routes/input_cache.py", "build_input_cache", "apiInput", "literal:Dict"): (
         1,
-        "the build's identity payload names the source kind",
+        "the build's identity payload names its read mode",
     ),
     ("routes/input_cache.py", "get_input_cache_status", "apiInput", "compare:body.node_type"): (
         1,
-        "the input-cache request's source kind",
+        "the input-cache request's read mode (a Workbench Input is read as apiInput)",
     ),
     ("routes/input_cache.py", "clear_input_cache", "apiInput", "compare:body.node_type"): (
         2,
-        "the input-cache request's source kind",
+        "the input-cache request's read mode (a Workbench Input is read as apiInput)",
     ),
 }
 
@@ -759,7 +760,7 @@ def scan_sources(
 def _src_sources() -> dict[str, str]:
     return {
         path.relative_to(SRC).as_posix(): path.read_text(encoding="utf-8")
-        for path in sorted(SRC.rglob("*.py"))
+        for path in source_files(SRC)
     }
 
 

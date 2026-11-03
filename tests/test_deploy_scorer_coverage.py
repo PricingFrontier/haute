@@ -519,3 +519,54 @@ class TestScoreGraphPromotedDataInput:
 
         assert result["x"].to_list() == [1.0, 2.0]
         assert result["doubled"].to_list() == [2.0, 4.0]
+
+
+class TestBundledArtifactsByNodeType:
+    """Which node types read a bundled artifact in place of their configured path."""
+
+    def test_a_load_file_reads_its_bundled_file(self) -> None:
+        from haute._types import GraphNode, NodeData
+        from haute.deploy._scorer import _bundled_input_artifact
+
+        node = GraphNode(
+            id="loader",
+            data=NodeData(
+                label="loader",
+                nodeType="externalFile",
+                config={"path": "models/prices.pkl", "fileType": "pickle"},
+            ),
+        )
+
+        remap = {"loader__prices.pkl": "/bundle/loader__prices.pkl"}
+        assert _bundled_input_artifact(node, remap) == "/bundle/loader__prices.pkl"
+        assert _bundled_input_artifact(node, {}) is None
+
+    def test_a_node_type_that_ships_no_input_artifact_reads_none(self) -> None:
+        from haute._types import GraphNode, NodeData
+        from haute.deploy._scorer import _bundled_input_artifact
+
+        node = GraphNode(
+            id="bands",
+            data=NodeData(label="bands", nodeType="banding", config={}),
+        )
+
+        assert _bundled_input_artifact(node, {"bands__x": "/bundle/bands__x"}) is None
+
+
+def test_a_quote_input_without_a_path_has_no_sample_row() -> None:
+    from haute.deploy._schema import _read_sample_row
+
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "request",
+                    "data": {"label": "request", "nodeType": "apiInput", "config": {}},
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Input node 'request' has no path - cannot create"):
+        _read_sample_row(graph, ["request"])

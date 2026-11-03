@@ -240,13 +240,6 @@ class DataInputInlineConfig(_DataInputPolarsCommon, total=False):
     """The rows, each an object from column name to value."""
 
 
-DATA_INPUT_CONFIG_TYPES = (
-    DataInputFileConfig,
-    DataInputDatabaseConfig,
-    DataInputLakehouseConfig,
-    DataInputDatabricksConfig,
-    DataInputInlineConfig,
-)
 DataInputConfig = Annotated[
     DataInputFileConfig
     | DataInputDatabaseConfig
@@ -324,12 +317,6 @@ class DataOutputDatabricksConfig(_DataOutputCommon, total=False):
     """Whether a load replaces the table's rows or adds to them."""
 
 
-DATA_OUTPUT_CONFIG_TYPES = (
-    DataOutputFileConfig,
-    DataOutputDatabaseConfig,
-    DataOutputLakehouseConfig,
-    DataOutputDatabricksConfig,
-)
 DataOutputConfig = Annotated[
     DataOutputFileConfig
     | DataOutputDatabaseConfig
@@ -1674,7 +1661,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
 NODE_CONFIG_MODELS: Mapping[NodeType, NodeConfigModel] = {
     model.node_type: model for model in _MODELS
 }
-"""Each node type's config model; the node specification (PCFG-R09) reads it from here."""
+"""Each node type's config model, the node specification's config column read by node type."""
 
 _missing = set(NodeType) - set(NODE_CONFIG_MODELS)
 if _missing:

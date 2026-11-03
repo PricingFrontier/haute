@@ -122,11 +122,16 @@ def collect_artifacts(
             artifacts.add(nid, artifact_name, abs_path)
 
         elif artifact == "optimiser_result":
-            source_type = config.get("sourceType", "")
+            from haute._node_apply import optimiser_apply_source
+
+            source = optimiser_apply_source(config)
             raw_path = config.get("artifact_path", "")
             if not raw_path:
                 continue
-            if source_type != "file":
+            # Only a file source's artifact is bundled. The runtime tolerates, and
+            # ignores, an MLflow source's artifact_path; the bundle refuses it, a
+            # recorded disagreement (specs/pipeline-config, "One interpretation").
+            if source is None or source.source_type != "file":
                 raise ValueError(
                     f"optimiserApply node {nid!r} with artifact_path must set sourceType='file'"
                 )

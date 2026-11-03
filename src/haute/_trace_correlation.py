@@ -40,7 +40,7 @@ from haute._json_safe import (
 )
 from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
-from haute._node_specs import node_spec, node_type_table
+from haute._node_specs import known_node_spec, node_type_table
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
 from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, TraceRowOutOfRangeError
@@ -1050,12 +1050,8 @@ def joins_by_role(node_type: NodeType | str | None) -> bool:
     Its edges carry the ``base`` and ``join`` roles its specification declares
     (``NodeSpec.input_roles``). ``False`` for anything that is not a node type.
     """
-    if node_type is None:
-        return False
-    try:
-        return bool(node_spec(node_type).input_roles)
-    except KeyError:
-        return False
+    spec = known_node_spec(node_type)
+    return spec is not None and bool(spec.input_roles)
 
 
 def _allows_relaxed_parent_match(
@@ -2766,6 +2762,5 @@ _TRACE_ROW_RULES: Mapping[NodeType, _TraceRowRule] = node_type_table(
 
 
 def _row_rule(node_type: NodeType) -> _TraceRowRule:
-    """The row rule of *node_type*. A value that is not a node type (a stand-in
-    node) is correlated through no edge, as a source is."""
-    return _TRACE_ROW_RULES.get(node_type, _SOURCE_ROWS)
+    """The row rule of *node_type* (a validated node's type, so always listed)."""
+    return _TRACE_ROW_RULES[node_type]

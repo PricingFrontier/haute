@@ -19,7 +19,7 @@
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
 | `src/haute/_node_type.py` | `NodeType`, the node-type enum, alone in a standard-library-only leaf so the specification below can import it without the cycle through `haute._types` (which imports `haute._graph_utils` before it would define the enum); `haute._types` re-exports it. |
-| `src/haute/_node_specs.py` | The node specification: `NodeSpec`, `NODE_SPECS` (one entry per `NodeType`, validated at import), `node_spec`, the derived category views (`REQUEST_INPUT_NODE_TYPES`, `RESPONSE_NODE_TYPES`, `SINK_ONLY_NODE_TYPES`, `SOURCE_NODE_TYPES`, `CODE_NODE_TYPES`, `STEPPED_NODE_TYPES`, `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`, `SINGLETON_NODE_GROUPS`, `REQUEST_INPUT_KINDS`, the decorator and sidecar-folder maps, `DEFAULT_NODE_TYPE`), and `node_type_table` (a concern's exhaustive per-type table). Imports only `haute._node_type` and the standard library. |
+| `src/haute/_node_specs.py` | The node specification: `NodeSpec`, `NODE_SPECS` (one entry per `NodeType`, validated at import), `node_spec` and `known_node_spec` (no entry for a value that is not a node type, which only recovery and unset string arguments meet), the derived category views (`REQUEST_INPUT_NODE_TYPES`, `RESPONSE_NODE_TYPES`, `SINK_ONLY_NODE_TYPES`, `SOURCE_NODE_TYPES`, `CODE_NODE_TYPES`, `STEPPED_NODE_TYPES`, `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`, `SINGLETON_NODE_GROUPS`, `REQUEST_INPUT_KINDS`, the decorator and sidecar-folder maps, `DEFAULT_NODE_TYPE`), and `node_type_table` (a concern's exhaustive per-type table). Imports only `haute._node_type` and the standard library. |
 | `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen: each node type's callables (exec builder, code template, column contract). |
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
@@ -99,7 +99,10 @@
 - **`NodeSpec` / `NODE_SPECS`** (`src/haute/_node_specs.py`) — the node specification, the index
   of a node type: one frozen, slotted `NodeSpec` per `NodeType` holding every fact about the type
   that more than one module reads, in one literal table (`NODE_SPECS`, a `MappingProxyType`).
-  `node_spec(node_type)` returns an entry and raises `KeyError` for an unknown type. A field with
+  `node_spec(node_type)` returns an entry and raises `KeyError` for an unknown type;
+  `known_node_spec(value)` returns `None` instead, for the places that legitimately meet a value that
+  is not a node type (a recovered file's node of a type this install does not know, an unset `str`
+  argument). A validated node's type is read with `node_spec`. A field with
   a default is defaulted only where the default means the type has none of it. The fields:
   - `node_type`.
   - `display_name`: the editor's name ("Quote Input", "Transform", "Model Scoring", "Load File",

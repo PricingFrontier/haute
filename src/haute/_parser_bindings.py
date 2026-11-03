@@ -14,17 +14,15 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from haute._graph_utils import incoming_edge_bindings
-from haute._node_specs import REQUEST_INPUT_KINDS, node_spec
+from haute._node_specs import REQUEST_INPUT_KINDS, known_node_spec
 from haute._types import PipelineGraph, SubmodelInputPort
 from haute.errors import ParseError
 
 
 def _is_transform(node_type: object) -> bool:
     """Whether *node_type* is the Transform, whose function's signature is its inputs."""
-    try:
-        return node_spec(str(node_type)).code == "transform"
-    except KeyError:
-        return False
+    spec = known_node_spec(node_type)
+    return spec is not None and spec.code == "transform"
 
 
 _REMEDIATION_MESSAGE = (

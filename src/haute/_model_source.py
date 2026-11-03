@@ -7,9 +7,9 @@ explanation, and the deploy bundler and scorer — parses the node config throug
 source defaults and validation rules live only here, so one config cannot load a
 different model in one context than in another.
 
-The fields are named after the config keys they come from, so the typed
-node-config models (``PCFG-R07``) absorb these classes as the Model Scoring
-source slice rather than adding a second config model.
+The fields are named after the config keys they come from: these classes are
+the parsed form of the Model Scoring config model's source keys
+(``haute._node_config_models.ModelScoreConfig``), not a second config model.
 
 Every loaded model is bound to the feature contract it scores under
 (:func:`haute._mlflow_io.bind_feature_contract`) before any consumer sees it.

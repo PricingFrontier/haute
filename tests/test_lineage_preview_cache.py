@@ -471,3 +471,34 @@ def test_lineage_key_signs_the_polars_version(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(polars, "__version__", "9.9.9")
 
     assert lineage_cache_key(request) != current
+
+
+def test_the_selected_live_switch_path_names_each_switchs_relevant_wiring() -> None:
+    """A Source Switch's incoming wiring signs the key; a node of any other type adds none."""
+    from types import SimpleNamespace
+
+    from haute._types import GraphEdge, GraphNode, NodeData
+
+    def node(node_id: str, node_type: str) -> GraphNode:
+        return GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=node_type, config={}))
+
+    nodes = {
+        "live": node("live", "dataInput"),
+        "batch": node("batch", "dataInput"),
+        "switch": node("switch", "liveSwitch"),
+        "target": node("target", "polars"),
+    }
+    edges = [
+        GraphEdge(id="e1", source="live", target="switch"),
+        GraphEdge(id="e2", source="batch", target="switch"),
+        GraphEdge(id="e3", source="switch", target="target"),
+    ]
+    # The batch input is not relevant to the run, so it is not part of the path.
+    prepared = SimpleNamespace(
+        order=["live", "switch", "target"], node_map=nodes, relevant_edges=edges
+    )
+
+    path = selected_live_switch_path(prepared)
+
+    assert [entry["switch_id"] for entry in path] == ["switch"]
+    assert [edge["source"] for edge in path[0]["incoming_edges"]] == ["live"]

@@ -16,7 +16,7 @@ from haute._config_io import (
     palette_default_config,
 )
 from haute._config_validation import reject_unrecognized_config_keys
-from haute._node_specs import STRUCTURAL_NODE_TYPES, node_spec
+from haute._node_specs import STRUCTURAL_NODE_TYPES, known_node_spec, node_spec
 from haute._pipeline_recovery import _recovery_artifacts, load_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
@@ -63,10 +63,8 @@ def _unsupported(message: str) -> PipelineRepairError:
 
 def _is_occurrence(node_type: str) -> bool:
     """Whether a recovered node's type is a submodel occurrence; not for an unknown type."""
-    try:
-        return node_spec(node_type).structural_role == "occurrence"
-    except KeyError:
-        return False
+    spec = known_node_spec(node_type)
+    return spec is not None and spec.structural_role == "occurrence"
 
 
 def _replace_spans(
