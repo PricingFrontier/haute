@@ -29,6 +29,7 @@ from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import MANY_TO_MANY_JOIN_DETAIL, plan_prepared_execution_strategy
 from haute.executor import _preview_cache, execute_graph
 from scripts.memory_smoke import run_smoke
+from tests._project import use_project
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
@@ -475,10 +476,9 @@ def _table(path: str, label: str, columns: list[dict[str, Any]]) -> dict[str, An
 
 def _build_snapshots(source_path: Path, config: dict[str, Any], project_root: Path) -> Any:
     """Build every emitting table's input snapshot for *config* against *source_path*."""
-    from haute._sandbox import set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
-    set_project_root(project_root)
+    use_project(project_root)
     full_config = {"path": str(source_path), "contract": "opaque", **config}
     return build_test_api_input_snapshots(source_path, full_config)
 
@@ -614,7 +614,7 @@ def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
     The source is removed before either restart, so each fresh process can only
     have read the published generation, projected to the demanded columns.
     """
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     source_path = tmp_path / "restart-source.jsonl"
     records = [
         {"id": 1, "amount": 10, "ignored": 100},
@@ -637,10 +637,9 @@ def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
     }
     config_path = tmp_path / "restart-config.json"
     config_path.write_bytes(orjson.dumps(config))
-    from haute._sandbox import set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     generations = build_test_api_input_snapshots(source_path, {**config, "path": str(source_path)})
     generation_parts = [
         Path(part) for generation in generations.values() for part in generation.data_paths
@@ -771,7 +770,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     import haute.execution as execution_mod
     from haute._json_shred import _source_proof
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     source_path = tmp_path / "source.json"
     records = [
         {"amount": 10, "premium": 3},
@@ -967,7 +966,7 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
     import haute.executor as executor_mod
     from haute._json_shred import _source_proof
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     source_path = tmp_path / "preview-hit.json"
     source_path.write_bytes(orjson.dumps([{"amount": 10}, {"amount": 20}]))
     config = {
@@ -1156,7 +1155,7 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     source_path = tmp_path / "wide-api.jsonl"
     config = _write_cached_api_fixture(source_path)
     generations = _build_snapshots(source_path, config, tmp_path)
@@ -1228,7 +1227,7 @@ def test_direct_jsonl_projection_has_bounded_checkpoint_distance(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     source_path = tmp_path / "wide-direct.jsonl"
     config = _write_direct_jsonl_fixture(source_path)
     context = ExecutionContext(

@@ -30,12 +30,13 @@ from haute.schemas import (
     TrainEstimateRequest,
     TrainRequest,
 )
+from tests._project import use_project
 from tests.conftest import current_source_revision
 
 
 @pytest.fixture(autouse=True)
 def _project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
 
 @pytest.mark.parametrize(

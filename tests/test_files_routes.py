@@ -9,16 +9,18 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._project import project_app, use_project
+
 
 @pytest.fixture()
 def work_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
 def client(work_dir: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -197,7 +199,7 @@ class TestBrowseFilesUnresolvedCwd:
     yields long-form entries, so an unresolved base made ``relative_to`` raise
     ``ValueError`` → HTTP 500 on ``/api/files``. POSIX ``getcwd`` resolves
     symlinks so it never bit locally; reproduced cross-platform here by
-    pointing ``Path.cwd`` at a symlink whose ``resolve()`` differs.
+    installing the project through a symlink whose ``resolve()`` differs.
     """
 
     @staticmethod
@@ -219,10 +221,10 @@ class TestBrowseFilesUnresolvedCwd:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         _real, link = self._symlinked_project(tmp_path)
-        # files.py reads ``Path.cwd()``; make it return the unresolved symlink.
-        monkeypatch.setattr(Path, "cwd", classmethod(lambda _cls: link))
+        # The project is installed through the unresolved symlink.
+        use_project(link)
 
-        from haute.server import app
+        app = project_app()
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/api/files", params={"dir": "data"})
@@ -238,9 +240,9 @@ class TestBrowseFilesUnresolvedCwd:
     ):
         real, link = self._symlinked_project(tmp_path)
         (real / "data" / "t.csv").write_text("x\n1\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "cwd", classmethod(lambda _cls: link))
+        use_project(link)
 
-        from haute.server import app
+        app = project_app()
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/api/schema", params={"path": "data/t.csv"})
@@ -301,14 +303,23 @@ class TestGetSchemaParquet:
         assert body["column_count"] == 50
         assert len(body["columns"]) == 50
 
+    @pytest.mark.parametrize(
+        ("name", "reader"),
+        [
+            ("metadata_count.parquet", None),
+            ("metadata_count.bin", {"format": "parquet", "arguments": {}}),
+        ],
+    )
     def test_parquet_row_count_uses_metadata_without_len_collect(
         self,
         work_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
+        name: str,
+        reader: dict[str, object] | None,
     ):
         from haute.routes.files import _read_schema_blocking
 
-        path = work_dir / "metadata_count.parquet"
+        path = work_dir / name
         pl.DataFrame(
             {
                 "id": list(range(12)),
@@ -330,7 +341,7 @@ class TestGetSchemaParquet:
 
         monkeypatch.setattr(pl.LazyFrame, "collect", guarded_collect)
 
-        response = _read_schema_blocking("metadata_count.parquet", path)
+        response = _read_schema_blocking(name, path, reader)
 
         assert response.row_count == 12
         assert response.row_count_estimated is False
@@ -369,6 +380,17 @@ class TestGetSchemaCsv:
             ("amount", "Float64"),
         ]
         assert body["row_count"] == 2
+
+    def test_a_csv_named_parquet_is_read_as_the_format_says(
+        self, client: TestClient, work_dir: Path
+    ):
+        (work_dir / "export.parquet").write_text("claim_id,amount\n1,10.5\n2,20.0\n")
+        resp = client.get(
+            "/api/schema",
+            params={"path": "export.parquet", "format": "csv", "arguments": "{}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["row_count"] == 2
 
     @pytest.mark.parametrize(
         ("params", "detail"),

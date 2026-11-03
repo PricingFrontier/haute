@@ -23,6 +23,7 @@ from haute.errors import HauteValidationError
 from haute.modelling import _gpu
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob
+from tests._project import project_app
 
 EVALUATION = {
     "schema_version": 1,
@@ -198,7 +199,7 @@ def test_an_xgboost_gpu_job_is_refused_when_it_cannot_fit_in_vram(
 def test_the_gpu_status_route_reports_the_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     monkeypatch.setattr(
         _gpu,

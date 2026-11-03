@@ -490,11 +490,13 @@ from haute.deploy._scorer import (
     score_graph,
     score_graph_lazy,
 )
+from haute._project_context import ProjectContext, ProjectContextMiddleware
 from haute.routes._isolated_worker_async import run_isolated_worker_async
 
 # ── Load manifest at startup ────────────────────────────────────────
 
 _MANIFEST_PATH = Path(__file__).parent / "deploy_manifest.json"
+_PROJECT = ProjectContext.at(Path(__file__).parent)
 _manifest = json.loads(_MANIFEST_PATH.read_text())
 
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
@@ -1007,6 +1009,11 @@ async def quote(request: Request) -> JSONResponse:
         return _internal_error(request, "deploy_quote_failed")
     except Exception:
         return _internal_error(request, "deploy_quote_failed")
+
+
+# Added last, so it is outermost: every request runs in the bundle's project, the
+# folder this app ships in, whatever the working directory the image starts in.
+app.add_middleware(ProjectContextMiddleware, context=_PROJECT)
 '''
 
 

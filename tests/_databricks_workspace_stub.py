@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import base64
 import json
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+from haute._project_context import context_thread
 
 
 @dataclass
@@ -86,7 +87,7 @@ def workspace_stub(accepted_secret: str) -> Iterator[WorkspaceStub]:
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     stub.host = f"http://127.0.0.1:{server.server_port}"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = context_thread(server.serve_forever, daemon=True)
     thread.start()
     try:
         yield stub

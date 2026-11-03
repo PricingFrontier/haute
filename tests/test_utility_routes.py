@@ -10,6 +10,7 @@ import pytest
 
 from haute._git_state import write_working_branch
 from tests._git_helpers import REWRITING_PRE_COMMIT_HOOK, git_run, init_repo, install_hook
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -18,8 +19,8 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run every test in a temporary project so utility/ is fresh."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
 
 
 def _revision(client: TestClient, module: str) -> str:
@@ -561,8 +562,8 @@ class TestUtilityFolderContainment:
         outside = tmp_path / "outside"
         project.mkdir()
         outside.mkdir()
-        monkeypatch.chdir(project)
-        monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: project)
+        use_project(project)
+        use_project(project)
         (outside / "values.py").write_text("VALUE = 1\n", encoding="utf-8")
         link = project / "utility"
         if os.name == "nt":

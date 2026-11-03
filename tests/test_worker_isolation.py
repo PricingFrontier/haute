@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 import haute._worker_isolation as isolation
+from haute._project_context import context_thread, current_project
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
@@ -31,6 +32,7 @@ from haute._worker_isolation import (
     _terminate_process,
     create_worker_queue,
     ensure_spawnable_interpreter,
+    isolated_worker_failure_is_cap_unavailable,
     isolated_worker_failure_is_memory,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
@@ -185,7 +187,7 @@ def test_server_shutdown_cancels_a_running_job_and_leaves_no_worker(
     process_name = f"haute-shutdown-test-{job_id}"
 
     async def run_and_shut_down() -> float:
-        async with server._lifespan(server.app):
+        async with server._lifespan(server.create_app(current_project())):
             supervisor.launch_protocol(
                 job_id,
                 _sleeping_protocol_worker,
@@ -236,9 +238,9 @@ def test_job_shutdown_stops_other_jobs_while_one_holds_its_registry() -> None:
             publishing.set()
             release.wait(30)
 
-    holder = threading.Thread(target=publish, name="haute-test-publishing-job", daemon=True)
-    waiter = threading.Thread(
-        target=free_token.event.wait, args=(30,), name="haute-test-waiting-job", daemon=True
+    holder = context_thread(publish, name="haute-test-publishing-job", daemon=True)
+    waiter = context_thread(
+        free_token.event.wait, args=(30,), name="haute-test-waiting-job", daemon=True
     )
     start_job_thread(holder)
     start_job_thread(waiter)
@@ -285,8 +287,8 @@ def test_the_lifespan_logs_the_jobs_that_outlive_its_bound(
 
 def test_job_shutdown_returns_at_its_bound_naming_the_jobs_still_running() -> None:
     release = threading.Event()
-    thread = threading.Thread(
-        target=release.wait, args=(30,), name="haute-test-unstoppable-job", daemon=True
+    thread = context_thread(
+        release.wait, args=(30,), name="haute-test-unstoppable-job", daemon=True
     )
     start_job_thread(thread)
     try:
@@ -376,7 +378,7 @@ def test_worker_cancellation_gate_serializes_request_after_publication() -> None
         gate.request()
 
     with gate.publication_guard():
-        requester = threading.Thread(target=request_cancellation)
+        requester = context_thread(request_cancellation)
         requester.start()
         assert request_started.wait(timeout=1.0)
         assert requester.is_alive()
@@ -681,6 +683,35 @@ def test_isolated_worker_failure_is_memory_classifies_every_worker_outcome(
 ) -> None:
     """Every supervisor maps worker failures to 507 through one shared predicate."""
     assert isolated_worker_failure_is_memory(failure) is expected
+
+
+def _remote(remote_type: str, *, is_memory: bool = False) -> IsolatedWorkerRemoteError:
+    return IsolatedWorkerRemoteError(
+        remote_type=remote_type,
+        remote_message="message",
+        remote_traceback="traceback",
+        is_memory=is_memory,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100), True),
+        (_remote("NativeMemoryLimitUnsupportedError"), True),
+        (_remote("NativeMemoryLimitCleanupError"), True),
+        (_remote("MemoryError", is_memory=True), False),
+        (IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100), False),
+        (IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100), False),
+        (RuntimeError("generic"), False),
+    ],
+)
+def test_isolated_worker_failure_is_cap_unavailable_only_for_a_cap_the_host_cannot_install(
+    failure: BaseException,
+    expected: bool,
+) -> None:
+    """A missing cap is told apart from running out of memory, which also claims it."""
+    assert isolated_worker_failure_is_cap_unavailable(failure) is expected
 
 
 def test_a_child_failure_on_a_path_too_long_for_windows_is_reported_as_such(
@@ -1296,6 +1327,7 @@ def test_isolated_entrypoint_applies_native_lease_before_callable(
         {"increment": 3},
         memory_limit,
         caps_supported,
+        current_project(),
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", 5)
@@ -1324,6 +1356,8 @@ def test_isolated_entrypoint_serialises_child_failure(monkeypatch: pytest.Monkey
         ("child boom",),
         {},
         128,
+        False,
+        current_project(),
     )
 
     status, payload = pickle.loads(results.get_nowait())
@@ -1360,6 +1394,7 @@ def test_isolated_entrypoint_exposes_native_backend_only_during_callable(
         {},
         128,
         True,
+        current_project(),
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", "cgroup")
@@ -1384,7 +1419,9 @@ def test_isolated_entrypoint_leaves_native_lease_active_until_process_teardown(
         ),
     )
 
-    isolation_mod._isolated_worker_entrypoint(results, _go(), lambda: "result", (), {}, 128, True)
+    isolation_mod._isolated_worker_entrypoint(
+        results, _go(), lambda: "result", (), {}, 128, True, current_project()
+    )
 
     assert pickle.loads(results.get_nowait()) == ("ok", "result")
     assert events == ["apply"]
@@ -1420,7 +1457,9 @@ def test_isolated_worker_starts_its_result_feeder_before_the_cap(
         NativeMemoryLease, "apply", lambda self, *_a, **_k: events.append("cap") or False
     )
 
-    isolation_mod._isolated_worker_entrypoint(RecordingQueue(), _go(), int, ("7",), {}, 128, False)
+    isolation_mod._isolated_worker_entrypoint(
+        RecordingQueue(), _go(), int, ("7",), {}, 128, False, current_project()
+    )
 
     # The ready report, then the result.
     assert events == ["feeder", "cap", "put", "put"]
@@ -1465,15 +1504,54 @@ def test_native_allocation_refused_by_the_worker_cap_is_a_memory_outcome() -> No
     assert exc_info.value.terminal_reason == "memory_limited"
 
 
-def test_worker_memory_enforcement_defaults_to_required(
+def test_worker_memory_enforcement_defaults_to_required_where_a_cap_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import haute._worker_isolation as isolation_mod
+
     monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", raising=False)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: True)
 
     assert resolve_worker_memory_enforcement() == "required"
     config = worker_config_for_memory_policy(memory_limit_bytes=123)
     assert config.memory_limit_bytes == 123
     assert config.require_memory_limit is True
+
+
+def test_worker_memory_enforcement_supervises_by_default_where_no_cap_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS: workers run supervised by the parent's RSS watchdog, not refused."""
+    import haute._worker_isolation as isolation_mod
+
+    monkeypatch.delenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", raising=False)
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setattr(isolation_mod, "_supervision_noted", threading.Event())
+    events: list[str] = []
+    monkeypatch.setattr(
+        isolation_mod.logger, "warning", lambda event, **_fields: events.append(event)
+    )
+
+    assert resolve_worker_memory_enforcement() == "best_effort"
+    config = worker_config_for_memory_policy(memory_limit_bytes=123)
+    assert config.memory_limit_bytes == 123
+    assert config.require_memory_limit is False
+    # Said once per process, however many workers resolve it.
+    assert events == ["worker_memory_supervised_without_cap"]
+
+
+def test_an_explicit_worker_memory_policy_wins_over_the_host_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import haute._worker_isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: False)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+    assert resolve_worker_memory_enforcement() == "required"
+
+    monkeypatch.setattr(isolation_mod, "process_memory_caps_supported", lambda: True)
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    assert resolve_worker_memory_enforcement() == "best_effort"
 
 
 def test_required_worker_memory_enforcement_sets_required_cap(
@@ -1982,7 +2060,9 @@ def test_worker_entrypoint_reports_native_setup_failure(monkeypatch: pytest.Monk
         "apply",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cap")),
     )
-    isolation._isolated_worker_entrypoint(queue, _go(), lambda: 1, (), {}, 10, True)
+    isolation._isolated_worker_entrypoint(
+        queue, _go(), lambda: 1, (), {}, 10, True, current_project()
+    )
     assert queue.actions == ["put", "close", "join"]
     assert pickle.loads(queue.value)[0] == "error"
 
@@ -2095,6 +2175,7 @@ def test_isolated_entrypoint_exposes_no_backend_when_best_effort_apply_fails(
         {},
         64,
         False,
+        current_project(),
     )
 
     assert pickle.loads(results.get_nowait()) == ("ok", None)

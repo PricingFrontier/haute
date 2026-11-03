@@ -28,6 +28,7 @@ from haute._polars_utils import (
     set_streaming_chunk_size,
     streaming_chunk_size_cap,
 )
+from haute._project_context import context_thread
 from haute.graph_utils import GraphNode, NodeData
 from tests.test_model_scorer import _make_scoring_model, _run_source
 
@@ -80,7 +81,7 @@ def test_overlapping_caps_from_two_threads_keep_the_smallest_until_each_exits() 
             small_entered.set()
             small_release.wait(timeout=10)
 
-    holder = threading.Thread(target=hold_small_cap)
+    holder = context_thread(hold_small_cap)
     holder.start()
     try:
         assert small_entered.wait(timeout=10)

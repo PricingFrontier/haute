@@ -21,6 +21,7 @@ import pytest
 import haute.execution as execution
 import haute.executor as executor
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 
 pytestmark = pytest.mark.perf
 
@@ -85,7 +86,7 @@ def _graph(project: Path, length: int) -> PipelineGraph:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     rows = 10_000
     pl.DataFrame({"id": range(rows), "a": range(rows)}).write_parquet(
         haute_scratch / "quotes.parquet"

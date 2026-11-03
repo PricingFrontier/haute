@@ -20,6 +20,7 @@ from haute.modelling._feature_contract import load_contract
 from haute.modelling._tboost import TBoostAlgorithm, TBoostModel
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob, model_contract_filename
+from tests._project import use_project
 
 EVALUATION = {
     "schema_version": 1,
@@ -937,14 +938,12 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
 
     from haute._mlflow_io import load_mlflow_model
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
-    from haute._sandbox import set_project_root
     from haute.modelling._mlflow_log import resolve_tracking_backend
     from haute.modelling._native_pyfunc import package_native_model
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     data = frame()
     _job, result = train(tmp_path / "train", target="claims", loss="Poisson", offset="exposure")
     model_path = Path(result.model_path)

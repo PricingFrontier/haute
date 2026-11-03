@@ -39,6 +39,7 @@ from haute.routes._training_preparation import (
     prepare_training_data,
 )
 from haute.schemas import TrainRequest
+from tests._project import use_project
 from tests.conftest import make_file_input_config
 
 _MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
@@ -683,6 +684,7 @@ class TestHandOffParity:
 
         body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
         direct_path = str(tmp_path / "direct.parquet")
+        use_project(Path("/").resolve())
         request = TrainingPreparationRequest(
             graph=body.graph,
             node_id="train",
@@ -690,7 +692,6 @@ class TestHandOffParity:
             source="live",
             parquet_path=direct_path,
             config=dict(body.graph.node_map["train"].data.config),
-            project_root=str(Path("/").resolve()),
         )
         context = create_admitted_execution_context(
             operation="training_pipeline",
@@ -740,7 +741,6 @@ def test_preparation_request_and_outcome_pickle_round_trip(training_parquet: str
         source="live",
         parquet_path="out.parquet",
         config={"target": "y"},
-        project_root=".",
         required_columns_by_node={
             "train": AllExceptColumns(
                 required_columns=frozenset({"y"}),
@@ -804,7 +804,6 @@ class TestPreparationCleanupFailsLoud:
             source="live",
             parquet_path=str(parquet_path),
             config=dict(body.graph.node_map["train"].data.config),
-            project_root=str(tmp_path),
             keep_columns=["y"],
         )
         context = create_admitted_execution_context(

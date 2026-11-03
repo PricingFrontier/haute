@@ -25,6 +25,7 @@ from haute.schemas import (
     RecoverySubmodelDefinition,
     RecoveryUnresolvedConnection,
 )
+from tests._project import use_project
 from tests.conftest import write_data_input_config
 
 
@@ -184,7 +185,7 @@ def test_a_source_that_is_not_utf8_is_source_only_and_its_save_is_refused(
     assert document.capabilities.can_repair is False
     assert document.source_revision
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     response = client.post(
         "/api/pipeline/save",
         json={
@@ -1721,7 +1722,7 @@ def test_persisted_mutations_reject_degraded_disk_without_writes(
     body: dict[str, object],
 ) -> None:
     _write(tmp_path / "main.py", _legacy_explore_source())
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
     response = client.post(endpoint, json=body)
@@ -1737,7 +1738,7 @@ def test_editor_routes_keep_first_broken_pipeline_active(
 ) -> None:
     first = _write(tmp_path / "a.py", _legacy_explore_source("broken-first"))
     second = _write(tmp_path / "b.py", _healthy_source("healthy-second"))
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr(
         "haute.routes.pipeline.discover_pipelines",
         lambda: [first, second],
@@ -2552,8 +2553,8 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
         def broken(source): ...
         """,
     )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.pipeline._get_project_root", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     captured: dict[str, object] = {}
 
@@ -2615,8 +2616,8 @@ def test_recovery_preview_closure_shares_canonical_cache_identity(
         def broken(source): ...
         """,
     )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.pipeline._get_project_root", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     captured: dict[str, object] = {}
 
@@ -2679,8 +2680,8 @@ def test_recovery_preview_rejects_blocked_target_before_execution(
             return explore
         """,
     )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.pipeline._get_project_root", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     response = client.post(
@@ -2706,8 +2707,8 @@ def test_recovery_preview_rejects_stale_revision_and_untrusted_sidecar(
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", _healthy_source("preview-fences"))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.pipeline._get_project_root", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     _write(
         pipeline_file,
@@ -2883,7 +2884,7 @@ def test_remove_unavailable_node_apply_reports_the_exact_edits_it_made(
         '"explore":{"x":30,"y":40},"model_input":{"x":50,"y":60}},'
         '"sources":["live"],"active_source":"live"}\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "explore")
 
@@ -2935,7 +2936,7 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
         '"explore":{"x":30,"y":40},"model_input":{"x":50,"y":60}},'
         '"sources":["live"],"active_source":"live"}\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "explore")
     request = {
@@ -3016,7 +3017,7 @@ def test_removing_a_modules_last_occurrence_removes_its_import(
         "def healthy():\n"
         "    return None\n\n\n" + registrations,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "missing")
     assert target.availability == "unavailable"
@@ -3097,7 +3098,7 @@ def test_removing_an_occurrence_keeps_the_import_a_registration_chain_still_uses
         ")\n"
         'pipeline.submodel(pricing.submodel, "broken", label="old")\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     payload = _remove_occurrence(client, pipeline_file, tmp_path, "broken")
 
@@ -3127,7 +3128,7 @@ def test_removing_an_occurrence_leaves_a_malformed_import_as_written(
         'pipeline.submodel(missing.submodel, "missing")\n'
         'pipeline.submodel(retained.submodel, "retained")\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     payload = _remove_occurrence(client, pipeline_file, tmp_path, "missing")
 
@@ -3162,7 +3163,7 @@ def test_remove_unavailable_node_is_ready_when_only_target_connections_block(
         tmp_path / "main.py",
         _legacy_explore_source().rstrip() + '\n        pipeline.connect("explore", "ghost")\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "explore")
     assert any(
@@ -3238,7 +3239,7 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
         )
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.submodels is not None
     target = next(
@@ -3335,7 +3336,7 @@ def test_remove_connection_deletes_only_the_broken_connect_line(
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", _CONNECTED + "    " + extra)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.load_status == "degraded"
 
@@ -3365,7 +3366,7 @@ def test_remove_connection_takes_out_one_duplicate_at_a_time(
     pipeline_file = _write(
         tmp_path / "main.py", _CONNECTED + '    pipeline.connect("quotes", "priced")\n' * 2
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     for remaining in (2, 1):
         document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
@@ -3438,7 +3439,7 @@ def test_remove_connection_refuses_a_stale_document_or_an_unknown_connection(
     pipeline_file = _write(
         tmp_path / "main.py", _CONNECTED + '    pipeline.connect("ghost", "priced")\n'
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _connection_request(document, "connection_endpoint_missing")
 
@@ -3493,7 +3494,7 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
         pipeline.connect("inputs", "priced", source_port="out")
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _connection_request(document, "connection_endpoint_missing")
     assert request["target_source_file"] == "modules/inputs.py"
@@ -3537,7 +3538,7 @@ def test_remove_connection_mends_a_submodel_with_no_nodes(
         pipeline.submodel(empty.submodel, "empty")
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.submodels is not None
     assert list(document.submodels) == ["modules/empty.py"]
@@ -3593,7 +3594,7 @@ def test_remove_connection_beside_one_file_registered_twice(
         'pipeline.submodel(pricing.submodel, "pricing_copy", instance_of="pricing")\n'
         + parent_extra,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.load_status == "degraded"
     assert document.submodels is not None
@@ -3654,7 +3655,7 @@ def test_remove_connection_refuses_what_is_not_one_connect_line_without_writing(
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", source)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     before = pipeline_file.read_bytes()
 
@@ -3805,7 +3806,7 @@ def test_a_quote_input_connection_naming_no_table_is_a_connection_to_remove(
     with pytest.raises(ParseError, match="does not name the table it takes") as refused:
         parse_pipeline_file(pipeline_file)
     assert refused.value.context["frame_missing_edges"] == ["request -> consume"]
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.load_status == "degraded"
     assert [diagnostic.code for diagnostic in document.diagnostics] == ["connection_frame_missing"]
@@ -3869,7 +3870,7 @@ def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(
             return obsolete
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     before = pipeline_file.read_bytes()
 
@@ -3900,7 +3901,7 @@ def test_remove_unavailable_node_apply_rejects_a_stale_revision(
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", _legacy_explore_source())
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "explore")
     original = pipeline_file.read_bytes()
@@ -3943,7 +3944,7 @@ def test_remove_unavailable_node_retains_config_unless_separately_approved(
             return None
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = {
         **_remove_repair_request(document, "obsolete"),
@@ -3995,7 +3996,7 @@ def test_remove_unavailable_node_refuses_a_config_edited_while_planning(
             return None
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = {**_remove_repair_request(document, "obsolete"), "delete_config": True}
     original_source = pipeline_file.read_bytes()
@@ -4045,7 +4046,7 @@ def test_remove_unavailable_node_rejects_deleting_a_shared_config(
             return None
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     response = client.post(
@@ -4083,7 +4084,7 @@ def test_remove_unavailable_node_rejects_config_deletion_of_a_document_artifact(
         pipeline_file.with_suffix(".haute.json"),
         '{"positions":{"obsolete":{"x":1,"y":2}}}\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     before = {
         pipeline_file: pipeline_file.read_bytes(),
@@ -4125,7 +4126,7 @@ def test_remove_unavailable_node_rejects_duplicate_identity_and_mixed_chain(
             return None
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     duplicate_document = load_pipeline_editor_document(duplicate_file, project_root=tmp_path)
     duplicate_target = duplicate_document.nodes[0]
     duplicate = client.post(
@@ -4195,7 +4196,7 @@ def test_remove_unavailable_node_rejects_connection_sharing_a_source_line(
         pipeline.connect("source", "obsolete"); preserved = "keep me"
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     before = pipeline_file.read_bytes()
 
@@ -4233,7 +4234,7 @@ def test_remove_unavailable_node_does_not_delete_a_trailing_connection_comment(
         pipeline.connect("source", "obsolete")  # preserve this authored note
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     before = pipeline_file.read_bytes()
 
@@ -4269,7 +4270,7 @@ def test_remove_unavailable_node_can_leave_independent_degraded_error(
             return None
         """,
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "obsolete")
 
@@ -4298,7 +4299,7 @@ def test_remove_unavailable_node_rolls_back_every_staged_artifact_on_write_failu
         pipeline_file.with_suffix(".haute.json"),
         '{"positions":{"explore":{"x":30,"y":40}}}\n',
     )
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "explore")
     before = {pipeline_file: pipeline_file.read_bytes(), sidecar: sidecar.read_bytes()}
@@ -4491,7 +4492,7 @@ def test_saving_over_statements_a_save_would_drop_is_refused_naming_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline_file = _write(tmp_path / "main.py", _UNKEPT_STATEMENTS_SOURCE)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     before = pipeline_file.read_bytes()
 
     response = client.post(
@@ -4581,7 +4582,7 @@ def test_saving_over_a_submodel_statement_a_save_would_drop_is_refused_naming_it
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _parent, child = _write_pipeline_with_unkept_submodel_statement(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     before = child.read_bytes()
 
     response = client.post(
@@ -4691,7 +4692,7 @@ def test_comments_a_save_would_drop_degrade_the_document_at_their_lines(
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(tmp_path / "main.py", _COMMENTS_A_SAVE_DROPS)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     before = pipeline_file.read_bytes()
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)

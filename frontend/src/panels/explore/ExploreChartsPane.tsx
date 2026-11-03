@@ -24,6 +24,7 @@ import {
   isPivotResultFresh,
   isPivotConfigured,
   parseExplorePivots,
+  PIVOT_NO_ROWS_MESSAGE,
   pivotCalculationIdentity,
   type ExplorePivotConfig,
 } from "./pivotConfig"
@@ -241,9 +242,12 @@ function ChartCard({
           </span>
         </CardMessage>
       )}
-      {adaptation.data && (
-        <ComboChart chart={adaptation.chart} data={adaptation.data} />
-      )}
+      {adaptation.data &&
+        (pivotResult?.row_paths.length === 0 ? (
+          <CardMessage>{PIVOT_NO_ROWS_MESSAGE}</CardMessage>
+        ) : (
+          <ComboChart chart={adaptation.chart} data={adaptation.data} />
+        ))}
     </section>
   )
 }

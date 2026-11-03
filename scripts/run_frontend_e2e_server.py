@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 
 from haute._local_security import SESSION_TOKEN_COOKIE, ensure_local_session_token_env
+from haute._project_context import ProjectContext, project_scope
 from haute.cli._helpers import _node_env, _npm
 from haute.cli._init_cmd import InitConfig, handle_init
 
@@ -563,7 +564,8 @@ def _augment_starter_pipeline() -> None:
 def _scaffold_e2e_project() -> None:
     _reset_project_dir()
     os.chdir(E2E_PROJECT_DIR)
-    handle_init(InitConfig(target="databricks", ci="none"))
+    with project_scope(ProjectContext.at(E2E_PROJECT_DIR)):
+        handle_init(InitConfig(target="databricks", ci="none"))
     _augment_starter_pipeline()
 
     ids = list(range(1, 31))
@@ -708,12 +710,15 @@ def _start_vite() -> subprocess.Popen[bytes]:
 
 def _start_backend() -> subprocess.Popen[bytes]:
     ensure_local_session_token_env()
+    # The server serves the e2e project, as `haute serve` run in it would.
+    env = {**os.environ, "HAUTE_PROJECT_ROOT": str(E2E_PROJECT_DIR)}
     return subprocess.Popen(
         [
             sys.executable,
             "-m",
             "uvicorn",
-            "haute.server:app",
+            "--factory",
+            "haute.server:create_app_from_environment",
             "--host",
             BACKEND_HOST,
             "--port",
@@ -722,6 +727,7 @@ def _start_backend() -> subprocess.Popen[bytes]:
             "warning",
         ],
         cwd=str(E2E_PROJECT_DIR),
+        env=env,
         stdout=sys.stdout,
         stderr=sys.stderr,
     )

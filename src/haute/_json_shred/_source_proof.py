@@ -499,9 +499,9 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 
 def _proof_record_root() -> Path:
     """The project-local directory durable source proofs live in."""
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
 
-    return _get_project_root() / ".haute_cache" / "source_proofs"
+    return current_project().root / ".haute_cache" / "source_proofs"
 
 
 def _proof_record_path(path: Path) -> Path:

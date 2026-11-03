@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import {
+  makeCanonicalGraph,
+  makeCanonicalNode,
+  makePreviewResponse as makeCompletePreviewResponse,
+} from "../../test-utils/factories"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   ApiError,
@@ -127,23 +132,14 @@ const dummyGraph = {
 }
 
 function makePreviewResponse() {
-  return {
-    status: "ok",
+  return makeCompletePreviewResponse({
     node_id: "node1",
     row_count: 1,
     column_count: 1,
     columns: [{ name: "x", dtype: "Int64" }],
     available_columns: [{ name: "x", dtype: "Int64" }],
     preview: [{ x: 1 }],
-    error: null,
-    error_line: null,
-    timing_ms: 0,
-    memory_bytes: 0,
-    timings: [],
-    memory: [],
-    schema_warnings: [],
-    node_statuses: {},
-  }
+  })
 }
 
 function makeSavePipelineResponse() {
@@ -154,6 +150,9 @@ function makeSavePipelineResponse() {
     source_revision: "revision-save",
     document_fingerprint: "fingerprint-save",
     warnings: [],
+    git_sha: null,
+    identity_required: false,
+    uncaptured: [],
   }
 }
 
@@ -281,13 +280,7 @@ function makeSubmodelCreateResponse(overrides: Record<string, unknown> = {}) {
     submodel_file: "pricing.py",
     parent_file: "main.py",
     source_revision: "revision-create",
-    graph: {
-      nodes: [dummyGraph.nodes[0]],
-      edges: [],
-      submodels: { pricing: { path: "pricing.py" } },
-      preserved_blocks: [],
-      source_revision: "revision-create",
-    },
+    graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")], source_revision: "revision-create" }),
     ...overrides,
   }
 }
@@ -298,12 +291,7 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
     submodel_name: "pricing",
     definition_id: "definition_pricing",
     submodel_file: "modules/pricing.py",
-    graph: {
-      nodes: [dummyGraph.nodes[0]],
-      edges: [],
-      preserved_blocks: [],
-      source_revision: null,
-    },
+    graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")] }),
     ...overrides,
   }
 }
@@ -314,12 +302,7 @@ function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
     instance_id: "pricing",
     definition_id: "definition_pricing",
     source_revision: "revision-dissolve",
-    graph: {
-      nodes: dummyGraph.nodes,
-      edges: dummyGraph.edges,
-      preserved_blocks: [],
-      source_revision: "revision-dissolve",
-    },
+    graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")], source_revision: "revision-dissolve" }),
     ...overrides,
   }
 }
@@ -1011,7 +994,7 @@ describe("endpoint contracts", () => {
   it("createNodeInstance sends the canonical node, graph and revision and requires its identities", async () => {
     const payload = { node_id: "calc", graph: dummyGraph, source_file: "pipe.py", base_revision: "revision-parent",
       preamble: "", pipeline_name: "main", preserved_blocks: [] }
-    const response = { status: "ok", graph: dummyGraph, owner_name: "calc", instance_name: "calc_2",
+    const response = { status: "ok", graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")] }), owner_name: "calc", instance_name: "calc_2",
       definition_id: "calc", source_revision: "revision-parent" }
     mockFetch.mockReturnValue(jsonResponse(response))
     expect(await createNodeInstance(payload)).toEqual(expect.objectContaining(response))
@@ -1402,7 +1385,7 @@ describe("git remote catch-up + history endpoints", () => {
   })
 
   it("getCommitPipeline GETs /api/git/show/{sha} for the source file and parses the graph", async () => {
-    mockFetch.mockReturnValue(jsonResponse(dummyGraph))
+    mockFetch.mockReturnValue(jsonResponse(makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")] })))
     const result = await getCommitPipeline("abc123", "pipelines/rating.py")
     expect(mockFetch.mock.calls[0][0]).toBe(
       "/api/git/show/abc123?source_file=pipelines%2Frating.py",
@@ -1411,7 +1394,7 @@ describe("git remote catch-up + history endpoints", () => {
   })
 
   it("getCommitPipeline URL-encodes the sha path segment", async () => {
-    mockFetch.mockReturnValue(jsonResponse(dummyGraph))
+    mockFetch.mockReturnValue(jsonResponse(makeCanonicalGraph()))
     await getCommitPipeline("weird/ sha", "rating.py")
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha?source_file=rating.py")
   })

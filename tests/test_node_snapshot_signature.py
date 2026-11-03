@@ -21,6 +21,7 @@ from haute._node_snapshots import (
     pipeline_source_file_key,
 )
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests._project import use_project
 
 _SIGNATURE_FIELDS = (
     "lineage_fingerprint",
@@ -109,7 +110,7 @@ def _signature(graph: PipelineGraph, node_id: str = "join", **overrides: object)
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame({"premium": [1.0, 2.0]}).write_parquet(haute_scratch / "quotes.parquet")
     return haute_scratch

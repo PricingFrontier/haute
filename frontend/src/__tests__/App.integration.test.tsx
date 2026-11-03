@@ -33,6 +33,8 @@
  * threading, conditional panel rendering — that the old file could not.
  * Target runtime is <5s for the whole file.
  */
+import { makeSavePipelineResponse } from "../test-utils/factories"
+import { makePreviewResponse } from "../test-utils/factories"
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react"
 import { makeLoadedPipeline, makePipelineEditorDocument } from "../testSupport/pipelineDocumentFixture"
@@ -85,7 +87,7 @@ vi.mock("../api/client", async () => {
     notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
-    // The preview status bar reads the snapshot store's size.
+    // Pipeline settings reads the snapshot store's size.
     fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
     // Pipeline endpoints
     renderPolarsSteps: vi.fn(async ({ steps }: { steps: Array<{ kind: string; input?: string }> }) => ({
@@ -553,9 +555,9 @@ beforeEach(() => {
 
   // Reset all api mocks to their default resolution (empty graph, success).
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
-  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
-  vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
-  vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
+  vi.mocked(api.savePipeline).mockReset().mockResolvedValue(makeSavePipelineResponse({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
+  vi.mocked(api.previewNode).mockReset().mockResolvedValue(makePreviewResponse({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 }))
+  vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue(makePreviewResponse({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 }))
   vi.mocked(api.applyRemoveUnavailableNode).mockReset()
   vi.mocked(api.getNodeDataPoint).mockReset().mockResolvedValue(missingPoint())
   vi.mocked(api.runNodeData).mockReset().mockResolvedValue({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })
@@ -731,14 +733,14 @@ describe("App integration - degraded execution fence", () => {
       }],
       capabilities: { can_preview: true },
     }))
-    vi.mocked(api.previewRecoveryNode).mockResolvedValueOnce({
+    vi.mocked(api.previewRecoveryNode).mockResolvedValueOnce(makePreviewResponse({
       node_id: explore.id,
       status: "ok",
       columns: [],
       preview: [],
       row_count: 0,
       column_count: 0,
-    })
+    }))
 
     render(<App />)
     await waitForAppReady()
@@ -1130,7 +1132,7 @@ describe("App integration - load a pipeline with nodes", () => {
       const config = graph.nodes.find((node) => node.id === nodeId)?.data.config as Record<string, unknown> | undefined
       const selected = config?.selected_columns as string[] | undefined
       const output = selected?.length ? columns.filter((column) => selected.includes(column.name)) : columns
-      return { node_id: nodeId, status: "ok", columns: output, available_columns: columns, preview: [], row_count: 0, column_count: output.length }
+      return makePreviewResponse({ node_id: nodeId, status: "ok", columns: output, available_columns: columns, preview: [], row_count: 0, column_count: output.length })
     })
     render(<App />)
     await waitForAppReady()
@@ -1182,7 +1184,7 @@ describe("App integration - load a pipeline with nodes", () => {
       source_revision: "revision-test",
     }))
     useSettingsStore.setState({ rowLimit: 2 })
-    vi.mocked(api.previewNode).mockResolvedValueOnce({
+    vi.mocked(api.previewNode).mockResolvedValueOnce(makePreviewResponse({
       node_id: "explore_1",
       status: "ok",
       columns: [
@@ -1199,8 +1201,8 @@ describe("App integration - load a pipeline with nodes", () => {
       preview_truncated: true,
       row_count: 3,
       column_count: 2,
-    })
-    vi.mocked(api.previewNode).mockResolvedValueOnce({
+    }))
+    vi.mocked(api.previewNode).mockResolvedValueOnce(makePreviewResponse({
       node_id: "source_0",
       status: "ok",
       columns: [{ name: "premium", dtype: "i64" }],
@@ -1211,8 +1213,8 @@ describe("App integration - load a pipeline with nodes", () => {
       preview_truncated: false,
       row_count: 1,
       column_count: 1,
-    })
-    vi.mocked(api.previewNode).mockResolvedValueOnce({
+    }))
+    vi.mocked(api.previewNode).mockResolvedValueOnce(makePreviewResponse({
       node_id: "explore_1",
       status: "ok",
       columns: [
@@ -1229,7 +1231,7 @@ describe("App integration - load a pipeline with nodes", () => {
       preview_truncated: true,
       row_count: 4,
       column_count: 2,
-    })
+    }))
 
     render(<App />)
     await waitForAppReady()
@@ -1265,6 +1267,49 @@ describe("App integration - load a pipeline with nodes", () => {
     expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
 
+  it("offers the assistant beside an Explore node's execution error", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
+    sourceNode.data.config = {
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      path: "data/claims.parquet",
+      arguments: {},
+    }
+    sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._columnsSource = "live"
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [sourceNode, makeNode("explore_1", "Claims Explore", "explore")],
+      edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockResolvedValueOnce(makePreviewResponse({
+      node_id: "explore_1",
+      status: "error",
+      error: "name 'premium_x' is not defined",
+      columns: [],
+      preview_columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    }))
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByText("Claims Explore"))
+
+    const preview = await screen.findByTestId("explore-preview-preview-pane")
+    expect(
+      (await within(preview).findAllByText("name 'premium_x' is not defined")).length,
+    ).toBeGreaterThan(0)
+    expect(
+      within(preview).getByRole("button", { name: /Ask the assistant to fix/ }),
+    ).toBeVisible()
+  })
+
   it("in manual calculation, clicking a node runs nothing and Ctrl+Enter calculates it", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     // Direct Parquet, so the snapshot-ensure stage skips this source.
@@ -1288,7 +1333,7 @@ describe("App integration - load a pipeline with nodes", () => {
       preserved_blocks: [],
       source_revision: "revision-test",
     }))
-    vi.mocked(api.previewNode).mockResolvedValue({
+    vi.mocked(api.previewNode).mockResolvedValue(makePreviewResponse({
       node_id: "polars_1",
       status: "ok",
       columns: [{ name: "premium", dtype: "i64" }],
@@ -1297,7 +1342,7 @@ describe("App integration - load a pipeline with nodes", () => {
       preview_row_count: 1,
       row_count: 1,
       column_count: 1,
-    })
+    }))
     useUIStore.setState({ calculationMode: "manual" })
 
     render(<App />)
@@ -1526,7 +1571,7 @@ describe("App integration - save pipeline", () => {
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
-    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
+    vi.mocked(api.savePipeline).mockResolvedValueOnce(makeSavePipelineResponse({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
     render(<App />)
     await waitForAppReady()
 
@@ -2720,11 +2765,11 @@ describe("App integration - read-only submodel instance", () => {
         ],
       } },
     }))
-    vi.mocked(api.previewNode).mockResolvedValue({
+    vi.mocked(api.previewNode).mockResolvedValue(makePreviewResponse({
       node_id: "submodel_runtime/again/child", status: "ok",
       columns: [{ name: "value", dtype: "Int64" }], preview: [{ value: 37 }],
       row_count: 1, column_count: 1,
-    })
+    }))
     render(<App />)
     await waitForAppReady()
     const copyNode = await waitFor(() => {
@@ -2880,7 +2925,7 @@ describe("App integration - a running assistant turn", () => {
       preserved_blocks: [],
       source_revision: "revision-test",
     }))
-    vi.mocked(api.previewNode).mockResolvedValue({
+    vi.mocked(api.previewNode).mockResolvedValue(makePreviewResponse({
       node_id: "polars_0",
       status: "error",
       error: "ColumnNotFoundError: premium",
@@ -2888,7 +2933,7 @@ describe("App integration - a running assistant turn", () => {
       preview: [],
       row_count: 0,
       column_count: 0,
-    })
+    }))
     render(<App />)
     await waitForAppReady()
     act(() => {
@@ -3127,8 +3172,8 @@ describe("App integration - panel open/close", () => {
         outputPorts: [{ name: "premium", source: { nodeId: "rate", handleId: null } }],
       } },
     }))
-    vi.mocked(api.previewNode).mockResolvedValue({ node_id: "submodel_runtime/pricing/rate", status: "ok",
-      columns: [{ name: "premium", dtype: "Int64" }], preview: [{ premium: 73 }], row_count: 1, column_count: 1 })
+    vi.mocked(api.previewNode).mockResolvedValue(makePreviewResponse({ node_id: "submodel_runtime/pricing/rate", status: "ok",
+      columns: [{ name: "premium", dtype: "Int64" }], preview: [{ premium: 73 }], row_count: 1, column_count: 1 }))
     render(<App />)
     await waitForAppReady()
     fireEvent.click(await screen.findByTestId("rf__node-pricing"))

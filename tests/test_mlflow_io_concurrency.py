@@ -50,6 +50,8 @@ from haute._mlflow_io import (
     load_mlflow_model,
 )
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute._project_context import context_thread
+from tests._project import use_project
 
 # Generous upper bounds for "this MUST happen" waits — they only matter on
 # a wedged run.  The single short wait used to assert "this must NOT
@@ -194,7 +196,7 @@ def _run_threads(workers: dict[str, Any], join_timeout: float = WAIT_MUST_HAPPEN
         return runner
 
     threads = {
-        name: threading.Thread(target=_wrap(name, fn), name=name, daemon=True)
+        name: context_thread(_wrap(name, fn), name=name, daemon=True)
         for name, fn in workers.items()
     }
     return results, errors, threads
@@ -209,7 +211,7 @@ class TestDownloadSingleFlight:
         Post-fix: the second caller blocks on the per-key lock and returns
         the already-downloaded file without touching the transport.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         gate = threading.Event()
         transport = _FakeTransport(gate=gate)
 
@@ -247,7 +249,7 @@ class TestDownloadSingleFlight:
         artifacts must be in flight simultaneously.  A global lock would
         strand one thread at the barrier → BrokenBarrierError → loud fail.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         barrier = threading.Barrier(2, timeout=WAIT_MUST_HAPPEN_S)
         transport_a = _FakeTransport(payload=b"aa", barrier=barrier)
         transport_b = _FakeTransport(payload=b"bb", barrier=barrier)
@@ -277,7 +279,7 @@ class TestDownloadSingleFlight:
         caller retries the download itself and succeeds (no deadlock, no
         poisoned lock).
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         release_first = threading.Event()
         transport = _FakeTransport(gate=release_first, fail_calls=frozenset({0}))
 
@@ -329,7 +331,7 @@ class TestLoadModelSingleFlight:
         cache, downloads the artifact AGAIN, overwrites the file the first
         thread is actively loading, and builds a duplicate model.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         transport = _FakeTransport()
 
         load_gate = threading.Event()
@@ -393,7 +395,7 @@ class TestLoadModelSingleFlight:
 
     def test_caller_after_completion_hits_memory_cache(self, tmp_path, monkeypatch):
         """Sequential follow-up callers never re-download or re-load."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         transport = _FakeTransport()
         load_calls: list[str] = []
 
@@ -462,7 +464,7 @@ class TestArtifactDiskIdentity:
         the second artifact sees that basename hit and loads the wrong
         model without ever downloading its own bytes.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         transport = _MappingTransport(
             {
                 "freq/model.cbm": b"freq-bytes",
@@ -548,7 +550,7 @@ class TestArtifactDiskIdentity:
         monkeypatch,
     ):
         """Registered-model cache keys must include full artifact identity."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         transport = _MappingTransport(
             {
                 "freq/model.cbm": b"registered-freq",
@@ -594,7 +596,7 @@ class TestArtifactDiskIdentity:
         monkeypatch,
     ):
         """A cold process must not serve ``freq/model.cbm`` for ``sev/model.cbm``."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         poisoned = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-restart", "freq/model.cbm"
@@ -634,7 +636,7 @@ class TestArtifactDiskIdentity:
         monkeypatch,
     ):
         """Eviction must not delete files another thread is actively loading."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         active_path = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-active", "freq/model.cbm"
@@ -706,7 +708,7 @@ class TestArtifactDiskIdentity:
         """Direct callers of _resolve_artifact_local must be eviction-safe."""
         from haute import _mlflow_io
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         active_path = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-active", "model.cbm"
@@ -749,7 +751,7 @@ class TestArtifactDiskIdentity:
         """A run becoming active after the eviction snapshot must survive."""
         from haute import _mlflow_io
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         race_path = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-race", "model.cbm"
@@ -780,7 +782,7 @@ class TestArtifactDiskIdentity:
                         if not release.wait(timeout=WAIT_MUST_HAPPEN_S):
                             raise AssertionError("active run holder was never released")
 
-                thread = threading.Thread(target=hold_run, daemon=True)
+                thread = context_thread(hold_run, daemon=True)
                 thread.start()
                 assert entered.wait(WAIT_MUST_HAPPEN_S), "active run was never marked"
                 return frozenset()
@@ -807,7 +809,7 @@ class TestArtifactDiskIdentity:
         """Rename is atomic with the active check; slow deletion is lock-free."""
         from haute import _mlflow_io
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         race_path = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-race", "model.cbm"
@@ -840,7 +842,7 @@ class TestArtifactDiskIdentity:
             # artifact underneath it (Windows cannot open past 260 characters).
             assert tombstone.name.startswith(".evicting-")
             assert len(tombstone.name) <= len(".evicting-") + 8
-            thread = threading.Thread(target=user_enters_run, daemon=True)
+            thread = context_thread(user_enters_run, daemon=True)
             thread.start()
             assert entered.wait(WAIT_MUST_HAPPEN_S), (
                 "slow tombstone deletion still held the global active-runs guard"
@@ -880,7 +882,7 @@ class TestArtifactDiskIdentity:
         limit, which is how long-named tombstones used to fail — as a missing
         path from inside the walk, so the removal must not read that as success.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         for run in ("run-old", "run-new"):
             _seed_artifact(
@@ -913,7 +915,7 @@ class TestArtifactDiskIdentity:
         monkeypatch,
     ):
         """The disk-cache hit path must be eviction-safe before is_file()."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cache_root = tmp_path / ".cache" / "models"
         cached_file = _artifact_cache_path(
             cache_root, _local_backend().digest, "run-fast", "model.cbm"
@@ -979,7 +981,7 @@ class TestLockAcquisitionRaces:
         """Disk file present, cache empty at entry; the 'winner' populates
         the cache while this caller waits — the waiter must return that
         instance without loading."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
             _local_backend().digest,
@@ -1026,7 +1028,7 @@ class TestLockAcquisitionRaces:
         """Disk file present at entry but deleted while waiting (a
         concurrent corrupt-retry): the caller must fall through to the
         full resolve path and re-download instead of failing."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
             _local_backend().digest,
@@ -1074,7 +1076,7 @@ class TestLockAcquisitionRaces:
         keyed at hook time from the freshly downloaded file, and this
         caller's single download is expected.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         winner_model = ScoringModel(_StubCatBoost(), ["a"], frozenset(), "catboost")
         transport = _FakeTransport()
         local_file = _artifact_cache_path(

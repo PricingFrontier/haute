@@ -26,9 +26,11 @@ from pathlib import Path
 
 import pytest
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project, project_holding, project_scope
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute.errors import InputPreparationError
 from haute.executor import _preview_cache, execute_graph
+from tests._project import use_project
 from tests.conftest import build_test_input_snapshot
 
 #: The Data Input ``path`` written into the node config — RELATIVE and
@@ -49,9 +51,9 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     Yields the on-disk absolute data path; the node config carries the RELATIVE
     ``path`` which must anchor to ``<root>/rating/data/...``.
     """
-    monkeypatch.chdir(tmp_path)  # cwd == project root, NOT the pipeline dir
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)  # cwd == project root, NOT the pipeline dir
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
 
     # haute.toml declares the nested pipeline — the anchor both the cache route
@@ -69,7 +71,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     yield data_path
 
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -127,9 +129,9 @@ def test_data_input_out_of_cwd_absolute_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Snapshot-only execution rejects absolute inputs outside its project root."""
-    monkeypatch.chdir(tmp_path)  # cwd == project root
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)  # cwd == project root
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
     try:
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
@@ -144,7 +146,7 @@ def test_data_input_out_of_cwd_absolute_is_rejected(
         with pytest.raises(ValueError, match="outside the project root"):
             execute_graph(graph, target_node_id="src")
     finally:
-        set_project_root(original)
+        use_project(original)
         _preview_cache.clear()
 
 
@@ -154,8 +156,7 @@ def test_snapshot_executor_rejects_relative_and_mixed_separator_escape(
     monkeypatch: pytest.MonkeyPatch,
     escape: str,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     outside = tmp_path.parent / "outside.csv"
     outside.write_text(_CSV_TEXT, encoding="utf-8")
 
@@ -167,8 +168,7 @@ def test_snapshot_executor_rejects_symlink_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     outside = tmp_path.parent / "outside-data"
     outside.mkdir()
     (outside / "customers.csv").write_text(_CSV_TEXT, encoding="utf-8")
@@ -181,19 +181,23 @@ def test_snapshot_executor_rejects_symlink_escape(
     with pytest.raises(ValueError, match="outside the project root"):
         execute_graph(_data_input_graph("linked-data/customers.csv"), target_node_id="src")
 
+    # A pipeline file reached through the link cannot carry the read out with it: the
+    # root is the installed project's, and the file beside the outside pipeline is
+    # never a candidate, so the source is simply not found in the project.
     (outside / "pipeline.py").write_text("# symlink target", encoding="utf-8")
     symlinked_source_graph = _data_input_graph("customers.csv").model_copy(
         update={"source_file": str(link / "pipeline.py")}
     )
-    with pytest.raises(ValueError, match="outside the project root"):
+    with pytest.raises(InputPreparationError, match="source is unavailable"):
         execute_graph(symlinked_source_graph, target_node_id="src")
 
 
-def test_selected_external_pipeline_uses_its_parent_as_execution_root(
+def test_a_selected_external_pipeline_runs_in_the_project_its_entry_point_installs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    """A pipeline file in no project runs in its own folder, the project a CLI command
+    or a standalone run installs for it (``project_holding``)."""
     external_root = tmp_path.parent / f"{tmp_path.name}-external-project"
     external_root.mkdir()
     source_file = external_root / "main.py"
@@ -204,9 +208,9 @@ def test_selected_external_pipeline_uses_its_parent_as_execution_root(
     graph = _data_input_graph("data/customers.csv").model_copy(
         update={"source_file": str(source_file)}
     )
-    _build_graph_snapshot(graph, base_dir=source_file.parent)
-
-    results = execute_graph(graph, target_node_id="src")
+    with project_scope(project_holding(source_file.parent)):
+        _build_graph_snapshot(graph, base_dir=source_file.parent)
+        results = execute_graph(graph, target_node_id="src")
 
     assert results["src"].status == "ok", results["src"].error
     assert results["src"].preview == _EXPECTED_RECORDS
@@ -220,8 +224,7 @@ def test_http_graph_cannot_select_an_external_pipeline_root(
 
     from haute.routes.pipeline import _validate_runtime_input_paths
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     external_root = tmp_path.parent / f"{tmp_path.name}-untrusted-http-root"
     external_root.mkdir()
     source_file = external_root / "main.py"

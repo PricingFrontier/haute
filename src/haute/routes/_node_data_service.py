@@ -54,6 +54,7 @@ from haute._node_snapshots import (
 )
 from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
+from haute._project_context import context_thread, current_project
 from haute._seed_plans import (
     SeedPlan,
     SeedPlanHandoff,
@@ -99,6 +100,7 @@ from haute.routes._job_lifecycle import (
     bind_running_execution_metrics_publisher,
 )
 from haute.routes._job_store import JobStore, RunningJobFields
+from haute.routes._memory_messages import memory_limit_user_message
 from haute.schemas import (
     ExecutionMetricsPayload,
     NodeDataClearResponse,
@@ -148,7 +150,6 @@ class _NodeSnapshotWorkerRequest:
     identity_digest: str
     slot_digest: str
     refresh: bool
-    project_root: str
     # Parent-chosen, so the parent can discard the staging directory of a
     # worker killed by cancellation, timeout, or the memory cap. The seed
     # plan's captures stage under the same token.
@@ -200,13 +201,6 @@ def _node_identity(
     return resolver.node_output_slot(node_id).identity(resolver.node_output_signature(node_id))
 
 
-def node_data_project_root() -> Path:
-    """Return the project root whose snapshot store holds node data."""
-    from haute._sandbox import _get_project_root
-
-    return _get_project_root()
-
-
 def _slot_key(resolution: PointResolution, source: str) -> str:
     point = resolution.point
     return f"{point.producer_node_id}|{point.port_label or ''}|{source}"
@@ -221,9 +215,7 @@ def _run_node_snapshot_worker(
     budget: IsolatedExecutionBudget,
 ) -> _NodeSnapshotWorkerOutcome:
     """One-shot child entrypoint: build and publish one explicit node-output snapshot."""
-    from haute._sandbox import set_project_root
 
-    set_project_root(Path(request.project_root))
     context: ExecutionContext | None = None
 
     def evidence() -> dict[str, Any] | None:
@@ -283,10 +275,11 @@ def _build_node_snapshot(
     import polars as pl
 
     from haute._chunked_writes import JoinRecipe, WriteRecipe, write_parts
+    from haute._project_context import graph_pipeline_dir
     from haute.execution import execute_lazy_graph
-    from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
+    from haute.executor import _build_node_fn, _compile_preamble
 
-    store = NodeSnapshotStore(request.project_root)
+    store = NodeSnapshotStore(current_project().root)
     changed = NodeSnapshotInputsChangedError(
         "This node's inputs changed while its data was being cached; cache it again."
     )
@@ -294,7 +287,7 @@ def _build_node_snapshot(
     if identity.digest != request.identity_digest:
         raise changed
     graph = DataPointResolver(request.graph, source=request.source, store=store).graph
-    preamble_ns = _compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
+    preamble_ns = _compile_preamble(graph.preamble or "", pipeline_dir=graph_pipeline_dir(graph))
     with (
         SeedPlan.adopt(request.seed_plan, store)
         if request.seed_plan is not None
@@ -400,7 +393,6 @@ class _ProfileWorkerRequest:
 
     graph: Any
     source: str
-    project_root: str
     resolution: PointResolution
     scratch_directory: str | None = None
 
@@ -419,9 +411,7 @@ def _run_profile_worker(
     budget: IsolatedExecutionBudget,
 ) -> _ProfileWorkerOutcome:
     """One-shot child entrypoint: profile exactly the data the parent leased."""
-    from haute._sandbox import set_project_root
 
-    set_project_root(Path(request.project_root))
     try:
         execution_context = create_isolated_execution_context(budget)
         try:
@@ -456,7 +446,7 @@ def _profile_point(
     from haute._frame_profile import _build_frame_stats
 
     resolver = DataPointResolver(
-        request.graph, source=request.source, store=NodeSnapshotStore(request.project_root)
+        request.graph, source=request.source, store=NodeSnapshotStore(current_project().root)
     )
     with resolver.lease_resolved(
         request.resolution, exact=True, execution_context=execution_context
@@ -618,7 +608,7 @@ class NodeDataService:
         resolver = DataPointResolver(
             body.graph,
             source=body.source,
-            store=NodeSnapshotStore(node_data_project_root()),
+            store=NodeSnapshotStore(current_project().root),
             building=self._building,
         )
         return consumer, resolver
@@ -653,7 +643,7 @@ class NodeDataService:
         resolver = DataPointResolver(
             graph,
             source=source,
-            store=store if store is not None else NodeSnapshotStore(node_data_project_root()),
+            store=store if store is not None else NodeSnapshotStore(current_project().root),
             building=self._building,
         )
         resolved: list[tuple[str, NodeDataPointResponse | None, str | None, tuple[str, ...]]] = []
@@ -977,15 +967,14 @@ class NodeDataService:
             identity_digest=identity.digest,
             slot_digest=slot.digest,
             refresh=body.refresh,
-            project_root=str(node_data_project_root()),
             staging_token=new_staging_token(),
         )
         with self._lock:
             previous_thread = (
                 self._threads.get(previous_job_id) if previous_job_id is not None else None
             )
-            thread = threading.Thread(
-                target=self._run_job,
+            thread = context_thread(
+                self._run_job,
                 args=(job_id, request, token, previous_thread),
                 name=f"haute-node-data-{job_id}",
                 daemon=True,
@@ -1016,7 +1005,7 @@ class NodeDataService:
                 PROFILE_ANALYSIS_KIND,
                 PROFILE_ANALYSIS_VERSION,
             )
-            project_root = node_data_project_root()
+            project_root = current_project().root
             stored = AnalysisResultStore(project_root).read(key, NodeDataProfile)
             if stored is not None:
                 return NodeDataProfileResponse(
@@ -1050,11 +1039,10 @@ class NodeDataService:
             request = _ProfileWorkerRequest(
                 graph=body.graph,
                 source=body.source,
-                project_root=str(project_root),
                 resolution=resolution,
             )
-            thread = threading.Thread(
-                target=self._run_profile_job,
+            thread = context_thread(
+                self._run_profile_job,
                 args=(job_id, key, request, resolver, token),
                 name=f"haute-node-profile-{job_id}",
                 daemon=True,
@@ -1112,7 +1100,7 @@ class NodeDataService:
             with self._profile_lock, self._jobs.latest_publication(job_id) as owns:
                 if not owns:
                     raise ExecutionCancelledError("node_data_profile", job_id=job_id)
-                AnalysisResultStore(request.project_root).write(key, profile)
+                AnalysisResultStore(current_project().root).write(key, profile)
                 self._lifecycle.transition(
                     job_id,
                     to="completed",
@@ -1198,7 +1186,7 @@ class NodeDataService:
                 ]
             for job_id in running:
                 self._jobs.cancel(job_id)
-            AnalysisResultStore(node_data_project_root()).clear_point(point_digest)
+            AnalysisResultStore(current_project().root).clear_point(point_digest)
 
     # --------------------------------------------------------------- jobs
 
@@ -1308,15 +1296,15 @@ class NodeDataService:
                     elapsed_seconds=elapsed,
                 )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            payload = exc.to_payload()
+            message = memory_limit_user_message(exc, operation_noun=label)
             self._lifecycle.transition(
                 job_id,
                 to="memory_limited",
-                message=str(payload),
+                message=message,
                 fields={
-                    "error": str(payload),
+                    "error": message,
                     "error_code": "memory_limit",
-                    "error_detail": payload,
+                    "error_detail": exc.to_payload(),
                 },
                 elapsed_seconds=elapsed,
             )
@@ -1363,7 +1351,7 @@ class NodeDataService:
         from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
         from haute.execution import prepare_graph
 
-        store = NodeSnapshotStore(request.project_root)
+        store = NodeSnapshotStore(current_project().root)
         graph = DataPointResolver(request.graph, source=request.source, store=store).graph
         prepared = prepare_graph(graph, request.node_id, source=request.source)
         prepare_input_snapshots(
@@ -1385,7 +1373,7 @@ class NodeDataService:
 
     def _discard_staging(self, request: _NodeSnapshotWorkerRequest) -> None:
         """Remove anything left under this build's staging token."""
-        NodeSnapshotStore(request.project_root).discard_node_output_staging(request.staging_token)
+        NodeSnapshotStore(current_project().root).discard_node_output_staging(request.staging_token)
 
     def _run_job(
         self,
@@ -1423,7 +1411,7 @@ class NodeDataService:
                     refresh=request.refresh,
                     build_node_id=request.node_id,
                 ),
-                store=NodeSnapshotStore(request.project_root),
+                store=NodeSnapshotStore(current_project().root),
                 staging_token=request.staging_token,
             ) as plan:
                 request = replace(request, seed_plan=plan.handoff())

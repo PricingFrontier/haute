@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from haute._config_io import global_constants_json
+from haute._project_context import standalone_project_scope
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant, NodeType
 from haute.codegen import graph_to_code
 from haute.graph_utils import GraphEdge, GraphNode, PipelineGraph
@@ -230,7 +231,13 @@ def _outputs(graph: PipelineGraph) -> dict[str, Any]:
 
 def convert(pipeline: Path) -> list[str]:
     """*pipeline*'s Constant nodes promoted where they qualify, its files written, every node
-    checked to give the same outputs; what was done and left."""
+    checked to give the same outputs; what was done and left. It runs in the project
+    holding *pipeline*."""
+    with standalone_project_scope(pipeline):
+        return _convert(pipeline)
+
+
+def _convert(pipeline: Path) -> list[str]:
     from haute.parser import parse_pipeline_file
 
     before = parse_pipeline_file(pipeline)

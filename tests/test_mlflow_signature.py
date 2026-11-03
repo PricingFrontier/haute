@@ -30,6 +30,8 @@ import pytest
 from mlflow.models import ModelSignature  # re-exported canonically from mlflow.models
 from mlflow.types import DataType
 
+from tests._project import use_project
+
 
 class _TemporalEchoModel(mlflow.pyfunc.PythonModel):
     """Small real pyfunc model used to exercise MLflow schema enforcement."""
@@ -823,14 +825,13 @@ def test_a_logged_model_declares_the_dtypes_its_pyfunc_predicts(
     from mlflow.tracking import MlflowClient
 
     from haute._mlflow_utils import mlflow_fluent_operation, resolve_backend
-    from haute._sandbox import set_project_root
     from haute.modelling._training_job import TrainingJob
 
     for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # conftest restores the original project root.
+    use_project(tmp_path)
+    use_project(tmp_path)  # conftest restores the original project root.
     rng = np.random.default_rng(11)
     x = rng.random(120)
     frame = pl.DataFrame({"x": x, "y": pl.Series((x * 4).round()).cast(target_dtype)})
@@ -884,15 +885,14 @@ def test_an_integer_exposure_is_signed_as_trained_and_served_as_sent(
     from mlflow.tracking import MlflowClient
 
     from haute._mlflow_utils import mlflow_fluent_operation, resolve_backend
-    from haute._sandbox import set_project_root
     from haute.modelling._feature_contract import load_contract
     from haute.modelling._training_job import TrainingJob, model_contract_filename
 
     for name in ("MLFLOW_TRACKING_URI", "DATABRICKS_HOST", "DATABRICKS_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # conftest restores the original project root.
+    use_project(tmp_path)
+    use_project(tmp_path)  # conftest restores the original project root.
     rng = np.random.default_rng(5)
     x = rng.random(150)
     exposure = rng.integers(1, 4, size=150)

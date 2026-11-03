@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from haute._pipeline_recovery import load_pipeline_editor_document
+from tests._project import use_project
 
 
 def _legacy_demo(root: Path) -> Path:
@@ -298,7 +299,7 @@ def test_a_legacy_submodel_registration_has_no_migration_action(tmp_path, client
 
     with pytest.raises(ValidationError, match="action"):
         PipelineRepairRecoverRequest(**request)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     response = client.post("/api/pipeline/repair/recover/apply", json=request)
 
     assert response.status_code == 422
@@ -352,7 +353,7 @@ def test_reset_rolls_back_all_artifacts_when_verification_fails(tmp_path, monkey
 
 def test_recovery_actions_round_trip_through_api(tmp_path, client, monkeypatch):
     _broken_constant(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     request = _request(tmp_path, "source", "reset").model_dump()
     result = client.post("/api/pipeline/repair/recover/apply", json=request)
     assert result.status_code == 200, result.text
@@ -421,7 +422,7 @@ def test_stale_revision_conflict_preserves_authored_bytes(
     tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _broken_constant(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     before_files = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     request = _request(tmp_path, "source", "reset").model_dump()
     current_revision = request["source_revision"]
@@ -445,7 +446,7 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
     import haute.routes._save_pipeline as save_pipeline
 
     parent = _broken_constant(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     config = tmp_path / "custom.json"
     before_parent = parent.read_bytes()
     before_config = config.read_bytes()
@@ -487,7 +488,7 @@ def test_a_restore_that_fails_is_named_in_the_repair_response(
     import haute.routes._save_pipeline as save_pipeline
 
     _broken_constant(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     request = _request(tmp_path, "source", "reset").model_dump()
     real_stage_write = save_pipeline._stage_artifact_write_bytes
     staged: list[Path] = []

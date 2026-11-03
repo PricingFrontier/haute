@@ -36,6 +36,7 @@ import click
 import pytest
 
 from haute.cli import cli
+from tests._project import use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -203,7 +204,7 @@ class TestInitScaffold:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Baseline: ``haute init`` in an empty dir creates ``haute.toml``."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
         assert (tmp_path / "haute.toml").exists()
@@ -219,7 +220,7 @@ class TestInitScaffold:
         Substrings like ``metadata/`` or ``mlruns-old/`` must not satisfy
         Haute's required ``/data/`` or ``mlruns/`` entries.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / ".gitignore").write_text(
             "metadata/\nmlruns-old/\n.env.local\n",
             encoding="utf-8",
@@ -349,7 +350,7 @@ class TestTrainProgressFlush:
 @pytest.fixture()
 def toml_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Minimal ``haute.toml`` + chdir so ``haute status`` can load config."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text(
         '[project]\nname = "t"\npipeline = "main.py"\n[deploy]\nmodel_name = "motor-pricing"\n',
     )
@@ -488,7 +489,7 @@ class TestPreCommitChmodWindowsSkip:
         ``sys.platform``; if the current code invokes ``chmod`` on Windows
         the spy captures the call and the test fails.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # Force the code path to believe it's running on Windows regardless
         # of the actual host OS.
         monkeypatch.setattr(sys, "platform", "win32")
@@ -520,7 +521,7 @@ class TestPreCommitChmodWindowsSkip:
         the real-POSIX path. We simulate Linux by monkeypatching
         ``sys.platform`` to ``"linux"``.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setattr(sys, "platform", "linux")
 
         chmod_spy = MagicMock(name="Path.chmod")

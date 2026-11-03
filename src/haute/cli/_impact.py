@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-from haute._project import get_project_root
+from haute._project_context import current_project
 from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
 
 if TYPE_CHECKING:
@@ -54,14 +54,14 @@ def handle_impact(config: ImpactConfig) -> None:
         format_terminal,
     )
 
-    toml_path = Path.cwd() / "haute.toml"
+    toml_path = current_project().root / "haute.toml"
     if not toml_path.exists():
         click.echo("Error: No haute.toml found.", err=True)
         raise SystemExit(1)
 
     deploy_config = DeployConfig.from_toml(toml_path)
     click.echo("  \u2713 Loaded config from haute.toml")
-    project_root = get_project_root()
+    project_root = current_project().root
 
     if config.endpoint_suffix and deploy_config.target != "databricks":
         click.echo(
@@ -341,7 +341,7 @@ def _impact_databricks(
         )
         raise SystemExit(1)
 
-    _load_env(Path.cwd())
+    _load_env(current_project().root)
     # Both endpoints are reached with the serving pair, as deploy reaches them.
     try:
         ws = serving_workspace_client()

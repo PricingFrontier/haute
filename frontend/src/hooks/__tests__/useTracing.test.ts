@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { makeTraceDiagnostic, makeTraceResult, makeTraceStep } from "../../test-utils/factories"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useTracing, {
@@ -92,25 +93,22 @@ function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
   }
 }
 
-type TraceFixture = Omit<
-  TraceResult,
-  "omissions" | "correlation_diagnostics" | "generated_at" | "pipeline_source" | "execution_origin"
->
+type TraceFixture = Partial<TraceResult>
 
 function completeTrace(trace: TraceFixture): TraceResult {
-  return {
+  return makeTraceResult({
     ...trace,
     omissions: [],
     correlation_diagnostics: [],
     generated_at: "2026-07-23T12:00:00+00:00",
     pipeline_source: null,
     execution_origin: "fresh_execution",
-  }
+  })
 }
 
 function makeTrace(nodeIds: string[]): TraceResult {
   return completeTrace({
-    steps: nodeIds.map((nodeId, topologicalRank) => ({
+    steps: nodeIds.map((nodeId, topologicalRank) => (makeTraceStep({
       node_id: nodeId,
       node_name: nodeId,
       node_type: "polars",
@@ -120,7 +118,7 @@ function makeTrace(nodeIds: string[]): TraceResult {
       topological_rank: topologicalRank,
       column_relevant: true,
       contributed_columns: [], derivations: [],
-    })),
+    }))),
     target_node_id: nodeIds.at(-1) ?? "",
     row_index: 0,
     column: "price",
@@ -282,7 +280,7 @@ describe("useTracing", () => {
 
   it("handleCellClick calls traceCell and sets result on success", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      steps: [makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] })],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -684,7 +682,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      steps: [makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] })],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -710,7 +708,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus rings the node a trace card points at, only while a trace shows", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      steps: [makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] })],
       target_node_id: "n1",
       row_index: 0,
       column: "price",
@@ -743,8 +741,8 @@ describe("useTracing", () => {
   it("nodesWithStatus does not set style.opacity on traced nodes either", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
+        makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }),
+        makeTraceStep({ node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] }),
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -770,7 +768,7 @@ describe("useTracing", () => {
 
   it("nodesWithStatus preserves transition on style", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      steps: [makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] })],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -796,8 +794,8 @@ describe("useTracing", () => {
   it("edgesWithTrace highlights edges between traced nodes", async () => {
     const trace = {
       steps: [
-        { node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] },
-        { node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] },
+        makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }),
+        makeTraceStep({ node_id: "n2", node_name: "N2", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 1, column_relevant: true, contributed_columns: [], derivations: [] }),
       ],
       target_node_id: "n2",
       row_index: 0,
@@ -1001,7 +999,7 @@ describe("useTracing", () => {
 
   it("_hoverDimmed is false when trace is active (trace takes priority)", async () => {
     const trace = {
-      steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] }],
+      steps: [makeTraceStep({ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true, contributed_columns: [], derivations: [] })],
       target_node_id: "n2",
       row_index: 0,
       column: "price",
@@ -1231,7 +1229,7 @@ describe("useTracing validity across shared snapshots", () => {
   })
 
   it("keeps a node not traced above a snapshot on the canvas trace path, without a traced value", async () => {
-    const diagnostic = (nodeId: string, reason: string, seedNodeIds: string[]) => ({
+    const diagnostic = (nodeId: string, reason: string, seedNodeIds: string[]) => (makeTraceDiagnostic({
       code: reason,
       severity: "info",
       reason,
@@ -1242,7 +1240,7 @@ describe("useTracing validity across shared snapshots", () => {
       ignored_columns: [],
       matched_row_indices: [],
       seed_node_ids: seedNodeIds,
-    })
+    }))
     mockTraceCell.mockResolvedValue({
       status: "ok",
       trace: {
@@ -1283,10 +1281,10 @@ describe("useTracing validity across shared snapshots", () => {
         ...base,
         column: "optimal_premium",
         steps: [
-          { ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"], derivations: [] },
-          { ...base.steps[1], schema_diff: diff(["market_note"]), output_values: { market_note: "y" }, column_relevant: false },
-          { ...base.steps[2], schema_diff: diff(["sale_flag"]), output_values: { sale_flag: null } },
-          { ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"], derivations: [] },
+          makeTraceStep({ ...base.steps[0], schema_diff: diff(["competitor_premium", "note"]), output_values: { competitor_premium: 377.2, note: "x" }, contributed_columns: ["competitor_premium"], derivations: [] }),
+          makeTraceStep({ ...base.steps[1], schema_diff: diff(["market_note"]), output_values: { market_note: "y" }, column_relevant: false }),
+          makeTraceStep({ ...base.steps[2], schema_diff: diff(["sale_flag"]), output_values: { sale_flag: null } }),
+          makeTraceStep({ ...base.steps[3], schema_diff: diff(["optimal_premium"]), output_values: { optimal_premium: 1.5 }, contributed_columns: ["optimal_premium"], derivations: [] }),
         ],
       },
     })

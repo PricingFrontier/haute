@@ -25,6 +25,8 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from haute._project_context import context_thread
+from tests._project import project_app, use_project
 from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
@@ -86,8 +88,8 @@ class TestWsClientsConcurrentMutation:
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        threads = [threading.Thread(target=adder, args=(s,), daemon=True) for s in sentinels] + [
-            threading.Thread(target=other, args=(s,), daemon=True) for s in sentinels
+        threads = [context_thread(adder, args=(s,), daemon=True) for s in sentinels] + [
+            context_thread(other, args=(s,), daemon=True) for s in sentinels
         ]
         for t in threads:
             t.start()
@@ -144,8 +146,8 @@ class TestWsClientsConcurrentMutation:
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        t_mut = threading.Thread(target=mutator, daemon=True)
-        t_bc = threading.Thread(target=broadcaster, daemon=True)
+        t_mut = context_thread(mutator, daemon=True)
+        t_bc = context_thread(broadcaster, daemon=True)
         t_mut.start()
         t_bc.start()
         t_mut.join(timeout=5)
@@ -268,9 +270,9 @@ class TestWsClientsConcurrentMutation:
                 errors.append(exc)
 
         threads = [
-            threading.Thread(target=disconnector, daemon=True),
-            threading.Thread(target=broadcaster, args=(5,), daemon=True),
-            threading.Thread(target=broadcaster, args=(5,), daemon=True),
+            context_thread(disconnector, daemon=True),
+            context_thread(broadcaster, args=(5,), daemon=True),
+            context_thread(broadcaster, args=(5,), daemon=True),
         ]
         try:
             for t in threads:
@@ -403,8 +405,8 @@ class TestJobStoreAtomicUpdateEnforced:
             for i in range(1, 201):
                 store.update_job(job_id, step=i, progress=i / 100.0)
 
-        reader_t = threading.Thread(target=reader, daemon=True)
-        writer_t = threading.Thread(target=writer)
+        reader_t = context_thread(reader, daemon=True)
+        writer_t = context_thread(writer)
         reader_t.start()
         writer_t.start()
         writer_t.join(timeout=10)
@@ -444,8 +446,8 @@ class TestJobStoreAtomicUpdateEnforced:
             for i in range(n_ops):
                 store.update_job(job_id, key_b=i)
 
-        ta = threading.Thread(target=writer_a)
-        tb = threading.Thread(target=writer_b)
+        ta = context_thread(writer_a)
+        tb = context_thread(writer_b)
         ta.start()
         tb.start()
         ta.join(timeout=10)
@@ -538,7 +540,7 @@ class TestAsyncRouteDoesNotBlockEventLoop:
         """
         import httpx
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         pq = data_dir / "big.parquet"
@@ -557,7 +559,7 @@ class TestAsyncRouteDoesNotBlockEventLoop:
             return original(path, *args, **kwargs)
 
         async def _run() -> dict[str, tuple[float, int]]:
-            from haute.server import app
+            app = project_app()
 
             results: dict[str, tuple[float, int]] = {}
             start = time.monotonic()

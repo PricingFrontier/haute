@@ -12,8 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._git_state import write_working_branch
-from haute._sandbox import set_project_root
 from tests._git_helpers import git_run, init_repo
+from tests._project import project_app, use_project
 
 WORKING = "pricing-dev"
 
@@ -32,14 +32,13 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git_run(root, "commit", "-m", "project")
     git_run(root, "checkout", "-b", WORKING)
     write_working_branch(root, WORKING)
-    monkeypatch.chdir(root)
-    set_project_root(root)
+    use_project(root)
     return root
 
 
 @pytest.fixture()
 def client(project: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -356,8 +355,7 @@ def test_a_branch_change_while_uploading_writes_nothing(
 
     assert response.status_code == 409
     assert "The branch changed while the file was uploading" in _refused(response)
-    assert not (project / "rating/files/data/table.csv").exists()
-    assert os.listdir(project / "rating/files/data") == []
+    assert not (project / "rating/files/data").exists()
 
 
 def test_a_body_shorter_than_its_length_leaves_nothing_behind(
@@ -375,6 +373,30 @@ def test_a_body_shorter_than_its_length_leaves_nothing_behind(
     assert "ended before it was complete" in _refused(response)
     assert os.listdir(project / "data") == []
     assert os.listdir(project / ".haute" / "uploads") == []
+
+
+def test_a_refused_upload_into_a_new_folder_leaves_no_folder(
+    client: TestClient, project: Path
+) -> None:
+    response = client.put(
+        "/api/project-files/content",
+        params={"place": "local", "path": "data/2026/cut.csv"},
+        content=b"abc",
+        headers={"content-length": "10"},
+    )
+
+    assert response.status_code == 400
+    assert not (project / "data").exists()
+
+
+def test_a_file_cannot_be_written_inside_a_file(client: TestClient, project: Path) -> None:
+    (project / "data").write_text("not a folder")
+
+    response = _put(client, "local", "data/inner.csv", b"x")
+
+    assert response.status_code == 400
+    assert "data/inner.csv is inside a file, not a folder." in _refused(response)
+    assert not (project / ".haute" / "uploads").exists()
 
 
 def test_an_upload_stages_outside_the_pipeline_folder(

@@ -15,7 +15,7 @@ from types import MappingProxyType
 import polars as pl
 import pytest
 
-from haute._sandbox import bound_project_root
+from haute._project_context import ProjectContext, project_scope
 from haute._types import GraphEdge, NodeEditorState, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
 from haute.assistant._providers import DatabricksProvider, OpenAIProvider
@@ -62,6 +62,7 @@ from scripts.run_assistant_self_test import (
     select_self_test_cases,
     self_test_config,
 )
+from tests._project import use_project
 from tests._source_files import source_files
 
 EVAL_ROOT = Path(__file__).parent / "assistant_eval"
@@ -298,7 +299,7 @@ class TestPortfolio:
                     ]
                     if not factors:
                         continue
-                    monkeypatch.chdir(PROJECTS_ROOT / case.project_fixture)
+                    use_project(PROJECTS_ROOT / case.project_fixture)
                     frame = _golden_frame(goldens[node].golden)
                     for factor in factors:
                         column = frame[factor["column"]]
@@ -347,7 +348,7 @@ class TestPortfolio:
         for case in CASES:
             if case.project_fixture not in fixtures:
                 root = PROJECTS_ROOT / case.project_fixture
-                with bound_project_root(root):
+                with project_scope(ProjectContext.at(root)):
                     graph = parse_pipeline_to_graph(root / "pipeline.py")
                 fixtures[case.project_fixture] = {node.id for node in graph.nodes}
             known = set(fixtures[case.project_fixture])
@@ -531,14 +532,13 @@ class TestFixtures:
         rewrites none of the fixture's files."""
 
         from haute._pipeline_recovery import load_pipeline_editor_document
-        from haute._sandbox import bound_project_root
         from haute.routes._helpers import parse_pipeline_to_graph
         from haute.routes._save_pipeline import SavePipelineService
 
         source = PROJECTS_ROOT / project
         copy = tmp_path_factory.mktemp("f") / "p"
         shutil.copytree(source, copy)
-        with bound_project_root(copy):
+        with project_scope(ProjectContext.at(copy)):
             graph = parse_pipeline_to_graph(copy / "pipeline.py")
             SavePipelineService(project_root=copy, pipeline_root=copy).save_graph_transactionally(
                 graph=graph,
@@ -1336,10 +1336,6 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow(tmp_path: Pa
 
     provider = _banding_replay(_scripted_config(_PERMISSIVE_EGRESS))
 
-    from haute.routes._helpers import pipeline_dir
-
-    pipeline_dir.cache_clear()
-    pipeline_dir()
     transcript: list[dict[str, object]] = []
     result = await run_self_test_case(
         _load_case("smoke_categorical_banding"),

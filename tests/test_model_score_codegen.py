@@ -17,6 +17,7 @@ import pytest
 
 from haute._mlflow_io import ScoringModel
 from haute.codegen import graph_to_code
+from tests._project import use_project
 from tests.conftest import make_edge, make_file_input_config, make_graph
 
 SCORER_SIDECAR = "config/model_scoring/scorer.json"
@@ -308,7 +309,7 @@ class TestModelScoreCodegen:
 
 def _save_and_import(graph, project: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Save *graph* as a project's pipeline file with its sidecars and data, and import it."""
-    monkeypatch.chdir(project)
+    use_project(project)
     (project / ".git").mkdir()
     (project / "haute.toml").write_text('[project]\nname = "scoring"\n', encoding="utf-8")
     pl.DataFrame({"a": [1.0, 3.0], "b": [2.0, 4.0]}).write_parquet(project / "data.parquet")

@@ -15,7 +15,7 @@ from typing import Any
 
 import polars as pl
 
-from haute._sandbox import set_project_root
+from haute._project_context import ProjectContext, project_scope
 from haute.routes._helpers import parse_pipeline_to_graph
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
@@ -603,7 +603,9 @@ def main() -> None:
     args = parser.parse_args()
 
     root = args.root.resolve()
-    set_project_root(root)
+    # The benchmark runs in the project it names, for the rest of the process.
+    scope = project_scope(ProjectContext.at(root))
+    scope.__enter__()
     pipeline = args.pipeline if args.pipeline.is_absolute() else root / args.pipeline
 
     runs = []

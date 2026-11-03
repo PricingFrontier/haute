@@ -94,8 +94,9 @@ native commit in the worker.
   [frontend-shared](../frontend-shared/high-level.md).
 - Generated pipeline `.py` source and the config-file layout `SavePipelineService` writes —
   see [pipeline-config](../pipeline-config/high-level.md) and [codegen](../codegen/high-level.md).
-- Path sandboxing primitives (`_get_project_root`) — see
-  [sandbox-security](../sandbox-security/high-level.md).
+- The project context every request runs in (`haute._project_context`) — see
+  [pipeline-config](../pipeline-config/high-level.md); path sandboxing primitives —
+  see [sandbox-security](../sandbox-security/high-level.md).
 - The shared node-type dispatch registry and column-contract lookup
   (`haute._registry`, `haute._contracts`) — see
   [pipeline-config](../pipeline-config/high-level.md),
@@ -459,9 +460,11 @@ pipeline's sources.
   response models of each converted module group (`RESPONSE_CONTRACT_GROUPS` in
   `scripts/generate_api_contracts.py`), and the request bodies of each request group
   (`REQUEST_CONTRACT_GROUPS`), generate reviewed browser declarations and standalone
-  validators from their canonical Pydantic models; the browser checks those responses with the
-  generated validators alone. Other frontend contracts remain explicitly maintained until they
-  are converted, rather than being claimed as generated.
+  validators from their canonical Pydantic models. Every response the browser parses is one of
+  them, checked by its generated validator; hand-written browser code keeps only the
+  cross-field rules the UI relies on and the shapes it gives a field the server leaves open
+  (a node's config, a trace step's calculation, the training diagnostics' rows). A node's
+  config is an open object until its typed models join the contract (`PCFG-R07`).
   A single `except HauteError` at any boundary catches the
   entire product's domain-error surface (with the documented exceptions — the OUTPUT
   dry-run request/response models are route-local, and resource-exhaustion
@@ -604,8 +607,8 @@ describes. Stale, changed or already-applied plans fail before
 - **[pipeline-config](../pipeline-config/high-level.md)** — `_save_pipeline.py` calls
   `collect_node_configs` / `config_path_for_node` to decide which config JSON sidecars a
   save writes, and owns the on-disk config layout under `<pipeline>/config/`.
-- **[sandbox-security](../sandbox-security/high-level.md)** — `_get_project_root()` anchors
-  the `/pipeline/read-json` route, and `contained_path` is the containment check
+- **[sandbox-security](../sandbox-security/high-level.md)** — the current project's root
+  anchors the `/pipeline/read-json` route, and `contained_path` is the containment check
   behind every request path.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the sole consumer of every
   schema and route this component (and the routers it hosts) exposes; the WebSocket resync
@@ -702,17 +705,25 @@ detail, and the assistant shows the same message.
   starved of CPU for longer than it can drop a live but slow client too; concurrent
   broadcasts and disconnects never drop a client on their own.
 
-**Missing-key configuration policy.** `routes/_helpers.py::pipeline_dir()`
-parses `[project].pipeline` with `_project._toml_configured_pipeline`, the
-reader pipeline binding and the executor's configured pipeline directory
-use; it applies it to the current directory, while the executor applies it
-to the execution-scoped project root (one project context is still to come).
-It treats a missing `[project].pipeline` key in `haute.toml` as a
-soft omission (warns and falls back to `Path.cwd()`), while malformed or
-unreadable configuration, a `[project]` that is not a table, or a
-`pipeline` value that is not a path string raises `ConfigError`. The asymmetry is deliberate: a missing key can be a
-fresh-project state, whereas swallowing a decode failure could silently
-misroute subsequent saves and loads.
+**One project per app.** The application is built for a project:
+`server.create_app(context)` takes the `ProjectContext` the server serves
+([pipeline-config](../pipeline-config/high-level.md), "Project context"), and its
+outermost middleware (`ProjectContextMiddleware`) installs it for every HTTP request,
+websocket and the lifespan, whatever the working directory or the caller's context, so
+an app built for project A serves A after a test or a user changes directory to project
+B. There is no module-level app. `haute serve` resolves the project once from the
+directory it is run in and refuses to start outside a Haute project (no `haute.toml`, or
+no git repository above it), printing the resolver's message; it starts uvicorn on the
+factory `haute.server:create_app_from_environment` with the resolved root in
+`HAUTE_PROJECT_ROOT`, because uvicorn builds the app in its own process, and the factory
+refuses to build one without it. The pipeline folder is the context's, read from the
+project's `haute.toml` when used (the folder of `[project].pipeline`, or the root when it
+names none); a malformed or unreadable `haute.toml`, a `[project]` that is not a table, or
+a `pipeline` value that is not a path string raises `ConfigError` there. Process-wide caches
+that hold a project's files (the pipeline index and the module-dependency map) are kept
+with the root they were built for and rebuilt for any other. Job threads start in a copy
+of the starting request's context (`context_thread`), and every worker request carries
+the project (see [pipeline-config](../pipeline-config/high-level.md)).
 
 ## Pipeline recovery, preview, and live-sync contract
 

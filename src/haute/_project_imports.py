@@ -27,28 +27,30 @@ from importlib.machinery import ModuleSpec, PathFinder, SourceFileLoader
 from pathlib import Path
 from types import CodeType, ModuleType
 
+from haute._project_context import current_project
+
 UTILITY_PACKAGE = "utility"
 
 
 def utility_search_dirs(
-    pipeline_dir: str | Path | None, *, working_dir: str | Path | None = None
+    pipeline_dir: str | Path | None, *, project_root: str | Path | None = None
 ) -> list[str]:
-    """Where a project's ``utility`` is found: beside the pipeline, then the working directory.
+    """Where a project's ``utility`` is found: beside the pipeline, then the project root.
 
-    One entry when they are the same directory. The cache fingerprint and the deploy
+    The project root is the current project's unless *project_root* names one. One
+    entry when they are the same directory. The cache fingerprint and the deploy
     bundle read ``utility`` from these directories too, so each hashes or ships the
     files the finder loads.
     """
     dirs: list[str] = []
     if pipeline_dir is not None:
         dirs.append(str(Path(pipeline_dir).resolve()))
-    dirs.append(str(Path(Path.cwd() if working_dir is None else working_dir).resolve()))
+    root = current_project().root if project_root is None else Path(project_root).resolve()
+    dirs.append(str(root))
     return list(dict.fromkeys(dirs))
 
 
-def find_utility_spec(
-    pipeline_dir: str | Path | None, *, working_dir: str | Path | None = None
-) -> ModuleSpec | None:
+def find_utility_spec(pipeline_dir: str | Path | None) -> ModuleSpec | None:
     """The ``utility`` an import loads, resolved without importing it.
 
     The finder's search of the project's directories first, then, for a project without
@@ -56,9 +58,7 @@ def find_utility_spec(
     project ``utility`` that is a namespace package (no ``__init__.py``) therefore wins
     over a regular package of that name elsewhere on the path, as it does when imported.
     """
-    spec = PathFinder.find_spec(
-        UTILITY_PACKAGE, utility_search_dirs(pipeline_dir, working_dir=working_dir)
-    )
+    spec = PathFinder.find_spec(UTILITY_PACKAGE, utility_search_dirs(pipeline_dir))
     if spec is not None:
         return spec
     return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
@@ -103,9 +103,7 @@ class _ProjectUtilityFinder(MetaPathFinder):
 _FINDER = _ProjectUtilityFinder()
 
 
-def bind_project_utility(
-    pipeline_dir: str | Path | None, *, working_dir: str | Path | None = None
-) -> bool:
+def bind_project_utility(pipeline_dir: str | Path | None, *, project_root: str | Path) -> bool:
     """Bind the ``utility`` finder to a project; return whether the binding changed.
 
     The finder is installed ahead of every other finder on first use. The caller holds
@@ -114,10 +112,17 @@ def bind_project_utility(
     """
     if _FINDER not in sys.meta_path:
         sys.meta_path.insert(0, _FINDER)
-    dirs = tuple(utility_search_dirs(pipeline_dir, working_dir=working_dir))
+    dirs = tuple(utility_search_dirs(pipeline_dir, project_root=project_root))
     changed = dirs != _FINDER.search_dirs
     _FINDER.search_dirs = dirs
     return changed
+
+
+def utility_bound_to(pipeline_dir: str | Path | None, *, project_root: str | Path) -> bool:
+    """Whether the finder is bound to these project directories now."""
+    return _FINDER in sys.meta_path and _FINDER.search_dirs == tuple(
+        utility_search_dirs(pipeline_dir, project_root=project_root)
+    )
 
 
 def evict_utility_modules() -> None:

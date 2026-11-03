@@ -59,14 +59,14 @@ Each package states its formats in its owning specification before behaviour cha
 - The specification lists the full map of old to new keys.
 - Keys the analyst names never change: column names, categorical levels, source names in `by_source`, constant names, sheet and table names.
 - The conversion for this change renames every listed key in one pass, so each file changes once for it.
-- Coordinate with `PCFG-R07` (typed config models) and `API-R03` (the generated browser contract), which own those boundaries.
+- Coordinate with `PCFG-R07` (typed config models), which owns that boundary; the browser contract is generated from the server's models, so a renamed key reaches it through `npm --prefix frontend run generate:contracts`.
 
 **Acceptance:**
 - No schema-owned camelCase key remains in a saved file or schema.
 - A camelCase column name, categorical level and source name survive conversion and a save unchanged.
 - The assistant's catalogue test and the browser contract match.
 
-**Dependencies:** `PCFG-R07` in the [pipeline-config roadmap](pipeline-config.md); `API-R03` in the [server API roadmap](server-api.md).
+**Dependencies:** `PCFG-R07` in the [pipeline-config roadmap](pipeline-config.md).
 
 **Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_banding_config.py`;
 `src/haute/assistant/_catalog.py`.

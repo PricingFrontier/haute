@@ -14,6 +14,7 @@ import pytest
 import requests
 
 from haute import _workbench_rollout as rollouts
+from haute._project_context import context_thread
 from haute._workbench_config import AppEnvironment, WorkbenchConfig
 from haute._workbench_rollout import (
     AppState,
@@ -31,6 +32,7 @@ from haute._workbench_rollout import (
     rollout,
 )
 from tests._git_helpers import git_run, init_repo
+from tests._project import use_project
 
 OLD = "acr.example.io/pricing/motor@sha256:" + "0" * 64
 NEW = "acr.example.io/pricing/motor@sha256:" + "a" * 64
@@ -760,7 +762,6 @@ def test_azure_never_waits_on_an_update_past_the_bound_set(azure: Any) -> None:
 def server() -> Any:
     """A server on loopback answering each path as the transport's failures look."""
     import http.server
-    import threading
     import time as clock
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -794,7 +795,7 @@ def server() -> Any:
             self.wfile.write(body)
 
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread = context_thread(httpd.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}"
     httpd.shutdown()
@@ -1290,7 +1291,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Pat
     with the CI service principal's variables set."""
     from haute.cli import cli
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     initialised = runner.invoke(
         cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
     )

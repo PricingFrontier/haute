@@ -5,13 +5,11 @@
  * with parse-time narrowing that fails loudly. Both were identified as
  * hidden sources of type-drift bugs:
  *
- *   #116 — `usePipelineAPI.ts` reads `node.data._columns` through
- *           `as Record<string, unknown>` casts.  These cover up the fact
- *           that the field is absent on first preview and has an
- *           app-specific shape (`ColumnDef[]`).  Replacement: a typed
- *           `isPipelineResponse` guard + `parsePipelineResponse` parser
- *           that narrow the top-level API response and throw with a
- *           clear "expected field X" message when the backend drifts.
+ *   #116 — `usePipelineAPI.ts` read `node.data._columns` through
+ *           `as Record<string, unknown>` casts.  A canonical graph is now
+ *           checked by its generated validator and read as the editor's
+ *           React Flow graph by `pipelineGraphFromContract`, which throws
+ *           naming the field when the backend drifts.
  *
  *   #117 — `useSubmodelNavigation.ts` constructs port-nodes via
  *           `{ id, type, position, data } as Node` casts.  The cast
@@ -51,6 +49,9 @@ import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Node } from "@xyflow/react"
+import { validatePipelineGraph } from "../../generated/api-contracts.git.validators.mjs"
+import { pipelineGraphFromContract } from "../../types/guards"
+import { expectGeneratedContract } from "../../types/generatedContractValidation"
 
 // ---------------------------------------------------------------------------
 // Lazy module loaders.  Using dynamic `import()` lets the test file parse
@@ -59,8 +60,6 @@ import type { Node } from "@xyflow/react"
 // ---------------------------------------------------------------------------
 
 interface GuardsModule {
-  isPipelineResponse: (v: unknown) => boolean
-  parsePipelineResponse: (v: unknown) => unknown
   validateReactFlowNode: (v: unknown) => Node
 }
 
@@ -95,337 +94,65 @@ function readSource(path: string): string {
 }
 
 // ===========================================================================
-// #116 — isPipelineResponse / parsePipelineResponse
+// #116 — a canonical graph read as the editor's (generated validator +
+// pipelineGraphFromContract)
 // ===========================================================================
 
-describe("#116 - isPipelineResponse / parsePipelineResponse", () => {
-  // -------------------------------------------------------------------------
-  // Shape-level acceptance
-  // -------------------------------------------------------------------------
+describe("#116 - a canonical graph read as the editor's", () => {
+  const graph = (overrides: Record<string, unknown> = {}) => ({
+    nodes: [{
+      id: "n1",
+      type: "dataInput",
+      position: { x: 0, y: 0 },
+      data: { label: "n1", description: "", nodeType: "dataInput", config: {}, editor: { steps_error: null, steps_discarded: null } },
+    }],
+    edges: [],
+    pipeline_name: "x",
+    pipeline_description: null,
+    preamble: "y",
+    preserved_blocks: [],
+    global_constants: [],
+    global_constants_error: null,
+    source_file: null,
+    source_revision: null,
+    submodels: null,
+    sources: ["live"],
+    active_source: "live",
+    warning: null,
+    ...overrides,
+  })
+  const read = (value: unknown) =>
+    pipelineGraphFromContract(expectGeneratedContract("PipelineGraph", validatePipelineGraph, value))
 
-  describe("isPipelineResponse acceptance", () => {
-    it("returns true for a minimal valid pipeline response", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({
-        nodes: [],
-        edges: [],
-        preserved_blocks: [],
-        source_revision: null,
-      })).toBe(true)
-    })
-
-    it("returns true for a fully populated pipeline response", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      const full = {
-        nodes: [{ id: "n1", position: { x: 0, y: 0 }, data: { label: "N1" } }],
-        edges: [{ id: "e1", source: "n1", target: "n2" }],
-        pipeline_name: "pricing",
-        pipeline_description: "Test pricing model",
-        preamble: "import polars as pl",
-        source_file: "pricing.py",
-        submodels: { child: {} },
-        warning: "something changed",
-        sources: ["live", "test"],
-        active_source: "test",
-        preserved_blocks: ["KEEP = 1"],
-        source_revision: "revision-full",
-      }
-      expect(isPipelineResponse(full)).toBe(true)
-    })
-
-    it("accepts a response with an empty preamble string", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({
-        nodes: [],
-        edges: [],
-        preamble: "",
-        preserved_blocks: [],
-        source_revision: null,
-      })).toBe(true)
-    })
-
-    it("accepts nullable metadata fields emitted by the backend response model", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(
-        isPipelineResponse({
-          nodes: [],
-          edges: [],
-          pipeline_name: null,
-          pipeline_description: null,
-          preamble: null,
-          source_file: null,
-          submodels: null,
-          warning: null,
-          preserved_blocks: [],
-          source_revision: null,
-        }),
-      ).toBe(true)
-    })
+  it("reads a canonical graph's nodes, edges and metadata", () => {
+    const parsed = read(graph())
+    expect(parsed.nodes.map((node) => node.id)).toEqual(["n1"])
+    expect(parsed.pipeline_name).toBe("x")
+    expect(parsed.sources).toEqual(["live"])
   })
 
-  // -------------------------------------------------------------------------
-  // Shape-level rejection — malformed payloads must fail the guard.  These
-  // cover the class of drift where the backend has been changed and the
-  // frontend silently destructured `undefined` (the bug class #116 was
-  // designed to surface).
-  // -------------------------------------------------------------------------
-
-  describe("isPipelineResponse rejection", () => {
-    it("returns false for null", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse(null)).toBe(false)
-    })
-
-    it("returns false for undefined", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse(undefined)).toBe(false)
-    })
-
-    it("returns false for a non-object (string)", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse("pipeline")).toBe(false)
-    })
-
-    it("returns false for a non-object (number)", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse(42)).toBe(false)
-    })
-
-    it("returns false when `nodes` is missing", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ edges: [] })).toBe(false)
-    })
-
-    it("returns false when `edges` is missing", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: [] })).toBe(false)
-    })
-
-    it("returns false when persisted document metadata is omitted", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({
-        nodes: [],
-        edges: [],
-        preserved_blocks: [],
-      })).toBe(false)
-      expect(isPipelineResponse({
-        nodes: [],
-        edges: [],
-        source_revision: null,
-      })).toBe(false)
-    })
-
-    it("returns false for a blank non-null source revision", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({
-        nodes: [],
-        edges: [],
-        preserved_blocks: [],
-        source_revision: "   ",
-      })).toBe(false)
-    })
-
-    it("returns false when `nodes` is not an array", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: "oops", edges: [] })).toBe(false)
-    })
-
-    it("returns false when `edges` is not an array", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: [], edges: {} })).toBe(false)
-    })
-
-    it.each([
-      ["React Flow type", { type: "removedNodeType", data: {} }],
-      ["node data type", { data: { nodeType: "removedNodeType" } }],
-    ])("returns false for an unknown %s", async (_field, nodeFields) => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({
-        nodes: [{
-          id: "legacy",
-          position: { x: 0, y: 0 },
-          ...nodeFields,
-        }],
-        edges: [],
-      })).toBe(false)
-    })
-
-    it("returns false when `preamble` is present but not a string", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: [], edges: [], preamble: 42 })).toBe(false)
-    })
-
-    it("returns false when `pipeline_name` is present but not a string", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(
-        isPipelineResponse({ nodes: [], edges: [], pipeline_name: 123 }),
-      ).toBe(false)
-    })
-
-    it("returns false when `sources` is present but not an array", async () => {
-      const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: [], edges: [], sources: "live" })).toBe(
-        false,
-      )
-    })
+  it("refuses a node whose React Flow type is not a pipeline node type", () => {
+    expect(() => read(graph({
+      nodes: [{ ...graph().nodes[0], type: "mystery" }],
+    }))).toThrow('graph.nodes[0].type: "mystery" is not a pipeline node type')
   })
 
-  // -------------------------------------------------------------------------
-  // parsePipelineResponse — throws with a helpful message on drift.
-  //
-  // The error message must name the offending field so the developer can
-  // fix the backend contract without diffing protobufs by eye.
-  // -------------------------------------------------------------------------
-
-  describe("parsePipelineResponse", () => {
-    it("returns the narrowed value on valid input", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      const input = {
-        nodes: [],
-        edges: [],
-        preamble: "import x",
-        preserved_blocks: [],
-        source_revision: null,
-      }
-      const parsed = parsePipelineResponse(input) as {
-        nodes: unknown[]
-        edges: unknown[]
-        preamble: string
-      }
-      // Value equality (reference pass-through is an acceptable
-      // implementation choice, but the test pins only semantic equality).
-      expect(parsed.preamble).toBe("import x")
-      expect(parsed.nodes).toEqual([])
-      expect(parsed.edges).toEqual([])
-    })
-
-    it("does not reject backend null warnings as object-shaped drift", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      const parsed = parsePipelineResponse({
-        nodes: [],
-        edges: [],
-        warning: null,
-        preserved_blocks: [],
-        source_revision: null,
-      }) as { warning?: string | null }
-
-      expect(parsed.warning).toBeNull()
-    })
-
-    it("throws on null input", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() => parsePipelineResponse(null)).toThrow()
-    })
-
-    it("throws on undefined input", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() => parsePipelineResponse(undefined)).toThrow()
-    })
-
-    it("throws with a message naming the missing `nodes` field", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() => parsePipelineResponse({ edges: [] })).toThrow(/nodes/i)
-    })
-
-    it("throws with a message naming the missing `edges` field", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() => parsePipelineResponse({ nodes: [] })).toThrow(/edges/i)
-    })
-
-    it("throws with a message naming missing persisted document metadata", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() => parsePipelineResponse({
-        nodes: [],
-        edges: [],
-        preserved_blocks: [],
-      })).toThrow(/source_revision/i)
-      expect(() => parsePipelineResponse({
-        nodes: [],
-        edges: [],
-        source_revision: null,
-      })).toThrow(/preserved_blocks/i)
-    })
-
-    it("throws for a blank non-null source revision", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() => parsePipelineResponse({
-        nodes: [],
-        edges: [],
-        preserved_blocks: [],
-        source_revision: "\t",
-      })).toThrow(/source_revision/i)
-    })
-
-    it("throws with a message indicating the type mismatch for `nodes`", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      expect(() =>
-        parsePipelineResponse({ nodes: "not-array", edges: [] }),
-      ).toThrow(/nodes/i)
-    })
-
-    it("throws an Error (not a plain string) on bad shape", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      let caught: unknown
-      try {
-        parsePipelineResponse("hello")
-      } catch (err) {
-        caught = err
-      }
-      expect(caught).toBeInstanceOf(Error)
-      const msg = (caught as Error).message
-      expect(msg.length).toBeGreaterThan(0)
-    })
+  it("refuses a node whose data names an unknown node type", () => {
+    const [node] = graph().nodes
+    expect(() => read(graph({ nodes: [{ ...node, data: { ...node.data, nodeType: "mystery" } }] })))
+      .toThrow("PipelineGraph: invalid contract at /nodes/0/data/nodeType")
   })
 
-  // -------------------------------------------------------------------------
-  // Narrowing — after parsePipelineResponse, the caller needs no further
-  // `as` casts.  We assert at runtime that the returned value exposes the
-  // typed fields — the static narrowing is enforced by TypeScript.
-  // -------------------------------------------------------------------------
-
-  describe("narrowing", () => {
-    it("provides field access without further casts", async () => {
-      const { parsePipelineResponse } = await loadGuards()
-      const parsed = parsePipelineResponse({
-        nodes: [],
-        edges: [],
-        pipeline_name: "x",
-        preamble: "y",
-        sources: ["live"],
-        preserved_blocks: [],
-        source_revision: null,
-      }) as {
-        nodes: unknown[]
-        edges: unknown[]
-        pipeline_name?: string
-        preamble?: string
-        sources?: string[]
-      }
-      expect(parsed.nodes).toEqual([])
-      expect(parsed.edges).toEqual([])
-      expect(parsed.pipeline_name).toBe("x")
-      expect(parsed.preamble).toBe("y")
-      expect(parsed.sources).toEqual(["live"])
-    })
+  it("refuses a graph without its edges", () => {
+    const { edges: _omitted, ...withoutEdges } = graph()
+    expect(() => read(withoutEdges)).toThrow("PipelineGraph: invalid contract at /edges: required")
   })
 
-  // -------------------------------------------------------------------------
-  // Static grep assertion — the bare casts that triggered #116 must not
-  // appear in the source anymore.  We tolerate type-annotations on ref
-  // declarations (`parentGraphRef: MutableRefObject<... submodels:
-  // Record<string, unknown> ...>`) because those are not casts — they are
-  // legitimate "treat this as an opaque bag" declarations.  What we ban
-  // is the pattern `x as Record<string, unknown>` on a value.
-  // -------------------------------------------------------------------------
-
-  describe("source-level assertion (post-refactor)", () => {
-    it("usePipelineAPI.ts contains no `as Record<string, unknown>` casts", () => {
-      const source = readSource(PIPELINE_API_PATH)
-      // Match an actual cast expression: ` as Record<string, unknown>`.
-      // Ref-declaration type annotations of the same type are untouched
-      // (they contain no leading `as` token).
-      expect(source).not.toMatch(/\bas\s+Record<string,\s*unknown>/)
-    })
+  // The bare casts that triggered #116 must not appear in the source. Ref
+  // declarations typed as an opaque bag are not casts; `x as Record<string, unknown>`
+  // on a value is.
+  it("usePipelineAPI.ts contains no `as Record<string, unknown>` casts", () => {
+    expect(readSource(PIPELINE_API_PATH)).not.toMatch(/\bas\s+Record<string,\s*unknown>/)
   })
 })
 

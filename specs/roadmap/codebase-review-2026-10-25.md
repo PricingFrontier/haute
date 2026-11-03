@@ -122,11 +122,12 @@ of independently reproduced defects. Its main session reported both Criticals an
 every Major as confirmed at source; the Minors and Suggestions were read at source or
 accepted on quoted evidence as the coverage table records. The validation below
 qualifies claims and remedies without inventing a replacement verified-defect count.
-The findings of the seventy-six packages delivered or settled since (thirteen by 28
+The findings of the seventy-eight packages delivered or settled since (thirteen by 28
 October 2026, twenty-five more on 29 October, two on 1 November, thirty more by 2 November,
 the deploy roadmap's nine, the CLI roadmap's six and the background-jobs roadmap's three
-among them, and the frontend-shared roadmap's six on 3 November) have been removed from
-the sections below; the coverage table keeps the original counts.
+among them, and the frontend-shared roadmap's six, `IO-R06` and the pipeline-config
+roadmap's `PCFG-R16` on 3 November) have been removed from the sections below; the
+coverage table keeps the original counts.
 
 ## Validation — 25 October 2026
 
@@ -189,8 +190,6 @@ puts it in front of the owner because of what it can cost in production:
 
 | Area | Findings | Package |
 |---|---|---|
-| IO layer | CIO-5, CIO-11 | `IO-R06` |
-| Pipeline config | PCF-13 | `PCFG-R16` (Decision) |
 | Model scoring | MDL-7, MDL-8, MDL-10, MDL-13 | `MSC-09` |
 | Assistant | ASA-1, ASA-2, ASA-7, ASA-13 | `ASSIST-54` |
 | Assistant | ASA-3, ASA-4, ASA-6, ASA-9 | `ASSIST-55` |
@@ -198,8 +197,6 @@ puts it in front of the owner because of what it can cost in production:
 | Assistant | ASB-1, ASB-2, ASB-10, ASB-12 | `ASSIST-57` |
 | Assistant | ASB-4, ASB-5, ASB-6, ASB-8, ASB-9 | `ASSIST-58` |
 | Assistant | ASB-3, ASB-7, ASB-11 | `ASSIST-59` |
-| Explore / EDA | SUB-5, SUB-6, SUB-7, SUB-10 | `EDA-R01` |
-| Frontend Explore | FOX-7, FOX-9, FOX-10 (Explore part), FOX-11, FOX-12 | `EDA-R03` |
 | Assistant UI | FTG-5, FTG-18, FTG-20 | `ASSIST-60` |
 | Workbench | PM-45 | `WB-43` (selected server engine's atomic form insertion) |
 | Engineering quality | PM-50 | `ENGQ-R01` (evidence added) |
@@ -208,34 +205,25 @@ puts it in front of the owner because of what it can cost in production:
 | Tests, scripts and CI | ENG-6 | `ENGQ-R01` |
 | Tests, scripts and CI | ENG-17 | `ENGQ-R11` (Decision) |
 
-Already tracked before this review and not repeated: the `cwd`-captured sandbox
-root used by the deploy modules, the underwriter app and the server
-(`PCFG-R04`); the
+Already tracked before this review and not repeated: the
 three worker mechanisms' parallel error hierarchies (`ROAD-WORKER-05`);
-the hand-maintained
-browser contract (`API-R03`); the cwd-dependent resolvers in the routes and the
-parser (`PCFG-R04`), the per-type
+the per-type
 validators and branches (`PCFG-R07`, `PCFG-R09`); the test-only config helpers and
-event-bus hooks (`ENGQ-R01`); the optimiser's unshown solve-memory forecast (`OPT-W02`) and its frontier
-points without convergence traces (`OPT-PC04`); the test-only
+event-bus hooks (`ENGQ-R01`); the optimiser's frontier points without convergence traces
+(`OPT-PC04`); the test-only
 `_compute_schema_hash` and the training facade (`ENGQ-R01`); fits that exceed
 their budget
-(`MOD-M01`, `MOD-M02`); the git routes' and the
-assistant's current-directory project root (`PCFG-R04`); the assistant
+(`MOD-M01`, `MOD-M02`); the assistant
 catalog's hand tables and
 key-only config validation (`PCFG-R09`, `PCFG-R07`), its whole-list rewrites
-(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the
-browser's hand-written contract mirrors (`API-R03`) and the dead
+(`ASSIST-52`) and the test-only manifest cache reset (`ENGQ-R01`); the dead
 `checkHauteSession`, `isPipelineResponse` and `parseRemoveUnavailableNodeRequest`
 (`ENGQ-R01`); the dead
 `submodelGraphFromMetadata` and two dead duplicate exports in the hooks and
 utilities (`ENGQ-R01`); in the workbench UI and
-the app shell, the
-chart theme observer written twice (`EDA-R03`) and knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
-and CI, the campaign-named test modules (`ENGQ-R05`), the test-only reset hooks in
-production code (`ENGQ-R01`), and the
-189 test modules that change directory because production resolves the project
-root from it (`PCFG-R04`).
+the app shell, knip's export-only symbols (`ENGQ-R01`); in the tests, scripts
+and CI, the campaign-named test modules (`ENGQ-R05`) and the test-only reset hooks in
+production code (`ENGQ-R01`).
 
 ## Verdicts that changed or stayed open
 
@@ -291,6 +279,6 @@ All probes live outside the repository and wrote nothing into it.
 | radon | 285 functions with cyclomatic complexity ≥ 20; 27 ≥ 50 (the largest in the optimiser service, the save service, the assistant tools and the RAM estimate). |
 | vulture (60 %) | 61 candidates; those confirmed unreferenced are in `ENGQ-R01`; the deploy, CLI and background-jobs ones are removed. |
 | jscpd Python | 0.30 % duplicated, 41 clones; the production ones, in deploy and the background jobs, are removed. |
-| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are in `EDA-R03`. |
+| jscpd TypeScript | 0.34 % duplicated, 29 clones; the production ones are removed. |
 | knip | 161 unused exports, 256 unused exported types, `@lezer/highlight` unlisted (since declared); every frontend reviewer found the hits used inside their own module, so they are over-exports under `ENGQ-R01`'s gate, not dead code. |
 | sweeps | 35 campaign-named test modules (`ENGQ-R05`). |

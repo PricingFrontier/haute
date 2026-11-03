@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._project import use_project
+
 
 def _project(root: Path) -> None:
     (root / "haute.toml").write_text(
@@ -164,7 +166,7 @@ def test_tool_applies_policy_before_returning_project_content(tmp_path: Path, mo
     from haute.assistant._tools import get_project_knowledge
 
     _project(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     result = get_project_knowledge("main.py", "rating territory")
 
     assert result["items"][0]["source"] == "docs/terms.md"

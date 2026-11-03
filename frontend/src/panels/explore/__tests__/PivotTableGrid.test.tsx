@@ -91,6 +91,40 @@ function result(rowCount = 2): ExplorePivotResult {
 describe("PivotTableGrid", () => {
   afterEach(cleanup)
 
+  it("formats each retained header level by its own field after the draft reorders them", () => {
+    // The result was calculated as year then share; the draft has since swapped them.
+    const reordered: ExplorePivotConfig = {
+      ...pivot,
+      rows: [],
+      columns: [
+        { id: "c2", field: "share", number_format: "percent", decimal_places: 0, use_grouping: true },
+        { id: "c1", field: "year", number_format: "general", decimal_places: null, use_grouping: false },
+      ],
+    }
+    const retained: ExplorePivotResult = {
+      ...result(),
+      row_fields: [],
+      column_fields: ["year", "share"],
+      row_paths: [{ members: [], is_grand_total: false }],
+      column_paths: [
+        {
+          members: [
+            { kind: "integer", value: "2024" },
+            { kind: "float", value: 0.25 },
+          ],
+          is_grand_total: false,
+        },
+      ],
+      cells: [],
+    }
+
+    render(<PivotTableGrid result={retained} pivot={reordered} />)
+
+    const headers = screen.getAllByRole("columnheader").map((cell) => cell.textContent)
+    expect(headers).toContain("2024")
+    expect(headers).toContain("25%")
+  })
+
   it("uses configured labels, null markers, and explicit grand totals", () => {
     render(<PivotTableGrid result={result()} pivot={pivot} />)
 
@@ -99,7 +133,8 @@ describe("PivotTableGrid", () => {
     ).toBeInTheDocument()
     expect(screen.getAllByText("Paid claims").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Grand total").length).toBeGreaterThan(0)
-    expect(screen.getAllByText("-").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0)
+    expect(screen.queryByText("-")).toBeNull()
   })
 
   it("renders post-aggregation formulas after ordinary Values", () => {

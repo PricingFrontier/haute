@@ -32,10 +32,13 @@ def _git(*args: str, cwd: Path) -> None:
 
 def _seed_volatile_project(project_dir: Path) -> None:
     """Create the standard scaffold + a local repository in *project_dir*."""
+    from haute._project_context import ProjectContext, project_scope
     from haute.cli._init_cmd import InitConfig, handle_init
 
     if not (project_dir / "haute.toml").exists():
-        handle_init(InitConfig(target="databricks", ci="github"))
+        # The scaffold is written into the project it is run in.
+        with project_scope(ProjectContext.at(project_dir)):
+            handle_init(InitConfig(target="databricks", ci="github"))
 
     if shutil.which("git") is None:
         print("bootstrap: git binary unavailable; skipping repo seed", flush=True)

@@ -4,6 +4,48 @@
  */
 export type ExploreChartsConfig = ExploreChartConfig[];
 /**
+ * One ``data:`` frame of the assistant's message stream, as the browser reads it.
+ */
+export type AssistantStreamEventPayload =
+  | AssistantTextDeltaEvent
+  | AssistantThinkingEvent
+  | AssistantToolStartedEvent
+  | AssistantToolProgressEvent
+  | AssistantToolFinishedEvent
+  | AssistantChangeAppliedEvent
+  | AssistantBuildPlanUpdatedEvent
+  | AssistantCompletedEvent
+  | AssistantFailedEvent
+  | AssistantCancelledEvent;
+/**
+ * Canonical node-type identifiers shared with the React Flow frontend.
+ *
+ * Inherits from ``StrEnum`` so ``NodeType.API_INPUT == "apiInput"`` is ``True``
+ * and JSON serialization produces the plain string value.
+ */
+export type NodeType =
+  | 'apiInput'
+  | 'workbenchInput'
+  | 'workbenchOutput'
+  | 'dataInput'
+  | 'dataOutput'
+  | 'polars'
+  | 'edgeJoin'
+  | 'modelScore'
+  | 'banding'
+  | 'ratingStep'
+  | 'output'
+  | 'explore'
+  | 'externalFile'
+  | 'liveSwitch'
+  | 'modelling'
+  | 'optimiser'
+  | 'scenarioExpander'
+  | 'optimiserApply'
+  | 'constant'
+  | 'submodel'
+  | 'submodelPort';
+/**
  * ``GET /api/mlflow/experiments``.
  */
 export type MlflowExperimentList = MlflowExperimentSummary[];
@@ -180,6 +222,262 @@ export interface ChartValueEncoding {
   stack_group: string | null;
   stack_normalize: boolean;
   value_id: string;
+}
+export interface AssistantStatusResponse {
+  configured: boolean;
+  endpoint_host: string | null;
+  max_sensitivity: 'public' | 'internal' | 'restricted' | null;
+  model: string | null;
+  mutations_enabled: boolean;
+  mutations_reason: string | null;
+  provider: string | null;
+  reason: string | null;
+  trust: 'local' | 'organization' | 'external' | null;
+}
+export interface AssistantSessionResponse {
+  build_plan: AssistantBuildPlan | null;
+  history: AssistantTranscriptEntry[];
+  session_id: string;
+  source_file: string;
+}
+/**
+ * The stages a multi-stage request is built in, in order, as the chat's checklist.
+ */
+export interface AssistantBuildPlan {
+  /**
+   * @minItems 1
+   * @maxItems 12
+   */
+  items: AssistantBuildPlanItem[];
+}
+/**
+ * One stage of a build plan: the changes saved against it and whether it is complete.
+ *
+ * The changes are Haute's record of the applies the model attributed to the
+ * item; completion is the model's claim, which Haute accepts only while the
+ * item has a change that is not undone.
+ */
+export interface AssistantBuildPlanItem {
+  changes: AssistantBuildPlanChange[];
+  complete: boolean;
+  id: string;
+  title: string;
+}
+/**
+ * One saved change recorded against a build-plan item, by its change card's id.
+ */
+export interface AssistantBuildPlanChange {
+  id: string;
+  undone: boolean;
+}
+/**
+ * One rehydratable transcript item from a resumed session's history.
+ *
+ * An ``outcome`` entry closes a completed turn with its stored outcome, a
+ * ``change`` entry carries an apply's change record and an ``undo`` entry the
+ * record of a change the analyst undid; only those kinds carry those fields.
+ */
+export interface AssistantTranscriptEntry {
+  change: AssistantChangeRecord | null;
+  is_error: boolean;
+  kind: 'user' | 'assistant' | 'tool' | 'outcome' | 'change' | 'undo';
+  name: string;
+  outcome: AssistantTurnOutcome | null;
+  summary: string;
+  text: string;
+  title: string;
+}
+/**
+ * The value-free change card of one saved plan.
+ *
+ * ``id`` is the hash of the plan it saved; a plan applies once, so it names
+ * this change. ``summary`` and ``assumptions`` are the model's own words from
+ * the plan's dry-run; everything else is built from what was saved.
+ * ``data_check`` is the plan's data check, or ``None`` when no check was
+ * attempted or its findings describe another graph.
+ */
+export interface AssistantChangeRecord {
+  /**
+   * @maxItems 5
+   */
+  assumptions: string[];
+  changes: AssistantGraphChanges;
+  data_check: AssistantChangeDataCheck | null;
+  git_sha: string | null;
+  id: string;
+  parent_sha: string | null;
+  revision: string;
+  summary: string;
+  warnings: string[];
+}
+/**
+ * A plan's node chips and edges, each list bounded; ``truncated`` when cut.
+ *
+ * An empty list and a false flag are the defaults, which the compact tool
+ * results the model reads leave out.
+ */
+export interface AssistantGraphChanges {
+  edges_added: AssistantChangeEdge[];
+  edges_removed: AssistantChangeEdge[];
+  nodes: AssistantChangeNode[];
+  preamble_changed: boolean;
+  truncated: boolean;
+}
+/**
+ * One edge a saved plan added or removed, by its endpoint node ids.
+ */
+export interface AssistantChangeEdge {
+  source: string;
+  target: string;
+}
+/**
+ * One node chip on a change card: which node, its palette type and what happened.
+ *
+ * ``fields`` names the configuration fields the plan changed in plain words,
+ * never their values; ``steps`` lists a stepped node's step kinds after the
+ * change (``None`` for a node without a step list) and ``steps_changed`` how
+ * many steps the plan inserted, replaced, removed or rewired.
+ */
+export interface AssistantChangeNode {
+  change: 'added' | 'changed' | 'removed' | 'renamed';
+  fields: string[];
+  id: string;
+  renamed_from: string | null;
+  steps: string[] | null;
+  steps_changed: number;
+  type: string;
+}
+/**
+ * The data check of the dry-run whose plan a change saved, as its card shows it.
+ *
+ * ``visibility`` compares the check's binding with the graph the apply
+ * saved: ``current``; ``earlier_inputs`` when an input or a cached model it
+ * read has changed since; ``other_scenario`` when the graph runs another
+ * scenario, which keeps no findings, only the ``scenario`` they described.
+ * A check bound to another graph is not carried at all. ``not_checked`` is
+ * one line saying why the check, or some of the changed nodes, did not run.
+ */
+export interface AssistantChangeDataCheck {
+  /**
+   * @maxItems 20
+   */
+  findings: AssistantDataFinding[];
+  findings_omitted: number;
+  not_checked: string | null;
+  outcome: 'checked' | 'not_run';
+  scenario: string;
+  visibility: 'current' | 'earlier_inputs' | 'other_scenario';
+}
+/**
+ * One data-check finding on a change card, worded from its counts and names.
+ *
+ * ``text`` says what was measured in plain words ("All 1,204 rows fell into
+ * the default band of age_band."): counts, shares, node, column and port
+ * names, never a row value, a configuration value or an error's own text.
+ */
+export interface AssistantDataFinding {
+  node: string;
+  severity: 'advisory' | 'informational';
+  text: string;
+}
+/**
+ * How a completed assistant turn ended, and what it saved.
+ *
+ * ``detail`` is the model's question (``needs_input``), the sanitized blocker
+ * (``blocked``), the verification error of a save that committed
+ * (``committed_unverified``) or the controller's reason the model stopped
+ * with a dry-run unfinished (``incomplete``); ``applied`` and ``answered``
+ * carry none. ``changes`` are the ids of the change records the turn saved,
+ * in order, whatever the kind says about finishing the request: ``applied``
+ * saved at least one and ``answered`` none, while any other kind may follow
+ * saved changes.
+ */
+export interface AssistantTurnOutcome {
+  changes: string[];
+  detail: string | null;
+  kind: 'applied' | 'answered' | 'needs_input' | 'blocked' | 'committed_unverified' | 'incomplete';
+}
+export interface AssistantSessionListResponse {
+  sessions: AssistantSessionSummary[];
+  source_file: string;
+}
+/**
+ * One conversation as the chat list renders it, without its transcript.
+ */
+export interface AssistantSessionSummary {
+  created_at: number;
+  last_used: number;
+  message_count: number;
+  session_id: string;
+  title: string;
+}
+export interface AssistantUndoResponse {
+  build_plan: AssistantBuildPlan | null;
+  change_id: string;
+  git_sha: string | null;
+}
+export interface AssistantTextDeltaEvent {
+  text: string;
+  type: 'text_delta';
+}
+/**
+ * The model is thinking: a status for the panel, carrying none of the thinking.
+ */
+export interface AssistantThinkingEvent {
+  type: 'thinking';
+}
+export interface AssistantToolStartedEvent {
+  id: string;
+  name: string;
+  summary: string;
+  title: string;
+  type: 'tool_started';
+}
+/**
+ * A running tool moved to a new stage: its activity row's title until it finishes.
+ */
+export interface AssistantToolProgressEvent {
+  id: string;
+  title: string;
+  type: 'tool_progress';
+}
+export interface AssistantToolFinishedEvent {
+  id: string;
+  is_error: boolean;
+  name: string;
+  summary: string;
+  title: string;
+  type: 'tool_finished';
+}
+/**
+ * A plan was saved: the change card built from what was saved.
+ */
+export interface AssistantChangeAppliedEvent {
+  change: AssistantChangeRecord;
+  type: 'change_applied';
+}
+/**
+ * A tool call changed the session's build plan: the whole plan as it now stands.
+ */
+export interface AssistantBuildPlanUpdatedEvent {
+  build_plan: AssistantBuildPlan;
+  type: 'build_plan_updated';
+}
+export interface AssistantCompletedEvent {
+  outcome: AssistantTurnOutcome;
+  type: 'completed';
+  usage: AssistantUsage;
+}
+export interface AssistantUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+export interface AssistantFailedEvent {
+  message: string;
+  type: 'failed';
+}
+export interface AssistantCancelledEvent {
+  type: 'cancelled';
 }
 /**
  * Every node of the graph, and everything else the store holds.
@@ -428,52 +726,247 @@ export interface PipelineSettingsValues {
   pipeline_time_limit_minutes: number | null;
   preview_memory_gb: number | null;
 }
-export interface ExplorePivotRunResponse {
-  cached: boolean;
-  failure: ExplorePivotFailure | null;
-  job_id: string | null;
-  message: string;
-  result: ExplorePivotResult | null;
-  status: 'started' | 'completed' | 'cache_required';
+/**
+ * Versioned editor load result; never a canonical executable graph.
+ */
+export interface PipelineEditorDocument {
+  active_source: string | null;
+  capabilities: PipelineDocumentCapabilities;
+  completeness: PipelineNodeCompleteness[];
+  completeness_omitted: number;
+  diagnostics: PipelineRecoveryDiagnostic[];
+  diagnostics_omitted: number;
+  document_kind: 'haute.pipeline_editor_document';
+  edges: RecoveryPipelineEdge[];
+  global_constants: GlobalConstant[];
+  global_constants_error: string | null;
+  has_authored_content: boolean;
+  load_status: 'ready' | 'degraded' | 'source_only';
+  name_violations: PipelineNameViolation[];
+  nodes: RecoveryPipelineNode[];
+  pipeline_description: string | null;
+  pipeline_name: string | null;
+  preamble: string | null;
+  preserved_blocks: string[];
+  schema_version: 1;
+  source_file: string;
+  source_revision: string | null;
+  source_selection_trusted: boolean;
+  source_text: string;
+  sources: string[];
+  submodels: {
+    [k: string]: RecoverySubmodelDefinition;
+  } | null;
+  unresolved_connections: RecoveryUnresolvedConnection[];
 }
-export interface ExplorePivotFailure {
-  dimensions: {
-    [k: string]: string | number;
+/**
+ * Server-derived admission fence for one loaded editor document.
+ */
+export interface PipelineDocumentCapabilities {
+  can_execute: boolean;
+  can_manage_submodels: boolean;
+  can_mutate: boolean;
+  can_preview: boolean;
+  can_repair: boolean;
+  can_save: boolean;
+  reserved_api_input_frame_labels: string[];
+}
+/**
+ * A required value missing from an otherwise loadable node's config.
+ *
+ * Completeness is not a load failure: entries never mark a node
+ * unavailable, never degrade the document, and never appear in
+ * ``diagnostics``.
+ */
+export interface PipelineNodeCompleteness {
+  code: string;
+  element_id: string;
+  message: string;
+  path: string;
+}
+/**
+ * Safe, stable diagnostic carried by an editor recovery document.
+ */
+export interface PipelineRecoveryDiagnostic {
+  code: string;
+  diagnostic_id: string;
+  element_id: string | null;
+  incident_id: string | null;
+  message: string;
+  remediation: string | null;
+  scope: 'pipeline' | 'node' | 'edge' | 'submodel';
+  severity: 'warning' | 'error';
+  source_file: string | null;
+  source_span: RecoverySourceSpan | null;
+}
+/**
+ * One bounded, one-based source range attributable during recovery.
+ */
+export interface RecoverySourceSpan {
+  end_column: number;
+  end_line: number;
+  start_column: number;
+  start_line: number;
+}
+/**
+ * Editor edge shape intentionally incompatible with canonical GraphEdge.
+ */
+export interface RecoveryPipelineEdge {
+  availability: 'ready' | 'unavailable' | 'blocked';
+  blocking_path: string[];
+  diagnostic_ids: string[];
+  input_name: string | null;
+  recovery_id: string;
+  source_authored_id: string;
+  source_handle: string | null;
+  source_recovery_id: string;
+  source_span: RecoverySourceSpan | null;
+  target_authored_id: string;
+  target_handle: string | null;
+  target_recovery_id: string;
+}
+/**
+ * One named, typed value that node code reads as ``global_constants.<name>``.
+ *
+ * A uniform constant holds ``value``, which every source reads. A constant
+ * split by source holds ``by_source``, which may lack a source: reading it
+ * under that source fails, naming both. Values stay JSON scalars, so a date
+ * is its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it
+ * was written.
+ */
+export interface GlobalConstant {
+  by_source: {
+    [k: string]: boolean | number | string;
+  } | null;
+  name: string;
+  type: 'integer' | 'float' | 'text' | 'boolean' | 'date';
+  value: boolean | number | string | null;
+}
+/**
+ * Editor node shape intentionally incompatible with canonical GraphNode.
+ */
+export interface RecoveryPipelineNode {
+  authored_id: string;
+  availability: 'ready' | 'unavailable' | 'blocked';
+  blocking_path: string[];
+  config: {
+    [k: string]: unknown;
+  } | null;
+  config_reference: string | null;
+  decorator_name: string;
+  default_input_name: string | null;
+  description: string;
+  diagnostic_ids: string[];
+  display_position: {
+    [k: string]: number;
   };
-  message: string;
-  reason_code: string;
-  remediation: string;
+  editor: NodeEditorState;
+  function_name: string;
+  label: string;
+  node_type: string | null;
+  recovery_id: string;
+  scoped_editable: boolean;
+  source_file: string | null;
+  source_handle_input_names: {
+    [k: string]: string;
+  };
+  source_span: RecoverySourceSpan | null;
 }
-export interface ExplorePivotResult {
-  calculation_key: string;
-  cells: ExplorePivotCell[];
-  column_fields: string[];
-  column_paths: ExplorePivotPath[];
-  data_version: string;
-  execution_metrics: ExecutionMetricsPayload | null;
-  generated_at: number;
-  node_id: string;
-  pivot_id: string;
-  row_fields: string[];
-  row_paths: ExplorePivotPath[];
-  source: string;
-  values: ExplorePivotValueIdentity[];
-  version: 1;
-  warnings: string[];
+/**
+ * What the server knows about a node for its editor, carried beside the config.
+ *
+ * None of it is a setting: it is never persisted, hashed or validated as config.
+ * ``steps_error`` is derived from the node's ``steps`` whenever its data is
+ * built; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is
+ * the parse's finding. A request may carry the field back, as a transform of the
+ * graph echoes it, but a save never reads the finding from it: it reparses the
+ * file on disk.
+ */
+export interface NodeEditorState {
+  steps_discarded: string | null;
+  steps_error: string | null;
 }
-export interface ExplorePivotCell {
-  column_index: number;
-  row_index: number;
-  value: string | number | boolean | null;
-  value_id: string;
+/**
+ * One editor-only recovered submodel definition.
+ */
+export interface RecoverySubmodelDefinition {
+  availability: 'ready' | 'unavailable' | 'blocked';
+  definition_id: string;
+  diagnostic_ids: string[];
+  file: string;
+  graph: RecoveryGraphSnapshot;
+  input_ports: {
+    [k: string]: unknown;
+  }[];
+  output_ports: {
+    [k: string]: unknown;
+  }[];
 }
-export interface ExplorePivotPath {
-  is_grand_total: boolean;
-  members: ExplorePivotMemberKey[];
+/**
+ * Renderable recovery graph used at the root and in submodel definitions.
+ */
+export interface RecoveryGraphSnapshot {
+  edges: RecoveryPipelineEdge[];
+  nodes: RecoveryPipelineNode[];
+  submodels: {
+    [k: string]: RecoverySubmodelDefinition;
+  } | null;
+  unresolved_connections: RecoveryUnresolvedConnection[];
 }
-export interface ExplorePivotMemberKey {
-  kind: 'null' | 'string' | 'boolean' | 'integer' | 'float' | 'nan' | 'date' | 'datetime' | 'time' | 'decimal';
-  value: string | number | boolean | null;
+/**
+ * Authored connection retained as a diagnostic structure.
+ */
+export interface RecoveryUnresolvedConnection {
+  /**
+   * @minItems 1
+   */
+  diagnostic_ids: string[];
+  recovery_id: string;
+  source_authored_id: string;
+  source_handle: string | null;
+  source_recovery_id: string | null;
+  source_span: RecoverySourceSpan | null;
+  target_authored_id: string;
+  target_handle: string | null;
+  target_recovery_id: string | null;
+}
+/**
+ * Committed repair plus the newly authoritative editor document.
+ */
+export interface PipelineRepairApplyResponse {
+  /**
+   * @minItems 1
+   */
+  applied_artifacts: string[];
+  /**
+   * @minItems 1
+   */
+  changes: PipelineRepairChange[];
+  completeness: PipelineNodeCompleteness[];
+  document: PipelineEditorDocument;
+  field_changes: PipelineRepairFieldChange[];
+  previous_config: {
+    [k: string]: unknown;
+  } | null;
+  repair_kind: 'remove_unavailable_node' | 'reset_node' | 'recover_node' | 'remove_connection';
+}
+/**
+ * Bounded display patch for one server-owned artifact edit.
+ */
+export interface PipelineRepairChange {
+  description: string;
+  diff: string;
+  diff_truncated: boolean;
+  operation: 'update' | 'delete';
+  path: string;
+}
+/**
+ * One engine decision about a recovered field, for optional display.
+ */
+export interface PipelineRepairFieldChange {
+  outcome: 'retained' | 'defaulted' | 'needs_input' | 'needs_review' | 'removed' | 'blocked';
+  path: string;
+  reason: string;
 }
 export interface ExecutionMetricsPayload {
   admission: ExecutionAdmissionPayload | null;
@@ -763,6 +1256,53 @@ export interface ExecutionWarningPayload {
   code: string;
   node_id: string | null;
   reason: string | null;
+}
+export interface ExplorePivotRunResponse {
+  cached: boolean;
+  failure: ExplorePivotFailure | null;
+  job_id: string | null;
+  message: string;
+  result: ExplorePivotResult | null;
+  status: 'started' | 'completed' | 'cache_required';
+}
+export interface ExplorePivotFailure {
+  dimensions: {
+    [k: string]: string | number;
+  };
+  message: string;
+  reason_code: string;
+  remediation: string;
+}
+export interface ExplorePivotResult {
+  calculation_key: string;
+  cells: ExplorePivotCell[];
+  column_fields: string[];
+  column_paths: ExplorePivotPath[];
+  data_version: string;
+  execution_metrics: ExecutionMetricsPayload | null;
+  generated_at: number;
+  node_id: string;
+  pivot_id: string;
+  row_fields: string[];
+  row_paths: ExplorePivotPath[];
+  source: string;
+  values: ExplorePivotValueIdentity[];
+  version: 1;
+  warnings: string[];
+}
+export interface ExplorePivotCell {
+  column_index: number;
+  row_index: number;
+  value: string | number | boolean | null;
+  value_id: string;
+}
+export interface ExplorePivotPath {
+  is_grand_total: boolean;
+  members: ExplorePivotMemberKey[];
+}
+export interface ExplorePivotMemberKey {
+  kind: 'null' | 'string' | 'boolean' | 'integer' | 'float' | 'nan' | 'date' | 'datetime' | 'time' | 'decimal';
+  value: string | number | boolean | null;
 }
 export interface ExplorePivotValueIdentity {
   aggregation: 'sum' | 'count' | 'average' | 'min' | 'max' | 'median' | 'distinct_count' | 'formula';
@@ -1332,6 +1872,94 @@ export interface SaveCapture {
   uncaptured: string[];
   warnings: string[];
 }
+/**
+ * React Flow graph structure used throughout Haute.
+ *
+ * This is the canonical type for the graph dict passed between
+ * parser, executor, codegen, deploy, and the server API layer.
+ */
+export interface PipelineGraph {
+  active_source: string;
+  edges: GraphEdge[];
+  global_constants: GlobalConstant[];
+  global_constants_error: string | null;
+  nodes: GraphNode[];
+  pipeline_description: string | null;
+  pipeline_name: string | null;
+  preamble: string | null;
+  preserved_blocks: string[];
+  source_file: string | null;
+  source_revision: string | null;
+  sources: string[];
+  submodels: {
+    [k: string]: SubmodelDefinition;
+  } | null;
+  warning: string | null;
+}
+/**
+ * A single edge in the React Flow graph.
+ */
+export interface GraphEdge {
+  id: string;
+  source: string;
+  sourceHandle: string | null;
+  target: string;
+  targetHandle: string | null;
+}
+/**
+ * A single node in the React Flow graph.
+ */
+export interface GraphNode {
+  data: NodeData;
+  id: string;
+  position: {
+    [k: string]: number;
+  };
+  type: string;
+}
+/**
+ * Data payload for a single pipeline node.
+ */
+export interface NodeData {
+  config: {
+    [k: string]: unknown;
+  };
+  description: string;
+  editor: NodeEditorState;
+  label: string;
+  nodeType: NodeType;
+}
+/**
+ * One shared, file-backed submodel definition and its public interface.
+ */
+export interface SubmodelDefinition {
+  definitionId: string;
+  file: string;
+  graph: PipelineGraph;
+  inputPorts: SubmodelInputPort[];
+  outputPorts: SubmodelOutputPort[];
+}
+/**
+ * A public input with ordered internal targets, or none while unrouted.
+ */
+export interface SubmodelInputPort {
+  name: string;
+  targets: SubmodelEndpoint[];
+}
+/**
+ * One stable public-port binding to an internal definition endpoint.
+ */
+export interface SubmodelEndpoint {
+  handleId: string | null;
+  nodeId: string;
+}
+/**
+ * A public output backed by exactly one internal source.
+ */
+export interface SubmodelOutputPort {
+  name: string;
+  source: SubmodelEndpoint;
+}
 export interface InputCacheBuildResponse {
   build_class: 'bounded' | 'admitted_eager';
   forced: boolean;
@@ -1406,6 +2034,16 @@ export interface InputCacheCancelResponse {
   status:
     'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
 }
+/**
+ * v2-shaped inference output: a list of table specs to merge into
+ * the apiInput's config. Caller stitches in the apiInput's existing
+ * ``path`` and ``contract`` metadata.
+ */
+export interface JsonCacheInferResponse {
+  tables: {
+    [k: string]: unknown;
+  }[];
+}
 export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[];
   schema_version: 1;
@@ -1457,6 +2095,16 @@ export interface IoFieldCapability {
   label: string;
   name: string;
   required: boolean;
+}
+export interface SchemaResponse {
+  column_count: number;
+  columns: ColumnInfo[];
+  path: string;
+  preview: {
+    [k: string]: unknown;
+  }[];
+  row_count: number | null;
+  row_count_estimated: boolean;
 }
 export interface MlflowDestinationsResponse {
   destinations: MlflowDestinationEntry[];
@@ -1681,6 +2329,8 @@ export interface OptimiserEstimateResponse {
   scenarios_per_quote_max: number | null;
   scenarios_per_quote_mean: number | null;
   scenarios_per_quote_min: number | null;
+  solve_memory_cap_bytes: number;
+  solve_memory_forecast_bytes: number;
   total_rows: number | null;
 }
 export interface OptimiserStatusResponse {
@@ -2236,6 +2886,170 @@ export interface OutputAssembleDryRunResponse {
   row_count: number;
   status: 'ok' | 'error';
 }
+/**
+ * The saved pipeline, with the save's version capture.
+ */
+export interface SavePipelineResponse {
+  document_fingerprint: string;
+  file: string;
+  git_sha: string | null;
+  identity_required: boolean;
+  pipeline_name: string;
+  source_revision: string;
+  status: string;
+  uncaptured: string[];
+  warnings: string[];
+}
+export interface CreateSubmodelResponse {
+  graph: PipelineGraph;
+  parent_file: string;
+  source_revision: string;
+  status: string;
+  submodel_file: string;
+}
+export interface CreateNodeInstanceResponse {
+  definition_id: string;
+  graph: PipelineGraph;
+  instance_name: string;
+  owner_name: string;
+  source_revision: string;
+  status: string;
+}
+export interface SubmodelGraphResponse {
+  definition_id: string;
+  graph: PipelineGraph;
+  status: string;
+  submodel_file: string;
+  submodel_name: string;
+}
+export interface DissolveSubmodelResponse {
+  definition_id: string;
+  graph: PipelineGraph;
+  instance_id: string;
+  source_revision: string;
+  status: string;
+}
+/**
+ * Full preview response — extends ``NodeResult`` with graph-wide metadata.
+ *
+ * Inherits all per-node fields (status, row_count, columns, preview, etc.)
+ * and adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for
+ * the full graph context.
+ */
+export interface PreviewNodeResponse {
+  available_columns: ColumnInfo[];
+  column_count: number;
+  columns: ColumnInfo[];
+  error: string | null;
+  error_line: number | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  frame_columns: {
+    [k: string]: ColumnInfo[];
+  };
+  memory: NodeMemoryInfo[];
+  memory_bytes: number;
+  node_available_columns: {
+    [k: string]: ColumnInfo[];
+  };
+  node_columns: {
+    [k: string]: ColumnInfo[];
+  };
+  node_frame_columns: {
+    [k: string]: {
+      [k: string]: ColumnInfo[];
+    };
+  };
+  node_id: string;
+  node_schema_warnings: {
+    [k: string]: SchemaWarning[];
+  };
+  node_statuses: {
+    [k: string]: 'ok' | 'error';
+  };
+  notes: string[];
+  port_previews: {
+    [k: string]: PortPreview;
+  };
+  preview: {
+    [k: string]: unknown;
+  }[];
+  preview_columns: string[];
+  preview_row_count: number;
+  preview_row_limit: number | null;
+  preview_truncated: boolean;
+  row_count: number;
+  schema_warnings: SchemaWarning[];
+  seed_plan: PreviewSeedPlanEntry[];
+  status: 'ok' | 'error';
+  timing_ms: number;
+  timings: NodeTimingInfo[];
+}
+export interface NodeMemoryInfo {
+  label: string;
+  memory_bytes: number;
+  node_id: string;
+}
+export interface SchemaWarning {
+  column: string | null;
+  detail: string | null;
+  input: string | null;
+  status: string;
+}
+/**
+ * One frame's preview of a multi-frame target asked for several (``port_labels``):
+ * what a preview of that frame alone (``port_label``) answers in its ``row_count``,
+ * ``columns``, ``preview`` and ``preview_truncated``.
+ */
+export interface PortPreview {
+  columns: ColumnInfo[];
+  preview: {
+    [k: string]: unknown;
+  }[];
+  preview_truncated: boolean;
+  row_count: number;
+}
+/**
+ * One snapshot generation a preview's collected rows were computed from.
+ *
+ * ``seeded``: read instead of computing the node. ``captured``: computed by
+ * this preview, published, and read by everything below it. ``columns`` is
+ * the generation's column set, ``None`` for all columns; ``port_label`` is
+ * always ``None``, since only node outputs are seeded or captured.
+ */
+export interface PreviewSeedPlanEntry {
+  columns: string[] | null;
+  created_at: string;
+  generation_id: string;
+  identity_digest: string;
+  kind: 'seeded' | 'captured';
+  node_id: string;
+  node_label: string;
+  port_label: null;
+}
+export interface NodeTimingInfo {
+  label: string;
+  node_id: string;
+  timing_ms: number;
+}
+/**
+ * Snapshot-backed Data Inputs and structured API Inputs, in execution order.
+ */
+export interface PreviewInputsResponse {
+  input_node_ids: string[];
+}
+/**
+ * A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).
+ *
+ * ``preparing`` until its execution plan is known; then ``running`` with the
+ * planned heavy steps completed of the total, and the step now running.
+ */
+export interface PreviewProgressResponse {
+  done: number | null;
+  label: string | null;
+  phase: 'preparing' | 'running';
+  request_id: string;
+  total: number | null;
+}
 export interface SessionStatusResponse {
   ok: boolean;
 }
@@ -2313,6 +3127,117 @@ export interface ProjectFileDeleteResponse {
   path: string;
   uncaptured: string[];
   warnings: string[];
+}
+export interface TraceResponse {
+  status: string;
+  trace: TraceResultResponse;
+}
+export interface TraceResultResponse {
+  column: string | null;
+  correlation_diagnostics: TraceCorrelationDiagnosticResponse[];
+  execution_ms: number;
+  execution_origin: 'fresh_execution' | 'trace_cache';
+  generated_at: string;
+  nodes_in_trace: number;
+  omissions: TraceOmissionResponse[];
+  output_value: unknown;
+  pipeline_source: string | null;
+  row_id_column: string | null;
+  row_id_value: unknown;
+  row_index: number;
+  steps: TraceStepResponse[];
+  target_node_id: string;
+  total_nodes_in_pipeline: number;
+  waterfall: TraceWaterfallEntryResponse[] | TraceWaterfallErrorResponse | null;
+}
+export interface TraceCorrelationDiagnosticResponse {
+  child_node_id: string | null;
+  code: string;
+  ignored_columns: string[];
+  match_columns: string[];
+  match_strategy: string | null;
+  matched_row_count: number | null;
+  matched_row_indices: number[];
+  message: string;
+  node_id: string | null;
+  reason: string;
+  seed_node_ids: string[];
+  severity: string;
+  [k: string]: unknown;
+}
+export interface TraceOmissionResponse {
+  diagnostic_index: number;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  reason: string;
+  topological_rank: number;
+}
+export interface TraceStepResponse {
+  calculation: {
+    [k: string]: unknown;
+  } | null;
+  column_relevant: boolean;
+  contributed_columns: string[];
+  derivations: TraceColumnDerivationResponse[];
+  expression: {
+    [k: string]: unknown;
+  } | null;
+  identical_row_count: number | null;
+  input_values: {
+    [k: string]: unknown;
+  };
+  node_detail: {
+    [k: string]: unknown;
+  } | null;
+  node_id: string;
+  node_name: string;
+  node_type: string;
+  output_values: {
+    [k: string]: unknown;
+  };
+  row_lineage_type: string | null;
+  schema_diff: SchemaDiffResponse;
+  snapshot_generation_id: string | null;
+  topological_rank: number;
+}
+export interface TraceColumnDerivationResponse {
+  column: string;
+  error: string | null;
+  error_type: string | null;
+  expression_text: string | null;
+  not_computable_reason: string | null;
+  reads: TraceColumnReadResponse[] | null;
+  result_source: string | null;
+  result_value: unknown;
+  substituted_text: string | null;
+}
+export interface TraceColumnReadResponse {
+  column: string;
+  sources: TraceColumnSourceResponse[];
+}
+export interface TraceColumnSourceResponse {
+  before_code: boolean;
+  column: string;
+  node_id: string;
+}
+export interface SchemaDiffResponse {
+  columns_added: string[];
+  columns_modified: string[];
+  columns_passed: string[];
+  columns_removed: string[];
+}
+export interface TraceWaterfallEntryResponse {
+  cumulative: number;
+  default_used: boolean;
+  delta: number;
+  label: string;
+  operation: 'base' | 'multiply' | 'add';
+  value: number;
+}
+export interface TraceWaterfallErrorResponse {
+  error: string;
+  error_type: string;
 }
 export interface TrainResponse {
   actual_vs_predicted: {
@@ -3588,6 +4513,114 @@ export interface WorkbenchAppQuoteActivityEntry {
  */
 export interface WorkbenchAppPeopleResponse {
   people: string[];
+}
+/**
+ * One bounded, side-effect-free editor identity resolution request.
+ */
+export interface EditorIdentityRequestNode {
+  alias?: string | null;
+  instance_of?: string | null;
+  label: string;
+  node_id: string;
+  node_type: NodeType;
+  /**
+   * @maxItems 1024
+   */
+  source_handles?: string[];
+  submodel?: string | null;
+}
+/**
+ * One generation the preview a trace explains was computed from.
+ */
+export interface TraceSeedPlanEntry {
+  generation_id: string;
+  identity_digest: string;
+  node_id: string;
+  port_label?: null;
+}
+/**
+ * One input node's source: a Data Input's config, or a structured API Input's.
+ *
+ * A structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``
+ * schema) is one snapshot per emitting table; its requests act on every
+ * table of the node together. ``node_type`` says how the source is read, so a
+ * Workbench Input's tables, read as a Quote Input's, are sent as ``apiInput``.
+ */
+export interface InputCacheSourceRequest {
+  config: {
+    [k: string]: unknown;
+  };
+  node_type?: 'dataInput' | 'apiInput';
+  schema_version?: 1;
+}
+/**
+ * Start or join a snapshot build; the server chooses how it is built.
+ */
+export interface InputCacheBuildRequest {
+  config: {
+    [k: string]: unknown;
+  };
+  node_type?: 'dataInput' | 'apiInput';
+  refresh?: boolean;
+  schema_version?: 1;
+}
+export interface MlflowSettingsUpdateRequest {
+  folder?: string;
+  tracking_uri?: string;
+}
+export interface MlflowTestConnectionRequest {
+  destination?: string;
+  folder?: string | null;
+  tracking_uri?: string | null;
+}
+export interface ModelSaveDestinationRequest {
+  algorithm: 'catboost' | 'glm' | 'xgboost' | 'lightgbm' | 'ebm' | 'tboost';
+  output_path: string;
+}
+export interface SaveModelRequest {
+  job_id: string;
+  output_path: string;
+  overwrite?: boolean;
+}
+/**
+ * One page of the target's chosen scenarios (the Quotes explorer, OPT-V12).
+ */
+export interface OptimiserApplyRequest {
+  descending?: boolean;
+  filters?: OptimiserQuoteFilters;
+  job_id: string;
+  limit?: number;
+  offset?: number;
+  point_index?: number | null;
+  quote_id_prefix?: string | null;
+  sort_by?: string | null;
+}
+/**
+ * The Quotes explorer's filters (OPT-V12), combined with AND; each is optional.
+ */
+export interface OptimiserQuoteFilters {
+  analysis_equals?: {
+    [k: string]: string | number | boolean | null;
+  };
+  at_range_edge?: boolean;
+  deployed_factor_differs?: boolean;
+  scenario_value_max?: number | null;
+  scenario_value_min?: number | null;
+}
+export interface OptimiserSaveRequest {
+  job_id: string;
+  output_path: string;
+  overwrite?: boolean;
+  point_index?: number | null;
+  stale?: boolean;
+  version?: string;
+}
+export interface OptimiserMlflowLogRequest {
+  destination?: '' | 'databricks' | 'server' | 'local';
+  experiment_name?: string | null;
+  job_id: string;
+  point_index?: number | null;
+  stale?: boolean;
 }
 /**
  * A quote typed into the app's sheets, with the form revision and the release the page

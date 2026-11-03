@@ -301,6 +301,7 @@ markers = [
     "index: resolves against the package index with the real uv, so it needs the network; excluded from default runs and run by the dependencies workflow (see .github/workflows/dependencies.yml)",
     "perf_evidence: perf measurements that inform a decision and assert none of their figures; the Performance workflow runs them, the pull-request perf job does not",
     "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
+    "no_project: runs a test with no Haute project installed, to prove an entry point installs its own (see tests/conftest.py)",
     "meta: repo-health checks that read files rather than exercise behaviour, so their result cannot vary by interpreter; deselected from the compatibility lanes (see .github/workflows/ci.yml)",
     "in_process: patches an in-process seam a worker process would not see, so previews, traces and estimates stay in threads even in the process-mode lane (see tests/conftest.py)",
     "store_servers: runs a quote store test on a SQL Server or PostgreSQL server the environment names, as the CI job's containers do (see tests/_store_servers.py)",

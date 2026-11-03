@@ -28,7 +28,7 @@ from haute.hosted import (
     create_app,
     databricks_app_environment,
 )
-from haute.server import app as haute_app
+from tests._project import project_app, use_project
 
 _APP_DIR = str(Path(__file__).resolve().parent.parent / "databricks_app")
 if _APP_DIR not in sys.path:
@@ -54,7 +54,7 @@ _CONTRACT = {
 
 @pytest.fixture()
 def project_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
@@ -93,7 +93,7 @@ class TestStockAppRejectsProxiedTraffic:
     """The failure mode that makes the boundary necessary at all."""
 
     def test_forwarded_metadata_is_rejected(self, project_dir: Path) -> None:
-        client = TestClient(haute_app, raise_server_exceptions=False)
+        client = TestClient(project_app(), raise_server_exceptions=False)
         response = client.get(
             "/api/session",
             headers={"host": "localhost", "x-forwarded-for": "10.1.2.3"},
@@ -102,7 +102,7 @@ class TestStockAppRejectsProxiedTraffic:
         assert "Forwarded headers are not supported" in response.text
 
     def test_databricksapps_host_is_rejected(self, project_dir: Path) -> None:
-        client = TestClient(haute_app, raise_server_exceptions=False)
+        client = TestClient(project_app(), raise_server_exceptions=False)
         response = client.get("/api/session", headers={"host": _PROXY_HEADERS["host"]})
         assert response.status_code == 400
         assert "Invalid host header" in response.text
@@ -189,14 +189,14 @@ class TestCreateApp:
         for name in DATABRICKS_APP_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
         with pytest.raises(RuntimeError, match="outside a recognised hosted environment"):
-            create_app()
+            create_app(Path.cwd())
 
     def test_serves_api_through_platform_proxy_headers(
         self,
         hosted_contract: None,
         project_dir: Path,
     ) -> None:
-        client = TestClient(create_app(), raise_server_exceptions=False)
+        client = TestClient(create_app(project_dir), raise_server_exceptions=False)
         response = client.get("/api/session", headers=_PROXY_HEADERS)
         assert response.status_code == 200
         assert response.json() == {"ok": True}
@@ -206,7 +206,7 @@ class TestCreateApp:
         hosted_contract: None,
         project_dir: Path,
     ) -> None:
-        client = TestClient(create_app(), raise_server_exceptions=False)
+        client = TestClient(create_app(project_dir), raise_server_exceptions=False)
         with client.websocket_connect(
             "/ws/sync",
             headers={
@@ -227,7 +227,7 @@ class TestBoundaryDoesNotBypassLocalAuth:
         defeat the session token gate — an anonymous proxied request stays
         403 even though its headers now look local."""
         monkeypatch.delenv(DISABLE_AUTH_ENV, raising=False)
-        client = TestClient(PlatformProxyBoundary(haute_app), raise_server_exceptions=False)
+        client = TestClient(PlatformProxyBoundary(project_app()), raise_server_exceptions=False)
         # Override the valid session cookie the suite-wide conftest fixture
         # bakes into every TestClient, so this request is truly anonymous.
         response = client.get(
@@ -250,6 +250,7 @@ class TestEnsureProject:
             "haute._project_storage.configure_git_credentials",
             lambda path: configured_creds.append(path),
         )
+        # The bootstrap changes directory itself; monkeypatch restores it.
         monkeypatch.chdir(tmp_path)
 
         returned_path = bootstrap.ensure_project()
@@ -302,6 +303,7 @@ class TestEnsureProject:
             "haute._project_storage.configure_git_credentials",
             lambda _path: None,
         )
+        # The bootstrap changes directory itself; monkeypatch restores it.
         monkeypatch.chdir(tmp_path)
 
         returned_path = bootstrap.ensure_project()
@@ -331,6 +333,7 @@ class TestEnsureProject:
             "haute._project_storage.configure_git_credentials",
             lambda _path: None,
         )
+        # The bootstrap changes directory itself; monkeypatch restores it.
         monkeypatch.chdir(tmp_path)
 
         with pytest.raises(StorageUnavailableError, match="volume down"):

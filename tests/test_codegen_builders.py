@@ -28,6 +28,7 @@ from haute._types import NodeType
 from haute.codegen import _node_to_code, graph_to_code
 from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_source
+from tests._project import use_project
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
@@ -1199,7 +1200,7 @@ class TestCodegenExecValidation:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A dataInput declaration loads a real parquet file through its sidecar."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / ".git").mkdir()
         (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
         data_dir = tmp_path / "data"
@@ -1220,7 +1221,7 @@ class TestCodegenExecValidation:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A dataInput hook receives the loaded data as ``df`` and returns its result."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / ".git").mkdir()
         (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
         data_dir = tmp_path / "data"
@@ -1244,7 +1245,7 @@ class TestCodegenExecValidation:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A generated dataInput honours the shared source schema config."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         (tmp_path / ".git").mkdir()
         (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
         data_dir = tmp_path / "data"
@@ -1327,7 +1328,7 @@ class TestCodegenExecValidation:
 
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
+        use_project(elsewhere)
 
         node = _make_codegen_node(
             "apiInput",

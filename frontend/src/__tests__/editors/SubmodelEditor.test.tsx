@@ -1,4 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest"
+import { makePreviewResponse } from "../../test-utils/factories"
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { applyPreviewResultColumnsToNodes } from "../../hooks/usePipelineAPI"
 import type { SchemaWarning } from "../../api/types"
@@ -14,13 +15,13 @@ describe("SubmodelEditor", () => {
     const instanceConfig = { ...config, alias: "copy", instanceOf: "pricing" }
     const nodes = [makeNode("copy", "submodel", { data: { label: "copy", config: instanceConfig } })]
     const warnings: SchemaWarning[] = [
-      { input: "policy", column: "region", status: "missing" },
-      { input: "policy", column: "limit", status: "missing" },
+      { input: "policy", column: "region", status: "missing", detail: null },
+      { input: "policy", column: "limit", status: "missing", detail: null },
       { input: "rates", column: null, status: "unavailable", detail: "Cannot resolve rates: missing rate_file.parquet" },
     ]
-    useGraphStore.setState({ edges: [], nodes: applyPreviewResultColumnsToNodes(nodes, "submodel_runtime/copy/score", {
+    useGraphStore.setState({ edges: [], nodes: applyPreviewResultColumnsToNodes(nodes, "submodel_runtime/copy/score", makePreviewResponse({
       status: "ok", node_schema_warnings: { copy: warnings },
-    }, "live", 0), submodels: { definition_pricing: definition } })
+    }), "live", 0), submodels: { definition_pricing: definition } })
     const view = render(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     const section = screen.getByRole("region", { name: "Missing columns" })
     expect(within(section).getByText("policy")).toBeVisible()
@@ -31,9 +32,9 @@ describe("SubmodelEditor", () => {
     view.rerender(<SubmodelEditor nodeId="copy" config={{ ...instanceConfig, instanceOf: undefined }} accentColor="#64748b" />)
     expect(screen.queryByRole("region", { name: "Missing columns" })).toBeNull()
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
-    const refreshed = applyPreviewResultColumnsToNodes(useGraphStore.getState().nodes, "submodel_runtime/copy/score", {
+    const refreshed = applyPreviewResultColumnsToNodes(useGraphStore.getState().nodes, "submodel_runtime/copy/score", makePreviewResponse({
       status: "ok", node_schema_warnings: { copy: [] },
-    }, "live", 0)
+    }), "live", 0)
     useGraphStore.setState({ nodes: refreshed })
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     expect(screen.queryByRole("region", { name: "Missing columns" })).toBeNull()

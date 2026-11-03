@@ -17,7 +17,7 @@ from haute._node_snapshots import (
     NodeSnapshotStore,
     pipeline_source_file_key,
 )
-from haute.routes._node_data_service import node_data_project_root
+from haute._project_context import current_project
 from haute.routes.node_data import node_data_service
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
 from haute.schemas import (
@@ -154,7 +154,7 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     # One store for the whole report: constructing it sweeps retired
     # directories and re-reads the same roots, and three of them answer no
     # question a shared one does not.
-    store = NodeSnapshotStore(node_data_project_root())
+    store = NodeSnapshotStore(current_project().root)
     inventory = store.inventory()
     # A node's own cache is what the store holds for it under this pipeline and
     # the source being reported. Another pipeline in the same project root has
@@ -229,12 +229,13 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
 
 @router.get("/usage", response_model=CacheUsageResponse)
 def cache_usage() -> CacheUsageResponse:
-    """The store's size, for the preview status bar.
+    """The store's size, shown beside the cached-data inventory in Pipeline settings.
 
     One pass over the store with one small metadata read per generation and no
-    point resolution, so the status bar can ask each time a preview settles.
+    point resolution. It is read with each inventory read, and kept in no memo,
+    so a size read after a Clear or a Refresh is the store's size then.
     """
-    usage = NodeSnapshotStore(node_data_project_root()).usage()
+    usage = NodeSnapshotStore(current_project().root).usage()
     return CacheUsageResponse(
         total_bytes=usage.total_bytes,
         automatic_bytes=usage.automatic_bytes,
@@ -255,7 +256,7 @@ def cache_clear(body: CacheClearRequest) -> CacheClearResponse:
     own; what it must not do is surprise a reader mid-scan, and it does not —
     a generation a reader holds retires when that reader releases it.
     """
-    store = NodeSnapshotStore(node_data_project_root())
+    store = NodeSnapshotStore(current_project().root)
     cleared: list[str] = []
     freed = 0
     for digest in dict.fromkeys(body.digests):

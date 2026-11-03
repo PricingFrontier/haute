@@ -24,6 +24,7 @@ from packaging.utils import canonicalize_name
 
 from haute._gitignore_guard import ensure_gitignore_guards
 from haute._io import read_user_text
+from haute._project_context import current_project
 from haute._scaffold_files import ensure_gitattributes, lf_bytes, write_lf
 
 if TYPE_CHECKING:
@@ -801,7 +802,7 @@ def handle_init(config: InitConfig) -> None:
     # Solo mode is configured in haute.toml, not via a CLI flag.
     # Default is team mode; user sets min_approvers = 0 for solo.
 
-    project_dir = Path.cwd()
+    project_dir = current_project().root
     haute_toml_path = project_dir / "haute.toml"
     connections_path = project_dir / CONNECTIONS_FILE
 

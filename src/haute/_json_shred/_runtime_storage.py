@@ -25,6 +25,7 @@ from haute._env import int_env
 from haute._file_lock import UnsafeCachePathError
 from haute._logging import get_logger
 from haute._process_memory import process_is_alive
+from haute._project_context import current_project
 
 logger = get_logger(component="json_shred")
 
@@ -233,7 +234,7 @@ def recover_json_runtime_storage(
 ) -> dict[str, int]:
     """Reap only old, plain, ownership-marked directories from dead processes."""
     root = (
-        Path(os.path.abspath(Path.cwd() / ".haute_cache"))
+        current_project().root / ".haute_cache"
         if cache_root is None
         else Path(os.path.abspath(cache_root))
     )

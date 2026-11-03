@@ -1318,7 +1318,7 @@ tests = [
   "tests/test_node_data_routes.py::test_cancelling_a_running_build_terminates_its_worker_without_publishing",
   "tests/test_analysis_results.py::test_cancelling_a_profile_ends_it_cancelled_and_stores_nothing",
   "tests/test_input_cache_route.py::test_same_identity_build_requests_join_one_active_job",
-  "tests/test_input_cache_route.py::test_cancel_requests_cooperative_stop",
+  "tests/test_input_cache_route.py::test_cancel_stops_the_worker",
   "tests/test_input_cache_route.py::test_build_deadline_owns_timeout_status_and_error_code",
   "tests/test_input_cache_route.py::test_clear_and_build_admission_are_linearized",
   "tests/test_job_lifecycle.py::test_running_metrics_publisher_ignores_terminal_job",

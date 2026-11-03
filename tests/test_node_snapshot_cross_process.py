@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from haute._node_snapshots import (
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
+from haute._project_context import context_thread
 from haute._source_cache import SourceCacheGenerationMissingError, SourceCacheIdentity
 
 _TIMEOUT = 60.0
@@ -258,7 +258,7 @@ def test_a_lease_paused_before_its_marker_blocks_clear_and_keeps_the_generation(
         worker.start()
         assert events.get(timeout=_TIMEOUT) == "leasing"
         assert events.get(timeout=_TIMEOUT) == "paused"
-        clearer = threading.Thread(target=clear)
+        clearer = context_thread(clear)
         clearer.start()
         time.sleep(0.5)
         assert clearer.is_alive(), "clear must wait for the lease lock"

@@ -23,7 +23,6 @@ import pytest
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import build_input_snapshot
 from haute._polars_io_registry import data_input_is_direct
-from haute._sandbox import set_project_root
 from haute._source_cache import SourceCacheStore
 from haute._types import NodeType, PipelineGraph
 from haute.assistant._node_cards import CARD_CONFIG_NAMES, node_card, node_card_fixture
@@ -32,6 +31,7 @@ from haute.assistant._wire_ops import OpValidationError
 from haute.executor import execute_graph
 from haute.graph_utils import flatten_graph
 from haute.routes._helpers import parse_pipeline_to_graph
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 _SOURCE_FILE = "pipeline.py"
@@ -267,8 +267,7 @@ def test_every_card_configuration_applies_and_executes(
     assert fixture is not None
     config = next(item for item in card["configs"] if item["name"] == config_name)
     project = _short_project(tmp_path, f"{node_type.value}-{config_name}")
-    monkeypatch.chdir(project)
-    set_project_root(project)
+    use_project(project)
     _write_fixture(project, fixture)
     if "model_run" in fixture:
         # Model artifacts stay inside this test's project.
@@ -336,7 +335,7 @@ def test_a_card_that_is_not_authorable_states_the_products_refusal(
     tmp_path: Path, node_type: NodeType
 ):
     project = _short_project(tmp_path, node_type.value)
-    set_project_root(project)
+    use_project(project)
 
     with pytest.raises(OpValidationError) as refused:
         _service(project).dry_run(
@@ -457,8 +456,7 @@ def test_walkthrough_guesses_fail_where_the_card_shape_is_valid_first_time(
     assert fixture is not None
     minimal = card["configs"][0]
     project = _short_project(tmp_path, f"guess-{node_type.value}")
-    monkeypatch.chdir(project)
-    set_project_root(project)
+    use_project(project)
     _write_fixture(project, fixture)
 
     refused = asyncio.run(

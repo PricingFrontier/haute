@@ -57,12 +57,10 @@
   the shared `haute._lru_cache.LRUCache` primitive (also used by the caching
   component's fingerprint cache — see
   [caching](../caching/low-level.md)).
-- **`_PROJECT_ROOT: Path | None`** (module-level, `_sandbox.py`) — lazily set to
-  `Path.cwd().resolve()` on first use by `_get_project_root()`; overridable via
-  `set_project_root()` (used by tests and the CLI). `bound_project_root(root)` is
-  the scoped form: it binds `root` for the duration of a `with` block and restores
-  the previous root on exit, even when the block raises, so a caller that works in
-  several projects in one process never leaves the root on a project it has left.
+- The project root every containment check below compares with is the current
+  project's (`haute._project_context.current_project().root`; see
+  [pipeline-config](../pipeline-config/low-level.md)): no process global holds it and
+  it is never taken from the working directory.
 - **`_BOOT_SESSION_TOKEN`** (`_local_security.py`) — a `secrets.token_urlsafe(32)`
   generated once at module import, used as the fallback session token when
   `HAUTE_LOCAL_SESSION_TOKEN` is unset.
@@ -147,7 +145,10 @@ reaches node code exactly as the preamble made it.
 1. `safe_unpickle(path)` / `safe_joblib_load(path)` call
    `validate_project_path(path)` first — raises `PathOutsideProjectError` before any
    file I/O if the resolved path escapes the project root.
-2. `validate_project_path`: `contained_path(_get_project_root(), Path(path).resolve())`.
+2. `validate_project_path` returns where *path* leads inside the current project's root:
+   a relative path names a file under the root (never one under the working directory),
+   an absolute one is resolved, and `contained_path` compares the result with the root.
+   Callers read the returned path.
    `contained_path(root, path)`: a NUL byte → `InvalidPathError`; an absolute `path`
    not lexically under `root.resolve()` → `PathOutsideProjectError`; otherwise
    `(root.resolve() / path).resolve()` must be `is_relative_to` the resolved root,
@@ -260,9 +261,7 @@ is the resolved path against the resolved root:
 An `is_relative_to` or `commonpath` call that is not a containment check carries a
 `# not contained_path: <reason>` comment on its line or the line above:
 
-- choosing a root between two valid ones: `_infer_project_root` (whether a pipeline
-  source is spelled inside the project, and whether a resolved one lies there),
-  `anchor_config_source_path`, `parse_pipeline_to_graph`;
+- choosing a root between two valid ones: `anchor_config_source_path`;
 - classifying a path whose either answer is valid: the pipeline folder a project
   versions (`_project_layout.pipeline_folder`), a candidate run's provenance
   (`capture_provenance`), the artifacts a save governs (`_require_artifact_identity`),
@@ -313,15 +312,10 @@ the app's own origin check refuses another site's writes. Its tests are in
 `tests/test_workbench_app_quotes.py`.
 
 **Runtime local-file containment (`_path_resolution.py` + execution core)**
-1. `canonical_dataframe_execution_graph` derives the execution root from the
-   configured sandbox project root (`_sandbox._get_project_root()`), which is
-   cwd in normal CLI use. If the graph names an absolute pipeline outside that
-   project, the pipeline's parent is the explicit root instead. A source path
-   lexically inside the configured project that resolves outside through a
-   symlink is rejected rather than treated as an external selection. HTTP
-   routes separately require submitted `source_file` values to remain inside
-   the configured project, so only direct/operator-controlled execution can
-   opt into the external-pipeline root.
+1. The execution root is the current project's root, installed by the entry point
+   that started the work (the server for a request, the CLI for a command, a standalone
+   run for its pipeline file, a worker for its request). HTTP routes require submitted
+   `source_file` values to remain inside that project.
 2. Every local runtime input field (`apiInput`/file or lakehouse `dataInput`,
    `externalFile`, model-score feature-contract files, and file-sourced
    optimiser artifacts) passes through `resolve_runtime_file_path(...,
@@ -340,11 +334,8 @@ the app's own origin check refuses another site's writes. Its tests are in
    candidates for a relative path, one that exists wins (a glob pattern exists where it
    matches a path, so a relative pattern anchors to the folder holding its files);
    when both or neither do, the caller's `prefer` decides.
-3. `walk_graph` runs under
-   `runtime_project_root_scoped`. The decorator accepts the declared `graph`
-   argument positionally or by keyword and rejects a missing/non-`PipelineGraph`
-   value before opening the scope. `_builders._resolve_runtime_data_path` repeats
-   the containment check against that context-local root at the final read seam.
+3. `_builders._resolve_runtime_data_path` repeats the containment check against the
+   current project's root at the final read seam.
    Database/Databricks/named-provider identifiers are not local path fields and
    retain their provider-owned external-resource semantics.
 4. `_builders._build_data_input` invokes `_exec_user_code` exactly once for non-empty

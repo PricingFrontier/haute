@@ -39,6 +39,7 @@ import pytest
 
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.assistant._ops import GraphEditPlan
+from tests._project import use_project
 
 # ---------------------------------------------------------------------------
 # Fixtures — a real tmp project with a parquet source
@@ -76,7 +77,7 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "data").mkdir()
     pl.DataFrame(
         {
@@ -363,7 +364,6 @@ class TestColumnProfiles:
         self,
         project_root: Path,
         monkeypatch: pytest.MonkeyPatch,
-        _widen_sandbox_root: None,
     ) -> None:
         config_dir = project_root / "config" / "data_input"
         config_dir.mkdir(parents=True)
@@ -1016,12 +1016,11 @@ class TestUnresolvableButInspectableNodes:
         hold for it. ``schema_only=True`` now reaches the OUTPUT builder, which
         describes the document from its mapping and source schemas instead."""
 
-        import haute._sandbox as sandbox_module
         import haute.assistant._tools as tools_module
         from haute.assistant._tools import node_schema
         from tests.conftest import make_edge, make_graph, make_output_config
 
-        monkeypatch.setattr(sandbox_module, "_PROJECT_ROOT", project_root.resolve())
+        use_project(project_root)
 
         graph = make_graph(
             {
@@ -1144,15 +1143,14 @@ def submodel_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     import shutil
     from collections import OrderedDict
 
-    from haute._sandbox import set_project_root
     from haute.assistant import _tools
 
     root = tmp_path / "s"
     shutil.copytree(
         Path(__file__).parent / "assistant_eval" / "projects" / "submodel_pricing", root
     )
-    monkeypatch.chdir(root)
-    set_project_root(root)  # restored by the autouse _restore_project_root
+    use_project(root)
+    use_project(root)  # restored by the autouse _restore_project_root
     monkeypatch.setattr(_tools, "_BRIEF_CACHE", OrderedDict())
     _egress_toml(root, max_sensitivity="restricted")
     return root
@@ -2489,10 +2487,9 @@ class TestExecutorArms:
         assert ledger.sources() == ()
 
     async def test_a_new_excel_input_is_refused_with_the_preview_remedy(self, project_root: Path):
-        from haute._sandbox import set_project_root
         from haute.assistant._tools import build_tool_executor
 
-        set_project_root(project_root)  # restored by the autouse _restore_project_root
+        use_project(project_root)  # restored by the autouse _restore_project_root
         execute_tool = build_tool_executor("main.py")
         result = await execute_tool(
             "dry_run_graph_edits",
@@ -2661,14 +2658,13 @@ def steps_first_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 
     from haute._config_io import palette_default_config
     from haute._pipeline_recovery import load_pipeline_editor_document
-    from haute._sandbox import set_project_root
     from haute._types import GraphEdge, NodeType
     from haute.assistant import _tools
     from haute.assistant._ops import PlanStore
     from haute.routes._save_pipeline import SavePipelineService
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    use_project(tmp_path)
+    use_project(tmp_path)  # restored by the autouse _restore_project_root
     monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
     monkeypatch.setattr(_tools, "mutations_readiness", lambda _root: (True, None))
     frames = {
@@ -3337,12 +3333,11 @@ _AGE_FACTOR = {
 def rating_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A code-mode source of driver ages, region codes and inception dates."""
 
-    from haute._sandbox import set_project_root
     from haute.assistant import _tools
     from haute.assistant._ops import PlanStore
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    use_project(tmp_path)
+    use_project(tmp_path)  # restored by the autouse _restore_project_root
     monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
     monkeypatch.setattr(_tools, "mutations_readiness", lambda _root: (True, None))
     (tmp_path / "main.py").write_text(RATING_SOURCE, encoding="utf-8")
@@ -4632,8 +4627,6 @@ def broken_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     import shutil
 
-    from haute._sandbox import set_project_root
-
     root = tmp_path / "b"
     shutil.copytree(Path(__file__).parent / "assistant_eval" / "projects" / "broken_pricing", root)
     # A Parquet scan reads its file directly, so no input snapshot is needed.
@@ -4649,8 +4642,8 @@ def broken_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ),
         encoding="utf-8",
     )
-    monkeypatch.chdir(root)
-    set_project_root(root)  # restored by the autouse _restore_project_root
+    use_project(root)
+    use_project(root)  # restored by the autouse _restore_project_root
     _egress_toml(root, max_sensitivity="internal")
     return root
 
@@ -5727,7 +5720,7 @@ class TestBriefBoundaries:
         from haute.assistant import _tools
         from tests._workbench_helpers import form_table, workbench_project
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         workbench_project(tmp_path, [form_table("policy", "input", ("state", "str"))])
         briefed: list[list[str]] = []
 

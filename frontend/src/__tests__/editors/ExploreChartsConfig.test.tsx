@@ -170,19 +170,27 @@ function ChartConfigHarness({
   onCommittedUpdate,
   onShowPivots,
   currentConfigHash = DATA_IDENTITY,
+  externalEdit,
+  mergeIntoRenderedConfig = false,
 }: {
   initialConfig?: Record<string, unknown>
   onCommittedUpdate?: () => void
   onShowPivots?: () => void
   currentConfigHash?: string | null
+  /** An edit landing from elsewhere, applied by the "Apply edit from elsewhere" button. */
+  externalEdit?: (config: Record<string, unknown>) => Record<string, unknown>
+  /** Merge each update into the config this render holds, as NodePanel does. */
+  mergeIntoRenderedConfig?: boolean
 }) {
   const [config, setConfig] = useState(initialConfig)
   const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
-    setConfig((current) =>
+    const merge = (base: Record<string, unknown>) =>
       typeof keyOrUpdates === "string"
-        ? { ...current, [keyOrUpdates]: value }
-        : { ...current, ...keyOrUpdates },
-    )
+        ? { ...base, [keyOrUpdates]: value }
+        : { ...base, ...keyOrUpdates }
+    // NodePanel merges an update into the config it rendered with, so a
+    // handler kept from an earlier render writes that render's config back.
+    setConfig(mergeIntoRenderedConfig ? merge(config) : merge)
     onCommittedUpdate?.()
     return { ok: true }
   }
@@ -206,6 +214,11 @@ function ChartConfigHarness({
         currentConfigHash={currentConfigHash}
         onShowPivots={onShowPivots}
       />
+      {externalEdit && (
+        <button type="button" onClick={() => setConfig((current) => externalEdit(current))}>
+          Apply edit from elsewhere
+        </button>
+      )}
       <output data-testid="persisted-config">{JSON.stringify(config)}</output>
     </GraphProvider>
   )
@@ -780,6 +793,37 @@ describe("ExploreChartsConfig", () => {
     expect(screen.getByRole("button", { name: "Configure Chart 2" })).toBeVisible()
   })
 
+  it("deletes a chart from the config as it stands once the confirmation is answered", async () => {
+    const first = chart(null, { id: "chart_1", name: "Chart 1" })
+    const second = chart(null, { id: "chart_2", name: "Chart 2" })
+    const renameSecond = (config: Record<string, unknown>) => ({
+      ...config,
+      edited_elsewhere: true,
+      charts: (config.charts as ExploreChartConfig[]).map((item) =>
+        item.id === "chart_2" ? { ...item, name: "Renamed meanwhile" } : item,
+      ),
+    })
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [first, second] }}
+        externalEdit={renameSecond}
+        mergeIntoRenderedConfig
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Chart 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Apply edit from elsewhere" }))
+    await answerQuestion("confirm")
+
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts.map((item: ExploreChartConfig) => [item.id, item.name])).toEqual([
+      ["chart_2", "Renamed meanwhile"],
+    ])
+    expect(persisted.edited_elsewhere).toBe(true)
+  })
+
   it("guides an empty chart workflow to Pivots without mutating config", () => {
     const onShowPivots = vi.fn()
     const draft = chart()
@@ -955,6 +999,47 @@ describe("ExploreChartsConfig", () => {
         expect.objectContaining({ value_id: "second-average" }),
       ],
     })
+  })
+
+  it("switches the source Pivot of the chart as it stands once the confirmation is answered", async () => {
+    const first = pivot("first")
+    const second = pivot("second")
+    const configured = chart(first)
+    const renameChart = (config: Record<string, unknown>) => ({
+      ...config,
+      edited_elsewhere: true,
+      charts: (config.charts as ExploreChartConfig[]).map((item) => ({
+        ...item,
+        name: "Renamed meanwhile",
+      })),
+    })
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [first, second] }}
+        externalEdit={renameChart}
+        mergeIntoRenderedConfig
+      />,
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+    fireEvent.change(screen.getByRole("combobox", { name: "Source pivot" }), {
+      target: { value: second.id },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Apply edit from elsewhere" }))
+    await answerQuestion("confirm")
+
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts).toHaveLength(1)
+    expect(persisted.charts[0]).toMatchObject({
+      name: "Renamed meanwhile",
+      pivot_id: second.id,
+      series_overrides: [],
+    })
+    expect(persisted.edited_elsewhere).toBe(true)
   })
 
   it("composes a column + secondary line via per-field controls and commits axis, legend, and category settings", async () => {

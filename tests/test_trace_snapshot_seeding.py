@@ -13,6 +13,7 @@ import pytest
 from haute._node_snapshots import NodeSnapshotStore
 from haute._seed_plans import ListedSeed
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from tests._project import project_app, use_project
 from tests._workbench_helpers import form_table, workbench_project
 from tests.test_preview_snapshot_seeding import (
     _ROWS,
@@ -29,7 +30,7 @@ from tests.test_preview_snapshot_seeding import (
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame({"id": list(range(_ROWS)), "a": list(range(_ROWS))}).write_parquet(
         haute_scratch / "policies.parquet"
@@ -50,7 +51,8 @@ def api(project: Path) -> Iterator[Any]:
     from fastapi.testclient import TestClient
 
     from haute.executor import _preview_cache
-    from haute.server import app
+
+    app = project_app()
 
     _preview_cache.clear()
     yield TestClient(app)

@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from haute._execution_admission import (
     create_admitted_execution_context,
     isolated_execution_budget,
+    preview_growth_grant_bytes,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -42,6 +43,7 @@ from haute._mlflow_utils import (
     registry_uri_for_tracking,
 )
 from haute._pipeline_settings import project_pipeline_settings
+from haute._project_context import current_project
 from haute._project_layout import default_model_folder
 from haute._ratebook_collar import (
     COMBINED_FACTOR_BOUNDS_KEY,
@@ -49,7 +51,7 @@ from haute._ratebook_collar import (
     parse_combined_factor_bounds,
 )
 from haute._rating import is_rating_dtype_descriptor
-from haute._sandbox import _get_project_root, contained_path
+from haute._sandbox import contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import IsolatedWorkerHostError, resolve_worker_memory_enforcement
 from haute.errors import RequestRefusedError
@@ -76,6 +78,7 @@ from haute.routes._optimiser_input import (
     ESTIMATE_MAPPED_ERRORS,
     _find_optimiser_node,
     estimate_failure_http_exception,
+    estimate_solve_memory_forecast,
 )
 from haute.routes._optimiser_outcomes import (
     ChoiceQueryService,
@@ -159,7 +162,7 @@ def _estimate_timeout() -> float:
 
 
 def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | float | None]:
-    """Return quote/scenario counts for the actual projected optimiser input.
+    """Return quote/scenario counts for the projected optimiser input, and the solve forecast.
 
     The route owns admission and the answer; the count itself
     (``OptimiserSolveService.estimate_input``: the pipeline, then ONE
@@ -177,10 +180,15 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     )
     try:
         if resolve_interactive_execution_mode() == "process":
-            return _optimiser_input_metrics_in_worker(body, execution_context)
-        return _solve_service.estimate_input(body, execution_context=execution_context)
+            metrics = _optimiser_input_metrics_in_worker(body, execution_context)
+        else:
+            metrics = _solve_service.estimate_input(body, execution_context=execution_context)
     finally:
         execution_context.release_admission(preserve_primary_error=True)
+    return {
+        **metrics,
+        "solve_memory_forecast_bytes": estimate_solve_memory_forecast(node.data.config, metrics),
+    }
 
 
 def _optimiser_input_metrics_in_worker(
@@ -305,6 +313,10 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
 
     try:
         metrics = _optimiser_input_metrics(body)
+        # After the estimate's own admission is released: what a solve started now would get.
+        cap_bytes = preview_growth_grant_bytes(
+            ExecutionProfile.OPTIMISER_SOLVE, operation="optimiser_estimate"
+        )
     except ESTIMATE_MAPPED_ERRORS as exc:
         raise estimate_failure_http_exception(exc, node_id=body.node_id) from None
     return OptimiserEstimateResponse(
@@ -314,6 +326,8 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
         scenarios_per_quote_max=cast(int | None, metrics.get("scenarios_per_quote_max")),
         scenarios_per_quote_mean=cast(float | None, metrics.get("scenarios_per_quote_mean")),
         expanded_row_count=cast(int | None, metrics.get("expanded_row_count")),
+        solve_memory_forecast_bytes=cast(int, metrics["solve_memory_forecast_bytes"]),
+        solve_memory_cap_bytes=cap_bytes,
     )
 
 
@@ -836,7 +850,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     # Relative and absolute paths both resolve inside the project root, the
     # base the pipeline's own file reads use. A bare filename lands in the
     # pipeline folder's files/models/, which Commit versions with the pipeline.
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     output_path = body.output_path
     if "/" not in output_path and "\\" not in output_path:
         output_path = f"{default_model_folder(project_root)}/{output_path}"

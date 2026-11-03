@@ -3,6 +3,7 @@
  * source and row limit and runs nothing; Refresh still calculates, and a
  * moved node-data epoch leaves the displayed preview alone.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -98,7 +99,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 }
 
 function envelope(nodeId: string): PreviewEnvelope {
-  return {
+  return makePreviewResponse({
     node_id: nodeId,
     status: "ok",
     row_count: 1,
@@ -106,7 +107,7 @@ function envelope(nodeId: string): PreviewEnvelope {
     columns: [{ name: "premium", dtype: "f64" }],
     preview: [{ premium: 1 }],
     seed_plan: [],
-  } as PreviewEnvelope
+  }) as PreviewEnvelope
 }
 
 async function renderLoaded(nodes: Node[], edges: Edge[] = []) {

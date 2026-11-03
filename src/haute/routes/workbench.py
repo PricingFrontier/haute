@@ -6,7 +6,7 @@ the tables an environment's database holds, read through its connection in
 ``connections.toml`` under the analyst's own sign-in, nothing written there.
 
 Every route reads ``haute.toml``, and those that serve the saved form read its folder too,
-from the working directory on every request, off the event loop, so an edit to either
+from the project's root on every request, off the event loop, so an edit to either
 reaches the next request. A bad table or form answers 409 with what to fix
 (``haute.routes._error_handlers``) while the pipeline editor goes on working. A save quotes
 the revision the form was read at and is refused, writing nothing, when the folder has
@@ -20,6 +20,7 @@ checks and writes, as every read of the folder does.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
@@ -30,6 +31,7 @@ from fastapi.concurrency import run_in_threadpool
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._git_lock import repository_mutation
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._workbench_app import ResolvedRelease, resolve_release
 from haute._workbench_config import WorkbenchConfig, read_workbench_config
 from haute._workbench_folder import (
@@ -122,8 +124,7 @@ logger = get_logger(component="server.workbench")
 
 
 def _config() -> WorkbenchConfig:
-    # The project is the working directory, as it is for the rest of the server.
-    return read_workbench_config(Path.cwd())
+    return read_workbench_config(current_project().root)
 
 
 async def _enabled_config() -> WorkbenchConfig:
@@ -511,8 +512,7 @@ async def get_param_file(file: str, column: str | None = None) -> WorkbenchParam
     a column's allowed values are read from. A file or column that cannot give them answers
     409 with why (``ParamFileError``). Served whether or not the workbench is enabled, since
     Banding's Import from params reads its categorical values here too."""
-    # The project is the working directory, as it is for the rest of the server.
-    read = await run_in_threadpool(read_param_file, Path.cwd(), file, column)
+    read = await run_in_threadpool(read_param_file, current_project().root, file, column)
     return WorkbenchParamFileResponse(columns=read.columns, values=read.values)
 
 
@@ -594,7 +594,8 @@ async def _within_deadline(work: Callable[[], _T], timed_out: Callable[[], _T]) 
     included (which can run the pipeline); past the deadline *timed_out*'s answer, the work
     left running to end on its own, releasing what it holds and writing nothing."""
     loop = asyncio.get_running_loop()
-    running = loop.run_in_executor(None, work)
+    # The work runs in the request's project, including past the deadline.
+    running = loop.run_in_executor(None, contextvars.copy_context().run, work)
     try:
         return await asyncio.wait_for(asyncio.shield(running), RUN_TIMEOUT_SECONDS)
     except TimeoutError:

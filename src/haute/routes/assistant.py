@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from haute._git import GitHistoryReadError
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._sandbox import contained_path, is_contained
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._catalog import tool_title
@@ -67,7 +68,7 @@ def _sessions_storage_dir() -> Path:
     directory is the project root.
     """
 
-    project_root = Path.cwd().resolve()
+    project_root = current_project().root
     storage = project_root / ".haute" / "assistant" / "sessions"
     if not is_contained(project_root, storage.resolve()):
         raise ConfigError("Assistant session storage must resolve inside the project root")
@@ -92,7 +93,7 @@ def _canonical_source_file(source_file: str) -> str:
     the assistant edits exactly the file the canvas shows.
     """
 
-    root = Path.cwd().resolve()
+    root = current_project().root
     target = contained_path(root, source_file)
     for path in discover_pipelines():
         resolved = path.resolve()

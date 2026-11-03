@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from haute._git_lock import repository_mutation
+from haute._project_context import context_thread
 from haute.routes import _helpers
 from haute.routes._helpers import project_write
 
@@ -72,7 +73,7 @@ async def test_a_write_holds_the_repository_lock_a_branch_switch_takes(
         switch_done.set()
 
     def write() -> list[bool]:
-        thread = threading.Thread(target=switch)
+        thread = context_thread(switch)
         thread.start()
         # The switch waits on the lock the write holds.
         switch_done.wait(timeout=0.2)

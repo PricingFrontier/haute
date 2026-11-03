@@ -308,9 +308,9 @@ def read_pipeline_settings(project_root: Path | str) -> PipelineSettings:
 
 def project_pipeline_settings() -> PipelineSettings:
     """The settings of the project the current execution runs in."""
-    from haute._path_resolution import current_runtime_project_root
+    from haute._project_context import current_project
 
-    return read_pipeline_settings(current_runtime_project_root())
+    return read_pipeline_settings(current_project().root)
 
 
 def _rendered(settings: PipelineSettings) -> str:

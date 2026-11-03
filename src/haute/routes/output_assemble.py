@@ -35,6 +35,7 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
 )
 from haute.routes.pipeline import (
+    _ensure_source_file,
     _interactive_affinity_key,
     _interactive_failures,
     _InteractiveRun,
@@ -124,6 +125,7 @@ async def output_assemble_dry_run(
             status_code=400,
             detail=f"Node '{body.node_id}' is not an OUTPUT node",
         )
+    _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
 
     # 2. Swap the volatile mapping into the OUTPUT node's config — the dry-run

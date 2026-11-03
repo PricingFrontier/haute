@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import threading
 import time
@@ -13,7 +14,9 @@ from unittest.mock import ANY, MagicMock, patch
 import polars as pl
 import pytest
 
+from haute._project_context import context_thread, current_project
 from haute.errors import RequestRefusedError
+from tests._project import use_project
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import (
     make_frontier_data as _frontier_data,
@@ -80,14 +83,13 @@ def test_save_explicit_frontier_point_without_solve_result(
     clean_job_store,
     tmp_path: Path,
 ):
-    from haute._sandbox import _get_project_root, set_project_root
 
-    original_root = _get_project_root()
+    original_root = current_project().root
     seed_job(clean_job_store, "save_point", _online_frontier_job())
     out_path = tmp_path / "selected.json"
 
     try:
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         resp = client.post(
             "/api/optimiser/save",
             json={
@@ -97,7 +99,7 @@ def test_save_explicit_frontier_point_without_solve_result(
             },
         )
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
     assert resp.status_code == 200
     saved = json.loads(out_path.read_text())
@@ -112,7 +114,6 @@ def test_save_without_point_saves_the_anchor_not_the_selected_point(
     clean_job_store,
     tmp_path: Path,
 ):
-    from haute._sandbox import _get_project_root, set_project_root
 
     stale_solve_result = SimpleNamespace(
         lambdas={"volume": 99.0},
@@ -122,7 +123,7 @@ def test_save_without_point_saves_the_anchor_not_the_selected_point(
         baseline_objective=95.0,
         converged=True,
     )
-    original_root = _get_project_root()
+    original_root = current_project().root
     seed_job(
         clean_job_store,
         "save_selected",
@@ -134,13 +135,13 @@ def test_save_without_point_saves_the_anchor_not_the_selected_point(
     out_path = tmp_path / "selected-default.json"
 
     try:
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         resp = client.post(
             "/api/optimiser/save",
             json={"job_id": "save_selected", "output_path": str(out_path)},
         )
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
     # No point index is the job's own solve, from its summary: neither the
     # server-selected point nor the (stale) heavy solve result.
@@ -269,7 +270,10 @@ def test_concurrent_frontier_point_materialisations_run_one_at_a_time_and_keep_b
     ):
         responses = [
             future.result(timeout=10)
-            for future in (pool.submit(request_point, 0), pool.submit(request_point, 1))
+            for future in (
+                pool.submit(contextvars.copy_context().run, request_point, 0),
+                pool.submit(contextvars.copy_context().run, request_point, 1),
+            )
         ]
 
     assert [response.status_code for response in responses] == [200, 200]
@@ -468,13 +472,13 @@ def test_frontier_work_on_one_solve_never_waits_for_another(clean_job_store) -> 
     def select(parent: str) -> object:
         return service.select_point(OptimiserFrontierSelectRequest(job_id=parent, point_index=0))
 
-    holder = threading.Thread(target=hold_parent_a, daemon=True)
+    holder = context_thread(hold_parent_a, daemon=True)
     holder.start()
     assert held.wait(5)
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            other = executor.submit(select, "parent_b")
-            same = executor.submit(select, "parent_a")
+            other = executor.submit(contextvars.copy_context().run, select, "parent_b")
+            same = executor.submit(contextvars.copy_context().run, select, "parent_a")
             try:
                 assert other.result(timeout=5)["selected_frontier_point"] == 0
                 with pytest.raises(FutureTimeoutError):
@@ -618,7 +622,7 @@ def test_a_disconnecting_subscriber_detaches_only_itself(clean_job_store):
             except ExecutionCancelledError as exc:
                 outcome["error"] = exc
 
-        thread = threading.Thread(target=wait_leaving, daemon=True)
+        thread = context_thread(wait_leaving, daemon=True)
         thread.start()
         token.cancel()
         thread.join(10)
@@ -683,7 +687,7 @@ def _leave(ticket) -> None:
         except ExecutionCancelledError as exc:
             outcome["error"] = exc
 
-    thread = threading.Thread(target=wait, daemon=True)
+    thread = context_thread(wait, daemon=True)
     thread.start()
     token.cancel()
     thread.join(10)

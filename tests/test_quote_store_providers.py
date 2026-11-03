@@ -29,6 +29,7 @@ from sqlalchemy.schema import CreateTable
 
 import haute._quote_store._providers as providers_module
 from haute._credential_security import validate_credential_free_uri
+from haute._project_context import current_project
 from haute._quote_store import (
     HOST_VARIABLES,
     QuoteStoreEnvironmentError,
@@ -50,11 +51,11 @@ from haute._quote_store._providers import (
 from haute._quote_store._rows import KEPT_KEY
 from haute._quote_store._schema import store_schema, structure
 from haute._quote_store._store import make_engine, reaching
-from haute._sandbox import _get_project_root, set_project_root
 from haute._workbench_app import create_app, hosted_store, read_release, store_dependencies
 from haute._workbench_app_store import StoreGate
 from haute._workbench_config import StoreEnvironment
 from haute._workbench_form import FormSpec, with_quote_details
+from tests._project import use_project
 from tests._store_servers import Target, configured, database
 from tests.test_workbench_app_quotes import Page, _write_release
 
@@ -762,8 +763,8 @@ def test_an_exact_text_under_another_collation_closes_the_quotes(sqlserver: Targ
 def test_a_release_started_apart_from_its_project_signs_in_as_it_declares(
     server: Target, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     declared = StoreEnvironment(TEST, server.backend, "password", PASSWORD)
     release_dir = _write_release(tmp_path / "release", environments=(declared,))
     _, release_form, _ = read_release(release_dir)
@@ -783,7 +784,7 @@ def test_a_release_started_apart_from_its_project_signs_in_as_it_declares(
         ) as client:
             saved = Page(client).priced()
     finally:
-        set_project_root(original)
+        use_project(original)
 
     assert server.read("SELECT quote_reference, stage FROM quote_details") == [
         (saved["reference"], "draft")

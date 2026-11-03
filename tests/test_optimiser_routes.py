@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import dataclasses
+import functools
 import threading
 import time
 from collections.abc import Iterator
@@ -22,7 +24,7 @@ from price_contour import PerFactorRecord
 
 from haute._execution_context import ExecutionProfile
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
-from haute._sandbox import set_project_root
+from haute._project_context import context_thread, current_project
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ForbiddenError, InvalidRequestError, NotFoundError, RequestRefusedError
 from haute.graph_utils import NodeType
@@ -38,6 +40,7 @@ from haute.routes._optimiser_service import (
 )
 from haute.routes._optimiser_solver import SolveContext, _as_solved_adjustments
 from haute.routes.optimiser import _build_artifact_payload
+from tests._project import use_project
 from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.job_store_support import replace_job, seed_job
@@ -91,7 +94,7 @@ def _make_scored_data(tmp_path, n_quotes: int = 50, n_steps: int = 5) -> str:
 
     Columns: quote_id, scenario_index, scenario_value, expected_income, volume
     """
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     rng = np.random.RandomState(42)
     quote_ids = []
     steps = []
@@ -1386,6 +1389,59 @@ class TestEstimateRoute:
         assert data["scenarios_per_quote_max"] == 3
         assert data["scenarios_per_quote_mean"] == pytest.approx(2.5)
 
+    def test_estimate_forecasts_the_solve_against_what_a_solve_would_be_granted(
+        self, client, tmp_path, monkeypatch
+    ):
+        """The forecast prices the quote ids' width and the ratebook factors; the cap is
+        the growth grant a solve started now would get, with the estimate's own
+        reservation already released (OPT-W02)."""
+        from haute._ram_estimate import forecast_solve_memory_bytes
+        from haute.routes._optimiser_input import grid_chunk_decision
+
+        gib = 1024**3
+        monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+        monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+        for name in (
+            "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_BYTES",
+            "HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB",
+            "HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES",
+            "HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_MB",
+            "HAUTE_EXECUTION_MEMORY_LIMIT_BYTES",
+            "HAUTE_EXECUTION_MEMORY_LIMIT_MB",
+            "HAUTE_EXECUTION_PROCESS_RSS_LIMIT_BYTES",
+            "HAUTE_EXECUTION_PROCESS_RSS_LIMIT_MB",
+            "HAUTE_EXECUTION_MEMORY_POLICY",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        df = pl.DataFrame(
+            {
+                "quote_id": ["a", "a", "abcdef", "abcdef"],
+                "scenario_index": [0, 1, 0, 1],
+                "scenario_value": [0.9, 1.1, 0.9, 1.1],
+                "expected_income": [100.0, 110.0, 90.0, 95.0],
+                "volume": [1.0, 0.9, 1.2, 1.1],
+            }
+        )
+        path = tmp_path / "widths.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post("/api/optimiser/estimate", json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["solve_memory_forecast_bytes"] == forecast_solve_memory_bytes(
+            mode="online",
+            quote_count=2,
+            row_count=4,
+            constraint_count=1,
+            factor_count=0,
+            quote_id_bytes=3.5,
+            chunk_rows=grid_chunk_decision(2).chunk_size,
+        )
+        # 10 GiB available less the 2 GiB OS reserve, nothing else in flight.
+        assert data["solve_memory_cap_bytes"] == 8 * gib
+
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_estimate_accepts_projection_safe_data_source_limit_code(
         self,
@@ -2486,7 +2542,7 @@ class TestEstimateRoute:
                     finished.set()
                     exit_now.wait()
 
-            threading.Thread(target=worker, daemon=True).start()
+            context_thread(worker, daemon=True).start()
 
         return launch, finished, exit_now
 
@@ -2616,8 +2672,8 @@ class TestEstimateRoute:
         from haute.schemas import OptimiserFrontierAutoRangeRequest
 
         class InlineThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
+            def __init__(self, *, target, daemon, args=(), kwargs=None, name=None):
+                self.target = functools.partial(target, *args, **(kwargs or {}))
                 self.daemon = daemon
 
             def start(self) -> None:
@@ -3725,7 +3781,7 @@ class TestSaveRoute:
         _poll_until_done(client, job_id)
 
         # Narrow the sandbox so the traversal path escapes it
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         resp = client.post(
             "/api/optimiser/save",
             json={"job_id": job_id, "output_path": "../../etc/passwd"},
@@ -5093,16 +5149,13 @@ class TestOptimiserMlflowLog:
     ):
         from mlflow.tracking import MlflowClient
 
-        from haute._sandbox import set_project_root
-
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
         monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         # 1) omitted destination -> 200, backend == "local", tracking_uri startswith file:
         self._seed_opt_job(clean_job_store, "opt_dest_omitted", {"mlflow_destination": "server"})
@@ -5167,7 +5220,6 @@ class TestOptimiserMlflowLog:
     def test_second_destination_is_distinct(self, client, clean_job_store, tmp_path, monkeypatch):
         from mlflow.tracking import MlflowClient
 
-        from haute._sandbox import set_project_root
         from haute.modelling._mlflow_settings import TrackingConfig
 
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
@@ -5176,8 +5228,7 @@ class TestOptimiserMlflowLog:
         monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
         monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         server_runs_dir = tmp_path / "server-runs"
         server_config = TrackingConfig(
@@ -5238,10 +5289,7 @@ class TestOptimiserMlflowLog:
     ):
         from mlflow.tracking import MlflowClient
 
-        from haute._sandbox import set_project_root
-
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
         monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team")
         monkeypatch.setenv("MLFLOW_ENABLE_DB_SDK", "true")
@@ -8410,8 +8458,6 @@ class TestApplyLambdasUnit:
     ):
         import json as json_mod
 
-        from haute._sandbox import set_project_root
-
         mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "save_rb_frontier_stale_cache",
@@ -8446,7 +8492,7 @@ class TestApplyLambdasUnit:
             "save_rb_frontier_stale_cache",
             install_stale_cached_summary,
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = str(tmp_path / "selected_ratebook.json")
 
         resp = client.post(
@@ -8593,7 +8639,6 @@ def _anchor_result(**overrides: object) -> dict[str, object]:
 
 class TestSaveResultUnit:
     def test_save_path_traversal_blocked_unit(self, client, clean_job_store, tmp_path):
-        from haute._sandbox import set_project_root
 
         seed_job(
             clean_job_store,
@@ -8607,7 +8652,7 @@ class TestSaveResultUnit:
                 "completed_at": time.time(),
             },
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         resp = client.post(
             "/api/optimiser/save",
             json={
@@ -8620,8 +8665,6 @@ class TestSaveResultUnit:
 
     def test_save_completed_job_writes_json(self, client, clean_job_store, tmp_path):
         import json as json_mod
-
-        from haute._sandbox import set_project_root
 
         mock_solve_result = MagicMock()
         seed_job(
@@ -8643,7 +8686,7 @@ class TestSaveResultUnit:
                 "completed_at": time.time(),
             },
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = str(tmp_path / "out.json")
         resp = client.post(
             "/api/optimiser/save",
@@ -8672,7 +8715,6 @@ class TestSaveResultUnit:
         self, client, clean_job_store, tmp_path
     ):
         """A bare filename goes where Commit versions it with the pipeline."""
-        from haute._sandbox import set_project_root
 
         seed_job(
             clean_job_store,
@@ -8690,7 +8732,7 @@ class TestSaveResultUnit:
             },
         )
         (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         resp = client.post(
             "/api/optimiser/save",
@@ -8709,13 +8751,11 @@ class TestSaveResultUnit:
     ):
         import json as json_mod
 
-        from haute._sandbox import set_project_root
-
         mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "save_rb_frontier",
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = str(tmp_path / "selected_ratebook.json")
 
         resp = client.post(
@@ -9793,11 +9833,12 @@ class TestMlflowLogExtended:
                 held.set()
                 release.wait()
 
-        holder = threading.Thread(target=hold_fluent_state, daemon=True)
+        holder = context_thread(hold_fluent_state, daemon=True)
         holder.start()
         assert held.wait(10)
         with ThreadPoolExecutor(max_workers=1) as executor:
             request = executor.submit(
+                contextvars.copy_context().run,
                 client.post,
                 "/api/optimiser/mlflow/log",
                 json={"job_id": "mlf_concurrent", "experiment_name": "concurrent"},
@@ -11463,14 +11504,12 @@ class TestExecutePipelineExtended:
         tmp_path,
         monkeypatch,
     ):
-        from haute._sandbox import set_project_root
         from haute.executor import _compile_preamble, execute_graph
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
 
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -11577,14 +11616,12 @@ class TestExecutePipelineExtended:
         tmp_path,
         monkeypatch,
     ):
-        from haute._sandbox import set_project_root
         from haute.executor import _compile_preamble
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
 
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
         (util_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -12306,14 +12343,13 @@ class TestLaunchBackground:
     ):
         """An invalid limit in the settings file never silently removes the solve's limit."""
         from haute._pipeline_settings import PipelineSettingsError
-        from haute._sandbox import set_project_root
         from haute.routes._optimiser_service import _solve_timeout_from_config
 
         (tmp_path / ".haute").mkdir()
         (tmp_path / ".haute" / "pipeline-settings.json").write_text(
             f'{{"optimisation_time_limit_minutes": {raw_value}}}', encoding="utf-8"
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         with pytest.raises(PipelineSettingsError, match="optimisation_time_limit_minutes"):
             _solve_timeout_from_config({})
@@ -12453,8 +12489,8 @@ class TestLaunchBackground:
         deferred_threads: list[object] = []
 
         class DeferredThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
+            def __init__(self, *, target, daemon, args=(), kwargs=None, name=None):
+                self.target = functools.partial(target, *args, **(kwargs or {}))
                 self.daemon = daemon
                 deferred_threads.append(self)
 
@@ -12566,7 +12602,6 @@ class TestSaveExceptionPaths:
         tmp_path,
     ):
         """Saving publishes from the summary: the heavy window is not extended."""
-        from haute._sandbox import set_project_root
 
         solve_result = MagicMock()
         seed_job(
@@ -12583,7 +12618,7 @@ class TestSaveExceptionPaths:
                 "node_label": "opt",
             },
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         with patch("haute.routes._job_store.time.time", return_value=940.0):
             resp = client.post(
@@ -12599,7 +12634,6 @@ class TestSaveExceptionPaths:
 
     def test_save_os_error(self, client, clean_job_store, tmp_path):
         """OSError during save returns 500 with filesystem error message."""
-        from haute._sandbox import set_project_root
 
         seed_job(
             clean_job_store,
@@ -12615,7 +12649,7 @@ class TestSaveExceptionPaths:
                 "completed_at": time.time(),
             },
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = str(tmp_path / "out.json")
 
         with (
@@ -12639,7 +12673,6 @@ class TestSaveExceptionPaths:
 
     def test_save_generic_exception(self, client, clean_job_store, tmp_path):
         """Generic Exception during save returns 500."""
-        from haute._sandbox import set_project_root
 
         seed_job(
             clean_job_store,
@@ -12655,7 +12688,7 @@ class TestSaveExceptionPaths:
                 "completed_at": time.time(),
             },
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = str(tmp_path / "out.json")
 
         with (
@@ -12879,7 +12912,7 @@ class TestSaveArtifactGate:
     ):
         """A non-finite solve value is a 400 and the artifact is untouched."""
         self._completed_job(clean_job_store, "save_nonfinite", **job_kwargs)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = tmp_path / "artifact.json"
         out_path.write_text('{"version": "previous"}')
 
@@ -12918,7 +12951,7 @@ class TestSaveArtifactGate:
                 "clamp_rate": 0.0,
             },
         )
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = tmp_path / "ratebook.json"
 
         resp = client.post(
@@ -12938,7 +12971,7 @@ class TestSaveArtifactGate:
     ):
         """A ratebook artifact with no factor tables cannot price — 400."""
         self._completed_job(clean_job_store, "save_rb_none", config={"mode": "ratebook"})
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = tmp_path / "ratebook.json"
 
         resp = client.post(
@@ -12956,7 +12989,7 @@ class TestSaveArtifactGate:
     ):
         """A write failure never tears the previous artifact (atomic write)."""
         self._completed_job(clean_job_store, "save_torn")
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = tmp_path / "artifact.json"
         out_path.write_text('{"version": "previous"}')
 
@@ -12980,7 +13013,7 @@ class TestSaveArtifactGate:
         import json as json_mod
 
         self._completed_job(clean_job_store, "save_retry")
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         out_path = tmp_path / "artifact.json"
 
         with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
@@ -13897,17 +13930,15 @@ class TestOptimiserMutationBoundaries:
         df.write_parquet(path)
         graph = _make_optimiser_graph(str(path))
 
-        from haute._sandbox import _get_project_root, set_project_root
-
-        original_root = _get_project_root()
+        original_root = current_project().root
         try:
-            set_project_root(tmp_path)
+            use_project(tmp_path)
             resp = client.post(
                 "/api/optimiser/estimate",
                 json={"graph": graph, "node_id": "opt"},
             )
         finally:
-            set_project_root(original_root)
+            use_project(original_root)
 
         assert resp.status_code == 400
         detail = resp.json()["detail"]
@@ -14041,13 +14072,13 @@ class TestPublishWithoutHeavyState:
         self, client, clean_job_store, tmp_path
     ):
         self._seed(clean_job_store, "rel")
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         pipeline_dir = tmp_path / "pipelines"
-        with patch("haute.routes._helpers.pipeline_dir", return_value=pipeline_dir):
-            resp = client.post(
-                "/api/optimiser/save",
-                json={"job_id": "rel", "output_path": "out/nested/result.json"},
-            )
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "pipelines/main.py"\n')
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "rel", "output_path": "out/nested/result.json"},
+        )
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -14060,7 +14091,7 @@ class TestPublishWithoutHeavyState:
         self, client, clean_job_store, tmp_path
     ):
         self._seed(clean_job_store, "abs")
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         resp = client.post(
             "/api/optimiser/save",
             json={"job_id": "abs", "output_path": str(tmp_path / "a" / "b.json")},
@@ -14072,7 +14103,7 @@ class TestPublishWithoutHeavyState:
         import json as json_mod
 
         self._seed(clean_job_store, "exists")
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         target = tmp_path / "out" / "result.json"
         target.parent.mkdir()
         previous = json_mod.dumps({"version": "previous"})

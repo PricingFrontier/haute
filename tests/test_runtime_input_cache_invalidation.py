@@ -36,10 +36,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._project_context import current_project
 from haute._types import GraphEdge
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
 from haute.trace import execute_trace
+from tests._project import use_project
 from tests.conftest import (
     make_edge as _edge,
 )
@@ -424,7 +426,7 @@ class TestPreviewRuntimeFileInvalidation:
         monkeypatch,
     ):
         """Editing raw JSON invalidates preview and bypasses the stale cache."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
@@ -508,7 +510,7 @@ class TestTraceRuntimeInputInvalidation:
         monkeypatch,
     ):
         """A stale parquet must not block a fresh trace from direct JSON."""
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
@@ -534,10 +536,9 @@ class TestTraceRuntimeInputInvalidation:
             api_input_snapshot_source,
             api_input_source_signature,
         )
-        from haute._sandbox import _get_project_root
         from haute._source_cache import SourceCacheBuildContext, SourceCacheStore
 
-        monkeypatch.chdir(tmp_path)  # .haute_cache/ lives under cwd
+        use_project(tmp_path)  # .haute_cache/ lives under cwd
 
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
@@ -552,7 +553,7 @@ class TestTraceRuntimeInputInvalidation:
                 return pl.LazyFrame({"amount": [50]})
 
         table = api_input_snapshot_source({"path": str(data), **_V2_AMOUNT_TABLES}, data).tables[0]
-        store = SourceCacheStore(_get_project_root())
+        store = SourceCacheStore(current_project().root)
         before = store.open_generation(table.identity)
         after = store.build(
             table.identity,
@@ -644,7 +645,7 @@ class TestStatGatedFingerprintMemo:
         revision is unchanged."""
         from haute._json_shred import _source_proof
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_group_by_graph(data)
@@ -675,7 +676,7 @@ class TestStatGatedFingerprintMemo:
         """The strong JSON revision, not size/mtime, gates cached previews."""
         from haute._json_shred import _source_proof
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)

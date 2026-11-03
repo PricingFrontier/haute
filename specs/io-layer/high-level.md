@@ -169,8 +169,15 @@ format therefore runs in a bounded profile once a build envelope can be reserved
 is refused only when its build cannot be isolated or admitted, or its parsing semantics
 are invalid.
 
-Explicit builds of the admitted-eager class run in the same hard-capped worker rather than
-on a server thread; bounded explicit builds keep their streaming thread path.
+An explicit build (the preview frame's Import) is admitted like any execution and runs in
+the same hard-capped worker as automatic preparation, never on a server thread, whatever its
+build class. The worker shares the rows it has written with the server, so an Import counts
+them as it goes wherever the build writes in steps: each batch of a database or Databricks
+read, each slice of a Parquet or IPC file. A CSV is written in one streaming pass, which
+reports nothing until it ends. A host with no native
+process-memory cap (macOS) runs the same workers, automatic or explicit, supervised rather
+than capped: the parent stops a worker whose memory passes its limit. Only an operator who
+sets `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` there is refused, as `cap_unavailable`.
 
 Snapshot readers acquire an explicit generation lease. Within an execution request the
 lease lasts until execution cleanup. Outside an execution request the returned scan owns a

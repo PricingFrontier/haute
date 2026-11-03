@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._project_context import context_thread
 from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError, RequestRefusedError, UnprocessableError
 from haute.modelling._descriptors import DESCRIPTORS
@@ -26,6 +27,7 @@ from haute.routes._train_service import (
     _training_required_columns_by_node,
     _validate_glm_config_values,
 )
+from tests._project import use_project
 from tests.conftest import (
     make_edge,
     make_file_input_config,
@@ -1419,7 +1421,7 @@ class TestSaveModelEndpoint:
             result=_completed_train_response(job_id="save_job", model_path=str(model_path)),
             config={},
         )
-        monkeypatch.setattr("haute.routes.modelling._get_project_root", lambda: project_root)
+        use_project(project_root)
 
         try:
             yield SimpleNamespace(
@@ -1558,8 +1560,8 @@ class TestSaveModelEndpoint:
             except HTTPException as exc:
                 outcomes[job_id] = exc
 
-        first = threading.Thread(target=save, args=("save_job",))
-        second = threading.Thread(target=save, args=("save_job_other",))
+        first = context_thread(save, args=("save_job",))
+        second = context_thread(save, args=("save_job_other",))
         try:
             with patch.object(modelling_routes, "atomic_copy_files", gated_copy):
                 try:
@@ -1849,11 +1851,11 @@ class TestOutputDirDefault:
     """A scripted TrainingJob writes into outputs/ by default."""
 
     def test_default_output_dir_without_source_file(self):
-        from haute.executor import _pipeline_dir
+        from haute._project_context import graph_pipeline_dir
         from tests.conftest import make_graph
 
         graph = make_graph({"nodes": [], "edges": []})
-        p_dir = _pipeline_dir(graph)
+        p_dir = graph_pipeline_dir(graph)
         assert p_dir is None
 
     def test_training_job_default_is_outputs(self):
@@ -3112,7 +3114,6 @@ class TestTrainingProjection:
             source="live",
             parquet_path=parquet_path,
             config=config,
-            project_root=str(tmp_path),
             required_columns_by_node=seeds,
         )
         with (
@@ -3191,7 +3192,6 @@ class TestTrainingProjection:
             source="live",
             parquet_path=parquet_path,
             config=config,
-            project_root=str(tmp_path),
             project_to_keep_columns=project_to_keep_columns,
             keep_columns=["claim_count", "driver_age"],
         )
@@ -3257,7 +3257,6 @@ class TestTrainingProjection:
             source="live",
             parquet_path=parquet_path,
             config=config,
-            project_root=str(tmp_path),
         )
         with (
             patch(
@@ -3330,7 +3329,6 @@ class TestTrainingProjection:
             source="live",
             parquet_path=parquet_path,
             config=config,
-            project_root=str(tmp_path),
         )
         with (
             patch(
@@ -3379,7 +3377,6 @@ class TestTrainingProjection:
             source="live",
             parquet_path=parquet_path,
             config={"target": "claim_count"},
-            project_root=str(tmp_path),
         )
 
         def raise_memory(*_args, **_kwargs):
@@ -3441,7 +3438,6 @@ class TestExecuteAndSinkPlanCleanup:
             source="live",
             parquet_path=parquet_path,
             config={"target": "claim_count"},
-            project_root=str(tmp_path),
         )
 
         plans: list[Any] = []

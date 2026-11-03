@@ -11,6 +11,7 @@ import pytest
 
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.schemas import TrainResponse
+from tests._project import use_project
 from tests.training_artifacts_support import publish_trained_job
 
 _JOB = "receipt_job"
@@ -42,7 +43,7 @@ def trained(tmp_path: Path, training_artifact_root: Path, monkeypatch: pytest.Mo
 
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.setattr("haute.routes.modelling._get_project_root", lambda: project)
+    use_project(project)
     model_path = tmp_path / "trained" / "freq.cbm"
     model_path.parent.mkdir()
     model_path.write_bytes(b"model")

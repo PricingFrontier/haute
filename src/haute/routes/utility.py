@@ -24,8 +24,9 @@ from haute._config_io import is_windows_reserved_filename
 from haute._file_ops import atomic_create_text, atomic_write_text, file_revision
 from haute._io import read_user_source, read_user_text
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._sandbox import contained_path
-from haute.routes._helpers import discover_pipelines, pipeline_dir, project_write
+from haute.routes._helpers import discover_pipelines, project_write
 from haute.routes._save_pipeline import capture_save_in_ledger
 from haute.schemas import (
     UTILITY_MODULE_NAME_MAX,
@@ -48,16 +49,11 @@ _VALID_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _Module = Annotated[str, PathParam(max_length=UTILITY_MODULE_NAME_MAX)]
 
 
-def _project_root() -> Path:
-    """The project root ``pipeline_dir`` anchors the pipeline at: the working directory."""
-    return Path.cwd().resolve()
-
-
 def _utility_root(project_root: Path) -> Path:
     """The pipeline folder's ``utility/``, resolved, and refused (403) unless it lies inside
     the project: a link or junction at it, or above it, that leads outside would otherwise
     have every route here list, read and write the outside folder's files."""
-    return contained_path(project_root, pipeline_dir() / "utility")
+    return contained_path(project_root, current_project().pipeline_dir / "utility")
 
 
 def _module_path(project_root: Path, module: str) -> Path:
@@ -187,8 +183,8 @@ def _refuse_new_name_violations(module: str, content: str) -> None:
     from haute.errors import HauteError
     from haute.parser import parse_pipeline_source_with_name_violations
 
-    base = pipeline_dir()
-    current = utility_reader(base, Path.cwd().resolve())
+    base = current_project().pipeline_dir
+    current = utility_reader(base, current_project().root)
 
     def edited(name: str) -> str | None:
         return content if name == module else current(name)
@@ -270,7 +266,7 @@ def _write_response(
 @router.get("", response_model=UtilityListResponse)
 async def list_utility_files() -> UtilityListResponse:
     """List all Python files in ``utility/`` (excluding ``__init__.py``)."""
-    d = _utility_root(_project_root())
+    d = _utility_root(current_project().root)
     if not d.is_dir():
         return UtilityListResponse(files=[])
 
@@ -285,7 +281,7 @@ async def list_utility_files() -> UtilityListResponse:
 async def read_utility_file(module: _Module) -> UtilityReadResponse:
     """Read the content of a utility file, with the revision a write must send."""
     _validate_module_name(module)
-    target = _module_path(_project_root(), module)
+    target = _module_path(current_project().root, module)
     _require_file(target)
     # The revision is read before the content: a change between the two then refuses
     # the editor's next write (412) instead of letting it overwrite that change.
@@ -338,7 +334,7 @@ async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteRespons
     """Create a new utility file in ``utility/``."""
     _validate_module_name(body.name)
     content = body.content or f'"""Utility module: {body.name}."""\n\nimport polars as pl\n'
-    project_root = _project_root()
+    project_root = current_project().root
     return await project_write(project_root, lambda: _create(project_root, body.name, content))
 
 
@@ -357,7 +353,7 @@ def _update(project_root: Path, module: str, body: UtilityWriteRequest) -> Utili
 async def update_utility_file(module: _Module, body: UtilityWriteRequest) -> UtilityWriteResponse:
     """Update an existing utility file, if it is still the revision the editor read."""
     _validate_module_name(module)
-    project_root = _project_root()
+    project_root = current_project().root
     return await project_write(project_root, lambda: _update(project_root, module, body))
 
 
@@ -378,5 +374,5 @@ async def delete_utility_file(
 ) -> UtilityDeleteResponse:
     """Delete a utility file, if it is still the revision the editor read."""
     _validate_module_name(module)
-    project_root = _project_root()
+    project_root = current_project().root
     return await project_write(project_root, lambda: _delete(project_root, module, revision))

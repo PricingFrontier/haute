@@ -29,6 +29,7 @@ from typing import Any
 from haute._json_files import render_json
 from haute._polars_steps import PolarsStepError, render_node_steps
 from haute._polars_steps_lift import canonical_steps
+from haute._project_context import standalone_project_scope
 from haute._types import NodeType
 from haute.parser import parse_pipeline_file
 
@@ -72,7 +73,8 @@ def _convert(pipeline: Path) -> list[str]:
     sidecar_before = sidecar_path.read_bytes() if sidecar_path.is_file() else None
     pipeline.write_bytes(converted.encode("utf-8"))
     try:
-        graph = parse_pipeline_file(pipeline)
+        with standalone_project_scope(pipeline):
+            graph = parse_pipeline_file(pipeline)
     except Exception as error:  # noqa: BLE001 - put the file back, whatever stopped it
         pipeline.write_bytes(source.encode("utf-8"))
         raise SystemExit(

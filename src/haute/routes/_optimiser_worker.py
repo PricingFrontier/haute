@@ -38,7 +38,6 @@ import tempfile
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from haute._env import int_env
@@ -130,7 +129,6 @@ class SolveInputWorkerRequest:
     config: dict[str, Any]
     mode: str
     required_columns_by_node: dict[str, frozenset[str]]
-    project_root: str
     seed_plan: SeedPlanHandoff
     output_path: str
     scratch_dir: str
@@ -161,7 +159,6 @@ class FrontierAutoRangeWorkerRequest:
     mode: str
     timeout: int | None
     required_columns_by_node: dict[str, frozenset[str]]
-    project_root: str
     seed_plan: SeedPlanHandoff
     scratch_dir: str
 
@@ -365,11 +362,8 @@ def materialise_solve_input_worker(
     budget: IsolatedExecutionBudget,
 ) -> SolveInputWorkerOutcome:
     """Spawn entrypoint: materialise the solve's input under the child's own hard cap."""
-    from haute._sandbox import set_project_root
     from haute.routes._optimiser_service import OptimiserSolveService
 
-    # The spawned child starts with the interpreter's default sandbox root.
-    set_project_root(Path(request.project_root))
     store = get_job_store("optimiser_worker")
     service = OptimiserSolveService(store)
     job_id = _private_solve_job(store, request)
@@ -423,10 +417,8 @@ def frontier_auto_range_worker(
     budget: IsolatedExecutionBudget,
 ) -> FrontierAutoRangeWorkerOutcome:
     """Spawn entrypoint: compute auto-range totals under the child's own hard cap."""
-    from haute._sandbox import set_project_root
     from haute.routes._optimiser_service import OptimiserSolveService
 
-    set_project_root(Path(request.project_root))
     store = get_job_store("optimiser_worker")
     service = OptimiserSolveService(store)
     job_id = _private_auto_range_job(store, request)

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { makeTraceResult } from "../../test-utils/factories"
+import { makeTraceStep } from "../../test-utils/factories"
 import { act, cleanup, render } from "@testing-library/react"
 
 import TraceViewFit from "../TraceViewFit"
@@ -15,7 +17,7 @@ vi.mock("@xyflow/react", () => ({
 }))
 
 function step(node_id: string, column_relevant = true): TraceStep {
-  return {
+  return makeTraceStep({
     node_id,
     node_name: node_id,
     node_type: "polars",
@@ -26,11 +28,11 @@ function step(node_id: string, column_relevant = true): TraceStep {
     column_relevant,
     contributed_columns: [],
     derivations: [],
-  }
+  })
 }
 
 function trace(steps: TraceStep[]): TraceResult {
-  return {
+  return makeTraceResult({
     target_node_id: steps[steps.length - 1].node_id,
     row_index: 0,
     column: "premium",
@@ -46,7 +48,7 @@ function trace(steps: TraceStep[]): TraceResult {
     generated_at: "2026-09-27T12:00:00+00:00",
     pipeline_source: null,
     execution_origin: "fresh_execution",
-  }
+  })
 }
 
 const identity = (id: string) => id

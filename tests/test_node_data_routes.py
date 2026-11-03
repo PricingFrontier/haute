@@ -26,7 +26,9 @@ from haute._polars_utils import (
     current_streaming_chunk_size,
     set_streaming_chunk_size,
 )
+from haute._project_context import context_thread, current_project
 from haute.routes import _node_data_service as service_mod
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -260,7 +262,7 @@ def test_validated_success_returns_same_success_envelope() -> None:
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame(
         {
@@ -583,6 +585,7 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
     from haute._execution_admission import ExecutionAdmissionError
     from haute._execution_context import ExecutionProfile
     from haute.errors import ContractMismatchError
+    from haute.routes._memory_messages import memory_limit_user_message
 
     def contract_failure(*_args, **_kwargs):
         raise ContractMismatchError("declared column premium is missing")
@@ -593,18 +596,24 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
     failed = _poll(client, run["job_id"])
     assert (failed["status"], failed["terminal_reason"]) == ("contract_error", "contract_error")
 
+    refusal = ExecutionAdmissionError(
+        "node_snapshot",
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+        memory_limit_bytes=1,
+        rss_at_admission_bytes=10,
+        reason="memory_headroom",
+    )
+
     def admission_failure(**_kwargs):
-        raise ExecutionAdmissionError(
-            "node_snapshot",
-            profile=ExecutionProfile.NODE_SNAPSHOT,
-            memory_limit_bytes=1,
-            rss_at_admission_bytes=10,
-            reason="memory_headroom",
-        )
+        raise refusal
 
     monkeypatch.setattr(service_mod, "create_admitted_execution_context", admission_failure)
     run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
-    assert _poll(client, run["job_id"])["status"] == "memory_limited"
+    limited = _poll(client, run["job_id"])
+    expected = memory_limit_user_message(refusal, operation_noun="Cache build")
+    assert limited["status"] == "memory_limited"
+    assert (limited["message"], limited["error"]) == (expected, expected)
+    assert limited["error_detail"]["reason"] == "memory_headroom"
 
 
 def test_an_invalid_settings_file_fails_the_job_with_its_message(
@@ -776,7 +785,7 @@ def test_clear_does_not_let_a_build_paused_before_publication_repopulate_the_slo
             except BaseException as exc:  # noqa: BLE001 - surfaced to the parent below.
                 result["error"] = exc
 
-        child = threading.Thread(target=run_child, daemon=True)
+        child = context_thread(run_child, daemon=True)
         children.append(child)
         child.start()
         while child.is_alive():
@@ -831,7 +840,7 @@ def test_simultaneous_identical_runs_share_one_job(
         barrier.wait()
         responses.append(client.post("/api/node-data/run", json=_body(graph, "explore")).json())
 
-    threads = [threading.Thread(target=post_run) for _ in range(4)]
+    threads = [context_thread(post_run) for _ in range(4)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -856,7 +865,7 @@ def test_a_killed_workers_staging_is_discarded_by_the_parent(
     from haute._worker_isolation import IsolatedWorkerStoppedError
 
     def killed_after_staging(function, request, budget, *, config):
-        store = NodeSnapshotStore(request.project_root)
+        store = NodeSnapshotStore(current_project().root)
         resolver = DataPointResolver(request.graph, source=request.source, store=store)
         identity = resolver.node_output_slot(request.node_id).identity(
             resolver.node_output_signature(request.node_id)
@@ -1353,7 +1362,7 @@ def test_terminated_build_worker_leaves_no_capture_staging(
     def killed_after_capture_staging(function, request, budget, *, config):
         # A capture of an intermediate node is staged under the plan's token
         # before the worker dies.
-        store = NodeSnapshotStore(request.project_root)
+        store = NodeSnapshotStore(current_project().root)
         resolver = DataPointResolver(request.graph, source=request.source, store=store)
         identity = resolver.node_output_slot("A").identity(resolver.node_output_signature("A"))
         artifact = store.stage_node_output(identity, staging_token=request.seed_plan.staging_token)

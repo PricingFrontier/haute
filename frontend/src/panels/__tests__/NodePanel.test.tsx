@@ -1,4 +1,5 @@
 import { useEffect } from "react"
+import { readEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within, act } from "@testing-library/react"
 import NodePanel from "../NodePanel"
@@ -15,7 +16,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
-import { adaptPipelineEditorDocument, parsePipelineEditorDocument } from "../../types/pipelineDocument"
+import { adaptPipelineEditorDocument } from "../../types/pipelineDocument"
 import { toSimpleEdge, toSimpleNode } from "../../hooks/usePanelGraphContext"
 import { apiInputFrameLabels } from "../../utils/apiInputPorts"
 
@@ -3435,7 +3436,7 @@ describe("scoped editing in degraded documents", () => {
         },
       ],
     })
-    const parsedDoc = parsePipelineEditorDocument(rawDto)
+    const parsedDoc = readEditorDocument(rawDto)
     useDocumentStatusStore.getState().loadDocumentStatus(parsedDoc)
     const adapted = adaptPipelineEditorDocument(parsedDoc)
     const simpleNodes = adapted.nodes.map(toSimpleNode)

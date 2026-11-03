@@ -142,8 +142,9 @@ export function startInputImport(nodeId: string, input: Pick<Node, "data">, onIm
         signal: controller.signal,
         onBuildProgress: (job) => {
           if (controller.signal.aborted) return
-          // Only a bounded build streams its rows; an eager one has no count yet.
-          setRun(nodeId, { rows: job.build_class === "bounded" ? job.progress.rows : null })
+          // A count once the build has counted rows: one written in a single
+          // pass (a CSV) or an API Input's tables report none until they end.
+          setRun(nodeId, { rows: job.progress.rows > 0 ? job.progress.rows : null })
         },
       })
     } catch (err) {

@@ -32,6 +32,7 @@ from haute.codegen import (
     graph_to_code_multi,
 )
 from haute.errors import ConfigError, ParseError
+from tests._project import use_project
 from tests.conftest import (
     compile_node_code as _compile_node_code,
 )
@@ -570,7 +571,7 @@ class TestNodeToCode:
         sidecar.write_text(json.dumps(config), encoding="utf-8")
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
+        use_project(elsewhere)
         namespace = {"__file__": str(pipeline_dir / "main.py")}
         exec(
             f"import polars as pl\nimport haute\npipeline = haute.Pipeline('b18')\n\n{code}",

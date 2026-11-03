@@ -589,8 +589,8 @@ successful run does no extra work.
   and macOS hosts, which have no dependable per-process cap. A hard cap cannot serve them
   because they do not run in a capped worker, or the host offers no cap. The stack is not
   extended for capped surfaces. The process-mode optimiser runs every native call in a
-  capped solver session (OPT-W01), so its resident-grid estimate is only a recorded
-  forecast there; whether the remaining uncapped surfaces still justify the stack is
+  capped solver session (OPT-W01), so its solve-memory forecast (OPT-W02) is only a
+  recorded figure and a warning there; whether the remaining uncapped surfaces still justify the stack is
   decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
   (the graph walker's display walk) and lazy execution (its sink walk) both call
@@ -827,17 +827,23 @@ successful run does no extra work.
   timeout becomes `IsolatedWorkerTimeoutError`, and a failure while the parent tears
   the child down is attached to the primary worker failure with `add_note()` rather
   than replacing it or raising a second exception.
-- **Worker memory enforcement is hard and fail-closed by default.**
-  `HAUTE_WORKER_MEMORY_ENFORCEMENT=required|best_effort`; unknown values and missing
-  required limits fail loudly. Required mode installs a native per-worker cap before
-  user work (Linux cgroup v2 where delegated, otherwise `RLIMIT_AS`; Windows Job
-  Object) and rejects an unsupported host. Parent RSS observation is a secondary
-  watchdog, not a substitute for a kernel cap. `best_effort` is an explicit
-  compatibility opt-out: it never claims hard enforcement when installation fails or
-  is unsupported, and a native cap it does install is reported as active evidence
-  only for the request that installed it. macOS has no dependable
-  per-process hard-memory primitive for this contract, so workloads there must select
-  `best_effort` explicitly; Haute never silently relabels RSS sampling as a hard cap.
+- **Worker memory enforcement is hard and fail-closed wherever the host can install a
+  cap.** `HAUTE_WORKER_MEMORY_ENFORCEMENT=required|best_effort` decides when it is set;
+  unknown values and missing required limits fail loudly. Unset, it is `required` on a
+  host that can install a native cap (Linux, Windows) and `best_effort` on one that
+  cannot (macOS), where `required` would refuse every worker, previews included.
+  Required mode installs a native per-worker cap before user work (Linux cgroup v2
+  where delegated, otherwise `RLIMIT_AS`; Windows Job Object) and rejects an
+  unsupported host, so setting it on macOS still refuses. Parent RSS observation is a
+  secondary watchdog, not a substitute for a kernel cap. `best_effort` never claims
+  hard enforcement when installation fails or is unsupported, and a native cap it does
+  install is reported as active evidence only for the request that installed it. macOS
+  has no dependable per-process hard-memory primitive for this contract (no cgroups or
+  job objects, and its kernel does not enforce `RLIMIT_AS`), so there each worker still
+  runs in its own process and the parent's RSS watchdog stops it past its limit: work is
+  supervised, not capped, and a fast allocation spike can overshoot a sample. Haute logs
+  `worker_memory_supervised_without_cap` once per process when it makes that choice and
+  never relabels RSS sampling as a hard cap.
   The training fit's protocol worker installs the same native cap as every other
   worker. `RLIMIT_AS` caps address space, which counts reservations a job never touches:
   a Polars worker reserves gigabytes for its thread pools and their allocator arenas

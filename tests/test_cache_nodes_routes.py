@@ -25,6 +25,7 @@ from haute._node_snapshots import (
     NodeSnapshotStore,
 )
 from haute._source_cache import SourceCacheBuildContext, SourceCacheCorruptError
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ class _LazyBuilder:
 
 @pytest.fixture
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     pl.DataFrame({"premium": [1.0, 2.0, 3.0]}).write_parquet(haute_scratch / "quotes.parquet")
     return haute_scratch

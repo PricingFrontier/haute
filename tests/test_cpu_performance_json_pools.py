@@ -30,7 +30,7 @@ def test_json_pool_uses_high_qos_initializer(
         monkeypatch.setattr(
             module,
             "_learn_jsonl_prefix",
-            lambda *_args: (module._InferenceState(), None),
+            lambda *_args: (module._InferenceState(), None, 0),
         )
         monkeypatch.setattr(module, "configure_process_high_qos", lambda: "unavailable")
         with pytest.raises(_PoolConstructedError):

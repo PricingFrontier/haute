@@ -14,7 +14,7 @@
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf`, and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
 | `src/haute/_keyword_parameters.py` | A code transform's keyword-only parameters: `keyword_parameters_from_signature` (the parse's record and located refusal), `validate_keyword_parameters` (a submitted config's contract), `reject_input_named_keyword_parameters` (codegen and the builder) and `keyword_parameter_values` (the values a run binds). |
-| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index; a structured step's optional `comment`, its comment and blank lines verbatim with each line ending in a newline, printed above its statement and outside the step's line range, each line empty or a comment with no whitespace at its end; a free-code step holding only comments accepted, one holding nothing refused; `MAX_EXPR_DEPTH` counting a chain of one operator as one level, where a binary's left operand is a binary of the same operator among `+ - * / // %`, never regrouped; and a variable step refused when a free-code step above it binds its name, read by `_code_bound_names`), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index; a structured step's optional `comment`, its comment and blank lines verbatim with each line ending in a newline, printed above its statement and outside the step's line range, each line empty or a comment with no whitespace at its end; a free-code step holding only comments accepted, one holding nothing refused; `MAX_EXPR_DEPTH` counting a chain of one operator as one level, where a binary's left operand is a binary of the same operator among `+ - * / // %`, never regrouped; and a variable step refused when a free-code step above it binds its name, read by `_code_bound_names`), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_lift.py` | The step renderer's inverse (READ-21), with which READ-22 rebuilds a stepped node's steps on load. `lift_steps` rebuilds the steps from a body: a statement becomes a step only when the renderer, placing that step after the steps rebuilt before it, prints exactly the statement's text, the comment and blank lines above it becoming the step's `comment`; each run of other statements, with the comments and blank lines among them, becomes one free-code step; comment lines after the last statement become a comment-only free-code step; the result must render back byte for byte, trailing newlines apart, or `StepLiftError` is raised. `canonical_steps` gives the canonical form a step list rebuilds as (`specs/codegen/structured-syntax-boundary.md`, Rebuilding steps from code). |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
@@ -27,9 +27,10 @@
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml` (`haute_toml` for an automated project, `workbench_haute_toml` for a workbench one), `.env.example` (`env_example`, `app_env_example`), `connections.toml` (`connections_toml`), CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes) and a workbench project's for 3 providers (`workbench_ci_files`, likewise), the CI secrets a target or an app host needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), whose of the two a project's CI reads (`ci_credentials`), starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_scaffold_files.py` | How `haute init` writes a project's files (READ-03): `lf_bytes` and `write_lf` write UTF-8 text with LF line endings whatever the platform, and `ensure_gitattributes` adds to the project's `.gitattributes` each of `GITATTRIBUTES_ENTRIES` it lacks (LF for the Python, JSON, TOML, YAML and Markdown files and the pre-commit hook Haute writes, CSV left out, `uv.lock` marked generated), answering what it added. |
 | `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
-| `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
+| `src/haute/_project.py` | Project-root discovery from an explicit start (`get_project_root(start)`, the walk-up `src/haute/_project_context.py::resolve_project` uses; `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file(path)`, 4-tier fallback in a folder; the CLI passes the shell's working directory when no path is given). |
+| `src/haute/_project_context.py` | The project a call works in. `ProjectContext` (frozen, slotted, picklable: the absolute, resolved `root`; `ProjectContext.at(root)` takes the root as given; the `pipeline_dir` property reads the root's `haute.toml` when used: the folder of `[project].pipeline`, or the root without one, a malformed file or a pipeline outside the root raising `ConfigError`), `resolve_project(start)` (the one resolver: `get_project_root(start)` then `at`), `project_scope(context)` (a context manager over one `ContextVar`, the one accessor's installer) and `current_project()` (the installed context, `NoProjectContextError` when none; `installed_project()`, for an entry point that installs its own, reports that nothing is installed instead of raising), `standalone_project_scope(source_file)` and `project_holding(folder)` (a standalone run's or a file-given CLI command's project: an installed one, else the project holding the file's folder, else that folder; no file: the working directory, the one entry-point read of it), `graph_pipeline_dir(graph)` (the folder of `graph.source_file`, a relative one under the project root), `context_thread` (a `threading.Thread` running its target in a copy of the starting context) and `ProjectContextMiddleware` (ASGI, installs an app's context for every HTTP request, websocket and lifespan). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
-| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
+| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding and `src/haute/_project_context.py::ProjectContext.pipeline_dir`. |
 
 ## Key types and data structures
 
@@ -231,13 +232,11 @@ rendering in the type's start mode against `step_input_names(node_type, param_na
 and comparing the extracted body with the rendering passed through the same
 extraction, `_code_extraction.normalise_user_code`, as programs rather than text
 (`_same_program`: the same syntax tree and the same comments, each compared without its
-trailing whitespace, which `ruff format` removes; the body is compared with
-both the current rendering and the renderer's earlier call spelling of the same steps,
-`render_polars_steps(..., spelling="earlier")`, which writes lists for keys,
-aggregations and columns and spells out Polars' sort and unique defaults as the
-renderer once did; so a body saved in an earlier layout, quoting or spelling of the
-same steps, or reformatted by `ruff format`, keeps them, while any other edit, a
-comment or a respelling in free code included, is a hand edit): keep, discard (returning
+trailing whitespace, which `ruff format` removes; so a body saved in an earlier
+layout or quoting of the same steps, or reformatted by `ruff format`, keeps them, while
+any other edit, a comment or a respelling in free code included, is a hand edit, as is a
+body only an earlier renderer wrote, such as Haute 0.5's lists for keys, aggregations
+and columns): keep, discard (returning
 the editor state's `steps_discarded` reason, which `_resolve_node_config` returns
 beside the config), or keep an
 unrenderable list behind an empty body; `steps` plus `inputMapping` on an original
@@ -427,9 +426,10 @@ the executor, codegen and projection), looks up and invokes the registered callb
 `KeyError` rather than silently falling back to opaque, so a new node type added without a
 contract registration is caught immediately.
 
-**Project/pipeline resolution (`_project.py`).** `resolve_pipeline_file(path)`: `None` →
-`_resolve_default_in(cwd)`; an existing directory → the same fallback scoped to it; an
-existing file → resolved as-is, no discovery; a non-existent path → `FileNotFoundError`.
+**Project/pipeline resolution (`src/haute/_project.py`).** `resolve_pipeline_file(path)`: an
+existing directory → `_resolve_default_in` scoped to it (the CLI passes the shell's working
+directory when no path is given); an existing file → resolved as-is, no discovery; a
+non-existent path → `FileNotFoundError`.
 `_resolve_default_in` tries, in order: `[project].pipeline` from `haute.toml` (existence and
 "looks like a pipeline" both checked — either failure raises `FileNotFoundError` naming the
 configured path, so a typo never silently falls through to auto-discovery); a root-level
@@ -899,6 +899,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
 
 ## Error handling
 
+- **`NoProjectContextError`** (`haute._project_context`, a `HauteError`) — a call that needs
+  the project made with none installed: it names `project_scope` and the CLI and server as
+  the ways to install one, and is never answered from the working directory.
+- **`ConfigError`** from `resolve_project` — no `haute.toml` at or above the start, or one
+  outside a git repository (`haute serve` prints it and exits 1), or a malformed
+  `haute.toml`.
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; a sidecar
   that is not UTF-8, naming the file and the first byte that is not; a decorator keyword
   beside `config=` and `contract=` on a sidecar-backed node, naming the node and the
@@ -967,6 +973,38 @@ it on the reading node instead of aborting the walk, and every other run propaga
 
 ## Testing
 
+- `tests/test_project_context.py` verifies the project context: `resolve_project` walking up
+  to the first `haute.toml` inside git and its `ConfigError` outside one, the pipeline folder
+  from `[project].pipeline` and the root without it, `current_project()` raising
+  `NoProjectContextError` with nothing installed and never reading the working directory,
+  `project_scope` nesting and restoring, `context_thread` running in the starting context,
+  `standalone_project_scope` (an installed project wins; else the file's project; else its
+  folder; no file: the working directory's project), a standalone `run()` and a configured
+  node called directly reading a relative path from the file's project with the working
+  directory elsewhere, an app built for project A serving A after the test installs and
+  changes directory to project B, two apps for two projects in sequence each listing their
+  own pipelines without a cache reset, `haute serve` outside a project exiting 1 with the
+  resolver's message, the uvicorn factory refusing without `HAUTE_PROJECT_ROOT`, interactive
+  and isolated worker requests running in the submitting call's project with the worker's
+  working directory elsewhere and two projects' requests on one warm worker each reading
+  their own (their `utility` too, A then B then A with a cached preamble and a deferred
+  import), a job thread reading its request's project, a worker request after `PUT
+  /api/mlflow/settings` using the new destination, and `validate_project_path` anchoring a
+  relative path at the root rather than the working directory, and (through
+  `tests/_working_directory_cases.py`, run in a nested pytest) the test after a strict test
+  that undoes its own monkeypatch starting where the process started.
+- `tests/test_project_context_lint.py` holds the ratchets, each an exact list of allowed
+  sites with the reason: no `os.chdir` or `monkeypatch.chdir` in the tests apart from
+  `tests._project.use_project` (which installs a test's project and runs the test in its
+  folder, as `haute serve` runs in its project's root), the harness (a strict test runs in
+  its project; every test ends in the directory its test process started in, even after a
+  strict test undoes its own monkeypatch) and tests of code that itself changes or
+  reads the working directory (the spawned interpreter's relative path, the Databricks
+  bootstrap), and
+  no `Path.cwd()` / `os.getcwd()` in `src/haute` apart from the CLI group's one read of the
+  shell's directory, the Polars spill folder fixed at import, the standalone entry point for
+  a pipeline with no defining file (`standalone_project_scope`) and the underwriter app's
+  guard that a release never replaces the working directory.
 - `tests/test_column_contracts_adoption.py` verifies builder contract adoption, parser/executor boundary enforcement and the boundary checks' messages, a draft banding factor passing through without a contract error, codegen metadata, model-score exceptions, and overhead benchmark.
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.

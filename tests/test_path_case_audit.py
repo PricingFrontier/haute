@@ -23,6 +23,7 @@ from haute._path_case_audit import (
     warn_if_case_ambiguous,
     wrap_path_case_audit,
 )
+from tests._project import use_project
 
 
 @pytest.fixture(autouse=True)
@@ -138,7 +139,7 @@ def test_retained_input_resolver_seam_runs_the_audit(
     """The retained-input chokepoint audits every resolved input path."""
     from haute import _node_apply
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "Foo.csv").write_text("x", encoding="utf-8")
 
     audited: list[str] = []

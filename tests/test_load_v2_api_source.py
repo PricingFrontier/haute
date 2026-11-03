@@ -24,16 +24,15 @@ from haute._input_providers import DeclaredTableSchema, recording_schema_tiers
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._snapshots import api_input_snapshot_source
 from haute._polars_io_registry import PolarsIoConfigError
-from haute._sandbox import set_project_root
 from haute._source_cache import SourceCacheStore
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 
 @pytest.fixture(autouse=True)
 def _isolated_cache_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the project store and standalone spills inside each test's project."""
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
 
 
 def _inputs_root(tmp_path: Path) -> Path:

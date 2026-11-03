@@ -5,19 +5,18 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._sandbox import set_project_root
+from tests._project import project_app, use_project
 
 
 @pytest.fixture()
 def work_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
 def client(work_dir: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 

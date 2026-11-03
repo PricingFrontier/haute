@@ -46,6 +46,7 @@ from fastapi.testclient import TestClient
 
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.errors import RequestRefusedError
+from tests._project import project_app, use_project
 from tests.conftest import current_source_revision, make_file_input_config
 
 
@@ -86,14 +87,14 @@ def _submodel_definition(
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Return a clean temp project root and chdir into it."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text('import haute\npipeline = haute.Pipeline("main")\n')
     return tmp_path
 
 
 @pytest.fixture()
 def isolated_client(project_root: Path) -> TestClient:
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -819,7 +820,7 @@ class TestRenameCollisionPositionWarning:
         sanitized key, and the save succeeds but the response carries a
         ``warnings`` field naming the collision.
         """
-        from haute.server import app
+        app = project_app()
 
         client = TestClient(app, raise_server_exceptions=False)
 

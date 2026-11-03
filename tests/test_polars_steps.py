@@ -75,6 +75,7 @@ from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._helpers import parse_pipeline_to_graph, save_sidecar
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
+from tests._project import use_project
 from tests.conftest import (
     build_test_input_snapshot,
     current_source_revision,
@@ -4105,8 +4106,8 @@ def test_a_statement_in_an_older_style_loads_as_code(tmp_path: Path) -> None:
     assert node.data.config["code"] == f"df = quotes\n{older_statement}\ndf = df.head(2)"
 
 
-#: The golden steps as the renderer wrote them before its current layout and
-#: style: one line per step, ``repr`` quotes, lists for keys and aggregations.
+#: The golden steps as Haute 0.5 wrote them: lists for keys and aggregations,
+#: which is a different program from the renderer's current calls.
 EARLIER_GOLDEN_CODE = "\n".join(
     [
         "df = quotes",
@@ -4182,64 +4183,6 @@ def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_cod
     assert node.data.editor.steps_discarded is None
     assert 'df = df.sort("premium", descending=True)' in node.data.config["code"]
     assert stable not in node.data.config["code"]
-
-
-@pytest.mark.parametrize(
-    ("kind_step", "earlier"),
-    [
-        (step("x", "select", columns=["a", "b"]), "df = df.select(['a', 'b'])"),
-        (
-            step("x", "select", columns=["region"], dtypes=["Float64"]),
-            "df = df.select(['region', pl.col(pl.Float64).exclude('region')])",
-        ),
-        (step("x", "drop", columns=["a"]), "df = df.drop(['a'])"),
-        (
-            step("x", "drop", columns=["region"], dtypes=["String"]),
-            "df = df.drop(['region'], pl.col(pl.String).exclude('region'))",
-        ),
-        (
-            step("x", "sort", keys=[{"column": "a", "descending": True}], nullsLast=True),
-            "df = df.sort(['a'], descending=[True], nulls_last=True)",
-        ),
-        (
-            step("x", "sort", keys=[{"column": "a", "descending": False}], nullsLast=False),
-            "df = df.sort(['a'], descending=[False], nulls_last=False)",
-        ),
-        (
-            step("x", "unique", columns=[], keep="any"),
-            "df = df.unique(subset=None, keep='any', maintain_order=True)",
-        ),
-        (
-            step("x", "fill_null", columns=["a"], fill={"kind": "value", "value": num(0)}),
-            "df = df.with_columns(pl.col(['a']).fill_null(0))",
-        ),
-        (
-            step(
-                "x",
-                "group_by",
-                keys=["k"],
-                aggregations=[{"column": "a", "agg": "sum", "name": "t"}],
-            ),
-            "df = df.group_by(['k'], maintain_order=True).agg([pl.col('a').sum().alias('t')])",
-        ),
-        (
-            step(
-                "x", "group_by", keys=[], aggregations=[{"column": "", "agg": "len", "name": "n"}]
-            ),
-            "df = df.select([pl.len().alias('n')])",
-        ),
-    ],
-)
-def test_the_earlier_spelling_is_the_renderer_s_previous_output(
-    kind_step: dict[str, Any], earlier: str
-) -> None:
-    """The earlier spelling reproduces what the renderer wrote before, as a program."""
-    rendered = render_polars_steps(
-        [source(), kind_step], ["quotes"], start="input", spelling="earlier"
-    )
-    assert ast.dump(ast.parse(step_text(rendered, 1))) == ast.dump(ast.parse(earlier))
-    current = render_polars_steps([source(), kind_step], ["quotes"], start="input")
-    assert step_text(current, 1) != step_text(rendered, 1)
 
 
 @pytest.mark.parametrize(
@@ -4514,7 +4457,7 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     init_repo(tmp_path)
     (tmp_path / "haute.toml").write_text("", encoding="utf-8", newline="\n")
     set_working_branch("pricing/test-user/steps", tmp_path, create=True, cwd=tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 

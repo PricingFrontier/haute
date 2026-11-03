@@ -65,11 +65,11 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
+from haute._output_assembler import OutputMappingSchemaError
 from haute._path_resolution import (
     RuntimePathError,
     resolve_node_input_path,
     resolve_runtime_file_path,
-    runtime_project_root_scope,
 )
 from haute._pipeline_recovery import (
     empty_pipeline_editor_document,
@@ -105,7 +105,8 @@ from haute._polars_steps import (
     render_polars_steps,
     resolve_free_code_columns,
 )
-from haute._sandbox import _get_project_root, contained_path
+from haute._project_context import current_project
+from haute._sandbox import contained_path
 from haute._seed_plans import (
     ListedSeed,
     ReadGeneration,
@@ -191,7 +192,6 @@ from haute.routes._helpers import (
     discover_pipelines,
     load_pipeline_editor_document,
     lookup_pipeline_by_name,
-    pipeline_dir,
     pipeline_document_update_payload,
     raise_pipeline_not_found,
     save_lock,
@@ -284,6 +284,16 @@ _TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
         (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
     }
 )
+# A dry-run's contract failures, which it answers 422 in a thread, answered the same out of a
+# worker, by exact identity.
+_OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES = frozenset(
+    {
+        (ContractMismatchError.__module__, ContractMismatchError.__name__),
+        (ContractColumnsMissingError.__module__, ContractColumnsMissingError.__name__),
+        (OutputMappingSchemaError.__module__, OutputMappingSchemaError.__name__),
+        (ConfigError.__module__, ConfigError.__name__),
+    }
+)
 # What each of the trace's refusals answers: 409 when the clicked row has changed since
 # its preview (the browser refreshes the preview), 400 for a row or target the trace
 # cannot take, 404 for a target the graph lacks. By type in a thread; out of a worker,
@@ -313,7 +323,7 @@ async def resolve_pipeline_editor_identities(
     """
     # The one project state this reads, with a naming context: the utility
     # files the graph's support code star-imports, as save and the executor do.
-    read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
+    read_utility = utility_reader(current_project().pipeline_dir, current_project().root)
     try:
         occurrence_definitions: dict[str, str] = {}
         if body.graph is not None:
@@ -628,7 +638,7 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
         try:
             resolve_runtime_file_path(
                 graph.source_file,
-                project_root=_get_project_root(),
+                project_root=current_project().root,
                 prefer="project",
                 enforce_project_root=True,
             )
@@ -693,7 +703,7 @@ def _prepare_data_output_request(
             status_code=400,
             detail="Invalid Data Output configuration.",
         ) from None
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     _validate_data_output_path(graph, output_node, project_root=project_root)
     return graph, output_node, config, project_root
 
@@ -873,6 +883,11 @@ def _raise_interactive_remote_http_error(
             raise HTTPException(status_code=400, detail=exc.remote_message) from None
         if identity == _PREVIEW_TARGET_REMOTE_IDENTITY:
             raise HTTPException(status_code=404, detail=exc.remote_message) from None
+    if (
+        operation == "output_assemble_dry_run"
+        and identity in _OUTPUT_DRY_RUN_CONTRACT_REMOTE_IDENTITIES
+    ):
+        raise HTTPException(status_code=422, detail=exc.remote_message) from None
     if operation == "pipeline_trace":
         if identity in _TRACE_CONTRACT_REMOTE_IDENTITIES:
             raise HTTPException(status_code=422, detail=exc.remote_message) from None
@@ -1026,7 +1041,7 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
     fail because the pipeline's parent dir isn't on ``sys.path``."""
     if graph.source_file:
         return
-    toml_path = Path.cwd() / "haute.toml"
+    toml_path = current_project().root / "haute.toml"
     if not toml_path.exists():
         return
     try:
@@ -1063,7 +1078,7 @@ def _read_json_object_blocking(target: Path) -> dict[str, Any]:
 async def list_pipelines() -> list[PipelineSummary]:
     """List all discovered pipelines."""
     files = discover_pipelines()
-    cwd = Path.cwd()
+    cwd = current_project().root
 
     def _wire_file(f: Path) -> str:
         try:
@@ -1128,7 +1143,7 @@ async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
         if f is not None:
             attempted.add(f.resolve())
             try:
-                return load_pipeline_editor_document(f, project_root=Path.cwd())
+                return load_pipeline_editor_document(f, project_root=current_project().root)
             except Exception as exc:
                 first_error = exc
                 logger.warning("pipeline_editor_load_failed", file=f.name, error=str(exc))
@@ -1138,7 +1153,7 @@ async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
             if f.resolve() in attempted:
                 continue
             try:
-                document = load_pipeline_editor_document(f, project_root=Path.cwd())
+                document = load_pipeline_editor_document(f, project_root=current_project().root)
                 if document.pipeline_name == name or f.stem == name:
                     return document
             except Exception as e:
@@ -1162,7 +1177,7 @@ async def get_first_pipeline(response: Response) -> PipelineEditorDocument:
 
     Python file is the source of truth. Sidecar .haute.json provides positions.
     """
-    cwd = Path.cwd()
+    cwd = current_project().root
 
     def _find_first() -> PipelineEditorDocument:
         files = discover_pipelines()
@@ -1218,7 +1233,7 @@ async def _apply_repair(
     try:
         async with save_lock:
             repaired = await run_in_threadpool(
-                apply, project_root=Path.cwd().resolve(), request=body
+                apply, project_root=current_project().root, request=body
             )
     except PipelineRepairError as exc:
         return _pipeline_recovery_error_response(exc.status_code, exc.detail())
@@ -1327,12 +1342,12 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
                 replayed = committed_saves.replay(operation, digest)
                 if replayed is not None:
                     return replayed
-            project_root = Path.cwd().resolve()
+            project_root = current_project().root
             # The service reads the file once, under the repository's lock; the
             # editor's Save refuses one that is not ready on disk.
             svc = SavePipelineService(
                 project_root=project_root,
-                pipeline_root=pipeline_dir(),
+                pipeline_root=current_project().pipeline_dir,
                 require_ready=True,
             )
             response = await run_in_threadpool(svc.save, body)
@@ -1393,7 +1408,7 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
 async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
     """Read a JSON artifact from the project root and return its object payload."""
-    target = contained_path(_get_project_root(), body.path)
+    target = contained_path(current_project().root, body.path)
     if target.suffix.lower() != ".json":
         raise HTTPException(status_code=400, detail="Only .json files are supported")
     if not target.is_file():
@@ -1566,7 +1581,7 @@ def _discard_preview_staging(staging_token: str) -> None:
     plan that closed normally already removed it, so this is then a no-op.
     """
     try:
-        NodeSnapshotStore(_get_project_root()).discard_node_output_staging(staging_token)
+        NodeSnapshotStore(current_project().root).discard_node_output_staging(staging_token)
     except OSError as exc:
         logger.warning("preview_staging_discard_failed", error=str(exc))
 
@@ -1677,6 +1692,8 @@ def _trace_payload(
     It is serialised where it runs, so the event loop never walks the full trace, and
     validated there too: ``JSONResponse`` bypasses response-model validation, so this is
     where the typed omission, waterfall and provenance contract meets the HTTP boundary.
+    The payload is the validated model's serialization, every declared field present, as
+    the browser's generated validator requires.
     """
     with _trace_node_failures(graph):
         result = execute_trace(
@@ -1692,9 +1709,8 @@ def _trace_payload(
             seed_plan=_listed_seeds(body),
             port_label=body.port_label,
         )
-    trace_payload = trace_result_to_dict(result)
-    TraceResponse.model_validate({"status": "ok", "trace": trace_payload})
-    return trace_payload
+    response = TraceResponse.model_validate({"status": "ok", "trace": trace_result_to_dict(result)})
+    return response.trace.model_dump(mode="json")
 
 
 def _execute_trace_worker(
@@ -1939,18 +1955,17 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     _validate_runtime_input_paths(graph)
 
     def _resolve() -> tuple[str, ...]:
-        with runtime_project_root_scope(graph.source_file):
-            return preview_input_node_ids(
+        return preview_input_node_ids(
+            graph,
+            body.node_id,
+            source=body.source,
+            required_columns_by_node=_preview_required_columns_by_node(
                 graph,
                 body.node_id,
-                source=body.source,
-                required_columns_by_node=_preview_required_columns_by_node(
-                    graph,
-                    body.node_id,
-                    body.requested_preview_columns,
-                )
-                or None,
+                body.requested_preview_columns,
             )
+            or None,
+        )
 
     try:
         node_ids = await run_blocking_with_response_timeout(
@@ -2211,7 +2226,7 @@ async def recovery_preview_node(
     """Preview one server-validated ready closure from a recovery document."""
     try:
         _ensure_printable_lookup_id(body.target_recovery_id, "target_recovery_id")
-        project_root = _get_project_root().resolve()
+        project_root = current_project().root
         source_path = contained_path(project_root, body.source_file)
         if not source_path.is_file():
             raise _recovery_preview_error(
@@ -2239,7 +2254,7 @@ async def recovery_preview_node(
 
 
 def _pipeline_settings_response() -> PipelineSettingsResponse:
-    root = _get_project_root()
+    root = current_project().root
     return PipelineSettingsResponse(
         settings=PipelineSettingsValues.model_validate(read_pipeline_settings(root).values()),
         automatic=PipelineSettingsAutomatic.model_validate(
@@ -2265,7 +2280,7 @@ async def patch_pipeline_settings(body: PipelineSettingsValues) -> PipelineSetti
 
     def _update() -> PipelineSettingsResponse:
         apply_chunk_rows(
-            update_pipeline_settings(_get_project_root(), body.model_dump(exclude_unset=True))
+            update_pipeline_settings(current_project().root, body.model_dump(exclude_unset=True))
         )
         return _pipeline_settings_response()
 
@@ -2328,7 +2343,6 @@ def _prepare_data_output_worker(
     graph: PipelineGraph,
     output_node_id: str,
     source: str,
-    project_root: str,
     overwrite: bool,
     staging_path: str | None,
     seed_plan: SeedPlanHandoff,
@@ -2343,7 +2357,6 @@ def _prepare_data_output_worker(
             output_node_id,
             source,
             execution_context=context,
-            project_root=project_root,
             overwrite=overwrite,
             staging_path=staging_path,
             seed_plan=seed_plan,
@@ -2456,7 +2469,6 @@ def _output_write_transaction(
                 graph,
                 output_node_id,
                 source,
-                str(project_root),
                 overwrite,
                 None if staging_path is None else str(staging_path),
                 plan.handoff(),

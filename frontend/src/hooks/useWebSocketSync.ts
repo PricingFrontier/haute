@@ -171,9 +171,9 @@ function parseDocumentOrigin(value: unknown): AssistantDocumentOrigin {
   }
 }
 
-function parsePipelineDocumentUpdateFrame(
+async function parsePipelineDocumentUpdateFrame(
   message: Record<string, unknown>,
-): PipelineDocumentUpdateFrame {
+): Promise<PipelineDocumentUpdateFrame> {
   const expectedKeys = [
     "type",
     "schema_version",
@@ -202,7 +202,7 @@ function parsePipelineDocumentUpdateFrame(
   if (typeof message.source_file !== "string" || !message.source_file.trim()) {
     throw new Error("pipeline_document_update: missing source_file")
   }
-  const document = parsePipelineEditorDocument(message.document)
+  const document = await parsePipelineEditorDocument(message.document)
   if (!document.source_revision) {
     throw new Error("pipeline_document_update: document is missing source_revision")
   }
@@ -373,7 +373,7 @@ export default function useWebSocketSync({
         if (msg.type === "pipeline_document_update") {
           let frame: PipelineDocumentUpdateFrame
           try {
-            frame = parsePipelineDocumentUpdateFrame(msg)
+            frame = await parsePipelineDocumentUpdateFrame(msg)
           } catch (err) {
             addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
             return

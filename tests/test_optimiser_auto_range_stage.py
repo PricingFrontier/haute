@@ -18,13 +18,13 @@ from haute import _execution_admission
 from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
 from haute._polars_utils import set_streaming_chunk_size
-from haute._sandbox import set_project_root
 from haute.errors import RequestRefusedError
 from haute.routes import _optimiser_service
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
 from haute.routes._optimiser_session import ESTIMATE_HOLDERS
 from haute.schemas import OptimiserFrontierAutoRangeRequest
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 _QUOTES = 40
@@ -33,7 +33,7 @@ _SCENARIOS = 3
 
 @pytest.fixture()
 def scored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_OPTIMISER_SETUP_MEMORY_LIMIT_MB", "256")
     monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "1024")
     rows = [(quote, step) for quote in range(_QUOTES) for step in range(_SCENARIOS)]

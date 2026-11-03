@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
@@ -54,7 +55,7 @@ def _load_parent_document(source_file: str) -> tuple[Path, Path, str]:
     ``GET /api/pipeline``, so submodel compare-and-swap uses that revision.
     """
     _require_parent_source_file(source_file)
-    project_root = Path.cwd().resolve()
+    project_root = current_project().root
     parent_path = contained_path(project_root, source_file)
     if not parent_path.is_file():
         raise HTTPException(status_code=404, detail="Parent pipeline file not found.")

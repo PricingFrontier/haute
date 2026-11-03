@@ -534,19 +534,11 @@ def validate_polars_steps(steps: object) -> list[dict[str, Any]]:
     return _Renderer(steps, None, "input").steps
 
 
-#: How the renderer spells its calls: ``current``, or ``earlier`` for the
-#: spelling it used before (lists for keys, aggregations and columns, and
-#: Polars' sort and unique defaults spelled out), which only serves to
-#: recognise a body saved by it.
-StepSpelling = Literal["current", "earlier"]
-
-
 def render_polars_steps(
     steps: object,
     input_names: Sequence[str] | None = None,
     *,
     start: StepStart,
-    spelling: StepSpelling = "current",
 ) -> RenderedSteps:
     """Render ``steps`` into the Polars function body.
 
@@ -554,12 +546,11 @@ def render_polars_steps(
     without it references are rendered as written. ``start`` says where ``df``
     comes from: ``input`` requires a leading ``source`` step (and refuses an
     empty list); ``frame`` refuses a ``source`` step anywhere and renders an
-    empty list to empty code. ``spelling`` chooses the call spelling (see
-    :data:`StepSpelling`); only the current one is ever executed or saved.
+    empty list to empty code.
     """
     if start not in STEP_STARTS:
         raise ValueError(f"Unknown step start {start!r}; expected one of {STEP_STARTS!r}.")
-    return _Renderer(steps, input_names, start, spelling).render()
+    return _Renderer(steps, input_names, start).render()
 
 
 def step_fields() -> dict[str, dict[str, list[str]]]:
@@ -1039,13 +1030,11 @@ class _Renderer:
         steps: object,
         input_names: Sequence[str] | None,
         start: StepStart,
-        spelling: StepSpelling = "current",
     ) -> None:
         if not isinstance(steps, list):
             raise PolarsStepError("Steps must be a list.")
         self.input_names = None if input_names is None else frozenset(input_names)
         self.start = start
-        self.earlier = spelling == "earlier"
         self.variables: set[str] = set()
         # Names the free-code steps rendered so far bind, which a variable may not take.
         self.code_names: set[str] = set()
@@ -1759,10 +1748,6 @@ class _Renderer:
         if not columns and not selectors:
             raise self.fail("Name at least one column or column type to keep.")
         parts = [repr(c) for c in columns] + selectors
-        if self.earlier:
-            if not selectors:
-                return f"df = df.select({columns!r})"
-            return f"df = df.select([{', '.join(parts)}])"
         return f"df = df.select({', '.join(parts)})"
 
     def _render_drop(self, step: Mapping[str, Any]) -> str:
@@ -1770,10 +1755,6 @@ class _Renderer:
         selectors = self._dtype_selectors(step, columns)
         if not columns and not selectors:
             raise self.fail("Name at least one column or column type to drop.")
-        if self.earlier:
-            if not selectors:
-                return f"df = df.drop({columns!r})"
-            return f"df = df.drop({', '.join(([repr(columns)] if columns else []) + selectors)})"
         parts = [repr(c) for c in columns] + selectors
         return f"df = df.drop({', '.join(parts)})"
 
@@ -1837,10 +1818,6 @@ class _Renderer:
             columns.append(sort_column)
             descending.append(self._bool(entry.get("descending"), f"Sort key {i + 1} descending"))
         nulls_last = self._bool(step["nullsLast"], "Nulls last")
-        if self.earlier:
-            return (
-                f"df = df.sort({columns!r}, descending={descending!r}, nulls_last={nulls_last!r})"
-            )
         # Polars' defaults (ascending, nulls first) are left unsaid. A stable
         # sort keeps tied rows in the order they arrive, so the same input
         # always gives the same rows in the same order.
@@ -1855,9 +1832,6 @@ class _Renderer:
     def _render_unique(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
         keep = self._choice(step["keep"], ("first", "last", "any", "none"), "Keep")
-        if self.earlier:
-            earlier_subset = repr(columns) if columns else "None"
-            return f"df = df.unique(subset={earlier_subset}, keep={keep!r}, maintain_order=True)"
         subset = f"subset={columns!r}, " if columns else ""
         return f"df = df.unique({subset}keep={keep!r}, maintain_order=True)"
 
@@ -1894,10 +1868,6 @@ class _Renderer:
         return self._group_and_aggregate(keys, rendered)
 
     def _group_and_aggregate(self, keys: list[str], rendered: list[str]) -> str:
-        if self.earlier:
-            if not keys:
-                return f"df = df.select([{', '.join(rendered)}])"
-            return f"df = df.group_by({keys!r}, maintain_order=True).agg([{', '.join(rendered)}])"
         if not keys:
             # A whole-frame summary: one row of aggregates.
             return f"df = df.select({', '.join(rendered)})"
@@ -2018,7 +1988,7 @@ class _Renderer:
 
     def _render_fill_null(self, step: Mapping[str, Any]) -> str:
         columns = self._str_list(step["columns"], "Columns", allow_empty=True)
-        names = repr(columns) if self.earlier else ", ".join(repr(c) for c in columns)
+        names = ", ".join(repr(c) for c in columns)
         target = f"pl.col({names})" if columns else "pl.all()"
         fill = self._object(step["fill"], "Fill")
         kind = fill.get("kind")

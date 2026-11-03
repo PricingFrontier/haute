@@ -20,10 +20,12 @@ from fastapi.testclient import TestClient
 from haute import _git
 from haute._git_state import write_working_branch
 from haute._git_transactions import commit_milestone
+from haute._project_context import context_thread
 from haute._workbench_folder import folder_revision
 from haute._workbench_form import QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_STORE_ONLY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
+from tests._project import use_project
 from tests._workbench_helpers import FORM, enable, form_files, write_form
 
 
@@ -76,7 +78,7 @@ DETAILS = {
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The working directory is the project, as it is for ``haute serve``."""
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 
@@ -763,7 +765,7 @@ def test_a_form_save_holds_the_repository_lock_from_its_check_to_its_capture(
                     lock.release()
             held.append(not any(taken))
 
-        prober = threading.Thread(target=probe)
+        prober = context_thread(probe)
         prober.start()
         prober.join()
         stage(out_path, payload, touched)

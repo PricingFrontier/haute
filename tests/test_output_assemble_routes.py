@@ -27,11 +27,14 @@ from haute._interactive_workers import (
     InteractiveWorkerRemoteError,
     InteractiveWorkerTimeoutError,
 )
-from haute._sandbox import _get_project_root, set_project_root
+from haute._output_assembler import OutputMappingSchemaError
+from haute._project_context import current_project
 from haute._types import NodeType
+from haute.errors import ConfigError, ContractColumnsMissingError, ContractMismatchError
 from haute.executor import _preview_cache
 from haute.routes._timeouts import BlockingWorkTimeoutError
 from haute.schemas import NodeResult
+from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots
 from tests.test_output_nested_roundtrip import (
     _FIXTURE,
@@ -69,18 +72,18 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Path]]:
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original = current_project().root
+    use_project(tmp_path)
     _preview_cache.clear()
 
-    from haute.server import app
+    app = project_app()
 
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
     yield TestClient(app), data_path
-    set_project_root(original)
+    use_project(original)
     _preview_cache.clear()
 
 
@@ -102,6 +105,24 @@ def test_dry_run_assembles_nested_document(project) -> None:
     assert payload["status"] == "ok", payload.get("error")
     assert payload["document"] == _expected_document()
     assert payload["row_count"] == 2
+
+
+def test_dry_run_resolves_paths_against_the_configured_pipeline(project) -> None:
+    """A graph without ``source_file`` takes the pipeline ``haute.toml`` names."""
+    client, data_path = project
+    root = data_path.parent.parent
+    (root / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+    (root / "rating").mkdir()
+    config = {**_api_input_config(data_path), "path": "../data/data_model_example.json"}
+    build_test_api_input_snapshots(data_path, config)
+
+    resp = client.post(
+        "/api/output-assemble/dry-run",
+        json={"graph": _graph_json(config), "node_id": "out", "output_mapping": _output_mapping()},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["document"] == _expected_document()
 
 
 def test_dry_run_rejects_invalid_mapping_with_422(project) -> None:
@@ -263,7 +284,7 @@ async def test_dry_run_timeout_defers_admission_release_until_worker_finishes(pr
             background_task,
         )
 
-    from haute.server import app
+    app = project_app()
 
     with (
         patch(
@@ -516,6 +537,47 @@ def test_dry_run_process_worker_failures_are_mapped_and_parent_admission_is_rele
         assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
         assert "private child detail" not in response.text
     assert releases == [True]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [ContractMismatchError, ContractColumnsMissingError, OutputMappingSchemaError, ConfigError],
+)
+def test_dry_run_process_worker_contract_failures_are_422_as_in_a_thread(
+    project,
+    failure: type[Exception],
+) -> None:
+    client, data_path = project
+    remote = InteractiveWorkerRemoteError(
+        remote_type=failure.__name__,
+        remote_module=failure.__module__,
+        remote_message="Node 'out' is missing columns: premium",
+        remote_traceback="private traceback",
+        public_payload=None,
+        is_memory=False,
+    )
+
+    async def _fail(*_args, **_kwargs):
+        raise remote
+
+    with (
+        patch(
+            "haute.routes.pipeline.resolve_interactive_execution_mode",
+            return_value="process",
+        ),
+        patch("haute.routes.pipeline.run_in_interactive_worker", _fail),
+    ):
+        response = client.post(
+            "/api/output-assemble/dry-run",
+            json={
+                "graph": _graph_json(_api_input_config(data_path)),
+                "node_id": "out",
+                "output_mapping": [],
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Node 'out' is missing columns: premium"
 
 
 def test_dry_run_process_timeout_releases_parent_admission_immediately(project) -> None:

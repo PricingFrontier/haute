@@ -5,9 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# The command core is the sole process boundary.  Its helpers are imported
-# explicitly into this domain's namespace so extracted functions retain their
-# original signatures and semantics without a facade dependency.
 from haute._git_core import (
     _ARCHIVE_PREFIX,
     _CLONE_TIMEOUT_SECONDS,
@@ -48,6 +45,11 @@ from haute._git_core import (
 )
 from haute._git_setup import resolve_ledger
 from haute._logging import get_logger
+
+# The command core is the sole process boundary.  Its helpers are imported
+# explicitly into this domain's namespace so extracted functions retain their
+# original signatures and semantics without a facade dependency.
+from haute._project_context import current_project
 from haute.schemas import (
     GitBranchAwayResponse,
     GitFastForwardResponse,
@@ -288,7 +290,7 @@ def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> 
             "fetch",
             str(bundle),
             f"+refs/heads/*:refs/remotes/{namespace}/*",
-            cwd=cwd or Path.cwd(),
+            cwd=cwd or current_project().root,
             env=_remote_env(cwd),
             timeout=_CLONE_TIMEOUT_SECONDS,
         )
@@ -472,7 +474,7 @@ def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, s
             "--tags",
             remote,
             "refs/tags/version/*",
-            cwd=cwd or Path.cwd(),
+            cwd=cwd or current_project().root,
             env=_remote_env(cwd),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
@@ -570,7 +572,7 @@ def _read_advertisement(
             "ls-remote",
             "--symref",
             remote,
-            cwd=cwd or Path.cwd(),
+            cwd=cwd or current_project().root,
             env=_remote_env(cwd),
             timeout=_FETCH_TIMEOUT_SECONDS,
         )
@@ -733,7 +735,7 @@ def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -
                 f"refs/heads/{branch}:{destination}",
                 "--quiet",
                 errors="replace",
-                cwd=cwd or Path.cwd(),
+                cwd=cwd or current_project().root,
                 env=_remote_env(cwd),
                 timeout=_FETCH_TIMEOUT_SECONDS,
             )
@@ -765,7 +767,7 @@ def _run_push(
             remote,
             *refspecs,
             errors="replace",
-            cwd=cwd or Path.cwd(),
+            cwd=cwd or current_project().root,
             env=_remote_env(cwd),
             timeout=_PUSH_TIMEOUT_SECONDS,
         )
@@ -1082,7 +1084,7 @@ def fast_forward_pair_from_tracking(
 
     # Volatile caches must not survive into the caught-up tree (S12); wiped only
     # once it is in place, so a refused catch-up deletes nothing.
-    _wipe_volatile_artefacts(cwd or Path.cwd())
+    _wipe_volatile_artefacts(cwd or current_project().root)
 
     logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
     return GitFastForwardResponse(
@@ -1186,7 +1188,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
 
     # Volatile caches must not bleed from the local tree into the adopted one (S12);
     # wiped only once it is in place, so a refused spin-off deletes nothing.
-    _wipe_volatile_artefacts(cwd or Path.cwd())
+    _wipe_volatile_artefacts(cwd or current_project().root)
 
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)

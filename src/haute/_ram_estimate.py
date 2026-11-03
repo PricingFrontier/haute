@@ -687,17 +687,16 @@ def _data_input_parquet_artifact(
     Parquet source returns ``None`` so callers touch the footer only when they
     actually need the count — each caller reads source metadata at most once.
     """
-    from haute._builders import _configured_pipeline_dir
     from haute._input_providers import source_cache_identity
     from haute._polars_io_registry import (
         anchor_config_source_path,
         data_input_is_direct,
         validate_data_input_config,
     )
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
     from haute._source_cache import SourceCacheStore
 
-    base_dir = _configured_pipeline_dir()
+    base_dir = current_project().pipeline_dir
     validated = validate_data_input_config(config)
     if data_input_is_direct(validated):
         anchored = anchor_config_source_path(validated, base_dir)
@@ -707,7 +706,7 @@ def _data_input_parquet_artifact(
         validated,
         base_dir=base_dir,
     )
-    generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+    generation = SourceCacheStore(current_project().root).open_generation(identity)
     return generation.metadata.row_count, generation.data_paths
 
 
@@ -750,7 +749,7 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
     """
     from haute._builders import _config_with_resolved_data_path
     from haute._json_shred._snapshots import api_input_snapshot_source
-    from haute._sandbox import _get_project_root
+    from haute._project_context import current_project
     from haute._source_cache import SourceCacheStore
 
     config = _config_with_resolved_data_path(node.data.config)
@@ -763,7 +762,7 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
             identity = source.table(port).identity
         except KeyError:
             return None
-        generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+        generation = SourceCacheStore(current_project().root).open_generation(identity)
         return _source_scoped_metadata(
             _detailed_parquet_metadata(generation.data_paths),
             node.id,
@@ -2485,24 +2484,96 @@ def _estimate_materialisation_boundary_from_index(
     )
 
 
-def estimate_optimiser_grid_peak_bytes(
+@dataclass(frozen=True, slots=True)
+class _SolveMemoryTerms:
+    """One mode's fitted terms of the solver session's memory growth, in bytes."""
+
+    fixed: int
+    per_quote: float
+    per_quote_id_byte: float
+    """Per quote, per byte of its quote id."""
+    per_quote_extra_constraint: float
+    """Per quote, per constraint beyond the first."""
+    per_row: float
+    per_row_constraint: float
+    """Per solver-input row, per constraint."""
+    per_quote_factor: float
+    """Per quote, per ratebook factor."""
+
+
+# Fitted to the session's measured growth over ``build_and_solve`` ("Measured
+# solve memory" in the optimiser low-level specification), then raised by the
+# margin so every measured run is forecast at 1.07-1.25x of its peak.
+_SOLVE_MEMORY_TERMS: Mapping[str, _SolveMemoryTerms] = MappingProxyType(
+    {
+        "online": _SolveMemoryTerms(
+            fixed=112 * 1024 * 1024,
+            per_quote=132.0,
+            per_quote_id_byte=5.0,
+            per_quote_extra_constraint=28.0,
+            per_row=5.3,
+            per_row_constraint=3.0,
+            per_quote_factor=0.0,
+        ),
+        "ratebook": _SolveMemoryTerms(
+            fixed=234 * 1024 * 1024,
+            per_quote=326.0,
+            per_quote_id_byte=7.4,
+            per_quote_extra_constraint=50.0,
+            per_row=7.1,
+            per_row_constraint=0.0,
+            per_quote_factor=26.5,
+        ),
+    }
+)
+_SOLVE_MEMORY_MARGIN = 1.15
+
+
+def solver_input_row_width_bytes(*, constraint_count: int, quote_id_bytes: float) -> float:
+    """One decoded solver-input row: the Int32 step, Float32 scenario value,
+    objective and constraints, and the quote id as a string view."""
+    return 4 + 4 + 4 * (1 + constraint_count) + _STRING_VIEW_BYTES + quote_id_bytes
+
+
+def forecast_solve_memory_bytes(
     *,
+    mode: str,
+    quote_count: int,
     row_count: int,
     constraint_count: int,
-    quote_id_width_bytes: float,
-    input_row_width_bytes: float,
+    factor_count: int,
+    quote_id_bytes: float,
     chunk_rows: int,
 ) -> int:
-    """Conservative grid + build overlap, including one decoded reader batch.
+    """The solver session's memory growth over one solve, from the input's shape.
 
-    The solver stores Float32 objective/scenario/constraint vectors. Until its
-    layout validator has run, allow one quote ID and its String/offset metadata
-    per input row. Two copies allow vector growth and sorting/conversion overlap.
+    The growth is what the session's native cap bounds: its peak over the
+    grid build, the solve, the inline frontier, the summary and the as-solved
+    apply artifact, less what it held when the command started. The terms are
+    fitted to measured runs; the grid build's two decoded reader chunks are
+    priced separately because the chunk size is a pipeline setting.
     """
-    numeric_width = 4 * (constraint_count + 2)
-    resident = row_count * (numeric_width + 32 + max(8, quote_id_width_bytes))
-    reader = min(row_count, chunk_rows) * input_row_width_bytes
-    return math.ceil(2 * resident + 2 * reader + 64 * 1024 * 1024)
+    terms = _SOLVE_MEMORY_TERMS.get(mode)
+    if terms is None:
+        raise ValueError(f"mode must be 'online' or 'ratebook', got {mode!r}")
+    if min(quote_count, row_count, constraint_count, factor_count) < 0:
+        raise ValueError("solve-memory forecast counts must not be negative")
+    per_quote = (
+        terms.per_quote
+        + terms.per_quote_id_byte * quote_id_bytes
+        + terms.per_quote_extra_constraint * max(0, constraint_count - 1)
+        + terms.per_quote_factor * factor_count
+    )
+    per_row = terms.per_row + terms.per_row_constraint * constraint_count
+    reader = (
+        2
+        * min(row_count, chunk_rows)
+        * solver_input_row_width_bytes(
+            constraint_count=constraint_count, quote_id_bytes=quote_id_bytes
+        )
+    )
+    fitted = terms.fixed + quote_count * per_quote + row_count * per_row + reader
+    return math.ceil(_SOLVE_MEMORY_MARGIN * fitted)
 
 
 _CHOICE_QUERY_BASE_BYTES = 64 * 1024 * 1024

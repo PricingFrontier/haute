@@ -783,56 +783,14 @@ def admit_growth_grant(
             job_id=job_id,
         )
     sampler = current_rss_bytes if memory_sampler is None else memory_sampler
-    rss_at_admission = sampler()
-    process_rss_limit_bytes, _process_rss_limit_key = _resolve_optional_rss_limit(profile)
+    rss_at_admission_sample = sampler()
     settings = project_pipeline_settings()
     with _IN_FLIGHT_LOCK:
-        available = _host_memory.require_positive_available_ram(available_ram_bytes())
-        os_reserve = _os_reserve_bytes(available, settings)
-        usable_now = available - os_reserve
-        limit = _profile_limit_from_sample(profile, available=available, usable=usable_now)
-        if rss_at_admission is None:
-            raise ExecutionAdmissionError(
-                operation,
-                profile=profile,
-                memory_limit_bytes=limit.memory_limit_bytes,
-                rss_at_admission_bytes=None,
-                reason="memory_sampler_unavailable",
-            )
-        holders = list(_IN_FLIGHT_RESERVATIONS.values())
-        reserved = sum(amount for _profile, amount, _operation in holders)
-        in_flight_room = usable_now - reserved
-        rss_room = (
-            None if process_rss_limit_bytes is None else process_rss_limit_bytes - rss_at_admission
-        )
-        grant = min(limit.memory_limit_bytes, in_flight_room)
-        if rss_room is not None:
-            grant = min(grant, rss_room)
-        if grant <= 0:
-            if rss_room is not None and rss_room <= 0:
-                reason = "process_rss_limit_exceeded"
-            elif reserved > 0 and in_flight_room <= 0:
-                reason = "in_flight_memory_budget_exceeded"
-            else:
-                reason = "no_memory_available"
-            raise ExecutionAdmissionError(
-                operation,
-                profile=profile,
-                memory_limit_bytes=limit.memory_limit_bytes,
-                rss_at_admission_bytes=rss_at_admission,
-                reason=reason,
-                process_rss_limit_bytes=process_rss_limit_bytes,
-                in_flight_reserved_bytes=reserved,
-                in_flight_limit_bytes=usable_now,
-                in_flight_operations=tuple(
-                    sorted(
-                        {
-                            f"{held_profile.value}:{held_operation}"
-                            for held_profile, _amount, held_operation in holders
-                        }
-                    )
-                )[:_MAX_REPORTED_IN_FLIGHT_OPERATIONS],
-            )
+        terms = _growth_grant_terms(profile, operation, rss_at_admission_sample, settings)
+        if terms.grant <= 0:
+            raise terms.refusal(operation)
+        grant = terms.grant
+        rss_at_admission = terms.rss_at_admission
         reservation_id = next(_IN_FLIGHT_COUNTER)
         _IN_FLIGHT_RESERVATIONS[reservation_id] = (profile, grant, operation)
 
@@ -845,12 +803,12 @@ def admit_growth_grant(
             memory_limit_bytes=grant,
             rss_at_admission_bytes=rss_at_admission,
             rss_limit_bytes=rss_limit_bytes,
-            process_rss_limit_bytes=process_rss_limit_bytes,
+            process_rss_limit_bytes=terms.process_rss_limit_bytes,
             headroom_bytes=grant,
-            config_key=limit.config_key,
-            budget_policy=limit.budget_policy,
-            available_ram_bytes=available,
-            os_reserve_bytes=os_reserve,
+            config_key=terms.limit.config_key,
+            budget_policy=terms.limit.budget_policy,
+            available_ram_bytes=terms.available,
+            os_reserve_bytes=terms.os_reserve,
         )
         context = ExecutionContext(
             operation=operation,
@@ -869,6 +827,120 @@ def admit_growth_grant(
         admission_release()
         raise
     return context
+
+
+@dataclass(frozen=True, slots=True)
+class _GrowthGrantTerms:
+    """What one growth grant is the least of, from one memory sample."""
+
+    profile: ExecutionProfile
+    rss_at_admission: int
+    available: int
+    os_reserve: int
+    usable: int
+    limit: _ResolvedMemoryLimit
+    process_rss_limit_bytes: int | None
+    reserved: int
+    holders: tuple[tuple[ExecutionProfile, int, str], ...]
+    rss_room: int | None
+    grant: int
+
+    def refusal(self, operation: str) -> ExecutionAdmissionError:
+        """The refusal of a grant of nothing, naming the term that bound it."""
+        in_flight_room = self.usable - self.reserved
+        if self.rss_room is not None and self.rss_room <= 0:
+            reason = "process_rss_limit_exceeded"
+        elif self.reserved > 0 and in_flight_room <= 0:
+            reason = "in_flight_memory_budget_exceeded"
+        else:
+            reason = "no_memory_available"
+        return ExecutionAdmissionError(
+            operation,
+            profile=self.profile,
+            memory_limit_bytes=self.limit.memory_limit_bytes,
+            rss_at_admission_bytes=self.rss_at_admission,
+            reason=reason,
+            process_rss_limit_bytes=self.process_rss_limit_bytes,
+            in_flight_reserved_bytes=self.reserved,
+            in_flight_limit_bytes=self.usable,
+            in_flight_operations=tuple(
+                sorted(
+                    {
+                        f"{held_profile.value}:{held_operation}"
+                        for held_profile, _amount, held_operation in self.holders
+                    }
+                )
+            )[:_MAX_REPORTED_IN_FLIGHT_OPERATIONS],
+        )
+
+
+def _growth_grant_terms(
+    profile: ExecutionProfile,
+    operation: str,
+    rss_at_admission: int | None,
+    settings: PipelineSettings,
+) -> _GrowthGrantTerms:
+    """Resolve a growth grant's terms from one sample; the caller holds the in-flight lock.
+
+    The grant is the least of the profile's limit (recomputed from a fresh
+    availability sample), what other in-flight reservations leave of the
+    usable memory, and any absolute process-RSS headroom. A grant of nothing
+    or less is the caller's to refuse.
+    """
+    process_rss_limit_bytes, _process_rss_limit_key = _resolve_optional_rss_limit(profile)
+    available = _host_memory.require_positive_available_ram(available_ram_bytes())
+    os_reserve = _os_reserve_bytes(available, settings)
+    usable = available - os_reserve
+    limit = _profile_limit_from_sample(profile, available=available, usable=usable)
+    if rss_at_admission is None:
+        raise ExecutionAdmissionError(
+            operation,
+            profile=profile,
+            memory_limit_bytes=limit.memory_limit_bytes,
+            rss_at_admission_bytes=None,
+            reason="memory_sampler_unavailable",
+        )
+    holders = tuple(_IN_FLIGHT_RESERVATIONS.values())
+    reserved = sum(amount for _profile, amount, _operation in holders)
+    rss_room = (
+        None if process_rss_limit_bytes is None else process_rss_limit_bytes - rss_at_admission
+    )
+    grant = min(limit.memory_limit_bytes, usable - reserved)
+    if rss_room is not None:
+        grant = min(grant, rss_room)
+    return _GrowthGrantTerms(
+        profile=profile,
+        rss_at_admission=rss_at_admission,
+        available=available,
+        os_reserve=os_reserve,
+        usable=usable,
+        limit=limit,
+        process_rss_limit_bytes=process_rss_limit_bytes,
+        reserved=reserved,
+        holders=holders,
+        rss_room=rss_room,
+        grant=grant,
+    )
+
+
+def preview_growth_grant_bytes(
+    profile: ExecutionProfile,
+    *,
+    operation: str,
+    memory_sampler: Callable[[], int | None] | None = None,
+) -> int:
+    """What :func:`admit_growth_grant` would grant *profile* now, reserving nothing.
+
+    Zero when it would refuse. A forecast compares against this before the
+    work is started (the optimiser's solve-memory forecast, OPT-W02).
+    """
+    if profile not in _IN_FLIGHT_PROFILE_SET:
+        raise ValueError(f"growth grants need an in-flight profile, not {profile.value!r}")
+    sampler = current_rss_bytes if memory_sampler is None else memory_sampler
+    rss_at_admission = sampler()
+    settings = project_pipeline_settings()
+    with _IN_FLIGHT_LOCK:
+        return max(0, _growth_grant_terms(profile, operation, rss_at_admission, settings).grant)
 
 
 def _profile_limit_from_sample(

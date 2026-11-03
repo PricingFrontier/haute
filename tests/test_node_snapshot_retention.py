@@ -41,6 +41,7 @@ from haute._pipeline_settings import (
     PipelineSettingsError,
     update_pipeline_settings,
 )
+from haute._project_context import context_thread
 from haute._source_cache import (
     SourceCacheBuildContext,
     SourceCacheGenerationMissingError,
@@ -559,8 +560,8 @@ def test_two_budget_checks_at_once_evict_only_the_excess(
 
     monkeypatch.setattr(store, "_scan_usage", paused_scan)
     evicted: list[int] = []
-    first = threading.Thread(target=lambda: evicted.append(store.enforce_automatic_budget()))
-    second = threading.Thread(target=lambda: evicted.append(store.enforce_automatic_budget()))
+    first = context_thread(lambda: evicted.append(store.enforce_automatic_budget()))
+    second = context_thread(lambda: evicted.append(store.enforce_automatic_budget()))
     first.start()
     assert first_scanned.wait(timeout=10)
     second.start()

@@ -18,7 +18,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._sandbox import bound_project_root
+from haute._project_context import ProjectContext, project_scope
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy import DeployConfig, resolve_config
 from haute.deploy._config import ResolvedDeploy
@@ -29,6 +29,7 @@ from haute.deploy._scorer import score_graph
 from haute.errors import ExecutionError
 from haute.parser import parse_pipeline_file
 from tests._git_helpers import init_repo
+from tests._project import use_project
 
 _EXAMPLE = (
     Path(__file__).resolve().parents[1]
@@ -124,7 +125,7 @@ def _project(
     ``modules/<name>.py``, imported by the pipeline), a response mapping each of
     *output*'s ports' columns to a field, and any other *files*."""
     project = tmp_path / "project"
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     shutil.copytree(_EXAMPLE, project)
     head = _PIPELINE_HEAD.format(modules=", ".join(modules))
     (project / "pipeline.py").write_text(head + body, encoding="utf-8")
@@ -159,7 +160,7 @@ def _score_bundle(resolved: ResolvedDeploy, build: Path, quotes: list[dict]) -> 
     """Score *quotes* as the served container does: from the bundle's manifest and files,
     in the bundle's directory."""
     manifest = json.loads(write_bundle(resolved, build).read_text(encoding="utf-8"))
-    with bound_project_root(build):
+    with project_scope(ProjectContext.at(build)):
         scored = score_graph(
             graph=PipelineGraph.model_validate(manifest["pruned_graph"]),
             input_df=pl.DataFrame(quotes),
@@ -236,7 +237,7 @@ pipeline.connect("second", "response", source_port="rated")
     )
 
     # The Load File reads inside the project, as `haute deploy` run there reads it.
-    with bound_project_root(project):
+    with project_scope(ProjectContext.at(project)):
         resolved = _resolve(project)
     answers = _score_bundle(resolved, tmp_path / "build", [{"quote_id": "q1", "fixture_value": 10}])
     (tmp_path / "staged").mkdir()
@@ -271,7 +272,7 @@ def test_load_file_deploy_preserves_logical_inputs(
 
     project = _project(tmp_path, monkeypatch, _ONE_SUBMODEL, {"factors": _FACTORS}, {})
     init_repo(project)
-    monkeypatch.chdir(project)
+    use_project(project)
     (tmp_path / "project/data/rates.json").write_text('{"factor": 2}', encoding="utf-8")
     request = parse_pipeline_file(project / "pipeline.py").node_map["quote"]
     plain = PipelineGraph(
@@ -387,7 +388,7 @@ def test_load_file_deploy_preserves_logical_inputs(
     quotes = [{"quote_id": "q1", "fixture_value": 10}]
     (tmp_path / "project/data/quote.json").write_text(json.dumps(quotes), encoding="utf-8")
     graph.node_map["quote"].data.config["path"] = "data/quote.json"
-    with bound_project_root(project):
+    with project_scope(ProjectContext.at(project)):
         expected = [{"premium": 31 if occurrence == "owner" else 71}]
         assert execute_graph(flatten_executable_graph(graph))["response"].preview == expected
         SavePipelineService(project).save_graph_transactionally(

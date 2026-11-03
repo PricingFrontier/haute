@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { makeTraceStep } from "../../test-utils/factories"
+import { makeTraceDiagnostic } from "../../test-utils/factories"
+import { makeTraceResult } from "../../test-utils/factories"
 import type { TraceResult } from "../../types/trace"
 import {
   buildTraceExportRows,
@@ -11,13 +14,13 @@ import {
 } from "../traceExport"
 
 function traceFixture(): TraceResult {
-  return {
+  return makeTraceResult({
     target_node_id: "premium|target",
     row_index: 3,
     column: "technical_premium",
     output_value: 123.456789,
     steps: [
-      {
+      makeTraceStep({
         node_id: "source",
         node_name: "Source",
         node_type: "dataInput",
@@ -36,8 +39,8 @@ function traceFixture(): TraceResult {
         calculation: null,
         node_detail: null,
         row_lineage_type: "created",
-      },
-      {
+      }),
+      makeTraceStep({
         node_id: "rating",
         node_name: "Rating",
         node_type: "ratingStep",
@@ -59,7 +62,7 @@ function traceFixture(): TraceResult {
           tables: [{ selected_value: 1.1, post_code_output_value: 2.2, default_used: true }],
         },
         row_lineage_type: "passthrough",
-      },
+      }),
     ],
     omissions: [
       {
@@ -87,7 +90,7 @@ function traceFixture(): TraceResult {
       },
     ],
     correlation_diagnostics: [
-      {
+      makeTraceDiagnostic({
         code: "ambiguous_row_match",
         severity: "warning",
         reason: "duplicate_exact_match",
@@ -98,12 +101,12 @@ function traceFixture(): TraceResult {
         ignored_columns: [],
         matched_row_indices: [1, 2],
         seed_node_ids: [],
-      },
+      }),
     ],
     generated_at: "2026-07-23T12:34:56+00:00",
     pipeline_source: "pricing/pipeline.py",
     execution_origin: "trace_cache",
-  }
+  })
 }
 
 describe("trace export projection", () => {

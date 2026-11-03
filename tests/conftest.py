@@ -25,8 +25,8 @@ from haute._config_io import config_path_for_node
 from haute._execution_context import ExecutionProfile
 from haute._pipeline_settings import PipelineSettings
 from haute._polars_utils import STREAMING_CHUNK_SIZE_ENV
+from haute._project_context import _CURRENT_PROJECT, ProjectContext, current_project
 from haute._ram_estimate import RamEstimate
-from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
@@ -344,6 +344,18 @@ def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
 
 
 @pytest.fixture(autouse=True)
+def _required_worker_memory_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Require a native worker memory cap on every host, unless a test says otherwise.
+
+    Unset, the policy follows the host: ``required`` where a native cap exists,
+    ``best_effort`` where none does (macOS). Pinning the stricter one makes a
+    test mean the same on every CI platform; a test of supervision sets
+    ``best_effort``, and a test of the host-dependent default removes the variable.
+    """
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "required")
+
+
+@pytest.fixture(autouse=True)
 def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
     """Keep the suite hermetic: MLflow must not phone home from a test.
 
@@ -530,22 +542,6 @@ def _default_bus_test_isolation(_default_bus_baseline: dict):
 
 
 @pytest.fixture(autouse=True)
-def _clear_pipeline_dir_cache():
-    """Prevent the lru_cache on pipeline_dir from leaking real paths into tests.
-
-    Without this, save tests that trigger ``_remove_stale_config_files`` will
-    scan and delete real config files from ``rating/config/`` because the
-    cached ``pipeline_dir()`` points at the real project, not the test's
-    ``tmp_path``.
-    """
-    from haute.routes._helpers import pipeline_dir
-
-    pipeline_dir.cache_clear()
-    yield
-    pipeline_dir.cache_clear()
-
-
-@pytest.fixture(autouse=True)
 def _clear_git_content_caches():
     """Reset the SHA-keyed git content caches between tests.
 
@@ -620,7 +616,6 @@ def _widen_sandbox_root(
     from haute._source_cache import SourceCacheStore
     from haute.modelling import _mlflow_settings
 
-    original = _get_project_root()
     widened_root = Path("/").resolve()
     # Keep this root short enough for the generation + atomic-write suffixes
     # to remain below Windows' traditional path limit.
@@ -651,9 +646,9 @@ def _widen_sandbox_root(
         return resolve_local(stored, cache_root if Path(root).resolve() == widened_root else root)
 
     monkeypatch.setattr(_mlflow_settings, "_resolve_local", resolve_local_under_writable_root)
-    set_project_root(widened_root)
+    token = _CURRENT_PROJECT.set(ProjectContext(widened_root))
     yield cache_root
-    set_project_root(original)
+    _CURRENT_PROJECT.reset(token)
 
 
 @pytest.fixture()
@@ -666,20 +661,51 @@ def training_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     return root
 
 
-@pytest.fixture(autouse=True)
-def _restore_project_root():
-    """Restore the sandbox project root after every test.
+@pytest.fixture(autouse=True, scope="session")
+def _session_project(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """The project a module- or session-scoped fixture works in: this run's temporary
+    base folder, which holds every folder ``tmp_path_factory`` makes. Each test then
+    installs its own (``_installed_project``)."""
+    token = _CURRENT_PROJECT.set(ProjectContext.at(tmp_path_factory.getbasetemp()))
+    try:
+        yield
+    finally:
+        _CURRENT_PROJECT.reset(token)
 
-    Several tests call ``set_project_root(tmp_path)`` directly (for
-    quick path-validation overrides) without restoring the original
-    value, leaking the temp directory into subsequent tests that use
-    real fixtures under ``tests/fixtures/``.  Snapshotting and restoring
-    the root here makes the global state behave per-test without
-    requiring every call site to add its own try/finally.
+
+@pytest.fixture(scope="session")
+def _session_working_dir() -> str:
+    """The directory this test process started in, which every test ends in."""
+    return os.getcwd()
+
+
+@pytest.fixture(autouse=True)
+def _installed_project(
+    request: pytest.FixtureRequest, tmp_path: Path, _session_working_dir: str
+) -> Iterator[None]:
+    """Run every test in its ``tmp_path`` project, as an entry point installs one.
+
+    ``@pytest.mark.no_project`` runs a test with no project installed, so it
+    proves an entry point installs its own. Teardown restores what was
+    installed before the test, whatever it installed since
+    (``tests._project.use_project``), and returns to the directory the process
+    started in: not the one the test started in, which a strict test's sandbox
+    has already made its ``tmp_path`` and which an explicit ``monkeypatch.undo()``
+    would otherwise leave for the next test.
     """
-    original = _get_project_root()
-    yield
-    set_project_root(original)
+    no_project = request.node.get_closest_marker("no_project") is not None
+    token = _CURRENT_PROJECT.set(None if no_project else ProjectContext.at(tmp_path))
+    try:
+        yield
+    finally:
+        _CURRENT_PROJECT.reset(token)
+        os.chdir(_session_working_dir)
+
+
+@pytest.fixture()
+def project() -> ProjectContext:
+    """The project the test runs in."""
+    return current_project()
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +748,6 @@ def build_test_input_snapshot(
     profile: ExecutionProfile = ExecutionProfile.PREVIEW_EAGER,
 ) -> None:
     """Prepare a runtime test input, building only snapshot-backed sources."""
-    from haute._builders import _configured_pipeline_dir
     from haute._input_providers import build_input_snapshot
     from haute._polars_io_registry import data_input_is_direct
     from haute._source_cache import SourceCacheStore
@@ -731,8 +756,8 @@ def build_test_input_snapshot(
         return
     build_input_snapshot(
         config,
-        store=SourceCacheStore(_get_project_root()),
-        base_dir=base_dir if base_dir is not None else _configured_pipeline_dir(),
+        store=SourceCacheStore(current_project().root),
+        base_dir=base_dir if base_dir is not None else current_project().pipeline_dir,
         profile=profile,
     )
 
@@ -753,7 +778,7 @@ def build_test_api_input_snapshots(
     return build_api_input_tables(
         source,
         [table.label for table in source.tables],
-        store=SourceCacheStore(_get_project_root()),
+        store=SourceCacheStore(current_project().root),
         profile=ExecutionProfile.LAZY_SINK,
     )
 
@@ -1052,9 +1077,9 @@ def client():
     """
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    from tests._project import FirstRequestProjectApp
 
-    return TestClient(app, raise_server_exceptions=False)
+    return TestClient(FirstRequestProjectApp(), raise_server_exceptions=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1142,23 +1167,6 @@ _TESTS_DIR = Path(__file__).resolve().parent
 _WS_REPO_ROOT = _TESTS_DIR.parent
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _project_root_baseline():
-    """Pin the sandbox project root before any test moves the working directory.
-
-    ``_get_project_root()`` lazily captures ``Path.cwd()`` on its first call.
-    Without an eager baseline, that first call happens inside
-    ``_restore_project_root`` — which sets up *after* ``_haute_write_sandbox``
-    has already chdir'd into the first strict test's tmp dir — so every later
-    test in the process inherits that tmp dir as the project root. That stays
-    invisible until the first test on a worker also writes a ``haute.toml``
-    into its tmp dir (e.g. the malformed-toml regression), which then poisons
-    unrelated executor and route tests.
-    """
-    set_project_root(_WS_REPO_ROOT)
-    yield
-
-
 @pytest.fixture(autouse=True)
 def _haute_write_sandbox(
     request: pytest.FixtureRequest,
@@ -1189,6 +1197,9 @@ def _haute_write_sandbox(
         sandbox_home = tmp_path / "_home"
         sandbox_tmp.mkdir(exist_ok=True)
         sandbox_home.mkdir(exist_ok=True)
+        # The test's project root, as `haute serve` runs in its project's: a library
+        # that writes to the working directory (CatBoost's catboost_info) writes inside
+        # the sandbox.
         monkeypatch.chdir(tmp_path)
         for var in ("TMPDIR", "TEMP", "TMP"):
             monkeypatch.setenv(var, str(sandbox_tmp))
@@ -1225,10 +1236,8 @@ def haute_scratch(tmp_path: Path) -> Path:
     Same substrate as ``tmp_path`` (unique per test, platform-appropriate,
     auto-pruned) plus the sandbox semantics: it is exactly the root the
     layer-3 guard confines strict tests to and exports as
-    ``HAUTE_TEST_SANDBOX_ROOT``. It is also the declared Haute project root
-    for execution tests that build graphs against files in this directory.
+    ``HAUTE_TEST_SANDBOX_ROOT``. It is also the project every test runs in.
     """
-    set_project_root(tmp_path)
     return tmp_path
 
 

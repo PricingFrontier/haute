@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from tests._project import use_project
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
@@ -40,7 +41,7 @@ def _trace_api_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     ``Path.cwd()``. These tests build per-test parquet files, so the
     temp directory must be the request's project root.
     """
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
 
 def _simple_graph(parquet_path: str | Path, code: str = "df = src") -> dict:
@@ -416,6 +417,28 @@ class TestResponseShape:
 
         assert resp.status_code == 500
         assert resp.json()["detail"] == "Operation failed. Check the server logs for details."
+
+    @pytest.mark.in_process
+    def test_route_answers_every_field_its_model_declares(self, client, tmp_path, monkeypatch):
+        """The browser's generated validator requires every serialized field, so the trace
+        answers its model's serialization, not the dict a diagnostic was built as."""
+        import haute.routes.pipeline as pipeline_route
+        from haute._trace_correlation import _join_no_match_diagnostic
+
+        real = pipeline_route.trace_result_to_dict
+        diagnostic = _join_no_match_diagnostic("s", "t", {"x": 1})
+        assert "seed_node_ids" not in diagnostic
+        monkeypatch.setattr(
+            pipeline_route,
+            "trace_result_to_dict",
+            lambda result: {**real(result), "correlation_diagnostics": [diagnostic]},
+        )
+
+        resp = _trace_post(client, _simple_graph(_simple_parquet(tmp_path)), row_index=0)
+
+        assert resp.status_code == 200, resp.text
+        [answered] = resp.json()["trace"]["correlation_diagnostics"]
+        assert answered == {**diagnostic, "seed_node_ids": []}
 
 
 # ===========================================================================

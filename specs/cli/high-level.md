@@ -339,7 +339,8 @@ Invariants that hold across every command:
 - Depends on [deploy](../deploy/high-level.md) for `deploy`/`smoke`/`impact`/`status`
   (`DeployConfig`, `resolve_config`, `validate_deploy`, `score_test_quotes`, `deploy_resolved`,
   `score_endpoint_batched`, `score_http_endpoint_batched`, `get_deploy_status`).
-- Depends on [server-api](../server-api/high-level.md) for `serve` (`haute.server:app`,
+- Depends on [server-api](../server-api/high-level.md) for `serve`
+  (`haute.server:create_app_from_environment`,
   `STATIC_DIR`, `static_build_ready`).
 - Depends on [modelling](../modelling/high-level.md) for `train` (`TrainingJob.run`).
 - Depends on [sandbox-security](../sandbox-security/high-level.md) for `serve`'s local session

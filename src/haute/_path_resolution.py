@@ -4,23 +4,14 @@ from __future__ import annotations
 
 import glob
 import os
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
-from functools import wraps
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal, TypeVar, cast
+from typing import Literal
 
-from haute._sandbox import _get_project_root, is_contained
-from haute._types import PipelineGraph
+from haute._project_context import current_project
+from haute._sandbox import is_contained
 from haute._validation_error import HauteValidationError
 
 PathPreference = Literal["project", "pipeline"]
-_CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
-_RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(  # pragma: no mutate
-    "haute_runtime_project_root",
-    default=None,
-)
 
 
 class RuntimePathError(HauteValidationError):
@@ -88,114 +79,6 @@ def _resolve_source_file_parent(  # pragma: no mutate
     return source.resolve().parent
 
 
-def _infer_project_root(
-    *,  # pragma: no mutate
-    project_root: str | Path | None,  # pragma: no mutate
-    source_file: str | Path | None,  # pragma: no mutate
-) -> Path:
-    if project_root is not None:
-        return Path(project_root).resolve()
-
-    current_project = _get_project_root().resolve()
-    if not source_file:
-        return current_project
-
-    source = Path(_normalise_path_text(source_file))
-    if not source.is_absolute():
-        return current_project
-
-    # not contained_path: a source spelled inside the project is not an external
-    # pipeline, so it must also resolve inside it
-    if source.absolute().is_relative_to(current_project):
-        if not is_contained(current_project, source.resolve()):
-            raise RuntimePathOutsideProjectError(
-                "Pipeline source resolves outside the project root"
-            )
-        return current_project
-    resolved_source = source.resolve()
-    # not contained_path: chooses the root; a pipeline outside the project is its own
-    if resolved_source.is_relative_to(current_project):
-        return current_project
-    return resolved_source.parent
-
-
-def current_runtime_project_root() -> Path:
-    """Return the execution-scoped root, falling back to the selected project."""
-    return _RUNTIME_PROJECT_ROOT.get() or _get_project_root().resolve()
-
-
-@contextmanager
-def runtime_project_root_scope(
-    source_file: str | Path | None,  # pragma: no mutate
-    *,
-    project_root: str | Path | None = None,
-) -> Iterator[Path]:
-    """Scope all builder path reads to the selected pipeline's project root.
-
-    *project_root* names the root outright (deploy's validated one); otherwise it
-    is inferred from *source_file*.
-    """
-    root = _infer_project_root(project_root=project_root, source_file=source_file)
-    token = _RUNTIME_PROJECT_ROOT.set(root)
-    try:
-        yield root
-    finally:
-        _RUNTIME_PROJECT_ROOT.reset(token)
-
-
-@contextmanager
-def standalone_project_root_scope(source_file: str | Path | None) -> Iterator[Path]:
-    """Scope a standalone run's root from its pipeline file, unless one is already scoped.
-
-    ``Pipeline.run()`` and ``score()`` run outside any execution entry point, so
-    without this their node loaders would anchor to the working directory. A
-    pipeline runs in the nearest Haute project (``haute.toml``) that holds its
-    file, whatever the working directory; a script in no project falls back to
-    ``_infer_project_root``'s rule (the current project if it holds the file,
-    else the file's folder). An execution that already scoped a root (deploy's
-    validated one) keeps it.
-    """
-    active = _RUNTIME_PROJECT_ROOT.get()
-    if active is not None:
-        yield active
-        return
-    with runtime_project_root_scope(
-        source_file, project_root=_enclosing_haute_project(source_file)
-    ) as root:
-        yield root
-
-
-def _enclosing_haute_project(source_file: str | Path | None) -> Path | None:
-    """The nearest Haute project holding a pipeline file, if there is one."""
-    if not source_file:
-        return None
-    source = Path(_normalise_path_text(source_file))
-    if not source.is_absolute():
-        return None
-    from haute._project import get_project_root
-    from haute.errors import ConfigError
-
-    try:
-        return get_project_root(source.resolve().parent)
-    except ConfigError:
-        # Not inside a Haute project: the pipeline's folder is its root.
-        return None
-
-
-def runtime_project_root_scoped(function: _CallableT) -> _CallableT:
-    """Decorate an execution entry point whose first argument is a graph."""
-
-    @wraps(function)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        graph = args[0] if args else kwargs.get("graph")
-        if not isinstance(graph, PipelineGraph):
-            raise TypeError(f"{function.__name__} requires a PipelineGraph as its graph argument")
-        with runtime_project_root_scope(graph.source_file):
-            return function(*args, **kwargs)
-
-    return cast(_CallableT, wrapper)
-
-
 def _candidate_if_allowed(
     candidate: Path,
     project_root: Path,
@@ -225,7 +108,7 @@ def resolve_runtime_file_path(
     missing candidates, a glob pattern existing where it matches a file; if
     both candidates exist, ``prefer`` decides.
     """
-    root = _infer_project_root(project_root=project_root, source_file=source_file)
+    root = current_project().root if project_root is None else Path(project_root).resolve()
     normalised_path = _normalise_path_text(raw_path)
     raw = Path(normalised_path)
     _reject_reserved_device_components(raw_path, raw)
@@ -325,10 +208,9 @@ def resolve_graph_source_path(raw_path: str, source_file: str | Path) -> str:
     The pipeline file's directory is tried first, then the project root (where the
     editor's file browser writes paths from), with Windows backslashes read as
     separators, so a project saved on Windows scores the same on Linux. Neither
-    candidate may leave the project root, as in deploy's validation and bundling:
-    the scoped runtime root (deploy's validated one) or else the root inferred
-    from *source_file*. A path found in neither place keeps the first candidate
-    inside the root, and one with none raises
+    candidate may leave the current project's root (deploy's validated one), as
+    in deploy's validation and bundling. A path found in neither place keeps the
+    first candidate inside the root, and one with none raises
     :class:`RuntimePathOutsideProjectError`.
     """
     return str(
@@ -336,7 +218,6 @@ def resolve_graph_source_path(raw_path: str, source_file: str | Path) -> str:
             raw_path,
             source_file=source_file,
             pipeline_dir=Path(source_file).parent,
-            project_root=_RUNTIME_PROJECT_ROOT.get(),
             prefer="pipeline",
             enforce_project_root=True,
         ).resolve()

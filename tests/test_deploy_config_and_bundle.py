@@ -37,6 +37,7 @@ from haute.deploy._config import ContainerConfig, DeployConfig
 from haute.deploy._utils import build_manifest
 from haute.errors import ConfigError, DeployError
 from tests._deploy_helpers import make_resolved_deploy
+from tests._project import use_project
 from tests.conftest import make_graph as _g
 
 # ---------------------------------------------------------------------------
@@ -290,7 +291,7 @@ class TestBundledPathsAreAbsolute:
         cwd_file = cwd_dir / "lookup.parquet"
         pl.DataFrame({"source": ["CWD"]}).write_parquet(cwd_file)
 
-        monkeypatch.chdir(cwd_dir)
+        use_project(cwd_dir)
 
         graph = _make_datasource_graph("static_ds", "lookup.parquet")
         artifacts = collect_artifacts(graph, [], pipeline_dir)
@@ -344,7 +345,7 @@ class TestBundledPathsAreAbsolute:
         pl.DataFrame({"payload": [1]}).write_parquet(real_file)
 
         # Build the manifest from the pipeline directory as CWD.
-        monkeypatch.chdir(pipeline_dir)
+        use_project(pipeline_dir)
         graph = _make_datasource_graph("static_ds", "lookup.parquet")
         artifacts = collect_artifacts(graph, [], pipeline_dir)
         resolved = make_resolved_deploy(
@@ -360,7 +361,7 @@ class TestBundledPathsAreAbsolute:
         # resolve to a non-existent file.
         other_dir = tmp_path / "somewhere_else"
         other_dir.mkdir()
-        monkeypatch.chdir(other_dir)
+        use_project(other_dir)
 
         # Round-trip through JSON to mimic the container reading manifest.
         round_tripped = json.loads(json.dumps(manifest))
@@ -468,7 +469,7 @@ class TestSnapshotGenerationLease:
         )
         store = SourceCacheStore(tmp_path)
         generation = build_input_snapshot(config, store=store, base_dir=tmp_path)
-        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+        use_project(tmp_path)
         resources = ExitStack()
         try:
             artifacts = collect_artifacts(graph, [], tmp_path, resources=resources)
@@ -519,7 +520,7 @@ class TestSnapshotGenerationLease:
             store=store,
             base_dir=project_dir,
         )
-        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: project_dir)
+        use_project(project_dir)
         resources = ExitStack()
         provenance: dict[str, dict[str, object]] = {}
 
@@ -610,7 +611,7 @@ class TestSnapshotGenerationLease:
         assert generation.data_paths[0].name == "part-00000.parquet"
         assert generation.data_paths[1].name == "part-00001.parquet"
 
-        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+        use_project(tmp_path)
         resources = ExitStack()
         try:
             artifacts = collect_artifacts(graph, [], tmp_path, resources=resources)

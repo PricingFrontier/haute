@@ -26,9 +26,10 @@ from haute._mlflow_io import (
     load_mlflow_model,
 )
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
-from haute._sandbox import set_project_root
+from haute._project_context import context_thread
 from haute.errors import MlflowConfigError
 from haute.modelling._mlflow_settings import TrackingConfig
+from tests._project import use_project
 
 RUN_ID = "run-1"
 ARTIFACT = "model.cbm"
@@ -57,7 +58,7 @@ def _env_free(monkeypatch: pytest.MonkeyPatch):
 def workspace(tmp_path: Path):
     """Project root with three local runs folders and an isolated disk cache."""
     (tmp_path / "haute.toml").write_text(_BASE_TOML, encoding="utf-8")
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     folders = {}
     for name in ("a", "b", "c"):
         folder = tmp_path / f"runs-{name}"
@@ -473,8 +474,8 @@ class TestConcurrentBackends:
                 errors[name] = exc
 
         threads = [
-            threading.Thread(target=run, args=("local", "local"), daemon=True),
-            threading.Thread(target=run, args=("server", "server"), daemon=True),
+            context_thread(run, args=("local", "local"), daemon=True),
+            context_thread(run, args=("server", "server"), daemon=True),
         ]
 
         with (

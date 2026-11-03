@@ -59,13 +59,13 @@ def _read_input_source(graph: PipelineGraph, node: GraphNode, resolved_path: str
     config = node.data.config
     if node.data.nodeType == NodeType.DATA_INPUT:
         from haute._input_providers import resolve_data_input
-        from haute._sandbox import _get_project_root
+        from haute._project_context import current_project
         from haute._source_cache import SourceCacheStore
 
         base_dir = Path(graph.source_file).parent if graph.source_file else None
         return resolve_data_input(
             {**config, **({"path": resolved_path} if resolved_path else {})},
-            store=SourceCacheStore(_get_project_root()),
+            store=SourceCacheStore(current_project().root),
             base_dir=base_dir,
         )
     if node.data.nodeType in REQUEST_INPUT_NODE_TYPES and not is_json_api_input_path(resolved_path):

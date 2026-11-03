@@ -29,6 +29,7 @@ from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
 from haute._logging import get_logger
+from haute._project_context import current_project
 from haute._project_layout import (
     LOCAL_FOLDERS,
     PIPELINE_FILES_SUBFOLDERS,
@@ -36,7 +37,6 @@ from haute._project_layout import (
     pipeline_files_folder,
     versioned_name,
 )
-from haute._sandbox import _get_project_root
 from haute.hosted import databricks_app_environment
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import LedgerCapture, capture_save_in_ledger
@@ -184,7 +184,7 @@ def _state(states: dict[str, FileState], project_relative: str) -> FileState | N
 
 
 def _list_folder(place_name: ProjectFilePlace, path: str) -> ProjectFolderResponse:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     folder = _target(project_root, place_name, path)
     place = folder.place
     at_root = folder.relative == ""
@@ -301,7 +301,7 @@ class _WritePlan:
 
 def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -> _WritePlan:
     """Everything a write can check before its body is read."""
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = _writable_file_target(project_root, place, path)
     display = target.project_relative
     if target.place.name == "local" and databricks_app_environment() is not None:
@@ -333,18 +333,29 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
                 "versioned. Change that rule to apply only at the project root, for "
                 "example '/data/' instead of 'data/'.",
             )
+    # The destination's folders are made only when the file is published, under the
+    # project write lock, so a refused upload leaves none behind.
+    nearest = _nearest_existing_folder(target)
     try:
-        target.path.parent.mkdir(parents=True, exist_ok=True)
-    except (FileExistsError, NotADirectoryError):
-        raise _refusal(400, "invalid_path", f"{display} is inside a file, not a folder.") from None
-    try:
-        ensure_disk_headroom(target.path.parent, length)
+        ensure_disk_headroom(nearest, length)
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
             raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
         raise
     branch = read_working_branch(project_root) if target.place.name == "pipeline" else None
     return _WritePlan(target, length, branch, _staging_path(project_root))
+
+
+def _nearest_existing_folder(target: _Target) -> Path:
+    """The destination's nearest folder that exists, refusing a path inside a file."""
+    folder = target.path.parent
+    while not folder.exists():
+        folder = folder.parent
+    if not folder.is_dir():
+        raise _refusal(
+            400, "invalid_path", f"{target.project_relative} is inside a file, not a folder."
+        )
+    return folder
 
 
 def _staging_path(project_root: Path) -> Path:
@@ -392,7 +403,7 @@ def _check_staging(project_root: Path, relative: str) -> None:
 def _publish_write(
     plan: _WritePlan, staging: Path, replace_revision: str | None
 ) -> ProjectFileWriteResponse:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = plan.target
     display = target.project_relative
     if target.place.name == "pipeline" and read_working_branch(project_root) != plan.branch:
@@ -414,6 +425,10 @@ def _publish_write(
             "file_changed",
             f"{display} changed since you chose to replace it. Look again, then retry.",
         )
+    try:
+        target.path.parent.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        raise _refusal(400, "invalid_path", f"{display} is inside a file, not a folder.") from None
     try:
         publish_staged_file(staging, target.path, replace=replace_revision is not None)
     except FileExistsError:
@@ -481,7 +496,7 @@ async def write_project_file(
                 400, "length_mismatch", f"The upload of {display} ended before it was complete."
             )
         return await project_write(
-            _get_project_root().resolve(), lambda: _publish_write(plan, staging, replace_revision)
+            current_project().root, lambda: _publish_write(plan, staging, replace_revision)
         )
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
@@ -492,7 +507,7 @@ async def write_project_file(
 
 
 def _download_target(place: ProjectFilePlace, path: str) -> Path:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = _file_target(project_root, place, path)
     if not target.path.is_file():
         raise _refusal(404, "file_missing", f"{target.project_relative} doesn't exist.")
@@ -513,7 +528,7 @@ async def download_project_file(place: ProjectFilePlace, path: str) -> FileRespo
 
 
 def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDeleteResponse:
-    project_root = _get_project_root().resolve()
+    project_root = current_project().root
     target = _writable_file_target(project_root, place, path)
     display = target.project_relative
     _target(project_root, target.place.name, target.relative)
@@ -548,6 +563,4 @@ async def delete_project_file(
     place: ProjectFilePlace, path: str, revision: str
 ) -> ProjectFileDeleteResponse:
     """Delete one file, if it is still the revision the analyst saw."""
-    return await project_write(
-        _get_project_root().resolve(), lambda: _delete(place, path, revision)
-    )
+    return await project_write(current_project().root, lambda: _delete(place, path, revision))

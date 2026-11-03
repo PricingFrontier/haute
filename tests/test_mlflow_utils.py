@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,6 +25,7 @@ from haute._mlflow_utils import (
     tracking_uri_from_environment,
 )
 from haute.errors import MlflowConfigError
+from tests._project import use_project
 
 
 @pytest.mark.parametrize("original_uri", [None, "https://user:secret@example.invalid/mlflow"])
@@ -106,9 +108,9 @@ def test_mlflow_fluent_operation_serializes_writers_and_restores_state() -> None
         mlflow.set_registry_uri(expected_registry)
         os.environ.update(expected_environment)
         with ThreadPoolExecutor(max_workers=2) as executor:
-            first_future = executor.submit(first_writer)
+            first_future = executor.submit(contextvars.copy_context().run, first_writer)
             assert first_entered.wait(timeout=5)
-            second_future = executor.submit(second_writer)
+            second_future = executor.submit(contextvars.copy_context().run, second_writer)
             assert second_started.wait(timeout=5)
             assert not second_entered.wait(timeout=0.1)
             release_first.set()
@@ -156,7 +158,6 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
 
     from haute._mlflow_io import _resolve_artifact_local
     from haute._mlflow_utils import resolve_mlflow_source
-    from haute._sandbox import set_project_root
     from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
     for v in (
@@ -169,7 +170,7 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "model-cache")
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     records = {}
     for name in ("a", "b"):
         uri = (tmp_path / name).as_uri()
@@ -294,9 +295,8 @@ class TestResolveBackend:
     def test_local_identity_is_canonical_folder(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._sandbox import set_project_root
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         for v in (
             "DATABRICKS_HOST",
             "DATABRICKS_TOKEN",
@@ -314,7 +314,6 @@ class TestResolveBackend:
     def test_two_local_folders_have_distinct_digests(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._sandbox import set_project_root
         from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
         for v in (
@@ -325,7 +324,7 @@ class TestResolveBackend:
             "MLFLOW_TRACKING_URI",
         ):
             monkeypatch.delenv(v, raising=False)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         save_mlflow_settings(MlflowSettings(folder="folder_a"), tmp_path)
         backend_a = resolve_backend("local")
         save_mlflow_settings(MlflowSettings(folder="folder_b"), tmp_path)
@@ -529,9 +528,7 @@ class TestResolveBackend:
     ) -> None:
         from unittest.mock import patch
 
-        from haute._sandbox import set_project_root
-
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         for v in (
             "DATABRICKS_HOST",
             "DATABRICKS_TOKEN",
@@ -569,9 +566,7 @@ class TestResolveMlflowSourceDestination:
     ) -> None:
         from unittest.mock import patch
 
-        from haute._sandbox import set_project_root
-
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         for v in (
             "DATABRICKS_HOST",
             "DATABRICKS_TOKEN",
@@ -594,9 +589,7 @@ class TestResolveMlflowSourceDestination:
     ) -> None:
         from unittest.mock import patch
 
-        from haute._sandbox import set_project_root
-
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "token-val")
         monkeypatch.delenv("MLFLOW_ENABLE_DB_SDK", raising=False)
@@ -751,7 +744,12 @@ class TestEnsureExperiment:
 
         monkeypatch.setattr(client, "create_experiment", create_after_the_other_looked)
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(ensure_experiment, client, uri, "pricing") for _ in range(2)]
+            futures = [
+                executor.submit(
+                    contextvars.copy_context().run, ensure_experiment, client, uri, "pricing"
+                )
+                for _ in range(2)
+            ]
             ids = {future.result(timeout=30) for future in futures}
 
         assert creators == ["pricing"]

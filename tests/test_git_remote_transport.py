@@ -28,6 +28,7 @@ from haute._git import (
     remote_is_empty,
     set_working_branch,
 )
+from tests._project import use_project
 
 WORKING = "pricing"
 LEDGER = f"{WORKING}-save"
@@ -98,7 +99,7 @@ def remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     _git(project, "add", "main.py")
     _git(project, "commit", "-q", "-m", "Initial project")
     _git(project, "checkout", "-q", "-b", WORKING)
-    monkeypatch.chdir(project)
+    use_project(project)
     set_working_branch(WORKING, project, cwd=project)
 
     served = tmp_path / "served"

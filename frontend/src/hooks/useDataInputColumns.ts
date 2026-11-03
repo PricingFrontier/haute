@@ -152,15 +152,13 @@ export function useDataInputColumns(
       signal: controller.signal,
     })
       .then((result) => {
-        if (result.columns) {
-          const fingerprint = columnFingerprint(result.columns)
-          // Only update local state if columns actually changed (avoids re-render cascade)
-          if (fingerprint !== prevColumnFingerprint.current) {
-            prevColumnFingerprint.current = fingerprint
-            setDataInputColumns(result.columns)
-          }
-          setColumnsCache(dataInput, result.columns, requestStructuralVersion, activeSource)
+        const fingerprint = columnFingerprint(result.columns)
+        // Only update local state if columns actually changed (avoids re-render cascade)
+        if (fingerprint !== prevColumnFingerprint.current) {
+          prevColumnFingerprint.current = fingerprint
+          setDataInputColumns(result.columns)
         }
+        setColumnsCache(dataInput, result.columns, requestStructuralVersion, activeSource)
       })
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return

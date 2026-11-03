@@ -17,6 +17,7 @@ import polars as pl
 import pytest
 
 from haute.errors import RequestRefusedError
+from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -45,7 +46,7 @@ def _clean_jobs():
 
 @pytest.fixture()
 def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(haute_scratch)
+    use_project(haute_scratch)
     (haute_scratch / "main.py").write_text("# pipeline\n", encoding="utf-8")
     return haute_scratch
 
@@ -327,6 +328,61 @@ def test_rows_without_a_usable_weight_are_left_out(cached) -> None:
     assert level.rows == 2
     assert level.weight == pytest.approx(4.0)
     assert level.target_mean == pytest.approx((1.0 + 9.0) / 4.0)
+
+
+def test_columns_named_like_the_internal_sums_are_read_as_data(cached) -> None:
+    graph = cached(
+        pl.DataFrame(
+            {
+                "__w": [10.0, 20.0],
+                "__wy": [1.0, 3.0],
+                "x": ["a", "b"],
+            }
+        )
+    )
+
+    plain = _relationship(_ask(graph, target="__w", features=["x"]), "x")
+    weighted = _relationship(_ask(graph, target="__w", weight="__wy", features=["x"]), "x")
+
+    assert [level.target_mean for level in plain.levels] == pytest.approx([10.0, 20.0])
+    assert plain.strength == pytest.approx(1.0, abs=1e-9)
+    assert [level.weight for level in weighted.levels] == pytest.approx([3.0, 1.0])
+    assert weighted.strength == pytest.approx(1.0, abs=1e-9)
+
+
+def test_each_feature_is_answered_by_one_query(cached, monkeypatch: pytest.MonkeyPatch) -> None:
+    from haute.routes import _explore_relationships as relationships_module
+
+    graph = cached(
+        pl.DataFrame(
+            {
+                "y": [1.0, 2.0, 3.0, 4.0],
+                "n1": [1.0, 2.0, 3.0, None],
+                "n2": [4, 3, 2, 1],
+                "c1": ["a", "b", "a", None],
+                "c2": ["p", "q", "r", "s"],
+            }
+        )
+    )
+    collect = relationships_module.cancellable_streaming_collect
+    queries: list[pl.LazyFrame] = []
+
+    def counted(query: pl.LazyFrame, **kwargs: Any) -> pl.DataFrame:
+        queries.append(query)
+        return collect(query, **kwargs)
+
+    monkeypatch.setattr(relationships_module, "cancellable_streaming_collect", counted)
+
+    response = _ask(graph, target="y", features=["n1", "n2", "c1", "c2"], level_limit=2)
+
+    # The row count, the target totals and the centred moments, then one per feature.
+    assert len(queries) == 3 + 4
+    assert [len(r.levels) for r in sorted(response.relationships, key=lambda r: r.feature)] == [
+        3,  # c1: a, b, (missing)
+        3,  # c2: the two heaviest and Other
+        4,  # n1: three occupied bins and (missing)
+        4,  # n2: four occupied bins
+    ]
 
 
 # ------------------------------------------------------------ key check

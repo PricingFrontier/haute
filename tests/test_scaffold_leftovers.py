@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from haute.cli import cli
+from tests._project import use_project
 
 _UV_PACKAGE_PYPROJECT = """\
 [project]
@@ -42,8 +43,8 @@ def _uv_init(project: Path) -> None:
     (package / "__init__.py").write_bytes(_UV_PACKAGE_INIT.encode("utf-8"))
 
 
-def _init(project: Path, monkeypatch: pytest.MonkeyPatch, *args: str) -> str:
-    monkeypatch.chdir(project)
+def _init(project: Path, *args: str) -> str:
+    use_project(project)
     result = CliRunner().invoke(cli, ["init", *args], catch_exceptions=False)
     assert result.exit_code == 0, result.output
     return result.output
@@ -55,11 +56,11 @@ def _init(project: Path, monkeypatch: pytest.MonkeyPatch, *args: str) -> str:
     ids=["automated", "workbench"],
 )
 def test_a_first_init_removes_uv_inits_leftovers_and_writes_no_defaults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
+    tmp_path: Path, args: tuple[str, ...]
 ) -> None:
     _uv_init(tmp_path)
 
-    output = _init(tmp_path, monkeypatch, *args)
+    output = _init(tmp_path, *args)
 
     assert not (tmp_path / "README.md").exists()
     assert not (tmp_path / "src").exists()
@@ -76,38 +77,32 @@ def test_a_first_init_removes_uv_inits_leftovers_and_writes_no_defaults(
     assert gitignore.count("# Haute") == 1
 
 
-def test_a_rerun_keeps_a_readme_and_package_written_by_hand(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _init(tmp_path, monkeypatch)
+def test_a_rerun_keeps_a_readme_and_package_written_by_hand(tmp_path: Path) -> None:
+    _init(tmp_path)
     (tmp_path / "README.md").write_bytes(b"# Motor pricing\n")
     (tmp_path / "src" / "motor_pricing").mkdir(parents=True)
     (tmp_path / "src" / "motor_pricing" / "__init__.py").write_bytes(_UV_PACKAGE_INIT.encode())
 
-    _init(tmp_path, monkeypatch)
+    _init(tmp_path)
 
     assert (tmp_path / "README.md").read_bytes() == b"# Motor pricing\n"
     assert (tmp_path / "src" / "motor_pricing" / "__init__.py").exists()
 
 
-def test_a_first_init_keeps_a_package_something_imports(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_first_init_keeps_a_package_something_imports(tmp_path: Path) -> None:
     _uv_init(tmp_path)
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_motor.py").write_bytes(b"from motor_pricing import main\n")
 
-    _init(tmp_path, monkeypatch)
+    _init(tmp_path)
 
     assert (tmp_path / "src" / "motor_pricing" / "__init__.py").exists()
     pyproject = tomllib.loads((tmp_path / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["build-system"]["build-backend"] == "uv_build"
 
 
-def test_env_example_says_what_each_azure_value_is_for(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _init(tmp_path, monkeypatch, "--workbench", "--store", "sqlserver", "--sign-in", "password")
+def test_env_example_says_what_each_azure_value_is_for(tmp_path: Path) -> None:
+    _init(tmp_path, "--workbench", "--store", "sqlserver", "--sign-in", "password")
     lines = (tmp_path / ".env.example").read_text(encoding="utf-8").splitlines()
     for variable in ("AZURE_SUBSCRIPTION_ID=", "AZURE_TENANT_ID=", "AZURE_CLIENT_ID="):
         assert lines[lines.index(variable) - 1].startswith("# ")

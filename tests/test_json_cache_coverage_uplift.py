@@ -14,18 +14,20 @@ import orjson
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._project import project_app, use_project
+
 
 @pytest.fixture()
-def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Chdir into a fresh tmp dir."""
-    monkeypatch.chdir(tmp_path)
+def project(tmp_path: Path) -> Path:
+    """A fresh tmp dir as the project the route anchors paths to."""
+    use_project(tmp_path)
     return tmp_path
 
 
 @pytest.fixture()
-def client(isolated_cwd: Path) -> TestClient:
-    """TestClient under the same isolated cwd, for route-level tests."""
-    from haute.server import app
+def client(project: Path) -> TestClient:
+    """TestClient serving that project, for route-level tests."""
+    app = project_app()
 
     return TestClient(app)
 
@@ -36,19 +38,17 @@ class TestInferExceptions:
         assert resp.status_code == 404
         assert "Data file not found" in resp.json()["detail"]
 
-    def test_infer_malformed_json_returns_422(self, client: TestClient, isolated_cwd: Path) -> None:
-        data_dir = isolated_cwd / "data"
+    def test_infer_malformed_json_returns_422(self, client: TestClient, project: Path) -> None:
+        data_dir = project / "data"
         data_dir.mkdir()
         (data_dir / "broken.json").write_bytes(b"{ broken")
         resp = client.post("/api/json-cache/infer", json={"path": "data/broken.json"})
         assert resp.status_code == 422
         assert "Invalid JSON in data file" in resp.json()["detail"]
 
-    def test_infer_generic_exception_returns_500(
-        self, client: TestClient, isolated_cwd: Path
-    ) -> None:
+    def test_infer_generic_exception_returns_500(self, client: TestClient, project: Path) -> None:
         """Unexpected internal error during inference → 500 with opaque detail."""
-        data_dir = isolated_cwd / "data"
+        data_dir = project / "data"
         data_dir.mkdir()
         (data_dir / "ok.json").write_bytes(orjson.dumps([{"x": 1}]))
         with patch(

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { makeSavePipelineResponse } from "../../test-utils/factories"
+import type { PreviewNodeResponse } from "../../api/types"
+import { makePreviewResponse } from "../../test-utils/factories"
 import type { Mock } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -338,7 +341,7 @@ describe("usePipelineAPI", () => {
 
   it("keeps training attached through Save and accepts its pending completion", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ source_file: "test.py", source_revision: "revision-old" }))
-    mockSave.mockResolvedValue({ file: "test.py", pipeline_name: "test", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "test.py", pipeline_name: "test", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" }))
     let finish!: (value: Awaited<ReturnType<typeof getTrainStatus>>) => void
     vi.mocked(getTrainStatus).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
     const params = makeParams()
@@ -591,12 +594,12 @@ describe("usePipelineAPI", () => {
       preserved_blocks: ["KEEP = 1"],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const params = makeParams({
       preservedBlocksRef: { current: ["KEEP = 1"] },
     })
@@ -625,10 +628,10 @@ describe("usePipelineAPI", () => {
 
   it("names the tab's live-sync connection, so the server leaves it out of the save's broadcast", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     setSyncConnectionId("tab-1")
     try {
       const params = makeParams()
@@ -646,7 +649,7 @@ describe("usePipelineAPI", () => {
   })
 
   describe("global constants", () => {
-    const saved = { file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }
+    const saved = makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", document_fingerprint: "fingerprint-saved" })
 
     async function loadAndSave(fixture: Parameters<typeof makeLoadedPipeline>[0]) {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], ...fixture }))
@@ -719,12 +722,12 @@ describe("usePipelineAPI", () => {
       edges: [],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -751,12 +754,12 @@ describe("usePipelineAPI", () => {
       },
       documentFingerprint: "loaded-document-fingerprint",
     })
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -874,12 +877,12 @@ describe("usePipelineAPI", () => {
       useUIStore.getState().setSyncBanner(
         "Pipeline changed on disk while you have unsaved changes.",
       )
-      resolveSave({
+      resolveSave(makeSavePipelineResponse({
         file: "pricing.py",
         pipeline_name: "pricing",
         source_revision: "revision-save",
         document_fingerprint: "fingerprint-saved",
-      })
+      }))
     })
 
     await expect(savePromise).resolves.toBe(true)
@@ -918,12 +921,12 @@ describe("usePipelineAPI", () => {
       )
       useDocumentStatusStore.getState().setGraphSynchronized(false)
       useUIStore.getState().setSyncBanner("External change is waiting.")
-      resolveSave({
+      resolveSave(makeSavePipelineResponse({
         file: "pricing.py",
         pipeline_name: "pricing",
         source_revision: "revision-save",
         document_fingerprint: "fingerprint-saved",
-      })
+      }))
     })
 
     await expect(savePromise).resolves.toBe(true)
@@ -960,7 +963,7 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(2))
     const oldSavedSnapshot = structuredClone(useGraphStore.getState().undoStack[0])
     if (!("nodes" in oldSavedSnapshot)) throw new Error("Expected the first save snapshot in graph history")
-    await act(async () => { resolvers[1]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new", document_fingerprint: "fingerprint-saved" }); await newer })
+    await act(async () => { resolvers[1](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new", document_fingerprint: "fingerprint-saved" })); await newer })
     const newestSavedConfig = { selected_columns: ["country"], column_renames: { country: "Country" } }
     const liveConfig = { ...newestSavedConfig, column_renames: { country: "Nation" } }
     act(() => {
@@ -976,7 +979,7 @@ describe("usePipelineAPI", () => {
       expect(params.sourceRevisionRef.current).toBe("revision-new")
       expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-new")
     }
-    await act(async () => { resolvers[0]({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old", document_fingerprint: "fingerprint-saved" }); await older })
+    await act(async () => { resolvers[0](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old", document_fingerprint: "fingerprint-saved" })); await older })
     assertNewestSaveState()
 
     // Mutation witness: accepting the old response at the production saved
@@ -1025,13 +1028,13 @@ describe("usePipelineAPI", () => {
       preserved_blocks: [],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
       warnings: ["Transform node 'claims' combines 2 inputs but has no code to combine them."],
-    })
+    }))
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -1051,7 +1054,7 @@ describe("usePipelineAPI", () => {
 
   it("handleSave includes the current submodel mirror in the payload", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const params = makeParams()
     const submodels = {
       pricing: {
@@ -1075,7 +1078,7 @@ describe("usePipelineAPI", () => {
 
   it("saves submodel boundary handles as the edge carries them", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const boundaryEdge: PipelineEdge = {
       id: "e_boundary",
       source: "pricing",
@@ -1112,12 +1115,12 @@ describe("usePipelineAPI", () => {
       preserved_blocks: [],
       source_revision: "revision-load",
     }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       file: "pricing.py",
       pipeline_name: "pricing",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
-    })
+    }))
     const root = makeNode("root", "polars", {
       data: {
         _functionName: "root_function",
@@ -1203,7 +1206,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
-      resolveSave({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+      resolveSave(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
       await savePromise
     })
 
@@ -1245,7 +1248,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
-      resolveSave({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+      resolveSave(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
       await savePromise
     })
 
@@ -1297,14 +1300,14 @@ describe("usePipelineAPI", () => {
     })
 
     await act(async () => {
-      resolveSecond({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-newer", document_fingerprint: "fingerprint-saved" })
+      resolveSecond(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-newer", document_fingerprint: "fingerprint-saved" }))
       await secondSave
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
     expect(params.sourceRevisionRef.current).toBe("revision-newer")
 
     await act(async () => {
-      resolveFirst({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-older", document_fingerprint: "fingerprint-saved" })
+      resolveFirst(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-older", document_fingerprint: "fingerprint-saved" }))
       await firstSave
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
@@ -1318,7 +1321,7 @@ describe("usePipelineAPI", () => {
 
   it("handleSave is blocked while drilled into a submodel", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" })
+    mockSave.mockResolvedValue(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save", document_fingerprint: "fingerprint-saved" }))
     const params = makeParams({
       parentGraphRef: {
         current: {
@@ -1401,14 +1404,14 @@ describe("usePipelineAPI", () => {
     ],
   ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       status: "saved",
       file: "test.py",
       pipeline_name: "test",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
       warnings: [],
-    })
+    }))
     const graph = edgeJoinSaveGraph(config)
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -1441,14 +1444,14 @@ describe("usePipelineAPI", () => {
     ["a stash captured from an older graph", -1, false],
   ])("handleSave blocks a missing edgeJoin key only for %s", async (_case, versionOffset, expectBlocked) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockSave.mockResolvedValue({
+    mockSave.mockResolvedValue(makeSavePipelineResponse({
       status: "saved",
       file: "test.py",
       pipeline_name: "test",
       source_revision: "revision-save",
       document_fingerprint: "fingerprint-saved",
       warnings: [],
-    })
+    }))
     const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -1527,14 +1530,14 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview sets loading preview then calls API", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
       preview: [{ a: 1 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -1558,14 +1561,14 @@ describe("usePipelineAPI", () => {
       source_file: "pipelines/recovered.py",
       source_revision: "revision-recovered",
     }))
-    mockRecoveryPreview.mockResolvedValue({
+    mockRecoveryPreview.mockResolvedValue(makePreviewResponse({
       node_id: "recovery_node",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 12.5 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const params = makeParams({
       sourceFileRef: { current: "pipelines/stale.py" },
       sourceRevisionRef: { current: "revision-stale" },
@@ -1624,14 +1627,7 @@ describe("usePipelineAPI", () => {
       source_file: "pipelines/recovered.py",
       source_revision: "revision-one",
     }))
-    let resolveRecoveryPreview!: (value: {
-      node_id: string
-      status: "ok"
-      columns: { name: string; dtype: string }[]
-      preview: Record<string, unknown>[]
-      row_count: number
-      column_count: number
-    }) => void
+    let resolveRecoveryPreview!: (value: PreviewNodeResponse) => void
     mockRecoveryPreview.mockImplementation(() => new Promise((resolve) => {
       resolveRecoveryPreview = resolve
     }))
@@ -1652,14 +1648,14 @@ describe("usePipelineAPI", () => {
     act(() => {
       params.sourceRevisionRef.current = "revision-two"
       useDocumentStatusStore.getState().loadLiveDocumentStatus(newerDocument, false, "live-fingerprint")
-      resolveRecoveryPreview({
+      resolveRecoveryPreview(makePreviewResponse({
         node_id: "recovery_node",
         status: "ok",
         columns: [{ name: "stale", dtype: "f64" }],
         preview: [{ stale: 1 }],
         row_count: 1,
         column_count: 1,
-      })
+      }))
     })
 
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
@@ -1678,14 +1674,7 @@ describe("usePipelineAPI", () => {
       source_file: "pipelines/recovered.py",
       source_revision: "revision-one",
     }))
-    let resolveRecoveryPreview!: (value: {
-      node_id: string
-      status: "ok"
-      columns: { name: string; dtype: string }[]
-      preview: Record<string, unknown>[]
-      row_count: number
-      column_count: number
-    }) => void
+    let resolveRecoveryPreview!: (value: PreviewNodeResponse) => void
     mockRecoveryPreview.mockImplementation(() => new Promise((resolve) => {
       resolveRecoveryPreview = resolve
     }))
@@ -1697,14 +1686,14 @@ describe("usePipelineAPI", () => {
 
     act(() => {
       useDocumentStatusStore.getState().setSystemFailure("Pipeline document could not be loaded.")
-      resolveRecoveryPreview({
+      resolveRecoveryPreview(makePreviewResponse({
         node_id: "recovery_node",
         status: "ok",
         columns: [{ name: "stale", dtype: "f64" }],
         preview: [{ stale: 1 }],
         row_count: 1,
         column_count: 1,
-      })
+      }))
     })
 
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
@@ -1731,9 +1720,9 @@ describe("usePipelineAPI", () => {
       const target = makeNode("claims")
       const params = makeParams()
       vi.mocked(previewInputs).mockResolvedValue({ input_node_ids: [input.id] })
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
-      })
+      }))
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false), { timeout: CACHE_WAIT_TIMEOUT_MS })
       params.graphRef.current = { nodes: [input, target], edges: [makeEdge(input.id, target.id)] }
@@ -1772,9 +1761,9 @@ describe("usePipelineAPI", () => {
     const target = makeNode("claims")
     const params = makeParams()
     params.graphRef.current = { nodes: [unfinished, target], edges: [] }
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "claims", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
-    })
+    }))
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -1797,14 +1786,14 @@ describe("usePipelineAPI", () => {
       joined: false, forced: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "target",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
       preview: [{ a: 1 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const input = makeSnapshotInput()
     const target = makeNode("target")
     const params = makeParams()
@@ -1850,9 +1839,9 @@ describe("usePipelineAPI", () => {
       joined: false, forced: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "target", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
-    })
+    }))
     const read = makeSnapshotInput("read-input")
     const aboveSeed = makeSnapshotInput("above-seed")
     const target = makeNode("target")
@@ -1886,9 +1875,9 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
     mockBuildInputCache.mockRejectedValue(new Error("this input cannot be built"))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "target", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0,
-    })
+    }))
     const unused = makeSnapshotInput("unused-input")
     const target = makeNode("target")
     const params = makeParams()
@@ -1954,14 +1943,14 @@ describe("usePipelineAPI", () => {
       mockGetInputCacheStatus.mockResolvedValue(
         inputCacheSnapshot("ready", freshness),
       )
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "target",
         status: "ok",
         columns: [],
         preview: [],
         row_count: 0,
         column_count: 0,
-      })
+      }))
       const input = makeSnapshotInput()
       const target = makeNode("target")
       const params = makeParams()
@@ -1986,14 +1975,14 @@ describe("usePipelineAPI", () => {
     NODE_TYPES.SUBMODEL_PORT,
   ])("fetchPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "should-not-run",
       status: "ok",
       columns: [],
       preview: [],
       row_count: 0,
       column_count: 0,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2009,14 +1998,14 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "should-not-run",
       status: "ok",
       columns: [],
       preview: [],
       row_count: 0,
       column_count: 0,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2064,14 +2053,14 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview propagation skips downstream submodel placeholders", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "upstream",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 100 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
     const submodel = makeNode("model_stuff", NODE_TYPES.SUBMODEL)
     const params = makeParams()
@@ -2095,14 +2084,14 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview propagation skips downstream submodel ports typed by React Flow", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "submodel_runtime/pricing/upstream",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 100 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
     const port = makeSubmodelPortNode()
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
@@ -2128,14 +2117,14 @@ describe("usePipelineAPI", () => {
 
   it("refreshPreview skips stale upstream submodel placeholders", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "target",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 100 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const submodel = makeNode("model_stuff", NODE_TYPES.SUBMODEL)
     const target = makeNode("target", NODE_TYPES.POLARS)
     const params = makeParams()
@@ -2158,14 +2147,14 @@ describe("usePipelineAPI", () => {
 
   it("refreshPreview skips stale upstream submodel ports typed by React Flow", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "target",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 100 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const port = makeSubmodelPortNode()
     const target = makeNode("target", NODE_TYPES.POLARS)
     const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
@@ -2195,14 +2184,14 @@ describe("usePipelineAPI", () => {
       preserved_blocks: [],
       source_revision: "revision-load",
     }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "submodel_runtime/pricing/nb_batch",
       status: "ok",
       columns: [{ name: "quote_id", dtype: "str" }],
       preview: [{ quote_id: "Q1" }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const child = makeNode("nb_batch", NODE_TYPES.DATA_INPUT)
     const params = makeParams({
       activeSubmodelIdentity: makeActiveSubmodelIdentity(),
@@ -2240,7 +2229,7 @@ describe("usePipelineAPI", () => {
       if (request.requestedPreviewColumns?.includes("first_name")) {
         throw new Error("Eager projection references columns missing from the node output schema.")
       }
-      return {
+      return makePreviewResponse({
         node_id: request.nodeId,
         status: "ok",
         columns: remainingColumns,
@@ -2248,7 +2237,7 @@ describe("usePipelineAPI", () => {
         preview: [{ quote_id: 1 }],
         row_count: 1,
         column_count: 1,
-      }
+      })
     })
     const params = makeParams()
     wireGraphStoreNodeSetters(params)
@@ -2284,7 +2273,7 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview requests known preview columns for nodes with cached schema", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [
@@ -2295,7 +2284,7 @@ describe("usePipelineAPI", () => {
       preview: [{ age: 25, premium: 100.5 }],
       row_count: 1,
       column_count: 2,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2322,7 +2311,7 @@ describe("usePipelineAPI", () => {
       dtype: "i64",
     }))
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "wide",
       status: "ok",
       columns,
@@ -2330,7 +2319,7 @@ describe("usePipelineAPI", () => {
       preview: [{ col_0: 1 }],
       row_count: 1,
       column_count: columns.length,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2357,14 +2346,14 @@ describe("usePipelineAPI", () => {
 
   it.each(["missing schema", "missing version", "different source"])("fetchPreview discovers columns with %s", async (scenario) => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "age", dtype: "i64" }],
       preview: [{ age: 25 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2384,7 +2373,7 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview populates nodeStatuses from response", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
@@ -2392,7 +2381,7 @@ describe("usePipelineAPI", () => {
       row_count: 1,
       column_count: 1,
       node_statuses: { n1: "ok", n0: "ok" },
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2406,7 +2395,7 @@ describe("usePipelineAPI", () => {
 
   it("promotes the node owning a projection warning to warning-complete", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
@@ -2443,7 +2432,7 @@ describe("usePipelineAPI", () => {
           remediation: "Define the input columns.",
         },
       }),
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2457,7 +2446,7 @@ describe("usePipelineAPI", () => {
 
   it("promotes successful schema-warning results to warning-complete", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
@@ -2466,9 +2455,9 @@ describe("usePipelineAPI", () => {
       column_count: 1,
       node_statuses: { n1: "ok", n0: "ok" },
       node_schema_warnings: {
-        n0: [{ column: "legacy", status: "extra" }],
+        n0: [{ column: "legacy", status: "extra", input: null, detail: null }],
       },
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2485,7 +2474,7 @@ describe("usePipelineAPI", () => {
       data: { label: "Node n1", nodeType: "polars", config: {} },
     })
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "premium", dtype: "Float64" }],
@@ -2494,7 +2483,7 @@ describe("usePipelineAPI", () => {
       preview: [{ premium: 10 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const params = makeParams()
     params.graphRef.current = { nodes: [node], edges: [] }
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -2551,7 +2540,7 @@ describe("usePipelineAPI", () => {
   it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
     const executionMetrics = makeExecutionMetricsFixture()
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
@@ -2559,7 +2548,7 @@ describe("usePipelineAPI", () => {
       row_count: 1,
       column_count: 1,
       execution_metrics: executionMetrics,
-    })
+    }))
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -2603,7 +2592,7 @@ describe("usePipelineAPI", () => {
 
   it("applies preview schema through the raw node setter without history or dirty churn", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
@@ -2611,12 +2600,12 @@ describe("usePipelineAPI", () => {
         { name: "premium", dtype: "f64" },
         { name: "region", dtype: "str" },
       ],
-      schema_warnings: [{ column: "region", status: "missing" }],
+      schema_warnings: [{ column: "region", status: "missing", input: null, detail: null }],
       frame_columns: { output_1: [{ name: "premium", dtype: "f64" }], output_2: [{ name: "claims", dtype: "i64" }] },
       preview: [{ premium: 120.5 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
     const node = makeNode("n1", "polars", {
       data: { label: "Rating step", nodeType: "polars", config: { expression: "df" } },
     })
@@ -2654,7 +2643,7 @@ describe("usePipelineAPI", () => {
       { name: "premium", dtype: "f64" },
       { name: "region", dtype: "str" },
     ])
-    expect(state.nodes[0].data._schemaWarnings).toEqual([{ column: "region", status: "missing" }])
+    expect(state.nodes[0].data._schemaWarnings).toEqual([{ column: "region", status: "missing", input: null, detail: null }])
     expect(state.nodes[0].data._frameColumns).toEqual({
       output_1: [{ name: "premium", dtype: "f64" }],
       output_2: [{ name: "claims", dtype: "i64" }],
@@ -2672,7 +2661,7 @@ describe("usePipelineAPI", () => {
 
   it("keeps nodeStatuses when selectedNode is recreated with the same id", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "n1",
       status: "ok",
       columns: [{ name: "a", dtype: "f64" }],
@@ -2680,7 +2669,7 @@ describe("usePipelineAPI", () => {
       row_count: 1,
       column_count: 1,
       node_statuses: { n1: "ok", upstream: "error" },
-    })
+    }))
     const baseParams = makeParams()
     const { result, rerender } = renderHook(
       ({ selectedNode }: { selectedNode: Node | null }) =>
@@ -2717,14 +2706,14 @@ describe("usePipelineAPI", () => {
           resolveUpstream = resolve
         })
       }
-      return Promise.resolve({
+      return Promise.resolve(makePreviewResponse({
         node_id: nodeId,
         status: "ok",
         columns: [{ name: "target_col", dtype: "f64" }],
         preview: [{ target_col: 1 }],
         row_count: 1,
         column_count: 1,
-      })
+      }))
     })
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -2752,14 +2741,14 @@ describe("usePipelineAPI", () => {
     })
 
     await act(async () => {
-      resolveUpstream({
+      resolveUpstream(makePreviewResponse({
         node_id: "upstream",
         status: "ok",
         columns: [{ name: "late_col", dtype: "f64" }],
         preview: [{ late_col: 1 }],
         row_count: 1,
         column_count: 1,
-      })
+      }))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -2777,21 +2766,21 @@ describe("usePipelineAPI", () => {
     const edge = makeEdge("upstream", "target")
     mockPreview.mockImplementation(({ nodeId }) => Promise.resolve(
       nodeId === "upstream"
-        ? {
+        ? makePreviewResponse({
             node_id: "upstream",
             status: "ok",
             columns: [{ name: "upstream_col", dtype: "i64" }],
             preview: [{ upstream_col: 1 }],
             row_count: 1,
             column_count: 1,
-          }
-        : {
+          })
+        : makePreviewResponse({
             node_id: "target",
             status: "ok",
             preview: [],
             row_count: 0,
             column_count: 0,
-          },
+          }),
     ))
     const params = makeParams()
     wireGraphStoreNodeSetters(params)
@@ -2819,7 +2808,8 @@ describe("usePipelineAPI", () => {
 
     const state = useGraphStore.getState()
     expect(params.setNodes).not.toHaveBeenCalled()
-    expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+    // One raw schema update per preview: the upstream's, then the target's.
+    expect(params.setNodesRaw).toHaveBeenCalledTimes(2)
     expect(state.nodes[0].data._columns).toEqual([{ name: "upstream_col", dtype: "i64" }])
     expect(state.undoStack).toHaveLength(0)
     expect(state.persistedFingerprint).toBe(persistedFingerprint)
@@ -2844,14 +2834,14 @@ describe("usePipelineAPI", () => {
           rejectUpstream = reject
         })
       }
-      return Promise.resolve({
+      return Promise.resolve(makePreviewResponse({
         node_id: nodeId,
         status: "ok",
         columns: [{ name: "target_col", dtype: "f64" }],
         preview: [{ target_col: 1 }],
         row_count: 1,
         column_count: 1,
-      })
+      }))
     })
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -2935,14 +2925,14 @@ describe("usePipelineAPI", () => {
 
     mockPreview.mockImplementation(({ nodeId, signal }) => {
       if (nodeId === "target") {
-        return Promise.resolve({
+        return Promise.resolve(makePreviewResponse({
           node_id: "target",
           status: "ok",
           columns: [{ name: "target_col", dtype: "f64" }],
           preview: [{ target_col: 1 }],
           row_count: 1,
           column_count: 1,
-        })
+        }))
       }
       return new Promise((_, reject) => {
         signal?.addEventListener(
@@ -3056,14 +3046,14 @@ describe("usePipelineAPI", () => {
 
   it("refreshPreview clears an older debounced preview before starting target preview", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    mockPreview.mockResolvedValue({
+    mockPreview.mockResolvedValue(makePreviewResponse({
       node_id: "target",
       status: "ok",
       columns: [{ name: "target_col", dtype: "f64" }],
       preview: [{ target_col: 1 }],
       row_count: 1,
       column_count: 1,
-    })
+    }))
 
     const target = makeNode("target", "polars", {
       data: {

@@ -16,6 +16,7 @@ from haute._io import UnsupportedSourceFormatError
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
+from haute._project_context import current_project
 from haute._sandbox import contained_path
 from haute.errors import SchemaMismatchError
 from haute.schemas import (
@@ -53,7 +54,7 @@ def _browse_files_request(
     # form — e.g. a Windows 8.3 short path (``C:\Users\RUNNER~1\...``) whose
     # entries come back long-form. (POSIX ``getcwd`` already resolves symlinks,
     # which is why this only bit Windows.)
-    base = Path.cwd().resolve()
+    base = current_project().root
     target = contained_path(base, requested_dir)
     ext_list = (
         _installed_input_extensions()
@@ -195,7 +196,11 @@ def _read_schema_blocking(
     else:
         lf = graph_utils.read_source(str(target))
 
-    if target.suffix.lower() == ".parquet":
+    # The reader's format, when given, says how the file is read, whatever its name.
+    is_parquet = (
+        reader["format"] == "parquet" if reader is not None else target.suffix.lower() == ".parquet"
+    )
+    if is_parquet:
         from haute._polars_utils import read_parquet_metadata
 
         schema = lf.collect_schema()
@@ -303,9 +308,9 @@ def _inspect_model_file_blocking(
 ) -> ModelFileInspectionResponse:
     from dataclasses import asdict
 
-    from haute._builders import _configured_pipeline_dir
     from haute._model_source import inspect_model_file as inspect
     from haute._path_resolution import RuntimePathError
+    from haute._project_context import current_project
     from haute.errors import ConfigError, FeatureMismatchError
     from haute.routes._runtime_path_errors import runtime_path_http_exception
 
@@ -313,7 +318,7 @@ def _inspect_model_file_blocking(
         inspection = inspect(
             path,
             feature_contract_path=feature_contract_path or None,
-            base_dir=_configured_pipeline_dir(),
+            base_dir=current_project().pipeline_dir,
         )
     except RuntimePathError as exc:
         raise runtime_path_http_exception(exc) from None
@@ -349,7 +354,7 @@ async def get_schema(
         raise HTTPException(status_code=400, detail="Reader arguments need a format.")
     # Resolve the base for the same reason as ``browse_files`` — keep cwd in its
     # canonical form so path handling is consistent on Windows short paths.
-    base = Path.cwd().resolve()
+    base = current_project().root
     target = contained_path(base, path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")

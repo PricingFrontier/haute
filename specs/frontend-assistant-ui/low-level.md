@@ -16,72 +16,46 @@
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, the build plan (`buildPlan`), turn status, status and `statusErrorDetail`, notice, the `view`/`sessions`/`sessionsStatus` list state, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus`/`loadSessions`/`openSession`/`showSessionList`/`undoChange` actions, plus `undoingChangeId`, the change whose undo is in flight. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. Acquiring the turn calls `useUIStore.startAssistantTurn(stop)` and releasing it calls `endAssistantTurn()`, the mirror the eager chrome reads. It exports `settleOutcome` (the one function that closes a turn with its outcome, live and on resume), `contextSelection` (the selected nodes a message carries, shared by the send and the chip), `CHOOSE_FOR_ME_REPLY` and `undoDisabledReason`. |
 | `frontend/src/components/AssistantWorkingPill.tsx` | The eager pill over the canvas while `useUIStore.assistantTurn` is set: "Assistant is working" with a Stop button calling that turn's `stop`. Reads only the UI store, never the assistant store. |
 | `frontend/src/components/AskAssistantButton.tsx` | The eager "Ask the assistant to fix" button the app shell passes into the data preview's error state; it calls the handler it is given. |
-| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession(sourceFile, sessionId, signal)`, `listAssistantSessions(sourceFile, signal)` (with per-row summary parsing), `undoAssistantChange(sessionId, changeId, sourceFile)` (parsing `{change_id, git_sha, build_plan}`), and `streamAssistantMessage(sessionId, message, sourceFile, options)`, whose options carry the message `context` (`selected_node_ids` and `preview_error_node_id`, at most `MAX_CONTEXT_SELECTION` = 20 ids); every call carries the canvas document's `source_file`, and the session and list parsers require the echoed `source_file`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
-| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/constants branches. Passes `isInsideSubmodel` and the central document-read-only fence into the panel because both are app-owned state unavailable to the module-scope assistant store; the panel reads the document's source file from `useDocumentStatusStore` itself, so drilling into a submodel never changes the chat's pipeline. Folds `useUIStore.assistantTurn !== null` into `editingReadOnly` (never into the document fence the panel receives), renders `AssistantWorkingPill` in the canvas container, and, at the top level only, gives the data preview an `AskAssistantButton` whose handler selects the failing node alone through the canvas's select changes and calls `askAssistantToFix(nodeId)`. The app never statically imports the panel, the assistant store or the assistant API module. |
+| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession(sourceFile, sessionId, signal)`, `listAssistantSessions(sourceFile, signal)` (with per-row summary parsing), `undoAssistantChange(sessionId, changeId, sourceFile)` (parsing `{change_id, git_sha, build_plan}`), and `streamAssistantMessage(sessionId, message, sourceFile, options)`, whose options carry the message `context` (`selected_node_ids` and `preview_error_node_id`, at most `MAX_CONTEXT_SELECTION` = 20 ids); every call carries the canvas document's `source_file`, and the session and list parsers require the echoed `source_file`. It requests JSON as `unknown` and checks the status, session, list, undo and each SSE frame with the generated validators of the `assistant` contract group (each frame as `AssistantStreamEventPayload`, the server's event union) before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
+| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/constants branches. Passes `isInsideSubmodel` and the central document-read-only fence into the panel because both are app-owned state unavailable to the module-scope assistant store; the panel reads the document's source file from `useDocumentStatusStore` itself, so drilling into a submodel never changes the chat's pipeline. Folds `useUIStore.assistantTurn !== null` into `editingReadOnly` (never into the document fence the panel receives), renders `AssistantWorkingPill` in the canvas container, and, at the top level only, gives the data preview (an Explore node's `ExplorePreview` included) an `AskAssistantButton` whose handler selects the failing node alone through the canvas's select changes and calls `askAssistantToFix(nodeId)`. The app never statically imports the panel, the assistant store or the assistant API module. |
 | `frontend/src/stores/useUIStore.ts` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned UI state with an `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`constantsOpen` (each setter clears the others, matching the existing pattern); opening clears `assistantUnseenOutcome`. Also holds the mirror of a running turn (`assistantTurn`, `startAssistantTurn`, `endAssistantTurn`), `assistantUnseenOutcome`, and the fix request (`assistantPreviewErrorNodeId`, `askAssistantToFix`, `clearAssistantPreviewError`). |
 | `frontend/src/components/ProjectControls.tsx` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned project controls (the toolbar's right-hand group, which the workbench's toolbar ends with too) with an Assistant toggle button in their Assistant and Help column, calling `setAssistantOpen`. While `assistantTurn` is set the button shows a spinning icon, says the assistant is working, and stays enabled even though the editing fence disables the other edit controls; `assistantUnseenOutcome` adds a dot. |
 
 ## Key types and data structures
 
-- **`AssistantStatus`** (`api/assistant.ts`, mirrored from `schemas.py`):
-  `{ configured: boolean; reason: string | null; provider: string | null; model: string |
-  null; endpoint_host: string | null; trust: "local" | "organization" | "external" | null;
-  max_sensitivity: "public" | "internal" | "restricted" | null;
-  mutations_enabled: boolean; mutations_reason: string | null }`.
-  `reason` (unconfigured) and `mutations_reason` (working branch not ready — the backend's
-  per-state message for no-repository/unset/detached/divergent/invalid) are the backend's human-readable
-  explanations; the composer renders whichever applies verbatim. When `configured` is true,
-  the status parser requires `endpoint_host`, `trust`, and `max_sensitivity` to be non-null,
-  throwing otherwise.
+- **`AssistantStatus`**, **`AssistantBuildPlan`**, **`AssistantChangeRecord`** and the
+  stream events' payloads (`api/assistant.ts`) are the generated declarations of the
+  server's models in `schemas.py`; the generated validators check every field, literal and
+  bound, and the server's models own the cross-field rules (a configured status names its
+  `endpoint_host`, `trust` and `max_sensitivity`; a build plan has at least one item, no
+  repeated item id and no complete item without a change that is not undone; a turn
+  outcome's detail and saved changes match its kind). `reason` (unconfigured) and
+  `mutations_reason` (working branch not ready — the backend's per-state message for
+  no-repository/unset/detached/divergent/invalid) are the backend's human-readable
+  explanations; the composer renders whichever applies verbatim.
 - **`AssistantSessionSummary`** (`api/assistant.ts`): `{ sessionId: string; title: string;
   createdAt: number; lastUsed: number; messageCount: number }`. Backs each row on the
   chat-list screen.
-- **`AssistantStreamEvent`** (`api/assistant.ts`, mirrored from the backend SSE contract in
-  `schemas.py`) — discriminated union on `type`:
+- **`AssistantStreamEvent`** (`api/assistant.ts`) — the generated event union on `type`:
   `text_delta { text }` · `thinking {}` · `tool_started { id, name, title, summary }` ·
   `tool_progress { id, title }` ·
   `tool_finished { id, name, title, is_error, summary }` · `change_applied { change }` ·
   `build_plan_updated { build_plan }` ·
   `completed { usage: { input_tokens, output_tokens }, outcome }` · `failed { message }` ·
-  `cancelled {}`. The parser validates the object, discriminator, every required
-  primitive, and the nested usage, outcome and build-plan objects before returning the union
-  member; an unknown type or malformed known variant throws. Unrelated additive fields are
-  ignored.
-- **`AssistantBuildPlan`** (`api/assistant.ts`, mirrored field-for-field from
-  `schemas.py`): `{ items: AssistantBuildPlanItem[] }`, at least one item, where an item is
-  `{ id; title; complete: boolean; changes: { id; undone: boolean }[] }`. The parser
-  validates every field and throws on an empty item list, a repeated item id, and a
-  complete item without a change that is not undone.
-- **`AssistantChangeRecord`** (`api/assistant.ts`, mirrored field-for-field from
-  `schemas.py`): `{ id; summary; assumptions: string[]; changes: { nodes:
-  AssistantChangeNode[]; edges_added: AssistantChangeEdge[]; edges_removed:
-  AssistantChangeEdge[]; preamble_changed: boolean; truncated: boolean }; warnings:
-  string[]; git_sha: string | null; parent_sha: string | null; revision: string;
-  data_check: AssistantChangeDataCheck | null }`, where the data check is `{ visibility:
-  "current" | "earlier_inputs" | "other_scenario"; outcome: "checked" | "not_run";
-  scenario; findings: { severity: "advisory" | "informational"; node; text }[];
-  findings_omitted: number; not_checked: string | null }` (the `data_check` key is
-  required, null without a check, and its literals and the omitted count, a non-negative
-  integer, are validated), and a node is `{ id;
-  type; change: "added" | "changed" | "removed" | "renamed"; renamed_from: string | null;
-  fields: string[]; steps: string[] | null; steps_changed: number }` and an edge `{ source;
-  target }`. The parser validates every field and the `change` literal and throws on any
-  violation.
-- **`AssistantTurnOutcome`** (`api/assistant.ts`, mirrored from `schemas.py`):
+  `cancelled {}`, with `completed`'s outcome read as the `AssistantTurnOutcome` union. An
+  unknown type, a malformed known variant or an unexpected field throws before the
+  callback.
+- **`AssistantTurnOutcome`** (`api/assistant.ts`): the union
   `{ kind: "applied" | "answered"; detail: null; changes: string[] }` or
-  `{ kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"; detail: string; changes: string[] }`
-  with a non-empty detail (the question, the blocker, the verification error, or the
-  controller's reason for stopping) and the ids of the changes the turn saved. Any other kind,
-  a detail on the first pair, a missing or empty detail on the second, a missing
-  `changes` array, an empty one on `applied` or a non-empty one on `answered` throws.
-- **`AssistantHistoryEntry` and session envelope** are locally parsed from
-  `unknown`: the envelope requires string `session_id`, an array `history` and
-  `build_plan`, `null` or a plan parsed as above (the undo response requires the same);
-  each row requires `kind` in `user|assistant|tool|outcome|change|undo`; a text or tool row
-  requires string `text`, `name`, `title`, and `summary`, and Boolean `is_error`, an
-  `outcome` row requires an `outcome` parsed as above, and a `change` or `undo` row a
-  `change` record parsed as above (an `undo` row's record is the change that was undone). `AssistantStatus` applies the same boundary
-  to its Boolean and nullable-string fields.
+  `{ kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"; detail: string; changes: string[] }`,
+  read from the generated outcome; a detail on the first pair or none on the second throws.
+- **`AssistantHistoryEntry` and session envelope**: the generated session response
+  (`session_id`, `source_file`, `history`, `build_plan`, `null` before the model sets one;
+  the undo response requires the same plan field) with each transcript entry read as a
+  union on `kind`: a text or tool row keeps `text`, `name`, `title`, `summary` and
+  `is_error`, an `outcome` row its outcome and a `change` or `undo` row its change record
+  (an `undo` row's record is the change that was undone); a row without its own kind's
+  payload throws.
 - **`TranscriptEntry`** (`stores/useAssistantStore.ts`) — union on `kind`:
   `{ kind: "user"; text }` · `{ kind: "assistant"; text; streaming: boolean }` ·
   `{ kind: "activity"; id; name; title; state: "running" | "ok" | "error"; summary }` ·

@@ -306,6 +306,7 @@ beforeEach(() => {
       { name: "premium", dtype: "Float64" },
     ],
     row_count: 2,
+    row_count_estimated: false,
     column_count: 2,
     preview: [],
   })
@@ -445,7 +446,7 @@ describe("DataInputEditor", () => {
       inputType: "file", format: "csv", mode: "scan", path, arguments: args, code: "",
     })
     const schemaOf = (path: string, column: string) => ({
-      path, columns: [{ name: column, dtype: "Int64" }], row_count: 1, column_count: 1, preview: [],
+      path, columns: [{ name: column, dtype: "Int64" }], row_count: 1, row_count_estimated: false, column_count: 1, preview: [],
     })
     /** Schema replies the test completes by hand, by path. */
     function controlledSchemas() {

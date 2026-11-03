@@ -40,6 +40,7 @@
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. The assembled-output preview is of one mapping read from one data source: after an edit or a source switch it shows none ("Refresh to assemble the response from the current mapping."), and opening it with none runs it. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. A selection of exactly the available columns is stored as none (every column); a stale name beside them is kept, so it stays visible to be unticked; unticking the last real column waits for a choice, while unticking the last, stale name commits no selection. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
+| `frontend/src/panels/editors/useConfirmedConfigUpdate.ts` | `useConfirmedConfigUpdate(config, onUpdate)`: asks a question and answers the editor's config and update handler as they stand once it is answered (null when declined), so a change written after a confirmation dialog is built from the current config, never from the render that opened it. A question open when another document loads is declined by the question store, so nothing is written into that document. |
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms (a moved placement carries only the fields its new zone declares: no unknown field is passed through), sort-ordering normalisation, duplicate-field checks, and typed member identity. |
 | `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and data-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone, a drop on the zone itself appending: a `PlacementCard` per placement, a formula's showing its Formula tag and reference and removing the formula from `formulas` and `value_order`, a field's showing its no-longer-available marker and aggregation selection, with the nested filter-member picker under a filter's. |
@@ -404,7 +405,10 @@ configured id, neither touches the preview pane, and pane
 switches on either side preserve a stored id so returning to the editor reopens the same
 subview. Delete asks for confirmation, removes only
 the selected card, allowing a no-longer-needed PivotChart dependency to be released
-deliberately, and clears the card's stored configured id.
+deliberately, and clears the card's stored configured id. Every confirmed change (deleting a
+pivot, a shared formula or a chart, and changing a populated chart source) goes through
+`useConfirmedConfigUpdate`: it is applied to the config as it stands once the dialog is
+answered, so an edit that landed while the dialog was open is kept.
 The Chart and Pivot list views render their card rows, list headers, Add actions, and empty states
 through `ExploreConfigCardList`; that component composes the same `ExploreToggleCard` used by
 Overview so enabled-state visuals, click targets, and accessibility cannot drift across panes.
@@ -434,7 +438,9 @@ are reconciled on render
 defaults-applied note, and the seeded encodings persist as part of the next committed chart edit
 — one undoable step, no effect-driven write. Changing a populated source uses a confirmation
 dialog; cancel changes nothing,
-confirm replaces `pivot_id`, encodings, and overrides in one `onUpdate` call. With no pivots, an
+confirm replaces `pivot_id`, encodings, and overrides in one `onUpdate` call, seeding the
+encodings from the source Pivot and applying them to the chart as both stand once the dialog is
+answered (a chart or Pivot deleted meanwhile writes nothing). With no pivots, an
 explicit action selects the Pivots editor pane without modifying config.
 
 The chart-type gallery renders one labelled icon button per option — Combo leftmost (the

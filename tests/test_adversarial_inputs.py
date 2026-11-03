@@ -29,6 +29,7 @@ from haute.schemas import (
     UtilityWriteRequest,
     WriteOutputRequest,
 )
+from tests._project import project_app
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ def client():
     """TestClient with raise_server_exceptions=False for status code assertions."""
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)
 

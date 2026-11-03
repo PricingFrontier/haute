@@ -1,25 +1,61 @@
 {
   "status": "ok",
-  "instance_id": "pricing",
-  "definition_id": "pricing-definition",
-  "source_revision": "revision-dissolve-1",
   "graph": {
     "nodes": [
       {
         "id": "n1",
         "type": "polars",
-        "position": { "x": 0, "y": 0 },
-        "data": { "label": "Left", "nodeType": "polars" }
+        "position": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "data": {
+          "label": "Left",
+          "description": "",
+          "nodeType": "polars",
+          "config": {},
+          "editor": {
+            "steps_error": null,
+            "steps_discarded": null
+          }
+        }
       },
       {
         "id": "n2",
         "type": "polars",
-        "position": { "x": 100, "y": 0 },
-        "data": { "label": "Right", "nodeType": "polars" }
+        "position": {
+          "x": 100.0,
+          "y": 0.0
+        },
+        "data": {
+          "label": "Right",
+          "description": "",
+          "nodeType": "polars",
+          "config": {},
+          "editor": {
+            "steps_error": null,
+            "steps_discarded": null
+          }
+        }
       }
     ],
     "edges": [],
+    "pipeline_name": null,
+    "pipeline_description": null,
+    "preamble": null,
     "preserved_blocks": [],
-    "source_revision": "revision-dissolve-1"
-  }
+    "global_constants": [],
+    "global_constants_error": null,
+    "source_file": null,
+    "source_revision": "revision-dissolve-1",
+    "submodels": null,
+    "warning": null,
+    "sources": [
+      "live"
+    ],
+    "active_source": "live"
+  },
+  "source_revision": "revision-dissolve-1",
+  "instance_id": "pricing",
+  "definition_id": "pricing-definition"
 }

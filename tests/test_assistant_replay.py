@@ -22,7 +22,7 @@ from typing import Any, cast
 import polars as pl
 import pytest
 
-from haute._sandbox import _get_project_root, bound_project_root
+from haute._project_context import ProjectContext, current_project, project_scope
 from haute.routes._helpers import parse_pipeline_to_graph
 from scripts.run_assistant_self_test import (
     FIXTURE_MODEL_RUN_PLACEHOLDER,
@@ -36,6 +36,7 @@ from scripts.run_assistant_self_test import (
     replay_self_test_case,
     run_self_test_case,
 )
+from tests._project import use_project
 from tests._source_files import source_files
 from tests.assistant_eval._frames import frames_equal, run, synthetic_inputs
 
@@ -114,7 +115,7 @@ def test_corpus_trajectories_author_the_corpus_and_its_goldens(
     assert golden.golden.endswith(corpus[item]["code"] + "\n")
 
     inputs = synthetic_inputs(hard=False)
-    monkeypatch.chdir(PROJECTS_ROOT / case.project_fixture)
+    use_project(PROJECTS_ROOT / case.project_fixture)
     for name in corpus[item]["inputs"]:
         assert pl.read_parquet(f"data/{name}.parquet").equals(inputs[name].collect()), name
     equal, why = frames_equal(
@@ -138,7 +139,7 @@ async def test_replay(trajectory, work_dir: Path) -> None:
     """Each trajectory replays without divergence and passes every scoring layer of
     every turn, and leaves the sandbox project root where it found it."""
 
-    root_before = _get_project_root()
+    root_before = current_project().root
     cwd_before = Path.cwd()
 
     result = await replay_self_test_case(
@@ -147,7 +148,7 @@ async def test_replay(trajectory, work_dir: Path) -> None:
 
     assert result.reasons == ()
     assert (result.evidence, result.provider, result.model) == ("replay", "replay", trajectory.id)
-    assert _get_project_root() == root_before
+    assert current_project().root == root_before
     assert Path.cwd() == cwd_before
 
 
@@ -400,7 +401,7 @@ def _saved_configs(fixture: str) -> dict[str, dict[str, Any]]:
     """Each node's configuration as a case's project starts, read without writing."""
 
     root = PROJECTS_ROOT / fixture
-    with bound_project_root(root):
+    with project_scope(ProjectContext.at(root)):
         graph = parse_pipeline_to_graph(root / "pipeline.py")
     return {node.id: dict(node.data.config) for node in graph.nodes}
 

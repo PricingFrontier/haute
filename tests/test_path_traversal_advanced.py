@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from haute.errors import InvalidPathError, PathOutsideProjectError
+from tests._project import use_project
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -261,7 +262,7 @@ class TestSymlinkTraversal:
 
     def test_validate_project_path_blocks_symlink_escape(self, tmp_path: Path):
         """validate_project_path in _sandbox.py should also block symlinks."""
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -271,7 +272,7 @@ class TestSymlinkTraversal:
         project.mkdir()
         (project / "link").symlink_to(outside)
 
-        set_project_root(project)
+        use_project(project)
         with pytest.raises(PathOutsideProjectError, match="outside"):
             validate_project_path(project / "link" / "secret.txt")
 
@@ -443,9 +444,7 @@ class TestNullByteInjection:
                 lambda tmp_path: {
                     "args": (tmp_path / "data\x00.json",),
                     "kwargs": {},
-                    "setup": lambda tp: __import__(
-                        "haute._sandbox", fromlist=["set_project_root"]
-                    ).set_project_root(tp),
+                    "setup": use_project,
                 },
                 id="validate_project_path",
             ),
@@ -571,7 +570,7 @@ class TestVeryLongPaths:
             pytest.param(
                 "validate_project_path handles very long path",
                 lambda: (
-                    __import__("haute._sandbox", fromlist=["set_project_root"]).set_project_root,
+                    use_project,
                     __import__(
                         "haute._sandbox", fromlist=["validate_project_path"]
                     ).validate_project_path,
@@ -611,7 +610,7 @@ class TestVeryLongPaths:
         raw = func_getter()
         call_spec = args_factory(tmp_path)
 
-        # Handle validate_project_path which needs set_project_root setup
+        # Handle validate_project_path, which needs its project installed
         if isinstance(raw, tuple):
             set_root, func = raw
             set_root(tmp_path)
@@ -697,9 +696,9 @@ class TestValidateProjectPathEdgeCases:
         """An empty string path should resolve to cwd, which may or may
         not be inside the project root.
         """
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         # Empty path resolves to cwd, which is tmp_path (via monkeypatch in CI)
         # or the actual cwd. Either way, should not crash.
         try:
@@ -712,9 +711,9 @@ class TestValidateProjectPathEdgeCases:
 
     def test_dot_path_resolves_to_cwd(self, tmp_path: Path):
         """'.' should resolve to cwd."""
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         try:
             result = validate_project_path(".")
             assert result.exists() or True  # May not exist but should resolve
@@ -723,9 +722,9 @@ class TestValidateProjectPathEdgeCases:
 
     def test_tilde_not_expanded(self, tmp_path: Path):
         """~ should NOT be expanded to $HOME -- it's a literal path component."""
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         # Path("~") does not expand; it resolves relative to cwd
         # This should either succeed (if cwd is inside project) or raise ValueError
         try:
@@ -741,9 +740,9 @@ class TestValidateProjectPathEdgeCases:
         Some filesystems normalize Unicode, so U+FF0E (fullwidth full stop)
         might be treated as '.', enabling traversal via '\uff0e\uff0e/'.
         """
-        from haute._sandbox import set_project_root, validate_project_path
+        from haute._sandbox import validate_project_path
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         # Fullwidth dots -- should be treated as literal characters, not '..'
         unicode_dots = "\uff0e\uff0e/secret"
         try:

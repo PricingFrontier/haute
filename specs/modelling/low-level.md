@@ -996,8 +996,9 @@ root (checked by `haute._sandbox.contained_path` on the resolved target): a
 `haute.toml` that is a symlink
 escaping the project is refused with `MlflowConfigError`, and the external
 target is left untouched. When no explicit `project_root` is passed, every
-entry point (load/save/resolve) uses `haute._sandbox._get_project_root()`,
-so the settings surface, the discovery routes, and the logging paths all
+entry point (load/save/resolve) uses the current project's root
+(`haute._project_context.current_project().root`), read when used, so a worker request
+made after `PUT /api/mlflow/settings` uses the new destination, and the settings surface, the discovery routes, and the logging paths all
 agree on which `haute.toml` and default runs folder they mean. A
 credential-bearing env `MLFLOW_TRACKING_URI` (userinfo in an `http(s)` URL)
 still *functions* — the full URI is passed to the MLflow client — but every
@@ -1261,7 +1262,7 @@ forward-slash spelling is the display path. It rejects reserved device names
 project root (an absolute path stands alone), and raises `RuntimePathOutsideProjectError` when
 the result leaves the root. `suffix_mismatch` is true when an explicit suffix differs from
 `model_suffix` ignoring case. Routes map these errors through `runtime_path_http_exception`
-(`400` malformed, `403` outside) and resolve against `_get_project_root()`.
+(`400` malformed, `403` outside) and resolve against the current project's root.
 
 `POST /save/destination` (`ModelSaveDestinationRequest`: non-empty `output_path`, `algorithm:
 Literal["catboost", "glm"]`) returns `ModelSaveDestinationResponse` (`path` display spelling,

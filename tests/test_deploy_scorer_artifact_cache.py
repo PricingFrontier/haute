@@ -35,11 +35,13 @@ import polars as pl
 import pytest
 
 from haute._mlflow_io import ScoringModel
+from haute._project_context import context_thread
 from haute.modelling._feature_contract import (
     CONTRACT_FILENAME,
     build_contract,
     save_contract,
 )
+from tests._project import use_project
 from tests.conftest import make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -219,7 +221,7 @@ class TestModelLoadedOncePerArtifact:
         example = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
         project = tmp_path / "project"
         shutil.copytree(example / "minimal_live_quote", project)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         ages = pd.DataFrame({"age": [float(age) for age in range(20, 40)]})
         model = CatBoostRegressor(iterations=3, depth=2, verbose=0, allow_writing_files=False)
         model.fit(ages, ages["age"] * 2.0)
@@ -509,7 +511,7 @@ class TestArtifactCacheUnit:
                 errors.append(exc)
 
         with patch("haute._mlflow_io.load_local_model", side_effect=gated_load):
-            threads = [threading.Thread(target=worker) for _ in range(6)]
+            threads = [context_thread(worker) for _ in range(6)]
             for thread in threads:
                 thread.start()
             assert started.wait(timeout=10), "first loader never started"
@@ -691,7 +693,7 @@ class TestArtifactCacheKeyCanonicalisation:
         from haute._mlflow_io import load_local_model_cached
 
         cbm_path, _ = _write_bundle(tmp_path)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         spy = _LoadSpy()
 
         with patch("haute._mlflow_io.load_local_model", side_effect=spy):
@@ -706,7 +708,7 @@ class TestArtifactCacheKeyCanonicalisation:
         from haute.deploy._scorer import _load_feature_contract_cached
 
         _, contract_path = _write_bundle(tmp_path)
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         first = _load_feature_contract_cached("./" + CONTRACT_FILENAME)
         assert _load_feature_contract_cached(str(contract_path)) is first

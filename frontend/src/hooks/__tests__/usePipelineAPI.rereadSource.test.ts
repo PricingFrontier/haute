@@ -3,6 +3,7 @@
  * caches every table again before previewing it, whether or not the file
  * changed. Every other preview keeps the freshness rules.
  */
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -98,14 +99,14 @@ function job(status: InputCacheJobStatusResponse["status"], message = ""): Input
   }
 }
 
-const okPreview = {
+const okPreview = makePreviewResponse({
   node_id: "quotes",
   status: "ok" as const,
   row_count: 2,
   column_count: 1,
   columns: [{ name: "id", dtype: "i64" }],
   preview: [{ id: 1 }, { id: 2 }],
-}
+})
 
 function makeParams() {
   return {

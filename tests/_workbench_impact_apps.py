@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._project_context import current_project
 from haute._quote_store import StoreLocation, store_url
-from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute._workbench_app import EASY_AUTH_NAME, create_app, read_release, write_release
 from haute._workbench_config import StoreEnvironment
@@ -23,6 +23,7 @@ from haute._workbench_form import FormSpec, with_quote_details
 from haute._workbench_rollout import AppState, HttpAnswer, _recorded
 from haute._workbench_tables import input_tables, output_tables
 from haute.deploy._utils import shipped_graph
+from tests._project import use_project
 from tests._store_servers import Target
 
 #: The hosted environment each release declares, whose store its app opens.
@@ -168,12 +169,12 @@ class TwoApps:
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._tmp = tmp_path
         self._monkeypatch = monkeypatch
-        self._root = _get_project_root()
+        self._root = current_project().root
         self.prod_host = Host(PROD)
         self.staging_host = Host(STAGING)
 
     def __enter__(self) -> TwoApps:
-        self._monkeypatch.chdir(self._tmp)
+        use_project(self._tmp)
         prod = _release(self._tmp / "prod", PROD_FORM, PROD_CODE)
         staging = _release(self._tmp / "staging", STAGING_FORM, STAGING_CODE)
         self.prod = _client(prod, self._tmp / "prod.sqlite").__enter__()
@@ -188,7 +189,7 @@ class TwoApps:
     ) -> None:
         self.staging.__exit__(kind, error, trace)
         self.prod.__exit__(kind, error, trace)
-        set_project_root(self._root)
+        use_project(self._root)
 
     def final_quote(self, reference: str, *, vehicles: str, note: str) -> None:
         """A quote saved priced on production and marked final, as an underwriter makes one."""

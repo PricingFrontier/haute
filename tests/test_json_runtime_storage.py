@@ -11,11 +11,12 @@ import pytest
 
 from haute import _file_lock
 from haute._json_shred import _cache, _runtime_storage
+from tests._project import use_project
 
 
 @pytest.fixture(autouse=True)
 def _isolated_runtime_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _runtime_storage._cleanup_direct_spill_dirs()
     _runtime_storage._RUNTIME_STORAGE_RECOVERED_ROOTS.clear()
     yield

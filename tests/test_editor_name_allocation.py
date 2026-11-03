@@ -17,6 +17,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, Submodel
 from haute.errors import RequestRefusedError
 from haute.routes._save_pipeline import SavePipelineService
 from tests._git_helpers import init_repo
+from tests._project import use_project
 
 
 def _node(node_id: str, label: str | None = None, node_type: str = "polars", **config: Any):
@@ -62,8 +63,8 @@ def _post(client: TestClient, graph: PipelineGraph, candidates: list[dict], allo
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     init_repo(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("haute.routes.pipeline.pipeline_dir", lambda: tmp_path)
+    use_project(tmp_path)
+    use_project(tmp_path)
     return tmp_path
 
 

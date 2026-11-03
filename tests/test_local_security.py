@@ -17,14 +17,17 @@ from haute._local_security import (
     LocalTrustedHostMiddleware,
     local_session_token,
 )
-from haute.server import _serve_index_html, app
+from haute.server import _serve_index_html
+from tests._project import project_app, use_project
 
 
 @pytest.fixture()
 def local_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text("", encoding="utf-8")
-    return TestClient(app, base_url="http://localhost:8000", raise_server_exceptions=False)
+    return TestClient(
+        project_app(), base_url="http://localhost:8000", raise_server_exceptions=False
+    )
 
 
 def _bootstrap(client: TestClient):

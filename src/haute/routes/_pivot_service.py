@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import Decimal
 from functools import cmp_to_key, reduce
@@ -42,7 +42,8 @@ from haute._hashing import content_hash_bytes
 from haute._lru_cache import LRUCache
 from haute._node_snapshots import NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
-from haute._sandbox import safe_globals, validate_user_code
+from haute._project_context import context_thread, current_project
+from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute._types import (
     ExplorePivotConfig,
     ExplorePivotFormula,
@@ -50,7 +51,7 @@ from haute._types import (
     ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
 )
-from haute.errors import InvalidRequestError, NotFoundError
+from haute.errors import ConfigError, InvalidRequestError, NotFoundError
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
     JobCancellation,
@@ -58,7 +59,6 @@ from haute.routes._background_jobs import (
 )
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
 from haute.routes._job_store import JobStore, RunningJobFields
-from haute.routes._node_data_service import node_data_project_root
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
     ExecutionMetricsPayload,
@@ -397,7 +397,30 @@ def _filter_member_expression(
         return column.is_null()
     if kind == "nan":
         return column.is_nan()
-    return column.eq(pl.lit(_member_literal(member)))
+    literal = _member_literal(member)
+    if kind == "datetime":
+        # The literal takes the column's time zone and unit: an offset-carrying
+        # member is otherwise typed UTC, which Polars refuses to compare.
+        datetime_dtype = cast(pl.Datetime, dtype)
+        time_zone = datetime_dtype.time_zone
+        if (literal.tzinfo is None) != (time_zone is None):
+            raise PivotContractError(
+                "invalid_pivot_filter_member",
+                f"Filter member {member['value']} does not match the time zone of field '{field}'.",
+                "Refresh the filter members and choose a value for this field.",
+                field=field,
+                member_kind=kind,
+            )
+        if time_zone is None:
+            return column.eq(pl.lit(literal, dtype=dtype))
+        # Through UTC, so each occurrence of a local time the clocks repeat
+        # keeps its own instant: the ISO text carries the offset, not the fold.
+        return column.eq(
+            pl.lit(literal.astimezone(UTC))
+            .dt.convert_time_zone(time_zone)
+            .dt.cast_time_unit(datetime_dtype.time_unit)
+        )
+    return column.eq(pl.lit(literal))
 
 
 def _unique_filter_members(members: Sequence[ExplorePivotMember]) -> list[ExplorePivotMember]:
@@ -418,23 +441,65 @@ def _group_alias(field: str) -> str:
     return f"__haute_pivot_group_{digest}"
 
 
+_FORMULA_EXAMPLE = 'pl.col("amount").sum() * 2'
+
+
+def _cause_text(exc: BaseException) -> str:
+    """The first line of an exception's message: Polars appends hints and plans below it."""
+
+    text = str(exc).strip()
+    return text.splitlines()[0] if text else type(exc).__name__
+
+
+def _formula_error(
+    formula: ExplorePivotFormula,
+    message: str,
+    remediation: str,
+    **dimensions: str | int,
+) -> PivotContractError:
+    return PivotContractError(
+        "invalid_pivot_formula",
+        f'Formula "{formula["display_name"]}" {message}',
+        remediation,
+        formula_id=formula["id"],
+        **dimensions,
+    )
+
+
 def _formula_expression(formula: ExplorePivotFormula) -> pl.Expr:
     """Compile one configured expression under the normal user-code sandbox."""
 
+    source = formula["expression"]
     try:
-        tree = ast.parse(formula["expression"], mode="eval")
-        validate_user_code(formula["expression"])
-        expression = eval(compile(tree, "<pivot formula>", "eval"), safe_globals(pl=pl), {})  # noqa: S307
-        if not isinstance(expression, pl.Expr):
-            raise TypeError("formula must return one Polars expression")
-        return expression.alias(_value_alias(formula["id"]))
-    except Exception as exc:
-        raise PivotContractError(
-            "invalid_pivot_formula",
-            "Pivot formula is invalid.",
-            "Use a safe Python expression that returns one Polars expression.",
-            formula_id=formula["id"],
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError as exc:
+        position = f" at column {exc.offset}" if exc.offset else ""
+        raise _formula_error(
+            formula,
+            f"is not a valid Python expression{position}: {exc.msg}.",
+            f"Write one expression, for example {_FORMULA_EXAMPLE}.",
         ) from exc
+    try:
+        validate_user_code(source)
+    except UnsafeCodeError as exc:
+        raise _formula_error(
+            formula, f"cannot run: {exc}", "Remove that call from the formula."
+        ) from exc
+    try:
+        expression = eval(compile(tree, "<pivot formula>", "eval"), safe_globals(pl=pl), {})  # noqa: S307
+    except Exception as exc:
+        raise _formula_error(
+            formula,
+            f"raised {type(exc).__name__}: {_cause_text(exc)}",
+            f"Build the expression from pl and source field names, for example {_FORMULA_EXAMPLE}.",
+        ) from exc
+    if not isinstance(expression, pl.Expr):
+        raise _formula_error(
+            formula,
+            f"returns {type(expression).__name__}, not a Polars expression.",
+            f"Write a Polars expression, for example {_FORMULA_EXAMPLE}.",
+        )
+    return expression.alias(_value_alias(formula["id"]))
 
 
 def _compile_formulas(
@@ -450,38 +515,41 @@ def _compile_formulas(
         try:
             source_fields = set(expression.meta.root_names())
         except Exception as exc:
-            raise PivotContractError(
-                "invalid_pivot_formula",
-                "Pivot formula is invalid.",
-                "Use a safe Python expression that returns one Polars expression.",
-                formula_id=formula["id"],
+            raise _formula_error(
+                formula,
+                f"does not say which source fields it reads: {_cause_text(exc)}",
+                f"Read source fields with pl.col, for example {_FORMULA_EXAMPLE}.",
             ) from exc
         missing = sorted(source_fields - schema.keys())
         if missing:
             missing_text = ", ".join(missing)
-            raise PivotContractError(
-                "invalid_pivot_formula",
-                f"Pivot formula uses unavailable source fields: {missing_text}.",
+            raise _formula_error(
+                formula,
+                f"uses unavailable source fields: {missing_text}.",
                 f"Use fields from the Explore dataset instead of: {missing_text}.",
-                formula_id=formula["id"],
                 missing_fields=missing_text,
             )
+        aggregate_remediation = (
+            f"Aggregate source fields in the Polars expression, for example {_FORMULA_EXAMPLE}."
+        )
         try:
             formula_dtype = (
                 validation_frame.group_by(pl.lit(0).alias("__haute_pivot_formula_validation_group"))
                 .agg(expression)
                 .collect_schema()[_value_alias(formula["id"])]
             )
-            if formula_dtype.is_nested() or formula_dtype.base_type() == pl.Object:
-                raise TypeError("formula must produce one supported scalar per group")
         except Exception as exc:
-            raise PivotContractError(
-                "invalid_pivot_formula",
-                "Pivot formula must produce one scalar aggregate per group.",
-                "Aggregate source fields in the Polars expression, for example "
-                'pl.col("amount").sum() * 2.',
-                formula_id=formula["id"],
+            raise _formula_error(
+                formula,
+                f"cannot be aggregated per group: {_cause_text(exc)}",
+                aggregate_remediation,
             ) from exc
+        if formula_dtype.is_nested() or formula_dtype.base_type() == pl.Object:
+            raise _formula_error(
+                formula,
+                f"produces {formula_dtype} per group, not one value.",
+                aggregate_remediation,
+            )
         compiled.append((formula, expression))
     return compiled
 
@@ -572,7 +640,7 @@ class PivotService:
         resolver = DataPointResolver(
             body.graph,
             source=body.source,
-            store=NodeSnapshotStore(node_data_project_root()),
+            store=NodeSnapshotStore(current_project().root),
         )
         return consumer, resolver
 
@@ -693,21 +761,26 @@ class PivotService:
         )
 
     def start(self, body: ExplorePivotRunRequest) -> ExplorePivotRunResponse:
+        try:
+            pivot = cast(
+                ExplorePivotConfig,
+                validate_explore_pivots([body.pivot], context="Explore pivot request")[0],
+            )
+        except ConfigError as exc:
+            raise InvalidRequestError(str(exc)) from exc
         point = self._data_point(body)
         if point is None:
             return self._cache_required_response()
-        pivot = cast(
-            ExplorePivotConfig,
-            validate_explore_pivots([body.pivot], context="Explore pivot request")[0],
-        )
         spec = self._calculation_spec(body, point, pivot)
         cached = self._result_cache.get(spec.result_cache_key)
         if cached is not None:
+            # The matrix is keyed by the data point, which several Explore nodes
+            # can share; the response still names the node that asked.
             return ExplorePivotRunResponse(
                 status="completed",
                 cached=True,
                 message="Pivot cache hit",
-                result=cached,
+                result=cached.model_copy(update={"node_id": body.node_id}),
             )
 
         initial_job: _PivotRunningJob = {
@@ -734,8 +807,8 @@ class PivotService:
                 expected_status="running",
             )
         start_job_thread(
-            threading.Thread(
-                target=self._run,
+            context_thread(
+                self._run,
                 args=(job_id, spec, token, predecessor_finished, completion_event),
                 daemon=True,
             )
@@ -1029,14 +1102,26 @@ class PivotService:
         query = query.rename({alias: field for field, alias in group_aliases.items()})
         try:
             return cancellable_streaming_collect(query, execution_context=context)
-        except PivotContractError:
+        except (ExecutionCancelledError, MemoryError):
+            # Cancellation, admission and memory limits keep their own terminal
+            # states instead of being blamed on a formula.
             raise
         except Exception as exc:
             if compiled_formulas:
+                names = ", ".join(
+                    f'"{formula["display_name"]}"' for formula, _ in compiled_formulas
+                )
+                # A Polars error names its own kind; a Python error a formula's
+                # callback raised (map_elements) is named by its type.
+                cause = (
+                    _cause_text(exc)
+                    if isinstance(exc, pl.exceptions.PolarsError)
+                    else f"{type(exc).__name__}: {_cause_text(exc)}"
+                )
                 raise PivotContractError(
                     "invalid_pivot_formula",
-                    "A pivot formula failed while evaluating the grouped data.",
-                    "Check the selected formulas against the source field values and types.",
+                    f"The pivot failed on the data with formulas {names}: {cause}",
+                    "Check the formulas against the source field values and types.",
                     formula_ids=", ".join(formula["id"] for formula, _ in compiled_formulas),
                 ) from exc
             raise

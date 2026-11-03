@@ -8,7 +8,7 @@
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and refuses with the matching `RequestRefusedError`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (`select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier point and artifact-handle helpers. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`pipeline_chunk_decision`: the pipeline's streaming chunk size), the solve-memory forecast's readings of a config, a solver input or an estimate (`solve_forecast_shape`, `forecast_solve_memory_from_input`, `estimate_solve_memory_forecast`) and the thread mode's admission on it (`_admit_solve_memory`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input` and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and the marked scratch root (`new_scratch_directory`, `scratch_directory`) that holds setup's and the log's temporary files (the solver-input parquet, a worker's scratch, the range reducer's spill directory, the MLflow log's staging folder). No optimiser module creates an unmarked temporary file. |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
 | `src/haute/routes/_optimiser_adjustments.py` | The pure adjustment report (OPT-V10): `adjustment_report` (one scenario-histogram result to a strict `OptimiserAdjustmentReport`: bars per grid step, the up/down/unadjusted and edge shares, inverted-CDF quantiles and means per weighting, refused weightings named in the report's diagnostics errors) and the bounded point-report cache (`cache_point_report`, `MAX_CACHED_ADJUSTMENT_REPORTS`). It reads no file, job or grid. |
@@ -824,7 +824,7 @@ also refuses (400, naming up to 5 paths) a summary whose JSON artifacts hold NaN
 (`_require_finite_summary_artifacts`). A materialised ratebook point whose kept factor table
 holds a non-finite rate, or two levels that canonicalise to one key, is refused by
 `_serialise_ratebook_factor_table_rows` with an `InvalidRequestError` (400) naming the table and
-level, on `/frontier/select`, `/save` and `/mlflow/log` alike. Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
+level, on `/frontier/select`, `/save` and `/mlflow/log` alike. Save resolves `output_path` with `contained_path(current_project().root, ...)`
 — a relative path against the project root, the base `/pipeline/read-json` uses, and an absolute
 path only inside it. A bare filename (no `/` or `\`) is placed under
 `_project_layout.default_model_folder` first, the pipeline folder's `files/models/`, so Commit
@@ -1167,7 +1167,8 @@ whose message already names every problem and the remedy.
   releases it on every exit. `OptimiserSolveService.estimate_input` does the count: it creates a
   short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE`, executes the pipeline to the data
   input, runs `estimate_input_metrics` (one streaming aggregation scan with the null-`quote_id`
-  check folded in) and removes the job in a `finally`. In process mode the count runs on the
+  check and the quote id's mean width folded in) and removes the job in a `finally`. The route
+  then adds the solve-memory forecast and its cap (see "Solve-memory forecast (OPT-W02)"). In process mode the count runs on the
   warm interactive worker pool (`optimiser_estimate_worker`, the pipeline's lineage affinity
   key, the admission's native and RSS caps, and the pipeline settings' pipeline time
   limit): the job lives in the worker's private `optimiser_worker` store, and the worker
@@ -1574,15 +1575,129 @@ The required behaviour is defined in
 - The missing/malformed/range-order failure model remains strict and names the exact constraint.
 - Backend fixtures that exercise frontier computation use per-constraint ranges; historical
   scalar-field fixtures are deleted.
-## Decoded input widths for the resident-grid forecast
+## Solve-memory forecast (OPT-W02)
 
-Setup chunk sizes are the Pipeline Settings value (see `_ChunkSizeDecision`), not
-a byte budget. The resident-grid forecast (`forecast_resident_grid_bytes`) prices
-each input row from a bounded decoded sample (at most 512 rows), in which strings
-and binary use their decoded resident width, so repeated dictionary values cannot
-make a large decoded batch look like a tiny encoded page. The setup execution
-limits remain authoritative: chunked input still builds a resident solver grid.
-## Reuse and admit the resident grid input
+`_ram_estimate.forecast_solve_memory_bytes` forecasts the solver session's memory *growth* over
+one `build_and_solve`: its peak over the grid build, the solve (and in ratebook mode the factor
+contexts), the adjustment report, the inline frontier, the summary and the as-solved apply
+artifact, less what the session held when the command started. Growth is what the session's
+native cap bounds: the cap is the charge when the command starts plus the command's grant (see
+"Solver session" below). The forecast is
+
+    1.15 × (fixed + quotes × (q + q_id × id_bytes + q_c × (constraints − 1) + q_f × factors)
+            + rows × (r + r_c × constraints) + 2 × min(rows, chunk_rows) × row_width)
+
+with `row_width = 4 + 4 + 4 × (1 + constraints) + 16 + id_bytes` (the Int32 step, the Float32
+scenario value, objective and constraints, and the quote id as a 16-byte string view plus its
+bytes), the two decoded reader chunks of the grid build, priced from the inputs because the chunk
+size is a pipeline setting. The other terms are fitted to "Measured solve memory" below:
+
+| Term | Online | Ratebook |
+|---|---|---|
+| `fixed` | 112 MiB | 234 MiB |
+| `q`, per quote | 132 B | 326 B |
+| `q_id`, per quote per quote-id byte | 5.0 B | 7.4 B |
+| `q_c`, per quote per constraint beyond the first | 28 B | 50 B |
+| `q_f`, per quote per ratebook factor | — | 26.5 B |
+| `r`, per solver-input row | 5.3 B | 7.1 B |
+| `r_c`, per row per constraint | 3.0 B | 0 |
+
+The 1.15 margin puts every measured run's forecast at 1.13–1.22× its peak online and
+1.07–1.25× in ratebook mode. A mode other than `online` or `ratebook`, or a negative count, raises
+`ValueError`. `solve_forecast_shape(config)` reads the mode (default `online`), the number of
+configured constraints and, in ratebook mode, the number of `factor_columns` groups.
+
+The forecast is read in three places, each with the same function:
+
+- **The input estimate** (`estimate_solve_memory_forecast`): from the estimate's single scan
+  (`quote_count`, `expanded_row_count`, the quote id's mean byte length `quote_id_bytes_mean` over
+  distinct non-null quotes, read from the same `group_by` keys) and the chunk size
+  `grid_chunk_decision(scenarios_per_quote_max)` would choose. `POST /api/optimiser/estimate`
+  returns it as `solve_memory_forecast_bytes`, beside `solve_memory_cap_bytes`, the growth grant
+  `admit_growth_grant` would give an `OPTIMISER_SOLVE` command now
+  (`preview_growth_grant_bytes`, which reserves nothing and answers 0 where a grant would be
+  refused), read after the estimate's own `OPTIMISER_SETUP` reservation is released. Neither is
+  ever a refusal: the Solve panel warns when the forecast exceeds the cap and leaves Solve
+  enabled.
+- **The solver session** (`forecast_solve_memory_from_input`): from the solver input setup wrote
+  (its row count, `row_count // n_steps` quotes, and the quote id's mean byte length over a
+  512-row decoded sample), recorded on the job as `solve_memory_forecast_bytes` and never
+  enforced.
+- **The thread compatibility mode** (`_admit_solve_memory`, from `build_quote_grid`): the same
+  solver-input forecast, refused with the typed admission error, carrying it as
+  `estimated_bytes` ("the optimiser solve needs an estimated N bytes; M bytes remain in the
+  execution allowance"), when it exceeds the execution context's remaining allowance. Nothing
+  else bounds memory there.
+
+## Measured solve memory
+
+Whole-process memory growth of the solver session's `build_and_solve`, measured on 3 November
+2026 with `scripts/benchmarks/opt-w02-solve-memory.py` (Polars 2.0.0, price-contour 0.7.0, 32
+logical CPUs, WSL2 with 110 GiB). Each case ran in a fresh process that does what a session's
+child does: it imports the session's preload module, starts the Polars thread pools (the
+`RLIMIT_AS` backend starts them before installing its cap, so they are part of the charge the cap
+is installed over), then runs `build_and_solve` itself, unchanged, on a synthetic solver input
+written by `validate_and_project` and `write_solver_input`: quote-contiguous, a String quote id,
+Float32 objective and constraints, the first constraint (`volume`) swept over 15 frontier points
+from its total at the base step (the step nearest 1.0) up 3% and any others unswept `max`
+bounds the solve never reaches (so with more than one constraint the frontier is orchestrated in
+Python, one `solve()` per point),
+and, in ratebook mode, a banding artifact of one 8-level String factor, one 5-level Int32 factor
+and further 10-level Int32 factors. Growth is the command's peak RSS (`VmHWM`, reset at each stage
+boundary the command reports) less its RSS when it started (183–184 MiB, imports and pools). One
+run per case; the two repeated 1M-quote cases differed by at most 1.5%.
+
+| Mode | Quotes | Steps | Constraints | Quote-id bytes | Factors | Growth | Peak stage |
+|---|---|---|---|---|---|---|---|
+| online | 1M | 6 | 1 | 10 | — | 374 MiB | apply artifact |
+| online | 4M | 6 | 1 | 10 | — | 1,041 MiB | apply artifact |
+| online | 1M | 11 | 1 | 10 | — | 416 MiB | apply artifact |
+| online | 5M | 11 | 1 | 10 | — | 1,419 MiB | apply artifact |
+| online | 10M | 11 | 1 | 10 | — | 2,594 MiB | apply artifact |
+| online | 1M | 11 | 1 | 36 | — | 548 MiB | apply artifact |
+| online | 4M | 11 | 1 | 36 | — | 1,714 MiB | apply artifact |
+| online | 1M | 11 | 3 | 10 | — | 514 MiB | frontier |
+| online | 4M | 11 | 3 | 10 | — | 1,693 MiB | frontier |
+| online | 1M | 21 | 1 | 10 | — | 490 MiB | apply artifact |
+| online | 4M | 21 | 1 | 10 | — | 1,513 MiB | apply artifact |
+| online | 1M | 21 | 2 | 24 | — | 632 MiB | apply artifact |
+| online | 4M | 21 | 2 | 24 | — | 2,185 MiB | frontier |
+| ratebook | 1M | 6 | 1 | 10 | 2 | 737 MiB | apply artifact |
+| ratebook | 4M | 6 | 1 | 10 | 2 | 2,203 MiB | apply artifact |
+| ratebook | 1M | 11 | 1 | 10 | 2 | 770 MiB | apply artifact |
+| ratebook | 5M | 11 | 1 | 10 | 2 | 3,009 MiB | apply artifact |
+| ratebook | 10M | 11 | 1 | 10 | 2 | 4,914 MiB | solve |
+| ratebook | 1M | 11 | 1 | 10 | 6 | 928 MiB | apply artifact |
+| ratebook | 4M | 11 | 1 | 10 | 6 | 2,637 MiB | apply artifact |
+| ratebook | 1M | 11 | 1 | 36 | 2 | 981 MiB | apply artifact |
+| ratebook | 4M | 11 | 1 | 36 | 2 | 3,120 MiB | apply artifact |
+| ratebook | 1M | 11 | 3 | 10 | 2 | 881 MiB | apply artifact |
+| ratebook | 4M | 11 | 3 | 10 | 2 | 2,732 MiB | apply artifact |
+| ratebook | 1M | 21 | 1 | 10 | 2 | 846 MiB | apply artifact |
+| ratebook | 4M | 21 | 1 | 10 | 2 | 2,659 MiB | apply artifact |
+| ratebook | 1M | 21 | 2 | 24 | 4 | 1,047 MiB | apply artifact |
+| ratebook | 4M | 21 | 2 | 24 | 4 | 3,266 MiB | apply artifact |
+
+The grid build alone peaked at 340 MiB, 1,269 MiB and 2,489 MiB at 1M, 5M and 10M quotes × 11
+steps, where the resident-grid estimate the forecast replaces put it at 1,235 MiB, 5,766 MiB and
+11,431 MiB (3.6–4.6×), and covered neither the solve nor the frontier. The forecast covers the
+whole command: at 10M quotes × 11 steps it is 3,172 MiB online and 6,140 MiB in ratebook mode.
+Ratebook adds the factor contexts and the grid's quote ids as a Python list (built for the
+factor-context alignment) to the solve stage. The Python-orchestrated frontier (more than one
+constraint, one unswept) is the online peak at 4M quotes.
+
+An `RLIMIT_AS` host charges address space, not RSS: the command's address space grew 3.7–8.7
+GiB, 3.3–3.8 GiB more than its RSS, mostly the per-thread allocator arenas the solver's thread
+pool reserves. The session's `RLIMIT_AS` cap adds `model_thread_address_space_allowance()` (2.5
+GiB + 192 MiB per online CPU, 8.5 GiB on this host) to the grant for exactly this, so the
+forecast prices resident growth, which is what the grant bounds on every backend.
+
+Thresholds, which a change to the solve's memory must re-measure against with the same method:
+every case's forecast stays within 1.0–1.5× of its measured growth (pinned by
+`test_the_solve_forecast_is_within_one_and_a_half_times_every_measured_peak`), and the input
+estimate keeps its single scan.
+
+## Reuse the resident grid input
 
 Grid setup reuses a single local Parquet scan when its optimised plan is only
 the scan/projection, without predicates, slices, virtual columns, schema
@@ -1592,16 +1707,11 @@ The current caller keeps its input lease alive; borrowed input is never removed
 by grid cleanup. Multipart or transformed input retains one projected adapter
 file because the installed solver interface accepts one file.
 
-Before constructing the resident grid, estimate numeric vectors, quote IDs,
-sorting/conversion overlap and one reader batch from row count and decoded
-sample widths. In the thread compatibility mode, refuse an estimate exceeding the
-current execution context's remaining allowance with the existing typed
-admission error, which carries the estimate as `estimated_bytes` so its message
-names both sizes. In process mode the estimate is only recorded
-(`grid_forecast_bytes`): the solver session's native cap bounds the build, and a
-solve is never refused on it. The estimate is conservative and does not replace
-runtime limits. The existing solver/frontier
-work keeps sharing its prepared grid; this change adds no parallel grid copies.
+Before constructing the grid, the thread compatibility mode admits the solve's memory
+forecast (see "Solve-memory forecast" above); in process mode the forecast is only recorded
+(`solve_memory_forecast_bytes`): the solver session's native cap bounds the solve, and a solve
+is never refused on it. The existing solver/frontier work keeps sharing its prepared grid; no
+parallel grid copies are made.
 ## Analysis-column side table and scenario grid
 
 The behaviour is defined in [the high-level specification](high-level.md#behaviour).
@@ -2376,7 +2486,7 @@ The server makes no price-contour call and holds no native optimiser object. It 
 bounded plain data, plus parquet artifacts the session wrote.
 
 The explicit `thread` compatibility mode keeps the in-process path described in the sections
-above (`runtime_mode: "in_process"`), including the resident-grid admission gate, because
+above (`runtime_mode: "in_process"`), including the solve-memory admission gate, because
 nothing else bounds memory there.
 
 ### Modules
@@ -2426,8 +2536,8 @@ The cap installed for a command stays in place while the session is idle. It is 
 
 **`build_and_solve(SessionSolveRequest)`**:
 
-1. Builds the grid. It records `grid_forecast_bytes` (the resident-grid estimate) in the
-   command metrics but does not enforce it.
+1. Builds the grid. It records `solve_memory_forecast_bytes` (the solve-memory forecast from
+   the solver input) on the job but does not enforce it.
 2. Checks that the quote-analysis table has one row per grid quote.
 3. Runs the unchanged `_solve_online` / `_solve_ratebook` against a private record in the
    `optimiser_worker` job store (private to the session process). The record is seeded with the parent job's `config`,

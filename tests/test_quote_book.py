@@ -6,7 +6,6 @@ environment names (tests/_store_servers.py)."""
 
 from __future__ import annotations
 
-import threading
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import replace
@@ -16,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from haute._project_context import context_thread
 from haute._quote_store import (
     PricedOutputs,
     QuoteBook,
@@ -317,7 +317,7 @@ def test_one_save_sent_twice_at_once_is_one_write_and_two_saves_land_once(book: 
         except Exception as exc:  # noqa: BLE001 - each thread's outcome is the test's
             answers.append(exc)
 
-    twice = [threading.Thread(target=send, args=(quote, key)) for _ in range(2)]
+    twice = [context_thread(send, args=(quote, key)) for _ in range(2)]
     for thread in twice:
         thread.start()
     for thread in twice:
@@ -326,7 +326,7 @@ def test_one_save_sent_twice_at_once_is_one_write_and_two_saves_land_once(book: 
 
     current = book.get("A-1", 1)
     answers.clear()
-    rivals = [threading.Thread(target=send, args=(current, op())) for _ in range(2)]
+    rivals = [context_thread(send, args=(current, op())) for _ in range(2)]
     for thread in rivals:
         thread.start()
     for thread in rivals:
@@ -535,7 +535,7 @@ def test_two_alternatives_made_at_once_take_two_options(book: QuoteBook) -> None
             ).quote
         )
 
-    threads = [threading.Thread(target=alternative) for _ in range(2)]
+    threads = [context_thread(alternative) for _ in range(2)]
     for thread in threads:
         thread.start()
     for thread in threads:

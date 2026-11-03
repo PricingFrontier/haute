@@ -14,13 +14,14 @@ import pytest
 from pydantic import BaseModel
 
 from tests._git_helpers import init_repo as _init_repo
+from tests._project import use_project
 
 
 @pytest.fixture(autouse=True)
 def _isolated_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Every test runs in a fresh Git repository."""
     repo = _init_repo(tmp_path)
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     return repo
 
 

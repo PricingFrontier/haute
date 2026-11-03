@@ -8,15 +8,15 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from haute._scaffold_files import GITATTRIBUTES_ENTRIES, ensure_gitattributes
 from haute.cli import cli
+from tests._project import use_project
 
 
-def _init(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(project)
+def _init(project: Path) -> None:
+    use_project(project)
     result = CliRunner().invoke(cli, ["init"], catch_exceptions=False)
     assert result.exit_code == 0, result.output
 
@@ -30,10 +30,8 @@ def _git(cwd: Path, *args: str) -> None:
     )
 
 
-def test_no_file_haute_init_writes_holds_a_carriage_return(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _init(tmp_path, monkeypatch)
+def test_no_file_haute_init_writes_holds_a_carriage_return(tmp_path: Path) -> None:
+    _init(tmp_path)
 
     written = [path for path in tmp_path.rglob("*") if path.is_file()]
     assert tmp_path / ".githooks" / "pre-commit" in written
@@ -41,10 +39,8 @@ def test_no_file_haute_init_writes_holds_a_carriage_return(
     assert [path for path in written if b"\r" in path.read_bytes()] == []
 
 
-def test_the_gitattributes_pins_lf_and_marks_the_lock_file_generated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _init(tmp_path, monkeypatch)
+def test_the_gitattributes_pins_lf_and_marks_the_lock_file_generated(tmp_path: Path) -> None:
+    _init(tmp_path)
 
     lines = (tmp_path / ".gitattributes").read_text(encoding="utf-8").splitlines()
     assert lines == list(GITATTRIBUTES_ENTRIES)
@@ -64,12 +60,10 @@ def test_a_teams_gitattributes_keeps_its_lines(tmp_path: Path) -> None:
     assert (tmp_path / ".gitattributes").read_bytes() == text
 
 
-def test_a_clone_with_autocrlf_checks_out_lf(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_clone_with_autocrlf_checks_out_lf(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    _init(project, monkeypatch)
+    _init(project)
     _git(project, "init", "-q")
     _git(project, "add", "-A")
     _git(project, "commit", "-q", "-m", "scaffold")

@@ -34,6 +34,7 @@ from haute.modelling._feature_contract import (
 )
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
+from tests._project import use_project
 from tests.conftest import make_graph as _g
 from tests.conftest import make_output_config
 
@@ -156,7 +157,7 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
     def test_cache_busts_on_artifact_change(self, tmp_path, monkeypatch):
         from haute.deploy._schema import infer_output_schema
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pq = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq)
         graph = _passthrough_schema_graph(pq)
@@ -199,7 +200,7 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
             infer_output_schema,
         )
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         pq = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0]}).write_parquet(pq)
         graph = _passthrough_schema_graph(pq)
@@ -275,7 +276,7 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
         shutil.copytree(example / "minimal_live_quote", project)
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        monkeypatch.chdir(elsewhere)
+        use_project(elsewhere)
         writes: list[Path] = []
         atomic_write_text = schema_module.atomic_write_text
 
@@ -561,7 +562,7 @@ class TestEditorAndPackagedScoringAgree:
         from haute.deploy._scorer import score_graph
         from haute.executor import execute_graph
 
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         input_file = tmp_path / "input.parquet"
         input_df = pl.DataFrame({"x": [1.5, 2.0, None], "label": ["row1", "row2", "row3"]})
         input_df.write_parquet(input_file)

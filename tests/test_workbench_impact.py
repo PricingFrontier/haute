@@ -24,6 +24,7 @@ from haute._workbench_impact import (
     render_report,
 )
 from haute._workbench_rollout import AppState, Clock, HttpAnswer
+from tests._project import use_project
 
 COMMIT = "c0ffee" + "0" * 34
 PROD = "motor-prod.example.azurecontainerapps.io"
@@ -779,7 +780,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: Any) -> Pat
     CI service principal's variables set."""
     from haute.cli import cli
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     initialised = runner.invoke(
         cli, ["init", "--workbench", "--store", "sqlserver", "--sign-in", "password"]
     )

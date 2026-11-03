@@ -96,6 +96,12 @@ brew install libomp
 
 Windows and Linux installs need no extra step.
 
+### macOS: memory limits are watched, not enforced
+
+Previews, imports, training and other heavy work run in separate worker processes, each with a memory limit. On Windows and Linux the operating system enforces that limit. macOS has no way for an ordinary program to do that, so there Haute watches each worker's memory and stops it once it passes its limit. A worker that allocates very quickly can briefly go past the limit before it is stopped, and macOS may slow down by swapping in that time, but Haute itself keeps running.
+
+To refuse that work on macOS instead of watching it, set `HAUTE_WORKER_MEMORY_ENFORCEMENT=required` before `haute serve`.
+
 **`haute serve` doesn't open anything in my browser**
 
 Look at the terminal output for a line like `Uvicorn running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).

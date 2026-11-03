@@ -31,6 +31,7 @@ import threading
 
 from haute._cache import graph_fingerprint
 from haute._lru_cache import LRUCache
+from haute._project_context import context_thread
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 
 # ---------------------------------------------------------------------------
@@ -266,8 +267,8 @@ class TestUnifiedCacheThreadSafety:
             except Exception as exc:  # pragma: no cover — failure path
                 errors.append(f"reader: {exc!r}")
 
-        t_w = threading.Thread(target=writer)
-        t_r = threading.Thread(target=reader)
+        t_w = context_thread(writer)
+        t_r = context_thread(reader)
         t_w.start()
         t_r.start()
         t_w.join(timeout=10)

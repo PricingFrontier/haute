@@ -17,7 +17,7 @@ import subprocess
 import sys
 import textwrap
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -29,13 +29,13 @@ from haute._builders import _build_node_fn
 from haute._config_io import collect_node_configs
 from haute._execution_admission import create_admitted_execution_context
 from haute._node_bindings import NodeInput, bind_node_inputs
-from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
 from haute.deploy._scorer import QuoteRequest, score_graph
 from haute.errors import ExecutionError, ParseError
 from haute.execution import ExecutionProfile, execute_lazy_graph
 from haute.parser import parse_pipeline_file
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots, make_ready_file_input_config
 
 # ---------------------------------------------------------------------------
@@ -147,14 +147,9 @@ def _haute_run(graph: PipelineGraph, node_id: str, source: str) -> pl.DataFrame:
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    original = _get_project_root()
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        set_project_root(original)
+def project(tmp_path: Path) -> Path:
+    use_project(tmp_path)
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------

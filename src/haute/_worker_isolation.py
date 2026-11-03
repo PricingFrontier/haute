@@ -34,6 +34,7 @@ from haute._process_memory import (
     current_process_virtual_bytes,
     process_rss_bytes,
 )
+from haute._project_context import ProjectContext, current_project, project_scope
 
 logger = get_logger(component="worker_isolation")
 
@@ -103,9 +104,30 @@ class IsolatedWorkerConfig:
             raise ValueError("address_space_allowance_bytes must not be negative")
 
 
+_supervision_noted = threading.Event()
+
+
 def resolve_worker_memory_enforcement() -> WorkerMemoryEnforcement:
-    """Return the explicit hard-cap policy for isolated workers."""
-    raw = os.environ.get(_WORKER_MEMORY_ENFORCEMENT_ENV, "required")
+    """Return the memory policy for isolated workers.
+
+    ``HAUTE_WORKER_MEMORY_ENFORCEMENT`` decides when it is set. Unset, a host
+    that can install a native cap requires one, and a host that cannot (macOS)
+    supervises its workers instead: each still runs in its own process, which
+    the parent's RSS watchdog stops past its limit, where requiring the cap
+    would refuse every worker. That choice is logged once per process.
+    """
+    raw = os.environ.get(_WORKER_MEMORY_ENFORCEMENT_ENV)
+    if raw is None:
+        if process_memory_caps_supported():
+            return "required"
+        if not _supervision_noted.is_set():
+            _supervision_noted.set()
+            logger.warning(
+                "worker_memory_supervised_without_cap",
+                enforcement="best_effort",
+                reason="this host cannot install a native per-process memory cap",
+            )
+        return "best_effort"
     policy = raw.strip().lower()
     if policy not in {"best_effort", "required"}:
         raise RuntimeError(f"{_WORKER_MEMORY_ENFORCEMENT_ENV} must be 'best_effort' or 'required'")
@@ -318,6 +340,27 @@ def isolated_worker_failure_is_memory(exc: BaseException) -> bool:
     if isinstance(exc, IsolatedWorkerRemoteError):
         return exc.is_memory or exc.remote_type == "NativeMemoryLimitUnsupportedError"
     return False
+
+
+# The child's own exceptions when it could not install, or release, its native cap.
+_CAP_UNAVAILABLE_REMOTE_TYPES = frozenset(
+    {"NativeMemoryLimitUnsupportedError", "NativeMemoryLimitCleanupError"}
+)
+
+
+def isolated_worker_failure_is_cap_unavailable(exc: BaseException) -> bool:
+    """Return whether a worker failed because this host cannot install its required cap.
+
+    The spawn refuses a required cap a host cannot install before any child
+    exists, and a child reports one it could not install or release. Decide
+    this before :func:`isolated_worker_failure_is_memory`, which counts both as
+    memory outcomes although nothing ran out of memory.
+    """
+    if isinstance(exc, IsolatedWorkerMemoryLimitUnsupportedError):
+        return True
+    return isinstance(exc, IsolatedWorkerRemoteError) and (
+        exc.remote_type in _CAP_UNAVAILABLE_REMOTE_TYPES
+    )
 
 
 def isolated_worker_failure_is_path_too_long(exc: BaseException) -> bool:
@@ -800,6 +843,8 @@ def run_isolated_worker(
             kwargs,
             worker_config.memory_limit_bytes,
             worker_config.require_memory_limit,
+            # The caller's project, which the child installs for the function.
+            current_project(),
         ),
     )
     primary_error: BaseException | None = None
@@ -941,7 +986,8 @@ def _isolated_worker_entrypoint(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     memory_limit_bytes: int | None,
-    require_memory_limit: bool = False,
+    require_memory_limit: bool,
+    project: ProjectContext,
 ) -> None:
     from haute._polars_utils import apply_spawned_streaming_chunk_size
 
@@ -967,7 +1013,8 @@ def _isolated_worker_entrypoint(
     )
     with native_memory_backend_scope(lease.backend if applied else None, lease):
         try:
-            envelope = ("ok", function(*args, **kwargs))
+            with project_scope(project):
+                envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:
             envelope = _worker_error_envelope(
                 memory_error_for_thread_start_failure(exc) if applied else exc

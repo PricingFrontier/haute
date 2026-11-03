@@ -709,3 +709,196 @@ export function makeInputCacheSnapshot(
     ...overrides,
   }
 }
+
+// ---------------------------------------------------------------------------
+// makePreviewResponse — a whole POST /api/pipeline/preview answer
+// ---------------------------------------------------------------------------
+
+import type { PreviewNodeResponse } from "../api/types"
+
+/** A preview response as the server sends it, every field present. */
+export function makePreviewResponse(
+  overrides: Partial<PreviewNodeResponse> = {},
+): PreviewNodeResponse {
+  return {
+    status: "ok",
+    node_id: "n1",
+    row_count: 0,
+    column_count: 0,
+    columns: [],
+    available_columns: [],
+    frame_columns: {},
+    preview: [],
+    preview_columns: [],
+    preview_row_count: 0,
+    preview_row_limit: null,
+    preview_truncated: false,
+    port_previews: {},
+    error: null,
+    error_line: null,
+    timing_ms: 0,
+    memory_bytes: 0,
+    schema_warnings: [],
+    notes: [],
+    timings: [],
+    memory: [],
+    node_statuses: {},
+    node_columns: {},
+    node_available_columns: {},
+    node_frame_columns: {},
+    node_schema_warnings: {},
+    execution_metrics: null,
+    seed_plan: [],
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trace factories — a trace as POST /api/pipeline/trace answers it
+// ---------------------------------------------------------------------------
+
+import type { TraceCorrelationDiagnostic, TraceResult, TraceStep } from "../types/trace"
+
+/** A trace step with every field the server sends. */
+export function makeTraceStep(overrides: Partial<TraceStep> = {}): TraceStep {
+  return {
+    node_id: "n1",
+    node_name: "Step",
+    node_type: "polars",
+    schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] },
+    input_values: {},
+    output_values: {},
+    topological_rank: 0,
+    column_relevant: true,
+    contributed_columns: [],
+    derivations: [],
+    expression: null,
+    calculation: null,
+    node_detail: null,
+    row_lineage_type: null,
+    snapshot_generation_id: null,
+    identical_row_count: null,
+    ...overrides,
+  }
+}
+
+/** A trace result with every field the server sends. */
+export function makeTraceResult(overrides: Partial<TraceResult> = {}): TraceResult {
+  return {
+    target_node_id: "n1",
+    row_index: 0,
+    column: null,
+    output_value: null,
+    steps: [],
+    omissions: [],
+    row_id_column: null,
+    row_id_value: null,
+    total_nodes_in_pipeline: 0,
+    nodes_in_trace: 0,
+    execution_ms: 0,
+    waterfall: null,
+    correlation_diagnostics: [],
+    generated_at: "2026-01-01T00:00:00+00:00",
+    pipeline_source: null,
+    execution_origin: "fresh_execution",
+    ...overrides,
+  }
+}
+
+/** A trace correlation diagnostic with every field the server sends. */
+export function makeTraceDiagnostic(
+  overrides: Partial<TraceCorrelationDiagnostic> = {},
+): TraceCorrelationDiagnostic {
+  return {
+    code: "ambiguous_source_frame",
+    severity: "warning",
+    reason: "ambiguous_source_frame",
+    message: "",
+    node_id: null,
+    child_node_id: null,
+    match_strategy: null,
+    match_columns: [],
+    ignored_columns: [],
+    matched_row_count: null,
+    matched_row_indices: [],
+    seed_node_ids: [],
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// makeSavePipelineResponse — POST /api/pipeline/save's answer
+// ---------------------------------------------------------------------------
+
+import type { SavePipelineResponse } from "../api/types"
+
+/** A pipeline save's answer with every field the server sends. */
+export function makeSavePipelineResponse(
+  overrides: Partial<SavePipelineResponse> = {},
+): SavePipelineResponse {
+  return {
+    status: "saved",
+    file: "main.py",
+    pipeline_name: "main",
+    source_revision: "revision-save",
+    document_fingerprint: "fingerprint-save",
+    warnings: [],
+    git_sha: null,
+    identity_required: false,
+    uncaptured: [],
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical graphs — a pipeline graph as the server sends one
+// ---------------------------------------------------------------------------
+
+import type {
+  GraphNode as CanonicalGraphNode,
+  NodeType as CanonicalNodeType,
+  PipelineGraph as CanonicalPipelineGraph,
+} from "../generated/api-contracts.generated"
+
+/** A canonical graph node with every field the server sends. */
+export function makeCanonicalNode(
+  id: string,
+  nodeType: CanonicalNodeType = "polars",
+  config: Record<string, unknown> = {},
+): CanonicalGraphNode {
+  return {
+    id,
+    type: nodeType,
+    position: { x: 0, y: 0 },
+    data: {
+      label: id,
+      description: "",
+      nodeType,
+      config,
+      editor: { steps_error: null, steps_discarded: null },
+    },
+  }
+}
+
+/** A canonical pipeline graph with every field the server sends. */
+export function makeCanonicalGraph(
+  overrides: Partial<CanonicalPipelineGraph> = {},
+): CanonicalPipelineGraph {
+  return {
+    nodes: [],
+    edges: [],
+    pipeline_name: null,
+    pipeline_description: null,
+    preamble: null,
+    preserved_blocks: [],
+    global_constants: [],
+    global_constants_error: null,
+    source_file: null,
+    source_revision: null,
+    submodels: null,
+    sources: ["live"],
+    active_source: "live",
+    warning: null,
+    ...overrides,
+  }
+}

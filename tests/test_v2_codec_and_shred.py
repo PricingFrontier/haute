@@ -43,7 +43,7 @@ from haute._json_shred._shred import (
     shred_request,
     shred_to_buffers,
 )
-from haute._sandbox import set_project_root
+from tests._project import use_project
 from tests._property_budget import pr_budget
 from tests.conftest import build_test_api_input_snapshots
 
@@ -622,7 +622,7 @@ def _write_rating_json(path: Path) -> None:
 def test_build_writes_one_input_snapshot_per_emit_table(tmp_path: Path) -> None:
     data_path = tmp_path / "data.json"
     _write_rating_json(data_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
 
     generations = build_test_api_input_snapshots(data_path, _rating_v2())
 
@@ -636,7 +636,7 @@ def test_build_writes_one_input_snapshot_per_emit_table(tmp_path: Path) -> None:
 def test_load_v2_api_source_returns_one_lazyframe_per_emit_table(tmp_path: Path) -> None:
     data_path = tmp_path / "data.json"
     _write_rating_json(data_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     config = _rating_v2()
     build_test_api_input_snapshots(data_path, config)
 

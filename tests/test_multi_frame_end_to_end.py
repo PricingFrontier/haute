@@ -32,10 +32,9 @@ satisfied by TestClient:
   reviewers' flagged port race cannot occur.
 - Readiness probe: TestClient(app) is synchronously ready; no poll needed.
 - Temp cache directory / no leakage: the input snapshot store is rooted at the
-  selected project root (``haute._source_cache.SourceCacheStore``). We
-  ``monkeypatch.chdir(tmp_path)`` + ``set_project_root`` so ``.haute_cache``
-  lands under the per-test tmp dir — the established
-  ``test_output_assemble_routes`` pattern.
+  installed project's root (``haute._source_cache.SourceCacheStore``). The
+  test's ``tmp_path`` is that project, so ``.haute_cache`` lands under the
+  per-test tmp dir.
 - File-watcher disabled: the watcher only starts in the server lifespan, which
   runs only when TestClient is entered as a context manager. We instantiate it
   BARE (no ``with``), so the lifespan/watcher never start — the repo convention.
@@ -71,9 +70,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._sandbox import _get_project_root, set_project_root
 from haute._types import NodeType
 from haute.executor import _preview_cache
+from tests._project import project_app, use_project
 
 # Reuse the canonical multi-port helpers (same imports test_output_assemble_routes
 # uses) — single source of truth for the apiInput shred config, the OUTPUT
@@ -149,19 +148,16 @@ def _canonical(node: Any) -> Any:
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Path]]:
     """In-process app rooted at an isolated tmp project (see module docstring,
     HARNESS CHOICE). TestClient is instantiated BARE so the lifespan/file-watcher
-    never starts; chdir + set_project_root keep the cache dir under tmp_path."""
-    monkeypatch.chdir(tmp_path)
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    never starts; the tmp_path project keeps the cache dir under tmp_path."""
+    use_project(tmp_path)
     _preview_cache.clear()
 
-    from haute.server import app
+    app = project_app()
 
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
     yield TestClient(app), data_path
-    set_project_root(original)
     _preview_cache.clear()
 
 

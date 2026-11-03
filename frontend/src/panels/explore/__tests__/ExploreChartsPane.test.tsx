@@ -421,6 +421,20 @@ describe("ExploreChartsPane", () => {
     expect(within(card).queryByRole("alert")).not.toBeInTheDocument()
   })
 
+  it("says no rows match on a chart whose source Pivot result is empty", () => {
+    const sourcePivot = pivot("shared")
+    seedResult(sourcePivot, { ...result(sourcePivot), row_paths: [], cells: [] })
+
+    renderPane([sourcePivot], [chart("empty", sourcePivot)])
+
+    const card = screen.getByRole("region", { name: "Chart empty" })
+    expect(
+      within(card).getByText("No rows match this pivot configuration."),
+    ).toBeVisible()
+    expect(within(card).queryByRole("alert")).toBeNull()
+    expect(within(card).queryByTestId("combo-chart")).toBeNull()
+  })
+
   it("keeps an adapter error local while a successful sibling still renders", () => {
     const sourcePivot = pivot("shared")
     seedResult(sourcePivot)

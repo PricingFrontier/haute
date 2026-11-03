@@ -8,13 +8,36 @@
       {
         "id": "child1",
         "type": "polars",
-        "position": { "x": 10, "y": 20 },
-        "data": { "label": "Child", "nodeType": "polars" }
+        "position": {
+          "x": 10.0,
+          "y": 20.0
+        },
+        "data": {
+          "label": "Child",
+          "description": "",
+          "nodeType": "polars",
+          "config": {},
+          "editor": {
+            "steps_error": null,
+            "steps_discarded": null
+          }
+        }
       }
     ],
     "edges": [],
     "pipeline_name": "pricing",
+    "pipeline_description": null,
+    "preamble": null,
     "preserved_blocks": [],
-    "source_revision": null
+    "global_constants": [],
+    "global_constants_error": null,
+    "source_file": null,
+    "source_revision": null,
+    "submodels": null,
+    "warning": null,
+    "sources": [
+      "live"
+    ],
+    "active_source": "live"
   }
 }

@@ -1,5 +1,1058 @@
 {
   "$defs": {
+    "AssistantBuildPlan": {
+      "additionalProperties": false,
+      "description": "The stages a multi-stage request is built in, in order, as the chat's checklist.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/AssistantBuildPlanItem"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "AssistantBuildPlan",
+      "type": "object"
+    },
+    "AssistantBuildPlanChange": {
+      "additionalProperties": false,
+      "description": "One saved change recorded against a build-plan item, by its change card's id.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "undone": {
+          "title": "Undone",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "undone"
+      ],
+      "title": "AssistantBuildPlanChange",
+      "type": "object"
+    },
+    "AssistantBuildPlanItem": {
+      "additionalProperties": false,
+      "description": "One stage of a build plan: the changes saved against it and whether it is complete.\n\nThe changes are Haute's record of the applies the model attributed to the\nitem; completion is the model's claim, which Haute accepts only while the\nitem has a change that is not undone.",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/AssistantBuildPlanChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "complete",
+        "changes"
+      ],
+      "title": "AssistantBuildPlanItem",
+      "type": "object"
+    },
+    "AssistantBuildPlanUpdatedEvent": {
+      "description": "A tool call changed the session's build plan: the whole plan as it now stands.",
+      "properties": {
+        "build_plan": {
+          "$ref": "#/$defs/AssistantBuildPlan"
+        },
+        "type": {
+          "const": "build_plan_updated",
+          "default": "build_plan_updated",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "build_plan"
+      ],
+      "title": "AssistantBuildPlanUpdatedEvent",
+      "type": "object"
+    },
+    "AssistantCancelledEvent": {
+      "properties": {
+        "type": {
+          "const": "cancelled",
+          "default": "cancelled",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "AssistantCancelledEvent",
+      "type": "object"
+    },
+    "AssistantChangeAppliedEvent": {
+      "description": "A plan was saved: the change card built from what was saved.",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/AssistantChangeRecord"
+        },
+        "type": {
+          "const": "change_applied",
+          "default": "change_applied",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "change"
+      ],
+      "title": "AssistantChangeAppliedEvent",
+      "type": "object"
+    },
+    "AssistantChangeDataCheck": {
+      "additionalProperties": false,
+      "description": "The data check of the dry-run whose plan a change saved, as its card shows it.\n\n``visibility`` compares the check's binding with the graph the apply\nsaved: ``current``; ``earlier_inputs`` when an input or a cached model it\nread has changed since; ``other_scenario`` when the graph runs another\nscenario, which keeps no findings, only the ``scenario`` they described.\nA check bound to another graph is not carried at all. ``not_checked`` is\none line saying why the check, or some of the changed nodes, did not run.",
+      "properties": {
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/AssistantDataFinding"
+          },
+          "maxItems": 20,
+          "title": "Findings",
+          "type": "array"
+        },
+        "findings_omitted": {
+          "minimum": 0,
+          "title": "Findings Omitted",
+          "type": "integer"
+        },
+        "not_checked": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Not Checked"
+        },
+        "outcome": {
+          "enum": [
+            "checked",
+            "not_run"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "scenario": {
+          "minLength": 1,
+          "title": "Scenario",
+          "type": "string"
+        },
+        "visibility": {
+          "enum": [
+            "current",
+            "earlier_inputs",
+            "other_scenario"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        }
+      },
+      "required": [
+        "visibility",
+        "outcome",
+        "scenario",
+        "findings",
+        "findings_omitted",
+        "not_checked"
+      ],
+      "title": "AssistantChangeDataCheck",
+      "type": "object"
+    },
+    "AssistantChangeEdge": {
+      "additionalProperties": false,
+      "description": "One edge a saved plan added or removed, by its endpoint node ids.",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "title": "AssistantChangeEdge",
+      "type": "object"
+    },
+    "AssistantChangeNode": {
+      "additionalProperties": false,
+      "description": "One node chip on a change card: which node, its palette type and what happened.\n\n``fields`` names the configuration fields the plan changed in plain words,\nnever their values; ``steps`` lists a stepped node's step kinds after the\nchange (``None`` for a node without a step list) and ``steps_changed`` how\nmany steps the plan inserted, replaced, removed or rewired.",
+      "properties": {
+        "change": {
+          "enum": [
+            "added",
+            "changed",
+            "removed",
+            "renamed"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "renamed_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Renamed From"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps"
+        },
+        "steps_changed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Steps Changed",
+          "type": "integer"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "change",
+        "renamed_from",
+        "fields",
+        "steps",
+        "steps_changed"
+      ],
+      "title": "AssistantChangeNode",
+      "type": "object"
+    },
+    "AssistantChangeRecord": {
+      "additionalProperties": false,
+      "description": "The value-free change card of one saved plan.\n\n``id`` is the hash of the plan it saved; a plan applies once, so it names\nthis change. ``summary`` and ``assumptions`` are the model's own words from\nthe plan's dry-run; everything else is built from what was saved.\n``data_check`` is the plan's data check, or ``None`` when no check was\nattempted or its findings describe another graph.",
+      "properties": {
+        "assumptions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "changes": {
+          "$ref": "#/$defs/AssistantGraphChanges"
+        },
+        "data_check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantChangeDataCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Git Sha"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "parent_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parent Sha"
+        },
+        "revision": {
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "summary",
+        "assumptions",
+        "changes",
+        "warnings",
+        "git_sha",
+        "parent_sha",
+        "revision",
+        "data_check"
+      ],
+      "title": "AssistantChangeRecord",
+      "type": "object"
+    },
+    "AssistantCompletedEvent": {
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/AssistantTurnOutcome"
+        },
+        "type": {
+          "const": "completed",
+          "default": "completed",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/AssistantUsage"
+        }
+      },
+      "required": [
+        "type",
+        "usage",
+        "outcome"
+      ],
+      "title": "AssistantCompletedEvent",
+      "type": "object"
+    },
+    "AssistantDataFinding": {
+      "additionalProperties": false,
+      "description": "One data-check finding on a change card, worded from its counts and names.\n\n``text`` says what was measured in plain words (\"All 1,204 rows fell into\nthe default band of age_band.\"): counts, shares, node, column and port\nnames, never a row value, a configuration value or an error's own text.",
+      "properties": {
+        "node": {
+          "minLength": 1,
+          "title": "Node",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "advisory",
+            "informational"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "node",
+        "text"
+      ],
+      "title": "AssistantDataFinding",
+      "type": "object"
+    },
+    "AssistantFailedEvent": {
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "type": {
+          "const": "failed",
+          "default": "failed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "title": "AssistantFailedEvent",
+      "type": "object"
+    },
+    "AssistantGraphChanges": {
+      "additionalProperties": false,
+      "description": "A plan's node chips and edges, each list bounded; ``truncated`` when cut.\n\nAn empty list and a false flag are the defaults, which the compact tool\nresults the model reads leave out.",
+      "properties": {
+        "edges_added": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantChangeEdge"
+          },
+          "title": "Edges Added",
+          "type": "array"
+        },
+        "edges_removed": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantChangeEdge"
+          },
+          "title": "Edges Removed",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/AssistantChangeNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "preamble_changed": {
+          "default": false,
+          "title": "Preamble Changed",
+          "type": "boolean"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges_added",
+        "edges_removed",
+        "preamble_changed",
+        "truncated"
+      ],
+      "title": "AssistantGraphChanges",
+      "type": "object"
+    },
+    "AssistantSessionListResponse": {
+      "properties": {
+        "sessions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantSessionSummary"
+          },
+          "title": "Sessions",
+          "type": "array"
+        },
+        "source_file": {
+          "title": "Source File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_file",
+        "sessions"
+      ],
+      "title": "AssistantSessionListResponse",
+      "type": "object"
+    },
+    "AssistantSessionResponse": {
+      "properties": {
+        "build_plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantBuildPlan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "history": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssistantTranscriptEntry"
+          },
+          "title": "History",
+          "type": "array"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "source_file": {
+          "title": "Source File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "source_file",
+        "history",
+        "build_plan"
+      ],
+      "title": "AssistantSessionResponse",
+      "type": "object"
+    },
+    "AssistantSessionSummary": {
+      "description": "One conversation as the chat list renders it, without its transcript.",
+      "properties": {
+        "created_at": {
+          "title": "Created At",
+          "type": "number"
+        },
+        "last_used": {
+          "title": "Last Used",
+          "type": "number"
+        },
+        "message_count": {
+          "title": "Message Count",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "title",
+        "created_at",
+        "last_used",
+        "message_count"
+      ],
+      "title": "AssistantSessionSummary",
+      "type": "object"
+    },
+    "AssistantStatusResponse": {
+      "properties": {
+        "configured": {
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "endpoint_host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Endpoint Host"
+        },
+        "max_sensitivity": {
+          "anyOf": [
+            {
+              "enum": [
+                "public",
+                "internal",
+                "restricted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Sensitivity"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "mutations_enabled": {
+          "title": "Mutations Enabled",
+          "type": "boolean"
+        },
+        "mutations_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mutations Reason"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "trust": {
+          "anyOf": [
+            {
+              "enum": [
+                "local",
+                "organization",
+                "external"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trust"
+        }
+      },
+      "required": [
+        "configured",
+        "reason",
+        "provider",
+        "model",
+        "endpoint_host",
+        "trust",
+        "max_sensitivity",
+        "mutations_enabled",
+        "mutations_reason"
+      ],
+      "title": "AssistantStatusResponse",
+      "type": "object"
+    },
+    "AssistantStreamEventPayload": {
+      "description": "One ``data:`` frame of the assistant's message stream, as the browser reads it.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/AssistantTextDeltaEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantThinkingEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantToolStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantToolProgressEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantToolFinishedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantChangeAppliedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantBuildPlanUpdatedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantCompletedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantFailedEvent"
+        },
+        {
+          "$ref": "#/$defs/AssistantCancelledEvent"
+        }
+      ],
+      "title": "AssistantStreamEventPayload"
+    },
+    "AssistantTextDeltaEvent": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "text_delta",
+          "default": "text_delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "AssistantTextDeltaEvent",
+      "type": "object"
+    },
+    "AssistantThinkingEvent": {
+      "description": "The model is thinking: a status for the panel, carrying none of the thinking.",
+      "properties": {
+        "type": {
+          "const": "thinking",
+          "default": "thinking",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "AssistantThinkingEvent",
+      "type": "object"
+    },
+    "AssistantToolFinishedEvent": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_error": {
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_finished",
+          "default": "tool_finished",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "title",
+        "is_error",
+        "summary"
+      ],
+      "title": "AssistantToolFinishedEvent",
+      "type": "object"
+    },
+    "AssistantToolProgressEvent": {
+      "description": "A running tool moved to a new stage: its activity row's title until it finishes.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_progress",
+          "default": "tool_progress",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "title"
+      ],
+      "title": "AssistantToolProgressEvent",
+      "type": "object"
+    },
+    "AssistantToolStartedEvent": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_started",
+          "default": "tool_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "title",
+        "summary"
+      ],
+      "title": "AssistantToolStartedEvent",
+      "type": "object"
+    },
+    "AssistantTranscriptEntry": {
+      "description": "One rehydratable transcript item from a resumed session's history.\n\nAn ``outcome`` entry closes a completed turn with its stored outcome, a\n``change`` entry carries an apply's change record and an ``undo`` entry the\nrecord of a change the analyst undid; only those kinds carry those fields.",
+      "properties": {
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantChangeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_error": {
+          "default": false,
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "user",
+            "assistant",
+            "tool",
+            "outcome",
+            "change",
+            "undo"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantTurnOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text",
+        "name",
+        "title",
+        "summary",
+        "is_error",
+        "outcome",
+        "change"
+      ],
+      "title": "AssistantTranscriptEntry",
+      "type": "object"
+    },
+    "AssistantTurnOutcome": {
+      "additionalProperties": false,
+      "description": "How a completed assistant turn ended, and what it saved.\n\n``detail`` is the model's question (``needs_input``), the sanitized blocker\n(``blocked``), the verification error of a save that committed\n(``committed_unverified``) or the controller's reason the model stopped\nwith a dry-run unfinished (``incomplete``); ``applied`` and ``answered``\ncarry none. ``changes`` are the ids of the change records the turn saved,\nin order, whatever the kind says about finishing the request: ``applied``\nsaved at least one and ``answered`` none, while any other kind may follow\nsaved changes.",
+      "properties": {
+        "changes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail"
+        },
+        "kind": {
+          "enum": [
+            "applied",
+            "answered",
+            "needs_input",
+            "blocked",
+            "committed_unverified",
+            "incomplete"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "detail",
+        "changes"
+      ],
+      "title": "AssistantTurnOutcome",
+      "type": "object"
+    },
+    "AssistantUndoResponse": {
+      "properties": {
+        "build_plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssistantBuildPlan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "change_id": {
+          "title": "Change Id",
+          "type": "string"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Git Sha"
+        }
+      },
+      "required": [
+        "change_id",
+        "git_sha",
+        "build_plan"
+      ],
+      "title": "AssistantUndoResponse",
+      "type": "object"
+    },
+    "AssistantUsage": {
+      "properties": {
+        "input_tokens": {
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "AssistantUsage",
+      "type": "object"
+    },
     "BandingHistogramBin": {
       "description": "One `[lower, upper)` interval of a numeric distribution, the last closed.",
       "properties": {
@@ -1768,6 +2821,86 @@
       "title": "ConditionGroup",
       "type": "object"
     },
+    "CreateNodeInstanceResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "definition_id": {
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "instance_name": {
+          "title": "Instance Name",
+          "type": "string"
+        },
+        "owner_name": {
+          "title": "Owner Name",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "graph",
+        "owner_name",
+        "instance_name",
+        "definition_id",
+        "source_revision"
+      ],
+      "title": "CreateNodeInstanceResponse",
+      "type": "object"
+    },
+    "CreateSubmodelResponse": {
+      "properties": {
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "parent_file": {
+          "default": "",
+          "title": "Parent File",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        },
+        "submodel_file": {
+          "default": "",
+          "title": "Submodel File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "submodel_file",
+        "parent_file",
+        "source_revision",
+        "graph"
+      ],
+      "title": "CreateSubmodelResponse",
+      "type": "object"
+    },
     "CsvExport": {
       "additionalProperties": false,
       "description": "A CSV of the one table an Export exports, its fields split by its ``delimiter``.",
@@ -1995,6 +3128,43 @@
       "title": "DispersionEstimateStatusResponse",
       "type": "object"
     },
+    "DissolveSubmodelResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "definition_id": {
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "instance_id": {
+          "title": "Instance Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "graph",
+        "source_revision",
+        "instance_id",
+        "definition_id"
+      ],
+      "title": "DissolveSubmodelResponse",
+      "type": "object"
+    },
     "EditorIdentitiesResponse": {
       "additionalProperties": false,
       "properties": {
@@ -2026,6 +3196,86 @@
         "violations"
       ],
       "title": "EditorIdentitiesResponse",
+      "type": "object"
+    },
+    "EditorIdentityRequestNode": {
+      "additionalProperties": false,
+      "description": "One bounded, side-effect-free editor identity resolution request.",
+      "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alias"
+        },
+        "instance_of": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instance Of"
+        },
+        "label": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_type": {
+          "$ref": "#/$defs/NodeType"
+        },
+        "source_handles": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "title": "Source Handles",
+          "type": "array"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "node_type"
+      ],
+      "title": "EditorIdentityRequestNode",
       "type": "object"
     },
     "EditorIdentityResponseNode": {
@@ -8537,6 +9787,84 @@
       "title": "GitWorkingBranchesResponse",
       "type": "object"
     },
+    "GlobalConstant": {
+      "additionalProperties": false,
+      "description": "One named, typed value that node code reads as ``global_constants.<name>``.\n\nA uniform constant holds ``value``, which every source reads. A constant\nsplit by source holds ``by_source``, which may lack a source: reading it\nunder that source fails, naming both. Values stay JSON scalars, so a date\nis its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it\nwas written.",
+      "properties": {
+        "by_source": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "By Source"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "integer",
+            "float",
+            "text",
+            "boolean",
+            "date"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "value",
+        "by_source"
+      ],
+      "title": "GlobalConstant",
+      "type": "object"
+    },
     "GpuFamilyStatus": {
       "additionalProperties": false,
       "description": "Whether one family can train on a GPU in this server process.",
@@ -8568,6 +9896,88 @@
         "device"
       ],
       "title": "GpuFamilyStatus",
+      "type": "object"
+    },
+    "GraphEdge": {
+      "description": "A single edge in the React Flow graph.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "sourceHandle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sourcehandle"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "targetHandle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targethandle"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "target",
+        "sourceHandle",
+        "targetHandle"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    },
+    "GraphNode": {
+      "description": "A single node in the React Flow graph.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/NodeData"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "position": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Position",
+          "type": "object"
+        },
+        "type": {
+          "default": "pipelineNode",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "position",
+        "data"
+      ],
+      "title": "GraphNode",
       "type": "object"
     },
     "HeadingWidget": {
@@ -8778,6 +10188,46 @@
         "column_names"
       ],
       "title": "ImportWidget",
+      "type": "object"
+    },
+    "InputCacheBuildRequest": {
+      "additionalProperties": false,
+      "description": "Start or join a snapshot build; the server chooses how it is built.",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Config",
+          "type": "object"
+        },
+        "node_type": {
+          "default": "dataInput",
+          "enum": [
+            "dataInput",
+            "apiInput"
+          ],
+          "title": "Node Type",
+          "type": "string"
+        },
+        "refresh": {
+          "default": false,
+          "title": "Refresh",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "InputCacheBuildRequest",
       "type": "object"
     },
     "InputCacheBuildResponse": {
@@ -9154,6 +10604,41 @@
         "tables"
       ],
       "title": "InputCacheSnapshotStatusResponse",
+      "type": "object"
+    },
+    "InputCacheSourceRequest": {
+      "additionalProperties": false,
+      "description": "One input node's source: a Data Input's config, or a structured API Input's.\n\nA structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``\nschema) is one snapshot per emitting table; its requests act on every\ntable of the node together. ``node_type`` says how the source is read, so a\nWorkbench Input's tables, read as a Quote Input's, are sent as ``apiInput``.",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Config",
+          "type": "object"
+        },
+        "node_type": {
+          "default": "dataInput",
+          "enum": [
+            "dataInput",
+            "apiInput"
+          ],
+          "title": "Node Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "InputCacheSourceRequest",
       "type": "object"
     },
     "InputCacheTableStatus": {
@@ -9661,6 +11146,24 @@
       "title": "IoOutputCapability",
       "type": "object"
     },
+    "JsonCacheInferResponse": {
+      "description": "v2-shaped inference output: a list of table specs to merge into\nthe apiInput's config. Caller stitches in the apiInput's existing\n``path`` and ``contract`` metadata.",
+      "properties": {
+        "tables": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tables"
+      ],
+      "title": "JsonCacheInferResponse",
+      "type": "object"
+    },
     "LogExperimentResponse": {
       "properties": {
         "backend": {
@@ -10157,6 +11660,62 @@
       "title": "MlflowSettingsResponse",
       "type": "object"
     },
+    "MlflowSettingsUpdateRequest": {
+      "properties": {
+        "folder": {
+          "default": "",
+          "maxLength": 4096,
+          "title": "Folder",
+          "type": "string"
+        },
+        "tracking_uri": {
+          "default": "",
+          "maxLength": 4096,
+          "title": "Tracking Uri",
+          "type": "string"
+        }
+      },
+      "title": "MlflowSettingsUpdateRequest",
+      "type": "object"
+    },
+    "MlflowTestConnectionRequest": {
+      "properties": {
+        "destination": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Destination",
+          "type": "string"
+        },
+        "folder": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Folder"
+        },
+        "tracking_uri": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tracking Uri"
+        }
+      },
+      "title": "MlflowTestConnectionRequest",
+      "type": "object"
+    },
     "MlflowTestConnectionResponse": {
       "properties": {
         "category": {
@@ -10334,6 +11893,34 @@
       "title": "ModelFileInspectionResponse",
       "type": "object"
     },
+    "ModelSaveDestinationRequest": {
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "catboost",
+            "glm",
+            "xgboost",
+            "lightgbm",
+            "ebm",
+            "tboost"
+          ],
+          "title": "Algorithm",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Output Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "output_path",
+        "algorithm"
+      ],
+      "title": "ModelSaveDestinationRequest",
+      "type": "object"
+    },
     "ModelSaveDestinationResponse": {
       "properties": {
         "path": {
@@ -10364,6 +11951,42 @@
         "xgboost"
       ],
       "title": "ModellingGpuStatusResponse",
+      "type": "object"
+    },
+    "NodeData": {
+      "description": "Data payload for a single pipeline node.",
+      "properties": {
+        "config": {
+          "additionalProperties": true,
+          "title": "Config",
+          "type": "object"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "label": {
+          "default": "Unnamed",
+          "title": "Label",
+          "type": "string"
+        },
+        "nodeType": {
+          "$ref": "#/$defs/NodeType",
+          "default": "polars"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "nodeType",
+        "config",
+        "editor"
+      ],
+      "title": "NodeData",
       "type": "object"
     },
     "NodeDataClearResponse": {
@@ -10966,6 +12589,116 @@
       "title": "NodeDataStatusResponse",
       "type": "object"
     },
+    "NodeEditorState": {
+      "additionalProperties": false,
+      "description": "What the server knows about a node for its editor, carried beside the config.\n\nNone of it is a setting: it is never persisted, hashed or validated as config.\n``steps_error`` is derived from the node's ``steps`` whenever its data is\nbuilt; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is\nthe parse's finding. A request may carry the field back, as a transform of the\ngraph echoes it, but a save never reads the finding from it: it reparses the\nfile on disk.",
+      "properties": {
+        "steps_discarded": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps Discarded"
+        },
+        "steps_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps Error"
+        }
+      },
+      "required": [
+        "steps_error",
+        "steps_discarded"
+      ],
+      "title": "NodeEditorState",
+      "type": "object"
+    },
+    "NodeMemoryInfo": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "memory_bytes": {
+          "title": "Memory Bytes",
+          "type": "integer"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "memory_bytes"
+      ],
+      "title": "NodeMemoryInfo",
+      "type": "object"
+    },
+    "NodeTimingInfo": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "timing_ms": {
+          "title": "Timing Ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "timing_ms"
+      ],
+      "title": "NodeTimingInfo",
+      "type": "object"
+    },
+    "NodeType": {
+      "description": "Canonical node-type identifiers shared with the React Flow frontend.\n\nInherits from ``StrEnum`` so ``NodeType.API_INPUT == \"apiInput\"`` is ``True``\nand JSON serialization produces the plain string value.",
+      "enum": [
+        "apiInput",
+        "workbenchInput",
+        "workbenchOutput",
+        "dataInput",
+        "dataOutput",
+        "polars",
+        "edgeJoin",
+        "modelScore",
+        "banding",
+        "ratingStep",
+        "output",
+        "explore",
+        "externalFile",
+        "liveSwitch",
+        "modelling",
+        "optimiser",
+        "scenarioExpander",
+        "optimiserApply",
+        "constant",
+        "submodel",
+        "submodelPort"
+      ],
+      "title": "NodeType",
+      "type": "string"
+    },
     "OptimiserAdjustmentBar": {
       "additionalProperties": false,
       "description": "One step of the scenario grid in an adjustment report, chosen or not.",
@@ -11171,6 +12904,84 @@
         "share_at_max"
       ],
       "title": "OptimiserAdjustmentWeighting",
+      "type": "object"
+    },
+    "OptimiserApplyRequest": {
+      "additionalProperties": false,
+      "description": "One page of the target's chosen scenarios (the Quotes explorer, OPT-V12).",
+      "properties": {
+        "descending": {
+          "default": false,
+          "title": "Descending",
+          "type": "boolean"
+        },
+        "filters": {
+          "$ref": "#/$defs/OptimiserQuoteFilters"
+        },
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "quote_id_prefix": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote Id Prefix"
+        },
+        "sort_by": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort By"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "OptimiserApplyRequest",
       "type": "object"
     },
     "OptimiserApplyResponse": {
@@ -11402,6 +13213,14 @@
           "default": null,
           "title": "Scenarios Per Quote Min"
         },
+        "solve_memory_cap_bytes": {
+          "title": "Solve Memory Cap Bytes",
+          "type": "integer"
+        },
+        "solve_memory_forecast_bytes": {
+          "title": "Solve Memory Forecast Bytes",
+          "type": "integer"
+        },
         "total_rows": {
           "anyOf": [
             {
@@ -11421,7 +13240,9 @@
         "scenarios_per_quote_min",
         "scenarios_per_quote_max",
         "scenarios_per_quote_mean",
-        "expanded_row_count"
+        "expanded_row_count",
+        "solve_memory_forecast_bytes",
+        "solve_memory_cap_bytes"
       ],
       "title": "OptimiserEstimateResponse",
       "type": "object"
@@ -12211,6 +14032,62 @@
       "title": "OptimiserInputSummary",
       "type": "object"
     },
+    "OptimiserMlflowLogRequest": {
+      "properties": {
+        "destination": {
+          "default": "",
+          "enum": [
+            "",
+            "databricks",
+            "server",
+            "local"
+          ],
+          "title": "Destination",
+          "type": "string"
+        },
+        "experiment_name": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Experiment Name"
+        },
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "stale": {
+          "default": false,
+          "title": "Stale",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "OptimiserMlflowLogRequest",
+      "type": "object"
+    },
     "OptimiserMlflowLogResponse": {
       "properties": {
         "backend": {
@@ -12469,6 +14346,76 @@
       "title": "OptimiserQuoteColumn",
       "type": "object"
     },
+    "OptimiserQuoteFilters": {
+      "additionalProperties": false,
+      "description": "The Quotes explorer's filters (OPT-V12), combined with AND; each is optional.",
+      "properties": {
+        "analysis_equals": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Analysis Equals",
+          "type": "object"
+        },
+        "at_range_edge": {
+          "default": false,
+          "title": "At Range Edge",
+          "type": "boolean"
+        },
+        "deployed_factor_differs": {
+          "default": false,
+          "title": "Deployed Factor Differs",
+          "type": "boolean"
+        },
+        "scenario_value_max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenario Value Max"
+        },
+        "scenario_value_min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenario Value Min"
+        }
+      },
+      "title": "OptimiserQuoteFilters",
+      "type": "object"
+    },
     "OptimiserRatebookCdTrace": {
       "additionalProperties": false,
       "description": "A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.\n\nHolds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``\nsays earlier ones were dropped.",
@@ -12620,6 +14567,55 @@
         "n_quotes_clamped_high"
       ],
       "title": "OptimiserRatebookFrontierPoint",
+      "type": "object"
+    },
+    "OptimiserSaveRequest": {
+      "properties": {
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "title": "Output Path",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "stale": {
+          "default": false,
+          "title": "Stale",
+          "type": "boolean"
+        },
+        "version": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "output_path"
+      ],
+      "title": "OptimiserSaveRequest",
       "type": "object"
     },
     "OptimiserSaveResponse": {
@@ -13664,6 +15660,461 @@
       "title": "Page",
       "type": "object"
     },
+    "PipelineDocumentCapabilities": {
+      "additionalProperties": false,
+      "description": "Server-derived admission fence for one loaded editor document.",
+      "properties": {
+        "can_execute": {
+          "title": "Can Execute",
+          "type": "boolean"
+        },
+        "can_manage_submodels": {
+          "title": "Can Manage Submodels",
+          "type": "boolean"
+        },
+        "can_mutate": {
+          "title": "Can Mutate",
+          "type": "boolean"
+        },
+        "can_preview": {
+          "title": "Can Preview",
+          "type": "boolean"
+        },
+        "can_repair": {
+          "default": false,
+          "title": "Can Repair",
+          "type": "boolean"
+        },
+        "can_save": {
+          "title": "Can Save",
+          "type": "boolean"
+        },
+        "reserved_api_input_frame_labels": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reserved Api Input Frame Labels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "can_mutate",
+        "can_save",
+        "can_execute",
+        "can_preview",
+        "can_manage_submodels",
+        "can_repair",
+        "reserved_api_input_frame_labels"
+      ],
+      "title": "PipelineDocumentCapabilities",
+      "type": "object"
+    },
+    "PipelineEditorDocument": {
+      "additionalProperties": false,
+      "description": "Versioned editor load result; never a canonical executable graph.",
+      "properties": {
+        "active_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "live",
+          "title": "Active Source"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/PipelineDocumentCapabilities"
+        },
+        "completeness": {
+          "items": {
+            "$ref": "#/$defs/PipelineNodeCompleteness"
+          },
+          "title": "Completeness",
+          "type": "array"
+        },
+        "completeness_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Completeness Omitted",
+          "type": "integer"
+        },
+        "diagnostics": {
+          "items": {
+            "$ref": "#/$defs/PipelineRecoveryDiagnostic"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "diagnostics_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Diagnostics Omitted",
+          "type": "integer"
+        },
+        "document_kind": {
+          "const": "haute.pipeline_editor_document",
+          "default": "haute.pipeline_editor_document",
+          "title": "Document Kind",
+          "type": "string"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "global_constants": {
+          "items": {
+            "$ref": "#/$defs/GlobalConstant"
+          },
+          "title": "Global Constants",
+          "type": "array"
+        },
+        "global_constants_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Global Constants Error"
+        },
+        "has_authored_content": {
+          "title": "Has Authored Content",
+          "type": "boolean"
+        },
+        "load_status": {
+          "enum": [
+            "ready",
+            "degraded",
+            "source_only"
+          ],
+          "title": "Load Status",
+          "type": "string"
+        },
+        "name_violations": {
+          "items": {
+            "$ref": "#/$defs/PipelineNameViolation"
+          },
+          "title": "Name Violations",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "pipeline_description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Description"
+        },
+        "pipeline_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Name"
+        },
+        "preamble": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preamble"
+        },
+        "preserved_blocks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preserved Blocks",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_file": {
+          "default": "",
+          "title": "Source File",
+          "type": "string"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Revision"
+        },
+        "source_selection_trusted": {
+          "default": true,
+          "title": "Source Selection Trusted",
+          "type": "boolean"
+        },
+        "source_text": {
+          "default": "",
+          "title": "Source Text",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "submodels": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RecoverySubmodelDefinition"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodels"
+        },
+        "unresolved_connections": {
+          "items": {
+            "$ref": "#/$defs/RecoveryUnresolvedConnection"
+          },
+          "title": "Unresolved Connections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "document_kind",
+        "schema_version",
+        "load_status",
+        "pipeline_name",
+        "pipeline_description",
+        "preamble",
+        "preserved_blocks",
+        "global_constants",
+        "global_constants_error",
+        "source_file",
+        "source_revision",
+        "source_text",
+        "sources",
+        "active_source",
+        "source_selection_trusted",
+        "has_authored_content",
+        "nodes",
+        "edges",
+        "unresolved_connections",
+        "submodels",
+        "diagnostics",
+        "diagnostics_omitted",
+        "completeness",
+        "completeness_omitted",
+        "name_violations",
+        "capabilities"
+      ],
+      "title": "PipelineEditorDocument",
+      "type": "object"
+    },
+    "PipelineGraph": {
+      "description": "React Flow graph structure used throughout Haute.\n\nThis is the canonical type for the graph dict passed between\nparser, executor, codegen, deploy, and the server API layer.",
+      "properties": {
+        "active_source": {
+          "default": "live",
+          "title": "Active Source",
+          "type": "string"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/GraphEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "global_constants": {
+          "items": {
+            "$ref": "#/$defs/GlobalConstant"
+          },
+          "title": "Global Constants",
+          "type": "array"
+        },
+        "global_constants_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Global Constants Error"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "pipeline_description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Description"
+        },
+        "pipeline_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Name"
+        },
+        "preamble": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preamble"
+        },
+        "preserved_blocks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preserved Blocks",
+          "type": "array"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source File"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Revision"
+        },
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "submodels": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/SubmodelDefinition"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodels"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges",
+        "pipeline_name",
+        "pipeline_description",
+        "preamble",
+        "preserved_blocks",
+        "global_constants",
+        "global_constants_error",
+        "source_file",
+        "source_revision",
+        "submodels",
+        "warning",
+        "sources",
+        "active_source"
+      ],
+      "title": "PipelineGraph",
+      "type": "object"
+    },
     "PipelineNameViolation": {
       "additionalProperties": false,
       "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name. A ``reserved_input`` or ``support_input``\nviolation whose input a frame or a public input port names carries that\n``binding``, so the editor that set it can show the violation; any other\nviolation's is ``None``.",
@@ -13829,6 +16280,313 @@
         "port"
       ],
       "title": "PipelineNameViolationPortBinding",
+      "type": "object"
+    },
+    "PipelineNodeCompleteness": {
+      "additionalProperties": false,
+      "description": "A required value missing from an otherwise loadable node's config.\n\nCompleteness is not a load failure: entries never mark a node\nunavailable, never degrade the document, and never appear in\n``diagnostics``.",
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "element_id": {
+          "minLength": 1,
+          "title": "Element Id",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "element_id",
+        "path",
+        "code",
+        "message"
+      ],
+      "title": "PipelineNodeCompleteness",
+      "type": "object"
+    },
+    "PipelineRecoveryDiagnostic": {
+      "additionalProperties": false,
+      "description": "Safe, stable diagnostic carried by an editor recovery document.",
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "diagnostic_id": {
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$",
+          "title": "Diagnostic Id",
+          "type": "string"
+        },
+        "element_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Element Id"
+        },
+        "incident_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Incident Id"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "remediation": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remediation"
+        },
+        "scope": {
+          "enum": [
+            "pipeline",
+            "node",
+            "edge",
+            "submodel"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "warning",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source File"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "diagnostic_id",
+        "code",
+        "severity",
+        "scope",
+        "message",
+        "element_id",
+        "source_file",
+        "source_span",
+        "remediation",
+        "incident_id"
+      ],
+      "title": "PipelineRecoveryDiagnostic",
+      "type": "object"
+    },
+    "PipelineRepairApplyResponse": {
+      "additionalProperties": false,
+      "description": "Committed repair plus the newly authoritative editor document.",
+      "properties": {
+        "applied_artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Applied Artifacts",
+          "type": "array"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/PipelineRepairChange"
+          },
+          "minItems": 1,
+          "title": "Changes",
+          "type": "array"
+        },
+        "completeness": {
+          "items": {
+            "$ref": "#/$defs/PipelineNodeCompleteness"
+          },
+          "title": "Completeness",
+          "type": "array"
+        },
+        "document": {
+          "$ref": "#/$defs/PipelineEditorDocument"
+        },
+        "field_changes": {
+          "items": {
+            "$ref": "#/$defs/PipelineRepairFieldChange"
+          },
+          "title": "Field Changes",
+          "type": "array"
+        },
+        "previous_config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous Config"
+        },
+        "repair_kind": {
+          "default": "remove_unavailable_node",
+          "enum": [
+            "remove_unavailable_node",
+            "reset_node",
+            "recover_node",
+            "remove_connection"
+          ],
+          "title": "Repair Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repair_kind",
+        "applied_artifacts",
+        "changes",
+        "document",
+        "field_changes",
+        "completeness",
+        "previous_config"
+      ],
+      "title": "PipelineRepairApplyResponse",
+      "type": "object"
+    },
+    "PipelineRepairChange": {
+      "additionalProperties": false,
+      "description": "Bounded display patch for one server-owned artifact edit.",
+      "properties": {
+        "description": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "diff": {
+          "maxLength": 131072,
+          "title": "Diff",
+          "type": "string"
+        },
+        "diff_truncated": {
+          "title": "Diff Truncated",
+          "type": "boolean"
+        },
+        "operation": {
+          "enum": [
+            "update",
+            "delete"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "operation",
+        "description",
+        "diff",
+        "diff_truncated"
+      ],
+      "title": "PipelineRepairChange",
+      "type": "object"
+    },
+    "PipelineRepairFieldChange": {
+      "additionalProperties": false,
+      "description": "One engine decision about a recovered field, for optional display.",
+      "properties": {
+        "outcome": {
+          "enum": [
+            "retained",
+            "defaulted",
+            "needs_input",
+            "needs_review",
+            "removed",
+            "blocked"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "path": {
+          "default": "",
+          "title": "Path",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "outcome",
+        "reason"
+      ],
+      "title": "PipelineRepairFieldChange",
       "type": "object"
     },
     "PipelineSettingsAutomatic": {
@@ -14101,6 +16859,450 @@
         "message"
       ],
       "title": "PolarsStepsRenderResponse",
+      "type": "object"
+    },
+    "PortPreview": {
+      "description": "One frame's preview of a multi-frame target asked for several (``port_labels``):\nwhat a preview of that frame alone (``port_label``) answers in its ``row_count``,\n``columns``, ``preview`` and ``preview_truncated``.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "row_count",
+        "columns",
+        "preview",
+        "preview_truncated"
+      ],
+      "title": "PortPreview",
+      "type": "object"
+    },
+    "PreviewInputsResponse": {
+      "description": "Snapshot-backed Data Inputs and structured API Inputs, in execution order.",
+      "properties": {
+        "input_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Node Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "input_node_ids"
+      ],
+      "title": "PreviewInputsResponse",
+      "type": "object"
+    },
+    "PreviewNodeResponse": {
+      "description": "Full preview response — extends ``NodeResult`` with graph-wide metadata.\n\nInherits all per-node fields (status, row_count, columns, preview, etc.)\nand adds ``node_id``, ``timings``, ``memory``, and ``node_statuses`` for\nthe full graph context.",
+      "properties": {
+        "available_columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Available Columns",
+          "type": "array"
+        },
+        "column_count": {
+          "default": 0,
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "error_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Line"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frame_columns": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ColumnInfo"
+            },
+            "type": "array"
+          },
+          "title": "Frame Columns",
+          "type": "object"
+        },
+        "memory": {
+          "items": {
+            "$ref": "#/$defs/NodeMemoryInfo"
+          },
+          "title": "Memory",
+          "type": "array"
+        },
+        "memory_bytes": {
+          "default": 0,
+          "title": "Memory Bytes",
+          "type": "integer"
+        },
+        "node_available_columns": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ColumnInfo"
+            },
+            "type": "array"
+          },
+          "title": "Node Available Columns",
+          "type": "object"
+        },
+        "node_columns": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ColumnInfo"
+            },
+            "type": "array"
+          },
+          "title": "Node Columns",
+          "type": "object"
+        },
+        "node_frame_columns": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/$defs/ColumnInfo"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "title": "Node Frame Columns",
+          "type": "object"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_schema_warnings": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/SchemaWarning"
+            },
+            "type": "array"
+          },
+          "title": "Node Schema Warnings",
+          "type": "object"
+        },
+        "node_statuses": {
+          "additionalProperties": {
+            "enum": [
+              "ok",
+              "error"
+            ],
+            "type": "string"
+          },
+          "title": "Node Statuses",
+          "type": "object"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "port_previews": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PortPreview"
+          },
+          "title": "Port Previews",
+          "type": "object"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "preview_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Preview Columns",
+          "type": "array"
+        },
+        "preview_row_count": {
+          "default": 0,
+          "title": "Preview Row Count",
+          "type": "integer"
+        },
+        "preview_row_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Row Limit"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "schema_warnings": {
+          "items": {
+            "$ref": "#/$defs/SchemaWarning"
+          },
+          "title": "Schema Warnings",
+          "type": "array"
+        },
+        "seed_plan": {
+          "items": {
+            "$ref": "#/$defs/PreviewSeedPlanEntry"
+          },
+          "title": "Seed Plan",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "timing_ms": {
+          "default": 0,
+          "title": "Timing Ms",
+          "type": "number"
+        },
+        "timings": {
+          "items": {
+            "$ref": "#/$defs/NodeTimingInfo"
+          },
+          "title": "Timings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "row_count",
+        "column_count",
+        "columns",
+        "available_columns",
+        "frame_columns",
+        "preview",
+        "preview_columns",
+        "preview_row_count",
+        "preview_row_limit",
+        "preview_truncated",
+        "port_previews",
+        "error",
+        "error_line",
+        "timing_ms",
+        "memory_bytes",
+        "schema_warnings",
+        "notes",
+        "node_id",
+        "timings",
+        "memory",
+        "node_statuses",
+        "node_columns",
+        "node_available_columns",
+        "node_frame_columns",
+        "node_schema_warnings",
+        "execution_metrics",
+        "seed_plan"
+      ],
+      "title": "PreviewNodeResponse",
+      "type": "object"
+    },
+    "PreviewProgressResponse": {
+      "description": "A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).\n\n``preparing`` until its execution plan is known; then ``running`` with the\nplanned heavy steps completed of the total, and the step now running.",
+      "properties": {
+        "done": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Done"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "phase": {
+          "enum": [
+            "preparing",
+            "running"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "total": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total"
+        }
+      },
+      "required": [
+        "request_id",
+        "phase",
+        "done",
+        "total",
+        "label"
+      ],
+      "title": "PreviewProgressResponse",
+      "type": "object"
+    },
+    "PreviewSeedPlanEntry": {
+      "description": "One snapshot generation a preview's collected rows were computed from.\n\n``seeded``: read instead of computing the node. ``captured``: computed by\nthis preview, published, and read by everything below it. ``columns`` is\nthe generation's column set, ``None`` for all columns; ``port_label`` is\nalways ``None``, since only node outputs are seeded or captured.",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Columns"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "generation_id": {
+          "minLength": 1,
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "identity_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "seeded",
+            "captured"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_label": {
+          "title": "Node Label",
+          "type": "string"
+        },
+        "port_label": {
+          "default": null,
+          "title": "Port Label",
+          "type": "null"
+        }
+      },
+      "required": [
+        "node_id",
+        "port_label",
+        "node_label",
+        "identity_digest",
+        "generation_id",
+        "columns",
+        "created_at",
+        "kind"
+      ],
+      "title": "PreviewSeedPlanEntry",
       "type": "object"
     },
     "ProjectFileDeleteResponse": {
@@ -14489,6 +17691,548 @@
       "title": "RatingLevelsResponse",
       "type": "object"
     },
+    "RecoveryGraphSnapshot": {
+      "additionalProperties": false,
+      "description": "Renderable recovery graph used at the root and in submodel definitions.",
+      "properties": {
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineEdge"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/RecoveryPipelineNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "submodels": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RecoverySubmodelDefinition"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodels"
+        },
+        "unresolved_connections": {
+          "items": {
+            "$ref": "#/$defs/RecoveryUnresolvedConnection"
+          },
+          "title": "Unresolved Connections",
+          "type": "array"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges",
+        "unresolved_connections",
+        "submodels"
+      ],
+      "title": "RecoveryGraphSnapshot",
+      "type": "object"
+    },
+    "RecoveryPipelineEdge": {
+      "additionalProperties": false,
+      "description": "Editor edge shape intentionally incompatible with canonical GraphEdge.",
+      "properties": {
+        "availability": {
+          "enum": [
+            "ready",
+            "unavailable",
+            "blocked"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "blocking_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocking Path",
+          "type": "array"
+        },
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "input_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Input Name"
+        },
+        "recovery_id": {
+          "minLength": 1,
+          "title": "Recovery Id",
+          "type": "string"
+        },
+        "source_authored_id": {
+          "minLength": 1,
+          "title": "Source Authored Id",
+          "type": "string"
+        },
+        "source_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Handle"
+        },
+        "source_recovery_id": {
+          "minLength": 1,
+          "title": "Source Recovery Id",
+          "type": "string"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_authored_id": {
+          "minLength": 1,
+          "title": "Target Authored Id",
+          "type": "string"
+        },
+        "target_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Handle"
+        },
+        "target_recovery_id": {
+          "minLength": 1,
+          "title": "Target Recovery Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "recovery_id",
+        "source_recovery_id",
+        "target_recovery_id",
+        "source_authored_id",
+        "target_authored_id",
+        "source_handle",
+        "target_handle",
+        "input_name",
+        "availability",
+        "source_span",
+        "diagnostic_ids",
+        "blocking_path"
+      ],
+      "title": "RecoveryPipelineEdge",
+      "type": "object"
+    },
+    "RecoveryPipelineNode": {
+      "additionalProperties": false,
+      "description": "Editor node shape intentionally incompatible with canonical GraphNode.",
+      "properties": {
+        "authored_id": {
+          "minLength": 1,
+          "title": "Authored Id",
+          "type": "string"
+        },
+        "availability": {
+          "enum": [
+            "ready",
+            "unavailable",
+            "blocked"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "blocking_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocking Path",
+          "type": "array"
+        },
+        "config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config"
+        },
+        "config_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config Reference"
+        },
+        "decorator_name": {
+          "minLength": 1,
+          "title": "Decorator Name",
+          "type": "string"
+        },
+        "default_input_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Input Name"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "display_position": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Display Position",
+          "type": "object"
+        },
+        "editor": {
+          "$ref": "#/$defs/NodeEditorState"
+        },
+        "function_name": {
+          "minLength": 1,
+          "title": "Function Name",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "node_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Node Type"
+        },
+        "recovery_id": {
+          "minLength": 1,
+          "title": "Recovery Id",
+          "type": "string"
+        },
+        "scoped_editable": {
+          "default": false,
+          "title": "Scoped Editable",
+          "type": "boolean"
+        },
+        "source_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source File"
+        },
+        "source_handle_input_names": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Source Handle Input Names",
+          "type": "object"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "recovery_id",
+        "authored_id",
+        "label",
+        "decorator_name",
+        "node_type",
+        "description",
+        "availability",
+        "display_position",
+        "config",
+        "editor",
+        "config_reference",
+        "function_name",
+        "default_input_name",
+        "source_handle_input_names",
+        "source_file",
+        "source_span",
+        "diagnostic_ids",
+        "blocking_path",
+        "scoped_editable"
+      ],
+      "title": "RecoveryPipelineNode",
+      "type": "object"
+    },
+    "RecoverySourceSpan": {
+      "additionalProperties": false,
+      "description": "One bounded, one-based source range attributable during recovery.",
+      "properties": {
+        "end_column": {
+          "minimum": 0,
+          "title": "End Column",
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "start_column": {
+          "minimum": 0,
+          "title": "Start Column",
+          "type": "integer"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "RecoverySourceSpan",
+      "type": "object"
+    },
+    "RecoverySubmodelDefinition": {
+      "additionalProperties": false,
+      "description": "One editor-only recovered submodel definition.",
+      "properties": {
+        "availability": {
+          "enum": [
+            "ready",
+            "unavailable",
+            "blocked"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "definition_id": {
+          "minLength": 1,
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "file": {
+          "minLength": 1,
+          "title": "File",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/RecoveryGraphSnapshot"
+        },
+        "input_ports": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Input Ports",
+          "type": "array"
+        },
+        "output_ports": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Output Ports",
+          "type": "array"
+        }
+      },
+      "required": [
+        "definition_id",
+        "file",
+        "availability",
+        "diagnostic_ids",
+        "graph",
+        "input_ports",
+        "output_ports"
+      ],
+      "title": "RecoverySubmodelDefinition",
+      "type": "object"
+    },
+    "RecoveryUnresolvedConnection": {
+      "additionalProperties": false,
+      "description": "Authored connection retained as a diagnostic structure.",
+      "properties": {
+        "diagnostic_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Diagnostic Ids",
+          "type": "array"
+        },
+        "recovery_id": {
+          "minLength": 1,
+          "title": "Recovery Id",
+          "type": "string"
+        },
+        "source_authored_id": {
+          "minLength": 1,
+          "title": "Source Authored Id",
+          "type": "string"
+        },
+        "source_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Handle"
+        },
+        "source_recovery_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Recovery Id"
+        },
+        "source_span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoverySourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "target_authored_id": {
+          "minLength": 1,
+          "title": "Target Authored Id",
+          "type": "string"
+        },
+        "target_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Handle"
+        },
+        "target_recovery_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Recovery Id"
+        }
+      },
+      "required": [
+        "recovery_id",
+        "source_recovery_id",
+        "target_recovery_id",
+        "source_authored_id",
+        "target_authored_id",
+        "source_handle",
+        "target_handle",
+        "source_span",
+        "diagnostic_ids"
+      ],
+      "title": "RecoveryUnresolvedConnection",
+      "type": "object"
+    },
     "RowCount": {
       "additionalProperties": false,
       "description": "How many of a many-row table's rows, by table name, pass all of its tests in the same\nrow: every row while it has none.",
@@ -14732,6 +18476,32 @@
       "title": "SaveCapture",
       "type": "object"
     },
+    "SaveModelRequest": {
+      "properties": {
+        "job_id": {
+          "maxLength": 512,
+          "title": "Job Id",
+          "type": "string"
+        },
+        "output_path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Output Path",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id",
+        "output_path"
+      ],
+      "title": "SaveModelRequest",
+      "type": "object"
+    },
     "SaveModelResponse": {
       "properties": {
         "feature_contract_path": {
@@ -14754,6 +18524,79 @@
         "feature_contract_path"
       ],
       "title": "SaveModelResponse",
+      "type": "object"
+    },
+    "SavePipelineResponse": {
+      "description": "The saved pipeline, with the save's version capture.",
+      "properties": {
+        "document_fingerprint": {
+          "title": "Document Fingerprint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "git_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Git Sha"
+        },
+        "identity_required": {
+          "default": false,
+          "title": "Identity Required",
+          "type": "boolean"
+        },
+        "pipeline_name": {
+          "title": "Pipeline Name",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "status": {
+          "default": "saved",
+          "title": "Status",
+          "type": "string"
+        },
+        "uncaptured": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncaptured",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
+        "git_sha",
+        "identity_required",
+        "uncaptured",
+        "status",
+        "file",
+        "pipeline_name",
+        "source_revision",
+        "document_fingerprint"
+      ],
+      "title": "SavePipelineResponse",
       "type": "object"
     },
     "SchemaColumn": {
@@ -14925,6 +18768,46 @@
       "title": "SchemaColumn",
       "type": "object"
     },
+    "SchemaDiffResponse": {
+      "properties": {
+        "columns_added": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns Added",
+          "type": "array"
+        },
+        "columns_modified": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns Modified",
+          "type": "array"
+        },
+        "columns_passed": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns Passed",
+          "type": "array"
+        },
+        "columns_removed": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns Removed",
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns_added",
+        "columns_removed",
+        "columns_modified",
+        "columns_passed"
+      ],
+      "title": "SchemaDiffResponse",
+      "type": "object"
+    },
     "SchemaItem": {
       "properties": {
         "comment": {
@@ -14958,6 +18841,60 @@
         "schemas"
       ],
       "title": "SchemaListResponse",
+      "type": "object"
+    },
+    "SchemaResponse": {
+      "properties": {
+        "column_count": {
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnInfo"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Count"
+        },
+        "row_count_estimated": {
+          "default": false,
+          "title": "Row Count Estimated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "columns",
+        "row_count",
+        "row_count_estimated",
+        "column_count",
+        "preview"
+      ],
+      "title": "SchemaResponse",
       "type": "object"
     },
     "SchemaTable": {
@@ -15000,6 +18937,58 @@
         "columns"
       ],
       "title": "SchemaTable",
+      "type": "object"
+    },
+    "SchemaWarning": {
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "status",
+        "input",
+        "detail"
+      ],
+      "title": "SchemaWarning",
       "type": "object"
     },
     "Section": {
@@ -15419,6 +19408,149 @@
         "parameters"
       ],
       "title": "SqlImport",
+      "type": "object"
+    },
+    "SubmodelDefinition": {
+      "additionalProperties": false,
+      "description": "One shared, file-backed submodel definition and its public interface.",
+      "properties": {
+        "definitionId": {
+          "title": "Definitionid",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "inputPorts": {
+          "items": {
+            "$ref": "#/$defs/SubmodelInputPort"
+          },
+          "title": "Inputports",
+          "type": "array"
+        },
+        "outputPorts": {
+          "items": {
+            "$ref": "#/$defs/SubmodelOutputPort"
+          },
+          "title": "Outputports",
+          "type": "array"
+        }
+      },
+      "required": [
+        "definitionId",
+        "file",
+        "graph",
+        "inputPorts",
+        "outputPorts"
+      ],
+      "title": "SubmodelDefinition",
+      "type": "object"
+    },
+    "SubmodelEndpoint": {
+      "additionalProperties": false,
+      "description": "One stable public-port binding to an internal definition endpoint.",
+      "properties": {
+        "handleId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Handleid"
+        },
+        "nodeId": {
+          "title": "Nodeid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nodeId",
+        "handleId"
+      ],
+      "title": "SubmodelEndpoint",
+      "type": "object"
+    },
+    "SubmodelGraphResponse": {
+      "properties": {
+        "definition_id": {
+          "title": "Definition Id",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/$defs/PipelineGraph"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        },
+        "submodel_file": {
+          "title": "Submodel File",
+          "type": "string"
+        },
+        "submodel_name": {
+          "title": "Submodel Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "submodel_name",
+        "definition_id",
+        "submodel_file",
+        "graph"
+      ],
+      "title": "SubmodelGraphResponse",
+      "type": "object"
+    },
+    "SubmodelInputPort": {
+      "additionalProperties": false,
+      "description": "A public input with ordered internal targets, or none while unrouted.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "targets": {
+          "items": {
+            "$ref": "#/$defs/SubmodelEndpoint"
+          },
+          "title": "Targets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "targets"
+      ],
+      "title": "SubmodelInputPort",
+      "type": "object"
+    },
+    "SubmodelOutputPort": {
+      "additionalProperties": false,
+      "description": "A public output backed by exactly one internal source.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SubmodelEndpoint"
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "title": "SubmodelOutputPort",
       "type": "object"
     },
     "TableInputWidget": {
@@ -15903,6 +20035,711 @@
         "output_cell_color"
       ],
       "title": "Theme",
+      "type": "object"
+    },
+    "TraceColumnDerivationResponse": {
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "error_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Type"
+        },
+        "expression_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expression Text"
+        },
+        "not_computable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Not Computable Reason"
+        },
+        "reads": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/TraceColumnReadResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reads"
+        },
+        "result_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Result Source"
+        },
+        "result_value": {
+          "title": "Result Value"
+        },
+        "substituted_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Substituted Text"
+        }
+      },
+      "required": [
+        "column",
+        "expression_text",
+        "substituted_text",
+        "result_value",
+        "not_computable_reason",
+        "result_source",
+        "reads",
+        "error",
+        "error_type"
+      ],
+      "title": "TraceColumnDerivationResponse",
+      "type": "object"
+    },
+    "TraceColumnReadResponse": {
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/TraceColumnSourceResponse"
+          },
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "column",
+        "sources"
+      ],
+      "title": "TraceColumnReadResponse",
+      "type": "object"
+    },
+    "TraceColumnSourceResponse": {
+      "properties": {
+        "before_code": {
+          "title": "Before Code",
+          "type": "boolean"
+        },
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "column",
+        "before_code"
+      ],
+      "title": "TraceColumnSourceResponse",
+      "type": "object"
+    },
+    "TraceCorrelationDiagnosticResponse": {
+      "additionalProperties": true,
+      "properties": {
+        "child_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Child Node Id"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "ignored_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Ignored Columns",
+          "type": "array"
+        },
+        "match_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Match Columns",
+          "type": "array"
+        },
+        "match_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Match Strategy"
+        },
+        "matched_row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matched Row Count"
+        },
+        "matched_row_indices": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Matched Row Indices",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "seed_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Seed Node Ids",
+          "type": "array"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "reason",
+        "message",
+        "node_id",
+        "child_node_id",
+        "match_strategy",
+        "match_columns",
+        "ignored_columns",
+        "matched_row_count",
+        "matched_row_indices",
+        "seed_node_ids"
+      ],
+      "title": "TraceCorrelationDiagnosticResponse",
+      "type": "object"
+    },
+    "TraceOmissionResponse": {
+      "properties": {
+        "diagnostic_index": {
+          "minimum": 0,
+          "title": "Diagnostic Index",
+          "type": "integer"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_name": {
+          "title": "Node Name",
+          "type": "string"
+        },
+        "node_type": {
+          "title": "Node Type",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "topological_rank": {
+          "minimum": 0,
+          "title": "Topological Rank",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_id",
+        "node_name",
+        "node_type",
+        "topological_rank",
+        "reason",
+        "diagnostic_index"
+      ],
+      "title": "TraceOmissionResponse",
+      "type": "object"
+    },
+    "TraceResponse": {
+      "properties": {
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "trace": {
+          "$ref": "#/$defs/TraceResultResponse"
+        }
+      },
+      "required": [
+        "status",
+        "trace"
+      ],
+      "title": "TraceResponse",
+      "type": "object"
+    },
+    "TraceResultResponse": {
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "correlation_diagnostics": {
+          "items": {
+            "$ref": "#/$defs/TraceCorrelationDiagnosticResponse"
+          },
+          "title": "Correlation Diagnostics",
+          "type": "array"
+        },
+        "execution_ms": {
+          "default": 0.0,
+          "title": "Execution Ms",
+          "type": "number"
+        },
+        "execution_origin": {
+          "enum": [
+            "fresh_execution",
+            "trace_cache"
+          ],
+          "title": "Execution Origin",
+          "type": "string"
+        },
+        "generated_at": {
+          "title": "Generated At",
+          "type": "string"
+        },
+        "nodes_in_trace": {
+          "default": 0,
+          "title": "Nodes In Trace",
+          "type": "integer"
+        },
+        "omissions": {
+          "items": {
+            "$ref": "#/$defs/TraceOmissionResponse"
+          },
+          "title": "Omissions",
+          "type": "array"
+        },
+        "output_value": {
+          "default": null,
+          "title": "Output Value"
+        },
+        "pipeline_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Source"
+        },
+        "row_id_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Id Column"
+        },
+        "row_id_value": {
+          "default": null,
+          "title": "Row Id Value"
+        },
+        "row_index": {
+          "title": "Row Index",
+          "type": "integer"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/TraceStepResponse"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "target_node_id": {
+          "title": "Target Node Id",
+          "type": "string"
+        },
+        "total_nodes_in_pipeline": {
+          "default": 0,
+          "title": "Total Nodes In Pipeline",
+          "type": "integer"
+        },
+        "waterfall": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/TraceWaterfallEntryResponse"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/$defs/TraceWaterfallErrorResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Waterfall"
+        }
+      },
+      "required": [
+        "target_node_id",
+        "row_index",
+        "column",
+        "output_value",
+        "steps",
+        "omissions",
+        "row_id_column",
+        "row_id_value",
+        "total_nodes_in_pipeline",
+        "nodes_in_trace",
+        "execution_ms",
+        "waterfall",
+        "correlation_diagnostics",
+        "generated_at",
+        "pipeline_source",
+        "execution_origin"
+      ],
+      "title": "TraceResultResponse",
+      "type": "object"
+    },
+    "TraceSeedPlanEntry": {
+      "description": "One generation the preview a trace explains was computed from.",
+      "properties": {
+        "generation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "identity_digest": {
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "node_id": {
+          "maxLength": 512,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "port_label": {
+          "default": null,
+          "title": "Port Label",
+          "type": "null"
+        }
+      },
+      "required": [
+        "node_id",
+        "identity_digest",
+        "generation_id"
+      ],
+      "title": "TraceSeedPlanEntry",
+      "type": "object"
+    },
+    "TraceStepResponse": {
+      "properties": {
+        "calculation": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calculation"
+        },
+        "column_relevant": {
+          "default": true,
+          "title": "Column Relevant",
+          "type": "boolean"
+        },
+        "contributed_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Contributed Columns",
+          "type": "array"
+        },
+        "derivations": {
+          "items": {
+            "$ref": "#/$defs/TraceColumnDerivationResponse"
+          },
+          "title": "Derivations",
+          "type": "array"
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expression"
+        },
+        "identical_row_count": {
+          "anyOf": [
+            {
+              "minimum": 2,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identical Row Count"
+        },
+        "input_values": {
+          "additionalProperties": true,
+          "title": "Input Values",
+          "type": "object"
+        },
+        "node_detail": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Detail"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "node_name": {
+          "title": "Node Name",
+          "type": "string"
+        },
+        "node_type": {
+          "title": "Node Type",
+          "type": "string"
+        },
+        "output_values": {
+          "additionalProperties": true,
+          "title": "Output Values",
+          "type": "object"
+        },
+        "row_lineage_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Lineage Type"
+        },
+        "schema_diff": {
+          "$ref": "#/$defs/SchemaDiffResponse"
+        },
+        "snapshot_generation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Generation Id"
+        },
+        "topological_rank": {
+          "minimum": 0,
+          "title": "Topological Rank",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_id",
+        "node_name",
+        "node_type",
+        "schema_diff",
+        "input_values",
+        "output_values",
+        "topological_rank",
+        "column_relevant",
+        "contributed_columns",
+        "derivations",
+        "expression",
+        "calculation",
+        "node_detail",
+        "row_lineage_type",
+        "snapshot_generation_id",
+        "identical_row_count"
+      ],
+      "title": "TraceStepResponse",
+      "type": "object"
+    },
+    "TraceWaterfallEntryResponse": {
+      "properties": {
+        "cumulative": {
+          "title": "Cumulative",
+          "type": "number"
+        },
+        "default_used": {
+          "title": "Default Used",
+          "type": "boolean"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "number"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "base",
+            "multiply",
+            "add"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "operation",
+        "value",
+        "delta",
+        "cumulative",
+        "default_used"
+      ],
+      "title": "TraceWaterfallEntryResponse",
+      "type": "object"
+    },
+    "TraceWaterfallErrorResponse": {
+      "properties": {
+        "error": {
+          "title": "Error",
+          "type": "string"
+        },
+        "error_type": {
+          "title": "Error Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error",
+        "error_type"
+      ],
+      "title": "TraceWaterfallErrorResponse",
       "type": "object"
     },
     "TrainEstimateResponse": {
@@ -19892,6 +24729,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "AssistantSessionListResponse": {
+      "$ref": "#/$defs/AssistantSessionListResponse"
+    },
+    "AssistantSessionResponse": {
+      "$ref": "#/$defs/AssistantSessionResponse"
+    },
+    "AssistantStatusResponse": {
+      "$ref": "#/$defs/AssistantStatusResponse"
+    },
+    "AssistantStreamEventPayload": {
+      "$ref": "#/$defs/AssistantStreamEventPayload"
+    },
+    "AssistantUndoResponse": {
+      "$ref": "#/$defs/AssistantUndoResponse"
+    },
     "BandingStatsResponse": {
       "$ref": "#/$defs/BandingStatsResponse"
     },
@@ -19910,14 +24762,29 @@
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
+    "CreateNodeInstanceResponse": {
+      "$ref": "#/$defs/CreateNodeInstanceResponse"
+    },
+    "CreateSubmodelResponse": {
+      "$ref": "#/$defs/CreateSubmodelResponse"
+    },
     "DispersionEstimateResponse": {
       "$ref": "#/$defs/DispersionEstimateResponse"
     },
     "DispersionEstimateStatusResponse": {
       "$ref": "#/$defs/DispersionEstimateStatusResponse"
     },
+    "DissolveSubmodelResponse": {
+      "$ref": "#/$defs/DissolveSubmodelResponse"
+    },
     "EditorIdentitiesResponse": {
       "$ref": "#/$defs/EditorIdentitiesResponse"
+    },
+    "EditorIdentityRequestNode": {
+      "$ref": "#/$defs/EditorIdentityRequestNode"
+    },
+    "ExecutionMetricsPayload": {
+      "$ref": "#/$defs/ExecutionMetricsPayload"
     },
     "ExplorePivotMembersResponse": {
       "$ref": "#/$defs/ExplorePivotMembersResponse"
@@ -20012,6 +24879,9 @@
     "GitWorkingBranchesResponse": {
       "$ref": "#/$defs/GitWorkingBranchesResponse"
     },
+    "InputCacheBuildRequest": {
+      "$ref": "#/$defs/InputCacheBuildRequest"
+    },
     "InputCacheBuildResponse": {
       "$ref": "#/$defs/InputCacheBuildResponse"
     },
@@ -20024,8 +24894,14 @@
     "InputCacheSnapshotStatusResponse": {
       "$ref": "#/$defs/InputCacheSnapshotStatusResponse"
     },
+    "InputCacheSourceRequest": {
+      "$ref": "#/$defs/InputCacheSourceRequest"
+    },
     "IoCapabilitiesResponse": {
       "$ref": "#/$defs/IoCapabilitiesResponse"
+    },
+    "JsonCacheInferResponse": {
+      "$ref": "#/$defs/JsonCacheInferResponse"
     },
     "LogExperimentResponse": {
       "$ref": "#/$defs/LogExperimentResponse"
@@ -20048,11 +24924,20 @@
     "MlflowSettingsResponse": {
       "$ref": "#/$defs/MlflowSettingsResponse"
     },
+    "MlflowSettingsUpdateRequest": {
+      "$ref": "#/$defs/MlflowSettingsUpdateRequest"
+    },
+    "MlflowTestConnectionRequest": {
+      "$ref": "#/$defs/MlflowTestConnectionRequest"
+    },
     "MlflowTestConnectionResponse": {
       "$ref": "#/$defs/MlflowTestConnectionResponse"
     },
     "ModelFileInspectionResponse": {
       "$ref": "#/$defs/ModelFileInspectionResponse"
+    },
+    "ModelSaveDestinationRequest": {
+      "$ref": "#/$defs/ModelSaveDestinationRequest"
     },
     "ModelSaveDestinationResponse": {
       "$ref": "#/$defs/ModelSaveDestinationResponse"
@@ -20075,6 +24960,9 @@
     "NodeDataStatusResponse": {
       "$ref": "#/$defs/NodeDataStatusResponse"
     },
+    "OptimiserApplyRequest": {
+      "$ref": "#/$defs/OptimiserApplyRequest"
+    },
     "OptimiserApplyResponse": {
       "$ref": "#/$defs/OptimiserApplyResponse"
     },
@@ -20090,8 +24978,14 @@
     "OptimiserFrontierSelectResponse": {
       "$ref": "#/$defs/OptimiserFrontierSelectResponse"
     },
+    "OptimiserMlflowLogRequest": {
+      "$ref": "#/$defs/OptimiserMlflowLogRequest"
+    },
     "OptimiserMlflowLogResponse": {
       "$ref": "#/$defs/OptimiserMlflowLogResponse"
+    },
+    "OptimiserSaveRequest": {
+      "$ref": "#/$defs/OptimiserSaveRequest"
     },
     "OptimiserSaveResponse": {
       "$ref": "#/$defs/OptimiserSaveResponse"
@@ -20114,6 +25008,15 @@
     "OutputDestinationResponse": {
       "$ref": "#/$defs/OutputDestinationResponse"
     },
+    "PipelineEditorDocument": {
+      "$ref": "#/$defs/PipelineEditorDocument"
+    },
+    "PipelineGraph": {
+      "$ref": "#/$defs/PipelineGraph"
+    },
+    "PipelineRepairApplyResponse": {
+      "$ref": "#/$defs/PipelineRepairApplyResponse"
+    },
     "PipelineSettingsResponse": {
       "$ref": "#/$defs/PipelineSettingsResponse"
     },
@@ -20122,6 +25025,15 @@
     },
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
+    },
+    "PreviewInputsResponse": {
+      "$ref": "#/$defs/PreviewInputsResponse"
+    },
+    "PreviewNodeResponse": {
+      "$ref": "#/$defs/PreviewNodeResponse"
+    },
+    "PreviewProgressResponse": {
+      "$ref": "#/$defs/PreviewProgressResponse"
     },
     "ProjectFileDeleteResponse": {
       "$ref": "#/$defs/ProjectFileDeleteResponse"
@@ -20138,17 +25050,35 @@
     "SaveCapture": {
       "$ref": "#/$defs/SaveCapture"
     },
+    "SaveModelRequest": {
+      "$ref": "#/$defs/SaveModelRequest"
+    },
     "SaveModelResponse": {
       "$ref": "#/$defs/SaveModelResponse"
+    },
+    "SavePipelineResponse": {
+      "$ref": "#/$defs/SavePipelineResponse"
     },
     "SchemaListResponse": {
       "$ref": "#/$defs/SchemaListResponse"
     },
+    "SchemaResponse": {
+      "$ref": "#/$defs/SchemaResponse"
+    },
     "SessionStatusResponse": {
       "$ref": "#/$defs/SessionStatusResponse"
     },
+    "SubmodelGraphResponse": {
+      "$ref": "#/$defs/SubmodelGraphResponse"
+    },
     "TableListResponse": {
       "$ref": "#/$defs/TableListResponse"
+    },
+    "TraceResponse": {
+      "$ref": "#/$defs/TraceResponse"
+    },
+    "TraceSeedPlanEntry": {
+      "$ref": "#/$defs/TraceSeedPlanEntry"
     },
     "TrainEstimateResponse": {
       "$ref": "#/$defs/TrainEstimateResponse"
@@ -20277,6 +25207,17 @@
   "required": [
     "execution_strategy_diagnostic",
     "explore_charts",
+    "EditorIdentityRequestNode",
+    "TraceSeedPlanEntry",
+    "InputCacheSourceRequest",
+    "InputCacheBuildRequest",
+    "MlflowSettingsUpdateRequest",
+    "MlflowTestConnectionRequest",
+    "ModelSaveDestinationRequest",
+    "SaveModelRequest",
+    "OptimiserApplyRequest",
+    "OptimiserSaveRequest",
+    "OptimiserMlflowLogRequest",
     "WorkbenchAppPriceRequest",
     "WorkbenchAppQuoteCreateRequest",
     "WorkbenchAppQuoteSaveRequest",
@@ -20336,6 +25277,7 @@
     "GitPushRejection",
     "GitMilestoneFork",
     "SaveCapture",
+    "PipelineGraph",
     "TrainResponse",
     "TrainStatusResponse",
     "ExplorePivotRunResponse",
@@ -20356,10 +25298,29 @@
     "InputCacheJobStatusResponse",
     "InputCacheCancelResponse",
     "InputCacheSnapshotStatusResponse",
+    "JsonCacheInferResponse",
     "WriteOutputResponse",
     "OutputDestinationResponse",
     "OutputAssembleDryRunResponse",
     "IoCapabilitiesResponse",
+    "SchemaResponse",
+    "PreviewNodeResponse",
+    "PreviewInputsResponse",
+    "PreviewProgressResponse",
+    "TraceResponse",
+    "AssistantStatusResponse",
+    "AssistantSessionResponse",
+    "AssistantSessionListResponse",
+    "AssistantUndoResponse",
+    "AssistantStreamEventPayload",
+    "PipelineEditorDocument",
+    "PipelineRepairApplyResponse",
+    "SavePipelineResponse",
+    "CreateSubmodelResponse",
+    "CreateNodeInstanceResponse",
+    "SubmodelGraphResponse",
+    "DissolveSubmodelResponse",
+    "ExecutionMetricsPayload",
     "WorkbenchStatusResponse",
     "WorkbenchTablesResponse",
     "WorkbenchFormResponse",
@@ -20406,6 +25367,27 @@
   "title": "HauteApiContractBundle",
   "type": "object",
   "x-haute-request-groups": {
+    "editor-requests": [
+      "EditorIdentityRequestNode",
+      "TraceSeedPlanEntry"
+    ],
+    "input-cache-requests": [
+      "InputCacheSourceRequest",
+      "InputCacheBuildRequest"
+    ],
+    "mlflow-requests": [
+      "MlflowSettingsUpdateRequest",
+      "MlflowTestConnectionRequest"
+    ],
+    "modelling-requests": [
+      "ModelSaveDestinationRequest",
+      "SaveModelRequest"
+    ],
+    "optimiser-requests": [
+      "OptimiserApplyRequest",
+      "OptimiserSaveRequest",
+      "OptimiserMlflowLogRequest"
+    ],
     "workbench-app-requests": [
       "WorkbenchAppPriceRequest",
       "WorkbenchAppQuoteCreateRequest",
@@ -20421,6 +25403,13 @@
     ]
   },
   "x-haute-response-groups": {
+    "assistant": [
+      "AssistantStatusResponse",
+      "AssistantSessionResponse",
+      "AssistantSessionListResponse",
+      "AssistantUndoResponse",
+      "AssistantStreamEventPayload"
+    ],
     "cache": [
       "CacheNodesResponse",
       "CacheClearResponse",
@@ -20437,6 +25426,13 @@
       "PolarsStepsRenderResponse",
       "PolarsFreeCodeColumnsResponse",
       "PipelineSettingsResponse"
+    ],
+    "editor-document": [
+      "PipelineEditorDocument",
+      "PipelineRepairApplyResponse"
+    ],
+    "execution-metrics": [
+      "ExecutionMetricsPayload"
     ],
     "explore": [
       "ExplorePivotRunResponse",
@@ -20477,16 +25473,19 @@
       "GitUpstreamStatusResponse",
       "GitPushRejection",
       "GitMilestoneFork",
-      "SaveCapture"
+      "SaveCapture",
+      "PipelineGraph"
     ],
     "input-cache": [
       "InputCacheBuildResponse",
       "InputCacheJobStatusResponse",
       "InputCacheCancelResponse",
-      "InputCacheSnapshotStatusResponse"
+      "InputCacheSnapshotStatusResponse",
+      "JsonCacheInferResponse"
     ],
     "io": [
-      "IoCapabilitiesResponse"
+      "IoCapabilitiesResponse",
+      "SchemaResponse"
     ],
     "mlflow": [
       "MlflowDestinationsResponse",
@@ -20530,6 +25529,18 @@
       "OutputDestinationResponse",
       "OutputAssembleDryRunResponse"
     ],
+    "pipeline": [
+      "SavePipelineResponse",
+      "CreateSubmodelResponse",
+      "CreateNodeInstanceResponse",
+      "SubmodelGraphResponse",
+      "DissolveSubmodelResponse"
+    ],
+    "preview": [
+      "PreviewNodeResponse",
+      "PreviewInputsResponse",
+      "PreviewProgressResponse"
+    ],
     "session": [
       "SessionStatusResponse",
       "BrowseFilesResponse",
@@ -20537,6 +25548,9 @@
       "ProjectFolderResponse",
       "ProjectFileWriteResponse",
       "ProjectFileDeleteResponse"
+    ],
+    "trace": [
+      "TraceResponse"
     ],
     "training": [
       "TrainResponse",
@@ -20573,5 +25587,8 @@
       "WorkbenchAppQuoteActivityResponse",
       "WorkbenchAppPeopleResponse"
     ]
-  }
+  },
+  "x-haute-shared-response-groups": [
+    "execution-metrics"
+  ]
 }

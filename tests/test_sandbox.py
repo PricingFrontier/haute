@@ -13,21 +13,21 @@ from types import ModuleType
 import pytest
 from packaging.requirements import Requirement
 
+from haute._project_context import ProjectContext, context_thread, project_scope
 from haute._sandbox import (
     _ALLOWED_PICKLE_CLASSES,
     _ALLOWED_PICKLE_GLOBALS,
     ArtifactVersionMismatchError,
     UnsafeCodeError,
     _resolve_allowed_global,
-    bound_project_root,
     safe_globals,
     safe_joblib_load,
     safe_unpickle,
-    set_project_root,
     validate_project_path,
     validate_user_code,
 )
 from haute.errors import PathOutsideProjectError
+from tests._project import use_project
 
 
 class TestSafeGlobals:
@@ -132,18 +132,18 @@ class TestValidateProjectPath:
     """Verify path validation catches directory traversal."""
 
     def test_path_inside_root(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "data.parquet"
         f.touch()
         assert validate_project_path(str(f)) == f
 
     def test_path_outside_root_raises(self, tmp_path: Path):
-        set_project_root(tmp_path / "subdir")
+        use_project(tmp_path / "subdir")
         with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path("/etc/passwd")
 
     def test_traversal_attack_blocked(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path(str(tmp_path / ".." / ".." / "etc" / "passwd"))
 
@@ -153,11 +153,11 @@ class TestValidateProjectPath:
         for root in (outer, inner):
             root.mkdir()
             (root / "data.csv").touch()
-        set_project_root(outer)
+        use_project(outer)
 
         with pytest.raises(RuntimeError, match="case failed"):
-            with bound_project_root(inner) as bound:
-                assert bound == inner.resolve()
+            with project_scope(ProjectContext.at(inner)) as bound:
+                assert bound.root == inner.resolve()
                 assert validate_project_path(inner / "data.csv") == inner / "data.csv"
                 with pytest.raises(PathOutsideProjectError):
                     validate_project_path(outer / "data.csv")
@@ -173,7 +173,7 @@ class TestSafeUnpickle:
 
     def test_safe_object_loads(self, tmp_path: Path):
         """A plain dict should unpickle fine."""
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "safe.pkl"
         f.write_bytes(pickle.dumps({"key": "value", "nums": [1, 2, 3]}))
         result = safe_unpickle(str(f))
@@ -181,7 +181,7 @@ class TestSafeUnpickle:
 
     def test_os_system_blocked(self, tmp_path: Path):
         """A pickle payload calling os.system should be blocked."""
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil.pkl"
         # Properly crafted payload via __reduce__ → os.system("echo pwned")
         payload = (
@@ -203,7 +203,7 @@ class TestSafeUnpickle:
         """Gradient-boosted models load through Model Scoring, not Load File."""
         estimator_cls = getattr(import_module(module), name)
         model = estimator_cls(n_estimators=2).fit([[0.0], [1.0], [2.0]], [1.0, 3.0, 5.0])
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "model.pkl"
         f.write_bytes(pickle.dumps(model))
         with pytest.raises(
@@ -213,7 +213,7 @@ class TestSafeUnpickle:
 
     def test_path_outside_root_blocked(self, tmp_path: Path):
         """Pickle loading should fail if path is outside root."""
-        set_project_root(tmp_path / "safe_dir")
+        use_project(tmp_path / "safe_dir")
         f = tmp_path / "outside.pkl"
         f.write_bytes(pickle.dumps(42))
         with pytest.raises(PathOutsideProjectError, match="outside the project root"):
@@ -235,7 +235,7 @@ class TestSafeUnpickle:
         import sklearn.base
         from sklearn.linear_model import LinearRegression
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         model = LinearRegression().fit([[0.0], [1.0]], [1.0, 3.0])
         f = tmp_path / "stale.pkl"
         with monkeypatch.context() as patched:
@@ -255,7 +255,7 @@ class TestSafeUnpickle:
         """The promotion is scoped to the load; the process-wide filters are untouched."""
         import warnings
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "plain.pkl"
         f.write_bytes(pickle.dumps({"a": 1}))
 
@@ -296,7 +296,7 @@ class TestSafeUnpickle:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """Without scikit-learn there is no version marker to check; loads proceed."""
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "plain.pkl"
         f.write_bytes(pickle.dumps({"a": 1}))
         monkeypatch.setattr(builtins, "__import__", self._import_refusing_sklearn("sklearn"))
@@ -311,7 +311,7 @@ class TestSafeUnpickle:
         A ``ModuleNotFoundError`` naming a module deeper in the tree is a broken
         install, and it surfaces instead of silently disabling the guard.
         """
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "plain.pkl"
         f.write_bytes(pickle.dumps({"a": 1}))
         monkeypatch.setattr(
@@ -347,7 +347,7 @@ class TestSafeJoblibLoad:
         import joblib
         import numpy as np
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "safe.joblib"
         data = {"weights": np.array([1.0, 2.0, 3.0]), "bias": 0.5}
         joblib.dump(data, str(f))
@@ -360,7 +360,7 @@ class TestSafeJoblibLoad:
         import joblib
         from sklearn.linear_model import LinearRegression
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "model.joblib"
         model = LinearRegression()
         joblib.dump(model, str(f))
@@ -382,7 +382,7 @@ class TestSafeJoblibLoad:
         import numpy as np
         from sklearn.linear_model import LinearRegression
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         x = np.array([[0.0], [1.0], [2.0], [3.0]])
         y = np.array([1.0, 3.0, 5.0, 7.0])  # y = 2x + 1
         model = LinearRegression().fit(x, y)
@@ -406,7 +406,7 @@ class TestSafeJoblibLoad:
         import sklearn.base
         from sklearn.linear_model import LinearRegression
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         model = LinearRegression().fit([[0.0], [1.0]], [1.0, 3.0])
         f = tmp_path / "stale.joblib"
         with monkeypatch.context() as patched:
@@ -437,7 +437,7 @@ class TestSafeJoblibLoad:
         )
         from sklearn.ensemble import RandomForestRegressor
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         x = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
         y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
         model = RandomForestRegressor(n_estimators=5, random_state=0).fit(x, y)
@@ -454,7 +454,7 @@ class TestSafeJoblibLoad:
         """A joblib file containing os.system should be blocked."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil.joblib"
 
         # Create a malicious object that would exec on unpickle
@@ -472,7 +472,7 @@ class TestSafeJoblibLoad:
         """A joblib file trying to use subprocess should be blocked."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil2.joblib"
 
         class _Evil:
@@ -489,7 +489,7 @@ class TestSafeJoblibLoad:
         """Joblib loading should fail if path is outside root."""
         import joblib
 
-        set_project_root(tmp_path / "safe_dir")
+        use_project(tmp_path / "safe_dir")
         f = tmp_path / "outside.joblib"
         joblib.dump(42, str(f))
         with pytest.raises(PathOutsideProjectError, match="outside the project root"):
@@ -499,7 +499,7 @@ class TestSafeJoblibLoad:
         """After safe_joblib_load, normal joblib.load of safe objects works."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "test.joblib"
         joblib.dump([1, 2, 3], str(f))
         safe_joblib_load(str(f))
@@ -510,7 +510,7 @@ class TestSafeJoblibLoad:
         """After a failed safe_joblib_load, normal joblib.load still works."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         safe_f = tmp_path / "safe.joblib"
         joblib.dump({"a": 1}, str(safe_f))
 
@@ -619,7 +619,7 @@ class TestJoblibFindClassWeakerThanPickle:
         """The pickle RestrictedUnpickler correctly rejects builtins.eval."""
         import io
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         # Manually verify that the RestrictedUnpickler blocks builtins.eval
         from haute._sandbox import _RestrictedUnpickler
 
@@ -635,7 +635,7 @@ class TestJoblibFindClassWeakerThanPickle:
         """
         import io
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         from haute._sandbox import _RestrictedUnpickler
 
         # The genuine gate (find_class) blocks builtins.eval on the real path
@@ -649,7 +649,7 @@ class TestJoblibFindClassWeakerThanPickle:
         joblib paths — both route through ``_resolve_allowed_global``."""
         import io
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         from haute._sandbox import _resolve_allowed_global, _RestrictedUnpickler
 
         # Pickle path blocks it via find_class.
@@ -692,7 +692,7 @@ class TestPickleAllowlistDotAnchoring:
         """``sklearn`` in the allowlist must not allow a ``sklearn_evil`` joblib payload."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         (tmp_path / "sklearn_evil.py").write_text(
             "class Marker:\n    def __init__(self):\n        self.value = 42\n",
             encoding="utf-8",
@@ -713,12 +713,11 @@ class TestJoblibMonkeyPatchThreadSafety:
 
     def test_concurrent_safe_joblib_load_no_crash(self, tmp_path: Path):
         """Two threads can load safe files without shared-class mutation."""
-        import threading
 
         import joblib
         import numpy as np
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         # Create two safe joblib files
         for i in range(2):
@@ -734,7 +733,7 @@ class TestJoblibMonkeyPatchThreadSafety:
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=load_file, args=(i,)) for i in range(2)]
+        threads = [context_thread(load_file, args=(i,)) for i in range(2)]
         for t in threads:
             t.start()
         for t in threads:
@@ -752,7 +751,7 @@ class TestJoblibMonkeyPatchThreadSafety:
         import numpy as np
         from joblib.numpy_pickle import NumpyUnpickler
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         original_find_class = NumpyUnpickler.find_class
 
         for i in range(4):
@@ -765,7 +764,7 @@ class TestJoblibMonkeyPatchThreadSafety:
             barrier.wait()
             safe_joblib_load(str(tmp_path / f"data_{idx}.joblib"))
 
-        threads = [threading.Thread(target=load_with_barrier, args=(i,)) for i in range(4)]
+        threads = [context_thread(load_with_barrier, args=(i,)) for i in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -785,7 +784,7 @@ class TestJoblibMonkeyPatchThreadSafety:
         import numpy as np
         from joblib.numpy_pickle import NumpyUnpickler
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         original_find_class = NumpyUnpickler.find_class
         observed: list[object] = []
 
@@ -811,7 +810,7 @@ class TestJoblibMonkeyPatchThreadSafety:
         import numpy as np
         from joblib.numpy_pickle import NumpyUnpickler
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         real_find_class = NumpyUnpickler.find_class
 
         def _sentinel_find_class(self: object, module: str, name: str) -> object:
@@ -838,7 +837,7 @@ class TestJoblibMonkeyPatchThreadSafety:
         """An installed but incompatible joblib must not masquerade as absent."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         artifact = tmp_path / "data.joblib"
         joblib.dump({"value": 1}, artifact)
         monkeypatch.delattr(joblib.numpy_pickle, "_validate_fileobject_and_memmap")
@@ -854,7 +853,7 @@ class TestJoblibMonkeyPatchThreadSafety:
         """Private constructor signature drift must retain Haute's typed boundary."""
         import joblib
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         artifact = tmp_path / "data.joblib"
         joblib.dump({"value": 1}, artifact)
 
@@ -940,7 +939,7 @@ class TestBoundedValidationCache:
 
 class TestValidateProjectPathEdgeCases:
     def test_relative_path_resolved_to_absolute(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         subdir = tmp_path / "data"
         subdir.mkdir()
         f = subdir / "file.csv"
@@ -950,25 +949,21 @@ class TestValidateProjectPathEdgeCases:
         assert result == f
 
     def test_empty_string_resolves_to_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.chdir(tmp_path)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         result = validate_project_path("")
         assert result == tmp_path
 
-    def test_empty_string_outside_root_raises(
+    def test_an_empty_path_names_the_project_root_not_the_working_directory(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ):
-        other = tmp_path / "other"
-        other.mkdir()
-        monkeypatch.chdir(other)
-        set_project_root(tmp_path / "restricted")
-        with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
-            validate_project_path("")
+        restricted = tmp_path / "restricted"
+        restricted.mkdir()
+        with project_scope(ProjectContext.at(restricted)):
+            assert validate_project_path("") == restricted.resolve()
 
     def test_nested_subdirectory_inside_root(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         nested = tmp_path / "a" / "b" / "c"
         nested.mkdir(parents=True)
         f = nested / "deep.txt"
@@ -976,7 +971,7 @@ class TestValidateProjectPathEdgeCases:
         assert validate_project_path(str(f)) == f
 
     def test_symlink_traversal_blocked(self, tmp_path: Path):
-        set_project_root(tmp_path / "project")
+        use_project(tmp_path / "project")
         (tmp_path / "project").mkdir()
         outside = tmp_path / "secret.txt"
         outside.touch()
@@ -1112,13 +1107,13 @@ class TestValidateUserCodeEdgeCases:
 
 class TestSafeUnpickleEdgeCases:
     def test_safe_dict_unpickles(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "data.pkl"
         f.write_bytes(pickle.dumps({"a": 1, "b": [2, 3]}))
         assert safe_unpickle(str(f)) == {"a": 1, "b": [2, 3]}
 
     def test_safe_nested_structures(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         data = {"list": [1, 2.0, "three"], "tuple": (4, 5), "set": frozenset({6})}
         f = tmp_path / "nested.pkl"
         f.write_bytes(pickle.dumps(data))
@@ -1128,7 +1123,7 @@ class TestSafeUnpickleEdgeCases:
         assert result["set"] == frozenset({6})
 
     def test_os_system_payload_blocked(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil.pkl"
 
         class _Evil:
@@ -1142,14 +1137,14 @@ class TestSafeUnpickleEdgeCases:
             safe_unpickle(str(f))
 
     def test_path_outside_project_root_blocked(self, tmp_path: Path):
-        set_project_root(tmp_path / "project")
+        use_project(tmp_path / "project")
         f = tmp_path / "outside.pkl"
         f.write_bytes(pickle.dumps(42))
         with pytest.raises(PathOutsideProjectError, match="outside the project root"):
             safe_unpickle(str(f))
 
     def test_subprocess_payload_blocked(self, tmp_path: Path):
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "evil2.pkl"
 
         class _Evil:
@@ -1181,7 +1176,7 @@ class TestPickleBombDeeplyNested:
             payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
         finally:
             sys.setrecursionlimit(old_limit)
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "nested_bomb.pkl"
         f.write_bytes(payload)
         try:
@@ -1206,7 +1201,7 @@ class TestPickleReduceExploit:
                 return (os.system, ("echo pwned",))
 
         payload = pickle.dumps(Exploit())
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "reduce_exploit.pkl"
         f.write_bytes(payload)
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
@@ -1215,12 +1210,11 @@ class TestPickleReduceExploit:
 
 class TestJoblibConcurrentLoadSafety:
     def test_ten_threads_same_file_no_corruption(self, tmp_path: Path):
-        import threading
 
         import joblib
         import numpy as np
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
         f = tmp_path / "shared.joblib"
         data = {"arr": np.array([1.0, 2.0, 3.0]), "label": "test"}
         joblib.dump(data, str(f))
@@ -1234,7 +1228,7 @@ class TestJoblibConcurrentLoadSafety:
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=load, args=(i,)) for i in range(10)]
+        threads = [context_thread(load, args=(i,)) for i in range(10)]
         for t in threads:
             t.start()
         for t in threads:
@@ -1405,7 +1399,7 @@ class TestPickleRCEGadgetGate:
         end-to-end, even though the module is under the numpy prefix."""
         import numpy
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         class _Gadget:
             def __reduce__(self):
@@ -1423,7 +1417,7 @@ class TestPickleRCEGadgetGate:
         import joblib
         import numpy
 
-        set_project_root(tmp_path)
+        use_project(tmp_path)
 
         class _Gadget:
             def __reduce__(self):
@@ -1497,7 +1491,7 @@ class TestCaseInsensitiveContainment:
         root.mkdir()
         sibling = tmp_path / "proj_evil"
         sibling.mkdir()
-        set_project_root(root)
+        use_project(root)
         target = sibling / "secret.csv"
         target.touch()
         with pytest.raises(PathOutsideProjectError, match="outside.*project root"):

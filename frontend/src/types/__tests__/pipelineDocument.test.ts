@@ -15,16 +15,16 @@ function document(): PipelineEditorDocument {
   }
 }
 
-describe("pipeline editor document contract", () => {
-  it("parses a degraded document and adapts independent canvas metadata", () => {
-    const parsed = parsePipelineEditorDocument(document())
+describe("pipeline editor document contract", async () => {
+  it("parses a degraded document and adapts independent canvas metadata", async () => {
+    const parsed = await parsePipelineEditorDocument(document())
     const adapted = adaptPipelineEditorDocument(parsed)
     expect(adapted.nodes[0]).toMatchObject({ id: "node:a", type: "dataInput", data: { _loadAvailability: "ready", _recoveryId: "node:a", _authoredId: "a", _authoredDecorator: "source", _authoredReceiver: "pipeline" } })
     ;(adapted.nodes[0].data.config as { nested: number[] }).nested[0] = 9
     expect((parsed.nodes[0].config?.nested as number[])[0]).toBe(1)
   })
 
-  it("keeps server-owned executable identities and config references on ready nodes and edges", () => {
+  it("keeps server-owned executable identities and config references on ready nodes and edges", async () => {
     const fixture = document()
     fixture.load_status = "ready"
     fixture.nodes[0].label = "API Input"
@@ -58,7 +58,7 @@ describe("pipeline editor document contract", () => {
       config_reference: null,
     })
 
-    const adapted = adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))
+    const adapted = adaptPipelineEditorDocument(await parsePipelineEditorDocument(fixture))
 
     expect(adapted.nodes[0].data).toMatchObject({
       _functionName: "API_Input",
@@ -71,7 +71,7 @@ describe("pipeline editor document contract", () => {
     expect(adapted.edges[0].data).toMatchObject({ _inputName: "drivers" })
   })
 
-  it("marks submodel-graph nodes with the @submodel authoring receiver", () => {
+  it("marks submodel-graph nodes with the @submodel authoring receiver", async () => {
     const fixture = document()
     fixture.submodels = {
       child: {
@@ -90,14 +90,14 @@ describe("pipeline editor document contract", () => {
       },
     }
 
-    const adapted = adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))
+    const adapted = adaptPipelineEditorDocument(await parsePipelineEditorDocument(fixture))
     expect(adapted.submodels.child.graph.nodes[0]).toMatchObject({
       id: "node:c",
       data: { _authoredReceiver: "submodel" },
     })
   })
 
-  it("renders an unresolved declaration only when both visual endpoints are known", () => {
+  it("renders an unresolved declaration only when both visual endpoints are known", async () => {
     const fixture = document()
     fixture.nodes.push({
       ...fixture.nodes[0],
@@ -118,7 +118,7 @@ describe("pipeline editor document contract", () => {
       diagnostic_ids: ["d1"],
     }]
 
-    const adapted = adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))
+    const adapted = adaptPipelineEditorDocument(await parsePipelineEditorDocument(fixture))
     expect(adapted.edges).toHaveLength(1)
     expect(adapted.edges[0]).toMatchObject({
       id: "edge:unresolved",
@@ -130,28 +130,32 @@ describe("pipeline editor document contract", () => {
 
     fixture.unresolved_connections[0].target_recovery_id = null
     expect(
-      adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture)).edges,
+      adaptPipelineEditorDocument(await parsePipelineEditorDocument(fixture)).edges,
     ).toHaveLength(0)
   })
 
-  it("supports source_only and rejects shape, coordinates, and edge endpoint drift", () => {
+  it("supports source_only and rejects shape, coordinates, and edge endpoint drift", async () => {
     const sourceOnly = document(); sourceOnly.load_status = "source_only"
-    expect(parsePipelineEditorDocument(sourceOnly).load_status).toBe("source_only")
+    expect((await parsePipelineEditorDocument(sourceOnly)).load_status).toBe("source_only")
     const extra = document(); Object.assign(extra, { unexpected: true })
-    expect(() => parsePipelineEditorDocument(extra)).toThrow(/unexpected or missing/)
+    await expect(parsePipelineEditorDocument(extra)).rejects.toThrow("PipelineEditorDocument: invalid contract at /: additionalProperties")
     const missing: Partial<PipelineEditorDocument> = document(); delete missing.source_text
-    expect(() => parsePipelineEditorDocument(missing)).toThrow(/unexpected or missing/)
+    await expect(parsePipelineEditorDocument(missing)).rejects.toThrow(
+      "PipelineEditorDocument: invalid contract at /source_text: required",
+    )
     const infinity = document(); infinity.nodes[0].display_position.x = Infinity
-    expect(() => parsePipelineEditorDocument(infinity)).toThrow(/finite/)
+    await expect(parsePipelineEditorDocument(infinity)).rejects.toThrow(
+      "PipelineEditorDocument: invalid contract at /nodes/0/display_position/x",
+    )
     const badEdge = document(); badEdge.edges = [{ recovery_id: "edge:1", source_recovery_id: "missing", target_recovery_id: "node:a", source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, input_name: null, availability: "blocked", source_span: null, diagnostic_ids: [], blocking_path: [] }]
-    expect(() => parsePipelineEditorDocument(badEdge)).toThrow(/missing recovery node/)
+    await expect(parsePipelineEditorDocument(badEdge)).rejects.toThrow(/missing recovery node/)
     const badUnresolved = document(); badUnresolved.unresolved_connections = [{ recovery_id: "edge:unresolved", source_recovery_id: "missing", target_recovery_id: null, source_authored_id: "x", target_authored_id: "a", source_handle: null, target_handle: null, source_span: null, diagnostic_ids: ["d1"] }]
-    expect(() => parsePipelineEditorDocument(badUnresolved)).toThrow(/missing recovery node/)
+    await expect(parsePipelineEditorDocument(badUnresolved)).rejects.toThrow(/missing recovery node/)
     const badSubmodel = document(); badSubmodel.submodels = { registered: { definition_id: "different", file: "modules/child.py", availability: "ready", diagnostic_ids: [], graph: { nodes: [], edges: [], unresolved_connections: [], submodels: null }, input_ports: [], output_ports: [] } }
-    expect(() => parsePipelineEditorDocument(badSubmodel)).toThrow(/registry key/)
+    await expect(parsePipelineEditorDocument(badSubmodel)).rejects.toThrow(/registry key/)
   })
 
-  it("rejects a submodel node whose label differs from its alias", () => {
+  it("rejects a submodel node whose label differs from its alias", async () => {
     const fixture = document()
     fixture.nodes.push({
       ...fixture.nodes[0],
@@ -161,12 +165,12 @@ describe("pipeline editor document contract", () => {
       node_type: "submodel",
       config: { definitionId: "def_sub", alias: "sub_alias" },
     })
-    expect(() => adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))).toThrow(
+    await expect(parsePipelineEditorDocument(fixture).then(adaptPipelineEditorDocument)).rejects.toThrow(
       "parsePipelineEditorDocument: submodel node node:sub label must equal its alias",
     )
   })
 
-  it("rejects a submodel node whose id differs from its alias", () => {
+  it("rejects a submodel node whose id differs from its alias", async () => {
     const fixture = document()
     fixture.nodes.push({
       ...fixture.nodes[0],
@@ -176,7 +180,7 @@ describe("pipeline editor document contract", () => {
       node_type: "submodel",
       config: { definitionId: "def_sub", alias: "sub_alias" },
     })
-    expect(() => adaptPipelineEditorDocument(parsePipelineEditorDocument(fixture))).toThrow(
+    await expect(parsePipelineEditorDocument(fixture).then(adaptPipelineEditorDocument)).rejects.toThrow(
       "parsePipelineEditorDocument: submodel node node:sub id must equal its alias",
     )
   })

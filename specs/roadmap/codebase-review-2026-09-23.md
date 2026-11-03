@@ -18,26 +18,9 @@ Reviewed at `main` @ `9319b11d`. The review read the code and changed none of it
 The code is careful and defensive, and its failure semantics are explicit. The main problem is **accumulated machinery**: several generations of mechanisms for the same concern coexist, and a lot of bespoke infrastructure re-implements things that Polars, FastAPI, Pydantic or a hard memory cap already provide. The top items still open:
 
 1. **The hand-maintained API contract is the top churn source.** `schemas.py`, `api/types.ts`, `types/guards.ts` and `api/client.ts` are the four most-changed files over the last three months. A Pydantic-to-TS generator already exists but covers only two pilots. (§5.1)
-2. **About 12 project-root/pipeline-dir resolvers**, several keyed on process cwd, with different semantics. One of them silently falls back to cwd. (§1.4)
-3. **Node config is an untyped `dict[str, Any]`.** The shared validator is strict for only 3 of 19 node types; the rest are validated piecemeal. (§5.4)
+2. **Node config is an untyped `dict[str, Any]`.** The shared validator is strict for only 3 of 19 node types; the rest are validated piecemeal. (§5.4)
 
 Of the strategic simplifications in §4, the one still open is folding the four overlapping reuse mechanisms (§4.7).
-
----
-
-## 1. Defects and brittle behaviour worth fixing now
-
-### 1.4 About 12 project-root / pipeline-dir resolvers — HIGH (brittleness)
-They have different semantics, and several depend on process cwd:
-- `_sandbox._get_project_root` captures cwd on first call as a global, with a `set_project_root` override.
-- `_project.get_project_root` walks up for `haute.toml` plus git; this is the spec'd resolver.
-- `_path_resolution.current_runtime_project_root` is a contextvar.
-- `routes/_helpers.pipeline_dir` (`:92`) returns cwd **even when `haute.toml` is missing**, only logging an error. That contradicts pipeline-config's "not being inside a Haute project raises".
-- `routes/input_cache._project_root` is `Path.cwd()`.
-- `routes/_node_data_service.node_data_project_root` uses the sandbox root.
-- Also: `_builders._configured_pipeline_dir`, `_project_storage.resolve_project_dir`, `modelling/_mlflow_settings._project_root_default` and `assistant/_config._normalise_project_root`.
-- Identical copies: `executor._pipeline_dir` (`:145`) and `_cache._pipeline_dir` (`:1436`).
-- **Fix.** Resolve one `ProjectContext` (root, pipeline file, config) once at CLI or server start and pass it explicitly. Delete the cwd fallbacks.
 
 ---
 
@@ -103,12 +86,6 @@ They have different semantics, and several depend on process cwd:
 
 ---
 
-## 6. Specs, docs, policy and governance
-
-- **Spec drift found:** `server-api`'s `pipeline_dir` cwd fallback versus pipeline-config's "not being inside a project raises".
-
----
-
 ## 7. Tests
 
 - **Size and shape.** Backend tests total 421K lines (2.3× the source); `test_optimiser_routes.py` alone is 16,581 lines. According to the saved project notes, a full serial run takes about 40 minutes.
@@ -124,11 +101,8 @@ owns no work; the packages carry the plan, acceptance and evidence.
 
 | Finding | Package |
 |---|---|
-| §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([engineering quality](engineering-quality.md)) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
-| §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.4 Typed node configs | `PCFG-R07` ([pipeline config](pipeline-config.md)) |
-| §6 Specification drift: the `pipeline_dir` cwd fallback | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §7 Test organisation | `ENGQ-R05` ([engineering quality](engineering-quality.md)) |

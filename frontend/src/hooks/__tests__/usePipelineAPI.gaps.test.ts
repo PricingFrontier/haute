@@ -6,6 +6,9 @@
  * 3. Preview caching integration (cache hit skips API call)
  * 4. fetchPreview abort — new preview aborts the previous in-flight request
  */
+import { makeSavePipelineResponse } from "../../test-utils/factories"
+import type { PreviewNodeResponse } from "../../api/types"
+import { makePreviewResponse } from "../../test-utils/factories"
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
@@ -17,7 +20,6 @@ import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { pendingSavesSettled } from "../../stores/pendingSaves"
-import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
@@ -251,7 +253,7 @@ describe("usePipelineAPI - gap tests", () => {
       let saveCallCount = 0
       mockSave.mockImplementation(() => {
         saveCallCount++
-        return Promise.resolve({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
+        return Promise.resolve(makeSavePipelineResponse({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
       })
 
       const params = makeParams()
@@ -287,7 +289,7 @@ describe("usePipelineAPI - gap tests", () => {
       const held = pendingSavesSettled(sourceFile)
       expect(held).not.toBeNull()
       await act(async () => {
-        answer({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" })
+        answer(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" }))
         await saving
         await held
       })
@@ -389,7 +391,7 @@ describe("usePipelineAPI - gap tests", () => {
       let callIdx = 0
       mockSave.mockImplementation(() => {
         callIdx++
-        if (callIdx === 1) return Promise.resolve({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" })
+        if (callIdx === 1) return Promise.resolve(makeSavePipelineResponse({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
         return Promise.reject(new Error("conflict"))
       })
 
@@ -487,14 +489,14 @@ describe("usePipelineAPI - gap tests", () => {
 
     it("honours a custom preview debounce before starting the API request", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
         row_count: 0,
         column_count: 0,
-      })
+      }))
 
       const { result } = renderHook(() => usePipelineAPI(makeParams()))
       await waitFor(() => expect(result.current.loading).toBe(false))
@@ -522,14 +524,14 @@ describe("usePipelineAPI - gap tests", () => {
 
     it("waits 200 ms by default before starting the API request", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
         row_count: 0,
         column_count: 0,
-      })
+      }))
 
       const { result } = renderHook(() => usePipelineAPI(makeParams()))
       await waitFor(() => expect(result.current.loading).toBe(false))
@@ -605,14 +607,14 @@ describe("usePipelineAPI - gap tests", () => {
         columnCache: {},
       })
       useGraphStore.setState({ structuralVersion: 4 })
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [{ name: "b", dtype: "i64" }],
         preview: [{ b: 2 }],
         row_count: 20,
         column_count: 1,
-      })
+      }))
 
       const params = makeParams()
       const { result } = renderHook(() => usePipelineAPI(params))
@@ -634,14 +636,14 @@ describe("usePipelineAPI - gap tests", () => {
       // always be considered fresh, showing stale data after the user
       // modifies a node's config.
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [{ name: "b", dtype: "i64" }],
         preview: [{ b: 2 }],
         row_count: 20,
         column_count: 1,
-      })
+      }))
 
       const cachedData = {
         nodeId: "n1",
@@ -692,14 +694,14 @@ describe("usePipelineAPI - gap tests", () => {
 
     it("refetches when cached preview source differs from active source", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
         row_count: 0,
         column_count: 0,
-      })
+      }))
 
       const cachedData = {
         nodeId: "n1",
@@ -744,14 +746,14 @@ describe("usePipelineAPI - gap tests", () => {
 
     it("refetches when cached preview row limit differs from current row limit", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
         row_count: 0,
         column_count: 0,
-      })
+      }))
 
       const cachedData = {
         nodeId: "n1",
@@ -803,14 +805,7 @@ describe("usePipelineAPI - gap tests", () => {
       // graph (no setNodes/cascade), and no cache entry is created for a
       // node that is absent from the live graph.
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      let resolvePreview!: (value: {
-        node_id: string
-        status: BackendNodeStatus
-        columns: { name: string; dtype: string }[]
-        preview: { stale: number }[]
-        row_count: number
-        column_count: number
-      }) => void
+      let resolvePreview!: (value: PreviewNodeResponse) => void
       mockPreview.mockReturnValue(new Promise((resolve) => {
         resolvePreview = resolve
       }))
@@ -829,14 +824,14 @@ describe("usePipelineAPI - gap tests", () => {
       })
 
       await act(async () => {
-        resolvePreview({
+        resolvePreview(makePreviewResponse({
           node_id: "n1",
           status: "ok",
           columns: [{ name: "stale", dtype: "i64" }],
           preview: [{ stale: 1 }],
           row_count: 1,
           column_count: 1,
-        })
+        }))
         await Promise.resolve()
       })
 
@@ -855,14 +850,14 @@ describe("usePipelineAPI - gap tests", () => {
   describe("fetchPreview abort on new request", () => {
     it("cancelPreview clears a pending debounced preview before the API request starts", async () => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      mockPreview.mockResolvedValue({
+      mockPreview.mockResolvedValue(makePreviewResponse({
         node_id: "n1",
         status: "ok",
         columns: [],
         preview: [],
         row_count: 0,
         column_count: 0,
-      })
+      }))
 
       const { result } = renderHook(() => usePipelineAPI(makeParams()))
       await waitFor(() => expect(result.current.loading).toBe(false))

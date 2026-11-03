@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
+import { makePreviewResponse } from "../src/test-utils/factories"
 import { resetE2eProject } from "./projectIsolation"
 
 const PREVIEW_ROW_COUNT = 30
@@ -28,7 +29,7 @@ async function routePreviewColumns(page: Page, columnCount: () => number): Promi
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: JSON.stringify(makePreviewResponse({
         status: "ok",
         node_id: body.node_id,
         row_count: PREVIEW_ROW_COUNT,
@@ -44,7 +45,7 @@ async function routePreviewColumns(page: Page, columnCount: () => number): Promi
         memory: [],
         schema_warnings: [],
         node_statuses: { [body.node_id]: "ok" },
-      }),
+      })),
     })
   })
 }

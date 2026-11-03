@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from tests._project import project_app
+
 
 def test_schema_warning_carries_input_and_unavailable_detail() -> None:
     from haute.schemas import SchemaWarning
@@ -50,7 +52,7 @@ def test_schema_warning_rejects_incomplete_or_contradictory_payload(
 def test_editor_identity_names_every_instance_output(outputs: list[str]) -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     response = TestClient(app).post(
         "/api/pipeline/editor-identities",
@@ -80,7 +82,7 @@ def test_editor_identity_refuses_occurrence_facts_different_from_context(
 ) -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
     from tests.test_submodel_instances import _reuse_graph
 
     node = {
@@ -106,7 +108,7 @@ def test_editor_identity_refuses_occurrence_facts_different_from_context(
 def test_editor_identity_refuses_instance_of_on_ordinary_node() -> None:
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     response = TestClient(app).post(
         "/api/pipeline/editor-identities",
@@ -139,7 +141,7 @@ def _normalise_schema(schema: dict[str, Any] | None) -> Any:
 
 
 def _api_contract_fingerprint() -> dict[str, dict[str, dict[str, Any]]]:
-    from haute.server import app
+    app = project_app()
 
     openapi = app.openapi()
     fingerprint: dict[str, dict[str, dict[str, Any]]] = {}
@@ -1108,7 +1110,7 @@ def _retrospective_fingerprint(
 
 
 def test_openapi_contract_fingerprint_matches_expected_snapshot() -> None:
-    from haute.server import app
+    app = project_app()
 
     # Route refs alone cannot detect a changed warning payload.
     assert app.openapi()["components"]["schemas"]["SchemaWarning"] == {

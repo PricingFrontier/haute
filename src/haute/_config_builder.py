@@ -42,6 +42,7 @@ from haute._polars_steps import (
     stepped_surface_for,
 )
 from haute._polars_steps_lift import StepLiftError, lift_steps
+from haute._project_context import current_project
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
@@ -532,18 +533,7 @@ def _reconcile_steps(
         reason = f"the steps cannot be rendered ({exc})"
     else:
         kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
-        # The renderer's earlier call spelling is accepted too, so a body it
-        # saved before keeps its steps; free code must match either way.
-        earlier = render_polars_steps(
-            steps,
-            step_input_names(node_type, param_names),
-            start=surface.start,
-            spelling="earlier",
-        ).code
-        if any(
-            _same_program(normalise_user_code(code, kind=kind), body_code)
-            for code in (rendered, earlier)
-        ):
+        if _same_program(normalise_user_code(rendered, kind=kind), body_code):
             return config, NodeEditorState()
         reason = "the function body no longer matches the rendered steps"
     logger.warning(
@@ -634,7 +624,7 @@ def _resolve_node_config(
                 keywords=keywords,
             )
         normalised_ref = config_ref.replace("\\", "/")
-        base = base_dir or Path.cwd()
+        base = base_dir or current_project().root
         try:
             loaded = load_node_config(normalised_ref, base_dir=base)
         except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:

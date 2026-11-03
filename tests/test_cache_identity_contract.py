@@ -22,6 +22,7 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._config_validation import VALID_KEYS
+from haute._project_context import current_project
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -31,6 +32,7 @@ from haute._types import (
     PipelineGraph,
 )
 from haute.execution import dataframe_graph_input_fingerprint
+from tests._project import use_project
 from tests._source_files import source_files
 
 
@@ -520,7 +522,7 @@ def test_runtime_input_identity_is_composed_with_structural_node_config(
     field: str,
     changed_value: str,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "artifact.bin").write_bytes(b"artifact")
     node = _node("runtime", node_type=node_type, config=base_config)
     graph = PipelineGraph(nodes=[node], source_file=str(tmp_path / "pipeline.py"))
@@ -553,12 +555,11 @@ def test_database_snapshot_pointer_uses_configured_pipeline_directory(
 ) -> None:
     """Runtime identity signs the same relative SQLite snapshot that execution opens."""
     from haute._input_providers import source_cache_identity
-    from haute._sandbox import _get_project_root, set_project_root
     from haute._source_cache import SourceCacheStore
 
-    monkeypatch.chdir(tmp_path)
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         pipeline_dir = tmp_path / "rating"
         pipeline_dir.mkdir()
@@ -597,7 +598,7 @@ def test_database_snapshot_pointer_uses_configured_pipeline_directory(
 
         assert second != first
     finally:
-        set_project_root(original_root)
+        use_project(original_root)
 
 
 def test_model_contract_key_routes_through_the_checked_value_projection(monkeypatch) -> None:

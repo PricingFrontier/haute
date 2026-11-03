@@ -47,9 +47,10 @@ from typing import Any
 
 import pytest
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests._project import project_app, use_project
 from tests.conftest import build_test_api_input_snapshots
 
 # The canonical multi-port witness: one nested document shredded into four
@@ -77,13 +78,8 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     ``path`` and the per-port cache is already built at the pipeline-dir-anchored
     absolute location (mirroring what "Cache as Parquet" writes).
     """
-    from haute.routes._helpers import pipeline_dir as _pipeline_dir
-
-    monkeypatch.chdir(tmp_path)  # cwd == project root, NOT the pipeline dir
-    original = _get_project_root()
-    set_project_root(tmp_path)
+    use_project(tmp_path)  # the project root, NOT the pipeline dir
     _preview_cache.clear()
-    _pipeline_dir.cache_clear()
 
     # haute.toml declares the nested pipeline — the anchor both the cache route
     # and (post-fix) the executor resolve a relative data path against.
@@ -107,9 +103,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     yield config, data_path
 
-    set_project_root(original)
     _preview_cache.clear()
-    _pipeline_dir.cache_clear()
 
 
 def _api_output_graph(config: dict[str, Any]) -> PipelineGraph:
@@ -166,7 +160,7 @@ def test_output_dry_run_route_with_pipeline_relative_path(nested_project) -> Non
     """
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     config, _data_path = nested_project
     graph = _api_output_graph(config)
@@ -190,25 +184,17 @@ def test_output_dry_run_route_with_pipeline_relative_path(nested_project) -> Non
 # ─── unit coverage for the resolution helpers ─────────────────────────────
 
 
-def test_configured_pipeline_dir_reads_haute_toml(tmp_path, monkeypatch) -> None:
-    """``_configured_pipeline_dir`` returns the parent of ``[project].pipeline``
-    from the selected project's haute.toml — the cache route's anchor."""
-    from haute._builders import _configured_pipeline_dir
-
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+def test_the_project_pipeline_dir_reads_haute_toml(tmp_path, monkeypatch) -> None:
+    """The project's pipeline folder is the parent of ``[project].pipeline``
+    from its haute.toml, read when used — the cache route's anchor."""
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
-    assert _configured_pipeline_dir() == (tmp_path / "rating")
+    assert current_project().pipeline_dir == (tmp_path / "rating").resolve()
 
 
-def test_configured_pipeline_dir_none_without_toml(tmp_path, monkeypatch) -> None:
-    """No haute.toml (or no ``[project].pipeline``) → ``None``, so resolution
-    falls back to the selected project root rather than guessing a pipeline dir."""
-    from haute._builders import _configured_pipeline_dir
-
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
-    assert _configured_pipeline_dir() is None
+def test_the_project_pipeline_dir_is_the_root_without_toml(tmp_path, monkeypatch) -> None:
+    """No haute.toml (or no ``[project].pipeline``) → the project root, rather than
+    guessing a pipeline dir."""
+    assert current_project().pipeline_dir == tmp_path.resolve()
 
 
 def test_resolve_runtime_data_path_passthrough_and_absolute(tmp_path, monkeypatch) -> None:
@@ -216,8 +202,7 @@ def test_resolve_runtime_data_path_passthrough_and_absolute(tmp_path, monkeypatc
     through ``resolve_runtime_file_path`` unchanged (no pipeline-dir rewrite)."""
     from haute._builders import _resolve_runtime_data_path
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     assert _resolve_runtime_data_path("") == ""
 
     absolute = tmp_path / "rating" / "data" / "quotes.json"
@@ -231,8 +216,7 @@ def test_resolve_runtime_data_path_anchors_relative_to_pipeline_dir(tmp_path, mo
     wins), matching the cache route — NOT under cwd/project-root."""
     from haute._builders import _resolve_runtime_data_path
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
     target = tmp_path / "rating" / "data" / "quotes.json"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -246,8 +230,7 @@ def test_resolve_runtime_data_path_rejects_out_of_cwd_absolute(tmp_path, monkeyp
     """The builder's final runtime resolver enforces the active project root."""
     from haute._builders import _resolve_runtime_data_path
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     outside = tmp_path.parent / "elsewhere" / "data" / "api_input.json"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("[]")

@@ -13,6 +13,7 @@ mechanism.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,7 @@ from haute._json_shred._writer import (
     _raise_chunk_error,
     _shred_chunk,
 )
+from tests._project import use_project
 
 
 def _write_jsonl(path: Path, records: list[Any]) -> Path:
@@ -506,6 +508,69 @@ def test_parallel_inference_walks_the_shared_prefix_once(
     assert top_level_walks == 10_000
 
 
+def _inline_inference_pool(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Run inference tasks in this process, recording the byte range each receives."""
+    dispatched: list[tuple[int, int]] = []
+
+    class InlinePool:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def map(self, function: Any, tasks: Any) -> list[Any]:
+            tasks = list(tasks)
+            dispatched.extend((start, end) for _path, start, end, _index, _seed in tasks)
+            return [function(task) for task in tasks]
+
+        def shutdown(self, **_kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", InlinePool)
+    return dispatched
+
+
+def test_parallel_inference_ranges_start_where_the_shared_prefix_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No worker reads a line the prefix pass already walked (IO-R07)."""
+    records: list[dict[str, Any]] = [{"id": i, "kind": "stable"} for i in range(10_250)]
+    records[10_100]["late"] = 1.5
+    lines = [(json.dumps(record) + "\n").encode() for record in records]
+    # A blank and a non-object line inside the prefix are read past, not counted.
+    lines[5:5] = [b"\n", b"42\n"]
+    src = tmp_path / "prefix-offset.jsonl"
+    src.write_bytes(b"".join(lines))
+    _force_parallel(monkeypatch, chunk_bytes=20_000)
+    dispatched = _inline_inference_pool(monkeypatch)
+
+    assert infer_v2_schema_from_data(src) == _full_walk_schema(records)
+
+    prefix_end = sum(len(line) for line in lines[:10_002])
+    assert dispatched[0][0] == prefix_end
+    assert dispatched[-1][1] == src.stat().st_size
+    assert all(left[1] == right[0] for left, right in zip(dispatched, dispatched[1:]))
+
+
+def test_parallel_inference_of_a_file_within_its_prefix_starts_no_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A multi-range file shorter than the prefix is inferred by the prefix alone (IO-R07)."""
+    records = _sample_records(50)
+    src = _write_jsonl(tmp_path / "short.jsonl", records)
+    _force_parallel(monkeypatch, chunk_bytes=200)
+    assert len(_records._jsonl_byte_ranges(src, 200)) > 1
+
+    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("a multi-range JSONL file was inferred serially")
+
+    def reject_pool(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("a file within the prefix started a worker pool")
+
+    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
+    monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", reject_pool)
+
+    assert infer_v2_schema_from_data(src) == _full_walk_schema(records)
+
+
 def test_fused_lines_skip_blanks_without_discarding_later_evidence() -> None:
     state = _inference._infer_jsonl_lines(
         [b'{"id":1}\n', b" \t\r\n", b"null\n", b'{"late":"present"}\n']
@@ -520,7 +585,7 @@ def test_fused_range_skips_orjson_for_shared_prefix_shapes(
     """Known JSONL rows are admitted by the seed before the fallback parser."""
     records = [{"id": i, "kind": "stable"} for i in range(10_000)]
     src = _write_jsonl(tmp_path / "fused-known.jsonl", records)
-    prefix, seed = _inference._learn_jsonl_prefix(src, src.stat().st_size)
+    prefix, seed, _prefix_end = _inference._learn_jsonl_prefix(src, src.stat().st_size)
     expected = _full_walk_schema(records)
     original_loads = orjson.loads
     parsed = 0
@@ -729,7 +794,9 @@ def test_parallel_inference_runs_off_the_main_thread(
     _force_parallel(monkeypatch, chunk_bytes=30_000)
 
     with ThreadPoolExecutor(max_workers=1) as thread_pool:
-        schema = thread_pool.submit(infer_v2_schema_from_data, src).result()
+        schema = thread_pool.submit(
+            contextvars.copy_context().run, infer_v2_schema_from_data, src
+        ).result()
 
     assert schema["tables"]
 
@@ -1374,10 +1441,9 @@ def test_failed_parallel_build_leaves_no_staging_directory(
             }
         ]
     }
-    from haute._sandbox import set_project_root
     from tests.conftest import build_test_api_input_snapshots
 
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     config = {"path": str(src), "contract": "opaque", **schema}
 
     _force_parallel(monkeypatch)
@@ -1404,7 +1470,9 @@ def test_parallel_build_runs_off_the_main_thread(
 
     _force_parallel(monkeypatch)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        _skip, frames = pool.submit(_shred_build, src, schema, tmp_path / "cache").result()
+        _skip, frames = pool.submit(
+            contextvars.copy_context().run, _shred_build, src, schema, tmp_path / "cache"
+        ).result()
 
     root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
     assert frames[root_label].height == 300

@@ -11,6 +11,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from haute._project_context import current_project
+
 
 class _Queue:
     def __init__(self, items: list[object] | None = None) -> None:
@@ -72,7 +74,14 @@ def test_child_entrypoints_apply_unavailable_qos_before_work(
             module, "configure_process_high_qos", lambda: events.append("qos") or "unavailable"
         )
         module._isolated_worker_entrypoint(
-            results, _go(), lambda: events.append("work") or "result", (), {}, None
+            results,
+            _go(),
+            lambda: events.append("work") or "result",
+            (),
+            {},
+            None,
+            False,
+            current_project(),
         )
         assert pickle.loads(results.put_items[0])[0] == "ready"
         assert pickle.loads(results.put_items[1]) == ("ok", "result")
@@ -95,6 +104,10 @@ def test_child_entrypoints_apply_unavailable_qos_before_work(
             module.WorkerRequest("id", "kind", {}),
             str(tmp_path),
             None,
+            False,
+            0,
+            (),
+            current_project(),
         )
         assert results.put_items[0][0] == "ready"  # type: ignore[index]
         assert results.put_items[1][0] == "ok"  # type: ignore[index]
@@ -150,7 +163,7 @@ def test_server_lifespan_applies_unavailable_qos_before_worker_pool(
     monkeypatch.setattr(server, "_artifact_reaper_task", None)
 
     async def exercise() -> None:
-        async with server._lifespan(server.app):
+        async with server._lifespan(server.create_app(current_project())):
             assert events == ["logging", "qos", "pool"]
 
     asyncio.run(exercise())

@@ -10,6 +10,7 @@ writes, starts a real Git action on another thread and checks what the action re
 
 from __future__ import annotations
 
+import contextvars
 import json
 import subprocess
 import threading
@@ -35,6 +36,7 @@ from haute.schemas import (
     SavePipelineRequest,
 )
 from tests._git_helpers import REWRITING_PRE_COMMIT_HOOK, install_hook
+from tests._project import use_project
 
 WORKING = "pricing"
 # How long a Git action is watched while the writer it must wait for is paused.
@@ -82,7 +84,7 @@ def _repository(root: Path, files: dict[str, str], monkeypatch: pytest.MonkeyPat
 
     The working directory moves into it: Git actions called without ``cwd`` run there."""
     root.mkdir()
-    monkeypatch.chdir(root)
+    use_project(root)
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.name", "Test User")
     _git(root, "config", "user.email", "test@example.com")
@@ -167,10 +169,10 @@ def _race(
 
     Returns the two outcomes as calls that return the result or raise its exception."""
     with ThreadPoolExecutor(max_workers=2) as pool:
-        written = pool.submit(write)
+        written = pool.submit(contextvars.copy_context().run, write)
         assert pause.reached.wait(10), "the writer never reached its pause"
         while_paused()
-        acted = pool.submit(act)
+        acted = pool.submit(contextvars.copy_context().run, act)
         try:
             assert not entered.wait(_WATCH_SECONDS), "the Git action ran inside the write"
         finally:

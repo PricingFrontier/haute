@@ -21,7 +21,12 @@ from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
 from haute._workbench_form import identity_clashes
-from haute.deploy._config import ResolvedDeploy, output_fields_are_valid, test_quote_files
+from haute.deploy._config import (
+    ResolvedDeploy,
+    in_resolved_project,
+    output_fields_are_valid,
+    test_quote_files,
+)
 from haute.deploy._scorer import (
     DeployInput,
     QuoteRequest,
@@ -513,6 +518,7 @@ def _global_constant_errors(graph: PipelineGraph) -> list[str]:
     return errors
 
 
+@in_resolved_project
 def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> list[TestQuoteResult]:
     """Run all pre-deploy validations.
 
@@ -558,7 +564,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             continue
         try:
             from haute._polars_io_registry import validate_data_input_config
-            from haute._sandbox import _get_project_root
+            from haute._project_context import current_project
             from haute.deploy._bundler import (
                 _resolve_direct_parquet_source,
                 shipped_snapshot_config,
@@ -585,7 +591,7 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             identity = source_cache_identity(
                 snapshot_config, base_dir=resolved.pipeline_file.parent
             )
-            SourceCacheStore(_get_project_root()).open_generation(identity)
+            SourceCacheStore(current_project().root).open_generation(identity)
         except Exception as exc:
             logger.exception(
                 "deploy_data_input_validation_failed",
@@ -712,6 +718,7 @@ def _request(inputs: list[dict[str, Any]], as_records: bool) -> DeployInput:
     return QuoteRequest(tuple(inputs)) if as_records else pl.DataFrame(inputs)
 
 
+@in_resolved_project
 def score_test_quotes(
     resolved: ResolvedDeploy, test_quotes_dir: Path | None = None
 ) -> list[TestQuoteResult]:
@@ -744,6 +751,7 @@ def score_test_quotes(
     return [score_test_quote_file(resolved, jf) for jf in json_files]
 
 
+@in_resolved_project
 def score_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> TestQuoteResult:
     """Score one test-quote file as :func:`score_test_quotes` scores each: its cases
     priced and each expected output compared, answering its result (``status`` ``ok`` or

@@ -21,6 +21,7 @@ from haute.deploy import DeployConfig, resolve_config, validate_deploy
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._served_haute import ServedHaute
 from haute.errors import DeployError
+from tests._project import use_project
 
 _EXAMPLE = (
     Path(__file__).resolve().parents[1]
@@ -75,7 +76,7 @@ def _make_project(
     helpers: str = "FACTOR = 3\n",
 ) -> None:
     """Build a deployable project at *project* whose preamble imports utility."""
-    monkeypatch.chdir(project.parent)
+    use_project(project.parent)
     shutil.copytree(_EXAMPLE, project)
     (project / "pipeline.py").write_text(
         _PIPELINE.format(preamble=preamble, factor=factor), encoding="utf-8"
@@ -336,7 +337,7 @@ def test_a_namespace_utility_deployed_from_its_pipeline_directory_is_bundled(
     project = tmp_path / "project"
     _make_project(project, monkeypatch)
     (project / "utility" / "__init__.py").unlink()
-    monkeypatch.chdir(project)
+    use_project(project)
 
     with _resolve(project) as resolved:
         validate_deploy(resolved)
@@ -346,13 +347,16 @@ def test_a_namespace_utility_deployed_from_its_pipeline_directory_is_bundled(
 def test_a_utility_namespace_split_across_project_directories_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = tmp_path / "project"
-    _make_project(project, monkeypatch)
-    (project / "utility" / "__init__.py").unlink()
+    """The pipeline folder and the project root are both searched: a namespace package
+    with a part in each cannot ship as one package."""
+    from haute.deploy._project_modules import resolve_project_modules
+
+    pipelines = tmp_path / "pipelines"
+    (pipelines / "utility").mkdir(parents=True)
     (tmp_path / "utility").mkdir()
 
     with pytest.raises(DeployError, match="namespace package split across 2 directories"):
-        _resolve(project)
+        resolve_project_modules("import utility", pipelines)
 
 
 def test_a_bundled_utility_file_that_does_not_parse_is_refused(

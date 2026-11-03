@@ -25,7 +25,7 @@ import pytest
 
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionCancellationToken, ExecutionProfile
-from haute._sandbox import set_project_root
+from haute._project_context import context_thread
 from haute._types import PipelineGraph
 from haute.assistant import _data_check as data_check
 from haute.assistant._config import EgressPolicy
@@ -48,6 +48,7 @@ from haute.assistant._data_check import (
 )
 from haute.assistant._ops import SemanticChanges, SemanticDiff
 from haute.graph_utils import flatten_graph
+from tests._project import use_project
 from tests.conftest import build_test_input_snapshot, make_file_input_config
 
 # ---------------------------------------------------------------------------
@@ -82,8 +83,7 @@ _QUOTES = {
 
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "haute.toml").write_text(_TOML, encoding="utf-8")
     (tmp_path / "main.py").write_text("", encoding="utf-8")
     (tmp_path / "data").mkdir()
@@ -1162,8 +1162,8 @@ async def test_an_occupied_slot_and_a_second_session_never_wait(
 
     worker_pool.start()
     graph = _seeded_graph(project)
-    holder = threading.Thread(
-        target=worker_pool.run,
+    holder = context_thread(
+        worker_pool.run,
         args=(hold_worker, 4.0),
         kwargs={"affinity_key": "editor", "timeout_seconds": 60},
     )
@@ -1320,8 +1320,8 @@ async def test_slow_binding_delayed_dispatch_and_a_starting_worker_end_at_the_de
             return real_start(index=index, generation=generation)
 
         monkeypatch.setattr(pool, "_start_slot", slow_start)
-        timing_out = threading.Thread(
-            target=lambda: pytest.raises(
+        timing_out = context_thread(
+            lambda: pytest.raises(
                 workers.InteractiveWorkerTimeoutError,
                 pool.run,
                 hold_worker,
@@ -2206,8 +2206,7 @@ def test_a_failure_inside_a_submodel_occurrence_is_reported_against_the_occurren
     module.write_bytes(
         module.read_bytes().replace(b'pl.col("vehicle_year")', b'pl.col("vehicle_yr")')
     )
-    monkeypatch.chdir(copy)
-    set_project_root(copy)
+    use_project(copy)
     graph = parse_pipeline_to_graph(copy / "pipeline.py")
 
     view = _inspect(graph, "premium")
@@ -2286,8 +2285,7 @@ async def test_a_failing_schema_part_leaves_the_data_part_to_answer(
 
     copy = tmp_path / "p"
     shutil.copytree(Path(__file__).parent / "assistant_eval" / "projects" / "broken_pricing", copy)
-    monkeypatch.chdir(copy)
-    set_project_root(copy)
+    use_project(copy)
     quotes = json.loads((copy / "config" / "data_input" / "quotes.json").read_text("utf-8"))
     build_test_input_snapshot(quotes, base_dir=copy)
     monkeypatch.setattr(_tools, "resolve_egress_policy", lambda _root: _POLICY)

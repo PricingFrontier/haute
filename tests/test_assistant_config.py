@@ -18,11 +18,12 @@ from haute.assistant import _config
 from haute.assistant._config import assistant_readiness, resolve_assistant_config
 from haute.errors import ConfigError, HauteError
 from haute.schemas import GitWorkingBranchResponse
+from tests._project import use_project
 
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)

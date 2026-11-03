@@ -18,13 +18,14 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code_multi
 from haute.deploy._config import DeployConfig, ResolvedDeploy, resolve_config
 from haute.deploy._scorer import score_graph
 from haute.errors import DeployError
 from haute.routes._save_pipeline import SavePipelineService
+from tests._project import use_project
 from tests.conftest import make_file_input_config, make_output_config
 
 
@@ -43,13 +44,12 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     pl.DataFrame({"quote_id": [1, 2], "region": ["N", "S"]}).write_parquet(
         root / "rating" / "quotes.parquet"
     )
-    original = _get_project_root()
-    monkeypatch.chdir(root)
-    set_project_root(root)
+    original = current_project().root
+    use_project(root)
     try:
         yield root
     finally:
-        set_project_root(original)
+        use_project(original)
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:

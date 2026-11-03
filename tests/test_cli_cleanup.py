@@ -42,6 +42,7 @@ import polars as pl
 import pytest
 
 from haute.cli import cli
+from tests._project import make_haute_project, use_project
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -363,7 +364,7 @@ class TestFindFrontendDirRaisesWhenAbsent:
         exercises the integration: missing frontend + existing static
         dir → prod serve succeeds.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(make_haute_project(tmp_path))
         static = tmp_path / "static"
         static.mkdir()
         (static / "index.html").write_text("<html></html>")
@@ -424,7 +425,7 @@ class TestSmokeErrorStyleIsProjectConvention:
         Pre-fix this exits with 2 (click.UsageError). Post-fix it must
         exit 1 to match every other command's "config missing" failure.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         # databricks target without endpoint_name or endpoint_suffix →
         # effective_endpoint_name is None → triggers the error path.
         _write_smoke_toml(
@@ -467,7 +468,7 @@ class TestSmokeErrorStyleIsProjectConvention:
 
             Error: ...
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_smoke_toml(
             tmp_path,
             target="databricks",
@@ -504,7 +505,7 @@ class TestSmokeErrorStyleIsProjectConvention:
         ``--endpoint-suffix`` option. ``haute.toml`` has no suffix that smoke
         reads, so the message must not send the user looking for one.
         """
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
         _write_smoke_toml(
             tmp_path,
             target="databricks",
@@ -562,7 +563,7 @@ class TestImpactStagingSuffixSingleSource:
     ) -> None:
         """``--endpoint-suffix FOO`` must win over the TOML value."""
         _write_impact_project(tmp_path, staging_suffix_in_toml="-from-toml")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with (
             patch("haute.cli._impact._impact_databricks") as mock_db,
@@ -593,7 +594,7 @@ class TestImpactStagingSuffixSingleSource:
         """Without ``--endpoint-suffix``, ``config.ci.staging_endpoint_suffix``
         is the single source of truth."""
         _write_impact_project(tmp_path, staging_suffix_in_toml="-from-toml")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with (
             patch("haute.cli._impact._impact_databricks") as mock_db,
@@ -631,7 +632,7 @@ class TestImpactStagingSuffixSingleSource:
         """
         # Write a TOML where staging.endpoint_suffix is explicitly empty.
         _write_impact_project(tmp_path, staging_suffix_in_toml="")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with (
             patch("haute.cli._impact._impact_databricks") as mock_db,
@@ -677,7 +678,7 @@ class TestImpactStagingSuffixSingleSource:
         to be empty.
         """
         _write_impact_project(tmp_path, staging_suffix_in_toml="")
-        monkeypatch.chdir(tmp_path)
+        use_project(tmp_path)
 
         with (
             patch("haute.cli._impact._impact_databricks") as mock_db,

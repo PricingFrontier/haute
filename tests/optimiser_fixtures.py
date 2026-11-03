@@ -29,6 +29,8 @@ from unittest.mock import MagicMock
 
 import polars as pl
 
+from tests._project import use_project
+
 # ---------------------------------------------------------------------------
 # Frontier point + data shapes
 # ---------------------------------------------------------------------------
@@ -556,8 +558,6 @@ def use_local_mlflow_store(tmp_path: Any, monkeypatch: Any) -> Any:
     """
     from mlflow.tracking import MlflowClient
 
-    from haute._sandbox import set_project_root
-
     for name in (
         "DATABRICKS_HOST",
         "DATABRICKS_TOKEN",
@@ -567,8 +567,7 @@ def use_local_mlflow_store(tmp_path: Any, monkeypatch: Any) -> Any:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)
+    use_project(tmp_path)
     return MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
 
 

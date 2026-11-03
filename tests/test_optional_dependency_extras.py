@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from haute._project_context import current_project
+
 
 def _module_available(module_name: str) -> bool:
     try:
@@ -28,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 def test_server_import_succeeds_with_optional_extras_installed() -> None:
     import haute.server as server
 
-    route_paths = set(server.app.openapi()["paths"])
+    route_paths = set(server.create_app(current_project()).openapi()["paths"])
 
     assert "/api/mlflow/experiments" in route_paths
     assert "/api/databricks/warehouses" in route_paths

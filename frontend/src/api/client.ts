@@ -61,6 +61,7 @@ import type {
   GitWorkingBranchResponse,
   GraphPayload,
   IoCapabilitiesResponse,
+  JsonCacheInferResponse,
   ModellingGpuStatusResponse,
   InputCacheBuildRequest,
   InputCacheBuildResponse,
@@ -128,26 +129,19 @@ import type {
   SessionStatusResponse,
 } from "./types"
 import {
-  parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   frontierAutoRangeStatusFromContract,
   optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   nodeDataStatusFromContract,
-  parseJsonCacheSchemaInferenceResponse,
-  parsePipelineResponse,
-  parsePreviewInputsResponse,
-  parsePreviewNodeResponse,
-  parsePreviewProgressResponse,
-  parseSavePipelineResponse,
-  parseSchemaResponse,
   writeOutputFromContract,
-  parseSubmodelCreateResponse,
-  parseNodeInstanceCreateResponse,
-  parseSubmodelGraphResponse,
-  parseTraceResponse,
   isPlainObject,
+  pipelineGraphFromContract,
+  previewFromContract,
+  withPipelineGraph,
+  traceFromContract,
+  type ExecutionMetricsValidator,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
@@ -166,8 +160,18 @@ const modellingValidators = () => import("../generated/api-contracts.modelling.v
 const nodeDataValidators = () => import("../generated/api-contracts.node-data.validators.mjs")
 const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
 const outputValidators = () => import("../generated/api-contracts.output.validators.mjs")
+const pipelineValidators = () => import("../generated/api-contracts.pipeline.validators.mjs")
+const previewValidators = () => import("../generated/api-contracts.preview.validators.mjs")
+const traceValidators = () => import("../generated/api-contracts.trace.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
+const executionMetricsValidators = () =>
+  import("../generated/api-contracts.execution-metrics.validators.mjs")
+
+/** The shared execution-metrics validator, for a response that carries execution metrics. */
+async function metricsValidator(): Promise<ExecutionMetricsValidator> {
+  return (await executionMetricsValidators()).validateExecutionMetricsPayload
+}
 import {
   parseRemoveBrokenConnectionApplyResponse,
   parseRemoveUnavailableNodeApplyResponse,
@@ -691,7 +695,7 @@ async function postNamingDocument<T>(
   url: string,
   body: unknown,
   options: MutationOptions | undefined,
-  parse: (data: unknown) => T,
+  parse: (data: unknown) => Promise<T>,
   caller: string,
 ): Promise<WithDocumentFingerprint<T>> {
   const named = await requestWith(url, {
@@ -700,7 +704,7 @@ async function postNamingDocument<T>(
     body: JSON.stringify(body),
     ...options,
   }, readNamedDocument(caller))
-  return { value: parse(named.body), documentFingerprint: named.documentFingerprint }
+  return { value: await parse(named.body), documentFingerprint: named.documentFingerprint }
 }
 
 const EDITOR_NODE_TYPES_WITHOUT_DEFAULT_INPUT = new Set<string>([
@@ -884,7 +888,10 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
-  ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+  ).then(async (data) => previewFromContract(
+    expectGeneratedContract("PreviewNodeResponse", (await previewValidators()).validatePreviewNodeResponse, data),
+    await metricsValidator(),
+  ))
 }
 
 /**
@@ -897,12 +904,14 @@ export async function getPreviewProgress(
   options: { signal?: AbortSignal } = {},
 ): Promise<PreviewProgressResponse | null> {
   try {
-    return parsePreviewProgressResponse(
-      await request<unknown>(`/api/pipeline/preview/progress/${encodeURIComponent(requestId)}`, {
-        ...options,
-        timeout: 2_000,
-        retry: { maxRetries: 0 },
-      }),
+    const data = await request<unknown>(
+      `/api/pipeline/preview/progress/${encodeURIComponent(requestId)}`,
+      { ...options, timeout: 2_000, retry: { maxRetries: 0 } },
+    )
+    return expectGeneratedContract(
+      "PreviewProgressResponse",
+      (await previewValidators()).validatePreviewProgressResponse,
+      data,
     )
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return null
@@ -938,7 +947,11 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
     },
     // Bounded by the server's pipeline time limit, which answers 504.
     { signal: args.signal, timeout: null },
-  ).then(parsePreviewInputsResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "PreviewInputsResponse",
+    (await previewValidators()).validatePreviewInputsResponse,
+    data,
+  ))
 }
 
 export interface RenderPolarsStepsArgs {
@@ -1041,7 +1054,10 @@ export function previewRecoveryNode(
       ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
-  ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+  ).then(async (data) => previewFromContract(
+    expectGeneratedContract("PreviewNodeResponse", (await previewValidators()).validatePreviewNodeResponse, data),
+    await metricsValidator(),
+  ))
 }
 
 export function savePipeline(
@@ -1062,7 +1078,8 @@ export function savePipeline(
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
-  return post<unknown>("/api/pipeline/save", payload, options).then(parseSavePipelineResponse)
+  return post<unknown>("/api/pipeline/save", payload, options).then(async (data) =>
+    expectGeneratedContract("SavePipelineResponse", (await pipelineValidators()).validateSavePipelineResponse, data))
 }
 
 export interface OutputAssembleDryRunArgs {
@@ -1138,7 +1155,8 @@ export interface TraceCellArgs {
 
 export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
   const { signal, timeout = null, ...payload } = args
-  return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(parseTraceResponse)
+  return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(async (data) =>
+    traceFromContract(expectGeneratedContract("TraceResponse", (await traceValidators()).validateTraceResponse, data)))
 }
 
 export interface WriteOutputArgs {
@@ -1197,7 +1215,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     "WriteOutputResponse",
     (await outputValidators()).validateWriteOutputResponse,
     data,
-  )))
+  ), await metricsValidator()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,14 +1236,18 @@ export function createSubmodel(
   },
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
-  return post<unknown>("/api/submodel/create", payload, options).then(parseSubmodelCreateResponse)
+  return post<unknown>("/api/submodel/create", payload, options).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("CreateSubmodelResponse", (await pipelineValidators()).validateCreateSubmodelResponse, data),
+  ))
 }
 
 export function createNodeInstance(
   payload: Omit<Parameters<typeof createSubmodel>[0], "name" | "node_ids"> & { node_id: string },
   options?: { signal?: AbortSignal },
 ): Promise<NodeInstanceCreateResponse> {
-  return post<unknown>("/api/submodel/instance", payload, options).then(parseNodeInstanceCreateResponse)
+  return post<unknown>("/api/submodel/instance", payload, options).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("CreateNodeInstanceResponse", (await pipelineValidators()).validateCreateNodeInstanceResponse, data),
+  ))
 }
 
 /**
@@ -1241,7 +1263,9 @@ export function loadSubmodel(
   return request<unknown>(
     `/api/submodel/${encodeURIComponent(definitionId)}?source_file=${encodeURIComponent(parentSourceFile)}`,
     options,
-  ).then(parseSubmodelGraphResponse)
+  ).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("SubmodelGraphResponse", (await pipelineValidators()).validateSubmodelGraphResponse, data),
+  ))
 }
 
 export function dissolveSubmodel(
@@ -1257,7 +1281,9 @@ export function dissolveSubmodel(
   },
   options?: { signal?: AbortSignal },
 ): Promise<DissolveSubmodelResponse> {
-  return post<unknown>("/api/submodel/dissolve", payload, options).then(parseDissolveSubmodelResponse)
+  return post<unknown>("/api/submodel/dissolve", payload, options).then(async (data) => withPipelineGraph(
+    expectGeneratedContract("DissolveSubmodelResponse", (await pipelineValidators()).validateDissolveSubmodelResponse, data),
+  ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1276,7 +1302,7 @@ export function fetchSchema(
     ? `&format=${encodeURIComponent(reader.format)}&arguments=${encodeURIComponent(JSON.stringify(reader.arguments))}`
     : ""
   return request<unknown>(`/api/schema?path=${encodeURIComponent(path)}${query}`, options).then(
-    parseSchemaResponse,
+    async (data) => expectGeneratedContract("SchemaResponse", (await ioValidators()).validateSchemaResponse, data),
   )
 }
 
@@ -1317,8 +1343,8 @@ export function clearCacheIdentities(
 /**
  * The snapshot store's size and the automatic captures' share of its budget.
  *
- * One pass over the store and no point resolution, so the preview status bar
- * reads it each time a preview settles.
+ * One pass over the store and no point resolution; Pipeline settings reads it
+ * with each read of the cached-data inventory.
  */
 export function fetchCacheUsage(
   options?: { signal?: AbortSignal },
@@ -1430,8 +1456,10 @@ export function getNodeDataStatus(
   return request<unknown>(`/api/node-data/status/${encodeURIComponent(jobId)}`, options).then(
     async (data) => {
       const { validateNodeDataStatusResponse } = await nodeDataValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read node data status", () => nodeDataStatusFromContract(
         expectGeneratedContract("NodeDataStatusResponse", validateNodeDataStatusResponse, data),
+        validateMetrics,
       ))
     },
   )
@@ -1447,6 +1475,7 @@ export function cancelNodeData(
     options,
   ).then(async (data) => nodeDataStatusFromContract(
     expectGeneratedContract("NodeDataStatusResponse", (await nodeDataValidators()).validateNodeDataStatusResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1548,6 +1577,7 @@ export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivot
     source: payload.source ?? "live",
   }, { signal, timeout }).then(async (data) => explorePivotRunFromContract(
     expectGeneratedContract("ExplorePivotRunResponse", (await exploreValidators()).validateExplorePivotRunResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1558,8 +1588,10 @@ export function getExplorePivotStatus(
   return request<unknown>(`/api/explore/pivots/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { validateExplorePivotStatusResponse } = await exploreValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read pivot status", () => explorePivotStatusFromContract(
         expectGeneratedContract("ExplorePivotStatusResponse", validateExplorePivotStatusResponse, data),
+        validateMetrics,
       ))
     })
 }
@@ -1571,6 +1603,7 @@ export function cancelExplorePivot(
   return post<unknown>(`/api/explore/pivots/cancel/${encodeURIComponent(jobId)}`, {}, options)
     .then(async (data) => explorePivotStatusFromContract(
       expectGeneratedContract("ExplorePivotStatusResponse", (await exploreValidators()).validateExplorePivotStatusResponse, data),
+      await metricsValidator(),
     ))
 }
 
@@ -1615,7 +1648,11 @@ export function getTrainStatus(
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { parseTrainStatusResponse } = await import("../types/trainGuards")
-      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data))
+      const validateMetrics = await metricsValidator()
+      return validateApiResponse(
+        "Could not read training status",
+        () => parseTrainStatusResponse(data, validateMetrics),
+      )
     })
 }
 
@@ -1627,7 +1664,8 @@ export function cancelTrain(
     `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
     undefined,
     options,
-  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data))
+  ).then(async (data) =>
+    (await import("../types/trainGuards")).parseTrainStatusResponse(data, await metricsValidator()))
 }
 
 export interface TrainModelArgs {
@@ -1738,8 +1776,10 @@ export function getOptimiserStatus(
   return request<unknown>(`/api/optimiser/solve/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { validateOptimiserStatusResponse } = await optimiserValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
         expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+        validateMetrics,
       ))
     })
 }
@@ -1752,8 +1792,10 @@ export function cancelOptimiserSolve(
   return post<unknown>(`/api/optimiser/solve/cancel/${encodeURIComponent(jobId)}`, undefined, options)
     .then(async (data) => {
       const { validateOptimiserStatusResponse } = await optimiserValidators()
+      const validateMetrics = await metricsValidator()
       return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
         expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+        validateMetrics,
       ))
     })
 }
@@ -1804,6 +1846,7 @@ export function getOptimiserFrontierAutoRangeStatus(
     options,
   ).then(async (data) => frontierAutoRangeStatusFromContract(
     expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1817,6 +1860,7 @@ export function cancelOptimiserFrontierAutoRange(
     options,
   ).then(async (data) => frontierAutoRangeStatusFromContract(
     expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+    await metricsValidator(),
   ))
 }
 
@@ -1919,12 +1963,16 @@ export const JSON_CACHE_INFER_TIMEOUT_MS = 1_800_000
 export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
   options?: { signal?: AbortSignal; timeout?: number },
-): Promise<{ tables: Array<Record<string, unknown>> }> {
+): Promise<JsonCacheInferResponse> {
   return post<unknown>(
     "/api/json-cache/infer",
     payload,
     { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
-  ).then(parseJsonCacheSchemaInferenceResponse)
+  ).then(async (data) => expectGeneratedContract(
+    "JsonCacheInferResponse",
+    (await inputCacheValidators()).validateJsonCacheInferResponse,
+    data,
+  ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2426,7 +2474,9 @@ export function getCommitPipeline(
   return request<unknown>(
     `/api/git/show/${encodeURIComponent(sha)}?source_file=${encodeURIComponent(sourceFile)}`,
     options,
-  ).then(parsePipelineResponse)
+  ).then(async (data) => pipelineGraphFromContract(
+    expectGeneratedContract("PipelineGraph", (await gitValidators()).validatePipelineGraph, data),
+  ))
 }
 
 /** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).

@@ -28,6 +28,7 @@ from haute._project_python import (
 from haute.cli import cli
 from haute.deploy._config import DeployConfig, _validate_python_versions
 from haute.errors import DeployError
+from tests._project import use_project
 
 RUNNING_MINOR = f"{sys.version_info.major}.{sys.version_info.minor}"
 OTHER_MINOR = "3.11" if RUNNING_MINOR != "3.11" else "3.12"
@@ -185,7 +186,7 @@ def test_deploy_refuses_a_base_image_requires_python_excludes(tmp_path: Path) ->
 def test_init_gives_local_ci_and_deploy_one_python(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _project(tmp_path, requires=">=3.13")
 
     result = runner.invoke(cli, ["init", "--target", target, "--ci", "github"])
@@ -206,7 +207,7 @@ def test_init_gives_local_ci_and_deploy_one_python(
 def test_init_pins_the_lowest_release_a_range_splitting_a_minor_admits(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _project(tmp_path, requires=">=3.13.5")
 
     result = runner.invoke(cli, ["init", "--target", "container", "--ci", "github"])
@@ -222,7 +223,7 @@ def test_init_pins_the_lowest_release_a_range_splitting_a_minor_admits(
 def test_init_refuses_an_unreadable_python_version_and_writes_nothing(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _project(tmp_path, pin="3.13.1garbage")
 
     result = runner.invoke(cli, ["init", "--ci", "github"])
@@ -236,7 +237,7 @@ def test_init_refuses_an_unreadable_python_version_and_writes_nothing(
 def test_init_keeps_an_existing_python_version(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     _project(tmp_path, pin="3.12.8", requires=">=3.11")
 
     result = runner.invoke(cli, ["init", "--ci", "github"])

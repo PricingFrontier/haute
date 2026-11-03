@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import patch
 
 from scripts.memory_smoke import StdlibMemorySampler
+from tests._project import use_project
 
 #: The fixture's conversion model reads these features, in schema order.
 FEATURES = ("age", "vehicle_value", "price_ratio")
@@ -181,13 +182,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from haute._mlflow_io import ScoringModel
     from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
-    from haute._sandbox import set_project_root
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
     from haute.schemas import OptimiserFrontierAutoRangeRequest
 
     fixture = args.fixture.resolve()
-    set_project_root(fixture)
+    use_project(fixture)
     set_streaming_chunk_size(args.chunk_rows)
     model = CatBoostRegressor()
     model.load_model(str(fixture / "model.cbm"))
@@ -233,4 +233,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # A script entry point: it runs in the project holding its working directory.
+    from haute._project_context import standalone_project_scope
+
+    with standalone_project_scope(None):
+        raise SystemExit(main())

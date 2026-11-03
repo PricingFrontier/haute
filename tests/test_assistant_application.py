@@ -12,6 +12,7 @@ from haute.assistant._ops import AssistantOperationError, PlanStore
 from haute.assistant._wire_ops import OpValidationError
 from haute.errors import RequestRefusedError
 from haute.schemas import ASSISTANT_RECEIPT_TEXT_LIMIT, AssistantChangeRecord
+from tests._project import use_project
 
 PIPELINE_SOURCE = """\
 import polars as pl
@@ -29,7 +30,7 @@ def quotes() -> pl.LazyFrame:
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text(PIPELINE_SOURCE, encoding="utf-8")
     return tmp_path
 
@@ -297,7 +298,7 @@ def broken(shared: pl.LazyFrame) -> pl.LazyFrame:
 def shared_source_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A saved pipeline that already contains one unresolvable node."""
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     (tmp_path / "main.py").write_text(SHARED_SOURCE_PIPELINE, encoding="utf-8")
     return tmp_path
 
@@ -1195,12 +1196,11 @@ def stepped_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     import polars as pl
 
     from haute._pipeline_recovery import load_pipeline_editor_document
-    from haute._sandbox import set_project_root
     from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
     from haute.routes._save_pipeline import SavePipelineService
 
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    use_project(tmp_path)
+    use_project(tmp_path)  # restored by the autouse _restore_project_root
     pl.DataFrame(
         {"quote_id": ["q1", "q2"], "region": ["north", "south"], "x": [1.0, 2.0]}
     ).write_parquet(tmp_path / "quotes.parquet")
@@ -1523,10 +1523,8 @@ _VALID_GLM = {
 def modelling_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A saved pipeline whose modelling node is the editor's unfinished ``{}``."""
 
-    from haute._sandbox import set_project_root
-
-    monkeypatch.chdir(tmp_path)
-    set_project_root(tmp_path)  # restored by the autouse _restore_project_root
+    use_project(tmp_path)
+    use_project(tmp_path)  # restored by the autouse _restore_project_root
     (tmp_path / "config" / "model_training").mkdir(parents=True)
     (tmp_path / "config" / "model_training" / "train.json").write_text("{}", encoding="utf-8")
     (tmp_path / "main.py").write_text(MODELLING_PIPELINE, encoding="utf-8")
@@ -1762,9 +1760,8 @@ class TestWrittenNodesAreReady:
 
 @pytest.fixture()
 def csv_project(project_root: Path) -> Path:
-    from haute._sandbox import set_project_root
 
-    set_project_root(project_root)  # restored by the autouse _restore_project_root
+    use_project(project_root)  # restored by the autouse _restore_project_root
     (project_root / "claims.csv").write_text("id;amount\n1;10\n2;20\n", encoding="utf-8")
     return project_root
 

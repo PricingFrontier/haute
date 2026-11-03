@@ -31,9 +31,10 @@ from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._shred import _rows_to_frame, shred_to_buffers
 from haute._json_shred._snapshots import api_input_snapshot_source
 from haute._json_shred._writer import _write_tables_streaming
-from haute._sandbox import _get_project_root, set_project_root
+from haute._project_context import current_project
 from haute._source_cache import SourceCacheStore
 from tests._execution_faults import FaultInjectingExecutionContext
+from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
 
@@ -295,8 +296,8 @@ def test_build_conserves_root_rows_and_accounts_skips(tmp_path: Path) -> None:
     assert skip_stats.skipped_records == 1
 
     # Row conservation: build the table into the store and read it back.
-    original_root = _get_project_root()
-    set_project_root(tmp_path)
+    original_root = current_project().root
+    use_project(tmp_path)
     try:
         build_test_api_input_snapshots(p, config)
         frames = load_v2_api_source(
@@ -304,4 +305,4 @@ def test_build_conserves_root_rows_and_accounts_skips(tmp_path: Path) -> None:
         )
         assert frames["root"].collect().height == 2  # both objects emitted, the string skipped
     finally:
-        set_project_root(original_root)
+        use_project(original_root)

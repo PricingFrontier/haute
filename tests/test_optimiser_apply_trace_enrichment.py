@@ -10,6 +10,7 @@ import pytest
 
 from haute._types import GraphNode, NodeData, NodeType
 from haute.trace import TraceResult, TraceStep, execute_trace
+from tests._project import use_project
 from tests.conftest import make_edge as _edge
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
@@ -1569,7 +1570,6 @@ def test_trace_reads_the_artifact_the_apply_runs_from_any_working_directory(
     pipeline-relative path loads whatever the working directory, and a path
     outside the project root is refused before anything is read."""
     from haute._path_resolution import RuntimePathOutsideProjectError
-    from haute._sandbox import set_project_root
 
     project = tmp_path / "project"
     pipelines = project / "pipelines"
@@ -1580,8 +1580,8 @@ def test_trace_reads_the_artifact_the_apply_runs_from_any_working_directory(
     _scored_online_df().write_parquet(scored)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-    set_project_root(project)
+    use_project(elsewhere)
+    use_project(project)
     graph = _g(
         {
             "nodes": [

@@ -30,7 +30,7 @@ import {
   type ExplorePivotConfig,
 } from "./pivotConfig"
 
-export type ExplorePivotActionNotice = {
+type ExplorePivotActionNotice = {
   message: string
   failure?: ExplorePivotFailure | null
 }
@@ -81,6 +81,7 @@ export default function useExplorePivotActions({
     (state) => state.completeExplorePivotJob,
   )
   const failJob = useNodeResultsStore((state) => state.failExplorePivotJob)
+  const failStart = useNodeResultsStore((state) => state.failExplorePivotStart)
 
   const [notices, setNotices] = useState<
     Record<string, ExplorePivotActionNotice>
@@ -172,22 +173,23 @@ export default function useExplorePivotActions({
       failure: ExplorePivotFailure | null = null,
       executionMetrics: ExecutionMetrics | null = null,
     ) => {
-      const jobId = `failed:${key}:${Date.now()}`
-      startStoredJob(
-        pivot,
+      failStart(
         key,
-        jobId,
-        calculationIdentity,
-        requestedDataVersion,
-      )
-      failJob(
-        key,
-        jobId,
+        {
+          nodeId: node.id,
+          pivotId: pivot.id,
+          nodeLabel,
+          pivotName: pivot.name,
+          calculationIdentity,
+          requestedDataVersion,
+          source: activeSource,
+          structuralVersion,
+        },
         message,
         terminalStatus(status, message, failure, executionMetrics),
       )
     },
-    [failJob, startStoredJob],
+    [activeSource, failStart, node.id, nodeLabel, structuralVersion],
   )
 
   const updatePivot = useCallback(

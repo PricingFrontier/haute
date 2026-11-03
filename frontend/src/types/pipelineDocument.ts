@@ -1,7 +1,14 @@
 import type { Node } from "@xyflow/react"
 
 import type {
-  NodeEditorState,
+  PipelineEditorDocument as GeneratedPipelineEditorDocument,
+  RecoveryGraphSnapshot,
+  RecoveryPipelineEdge,
+  RecoveryPipelineNode,
+  RecoverySubmodelDefinition,
+  RecoveryUnresolvedConnection,
+} from "../generated/api-contracts.generated"
+import type {
   PipelineEdge,
   SubmodelDefinition,
   SubmodelEndpoint,
@@ -11,94 +18,40 @@ import type {
 import { PIPELINE_NODE_TYPES } from "./node"
 import {
   expectArray,
-  expectBoolean,
   expectExactKeys,
   expectNonBlankString,
   expectNullableString,
-  expectNumber,
   expectPlainObject,
-  expectSchemaVersionOne,
-  expectString,
-  expectStringLiteral,
 } from "./guards"
-import {
-  GLOBAL_CONSTANT_TYPES,
-  type GlobalConstant,
-  type GlobalConstantValue,
-} from "../utils/globalConstants"
+import { expectGeneratedContract } from "./generatedContractValidation"
+import type { GlobalConstant } from "../utils/globalConstants"
 
 const PARSER = "parsePipelineEditorDocument"
-const AVAILABILITY = ["ready", "unavailable", "blocked"] as const
-const STATUS = ["ready", "degraded", "source_only"] as const
-const SEVERITY = ["warning", "error"] as const
-const SCOPE = ["pipeline", "node", "edge", "submodel"] as const
 
-type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue }
+// The document's structure is the generated `PipelineEditorDocument`. The UI reads a
+// node's display position as a point, a submodel's server-open ports as the editor's
+// port shapes, and a constant without a value or split as one without the key.
+export type {
+  PipelineDocumentCapabilities,
+  PipelineNameViolation,
+  PipelineNameViolationParty,
+  PipelineNodeCompleteness,
+  PipelineRecoveryDiagnostic as PipelineDiagnostic,
+  RecoverySourceSpan as SourceSpan,
+} from "../generated/api-contracts.generated"
 
-export type PipelineLoadStatus = (typeof STATUS)[number]
-export type PipelineElementAvailability = (typeof AVAILABILITY)[number]
+export type PipelineLoadStatus = GeneratedPipelineEditorDocument["load_status"]
+export type PipelineElementAvailability = RecoveryPipelineNode["availability"]
+/** The editor setting that names a `reserved_input` or `support_input` violation's input. */
+export type PipelineNameViolationBinding = NonNullable<
+  GeneratedPipelineEditorDocument["name_violations"][number]["binding"]
+>
 
-export interface SourceSpan {
-  start_line: number
-  start_column: number
-  end_line: number
-  end_column: number
-}
-
-export interface RecoveryNode {
-  recovery_id: string
-  authored_id: string
-  label: string
-  decorator_name: string
-  node_type: string | null
-  description: string
-  availability: PipelineElementAvailability
+export type RecoveryNode = Omit<RecoveryPipelineNode, "display_position"> & {
   display_position: { x: number; y: number }
-  config: Record<string, JsonValue> | null
-  editor: NodeEditorState
-  config_reference: string | null
-  function_name: string
-  default_input_name: string | null
-  source_handle_input_names: Record<string, string>
-  source_file: string | null
-  source_span: SourceSpan | null
-  diagnostic_ids: string[]
-  blocking_path: string[]
-  scoped_editable: boolean
 }
-
-export interface RecoveryEdge {
-  recovery_id: string
-  source_recovery_id: string
-  target_recovery_id: string
-  source_authored_id: string
-  target_authored_id: string
-  source_handle: string | null
-  target_handle: string | null
-  input_name: string | null
-  availability: PipelineElementAvailability
-  source_span: SourceSpan | null
-  diagnostic_ids: string[]
-  blocking_path: string[]
-}
-
-export interface UnresolvedConnection {
-  recovery_id: string
-  source_recovery_id: string | null
-  target_recovery_id: string | null
-  source_authored_id: string
-  target_authored_id: string
-  source_handle: string | null
-  target_handle: string | null
-  source_span: SourceSpan | null
-  diagnostic_ids: string[]
-}
+export type RecoveryEdge = RecoveryPipelineEdge
+export type UnresolvedConnection = RecoveryUnresolvedConnection
 
 export interface RecoveryGraph {
   nodes: RecoveryNode[]
@@ -107,389 +60,49 @@ export interface RecoveryGraph {
   submodels: Record<string, RecoverySubmodel> | null
 }
 
-export interface RecoverySubmodel {
-  definition_id: string
-  file: string
-  availability: PipelineElementAvailability
-  diagnostic_ids: string[]
+export type RecoverySubmodel = Omit<
+  RecoverySubmodelDefinition,
+  "graph" | "input_ports" | "output_ports"
+> & {
   graph: RecoveryGraph
   input_ports: SubmodelInputPort[]
   output_ports: SubmodelOutputPort[]
 }
 
-export interface PipelineDiagnostic {
-  diagnostic_id: string
-  code: string
-  severity: (typeof SEVERITY)[number]
-  scope: (typeof SCOPE)[number]
-  message: string
-  element_id: string | null
-  source_file: string | null
-  source_span: SourceSpan | null
-  remediation: string | null
-  incident_id: string | null
-}
+export type PipelineEditorDocument = Omit<
+  GeneratedPipelineEditorDocument,
+  "nodes" | "edges" | "unresolved_connections" | "submodels" | "global_constants"
+> & RecoveryGraph & { global_constants: GlobalConstant[] }
 
-export interface PipelineNodeCompleteness {
-  element_id: string
-  path: string
-  code: string
-  message: string
-}
+type EditorDocumentValidators = typeof import("../generated/api-contracts.editor-document.validators.mjs")
 
-/** A node taking part in a name violation; `submodel` is its definition id, if any. */
-export interface PipelineNameViolationParty {
-  node_id: string
-  label: string
-  submodel: string | null
-}
+let editorDocumentValidatorsLoad: Promise<EditorDocumentValidators> | null = null
 
-const NAME_VIOLATION_KINDS = [
-  "duplicate",
-  "reserved",
-  "builtin",
-  "reserved_input",
-  "support_collision",
-  "support_input",
-  "support_conflict",
-  "support_reserved",
-  "support_unsupported",
-  "output_destination",
-] as const
-
-/** The editor setting that names a `reserved_input` or `support_input` violation's input:
- *  a request input's frame (the request input, its frame's source handle, and the
- *  definition it sits in) or a submodel's public input port. */
-export type PipelineNameViolationBinding =
-  | { kind: "frame"; node_id: string; handle: string; submodel: string | null }
-  | { kind: "submodel_input"; submodel: string; port: string }
-
-/** One name violation (codegen's naming rule, or support code's) with the server's message;
- *  one involving no node (two helpers, an unreadable statement) has no parties. */
-export interface PipelineNameViolation {
-  kind: (typeof NAME_VIOLATION_KINDS)[number]
-  /** Empty for a support-code statement the server cannot read. */
-  name: string
-  message: string
-  parties: PipelineNameViolationParty[]
-  /** The frame or public input port naming the input, for an input violation that has one. */
-  binding: PipelineNameViolationBinding | null
-}
-
-export interface PipelineDocumentCapabilities {
-  can_mutate: boolean
-  can_save: boolean
-  can_execute: boolean
-  can_preview: boolean
-  can_manage_submodels: boolean
-  can_repair: boolean
-  reserved_api_input_frame_labels: string[]
-}
-
-export interface PipelineEditorDocument extends RecoveryGraph {
-  document_kind: "haute.pipeline_editor_document"
-  schema_version: 1
-  load_status: PipelineLoadStatus
-  pipeline_name: string | null
-  pipeline_description: string | null
-  preamble: string | null
-  preserved_blocks: string[]
-  global_constants: GlobalConstant[]
-  global_constants_error: string | null
-  source_file: string
-  source_revision: string | null
-  source_text: string
-  sources: string[]
-  active_source: string | null
-  source_selection_trusted: boolean
-  has_authored_content: boolean
-  diagnostics: PipelineDiagnostic[]
-  diagnostics_omitted: number
-  completeness: PipelineNodeCompleteness[]
-  completeness_omitted: number
-  name_violations: PipelineNameViolation[]
-  capabilities: PipelineDocumentCapabilities
-}
-
-function exactKeys(
-  object: Record<string, unknown>,
-  field: string,
-  expected: string[],
-): void {
-  expectExactKeys(PARSER, object, field, expected)
-}
-
-function constantValue(value: unknown, field: string): GlobalConstantValue {
-  if (typeof value === "string" || typeof value === "boolean") return value
-  return expectNumber(PARSER, value, field)
-}
-
-function parseGlobalConstant(value: unknown, field: string): GlobalConstant {
-  const object = expectPlainObject(PARSER, value, field)
-  const type = expectStringLiteral(PARSER, object.type, `${field}.type`, GLOBAL_CONSTANT_TYPES)
-  const constant: GlobalConstant = { name: expectString(PARSER, object.name, `${field}.name`), type }
-  if (object.value !== null && object.value !== undefined) {
-    constant.value = constantValue(object.value, `${field}.value`)
-  }
-  if (object.by_source !== null && object.by_source !== undefined) {
-    const bySource = expectPlainObject(PARSER, object.by_source, `${field}.by_source`)
-    constant.by_source = Object.fromEntries(
-      Object.entries(bySource).map(([source, item]) => [
-        source,
-        constantValue(item, `${field}.by_source.${source}`),
-      ]),
-    )
-  }
-  return constant
-}
-
-function stringArray(value: unknown, field: string): string[] {
-  return expectArray(PARSER, value, field).map((item, index) =>
-    expectString(PARSER, item, `${field}[${index}]`),
-  )
-}
-
-function nonBlankStringMap(value: unknown, field: string): Record<string, string> {
-  const object = expectPlainObject(PARSER, value, field)
-  return Object.fromEntries(
-    Object.entries(object).map(([key, item]) => [
-      expectNonBlankString(PARSER, key, `${field} key`),
-      expectNonBlankString(PARSER, item, `${field}.${key}`),
-    ]),
-  )
-}
-
-function nullableString(
-  object: Record<string, unknown>,
-  key: string,
-  field: string,
-): string | null {
-  return expectNullableString(PARSER, object[key], `${field}.${key}`)
-}
-
-function parseJson(value: unknown, field: string): JsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return value
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) {
-      throw new Error(`${PARSER}: expected ${field} to be finite`)
-    }
-    return value
-  }
-  if (Array.isArray(value)) {
-    return value.map((item, index) => parseJson(item, `${field}[${index}]`))
-  }
-  const object = expectPlainObject(PARSER, value, field)
-  return Object.fromEntries(
-    Object.entries(object).map(([key, item]) => [key, parseJson(item, `${field}.${key}`)]),
-  )
-}
-
-function parseJsonObject(value: unknown, field: string): Record<string, JsonValue> {
-  return parseJson(expectPlainObject(PARSER, value, field), field) as Record<string, JsonValue>
-}
-
-function parseSpan(value: unknown, field: string): SourceSpan | null {
-  if (value === null) return null
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["start_line", "start_column", "end_line", "end_column"])
-  const result = {
-    start_line: expectNumber(PARSER, object.start_line, `${field}.start_line`),
-    start_column: expectNumber(PARSER, object.start_column, `${field}.start_column`),
-    end_line: expectNumber(PARSER, object.end_line, `${field}.end_line`),
-    end_column: expectNumber(PARSER, object.end_column, `${field}.end_column`),
-  }
-  const ordered =
-    result.end_line > result.start_line ||
-    (result.end_line === result.start_line && result.end_column >= result.start_column)
-  if (
-    !Object.values(result).every(Number.isInteger) ||
-    result.start_line < 1 ||
-    result.end_line < 1 ||
-    result.start_column < 0 ||
-    result.end_column < 0 ||
-    !ordered
-  ) {
-    throw new Error(`${PARSER}: invalid ${field}`)
-  }
-  return result
-}
-
-function parsePosition(value: unknown, field: string): { x: number; y: number } {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["x", "y"])
-  const x = expectNumber(PARSER, object.x, `${field}.x`)
-  const y = expectNumber(PARSER, object.y, `${field}.y`)
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error(`${PARSER}: expected ${field} coordinates to be finite`)
-  }
-  return { x, y }
-}
-
-function parseEditorState(value: unknown, field: string): NodeEditorState {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["steps_error", "steps_discarded"])
-  return {
-    steps_error: nullableString(object, "steps_error", field),
-    steps_discarded: nullableString(object, "steps_discarded", field),
-  }
-}
-
-function parseRecoveryNode(value: unknown, field: string): RecoveryNode {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, [
-    "recovery_id",
-    "authored_id",
-    "label",
-    "decorator_name",
-    "node_type",
-    "description",
-    "availability",
-    "display_position",
-    "config",
-    "editor",
-    "config_reference",
-    "function_name",
-    "default_input_name",
-    "source_handle_input_names",
-    "source_file",
-    "source_span",
-    "diagnostic_ids",
-    "blocking_path",
-    "scoped_editable",
-  ])
-  return {
-    recovery_id: expectNonBlankString(PARSER, object.recovery_id, `${field}.recovery_id`),
-    authored_id: expectNonBlankString(PARSER, object.authored_id, `${field}.authored_id`),
-    label: expectNonBlankString(PARSER, object.label, `${field}.label`),
-    decorator_name: expectNonBlankString(PARSER, object.decorator_name, `${field}.decorator_name`),
-    node_type: nullableString(object, "node_type", field),
-    description: expectString(PARSER, object.description, `${field}.description`),
-    availability: expectStringLiteral(
-      PARSER,
-      object.availability,
-      `${field}.availability`,
-      AVAILABILITY,
-    ),
-    display_position: parsePosition(object.display_position, `${field}.display_position`),
-    config:
-      object.config === null ? null : parseJsonObject(object.config, `${field}.config`),
-    editor: parseEditorState(object.editor, `${field}.editor`),
-    config_reference: nullableString(object, "config_reference", field),
-    function_name: expectNonBlankString(PARSER, object.function_name, `${field}.function_name`),
-    default_input_name: nullableString(object, "default_input_name", field),
-    source_handle_input_names: nonBlankStringMap(
-      object.source_handle_input_names,
-      `${field}.source_handle_input_names`,
-    ),
-    source_file: nullableString(object, "source_file", field),
-    source_span: parseSpan(object.source_span, `${field}.source_span`),
-    diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
-    blocking_path: stringArray(object.blocking_path, `${field}.blocking_path`),
-    scoped_editable: expectBoolean(PARSER, object.scoped_editable, `${field}.scoped_editable`),
-  }
-}
-
-function parseRecoveryEdge(value: unknown, field: string): RecoveryEdge {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, [
-    "recovery_id",
-    "source_recovery_id",
-    "target_recovery_id",
-    "source_authored_id",
-    "target_authored_id",
-    "source_handle",
-    "target_handle",
-    "input_name",
-    "availability",
-    "source_span",
-    "diagnostic_ids",
-    "blocking_path",
-  ])
-  return {
-    recovery_id: expectNonBlankString(PARSER, object.recovery_id, `${field}.recovery_id`),
-    source_recovery_id: expectNonBlankString(
-      PARSER,
-      object.source_recovery_id,
-      `${field}.source_recovery_id`,
-    ),
-    target_recovery_id: expectNonBlankString(
-      PARSER,
-      object.target_recovery_id,
-      `${field}.target_recovery_id`,
-    ),
-    source_authored_id: expectNonBlankString(
-      PARSER,
-      object.source_authored_id,
-      `${field}.source_authored_id`,
-    ),
-    target_authored_id: expectNonBlankString(
-      PARSER,
-      object.target_authored_id,
-      `${field}.target_authored_id`,
-    ),
-    source_handle: nullableString(object, "source_handle", field),
-    target_handle: nullableString(object, "target_handle", field),
-    input_name: nullableString(object, "input_name", field),
-    availability: expectStringLiteral(
-      PARSER,
-      object.availability,
-      `${field}.availability`,
-      AVAILABILITY,
-    ),
-    source_span: parseSpan(object.source_span, `${field}.source_span`),
-    diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
-    blocking_path: stringArray(object.blocking_path, `${field}.blocking_path`),
-  }
-}
-
-function parseUnresolvedConnection(value: unknown, field: string): UnresolvedConnection {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, [
-    "recovery_id",
-    "source_recovery_id",
-    "target_recovery_id",
-    "source_authored_id",
-    "target_authored_id",
-    "source_handle",
-    "target_handle",
-    "source_span",
-    "diagnostic_ids",
-  ])
-  return {
-    recovery_id: expectNonBlankString(PARSER, object.recovery_id, `${field}.recovery_id`),
-    source_recovery_id: nullableString(object, "source_recovery_id", field),
-    target_recovery_id: nullableString(object, "target_recovery_id", field),
-    source_authored_id: expectNonBlankString(
-      PARSER,
-      object.source_authored_id,
-      `${field}.source_authored_id`,
-    ),
-    target_authored_id: expectNonBlankString(
-      PARSER,
-      object.target_authored_id,
-      `${field}.target_authored_id`,
-    ),
-    source_handle: nullableString(object, "source_handle", field),
-    target_handle: nullableString(object, "target_handle", field),
-    source_span: parseSpan(object.source_span, `${field}.source_span`),
-    diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
-  }
+/**
+ * The editor-document validators, loaded once with the first document. Every reader
+ * awaits this one promise, so live-sync frames keep their order.
+ */
+export function loadEditorDocumentValidators(): Promise<EditorDocumentValidators> {
+  editorDocumentValidatorsLoad ??= import("../generated/api-contracts.editor-document.validators.mjs")
+    .catch((error: unknown) => {
+      editorDocumentValidatorsLoad = null
+      throw error
+    })
+  return editorDocumentValidatorsLoad
 }
 
 function parseEndpoint(value: unknown, field: string): SubmodelEndpoint {
   const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["nodeId", "handleId"])
+  expectExactKeys(PARSER, object, field, ["nodeId", "handleId"])
   return {
     nodeId: expectNonBlankString(PARSER, object.nodeId, `${field}.nodeId`),
-    handleId: nullableString(object, "handleId", field),
+    handleId: expectNullableString(PARSER, object.handleId, `${field}.handleId`),
   }
 }
 
 function parseInputPort(value: unknown, field: string): SubmodelInputPort {
   const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["name", "targets"])
+  expectExactKeys(PARSER, object, field, ["name", "targets"])
   return {
     name: expectNonBlankString(PARSER, object.name, `${field}.name`),
     targets: expectArray(PARSER, object.targets, `${field}.targets`).map((target, index) =>
@@ -500,45 +113,41 @@ function parseInputPort(value: unknown, field: string): SubmodelInputPort {
 
 function parseOutputPort(value: unknown, field: string): SubmodelOutputPort {
   const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["name", "source"])
+  expectExactKeys(PARSER, object, field, ["name", "source"])
   return {
     name: expectNonBlankString(PARSER, object.name, `${field}.name`),
     source: parseEndpoint(object.source, `${field}.source`),
   }
 }
 
-function parseRecoveryGraph(value: Record<string, unknown>, field: string): RecoveryGraph {
-  exactKeys(value, field, ["nodes", "edges", "unresolved_connections", "submodels"])
-  const nodes = expectArray(PARSER, value.nodes, `${field}.nodes`).map((item, index) =>
-    parseRecoveryNode(item, `${field}.nodes[${index}]`),
-  )
-  const edges = expectArray(PARSER, value.edges, `${field}.edges`).map((item, index) =>
-    parseRecoveryEdge(item, `${field}.edges[${index}]`),
-  )
-  const unresolvedConnections = expectArray(
-    PARSER,
-    value.unresolved_connections,
-    `${field}.unresolved_connections`,
-  ).map((item, index) =>
-    parseUnresolvedConnection(item, `${field}.unresolved_connections[${index}]`),
-  )
+function displayPosition(node: RecoveryPipelineNode): { x: number; y: number } {
+  const { x, y } = node.display_position
+  if (x === undefined || y === undefined) {
+    throw new Error(`${PARSER}: node ${node.recovery_id} display_position needs x and y`)
+  }
+  return { x, y }
+}
 
+// Every edge and connection of a graph names one of its nodes, every element id is
+// unique, and a submodel sits under its own definition id: the canvas adapter relies
+// on all three.
+function recoveryGraphFromContract(graph: RecoveryGraphSnapshot, field: string): RecoveryGraph {
   const recoveryIds = new Set<string>()
-  for (const item of [...nodes, ...edges, ...unresolvedConnections]) {
+  for (const item of [...graph.nodes, ...graph.edges, ...graph.unresolved_connections]) {
     if (recoveryIds.has(item.recovery_id)) {
       throw new Error(`${PARSER}: duplicate recovery id ${item.recovery_id}`)
     }
     recoveryIds.add(item.recovery_id)
   }
-  const nodeIds = new Set(nodes.map((item) => item.recovery_id))
-  for (const edge of edges) {
+  const nodeIds = new Set(graph.nodes.map((item) => item.recovery_id))
+  for (const edge of graph.edges) {
     if (!nodeIds.has(edge.source_recovery_id) || !nodeIds.has(edge.target_recovery_id)) {
       throw new Error(
         `${PARSER}: ${field} edge ${edge.recovery_id} references a missing recovery node`,
       )
     }
   }
-  for (const connection of unresolvedConnections) {
+  for (const connection of graph.unresolved_connections) {
     if (
       (connection.source_recovery_id !== null && !nodeIds.has(connection.source_recovery_id)) ||
       (connection.target_recovery_id !== null && !nodeIds.has(connection.target_recovery_id))
@@ -548,304 +157,55 @@ function parseRecoveryGraph(value: Record<string, unknown>, field: string): Reco
       )
     }
   }
-
-  const rawSubmodels = value.submodels
-  const submodels =
-    rawSubmodels === null
-      ? null
-      : Object.fromEntries(
-        Object.entries(expectPlainObject(PARSER, rawSubmodels, `${field}.submodels`)).map(
-          ([id, item]) => {
-            const submodel = parseRecoverySubmodel(item, `${field}.submodels.${id}`)
-            if (submodel.definition_id !== id) {
-              throw new Error(
-                `${PARSER}: ${field} submodel registry key ${id} does not match definition_id`,
-              )
-            }
-            return [id, submodel]
-          },
-        ),
-      )
-  return { nodes, edges, unresolved_connections: unresolvedConnections, submodels }
-}
-
-function parseRecoverySubmodel(value: unknown, field: string): RecoverySubmodel {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, [
-    "definition_id",
-    "file",
-    "availability",
-    "diagnostic_ids",
-    "graph",
-    "input_ports",
-    "output_ports",
-  ])
-  const inputPorts = expectArray(PARSER, object.input_ports, `${field}.input_ports`).map(
-    (port, index) => parseInputPort(port, `${field}.input_ports[${index}]`),
-  )
-  return {
-    definition_id: expectNonBlankString(
-      PARSER,
-      object.definition_id,
-      `${field}.definition_id`,
-    ),
-    file: expectNonBlankString(PARSER, object.file, `${field}.file`),
-    availability: expectStringLiteral(
-      PARSER,
-      object.availability,
-      `${field}.availability`,
-      AVAILABILITY,
-    ),
-    diagnostic_ids: stringArray(object.diagnostic_ids, `${field}.diagnostic_ids`),
-    graph: parseRecoveryGraph(
-      expectPlainObject(PARSER, object.graph, `${field}.graph`),
-      `${field}.graph`,
-    ),
-    input_ports: inputPorts,
-    output_ports: expectArray(PARSER, object.output_ports, `${field}.output_ports`).map(
-      (port, index) => parseOutputPort(port, `${field}.output_ports[${index}]`),
-    ),
-  }
-}
-
-function parseDiagnostic(value: unknown, field: string): PipelineDiagnostic {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, [
-    "diagnostic_id",
-    "code",
-    "severity",
-    "scope",
-    "message",
-    "element_id",
-    "source_file",
-    "source_span",
-    "remediation",
-    "incident_id",
-  ])
-  return {
-    diagnostic_id: expectNonBlankString(
-      PARSER,
-      object.diagnostic_id,
-      `${field}.diagnostic_id`,
-    ),
-    code: expectNonBlankString(PARSER, object.code, `${field}.code`),
-    severity: expectStringLiteral(PARSER, object.severity, `${field}.severity`, SEVERITY),
-    scope: expectStringLiteral(PARSER, object.scope, `${field}.scope`, SCOPE),
-    message: expectNonBlankString(PARSER, object.message, `${field}.message`),
-    element_id: nullableString(object, "element_id", field),
-    source_file: nullableString(object, "source_file", field),
-    source_span: parseSpan(object.source_span, `${field}.source_span`),
-    remediation: nullableString(object, "remediation", field),
-    incident_id: nullableString(object, "incident_id", field),
-  }
-}
-
-export function parseNodeCompleteness(value: unknown, field: string): PipelineNodeCompleteness {
-  const object = expectPlainObject(PARSER, value, field)
-  exactKeys(object, field, ["element_id", "path", "code", "message"])
-  return {
-    element_id: expectNonBlankString(PARSER, object.element_id, `${field}.element_id`),
-    path: expectNonBlankString(PARSER, object.path, `${field}.path`),
-    code: expectNonBlankString(PARSER, object.code, `${field}.code`),
-    message: expectNonBlankString(PARSER, object.message, `${field}.message`),
-  }
-}
-
-function parseNameViolationBinding(value: unknown, field: string): PipelineNameViolationBinding | null {
-  if (value === null) return null
-  const object = expectPlainObject(PARSER, value, field)
-  const kind = expectStringLiteral(PARSER, object.kind, `${field}.kind`, ["frame", "submodel_input"] as const)
-  if (kind === "frame") {
-    exactKeys(object, field, ["kind", "node_id", "handle", "submodel"])
-    return {
-      kind,
-      node_id: expectNonBlankString(PARSER, object.node_id, `${field}.node_id`),
-      handle: expectNonBlankString(PARSER, object.handle, `${field}.handle`),
-      submodel: nullableString(object, "submodel", field),
-    }
-  }
-  exactKeys(object, field, ["kind", "submodel", "port"])
-  return {
-    kind,
-    submodel: expectNonBlankString(PARSER, object.submodel, `${field}.submodel`),
-    port: expectNonBlankString(PARSER, object.port, `${field}.port`),
-  }
-}
-
-/** Parse a list of name violations: a document's, or an identity response's. */
-export function parseNameViolations(value: unknown, field: string): PipelineNameViolation[] {
-  return expectArray(PARSER, value, field).map((item, index) => {
-    const at = `${field}[${index}]`
-    const object = expectPlainObject(PARSER, item, at)
-    exactKeys(object, at, ["kind", "name", "message", "parties", "binding"])
-    const parties = expectArray(PARSER, object.parties, `${at}.parties`).map((party, partyIndex) => {
-      const partyAt = `${at}.parties[${partyIndex}]`
-      const partyObject = expectPlainObject(PARSER, party, partyAt)
-      exactKeys(partyObject, partyAt, ["node_id", "label", "submodel"])
-      return {
-        node_id: expectNonBlankString(PARSER, partyObject.node_id, `${partyAt}.node_id`),
-        label: expectString(PARSER, partyObject.label, `${partyAt}.label`),
-        submodel: nullableString(partyObject, "submodel", partyAt),
+  const submodels = graph.submodels === null
+    ? null
+    : Object.fromEntries(Object.entries(graph.submodels).map(([id, submodel]) => {
+      const at = `${field}.submodels.${id}`
+      if (submodel.definition_id !== id) {
+        throw new Error(`${PARSER}: ${field} submodel registry key ${id} does not match definition_id`)
       }
-    })
-    return {
-      kind: expectStringLiteral(PARSER, object.kind, `${at}.kind`, NAME_VIOLATION_KINDS),
-      name: expectString(PARSER, object.name, `${at}.name`),
-      message: expectNonBlankString(PARSER, object.message, `${at}.message`),
-      parties,
-      binding: parseNameViolationBinding(object.binding, `${at}.binding`),
-    }
-  })
+      return [id, {
+        ...submodel,
+        graph: recoveryGraphFromContract(submodel.graph, `${at}.graph`),
+        input_ports: submodel.input_ports.map((port, index) =>
+          parseInputPort(port, `${at}.input_ports[${index}]`)),
+        output_ports: submodel.output_ports.map((port, index) =>
+          parseOutputPort(port, `${at}.output_ports[${index}]`)),
+      } satisfies RecoverySubmodel]
+    }))
+  return {
+    nodes: graph.nodes.map((node) => ({ ...node, display_position: displayPosition(node) })),
+    edges: graph.edges,
+    unresolved_connections: graph.unresolved_connections,
+    submodels,
+  }
 }
 
-export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocument {
-  const object = expectPlainObject(PARSER, value)
-  exactKeys(object, "document", [
-    "document_kind",
-    "schema_version",
-    "load_status",
-    "pipeline_name",
-    "pipeline_description",
-    "preamble",
-    "preserved_blocks",
-    "global_constants",
-    "global_constants_error",
-    "source_file",
-    "source_revision",
-    "source_text",
-    "sources",
-    "active_source",
-    "source_selection_trusted",
-    "has_authored_content",
-    "nodes",
-    "edges",
-    "unresolved_connections",
-    "submodels",
-    "diagnostics",
-    "diagnostics_omitted",
-    "completeness",
-    "completeness_omitted",
-    "name_violations",
-    "capabilities",
-  ])
-  const graph = parseRecoveryGraph(
-    {
-      nodes: object.nodes,
-      edges: object.edges,
-      unresolved_connections: object.unresolved_connections,
-      submodels: object.submodels,
-    },
-    "document graph",
-  )
-  const capabilities = expectPlainObject(PARSER, object.capabilities, "document.capabilities")
-  exactKeys(capabilities, "document.capabilities", [
-    "can_mutate",
-    "can_save",
-    "can_execute",
-    "can_preview",
-    "can_manage_submodels",
-    "can_repair",
-    "reserved_api_input_frame_labels",
-  ])
-  const diagnostics = expectArray(PARSER, object.diagnostics, "document.diagnostics").map(
-    (item, index) => parseDiagnostic(item, `document.diagnostics[${index}]`),
-  )
-  if (new Set(diagnostics.map((item) => item.diagnostic_id)).size !== diagnostics.length) {
+/** A generated document as the editor reads it. */
+export function editorDocumentFromContract(
+  document: GeneratedPipelineEditorDocument,
+): PipelineEditorDocument {
+  const diagnosticIds = document.diagnostics.map((item) => item.diagnostic_id)
+  if (new Set(diagnosticIds).size !== diagnosticIds.length) {
     throw new Error(`${PARSER}: duplicate document diagnostic id`)
   }
-  const diagnosticsOmitted = expectNumber(
-    PARSER,
-    object.diagnostics_omitted,
-    "document.diagnostics_omitted",
-  )
-  if (!Number.isInteger(diagnosticsOmitted) || diagnosticsOmitted < 0) {
-    throw new Error(
-      `${PARSER}: expected document.diagnostics_omitted to be a non-negative integer`,
-    )
-  }
-  const completeness = expectArray(PARSER, object.completeness, "document.completeness").map(
-    (item, index) => parseNodeCompleteness(item, `document.completeness[${index}]`),
-  )
-  const completenessOmitted = expectNumber(
-    PARSER,
-    object.completeness_omitted,
-    "document.completeness_omitted",
-  )
-  if (!Number.isInteger(completenessOmitted) || completenessOmitted < 0) {
-    throw new Error(
-      `${PARSER}: expected document.completeness_omitted to be a non-negative integer`,
-    )
-  }
-  const reservedApiInputFrameLabels = stringArray(
-    capabilities.reserved_api_input_frame_labels,
-    "capabilities.reserved_api_input_frame_labels",
-  )
-  if (
-    reservedApiInputFrameLabels.some((label) => label.length === 0)
-    || reservedApiInputFrameLabels.some(
-      (label, index) => index > 0 && label <= reservedApiInputFrameLabels[index - 1],
-    )
-  ) {
-    throw new Error(
-      `${PARSER}: capabilities.reserved_api_input_frame_labels must be sorted and unique`,
-    )
-  }
   return {
-    ...graph,
-    document_kind: expectStringLiteral(
-      PARSER,
-      object.document_kind,
-      "document.document_kind",
-      ["haute.pipeline_editor_document"] as const,
-    ),
-    schema_version: expectSchemaVersionOne(
-      PARSER,
-      object.schema_version,
-      "document.schema_version",
-    ),
-    load_status: expectStringLiteral(PARSER, object.load_status, "document.load_status", STATUS),
-    pipeline_name: nullableString(object, "pipeline_name", "document"),
-    pipeline_description: nullableString(object, "pipeline_description", "document"),
-    preamble: nullableString(object, "preamble", "document"),
-    preserved_blocks: stringArray(object.preserved_blocks, "document.preserved_blocks"),
-    global_constants: expectArray(PARSER, object.global_constants, "document.global_constants").map(
-      (item, index) => parseGlobalConstant(item, `document.global_constants[${index}]`),
-    ),
-    global_constants_error: nullableString(object, "global_constants_error", "document"),
-    source_file: expectString(PARSER, object.source_file, "document.source_file"),
-    source_revision: nullableString(object, "source_revision", "document"),
-    source_text: expectString(PARSER, object.source_text, "document.source_text"),
-    sources: stringArray(object.sources, "document.sources"),
-    active_source: nullableString(object, "active_source", "document"),
-    source_selection_trusted: expectBoolean(
-      PARSER,
-      object.source_selection_trusted,
-      "document.source_selection_trusted",
-    ),
-    has_authored_content: expectBoolean(
-      PARSER,
-      object.has_authored_content,
-      "document.has_authored_content",
-    ),
-    diagnostics,
-    diagnostics_omitted: diagnosticsOmitted,
-    completeness,
-    completeness_omitted: completenessOmitted,
-    name_violations: parseNameViolations(object.name_violations, "document.name_violations"),
-    capabilities: {
-      can_mutate: expectBoolean(PARSER, capabilities.can_mutate, "capabilities.can_mutate"),
-      can_save: expectBoolean(PARSER, capabilities.can_save, "capabilities.can_save"),
-      can_execute: expectBoolean(PARSER, capabilities.can_execute, "capabilities.can_execute"),
-      can_preview: expectBoolean(PARSER, capabilities.can_preview, "capabilities.can_preview"),
-      can_manage_submodels: expectBoolean(
-        PARSER,
-        capabilities.can_manage_submodels,
-        "capabilities.can_manage_submodels",
-      ),
-      can_repair: expectBoolean(PARSER, capabilities.can_repair, "capabilities.can_repair"),
-      reserved_api_input_frame_labels: reservedApiInputFrameLabels,
-    },
+    ...document,
+    ...recoveryGraphFromContract(document, "document"),
+    global_constants: document.global_constants.map(({ value, by_source, ...constant }) => ({
+      ...constant,
+      ...(value === null ? {} : { value }),
+      ...(by_source === null ? {} : { by_source }),
+    })),
   }
+}
+
+/** The editor document a load, a live-sync update or a scoped node save answers. */
+export async function parsePipelineEditorDocument(value: unknown): Promise<PipelineEditorDocument> {
+  const { validatePipelineEditorDocument } = await loadEditorDocumentValidators()
+  return editorDocumentFromContract(
+    expectGeneratedContract("PipelineEditorDocument", validatePipelineEditorDocument, value),
+  )
 }
 
 export interface AdaptedPipelineEditorDocument {

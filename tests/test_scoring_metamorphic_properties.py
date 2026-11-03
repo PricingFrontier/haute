@@ -37,6 +37,7 @@ from hypothesis import example, find, given
 from haute.deploy._pruner import find_output_node, prune_for_deploy
 from haute.deploy._scorer import score_graph
 from haute.executor import _preview_cache, execute_graph
+from tests._project import use_project
 from tests._property_budget import pr_budget
 from tests.conftest import make_graph as _g
 
@@ -212,7 +213,7 @@ def test_request_permutation_preserves_per_request_answers(
     rows, perm = data
     sub_dir = tmp_path / uuid.uuid4().hex
     sub_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(sub_dir)
+    use_project(sub_dir)
     input_file = sub_dir / "input.parquet"
 
     input_df = pl.DataFrame(rows, schema=FRAME_SCHEMA)
@@ -264,7 +265,7 @@ def test_editor_and_scorer_agree_on_generated_rows(
 ) -> None:
     sub_dir = tmp_path / uuid.uuid4().hex
     sub_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(sub_dir)
+    use_project(sub_dir)
     input_file = sub_dir / "input.parquet"
 
     input_df = pl.DataFrame(rows, schema=FRAME_SCHEMA)
@@ -311,7 +312,7 @@ def test_order_sensitive_operations_break_the_permutation_relation(
 ) -> None:
     sub_dir = tmp_path / "negative_control"
     sub_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(sub_dir)
+    use_project(sub_dir)
     input_file = sub_dir / "cum_sum.parquet"
 
     order_sensitive_code = "df = src.with_columns(running=pl.col('x').cum_sum())"
@@ -382,7 +383,7 @@ def test_cold_and_warm_execution_agree_and_a_code_edit_is_never_served_stale(
     t_initial, t_edited = transforms
     sub_dir = tmp_path / uuid.uuid4().hex
     sub_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(sub_dir)
+    use_project(sub_dir)
     input_file = sub_dir / "input.parquet"
 
     input_df = pl.DataFrame(rows, schema=FRAME_SCHEMA)

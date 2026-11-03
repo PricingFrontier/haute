@@ -38,6 +38,7 @@ from haute._execution_context import (
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._pipeline_settings import PipelineSettings
+from haute._project_context import context_thread, current_project
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.deploy._request_rows import RequestRows
 from haute.errors import (
@@ -51,6 +52,7 @@ from haute.execution import execute_lazy_graph
 from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
 from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
+from tests._project import project_app, use_project
 from tests.conftest import (
     make_edge,
     make_file_output_config,
@@ -140,12 +142,14 @@ def test_current_rss_bytes_is_none_when_the_probe_is_unavailable(
 class _ImmediateThread:
     """Run a background target inline while preserving the Thread constructor API."""
 
-    def __init__(self, *, target, daemon):
+    def __init__(self, *, target, daemon, args=(), kwargs=None, name=None):
         self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
         self.daemon = daemon
 
     def start(self) -> None:
-        self.target()
+        self.target(*self.args, **self.kwargs)
 
 
 def test_execution_metrics_payload_includes_memory_budget() -> None:
@@ -703,6 +707,70 @@ def test_an_absolute_process_rss_limit_caps_the_grant_and_names_itself(
     with pytest.raises(ExecutionAdmissionError) as refused:
         _grant(memory_sampler=lambda: 2 * _GIB)
     assert refused.value.reason == "process_rss_limit_exceeded"
+
+
+def _preview(**kwargs: Any) -> int:
+    from haute._execution_admission import preview_growth_grant_bytes
+
+    return preview_growth_grant_bytes(
+        ExecutionProfile.OPTIMISER_SOLVE,
+        operation="optimiser_estimate",
+        memory_sampler=kwargs.pop("memory_sampler", lambda: 100),
+        **kwargs,
+    )
+
+
+def test_the_grant_preview_is_what_a_grant_would_get_and_reserves_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import (
+        _IN_FLIGHT_RESERVATIONS,
+        create_admitted_execution_context,
+    )
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(3 * 1024))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        held = dict(_IN_FLIGHT_RESERVATIONS)
+        assert _preview() == 5 * _GIB
+        assert _preview() == 5 * _GIB
+        assert dict(_IN_FLIGHT_RESERVATIONS) == held
+        grant = _grant()
+        try:
+            assert grant.memory_limit_bytes == 5 * _GIB
+        finally:
+            grant.release_admission()
+    finally:
+        training.release_admission()
+    assert _preview() == 8 * _GIB
+
+
+def test_the_grant_preview_is_zero_where_a_grant_would_refuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_BYTES", str(8 * _GIB))
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        assert _preview() == 0
+        with pytest.raises(ExecutionAdmissionError):
+            _grant()
+    finally:
+        training.release_admission()
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_PROCESS_RSS_LIMIT_BYTES", str(1 * _GIB))
+    assert _preview(memory_sampler=lambda: 256 * 1024 * 1024) == 768 * 1024 * 1024
+    assert _preview(memory_sampler=lambda: 2 * _GIB) == 0
 
 
 def test_the_solve_profile_takes_the_whole_usable_machine(
@@ -1461,7 +1529,7 @@ def test_on_cancel_callbacks_run_outside_the_token_lock() -> None:
     def reads_the_token_from_another_thread() -> None:
         # A callback that needs the token (here, from another thread) must not
         # deadlock on the lock cancel() holds while setting the flag.
-        thread = threading.Thread(target=lambda: seen.append(token.cancelled))
+        thread = context_thread(lambda: seen.append(token.cancelled))
         thread.start()
         thread.join(5)
 
@@ -3399,7 +3467,7 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest, WriteOutputResponse
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
@@ -3451,7 +3519,7 @@ async def test_write_output_route_rejects_unconfigured_data_output(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     graph = make_graph(
         {
             "nodes": [
@@ -3503,9 +3571,10 @@ async def test_get_pipeline_falls_back_after_indexed_and_scanned_load_failures(
         }
     )
     loaded_paths: list[str] = []
+    expected_root = current_project().root
 
     def load(path, *, project_root):
-        assert project_root == Path.cwd()
+        assert project_root == expected_root
         loaded_paths.append(path.name)
         if path in {indexed, scanned_bad}:
             raise RuntimeError(f"{path.name} is temporarily unparseable")
@@ -3535,7 +3604,7 @@ async def test_get_pipeline_reraises_indexed_load_error_after_all_candidates_fai
     indexed = tmp_path / "indexed.py"
     scanned_bad = tmp_path / "scanned_bad.py"
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     def load(path, *, project_root):
         assert project_root == tmp_path
@@ -3558,7 +3627,7 @@ async def test_get_first_pipeline_reraises_first_candidate_load_error(
 
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
 
     def load(path, *, project_root):
         assert project_root == tmp_path
@@ -3578,7 +3647,7 @@ async def test_get_first_pipeline_keeps_first_authored_empty_document(
 ) -> None:
     from haute.routes import pipeline as pipeline_route
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     empty_first = tmp_path / "empty_first.py"
     empty_second = tmp_path / "empty_second.py"
     broken = tmp_path / "broken.py"
@@ -3729,7 +3798,7 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
 
     payload = tmp_path / "payload.json"
     payload.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(pipeline_route, "_get_project_root", lambda: tmp_path)
+    use_project(tmp_path)
     monkeypatch.setattr(
         pipeline_route,
         "read_user_text",
@@ -4281,7 +4350,7 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
 async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_path) -> None:
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "64")
     monkeypatch.setenv("HAUTE_SINK_PROCESS_RSS_LIMIT_MB", "64")
     monkeypatch.setattr(
@@ -4325,7 +4394,7 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
         {
@@ -4379,7 +4448,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     output_path = tmp_path / "sink.parquet"
@@ -4475,7 +4544,7 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     graph = make_graph(
         {
             "nodes": [
@@ -4518,7 +4587,7 @@ async def test_sink_route_releases_admission_before_isolated_timeout_returns(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
         {
@@ -4596,7 +4665,7 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
         {
@@ -4672,7 +4741,7 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
-    monkeypatch.chdir(tmp_path)
+    use_project(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     pipeline_settings(pipeline_time_limit_minutes=0.05 / 60)
@@ -4864,7 +4933,6 @@ def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> Non
         source="live",
         parquet_path=tmp_parquet,
         config=config,
-        project_root=str(tmp_path),
     )
     with patch(
         "haute.routes._training_preparation.execute_lazy_graph", side_effect=fake_execute_lazy
@@ -6013,6 +6081,7 @@ def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> Non
 
     model = HauteModel()
     model._graph = make_graph({"nodes": [], "edges": []})
+    model._project = current_project()
     model._input_node_ids = ["src"]
     model._output_node_id = "out"
     model._artifact_paths = {}
@@ -6247,6 +6316,6 @@ def _app_client():
     """A client for the application, so its exception handlers answer."""
     from fastapi.testclient import TestClient
 
-    from haute.server import app
+    app = project_app()
 
     return TestClient(app, raise_server_exceptions=False)

@@ -17,6 +17,7 @@ from haute.routes._training_preparation import (
     prepare_training_data,
 )
 from haute.schemas import TrainRequest
+from tests._project import use_project
 from tests.conftest import make_graph
 
 
@@ -197,6 +198,7 @@ def _preparation_request(
     parquet_path: Path,
     **overrides: Any,
 ) -> TrainingPreparationRequest:
+    use_project(parquet_path.parent)
     return TrainingPreparationRequest(
         graph=body.graph,
         node_id="train",
@@ -204,7 +206,6 @@ def _preparation_request(
         source=body.source,
         parquet_path=str(parquet_path),
         config=dict(body.graph.node_map["train"].data.config),
-        project_root=str(parquet_path.parent),
         **overrides,
     )
 
