@@ -14,6 +14,7 @@ tests/test_metrics_gini_ties.py
 tests/test_optimiser_level_tie_properties.py
 tests/test_parser_roundtrip.py
 tests/test_path_resolution_properties.py
+tests/test_polars_steps_lift.py
 tests/test_property.py
 tests/test_rating_step_config_coverage.py
 tests/test_save_precondition_properties.py

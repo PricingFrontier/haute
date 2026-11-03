@@ -43,7 +43,6 @@ Each package states its formats in its owning specification before behaviour cha
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | READ-20 | Planned | P2 | Each format change comes with a one-off script that converts commercial-pricing and Haute's fixtures, proven before and after. |
-| READ-21 | Planned | P2 | A prototype proves that Haute can rebuild every kind of Polars step from the code it renders. |
 | READ-22 | Planned | P2 | A Polars node is stored only as code in `main.py`, and a hand edit or comment keeps the rest of its steps. |
 | READ-23 | Planned | P2 | Workbench columns and tables are identified by their names, with no ids in the form folder or a release. |
 | READ-28 | Planned | P3 | Constants that only formulas read become global constants. |
@@ -77,38 +76,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 **Evidence:** `specs/README.md`; `src/haute/_workbench_folder.py::form_at_ref`.
 
-### READ-21 — Every Polars step kind is rebuilt from the code it renders
-**Why:** Storing a Polars node only in `main.py` (`READ-22`) depends on Haute rebuilding steps from code: about 1,000 lines that reverse the step renderer. Some forms are ambiguous:
-- a pivot and a filtered group-by render to the same code;
-- two code steps side by side merge;
-- the `divide` pattern has to be recognised.
-
-The rebuilt steps also carry nothing the code doesn't hold, such as step ids or a formula's typed text.
-
-The [syntax-boundary specification](../codegen/structured-syntax-boundary.md) does not rule this out. It rejects a graph model taking authority over arbitrary Python, not rebuilding the steps Haute supports from the code it writes.
-
-**Plan:**
-- Before anything changes on disk, build the step rebuilder as a prototype.
-- Define the canonical form of a step list:
-  - code steps next to each other are merged into one, since the rendered code holds no boundary between them;
-  - so a run of statements Haute cannot recognise is one code step, however many statements it holds;
-  - each ambiguous form becomes one documented step;
-  - ids and display-only text are left out.
-- Prove two properties over every step kind in the catalogue, alone and in chains:
-  - rebuilding rendered steps gives their canonical form;
-  - rendering the rebuilt steps gives the same code.
-- Cover compound statements, comments, and code mixing recognised and unrecognised statements.
-- A form Haute renders but cannot rebuild is a defect, unless that step kind changes how it renders.
-
-**Acceptance:**
-- A property test over the step catalogue passes both properties.
-- The specification records the canonical form and each ambiguous form with its chosen step.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_steps.py::_Renderer`; `src/haute/_polars_steps.py::render_node_steps`;
-`src/haute/_config_builder.py::_reconcile_steps`.
-
 ### READ-22 — A Polars node is stored only as code in `main.py`
 **Why:** Today the code in `main.py` runs, and `config/polars/<node>.json` holds the steps again as an expression tree. The steps are kept only while their rendering is the same syntax tree as the code, with the same comments. That causes several problems:
 - the tree nests one level per term in a chain of one operator, so such a chain is capped at 13 terms (`MAX_EXPR_DEPTH = 12`);
@@ -119,7 +86,7 @@ The [syntax-boundary specification](../codegen/structured-syntax-boundary.md) do
 **Plan:**
 - Drop `config/polars/*.json` and the `config=` argument on `@pipeline.polars`.
 - **Rebuilding steps on load:**
-  - Haute rebuilds the steps from the node's code (`READ-21`).
+  - Haute rebuilds the steps from the node's code with `lift_steps` in `src/haute/_polars_steps_lift.py`, whose canonical form the [structured-syntax boundary](../codegen/structured-syntax-boundary.md) records.
   - A run of statements it cannot recognise becomes one code step, and the statements around it stay steps.
 - **Column settings** such as `selected_columns` and `column_renames` go into the decorator's keywords, as a code-only Polars node writes them today.
 - **Unfinished steps:**
@@ -155,7 +122,7 @@ The [syntax-boundary specification](../codegen/structured-syntax-boundary.md) do
 - The formula box round-trips each formula.
 - The reference pipeline gives every node the same output columns, types and sample values before and after its conversion.
 
-**Dependencies:** `READ-20`, `READ-21`.
+**Dependencies:** `READ-20`.
 
 **Evidence:** `src/haute/_config_builder.py::_same_program`; `src/haute/_polars_steps.py::MAX_EXPR_DEPTH`;
 `src/haute/_codegen_builders.py`; `frontend/src/panels/editors/polarsSteps/formula.ts::additive`;

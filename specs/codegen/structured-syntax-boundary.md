@@ -107,3 +107,96 @@ decorator and no generated source is edited after the fact. The pilot's
 `inject_decorator_keyword` and the repair path's `prepend_function_statements` therefore
 have no callers and were removed. Rule 4 still binds: a future post-generation edit goes
 through the LibCST boundary rather than a token splice or substring mutation.
+
+## Rebuilding steps from code (READ-21)
+
+`haute._polars_steps_lift` is a prototype of the inverse of the step renderer
+(`haute._polars_steps.render_node_steps`). `lift_steps(node_type, code)` rebuilds a stepped
+node's steps from its rendered body, and `canonical_steps(node_type, steps)` gives the steps
+that body rebuilds as. Neither the parser nor the save path calls them yet; `READ-22` builds
+on them.
+
+This fits the boundary above. The standard-library AST is used only to propose steps.
+Nothing is unparsed over authored code, and LibCST is not needed, since nothing is
+rewritten. A statement becomes a step only when the renderer, given that step after the
+steps rebuilt before it, prints exactly the statement's text. Every other statement keeps
+its text as code. The rebuilt steps never take authority over Python they cannot describe.
+
+### Canonical form
+
+- **Statements and trivia.** A body is its top-level statements. A comment or blank line
+  belongs to the statement below it, and lines after the last statement belong to that
+  statement. Statements that share a line (`a = 1; b = 2`) are read as one statement of
+  code.
+- **Code.** A statement is code unless a step renders exactly its text where it stands. A
+  statement with a comment or blank line above it is code, because no step holds a
+  comment. A run of code statements, with the comments and blank lines among them, is
+  one `free_code` step, however many statements it holds.
+- **A step stands only where it renders the same.** A variable kept as code defines
+  nothing for the steps after it, so a step that reads it is code too. A variable step
+  whose name an earlier rebuilt variable already defines is code.
+- **Ids.** Original step ids are dropped. Each rebuilt step's id is its kind and its
+  one-based place in the list, such as `filter-3`, so the list renders as it stands.
+- **Display-only text.** A formula's `text` is dropped.
+- **Settings the code writes out are written out.**
+  - A null literal carries `"value": null`.
+  - A text join (`concat`) carries its `separator`, `""` when none was given.
+  - Each `orderBy` entry of a window carries `descending`.
+  - A `rank` or `dense_rank` window always carries `descending`.
+- **Settings the code does not hold are left out.**
+  - `descending` on any other window is left out.
+  - `quantile` is left out unless the aggregate is `quantile`, on a window, a group-by
+    aggregate and a column-type aggregate alike.
+  - A group-by row count (`len`) has no `column`.
+  - An empty `dtypes` on `select` or `drop` is left out.
+  - A `where` or `orderBy` of `null` is left out.
+- **Membership numbers.** Membership numbers are stored as their `numberType` writes them:
+  - `integer` as whole numbers;
+  - `float` as floats;
+  - `decimal` as the number the rendered text reads as. A whole number is an integer,
+    except `-0`, which only a float renders. Any other value is a float.
+
+### Ambiguous forms
+
+| Code | Steps that render it | Chosen step |
+|---|---|---|
+| A group-by whose every aggregate is `pl.col(v).filter(pl.col(on) == <literal>).<agg>()`, with one `v`, one `on` and one `agg` | a filtered group-by, or a pivot | the pivot |
+| Two code steps side by side | either split, or one | one `free_code` step |
+| `pl.when(d != 0).then(r / d)`, with no `otherwise` | the `divide` function (an if-then always ends in `otherwise`) | `divide` |
+| One condition in a filter, a row filter or an if-then branch | `match: all` or `match: any` | `match: all` |
+| An operand `{"kind": "expr", "expr": {"type": "operand", "operand": X}}` | the nested form, or `X` | `X`, where `X` renders the same in that slot and may stand there; otherwise the nested form |
+| An expression `{"type": "operand", "operand": {"kind": "expr", "expr": E}}` | the wrapper, or `E` | `E` |
+| A code statement that is exactly what a step renders | `free_code`, or the step | the step |
+
+**Where `X` renders the same.**
+- In expression position (a binary's left side, a function's input, an if-then's
+  branches, text-join and sum parts), it always does.
+- In value position (a binary's right side, a condition's value, an operand argument, a
+  fill value), only a column, an expression, a date or a null does. A number, text or
+  true/false is written bare there, and `pl.lit(...)` only when nested.
+- A window's value takes only a column or an expression.
+- A slot that takes only some literal types keeps a different literal nested: text tests
+  take only text, the `clip` and `divide` functions' arguments only numbers, and the
+  `fill_null` function's argument only a number, text or true/false. So `pl.lit(None)` in
+  `str.contains(...)` is the nested form.
+
+### Limits the prototype records
+
+- **A comment above a step turns it into code.** `READ-22` needs a step to hold the
+  comment above it before "comments never turn a node into code" can hold. That is a
+  change to the step schema and the renderer.
+- **A variable can be defined twice.** The renderer accepts a variable step whose name
+  free code above it already assigns, as in `rate = 2` written as code before a `rate`
+  step. Rebuilt, the first assignment is the variable and the step is code.
+- **Only the exact rendered body is rebuilt.** `lift_steps` refuses code that its steps do
+  not render back byte for byte, such as a body with a trailing newline, raising
+  `StepLiftError`.
+
+`tests/test_polars_steps_lift.py` proves both properties with Hypothesis:
+- `lift_steps(render(s)) == canonical_steps(s)`;
+- `render(lift_steps(render(s))) == render(s)`.
+
+They hold over every step kind in `STEP_KINDS`, every function, window aggregate and
+condition operator, and chains on a transform, a Data Input and an External File. The
+chains mix steps with code, compound statements and comments. Every corpus translation
+also rebuilds step for step.
