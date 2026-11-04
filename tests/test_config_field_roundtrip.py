@@ -587,12 +587,43 @@ def test_every_declared_field_has_a_roundtrip_example_or_structural_policy():
     _assert_field_inventory(list(_examples()), _schemas())
 
 
+#: An API Input column's settings at the value inference gives them: its sidecar leaves
+#: them out and the load gives them back (READ-42). Written out here, not imported, so the
+#: oracle does not lean on the code it checks. A column given no "selected" is not
+#: selected, and the save writes it so.
+_API_INPUT_COLUMN_DEFAULTS = {
+    "status": "Inferred",
+    "selected": False,
+    "levels": None,
+    "origin": "inferred",
+    "key": False,
+}
+
+
+def _authored(node_type, key, value):
+    """*value* as the load gives it back, by the rules this oracle encodes."""
+    if node_type == NodeType.API_INPUT and key == "tables":
+        return [
+            {
+                **table,
+                "columns": [
+                    {**_API_INPUT_COLUMN_DEFAULTS, **column} for column in table["columns"]
+                ],
+            }
+            for table in value
+        ]
+    return value
+
+
 def _assert_authored_values(original, parsed):
     # This oracle deliberately does not call production normalizers: applying
     # the same lossy normalizer to both sides could conceal a persistence bug.
-    # The one equivalence it encodes is the contract rule itself: an absent
+    # It encodes two equivalences, both rules of the file format. An absent
     # contract and "opaque" mean the same, so codegen omits an opaque contract
     # and a node whose settings live in its decorator parses back without one.
+    # An API Input column given no "status", "levels", "origin" or "key" reads
+    # back with the value inference gives it, and one given no "selected" as not
+    # selected.
     for node in original.nodes:
         restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
         for key, value in node.data.config.items():
@@ -602,7 +633,8 @@ def _assert_authored_values(original, parsed):
                 )
                 continue
             assert key in restored, f"{node.data.nodeType}.{key} disappeared"
-            assert restored[key] == value, f"{node.data.nodeType}.{key} changed"
+            expected = _authored(node.data.nodeType, key, value)
+            assert restored[key] == expected, f"{node.data.nodeType}.{key} changed"
 
 
 @pytest.mark.parametrize(

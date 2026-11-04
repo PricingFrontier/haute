@@ -190,6 +190,74 @@ class TableV2(TypedDict, total=False):
     """The table's columns."""
 
 
+#: A column's settings at the value inference gives them, which its sidecar leaves out
+#: (READ-42). Loading the sidecar gives them back: the shred takes a column without
+#: ``selected`` as not selected.
+COLUMN_SIDECAR_DEFAULTS: Mapping[str, Any] = {
+    "status": "Inferred",
+    "selected": True,
+    "levels": None,
+    "origin": "inferred",
+    "key": False,
+}
+
+#: A column's keys in the order its sidecar writes them; any other follows as given.
+_COLUMN_KEYS = ("name", "path", "type", "status", "selected", "levels", "format", "origin", "key")
+
+
+def _at_default(value: Any, default: Any) -> bool:
+    """Whether *value* is *default* itself: ``0`` is not ``False``, nor ``1`` ``True``."""
+    return type(value) is type(default) and value == default
+
+
+def _column_for_sidecar(column: Any) -> Any:
+    if not isinstance(column, dict):
+        return column
+    if "selected" not in column:
+        # A config the shred reads takes a column without ``selected`` as not selected,
+        # and a sidecar takes it as selected: written, it says what it meant.
+        column = {**column, "selected": False}
+    ordered = {key: column[key] for key in _COLUMN_KEYS if key in column}
+    ordered.update((key, value) for key, value in column.items() if key not in ordered)
+    return {
+        key: value
+        for key, value in ordered.items()
+        if not (key in COLUMN_SIDECAR_DEFAULTS and _at_default(value, COLUMN_SIDECAR_DEFAULTS[key]))
+    }
+
+
+def _column_from_sidecar(column: Any) -> Any:
+    if not isinstance(column, dict):
+        return column
+    return {**column, **{k: v for k, v in COLUMN_SIDECAR_DEFAULTS.items() if k not in column}}
+
+
+def _with_columns(config: dict[str, Any], change: Any) -> dict[str, Any]:
+    """*config* with *change* applied to each column of each table; anything else as given,
+    for validation to refuse."""
+    tables = config.get(_V2_TABLES_KEY)
+    if not isinstance(tables, list):
+        return config
+    changed = [
+        {**table, "columns": [change(column) for column in table["columns"]]}
+        if isinstance(table, dict) and isinstance(table.get("columns"), list)
+        else table
+        for table in tables
+    ]
+    return {**config, _V2_TABLES_KEY: changed}
+
+
+def columns_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """An API Input config as its sidecar writes it: each column's keys in order, a setting
+    at the value inference gives it left out (READ-42)."""
+    return _with_columns(config, _column_for_sidecar)
+
+
+def columns_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """An API Input sidecar's config with each column's left-out settings given back."""
+    return _with_columns(config, _column_from_sidecar)
+
+
 _STRUCTURED_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson", ".xml")
 
 

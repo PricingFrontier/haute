@@ -111,8 +111,9 @@ node that binds receives its frames in the order its parameters read them, in ev
 `.haute.json`, the global constants, the Workbench form folder and a test quote. It writes
 UTF-8 with nothing escaped, LF line endings, a two-space indent and a final newline, and
 shapes a record by its kind, never by a width limit, so a one-character edit changes one
-line: a rating entry, a node position, a Workbench layout box, a schema column and a
-show-when condition each sit on one line, as does any list or mapping of numbers alone
+line: a rating entry, a node position, a Workbench layout box, a schema column, a
+show-when condition, an API Input column and a Quote Response mapping row each sit on one
+line (READ-42), as does any list or mapping of numbers alone
 (a node position is whole pixels: the canvas places and drags nodes on them, and the save
 rounds an older fractional one half up, as the canvas does, so loading and saving an
 unchanged pipeline leaves its `.haute.json` byte for byte the same);

@@ -46,6 +46,7 @@ import hypothesis.strategies as st
 import pytest
 from hypothesis import HealthCheck, given, settings
 
+from haute._api_input_schema import columns_from_sidecar
 from haute._banding_config import expand_banding_config_from_sidecar
 from haute._config_io import collect_node_configs
 from haute._graph_utils import _sanitize_func_name
@@ -654,6 +655,10 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
         normalized = expand_banding_config_from_sidecar(normalized)
     if node_type == NodeType.RATING_STEP:
         normalized = normalise_rating_step_config(normalized)
+    if node_type == NodeType.API_INPUT:
+        # A column's sidecar leaves out the settings inference gives it, and the load gives
+        # them back (READ-42).
+        normalized = columns_from_sidecar(normalized)
     for field in _NODE_REFERENCE_CONFIG_FIELDS.get(node_type, frozenset()):
         value = normalized.get(field)
         if isinstance(value, str):

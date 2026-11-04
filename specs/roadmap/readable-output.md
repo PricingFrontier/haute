@@ -46,7 +46,7 @@ The owner decided the following on 4 November 2026:
 
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
-All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). A change that only leaves something out, as READ-42 does, needs no conversion: the old file still loads and its next save writes the new form. In the 4 November round, Haute's fixtures are converted in the change's own pull request and commercial-pricing by hand (READ-44). Otherwise each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
+All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). A change that only leaves something out, as READ-42 did for API Input columns, needs no conversion: the old file still loads and its next save writes the new form. In the 4 November round, Haute's fixtures are converted in the change's own pull request and commercial-pricing by hand (READ-44). Otherwise each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
 
@@ -54,7 +54,6 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-42 | Planned | P1 | An API Input column and a response field are one line each, and a column leaves out the settings inference gives it. |
 | READ-45 | Planned | P2 | A submodel module writes its port endpoints in snake_case. |
 | READ-44 | Planned | P1 | Every stepped node's code is its only copy of its steps. |
 | READ-43 | Planned | P1 | An Explore node's settings live in its sidecar, and its steps in its code. |
@@ -62,23 +61,6 @@ Each package states its formats in its owning specification before behaviour cha
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
-
-### READ-42 — An API Input column and a response field are one line each
-**Why:** An API Input sidecar writes each column over 10 lines, and every column carries the five settings inference gives it. An Output sidecar writes each response field over 6 lines.
-
-**Plan:**
-- The printer writes each API Input column and each Output mapping row on one line.
-- An API Input column leaves out a setting at the value inference gives it: "status" Inferred, "selected" true, "levels" null, "origin" inferred and "key" false. The loader gives them back before anything reads the config, since a run takes an absent "selected" as false.
-- A file that still writes them loads as it is, and its next save writes the short form, so nothing is converted.
-
-**Acceptance:**
-- throwaway-testing's `api_input.json` saves as about 220 lines and reads back to the same config.
-- A project whose columns leave "selected" out builds and scores the same response.
-- Golden sidecars for both node types.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_api_input_schema.py::validate_v2_schema`.
 
 ### READ-45 — A submodel module writes its port endpoints in snake_case
 **Why:** A module's `haute.Submodel(...)` header writes each port endpoint as `{"nodeId": ..., "handleId": None}`, in camelCase and with a handle that is None.

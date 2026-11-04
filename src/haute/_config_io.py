@@ -26,6 +26,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from haute._api_input_schema import columns_for_sidecar, columns_from_sidecar
 from haute._banding_config import (
     bands_read_from_sidecar,
     compact_banding_config_for_sidecar,
@@ -165,7 +166,7 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
 def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
     """A sidecar's settings as the editor and the engine hold them, its file format decoded:
     rating tables from grids, banding from band lists, constants from a map, and a setting
-    left out at its default given it again (READ-10, 26, 27, 28). A file in a form before
+    left out at its default given it again (READ-10, 26, 27, 28, 42). A file in a form before
     one of those is refused. Nothing else is checked, so Recover can read a sidecar whose
     keys the contract no longer takes."""
     # A setting a sidecar leaves out at its default reads as that default (READ-10), so
@@ -182,6 +183,9 @@ def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str
     if node_type == NodeType.RATING_STEP:
         # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
         return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
+    if node_type == NodeType.API_INPUT:
+        # A column leaves out the settings inference gives it (READ-42).
+        return columns_from_sidecar(config)
     return config
 
 
@@ -213,6 +217,8 @@ def _prepare_config_for_sidecar(
         normalised = normalise_rating_step_config(filtered)
         refuse_levels_equal_under_factor_dtypes(normalised)
         return compact_rating_config_for_sidecar(normalised)
+    if node_type == NodeType.API_INPUT:
+        return columns_for_sidecar(filtered)
     return filtered
 
 
@@ -241,8 +247,9 @@ _NO_PLACE: OneLine = at()
 
 
 #: Each node type's records written on one line each: a rating table's factors, its columns
-#: and each row of its grid (READ-26), and a banding factor's bands (READ-27). Keyed by the
-#: node type, so another type's ``tables`` or ``factors`` keeps one item a line.
+#: and each row of its grid (READ-26), a banding factor's bands (READ-27), an API Input
+#: column and a Quote Response mapping row (READ-42). Keyed by the node type, so another
+#: type's ``tables`` or ``factors`` keeps one item a line.
 _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
     NodeType.RATING_STEP: at(
         ("tables", ANY, "factors"),
@@ -250,6 +257,8 @@ _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
         ("tables", ANY, "rows", ANY),
     ),
     NodeType.BANDING: at(("factors", ANY, "rules", ANY)),
+    NodeType.API_INPUT: at(("tables", ANY, "columns", ANY)),
+    NodeType.OUTPUT: at(("output_mapping", ANY)),
 }
 
 
