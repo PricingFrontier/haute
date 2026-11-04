@@ -147,6 +147,27 @@ def rename(value: Any, hint: Any) -> Any:
     return value
 
 
+def _pipeline_directory(tree: ast.Module, path: Path) -> Path:
+    """The directory the file's ``config=`` paths resolve against, as the parser reads it:
+    the file's own, climbed by a submodel definition's ``Submodel(..., pipeline_dir=...)``."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != "Submodel":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "pipeline_dir":
+                continue
+            if not isinstance(keyword.value, ast.Constant) or not isinstance(
+                keyword.value.value, str
+            ):
+                raise SystemExit(f"{path}: pipeline_dir= is not a string; nothing converted.")
+            return (path.parent / keyword.value.value).resolve()
+    return path.parent
+
+
 def _decorator_configs(
     source: str, path: Path
 ) -> tuple[dict[Path, NodeType], list[tuple[int, int, str]]]:
@@ -156,6 +177,7 @@ def _decorator_configs(
     tree = ast.parse(source, filename=str(path))
     sidecars: dict[Path, NodeType] = {}
     keywords: list[tuple[int, int, str]] = []
+    base = _pipeline_directory(tree, path)
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -173,7 +195,7 @@ def _decorator_configs(
                     and isinstance(keyword.value, ast.Constant)
                     and isinstance(keyword.value.value, str)
                 ):
-                    sidecar = (path.parent / keyword.value.value).resolve()
+                    sidecar = (base / keyword.value.value).resolve()
                     known = sidecars.get(sidecar)
                     if known is not None and known != node_type:
                         raise SystemExit(
@@ -253,7 +275,8 @@ def convert(paths: list[Path]) -> list[Path]:
                 planned[pipeline_sidecar] = text
     for sidecar, node_type in sorted(sidecars.items()):
         if not sidecar.is_file():
-            continue
+            # A sidecar left unread would stay in the old form, refused on the next load.
+            raise SystemExit(f"{sidecar}: named by a decorator but not found; nothing converted.")
         text = _sidecar_text(sidecar, node_type)
         if text is not None:
             planned[sidecar] = text

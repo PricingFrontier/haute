@@ -214,6 +214,48 @@ def test_a_project_converts_once_and_reads_as_haute_saves_it(
     assert conversion.convert([tmp_path]) == []
 
 
+def test_a_submodel_definition_s_sidecars_resolve_against_its_pipeline(
+    tmp_path: Path, conversion: ModuleType
+) -> None:
+    """A definition below the pipeline names its sidecars from the pipeline's directory
+    (``pipeline_dir=".."``), as the parser reads them."""
+    module = tmp_path / "modules" / "sub.py"
+    module.parent.mkdir()
+    module.write_text(
+        "import haute\n\n"
+        'submodel = haute.Submodel("sub", pipeline_dir="..")\n\n\n'
+        '@submodel.banding(config="config/banding/sub_bands.json")\n'
+        "def sub_bands(quotes): ...\n",
+        encoding="utf-8",
+    )
+    sidecar = tmp_path / "config" / "banding" / "sub_bands.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json.dumps({"factors": [{"banding": "categorical", "column": "c", "outputColumn": "b"}]}),
+        encoding="utf-8",
+    )
+
+    assert conversion.convert([tmp_path]) == [sidecar.resolve()]
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["factors"][0]["output_column"] == "b"
+
+
+def test_a_sidecar_a_decorator_names_but_is_missing_refuses_the_whole_run(
+    tmp_path: Path, conversion: ModuleType
+) -> None:
+    pipeline = _project(tmp_path)
+    source = pipeline.read_text(encoding="utf-8")
+    pipeline.write_text(
+        source
+        + '\n\n@pipeline.banding(config="config/banding/gone.json")\ndef gone(quotes): ...\n',
+        encoding="utf-8",
+    )
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(SystemExit, match="gone.json"):
+        conversion.convert([tmp_path])
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 def test_a_sidecar_with_a_camel_case_key_is_refused_naming_the_conversion(
     tmp_path: Path,
 ) -> None:
