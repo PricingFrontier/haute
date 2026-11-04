@@ -584,7 +584,7 @@ describe("useWebSocketSync", () => {
         data: {
           label: "Inputs",
           nodeType: "submodel",
-          config: { definitionId: "Inputs", alias: "Inputs" },
+          config: { definition_id: "Inputs", alias: "Inputs" },
         },
       }
       const targetNode: Node = {

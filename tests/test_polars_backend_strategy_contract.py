@@ -605,7 +605,7 @@ def _group_by_graph():
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": "premium",
@@ -986,9 +986,9 @@ def test_strategy_diagnostic_reports_edge_join_keys_as_join_key_provenance() -> 
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
-                            "maintainOrder": "left_right",
-                            "leftOn": ["base_key"],
-                            "rightOn": ["lookup_key"],
+                            "maintain_order": "left_right",
+                            "left_on": ["base_key"],
+                            "right_on": ["lookup_key"],
                             "contract": "opaque",
                         },
                     },
@@ -1053,9 +1053,9 @@ def _joined_then_code_parts(code: str, suffix: str = ""):
                 "nodeType": "edgeJoin",
                 "config": {
                     "how": "left",
-                    "maintainOrder": "left_right",
-                    "leftOn": ["quote_id"],
-                    "rightOn": ["quote_id"],
+                    "maintain_order": "left_right",
+                    "left_on": ["quote_id"],
+                    "right_on": ["quote_id"],
                 },
             },
         },
@@ -1246,7 +1246,7 @@ def _receiver_graph(code: str, *, source_label: str = "claims"):
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": "premium",
@@ -1942,7 +1942,7 @@ def _source_and_child_graph(path: Path, child: dict[str, object]):
                 "config": {
                     "column_name": "m",
                     "step_column": "scenario_index",
-                    "stepCount": 1,
+                    "step_count": 1,
                     "code": (
                         "df = df.drop('a', 'm', 'scenario_index')"
                         ".with_columns(x=pl.int_range(pl.len()))"
@@ -2028,7 +2028,7 @@ def _external_file_graph(tmp_path: Path, code: str, *, lookup: bool = False):
             "data": {
                 "label": "ext",
                 "nodeType": "externalFile",
-                "config": {"path": str(artifact), "fileType": "json", "code": code},
+                "config": {"path": str(artifact), "file_type": "json", "code": code},
             },
         },
     ]
@@ -2219,7 +2219,7 @@ def _shape_group_by_graph(
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": output_column,

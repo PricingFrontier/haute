@@ -29,7 +29,7 @@ function fixture(instance = true, sameChild = false, outputCount = 2) {
     : instance ? ["again_premium", "again_audit"] : ["premium", "audit"]
   const occurrence = makeNode(instance ? "again" : "owner", "submodel", { data: {
     label: instance ? "again" : "owner", nodeType: "submodel",
-    config: { definitionId: "rating", alias: instance ? "again" : "owner", ...(instance ? { instanceOf: "owner" } : {}) },
+    config: { definition_id: "rating", alias: instance ? "again" : "owner", ...(instance ? { instance_of: "owner" } : {}) },
     _sourceHandleInputNames: Object.fromEntries(["premium", "audit"].slice(0, outputCount).map((port, i) => [`out__${port}`, names[i]])),
   } })
   const children = [makeNode("finish"), makeNode("check")]

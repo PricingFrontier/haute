@@ -184,7 +184,8 @@ def test_a_standalone_run_reads_a_relative_path_from_its_files_project(tmp_path:
     pl.DataFrame({"x": [1, 2]}).write_parquet(root / "data" / "rows.parquet")
     (root / "config" / "data_input").mkdir(parents=True)
     (root / "config" / "data_input" / "rows.json").write_text(
-        '{"inputType": "file", "path": "data/rows.parquet", "format": "parquet", "mode": "scan"}\n',
+        '{"input_type": "file", "path": "data/rows.parquet", "format": "parquet", '
+        '"mode": "scan"}\n',
         encoding="utf-8",
     )
     script = tmp_path / "project" / "standalone.py"

@@ -1069,7 +1069,7 @@ function decimalPlaces(value: number): number {
 
 /**
  * Membership values: one type for the whole list, then plain values as chips.
- * Numbers carry the kind of number their column holds (`numberType`), taken
+ * Numbers carry the kind of number their column holds (`number_type`), taken
  * from the column's type, or chosen while that type is unknown; a value that
  * kind can never match (a fraction for whole numbers, more decimal places than
  * a Decimal column's scale) is refused.
@@ -1225,7 +1225,7 @@ export function ConditionRow({
     const typed = takes === "value" && !textOnly && isUntouchedValue(condition.value) ? valueForType(schema.typeOf(column)) : null
     const next = typed ? { ...condition, column, value: typed } : { ...condition, column }
     const numberType = numberTypeOf(schema.typeOf(column))
-    onChange(next.numberType !== undefined && numberType !== null ? { ...next, numberType } : next)
+    onChange(next.number_type !== undefined && numberType !== null ? { ...next, number_type: numberType } : next)
   }
   const setOperator = (operator: Condition["operator"]) => {
     const nextTakes = CONDITION_OPERATORS.find((o) => o.value === operator)?.takes ?? "value"
@@ -1238,7 +1238,7 @@ export function ConditionRow({
     if (nextTakes === "values") {
       // One membership list to another keeps its values and the kind of number they are.
       next.values = condition.values ?? []
-      if (next.values.length > 0 && condition.numberType !== undefined) next.numberType = condition.numberType
+      if (next.values.length > 0 && condition.number_type !== undefined) next.number_type = condition.number_type
     }
     onChange(next)
   }
@@ -1275,11 +1275,11 @@ export function ConditionRow({
       {takes === "values" && (
         <LiteralListField
           values={condition.values ?? []}
-          numberType={condition.numberType}
+          numberType={condition.number_type}
           columnType={condition.column ? schema.typeOf(condition.column) : null}
           onChange={(values, numberType) => {
-            const { numberType: _previous, ...rest } = condition
-            onChange(numberType && values.length > 0 ? { ...rest, values, numberType } : { ...rest, values })
+            const { number_type: _previous, ...rest } = condition
+            onChange(numberType && values.length > 0 ? { ...rest, values, number_type: numberType } : { ...rest, values })
           }}
           ariaLabel={`${ariaLabel} values`}
         />

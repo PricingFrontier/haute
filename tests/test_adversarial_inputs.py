@@ -46,7 +46,7 @@ def client():
 
 def _file_input_config(path: str) -> dict[str, object]:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": path,
@@ -532,16 +532,16 @@ class TestIntegerOverflow:
         assert req.row_index == 2**32
 
     def test_scenario_expander_steps_overflow(self):
-        """stepCount=2^32 in scenarioExpander config should parse fine in Pydantic."""
+        """step_count=2^32 in scenarioExpander config should parse fine in Pydantic."""
         node = GraphNode(
             id="se",
             data=NodeData(
                 label="SE",
                 nodeType="scenarioExpander",
-                config={"stepCount": 2**32, "min_value": 0, "max_value": 1},
+                config={"step_count": 2**32, "min_value": 0, "max_value": 1},
             ),
         )
-        assert node.data.config["stepCount"] == 2**32
+        assert node.data.config["step_count"] == 2**32
 
 
 # ═══════════════════════════════════════════════════════════════════════

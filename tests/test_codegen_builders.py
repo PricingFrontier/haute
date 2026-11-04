@@ -251,7 +251,7 @@ class TestGenBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "25", "label": "young"},
@@ -281,7 +281,7 @@ class TestGenBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "default": "unknown",
                         "rules": [{"boundary": "25", "label": "young"}],
@@ -302,13 +302,13 @@ class TestGenBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [{"boundary": "50", "label": "u50"}],
                     },
                     {
                         "column": "region",
-                        "outputColumn": "region_group",
+                        "output_column": "region_group",
                         "banding": "categorical",
                         "rules": [{"value": "north", "assignment": "N"}],
                     },
@@ -331,7 +331,7 @@ class TestGenBanding:
                 "factors": [
                     {
                         "column": "vehicle",
-                        "outputColumn": "vehicle_group",
+                        "output_column": "vehicle_group",
                         "banding": "categorical",
                         "rules": [{"value": "car", "assignment": "auto"}],
                     }
@@ -360,7 +360,7 @@ class TestGenBanding:
                 "factors": [
                     {
                         "column": "x",
-                        "outputColumn": "x_band",
+                        "output_column": "x_band",
                         "banding": "breakpoints",
                         "rules": [{"boundary": "10", "label": "low"}],
                     }
@@ -392,7 +392,7 @@ class TestGenScenarioExpander:
                 "column_name": "scenario_value",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "stepCount": 21,
+                "step_count": 21,
                 "step_column": "scenario_index",
             },
             label="Scenarios",
@@ -414,7 +414,7 @@ class TestGenScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "stepCount": 11,
+                "step_count": 11,
             },
             label="Expand",
         )
@@ -434,7 +434,7 @@ class TestGenScenarioExpander:
     def test_no_sources_declares_no_parameters(self) -> None:
         node = _make_codegen_node(
             "scenarioExpander",
-            {"column_name": "sv", "stepCount": 5},
+            {"column_name": "sv", "step_count": 5},
             label="NoSrcExpand",
         )
         code = _node_to_code(node, source_names=[])
@@ -449,7 +449,7 @@ class TestGenScenarioExpander:
             {
                 "quote_id": "",
                 "column_name": None,
-                "stepCount": 21,
+                "step_count": 21,
             },
             label="PartialExpand",
         )
@@ -465,7 +465,7 @@ class TestGenScenarioExpander:
             "scenarioExpander",
             {
                 "column_name": "sv",
-                "stepCount": 5,
+                "step_count": 5,
                 "code": 'df = df.filter(pl.col("sv") > 0.9)',
             },
             label="FilteredExpand",
@@ -485,7 +485,7 @@ class TestGenScenarioExpander:
             "scenarioExpander",
             {
                 "column_name": "sv",
-                "stepCount": 3,
+                "step_count": 3,
                 "code": 'df = df.with_columns(pl.col("sv").alias("factor"))',
             },
             label="AssignExpand",
@@ -501,7 +501,7 @@ class TestGenScenarioExpander:
         """An empty code string is no code: the node is a declaration, not a hook."""
         node = _make_codegen_node(
             "scenarioExpander",
-            {"column_name": "sv", "stepCount": 5, "code": ""},
+            {"column_name": "sv", "step_count": 5, "code": ""},
             label="PassExpand",
         )
         code = _node_to_code(node, source_names=["data"])
@@ -821,7 +821,7 @@ class TestGenExplore:
 
 
 _PARQUET_INPUT = {
-    "inputType": "file",
+    "input_type": "file",
     "format": "parquet",
     "mode": "scan",
     "path": "data/policies.parquet",
@@ -892,7 +892,7 @@ class TestGraphToCodeWithBuilders:
                                 "factors": [
                                     {
                                         "column": "age",
-                                        "outputColumn": "age_band",
+                                        "output_column": "age_band",
                                         "banding": "breakpoints",
                                         "rules": [{"boundary": "50", "label": "u50"}],
                                     }
@@ -932,7 +932,7 @@ class TestGraphToCodeWithBuilders:
                                 "column_name": "sv",
                                 "min_value": 0.8,
                                 "max_value": 1.2,
-                                "stepCount": 5,
+                                "step_count": 5,
                             },
                         },
                     },
@@ -1111,7 +1111,7 @@ class TestGraphToCodeWithBuilders:
                             "label": "Source",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "d.parquet",
@@ -1128,7 +1128,7 @@ class TestGraphToCodeWithBuilders:
                                 "factors": [
                                     {
                                         "column": "age",
-                                        "outputColumn": "age_band",
+                                        "output_column": "age_band",
                                         "banding": "breakpoints",
                                         "rules": [{"boundary": "50", "label": "u50"}],
                                     }
@@ -1141,7 +1141,7 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "Expand",
                             "nodeType": "scenarioExpander",
-                            "config": {"column_name": "sv", "stepCount": 5},
+                            "config": {"column_name": "sv", "step_count": 5},
                         },
                     },
                     {
@@ -1262,7 +1262,7 @@ class TestCodegenExecValidation:
         csv_path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
 
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "data/quotes.csv",
@@ -1404,7 +1404,7 @@ class TestCodegenExecValidation:
         node = _make_codegen_node(
             "output",
             {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "upstream",
                         "source_column": "premium",
@@ -1452,7 +1452,7 @@ class TestCodegenExecValidation:
         names, so the second declared frame feeds the ``drivers`` mapping.
         """
         config = {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "drivers",
                     "source_column": "driver_id",
@@ -1487,7 +1487,7 @@ class TestCodegenExecValidation:
         factors = [
             {
                 "column": "age",
-                "outputColumn": "age_band",
+                "output_column": "age_band",
                 "banding": "breakpoints",
                 "rules": [{"boundary": "50", "label": "young"}],
             }
@@ -1512,7 +1512,7 @@ class TestCodegenExecValidation:
     def test_model_score_declaration_scores_through_its_decorator(self, tmp_path: Path) -> None:
         """A modelScore declaration scores its input with the sidecar's model when run."""
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "task": "regression",
             "output_column": "prediction",
             "run_id": "abc123",
@@ -1557,7 +1557,7 @@ class TestCodegenExecValidation:
 
 
 _PARQUET_OUTPUT = {
-    "outputType": "file",
+    "output_type": "file",
     "path": "output/results.parquet",
     "format": "parquet",
     "mode": "sink",
@@ -1589,7 +1589,7 @@ class TestGenDataOutput:
         node = _make_codegen_node(
             "dataOutput",
             {
-                "outputType": "file",
+                "output_type": "file",
                 "path": "output/report.csv",
                 "format": "csv",
                 "mode": "sink",
@@ -1609,7 +1609,7 @@ class TestGenDataOutput:
         node = _make_codegen_node(
             "dataOutput",
             {
-                "outputType": "file",
+                "output_type": "file",
                 "path": "out.parquet",
                 "format": "parquet",
                 "mode": "sink",

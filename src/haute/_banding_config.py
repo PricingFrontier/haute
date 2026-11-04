@@ -122,13 +122,13 @@ def banding_factor_is_active(factor: dict[str, Any]) -> bool:
     node passes the frame through for it. The node's column contract asks
     the same question, so it never promises a draft's output column.
     """
-    return bool(factor.get("column") and factor.get("outputColumn") and factor.get("rules"))
+    return bool(factor.get("column") and factor.get("output_column") and factor.get("rules"))
 
 
 def require_distinct_banding_outputs(factors: list[dict[str, Any]]) -> None:
     """Refuse two active factors writing one output column.
 
-    Execution aliases each active factor's ``outputColumn`` in order, so the
+    Execution aliases each active factor's ``output_column`` in order, so the
     later band would silently replace the earlier one. A draft factor writes
     nothing and is left out. Factors are named by 1-based position, as the
     editor lists them, and by input column.
@@ -137,7 +137,7 @@ def require_distinct_banding_outputs(factors: list[dict[str, Any]]) -> None:
     for index, factor in enumerate(factors):
         if not banding_factor_is_active(factor):
             continue
-        output_column = factor["outputColumn"]
+        output_column = factor["output_column"]
         earlier = first_writer.setdefault(output_column, index)
         if earlier == index:
             continue

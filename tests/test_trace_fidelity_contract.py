@@ -38,7 +38,7 @@ def test_rating_detail_separates_table_selection_from_post_code_output() -> None
                 {
                     "factors": ["region"],
                     "entries": [{"region": "north", "value": 1.1}],
-                    "outputColumn": "factor",
+                    "output_column": "factor",
                 }
             ],
             "code": "df = df.with_columns(factor=pl.col('factor') * 2)",
@@ -61,7 +61,7 @@ def test_rating_selection_uses_the_runtime_numeric_value_before_post_code() -> N
                 {
                     "factors": ["region"],
                     "entries": [{"region": "north", "value": "1.10"}],
-                    "outputColumn": "factor",
+                    "output_column": "factor",
                 }
             ],
             "code": "df = df.with_columns(note=pl.lit('unchanged'))",

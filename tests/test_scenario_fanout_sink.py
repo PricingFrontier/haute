@@ -1,7 +1,7 @@
 """A Model Score below a scenario expansion sinks its input in fan-out-sized chunks.
 
 The expansion's ``explode`` turns each streaming chunk of its source into
-``stepCount`` times as many rows in every Polars thread, so the scorer's input
+``step_count`` times as many rows in every Polars thread, so the scorer's input
 sink caps the chunk at the pipeline setting divided by the fan-out and an
 expanded chunk stays within the setting.
 """
@@ -185,7 +185,7 @@ def _node(node_id: str, node_type: str, config: dict[str, Any] | None = None) ->
 
 
 def _expander(node_id: str, steps: Any) -> GraphNode:
-    return _node(node_id, "scenarioExpander", {"stepCount": steps, "column_name": "adj"})
+    return _node(node_id, "scenarioExpander", {"step_count": steps, "column_name": "adj"})
 
 
 def test_the_fanout_is_the_product_of_the_upstream_expanders_step_counts() -> None:
@@ -212,7 +212,7 @@ def test_the_model_score_builder_gives_its_scorer_the_upstream_fanout() -> None:
     node_map = {
         "src": _node("src", "dataInput"),
         "grid": _expander("grid", 11),
-        "score": _node("score", "modelScore", {"sourceType": "run", "run_id": "abc"}),
+        "score": _node("score", "modelScore", {"source_type": "run", "run_id": "abc"}),
     }
     _name, score_fn, _is_source = _build_node_fn(
         node_map["score"],
@@ -237,7 +237,7 @@ def _expanded_quotes(steps: int) -> pl.LazyFrame:
     ).lazy()
     return expand_scenarios_from_config(
         quotes,
-        {"stepCount": steps, "column_name": "b", "min_value": 0.5, "max_value": 1.5},
+        {"step_count": steps, "column_name": "b", "min_value": 0.5, "max_value": 1.5},
     )
 
 

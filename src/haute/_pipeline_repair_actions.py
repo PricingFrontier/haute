@@ -290,7 +290,7 @@ def _reset_node(
         source_handles = None
         if source.node_type == NodeType.SUBMODEL:
             source_config = source.config or {}
-            definition_id = source_config.get("definitionId")
+            definition_id = source_config.get("definition_id")
             definitions = graph.submodels or {}
             if not isinstance(definition_id, str) or definition_id not in definitions:
                 raise _unsupported(
@@ -298,7 +298,7 @@ def _reset_node(
                     "repair it before changing this node."
                 )
             definition = definitions[definition_id]
-            instance_of = source_config.get("instanceOf")
+            instance_of = source_config.get("instance_of")
             source_handles = [f"out__{port['name']}" for port in definition.output_ports]
         named_inputs.append(
             (

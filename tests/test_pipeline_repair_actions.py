@@ -397,7 +397,7 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
         # incomplete configuration; reset is never blocked by completeness.
         result = _apply(tmp_path, request)
         written = json.loads((tmp_path / "custom.json").read_text())
-        assert written["inputType"] == "file"
+        assert written["input_type"] == "file"
         assert written["path"] == ""
         assert result.document.load_status == "ready"
     else:
@@ -526,7 +526,7 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "json",
                 "path": "quotes.json",
                 "arguments": {},
@@ -612,7 +612,7 @@ def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_pat
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sidecar = tmp_path / "config" / "model_scoring" / "score.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text('{"sourceType": "run", "run_id": "abc"}\n', encoding="utf-8")
+    sidecar.write_text('{"source_type": "run", "run_id": "abc"}\n', encoding="utf-8")
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n\n'
         "@pipeline.polars\ndef quotes() -> pl.LazyFrame:\n"
@@ -626,10 +626,12 @@ def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_pat
     plan = build_recover_unavailable_node_plan(
         project_root=tmp_path, request=_request(tmp_path, "score", "recover")
     )
-    changes = {change.path: change.outcome for change in plan.response.field_changes}
-    assert changes["/source_type"] == "removed"
+    changes = [(change.path, change.outcome) for change in plan.response.field_changes]
+    # The keyword is reported removed beside the sidecar's own source_type, which is kept.
+    assert ("/source_type", "removed") in changes
+    assert ("/source_type", "retained") in changes
     assert plan.response.previous_config is not None
-    assert plan.response.previous_config["sourceType"] == "run"
+    assert plan.response.previous_config["source_type"] == "run"
 
 
 def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):
@@ -704,7 +706,7 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     draft = {
         "banding": "categorical",
         "column": "cover",
-        "outputColumn": "cover_band",
+        "output_column": "cover_band",
         "rules": {},
         "default": None,
     }
@@ -740,8 +742,8 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
 
 
 def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
-    """The worked example: a Scenario Expander sidecar from before the stepCount rename
-    (`steps: 11`) whose `stepCount` was then hand-edited to 0. The recover applies: the
+    """The worked example: a Scenario Expander sidecar from before the step_count rename
+    (`steps: 11`) whose `step_count` was then hand-edited to 0. The recover applies: the
     stale `steps` is removed, and the count the engine refuses takes the palette's 21,
     reported as defaulted, so the written config loads."""
     from haute._config_io import collect_node_configs
@@ -770,7 +772,7 @@ def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
                         "step_column": "scenario_index",
                         "min_value": 0.1,
                         "max_value": 0.3,
-                        "stepCount": 3,
+                        "step_count": 3,
                         "steps": [],
                     },
                 ),
@@ -786,7 +788,7 @@ def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
         config_file.write_text(content)
     sidecar = tmp_path / "config/expander/grid.json"
     stale = json.loads(sidecar.read_text())
-    stale["stepCount"] = 0
+    stale["step_count"] = 0
     stale["steps"] = 11
     sidecar.write_text(json.dumps(stale))
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
@@ -801,19 +803,19 @@ def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
     assert ("/steps", "removed") in outcomes
     # The refusal's outcome replaces the value's: the plan lists it once.
     assert [
-        change.outcome for change in plan.response.field_changes if change.path == "/stepCount"
+        change.outcome for change in plan.response.field_changes if change.path == "/step_count"
     ] == ["defaulted"]
     assert {
         change.reason
         for change in plan.response.field_changes
-        if (change.path, change.outcome) == ("/stepCount", "defaulted")
+        if (change.path, change.outcome) == ("/step_count", "defaulted")
     } == {"The value was refused; replaced with the audited default."}
     result = _apply(tmp_path, request)
     assert result.completeness == []
     applied = next(node for node in result.document.nodes if node.authored_id == "grid")
     assert applied.availability == "ready"
     written = json.loads(sidecar.read_text())
-    assert written["stepCount"] == 21
+    assert written["step_count"] == 21
     assert "steps" not in written
 
 
@@ -828,7 +830,7 @@ def test_recover_empty_locator_applies_as_incomplete(tmp_path):
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "",
@@ -871,7 +873,7 @@ def test_recover_refuses_unreadable_config_sidecars(tmp_path):
 
 
 _OUTPUT_CONFIG = {
-    "outputType": "file",
+    "output_type": "file",
     "format": "parquet",
     "mode": "sink",
     "path": "out.parquet",
@@ -900,7 +902,7 @@ def test_recover_replaces_a_body_a_type_without_code_never_runs(tmp_path):
     (tmp_path / "a.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "quotes.parquet",
@@ -947,7 +949,7 @@ def test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook(tmp_pa
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "quotes.parquet",
@@ -1003,13 +1005,13 @@ def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp
 
     result = _apply(tmp_path, _request(tmp_path, "joined", "recover"))
 
-    assert ("/maintainOrder", "defaulted") in {
+    assert ("/maintain_order", "defaulted") in {
         (change.path, change.outcome) for change in result.field_changes
     }
     assert result.document.load_status == "ready"
     assert 'maintain_order="right_left"' in (tmp_path / "main.py").read_text()
     joined = parse_pipeline_file(tmp_path / "main.py").node_map["joined"]
-    assert joined.data.config["maintainOrder"] == "right_left"
+    assert joined.data.config["maintain_order"] == "right_left"
 
 
 def test_recover_gives_an_asof_join_the_palette_join_type(tmp_path):
@@ -1131,7 +1133,7 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
 
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sink_config = {
-        "outputType": "file",
+        "output_type": "file",
         "format": "parquet",
         "mode": "sink",
         "path": "out.parquet",
@@ -1150,7 +1152,7 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
         '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n' + generated_sink
     )
     broken_input = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "quotes.parquet",
@@ -1186,7 +1188,7 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
         pytest.param("missing.json", None, id="config-file-missing"),
         pytest.param(
             "in.json",
-            {"inputType": "carrier-pigeon", "path": "quotes.parquet", "arguments": {}},
+            {"input_type": "carrier-pigeon", "path": "quotes.parquet", "arguments": {}},
             id="unknown-provider",
         ),
     ],

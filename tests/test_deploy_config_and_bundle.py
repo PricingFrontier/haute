@@ -206,7 +206,7 @@ def _make_datasource_graph(node_id: str, raw_path: str):
                     "data": {
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": raw_path,
@@ -397,7 +397,7 @@ class TestArtifactContainmentAndModelContracts:
         self, tmp_path: Path, artifact_path: object, error: type[Exception]
     ) -> None:
         graph = self._model_graph(
-            {"sourceType": "run", "run_id": "run", "artifact_path": artifact_path}
+            {"source_type": "run", "run_id": "run", "artifact_path": artifact_path}
         )
         with pytest.raises(error, match="artifact_path"):
             collect_artifacts(graph, [], tmp_path)
@@ -411,7 +411,7 @@ class TestArtifactContainmentAndModelContracts:
         explicit.write_text("explicit")
         graph = self._model_graph(
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run",
                 "artifact_path": "model.cbm",
                 "feature_contract_path": "chosen.json",
@@ -458,7 +458,7 @@ class TestSnapshotGenerationLease:
         from haute._source_cache import SourceCacheStore
 
         config = {
-            "inputType": "inline",
+            "input_type": "inline",
             "format": "records",
             "mode": "read",
             "records": [{"driver": "Ada"}],
@@ -492,7 +492,7 @@ class TestSnapshotGenerationLease:
         source_path = project_dir / "drivers.csv"
         pl.DataFrame({"driver": ["old"]}).write_csv(source_path)
         input_config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "drivers.csv",
@@ -562,7 +562,7 @@ class TestSnapshotGenerationLease:
         from haute.deploy._scorer import score_graph
 
         input_config = {
-            "inputType": "inline",
+            "input_type": "inline",
             "format": "records",
             "mode": "read",
             "records": [{"driver": "Ada"}, {"driver": "Bob"}],
@@ -585,7 +585,7 @@ class TestSnapshotGenerationLease:
                             "label": "out",
                             "nodeType": "output",
                             "config": {
-                                "outputMapping": [
+                                "output_mapping": [
                                     {
                                         "source_port": "drivers",
                                         "source_column": "driver",

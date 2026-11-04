@@ -3,9 +3,9 @@ import type { IoCapabilityGroup, IoFieldCapability, IoFormatCapability } from ".
 /** Which side of the provider/format capabilities a Data Input or Data Output reads. */
 export type IoDirection = "input" | "output"
 
-export const PROVIDER_KEY: Record<IoDirection, "inputType" | "outputType"> = {
-  input: "inputType",
-  output: "outputType",
+export const PROVIDER_KEY: Record<IoDirection, "input_type" | "output_type"> = {
+  input: "input_type",
+  output: "output_type",
 }
 
 export const DIRECTION_LABEL: Record<IoDirection, string> = {

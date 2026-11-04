@@ -130,11 +130,11 @@ def _build_node_config(
     else:
         raise ValueError(f"{node_type!r} nodes keep their settings in a JSON sidecar.")
     _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
-    # ``inputMapping`` is also used by ordinary Polars transforms to retain a
+    # ``input_mapping`` is also used by ordinary Polars transforms to retain a
     # stable logical input name across topology rewrites.  Keep the decorator
     # metadata on parse so graph -> source -> graph remains a fixpoint.
-    if "inputMapping" in decorator_kwargs:
-        config["inputMapping"] = decorator_kwargs["inputMapping"]
+    if "input_mapping" in decorator_kwargs:
+        config["input_mapping"] = decorator_kwargs["input_mapping"]
     return config
 
 
@@ -423,7 +423,7 @@ def validate_step_container(
     """Refuse a ``steps`` value no stepped node can use, whatever its body.
 
     It must be a list, and an edges surface takes its inputs from the edges,
-    so it cannot sit beside an ``inputMapping``.
+    so it cannot sit beside an ``input_mapping``.
     """
     if not isinstance(config["steps"], list):
         raise ConfigError(
@@ -431,7 +431,7 @@ def validate_step_container(
             func_name=func_name,
             config_path=config_ref,
         )
-    if stepped_surface_for(node_type).inputs == "edges" and config.get("inputMapping") is not None:
+    if stepped_surface_for(node_type).inputs == "edges" and config.get("input_mapping") is not None:
         raise ConfigError(
             STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
             func_name=func_name,
@@ -455,7 +455,7 @@ def _with_lifted_steps(config: dict[str, Any], func_name: str) -> dict[str, Any]
     stay code-only.
     """
     code = str(config.get("code") or "")
-    if not code or config.get("inputMapping") is not None:
+    if not code or config.get("input_mapping") is not None:
         return config
     try:
         steps = lift_steps(NodeType.POLARS, code)
@@ -567,9 +567,13 @@ def _resolve_node_config(
     Returns ``(node_type, config_dict, editor_state)``: the editor state
     records a stepped node whose steps the body no longer matches.
     """
-    from haute._config_validation import reject_removed_node_reuse_kwargs
+    from haute._config_validation import (
+        reject_camel_case_decorator_kwargs,
+        reject_removed_node_reuse_kwargs,
+    )
 
     reject_removed_node_reuse_kwargs(decorator_kwargs)
+    reject_camel_case_decorator_kwargs(decorator_kwargs, func_name)
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or NodeType.POLARS
@@ -692,7 +696,7 @@ def _resolve_node_config(
                 f"maintain_order on its decorator to one of {orders}.",
                 func_name=func_name,
                 node_type=node_type.value,
-                maintainOrder=exc.context["maintainOrder"],
+                maintain_order=exc.context["maintain_order"],
             ) from exc
 
     # Cross-check a user-declared contract against the builder's.  A

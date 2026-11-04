@@ -162,7 +162,7 @@ class TestDryRun:
                 {
                     "joinInput": "lookup",
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["x"],
                 },
                 "unknown config key",
@@ -172,10 +172,10 @@ class TestDryRun:
                     "baseInput": "quotes",
                     "joinInput": "lookup",
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["x"],
-                    "leftOn": ["x"],
-                    "rightOn": ["x"],
+                    "left_on": ["x"],
+                    "right_on": ["x"],
                 },
                 "unknown config key",
             ),
@@ -713,7 +713,7 @@ _FOUR_NODE_BATCH: list[dict[str, object]] = [
                 {
                     "banding": "breakpoints",
                     "column": "driver_age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "24", "label": "17-24"},
                         {"boundary": "", "label": "25+"},
@@ -732,15 +732,15 @@ _FOUR_NODE_BATCH: list[dict[str, object]] = [
             "tables": [
                 {
                     "factors": ["age_band"],
-                    "outputColumn": "age_relativity",
+                    "output_column": "age_relativity",
                     "entries": [
                         {"age_band": "17-24", "value": 1.8},
                         {"age_band": "25+", "value": 1.05},
                     ],
-                    "defaultValue": 1.0,
+                    "default_value": 1.0,
                 }
             ],
-            "combinedOutputs": [],
+            "combined_outputs": [],
             "steps": [],
         },
     },
@@ -891,7 +891,7 @@ class TestChangeCard:
                             {
                                 "banding": "breakpoints",
                                 "column": "driver_age",
-                                "outputColumn": "age_band",
+                                "output_column": "age_band",
                                 "rules": [
                                     {"boundary": "21", "label": "17-21"},
                                     {"boundary": "", "label": "22+"},
@@ -1063,7 +1063,7 @@ def test_dry_run_rejects_invalid_banding_semantics_before_storing(
                             {
                                 "banding": "age",
                                 "column": "x",
-                                "outputColumn": "age_band",
+                                "output_column": "age_band",
                                 "rules": [{"key": "0-10", "value": 10}],
                             }
                         ],
@@ -1149,8 +1149,8 @@ _STEPPED_BASES: dict[str, tuple[str, dict]] = {
             "tables": [
                 {
                     "factors": ["region"],
-                    "outputColumn": "rate",
-                    "defaultValue": "1.0",
+                    "output_column": "rate",
+                    "default_value": "1.0",
                     "entries": [{"region": "north", "value": "1.25"}],
                 }
             ]
@@ -1163,16 +1163,16 @@ _STEPPED_BASES: dict[str, tuple[str, dict]] = {
             "column_name": "scenario_value",
             "min_value": 0.9,
             "max_value": 1.1,
-            "stepCount": 3,
+            "step_count": 3,
             "step_column": "scenario_index",
         },
     ),
     "explored": ("explore", {}),
-    "loaded": ("externalFile", {"path": "lookup.json", "fileType": "json"}),
+    "loaded": ("externalFile", {"path": "lookup.json", "file_type": "json"}),
     "scored": (
         "modelScore",
         {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -1189,7 +1189,7 @@ def _palette_config(node_type: str, base: dict) -> dict:
     from haute._types import NodeType
 
     defaults = palette_default_config(NodeType(node_type))
-    if base.get("sourceType") == "run":
+    if base.get("source_type") == "run":
         defaults = {"steps": defaults["steps"]}
     return {**defaults, **base}
 
@@ -1429,7 +1429,7 @@ class TestSteppedWrites:
         await service.apply("main.py", plan.plan_hash)
 
         saved = _reparsed_config(stepped_project, "claims")
-        assert saved["inputType"] == "file"
+        assert saved["input_type"] == "file"
         assert saved["steps"] == []
 
     async def test_a_saved_config_that_misses_its_digest_is_a_verification_failure(
@@ -1689,7 +1689,7 @@ class TestWrittenNodesAreReady:
                         "node_type": "externalFile",
                         "name": "lookup",
                         "ref": "l",
-                        "config": {"path": "missing.json", "fileType": "json"},
+                        "config": {"path": "missing.json", "file_type": "json"},
                     },
                     {"op": "add_edge", "source": "policies", "target": "$l"},
                 ],
@@ -1715,7 +1715,7 @@ class TestWrittenNodesAreReady:
                         "node_type": "externalFile",
                         "name": "lookup",
                         "ref": "l",
-                        "config": {"path": "lookup.json", "fileType": "json"},
+                        "config": {"path": "lookup.json", "file_type": "json"},
                     },
                     {"op": "add_edge", "source": "policies", "target": "$l"},
                 ],
@@ -1801,7 +1801,7 @@ class TestInferredInputSchemas:
     """A new local file input resolves its schema from the file at dry-run."""
 
     _CSV = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": "claims.csv",
         "arguments": {"separator": ";", "schema_overrides": {"id": "str"}},

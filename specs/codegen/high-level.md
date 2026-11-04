@@ -131,7 +131,7 @@ Out of scope (owned by neighbouring components):
   - none is a public name of Python's `builtins` (`max`, `filter`, `id`, `ValueError`,
     `Ellipsis`); the comparison is exact, so `Max premium` and `Filter` stay valid;
   - no input a node body receives, as the executor binds it (a sanitized source label, an API
-    frame label, a submodel port name, an `inputMapping` alias), is
+    frame label, a submodel port name, an `input_mapping` alias), is
     reserved. (`df` keeps its own rule: an input of that name is refused where node code reads
     it and is an ordinary input on a node type without code.)
 
@@ -186,7 +186,7 @@ Out of scope (owned by neighbouring components):
   edge contributes the sanitised source-node label. A frame emitted as `quotes` is therefore callable as
   `quotes` in every downstream body — the same string the editor lists as the
   input. When a canvas topology rewrite replaces a Polars node's parent while
-  preserving the authored input's meaning, `inputMapping` records
+  preserving the authored input's meaning, `input_mapping` records
   `{logical_name: current_edge_name}`. Codegen then keeps the logical name in
   the function signature and emits the mapping on `@pipeline.polars(...)`,
   while the `connect(...)` call continues to name the current parent. The
@@ -246,7 +246,7 @@ Out of scope (owned by neighbouring components):
     `df = <first input>` as its first statement, the names its code box
     documents: `def <name>(<inputs>: pl.LazyFrame, *, obj) -> pl.LazyFrame:`.
     Its free code names its inputs as a Transform's does, so a sidecar
-    `inputMapping` names those parameters, and the binding, by its logical
+    `input_mapping` names those parameters, and the binding, by its logical
     names.
   - API Input, Data Output, Edge Join, Banding, Output, Live Switch,
     Modelling, Optimiser, Optimiser Apply and Constant nodes never carry code
@@ -311,7 +311,7 @@ Out of scope (owned by neighbouring components):
   the body first declares `df: pl.LazyFrame` as an unbound local, so a
   same-named preamble global cannot satisfy the missing output assignment.
   Normally the logical name is the edge-derived
-  name; a Polars `inputMapping` may preserve an earlier logical
+  name; a Polars `input_mapping` may preserve an earlier logical
   name across a structural rewrite. Mapping values must match distinct current
   edge names and the resulting logical names must remain distinct valid Haute
   identifiers, otherwise generation and execution fail loudly. The user starts
@@ -414,7 +414,7 @@ the body with the shared step renderer against the generated parameter names ins
 (its steps live in that body alone, READ-22), and on a render failure emits the same
 incomplete placeholder body that a code-less transform emits; the save then keeps the
 step list in `.haute.json` (`unfinished_steps`) and its warning for incomplete
-transforms names the failing step. A stepped node that also carries `inputMapping` is rejected
+transforms names the failing step. A stepped node that also carries `input_mapping` is rejected
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
 the rendered code exactly, which is what lets the parser rebuild each step from the
 statement it rendered (`lift_steps`), any other statement loading as code.

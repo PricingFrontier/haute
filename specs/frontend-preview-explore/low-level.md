@@ -483,7 +483,8 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
 
 Preview `loading` and `error` statuses are ordinary render branches. A failed build or profile
 request toasts and leaves the panes showing the state the point reports, never fabricated
-statistics. Actionable profile execution metrics render in the shared diagnostics banner. Utility
+statistics. A node the graph gives nothing to read, such as an Explore node not yet connected,
+says why in the frame's status line (the cache's `unreadable`) instead of toasting. Actionable profile execution metrics render in the shared diagnostics banner. Utility
 syntax errors remain inline and block a requested file switch; other file-operation failures
 toast or display action-local text. Point/profile/card shape is assumed to meet the API contract;
 optional overview settings alone are parsed defensively.

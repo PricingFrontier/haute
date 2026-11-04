@@ -29,9 +29,9 @@ const common = { node, allNodes: [node], edges: [] }
 const factor = {
   banding: "breakpoints" as const,
   column: "premium",
-  outputColumn: "band",
+  output_column: "band",
   rules: [{ boundary: "50", label: "low" }, { boundary: "", label: "high" }],
-  rightClosed: true,
+  right_closed: true,
 }
 const oldStats = {
   status: "ok",

@@ -46,7 +46,7 @@ def _graph(project: Path, *, preamble: str = "import polars as pl") -> PipelineG
                 "source",
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": str(project / "quotes.parquet"),
@@ -63,7 +63,7 @@ def _graph(project: Path, *, preamble: str = "import polars as pl") -> PipelineG
                         {
                             "banding": "breakpoints",
                             "column": "premium",
-                            "outputColumn": "band",
+                            "output_column": "band",
                             "rules": [],
                         }
                     ]
@@ -238,7 +238,7 @@ def test_downstream_edits_change_neither_slot_nor_signature(project: Path, chang
                 {
                     "banding": "breakpoints",
                     "column": "premium",
-                    "outputColumn": "band",
+                    "output_column": "band",
                     "rules": [{"boundary": "1", "label": "high"}],
                 }
             ],
@@ -324,7 +324,7 @@ def _data_input(node_id: str, path: Path) -> GraphNode:
     return _node(
         node_id,
         NodeType.DATA_INPUT,
-        {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(path)},
+        {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(path)},
     )
 
 
@@ -503,7 +503,7 @@ def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]
                 "quotes",
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "quotes.parquet",
@@ -512,7 +512,7 @@ def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]
             _node(
                 "claims",
                 NodeType.DATA_INPUT,
-                {"inputType": "file", "format": "csv", "mode": "scan", "path": "claims.csv"},
+                {"input_type": "file", "format": "csv", "mode": "scan", "path": "claims.csv"},
             ),
             _node(
                 "joined",
@@ -542,7 +542,7 @@ def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]
                 "scored",
                 NodeType.MODEL_SCORE,
                 {
-                    "sourceType": "file",
+                    "source_type": "file",
                     "model_path": "model.cbm",
                     "output_column": "prediction",
                     "task": "regression",
@@ -575,7 +575,7 @@ def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]
                 "quotes",
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "quotes.parquet",
@@ -584,7 +584,12 @@ def _signing_corpus(project: Path) -> list[tuple[PipelineGraph, tuple[str, ...]]
             _node(
                 "batch_quotes",
                 NodeType.DATA_INPUT,
-                {"inputType": "file", "format": "parquet", "mode": "scan", "path": "batch.parquet"},
+                {
+                    "input_type": "file",
+                    "format": "parquet",
+                    "mode": "scan",
+                    "path": "batch.parquet",
+                },
             ),
             _node(
                 "policies",

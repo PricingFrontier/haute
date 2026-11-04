@@ -40,7 +40,7 @@
                         {
                           "banding": "categorical",
                           "column": "has_prior_claim",
-                          "outputColumn": "claims_group",
+                          "output_column": "claims_group",
                           "rules": [
                             {
                               "value": "True",
@@ -87,7 +87,7 @@
                         {
                           "banding": "categorical",
                           "column": "has_prior_claim",
-                          "outputColumn": "claims_group",
+                          "output_column": "claims_group",
                           "rules": [
                             {
                               "value": "true",

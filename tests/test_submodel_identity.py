@@ -90,15 +90,15 @@ pipeline.connect("source", "pricing_2", target_port="in_data")
     assert owner.id == "pricing"
     assert owner.data.label == "pricing"
     assert owner.data.config["alias"] == "pricing"
-    assert owner.data.config["definitionId"] == "def_pricing_declared"
-    assert "instanceOf" not in owner.data.config
+    assert owner.data.config["definition_id"] == "def_pricing_declared"
+    assert "instance_of" not in owner.data.config
 
     copy = graph.node_map["pricing_2"]
     assert copy.id == "pricing_2"
     assert copy.data.label == "pricing_2"
     assert copy.data.config["alias"] == "pricing_2"
-    assert copy.data.config["definitionId"] == "def_pricing_declared"
-    assert copy.data.config["instanceOf"] == "pricing"
+    assert copy.data.config["definition_id"] == "def_pricing_declared"
+    assert copy.data.config["instance_of"] == "pricing"
 
 
 _NOT_THE_IMPORT_FORM = r"is imported as `from modules import <name>`.*is not that form"
@@ -299,7 +299,7 @@ def test_codegen_with_stale_editor_node_id_emits_name_everywhere() -> None:
         data=NodeData(
             label="new_name",
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": "def_pricing", "alias": "new_name"},
+            config={"definition_id": "def_pricing", "alias": "new_name"},
         ),
     )
     copy_node = GraphNode(
@@ -309,9 +309,9 @@ def test_codegen_with_stale_editor_node_id_emits_name_everywhere() -> None:
             label="copy_name",
             nodeType=NodeType.SUBMODEL,
             config={
-                "definitionId": "def_pricing",
+                "definition_id": "def_pricing",
                 "alias": "copy_name",
-                "instanceOf": "old_name",
+                "instance_of": "old_name",
             },
         ),
     )
@@ -409,7 +409,7 @@ def test_grouping_through_create_submodel_graph_mints_name_as_id() -> None:
     assert sm_node.id == "grp"
     assert sm_node.data.label == "grp"
     assert sm_node.data.config["alias"] == "grp"
-    assert sm_node.data.config["definitionId"] == "grp"
+    assert sm_node.data.config["definition_id"] == "grp"
 
 
 def test_sidecar_position_key_returns_alias_for_submodel() -> None:

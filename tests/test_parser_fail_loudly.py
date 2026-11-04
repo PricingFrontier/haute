@@ -296,7 +296,7 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "data": {
                         "label": "sm1",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                        "config": {"definition_id": "sm1", "alias": "sm1"},
                     },
                 },
             ],
@@ -346,7 +346,7 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "data": {
                         "label": "sm1",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                        "config": {"definition_id": "sm1", "alias": "sm1"},
                     },
                 },
             ],
@@ -1095,10 +1095,10 @@ class TestHookMarkerIsNotAnInput:
             tmp_path,
             NodeType.DATA_INPUT,
             "df",
-            {"inputType": "file", "format": "parquet", "path": "df.parquet"},
+            {"input_type": "file", "format": "parquet", "path": "df.parquet"},
         )
         rate = write_node_config(
-            tmp_path, NodeType.RATING_STEP, "rate", {"tables": [], "combinedOutputs": []}
+            tmp_path, NodeType.RATING_STEP, "rate", {"tables": [], "combined_outputs": []}
         )
         band = write_node_config(tmp_path, NodeType.BANDING, "band", {"factors": []})
         consumers = {

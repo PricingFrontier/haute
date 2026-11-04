@@ -83,28 +83,28 @@ class TestValidKeysRegistry:
     def test_universal_keys_included(self):
         """Input mappings are universal; reuse identity belongs to occurrences only."""
         for nt, keys in VALID_KEYS.items():
-            assert ("instanceOf" in keys) == (nt == NodeType.SUBMODEL)
-            assert "inputMapping" in keys, f"inputMapping missing from {nt}"
+            assert ("instance_of" in keys) == (nt == NodeType.SUBMODEL)
+            assert "input_mapping" in keys, f"input_mapping missing from {nt}"
 
     @pytest.mark.parametrize(
         "node_type, expected_key",
         [
             (NodeType.API_INPUT, "path"),
-            (NodeType.DATA_INPUT, "inputType"),
+            (NodeType.DATA_INPUT, "input_type"),
             (NodeType.MODEL_SCORE, "run_id"),
             (NodeType.BANDING, "factors"),
             (NodeType.RATING_STEP, "tables"),
-            (NodeType.OUTPUT, "outputMapping"),
+            (NodeType.OUTPUT, "output_mapping"),
             (NodeType.DATA_OUTPUT, "format"),
             (NodeType.EXPLORE, "contract"),
-            (NodeType.EXTERNAL_FILE, "fileType"),
+            (NodeType.EXTERNAL_FILE, "file_type"),
             (NodeType.LIVE_SWITCH, "input_scenario_map"),
             (NodeType.MODELLING, "algorithm"),
             (NodeType.OPTIMISER, "constraints"),
             (NodeType.SCENARIO_EXPANDER, "quote_id"),
             (NodeType.OPTIMISER_APPLY, "artifact_path"),
             (NodeType.CONSTANT, "values"),
-            (NodeType.SUBMODEL, "definitionId"),
+            (NodeType.SUBMODEL, "definition_id"),
         ],
     )
     def test_known_key_present(self, node_type, expected_key):
@@ -142,7 +142,7 @@ class TestUnrecognizedConfigKeys:
         assert (
             unrecognized_config_keys(
                 NodeType.POLARS,
-                {"code": "x", "inputMapping": {"a": "b"}},
+                {"code": "x", "input_mapping": {"a": "b"}},
             )
             == []
         )
@@ -167,7 +167,7 @@ class TestUnrecognizedConfigKeys:
 
     def test_a_submodel_port_declares_only_the_universal_keys(self):
         assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"anything": 1}) == ["anything"]
-        assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"inputMapping": {}}) == []
+        assert unrecognized_config_keys(NodeType.SUBMODEL_PORT, {"input_mapping": {}}) == []
 
     def test_reject_names_the_node_its_type_and_every_undeclared_key(self):
         with pytest.raises(
@@ -334,7 +334,7 @@ class TestSharedColumnSettingsUniversal:
             "pivot_formulas": list[ExplorePivotFormula],
             "pivots": list[ExplorePivotPersistedConfig],
             "charts": list[ExploreChartConfig],
-            "inputMapping": dict[str, str],
+            "input_mapping": dict[str, str],
             "contract": ContractDeclaration,
             "selected_columns": list[str],
             "column_renames": dict[str, str],
@@ -445,10 +445,10 @@ class TestConfigKeyTupleAlignment:
                 f"MODEL_SCORE_CONFIG_KEYS has '{key}' but ModelScoreConfig does not"
             )
 
-    def test_model_score_keys_use_camelCase_sourceType(self):  # noqa: N802 - references camelCase config key `sourceType`
-        """MODEL_SCORE_CONFIG_KEYS should use 'sourceType' (camelCase), not 'source_type'."""
-        assert "sourceType" in MODEL_SCORE_CONFIG_KEYS
-        assert "source_type" not in MODEL_SCORE_CONFIG_KEYS
+    def test_model_score_keys_use_snake_case_source_type(self):
+        """MODEL_SCORE_CONFIG_KEYS uses 'source_type', not its camelCase form (READ-29)."""
+        assert "source_type" in MODEL_SCORE_CONFIG_KEYS
+        assert "sourceType" not in MODEL_SCORE_CONFIG_KEYS
 
     def test_optimiser_keys_match_typed_dict(self):
         """Every key in OPTIMISER_CONFIG_KEYS should exist in OptimiserConfig."""
@@ -503,7 +503,7 @@ class TestConfigKeyTupleAlignment:
 
 
 # ---------------------------------------------------------------------------
-# Parser round-trip: source_type → sourceType mapping
+# Parser round-trip: source_type → source_type mapping
 # ---------------------------------------------------------------------------
 
 

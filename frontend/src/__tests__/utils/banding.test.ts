@@ -59,7 +59,7 @@ describe("extractBandingLevelsForNode", () => {
         {
           banding: "breakpoints",
           column: "proposer_age",
-          outputColumn: "proposer_age_band",
+          output_column: "proposer_age_band",
           rules: [
             { boundary: "25", label: "Under 25" },
             { boundary: "50", label: "25 to 49" },
@@ -81,7 +81,7 @@ describe("extractBandingLevelsForNode", () => {
         {
           banding: "breakpoints",
           column: "age",
-          outputColumn: "age_band",
+          output_column: "age_band",
           rules: [
             { boundary: "30", label: "Young" },
             { boundary: "", label: "Old" },
@@ -90,7 +90,7 @@ describe("extractBandingLevelsForNode", () => {
         {
           banding: "categorical",
           column: "region",
-          outputColumn: "region_band",
+          output_column: "region_band",
           rules: [
             { value: "NSW", assignment: "East" },
             { value: "VIC", assignment: "East" },
@@ -107,13 +107,13 @@ describe("extractBandingLevelsForNode", () => {
     })
   })
 
-  it("ignores factors without outputColumn", () => {
+  it("ignores factors without output_column", () => {
     const nodes: SimpleNode[] = [
       makeBandingNode("b1", [
         {
           banding: "breakpoints",
           column: "age",
-          outputColumn: "",
+          output_column: "",
           rules: [
             { boundary: "30", label: "Young" },
           ],
@@ -121,7 +121,7 @@ describe("extractBandingLevelsForNode", () => {
         {
           banding: "breakpoints",
           column: "score",
-          outputColumn: "score_band",
+          output_column: "score_band",
           rules: [
             { boundary: "50", label: "Low" },
           ],
@@ -131,7 +131,7 @@ describe("extractBandingLevelsForNode", () => {
 
     const result = extractBandingLevelsForNode(nodes, "b1")
     expect(result).toEqual({ score_band: ["Low"] })
-    // The empty-outputColumn factor should not produce a key
+    // The empty-output_column factor should not produce a key
     expect(Object.keys(result)).toEqual(["score_band"])
   })
 
@@ -141,7 +141,7 @@ describe("extractBandingLevelsForNode", () => {
         {
           banding: "breakpoints",
           column: "age",
-          outputColumn: "age_band",
+          output_column: "age_band",
           rules: [
             { boundary: "30", label: "Young" },
             { boundary: "50", label: "" },
@@ -161,7 +161,7 @@ describe("extractBandingLevelsForNode", () => {
         {
           banding: "categorical",
           column: "region",
-          outputColumn: "region_band",
+          output_column: "region_band",
           rules: [
             { value: "NSW", assignment: "East" },
             { value: "VIC", assignment: "East" },
@@ -180,14 +180,14 @@ describe("extractBandingLevelsForNode", () => {
 describe("classifyBandingFactors", () => {
   it("classifies both banding types and reports configured zero-level outputs without throwing on drafts", () => {
     expect(classifyBandingFactors([
-      { banding: "categorical", outputColumn: "channel_band", rules: [{ assignment: "Direct" }] },
-      { banding: "breakpoints", outputColumn: "vehicle_band", rules: [{ label: "New" }] },
-      { banding: "breakpoints", outputColumn: "empty_band", rules: [{}] },
+      { banding: "categorical", output_column: "channel_band", rules: [{ assignment: "Direct" }] },
+      { banding: "breakpoints", output_column: "vehicle_band", rules: [{ label: "New" }] },
+      { banding: "breakpoints", output_column: "empty_band", rules: [{}] },
       null,
-      { banding: "unknown", outputColumn: "ignored", rules: [{ assignment: "Ignored" }] },
+      { banding: "unknown", output_column: "ignored", rules: [{ assignment: "Ignored" }] },
       // The removed operator type is no longer a banding type.
-      { banding: "continuous", outputColumn: "age_band", rules: [{ assignment: "Young" }] },
-      { banding: "categorical", outputColumn: "   ", rules: [{ assignment: "Ignored" }] },
+      { banding: "continuous", output_column: "age_band", rules: [{ assignment: "Young" }] },
+      { banding: "categorical", output_column: "   ", rules: [{ assignment: "Ignored" }] },
     ])).toEqual({
       levels: { channel_band: ["Direct"], vehicle_band: ["New"] },
       configuredOutputs: ["channel_band", "vehicle_band", "empty_band"],
@@ -200,7 +200,7 @@ describe("classifyBandingFactors", () => {
     expect(classifyBandingFactors([
       {
         banding: "categorical",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [{ value: "18", assignment: "Young" }],
         default: { label: "not-a-persisted-default" },
       },
@@ -217,7 +217,7 @@ describe("extractBandingLevelOrderForNode", () => {
         {
           banding: "breakpoints",
           column: "proposer_age",
-          outputColumn: "proposer_age_band",
+          output_column: "proposer_age_band",
           rules: [
             { boundary: "27", label: "20-27" },
             { boundary: "34", label: "28-34" },
@@ -227,7 +227,7 @@ describe("extractBandingLevelOrderForNode", () => {
         {
           banding: "breakpoints",
           column: "vehicle_age",
-          outputColumn: "vehicle_age_band",
+          output_column: "vehicle_age_band",
           rules: [
             { boundary: "3", label: "1-3" },
             { boundary: "5", label: "4-5" },
@@ -238,7 +238,7 @@ describe("extractBandingLevelOrderForNode", () => {
         {
           banding: "categorical",
           column: "channel",
-          outputColumn: "channel_band",
+          output_column: "channel_band",
           rules: [
             { value: "direct_web", assignment: "direct_web" },
             { value: "broker", assignment: "broker" },
@@ -260,7 +260,7 @@ describe("bandingLevelOrderForOptimiser", () => {
     {
       banding: "categorical",
       column: "channel",
-      outputColumn: "channel_band",
+      output_column: "channel_band",
       rules: [{ value: "direct", assignment: "Direct" }],
       default: "missing",
     },
@@ -322,7 +322,7 @@ describe("extractBandingLevels", () => {
         {
           banding: "breakpoints",
           column: "age",
-          outputColumn: "age_band",
+          output_column: "age_band",
           rules: [
             { boundary: "30", label: "Young" },
           ],
@@ -332,7 +332,7 @@ describe("extractBandingLevels", () => {
         {
           banding: "breakpoints",
           column: "age",
-          outputColumn: "age_band",
+          output_column: "age_band",
           rules: [
             { boundary: "60", label: "Old" },
           ],
@@ -340,7 +340,7 @@ describe("extractBandingLevels", () => {
         {
           banding: "categorical",
           column: "vehicle",
-          outputColumn: "vehicle_band",
+          output_column: "vehicle_band",
           rules: [
             { value: "sedan", assignment: "Car" },
             { value: "SUV", assignment: "Truck" },
@@ -362,7 +362,7 @@ describe("extractBandingLevels", () => {
         {
           banding: "categorical",
           column: "channel",
-          outputColumn: "channel_band",
+          output_column: "channel_band",
           rules: [
             { value: "direct", assignment: "Direct" },
             { value: "broker", assignment: "Broker" },
@@ -371,7 +371,7 @@ describe("extractBandingLevels", () => {
         {
           banding: "breakpoints",
           column: "proposer_age",
-          outputColumn: "proposer_age_band",
+          output_column: "proposer_age_band",
           rules: [
             { boundary: "25", label: "Under 25" },
             { boundary: "50", label: "25 to 49" },
@@ -381,7 +381,7 @@ describe("extractBandingLevels", () => {
         {
           banding: "breakpoints",
           column: "vehicle_age",
-          outputColumn: "vehicle_age_band",
+          output_column: "vehicle_age_band",
           rules: [
             { boundary: "1", label: "New" },
             { boundary: "5", label: "Established" },

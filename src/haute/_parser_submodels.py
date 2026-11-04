@@ -748,10 +748,10 @@ def _merge_registered_submodels(
                     description=definition.graph.pipeline_description or "",
                     nodeType=NodeType.SUBMODEL,
                     config={
-                        "definitionId": definition.definition_id,
+                        "definition_id": definition.definition_id,
                         "alias": registration.name,
                         **(
-                            {"instanceOf": registration.instance_of}
+                            {"instance_of": registration.instance_of}
                             if registration.instance_of is not None
                             else {}
                         ),

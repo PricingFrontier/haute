@@ -36,7 +36,7 @@ def _explore_graph_with_config(config: dict) -> PipelineGraph:
                     label="source",
                     nodeType="dataInput",
                     config={
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "mode": "scan",
                         "path": "data.parquet",

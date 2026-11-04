@@ -680,7 +680,7 @@ class TestValidateDeploy:
             "db_src",
             node_type=NodeType.DATA_INPUT,
             config={
-                "inputType": "databricks",
+                "input_type": "databricks",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.schema.table",
                 "arguments": {},
@@ -711,7 +711,7 @@ class TestValidateDeploy:
             "db_src",
             node_type=NodeType.DATA_INPUT,
             config={
-                "inputType": "databricks",
+                "input_type": "databricks",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.schema.table",
                 "arguments": {},

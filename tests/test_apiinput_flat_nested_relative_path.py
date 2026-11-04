@@ -92,7 +92,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def _api_input_config(path: str) -> dict[str, Any]:
     """A flat-file apiInput config carrying a (relative) ``path``, as the frontend
-    serialises a flat apiInput (``sourceType`` is not an apiInput config key)."""
+    serialises a flat apiInput (``source_type`` is not an apiInput config key)."""
     return {"path": path}
 
 

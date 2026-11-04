@@ -934,7 +934,7 @@ describe("canonical submodel boundary resolution", () => {
       data: {
         ...sourceNode("submodel").data,
         config: {
-          definitionId: "definition_pricing",
+          definition_id: "definition_pricing",
           alias: "pricing_secondary",
         },
         _sourceHandleInputNames: {
@@ -978,7 +978,7 @@ describe("canonical submodel boundary resolution", () => {
       data: {
         ...sourceNode("submodel").data,
         config: {
-          definitionId: "definition_pricing",
+          definition_id: "definition_pricing",
           alias: "pricing_secondary",
         },
       },

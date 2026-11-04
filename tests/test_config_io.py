@@ -114,7 +114,7 @@ class TestSaveAndLoad:
             pytest.param(
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "csv",
                     "path": "data/input.csv",
                     "arguments": {
@@ -129,7 +129,7 @@ class TestSaveAndLoad:
             pytest.param(
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "inline",
+                    "input_type": "inline",
                     "format": "records",
                     "records": [
                         {"_id": 1, "payload": {"_cache": [{"_id": "kept"}]}},
@@ -166,12 +166,12 @@ class TestSaveAndLoad:
                     "tables": [
                         {
                             "factors": ["_id"],
-                            "outputColumn": "factor",
+                            "output_column": "factor",
                             "entries": [{"_id": "A", "value": 1.25}],
                         }
                     ],
                     # Left out of the file at its default and read back as it (READ-10).
-                    "combinedOutputs": [],
+                    "combined_outputs": [],
                 },
                 id="rating-factor-names",
             ),
@@ -193,7 +193,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "categorical",
                     "column": "category",
-                    "outputColumn": "band",
+                    "output_column": "band",
                     "rules": {"_id": "identifier", "_prevRules": "previous", "ordinary": "normal"},
                 }
             ]
@@ -214,7 +214,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "categorical",
                     "column": "category",
-                    "outputColumn": "band",
+                    "output_column": "band",
                     "_prevRules": {"breakpoints": []},
                     "rules": {"ordinary": "normal"},
                 }
@@ -226,7 +226,7 @@ class TestSaveAndLoad:
 
     def test_save_creates_directories_and_file(self, tmp_path):
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data/input.parquet",
@@ -237,7 +237,7 @@ class TestSaveAndLoad:
         assert (tmp_path / rel).is_file()
 
     def test_saved_content_is_valid_json(self, tmp_path):
-        config = {"inputType": "file", "format": "parquet", "path": "data/input.parquet"}
+        config = {"input_type": "file", "format": "parquet", "path": "data/input.parquet"}
         rel = _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
         assert json.loads((tmp_path / rel).read_text(encoding="utf-8")) == config
         loaded = load_node_config("config/data_input/src.json", base_dir=tmp_path)
@@ -317,12 +317,12 @@ class TestSaveAndLoad:
         assert not (tmp_path / "config" / "workbench_input" / "quote.json").exists()
 
     def test_code_key_excluded_from_json(self, tmp_path):
-        config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}
+        config = {"path": "model.pkl", "file_type": "pickle", "code": "df = obj.predict(df)"}
         _write_node_config_sidecar(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)
         loaded = load_node_config("config/load_file/ext.json", base_dir=tmp_path)
         assert "code" not in loaded
         assert loaded["path"] == "model.pkl"
-        assert loaded["fileType"] == "pickle"
+        assert loaded["file_type"] == "pickle"
 
     def test_load_nonexistent_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -334,7 +334,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "breakpoints",
                     "column": "DrivAge",
-                    "outputColumn": "DrivAgeBand",
+                    "output_column": "DrivAgeBand",
                     "rules": [
                         {"boundary": "20", "label": "0-20"},
                         {"boundary": "", "label": "20+"},
@@ -355,7 +355,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "categorical",
                     "column": "fuel_type",
-                    "outputColumn": "fuel_band",
+                    "output_column": "fuel_band",
                     "rules": [
                         {"value": "Petrol", "assignment": "Standard"},
                         {"value": "Diesel", "assignment": "Standard"},
@@ -382,13 +382,13 @@ class TestSaveAndLoad:
                 {
                     "banding": "breakpoints",
                     "column": "driver_age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "65", "label": "adult"},
                         {"boundary": "", "label": "senior"},
                     ],
-                    "rightClosed": True,
+                    "right_closed": True,
                     "default": "unknown",
                 },
             ],
@@ -411,7 +411,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "categorical",
                     "column": "fuel_type",
-                    "outputColumn": "fuel_band",
+                    "output_column": "fuel_band",
                     "rules": [
                         {"value": "Petrol", "assignment": "Standard"},
                         {"value": "Petrol", "assignment": "Premium"},
@@ -429,7 +429,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "25", "label": "adult"},
@@ -447,7 +447,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": {25: "young", "25": "adult"},
                 },
             ],
@@ -471,7 +471,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "categorical",
                     "column": "fuel_type",
-                    "outputColumn": "fuel_band",
+                    "output_column": "fuel_band",
                     "rules": [
                         {"value": "Petrol", "assignment": "Standard"},
                         {"value": "", "assignment": "Draft"},
@@ -489,7 +489,7 @@ class TestSaveAndLoad:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "65", "label": ""},
@@ -504,7 +504,7 @@ class TestSaveAndLoad:
 
 class TestRemoveConfigFile:
     def test_remove_existing_file(self, tmp_path):
-        config = {"inputType": "file", "format": "parquet", "path": "data.parquet"}
+        config = {"input_type": "file", "format": "parquet", "path": "data.parquet"}
         _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
         assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path)
         assert not (tmp_path / "config" / "data_input" / "src.json").exists()
@@ -532,7 +532,7 @@ class TestCollectNodeConfigs:
                             "label": "src",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "path": "d.parquet",
                             },
@@ -566,7 +566,7 @@ class TestCollectNodeConfigs:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": "m.pkl",
-                                "fileType": "pickle",
+                                "file_type": "pickle",
                                 "code": "df = obj(df)",
                             },
                         },
@@ -592,7 +592,7 @@ class TestCollectNodeConfigs:
                 "data": {
                     "label": "b",
                     "nodeType": "dataInput",
-                    "config": {"inputType": "file", "format": "parquet", "path": "d.parquet"},
+                    "config": {"input_type": "file", "format": "parquet", "path": "d.parquet"},
                 },
             },
             {
@@ -614,7 +614,7 @@ class TestCollectNodeConfigs:
                 "data": {
                     "label": "h",
                     "nodeType": "dataOutput",
-                    "config": {"outputType": "file", "format": "parquet", "path": "o.parquet"},
+                    "config": {"output_type": "file", "format": "parquet", "path": "o.parquet"},
                 },
             },
             {
@@ -629,7 +629,7 @@ class TestCollectNodeConfigs:
             {"id": "l", "data": {"label": "l", "nodeType": "optimiserApply", "config": {}}},
             {
                 "id": "m",
-                "data": {"label": "m", "nodeType": "scenarioExpander", "config": {"stepCount": 3}},
+                "data": {"label": "m", "nodeType": "scenarioExpander", "config": {"step_count": 3}},
             },
             {"id": "n", "data": {"label": "n", "nodeType": "constant", "config": {"values": []}}},
         ]
@@ -681,7 +681,7 @@ class TestCollectNodeConfigs:
                                     {
                                         "banding": "categorical",
                                         "column": "fuel_type",
-                                        "outputColumn": "fuel_band",
+                                        "output_column": "fuel_band",
                                         "rules": [
                                             {"value": "Petrol", "assignment": "Standard"},
                                             {"value": "Electric", "assignment": "Green"},
@@ -735,7 +735,7 @@ class TestFindConfigByFuncName:
 
     def test_recovers_config_for_valid_func_name(self, tmp_path):
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -754,7 +754,7 @@ class TestFindConfigByFuncName:
                 {
                     "banding": "categorical",
                     "column": "fuel_type",
-                    "outputColumn": "fuel_band",
+                    "output_column": "fuel_band",
                     "rules": {"Petrol": "Standard", "Electric": "Green"},
                 }
             ]
@@ -953,7 +953,7 @@ class TestLoadNodeConfigEdgeCases:
                         {
                             "banding": "continuous",
                             "column": "age",
-                            "outputColumn": "age_band",
+                            "output_column": "age_band",
                             "rules": {"25": "young"},
                         }
                     ]
@@ -986,7 +986,7 @@ class TestLoadNodeConfigEdgeCases:
     {
       "banding": "categorical",
       "column": "fuel_type",
-      "outputColumn": "fuel_band",
+      "output_column": "fuel_band",
       "rules": {
         "Petrol": "Standard",
         "Petrol": "Premium"
@@ -1017,7 +1017,7 @@ class TestSidecarPreparationEdgeCases:
         assert loaded["alpha"] is None
 
     def test_null_where_a_key_does_not_take_it_is_refused(self, tmp_path):
-        config = {"inputType": "file", "format": "parquet", "path": None}
+        config = {"input_type": "file", "format": "parquet", "path": None}
         with pytest.raises(NodeConfigError, match="'path': Input should be a valid string"):
             _write_node_config_sidecar(NodeType.DATA_INPUT, "src", config, tmp_path)
 
@@ -1025,7 +1025,7 @@ class TestSidecarPreparationEdgeCases:
         from haute.errors import ConfigError
 
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "path": "d.parquet",
             "_internal": "secret",
@@ -1105,7 +1105,7 @@ class TestCollectNodeConfigsEdgeCases:
                             "label": "my_src",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "path": "d.parquet",
                             },
@@ -1130,7 +1130,7 @@ class TestRemoveConfigFileEdgeCases:
         _write_node_config_sidecar(
             NodeType.DATA_INPUT,
             "src",
-            {"inputType": "file", "format": "parquet", "path": "d"},
+            {"input_type": "file", "format": "parquet", "path": "d"},
             tmp_path,
         )
         assert remove_config_file(NodeType.DATA_INPUT, "src", tmp_path) is True
@@ -1149,8 +1149,8 @@ class TestRatingStepSidecars:
             "tables": [
                 {
                     "factors": ["area"],
-                    "outputColumn": "area_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "area_factor",
+                    "default_value": "1.0",
                     "entries": [
                         {"area": "London", "value": "1.25"},
                         {"area": "Rural", "value": 0.85},
@@ -1158,7 +1158,7 @@ class TestRatingStepSidecars:
                 },
                 {
                     "factors": ["vehicle_age_band", "cover_type"],
-                    "outputColumn": "vehicle_factor",
+                    "output_column": "vehicle_factor",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -1174,8 +1174,8 @@ class TestRatingStepSidecars:
                     ],
                 },
             ],
-            "combinedOutputs": [
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            "combined_outputs": [
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         }
 
@@ -1187,12 +1187,12 @@ class TestRatingStepSidecars:
         # and each rate are written as held.
         one, two = saved["tables"]
         assert "entries" not in one and "columns" not in one
-        assert one["defaultValue"] == "1.0"
+        assert one["default_value"] == "1.0"
         assert one["rows"] == [["London", "1.25"], ["Rural", 0.85]]
         assert "entries" not in two
         assert two["columns"] == ["comprehensive", "tpft"]
         assert two["rows"] == [["1-3", 0.9, 1.1], ["10+", 1.4, None]]
-        assert saved["combinedOutputs"] == config["combinedOutputs"]
+        assert saved["combined_outputs"] == config["combined_outputs"]
         assert load_node_config(rel, base_dir=tmp_path) == config
 
     def test_save_writes_three_factors_as_rows_of_two_and_columns_of_the_third(self, tmp_path):
@@ -1200,7 +1200,7 @@ class TestRatingStepSidecars:
             "tables": [
                 {
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
-                    "outputColumn": "vehicle_factor",
+                    "output_column": "vehicle_factor",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -1240,14 +1240,14 @@ class TestRatingStepSidecars:
         ]
         # The entries come back in the grid's row-major order, here the order written, and
         # the combined outputs left out at their default read back as it (READ-10).
-        assert load_node_config(rel, base_dir=tmp_path) == {**config, "combinedOutputs": []}
+        assert load_node_config(rel, base_dir=tmp_path) == {**config, "combined_outputs": []}
 
     def test_save_keeps_sparse_three_factor_entries_sparse(self, tmp_path):
         config = {
             "tables": [
                 {
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
-                    "outputColumn": "sparse_factor",
+                    "output_column": "sparse_factor",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -1303,7 +1303,7 @@ class TestRatingStepSidecars:
                                 "tables": [
                                     {
                                         "factors": ["vehicle_age_band", "cover_type"],
-                                        "outputColumn": "vehicle_factor",
+                                        "output_column": "vehicle_factor",
                                         "entries": [
                                             {
                                                 "vehicle_age_band": "1-3",
@@ -1345,7 +1345,7 @@ class TestRatingStepSidecars:
                                             "cover_type",
                                             "channel",
                                         ],
-                                        "outputColumn": "vehicle_factor",
+                                        "output_column": "vehicle_factor",
                                         "entries": [
                                             {
                                                 "vehicle_age_band": "1-3",
@@ -1380,7 +1380,7 @@ class TestRatingStepSidecars:
             "tables": [
                 {
                     "factors": ["area"],
-                    "outputColumn": "area_factor",
+                    "output_column": "area_factor",
                     "entries": [
                         {"area": 1, "value": 1.1},
                         {"area": "1", "value": 1.2},
@@ -1402,7 +1402,7 @@ class TestRatingStepSidecars:
             "tables": [
                 {
                     "factors": ["vehicle_age_band", "cover_type"],
-                    "outputColumn": "vehicle_factor",
+                    "output_column": "vehicle_factor",
                     "entries": [{"vehicle_age_band": "1-3", "value": 0.9}],
                 }
             ]
@@ -1419,7 +1419,7 @@ class TestRatingStepSidecars:
             "tables": [
                 {
                     "factors": ["area"],
-                    "outputColumn": "area_factor",
+                    "output_column": "area_factor",
                     "entries": [{"area": "London", "value": ""}],
                 }
             ]
@@ -1436,7 +1436,7 @@ class TestRatingStepSidecars:
             "tables": [
                 {
                     "factors": ["area"],
-                    "outputColumn": "area_factor",
+                    "output_column": "area_factor",
                     "entries": [{"area": "London", "value": 1.25, "note": "kept"}],
                 }
             ]
@@ -1464,7 +1464,7 @@ class TestRatingStepSidecars:
                     "tables": [
                         {
                             "factors": "area",
-                            "outputColumn": "area_factor",
+                            "output_column": "area_factor",
                             "rows": [["London", 1.25]],
                         }
                     ]
@@ -1487,9 +1487,9 @@ class TestRatingStepSidecars:
   "tables": [
     {
       "factors": ["area"],
-      "outputColumn": "area_factor",
-      "defaultValue": 1.25,
-      "defaultValue": 1.1,
+      "output_column": "area_factor",
+      "default_value": 1.25,
+      "default_value": 1.1,
       "rows": [["London", 1.25]]
     }
   ]
@@ -1498,7 +1498,7 @@ class TestRatingStepSidecars:
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="duplicate JSON key 'defaultValue'"):
+        with pytest.raises(ValueError, match="duplicate JSON key 'default_value'"):
             load_node_config(path)
 
 

@@ -72,16 +72,16 @@ def _graph(root: Path) -> PipelineGraph:
             "kind": "join",
             "input": "bands",
             "how": "left",
-            "leftOn": ["band"],
-            "rightOn": ["band"],
+            "left_on": ["band"],
+            "right_on": ["band"],
             "suffix": "_b",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
         },
         {
             "id": "o",
             "kind": "sort",
             "keys": [{"column": "rate", "descending": False}],
-            "nullsLast": False,
+            "nulls_last": False,
         },
     ]
 
@@ -97,7 +97,7 @@ def _graph(root: Path) -> PipelineGraph:
                 node(
                     "priced",
                     "edgeJoin",
-                    {"how": "left", "on": "region", "suffix": "_r", "maintainOrder": "left_right"},
+                    {"how": "left", "on": "region", "suffix": "_r", "maintain_order": "left_right"},
                 ),
                 node("ordered", "polars", {"steps": steps}),
                 node("written", "dataOutput", make_file_output_config(root / "written.parquet")),
@@ -105,7 +105,7 @@ def _graph(root: Path) -> PipelineGraph:
                     "out",
                     "output",
                     {
-                        "outputMapping": [
+                        "output_mapping": [
                             {
                                 "source_port": "written",
                                 "source_column": column,

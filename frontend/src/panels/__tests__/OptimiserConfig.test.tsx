@@ -3104,7 +3104,7 @@ describe("OptimiserConfig", () => {
       fireEvent.change(within(receipt).getByRole("combobox", { name: "Apply Optimisation node" }), { target: { value: "apply_1" } })
       fireEvent.click(within(receipt).getByRole("button", { name: "Use in Apply node" }))
       expect(onUpdateNodeConfig).toHaveBeenCalledWith("apply_1", {
-        sourceType: "file",
+        source_type: "file",
         artifact_path: "rating/files/models/optimiser_My_Optimiser_opt_1.json",
       })
       expect(receipt).toHaveTextContent("Apply Rates now loads rating/files/models/optimiser_My_Optimiser_opt_1.json.")

@@ -60,9 +60,9 @@ def test_lookup_coerces_entries_through_input_dtype_and_preserves_source(
     table: dict[str, Any] = {
         "name": case.name,
         "factors": ["factor"],
-        "outputColumn": "rate",
+        "output_column": "rate",
         "entries": [{"factor": case.entry_value, "value": 2.0}],
-        "onMissing": "neutral",
+        "on_missing": "neutral",
     }
 
     result = _apply_rating_table(source.lazy(), table).collect()
@@ -80,7 +80,7 @@ def test_trace_uses_the_same_originating_dtype(case: RatingKeyCase) -> None:
     table = {
         "name": case.name,
         "factors": ["factor"],
-        "outputColumn": "rate",
+        "output_column": "rate",
         "entries": [{"factor": case.entry_value, "value": 2.0}],
     }
 
@@ -97,7 +97,7 @@ def test_trace_uses_the_same_originating_dtype(case: RatingKeyCase) -> None:
 def test_trace_refuses_to_infer_a_rating_factor_dtype() -> None:
     table = {
         "factors": ["factor"],
-        "outputColumn": "rate",
+        "output_column": "rate",
         "entries": [{"factor": "0.1", "value": 2.0}],
     }
 
@@ -378,7 +378,7 @@ def test_unsupported_factor_dtype_fails_before_lookup(dtype: pl.DataType) -> Non
     frame = pl.DataFrame({"factor": pl.Series("factor", [value], dtype=dtype)})
     table = {
         "factors": ["factor"],
-        "outputColumn": "rate",
+        "output_column": "rate",
         "entries": [{"factor": value, "value": 2.0}],
     }
 
@@ -396,9 +396,9 @@ def _date_entry_table(entry: str) -> dict[str, Any]:
     return {
         "name": _DATE_ENTRY_TABLE_NAME,
         "factors": ["factor"],
-        "outputColumn": "rate",
+        "output_column": "rate",
         "entries": [{"factor": entry, "value": 2.0}],
-        "onMissing": "neutral",
+        "on_missing": "neutral",
     }
 
 
@@ -460,9 +460,9 @@ def test_date_entries_reject_other_spellings_on_both_paths(entry: str) -> None:
 def _duration_entry_table(entry: str) -> dict[str, Any]:
     return {
         "factors": ["factor"],
-        "outputColumn": "rate",
+        "output_column": "rate",
         "entries": [{"factor": entry, "value": 2.0}],
-        "onMissing": "neutral",
+        "on_missing": "neutral",
     }
 
 

@@ -31,9 +31,9 @@ type RatingSection = RatingStepEditorSection
 type CombinedOperation = "multiply" | "add" | "min" | "max"
 
 type CombinedOutput = {
-  outputColumn: string
+  output_column: string
   operation: string
-  baseValue: string
+  base_value: string
 }
 
 const OPERATION_OPTIONS: { value: CombinedOperation; label: string }[] = [
@@ -57,21 +57,21 @@ function defaultBaseValue(operation: string): string {
 }
 
 function resolveInitialSection(config: Record<string, unknown>): RatingSection {
-  if (Array.isArray(config.combinedOutputs) && config.combinedOutputs.length > 0) return "combined"
+  if (Array.isArray(config.combined_outputs) && config.combined_outputs.length > 0) return "combined"
   return "tables"
 }
 
 function normaliseCombinedOutputs(config: Record<string, unknown>): CombinedOutput[] {
-  if (!Array.isArray(config.combinedOutputs)) return []
-  return config.combinedOutputs.map((raw) => {
+  if (!Array.isArray(config.combined_outputs)) return []
+  return config.combined_outputs.map((raw) => {
     const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}
     return {
-      outputColumn: typeof item.outputColumn === "string" ? item.outputColumn : "",
+      output_column: typeof item.output_column === "string" ? item.output_column : "",
       operation: typeof item.operation === "string" && item.operation.trim()
         ? item.operation
         : "multiply",
-      baseValue: typeof item.baseValue === "string" || typeof item.baseValue === "number"
-        ? String(item.baseValue)
+      base_value: typeof item.base_value === "string" || typeof item.base_value === "number"
+        ? String(item.base_value)
         : "",
     }
   })
@@ -88,7 +88,7 @@ function formulaFor(operation: string, columns: string[], baseValue: string): st
 function nextCombinedOutputName(outputs: CombinedOutput[], tableOutputColumns: string[]): string {
   const used = new Set([
     ...tableOutputColumns,
-    ...outputs.map(output => output.outputColumn.trim()).filter(Boolean),
+    ...outputs.map(output => output.output_column.trim()).filter(Boolean),
   ])
   let idx = outputs.length + 1
   while (used.has(`combined_${idx}`)) idx += 1
@@ -101,12 +101,12 @@ function combinedOutputHasIssue(
   outputs: CombinedOutput[],
   tableOutputColumns: string[],
 ): boolean {
-  const outputName = output.outputColumn.trim()
+  const outputName = output.output_column.trim()
   const outputNameIssue = !outputName ||
     tableOutputColumns.includes(outputName) ||
-    outputs.some((other, otherIdx) => otherIdx !== idx && other.outputColumn.trim() === outputName)
+    outputs.some((other, otherIdx) => otherIdx !== idx && other.output_column.trim() === outputName)
   const operationIssue = !isCombinedOperation(output.operation)
-  const baseValueIssue = output.baseValue.trim() === "" || !Number.isFinite(Number(output.baseValue))
+  const baseValueIssue = output.base_value.trim() === "" || !Number.isFinite(Number(output.base_value))
   return outputNameIssue || operationIssue || baseValueIssue
 }
 
@@ -163,7 +163,7 @@ function onlyNonBandedLevels(
 }
 
 function tableDisplayName(table: RatingTable, idx: number): string {
-  return table.outputColumn.trim() || `Table ${idx + 1}`
+  return table.output_column.trim() || `Table ${idx + 1}`
 }
 
 function tableStatusLabel(state: "healthy" | "problem"): string {
@@ -285,37 +285,37 @@ export default function RatingStepEditor({
     activeSection === "tables",
   )
   const tableEditorUnavailable = tableList.noneVisible
-  const outputColumnBlank = table.outputColumn.trim() === ""
+  const outputColumnBlank = table.output_column.trim() === ""
   const outputColumnDuplicate = !outputColumnBlank && tables.some((candidate, idx) => (
-    idx !== safeIdx && candidate.outputColumn.trim() === table.outputColumn.trim()
+    idx !== safeIdx && candidate.output_column.trim() === table.output_column.trim()
   ))
   const outputColumnInvalid = outputColumnBlank || outputColumnDuplicate
   const outputColumnInputId = `rating-output-column-${safeIdx}`
   const outputColumnErrorId = `${outputColumnInputId}-error`
   const defaultInputId = `rating-default-${safeIdx}`
   const onMissingInputId = `rating-on-missing-${safeIdx}`
-  const hasDefault = typeof table.defaultValue === "string" && table.defaultValue.trim() !== ""
+  const hasDefault = typeof table.default_value === "string" && table.default_value.trim() !== ""
   const hasCombinedOutput = combinedOutputs.length > 0
   const safeCombinedIdx = hasCombinedOutput ? Math.min(activeCombinedIdx, combinedOutputs.length - 1) : 0
-  const combinedOutput = combinedOutputs[safeCombinedIdx] || { outputColumn: "", operation: "multiply" as CombinedOperation, baseValue: "1.0" }
-  const combinedColumnBlank = combinedOutput.outputColumn.trim() === ""
+  const combinedOutput = combinedOutputs[safeCombinedIdx] || { output_column: "", operation: "multiply" as CombinedOperation, base_value: "1.0" }
+  const combinedColumnBlank = combinedOutput.output_column.trim() === ""
   const combinedColumnInputId = `rating-combined-output-column-${safeCombinedIdx}`
   const combinedColumnErrorId = `${combinedColumnInputId}-error`
   const combinedBaseValueInputId = `rating-combined-base-value-${safeCombinedIdx}`
   const combinedBaseValueErrorId = `${combinedBaseValueInputId}-error`
   const combinedOperationErrorId = `rating-combined-operation-${safeCombinedIdx}-error`
-  const combinedBaseValueBlank = combinedOutput.baseValue.trim() === ""
+  const combinedBaseValueBlank = combinedOutput.base_value.trim() === ""
   const combinedBaseValueInvalid = hasCombinedOutput && (
-    combinedBaseValueBlank || !Number.isFinite(Number(combinedOutput.baseValue))
+    combinedBaseValueBlank || !Number.isFinite(Number(combinedOutput.base_value))
   )
   const combinedOperationInvalid = hasCombinedOutput && !isCombinedOperation(combinedOutput.operation)
-  const tableOutputColumns = tables.map(t => t.outputColumn.trim()).filter(Boolean)
-  const combinedOutputColumns = combinedOutputs.map(t => t.outputColumn.trim()).filter(Boolean)
-  const currentCombinedOutputName = combinedOutput.outputColumn.trim()
+  const tableOutputColumns = tables.map(t => t.output_column.trim()).filter(Boolean)
+  const combinedOutputColumns = combinedOutputs.map(t => t.output_column.trim()).filter(Boolean)
+  const currentCombinedOutputName = combinedOutput.output_column.trim()
   const combinedColumnDuplicate = currentCombinedOutputName !== "" && (
     tableOutputColumns.includes(currentCombinedOutputName) ||
     combinedOutputs.some((item, idx) => (
-      idx !== safeCombinedIdx && item.outputColumn.trim() === currentCombinedOutputName
+      idx !== safeCombinedIdx && item.output_column.trim() === currentCombinedOutputName
     ))
   )
   const hasConfiguredCombined = combinedOutputColumns.length > 0
@@ -336,13 +336,13 @@ export default function RatingStepEditor({
     commitTables(next)
   }
 
-  // An empty Default is removed rather than saved, so a miss follows onMissing.
+  // An empty Default is removed rather than saved, so a miss follows on_missing.
   const setDefaultValue = (idx: number, raw: string) => {
     const value = raw.trim()
     commitTables(tables.map((t, i) => {
       if (i !== idx) return t
-      const { defaultValue: _previous, ...rest } = t
-      return value ? { ...rest, defaultValue: value } : rest
+      const { default_value: _previous, ...rest } = t
+      return value ? { ...rest, default_value: value } : rest
     }))
   }
 
@@ -368,15 +368,15 @@ export default function RatingStepEditor({
     const rebuilt =
       cells > MAX_EDITABLE_TABLE_CELLS
         ? t.entries
-        : buildCartesianEntries(newFactors, factorLevels, t.entries, t.defaultValue)
+        : buildCartesianEntries(newFactors, factorLevels, t.entries, t.default_value)
     const factorDtypes = newFactors.reduce<Record<string, RatingFactorDtype>>((result, factor) => {
-      const descriptor = t.factorDtypes?.[factor]
+      const descriptor = t.factor_dtypes?.[factor]
       if (descriptor) result[factor] = descriptor
       return result
     }, {})
     updateTable(idx, {
       factors: newFactors,
-      factorDtypes: Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined,
+      factor_dtypes: Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined,
       entries: rebuilt,
     })
   }
@@ -427,17 +427,17 @@ export default function RatingStepEditor({
   }
 
   const commitCombinedOutputs = (next: CombinedOutput[]) => {
-    onUpdate({ combinedOutputs: next })
+    onUpdate({ combined_outputs: next })
   }
 
   const updateCombinedOutput = (idx: number, patch: Partial<CombinedOutput>) => {
     const next = combinedOutputs.map((item, i) => {
       if (i !== idx) return item
       const operation = patch.operation ?? item.operation
-      const baseValue = patch.operation && !patch.baseValue
+      const baseValue = patch.operation && !patch.base_value
         ? defaultBaseValue(operation)
-        : patch.baseValue ?? item.baseValue
-      return { ...item, ...patch, operation, baseValue }
+        : patch.base_value ?? item.base_value
+      return { ...item, ...patch, operation, base_value: baseValue }
     })
     commitCombinedOutputs(next)
   }
@@ -445,7 +445,7 @@ export default function RatingStepEditor({
   const addCombinedOutput = () => {
     const next = [
       ...combinedOutputs,
-      { outputColumn: nextCombinedOutputName(combinedOutputs, tableOutputColumns), operation: "multiply" as CombinedOperation, baseValue: "1.0" },
+      { output_column: nextCombinedOutputName(combinedOutputs, tableOutputColumns), operation: "multiply" as CombinedOperation, base_value: "1.0" },
     ]
     commitCombinedOutputs(next)
     setActiveCombinedIdx(combinedOutputs.length)
@@ -461,7 +461,7 @@ export default function RatingStepEditor({
   const rebuildCurrentEntries = () => {
     const t = tables[safeIdx]
     if (cartesianCellCount(t.factors, factorLevels) > MAX_EDITABLE_TABLE_CELLS) return
-    const rebuilt = buildCartesianEntries(t.factors, factorLevels, t.entries, t.defaultValue)
+    const rebuilt = buildCartesianEntries(t.factors, factorLevels, t.entries, t.default_value)
     updateTable(safeIdx, { entries: rebuilt })
   }
 
@@ -627,9 +627,9 @@ export default function RatingStepEditor({
       <div className="grid grid-cols-[2fr_1fr_1.3fr] gap-2">
         <div>
           <label htmlFor={outputColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: outputColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Output Column</label>
-          <CommittedTextField key={`out-${safeIdx}`} type="text" value={table.outputColumn}
+          <CommittedTextField key={`out-${safeIdx}`} type="text" value={table.output_column}
             id={outputColumnInputId}
-            onCommit={(outputColumn) => updateTable(safeIdx, { outputColumn })}
+            onCommit={(outputColumn) => updateTable(safeIdx, { output_column: outputColumn })}
             aria-invalid={outputColumnInvalid}
             aria-describedby={outputColumnInvalid ? outputColumnErrorId : undefined}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
@@ -642,17 +642,17 @@ export default function RatingStepEditor({
         </div>
         <div>
           <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.defaultValue ?? ""}
+          <CommittedTextField key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" value={table.default_value ?? ""}
             onCommit={(value) => setDefaultValue(safeIdx, value)}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
             style={INPUT_STYLE} placeholder="none" />
         </div>
         <div>
           <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
-          <select id={onMissingInputId} value={table.onMissing ?? "error"}
+          <select id={onMissingInputId} value={table.on_missing ?? "error"}
             disabled={hasDefault}
             title={hasDefault ? "The default fills every miss" : "What a level with no entry does"}
-            onChange={(e) => updateTable(safeIdx, { onMissing: e.target.value })}
+            onChange={(e) => updateTable(safeIdx, { on_missing: e.target.value })}
             className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
             style={INPUT_STYLE}>
             <option value="error">Stop the run</option>
@@ -745,7 +745,7 @@ export default function RatingStepEditor({
         return (
           <div className="flex items-center justify-between text-[10px] font-mono px-1"
             style={{ color: 'var(--text-muted)' }}>
-            <span>{table.outputColumn ? <span style={{ color: 'var(--text-secondary)' }}>{table.outputColumn}</span> : 'untitled'}</span>
+            <span>{table.output_column ? <span style={{ color: 'var(--text-secondary)' }}>{table.output_column}</span> : 'untitled'}</span>
             <span>{table.entries.length} entries{s ? ` · range ${s.min.toFixed(2)}–${s.max.toFixed(2)}` : ''}</span>
           </div>
         )
@@ -800,7 +800,7 @@ export default function RatingStepEditor({
                       className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
                       style={{ background: itemHasIssue ? 'var(--warning-strong)' : 'var(--success)' }}
                     />
-                    <span className="font-mono truncate max-w-[130px]">{item.outputColumn || `Combined ${i + 1}`}</span>
+                    <span className="font-mono truncate max-w-[130px]">{item.output_column || `Combined ${i + 1}`}</span>
                     <button
                       type="button"
                       aria-label="Remove combined output"
@@ -839,9 +839,9 @@ export default function RatingStepEditor({
               <CommittedTextField
                 key={`combined-out-${safeCombinedIdx}`}
                 type="text"
-                value={combinedOutput.outputColumn}
+                value={combinedOutput.output_column}
                 id={combinedColumnInputId}
-                onCommit={(outputColumn) => updateCombinedOutput(safeCombinedIdx, { outputColumn })}
+                onCommit={(outputColumn) => updateCombinedOutput(safeCombinedIdx, { output_column: outputColumn })}
                 aria-invalid={combinedColumnInvalid}
                 aria-describedby={combinedColumnInvalid ? combinedColumnErrorId : undefined}
                 className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
@@ -885,8 +885,8 @@ export default function RatingStepEditor({
                   id={combinedBaseValueInputId}
                   type="number"
                   step="any"
-                  value={combinedOutput.baseValue}
-                  onCommit={(baseValue) => updateCombinedOutput(safeCombinedIdx, { baseValue })}
+                  value={combinedOutput.base_value}
+                  onCommit={(baseValue) => updateCombinedOutput(safeCombinedIdx, { base_value: baseValue })}
                   aria-invalid={combinedBaseValueInvalid}
                   aria-describedby={combinedBaseValueInvalid ? combinedBaseValueErrorId : undefined}
                   className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
@@ -903,9 +903,9 @@ export default function RatingStepEditor({
             {tableOutputColumns.length > 0 && (
               <div className="text-[10px] font-mono px-2 py-1.5 rounded flex items-center gap-1.5 overflow-x-auto"
                 style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}>
-                <span style={{ color: accentColor, fontWeight: 600 }}>{combinedOutput.outputColumn || "?"}</span>
+                <span style={{ color: accentColor, fontWeight: 600 }}>{combinedOutput.output_column || "?"}</span>
                 <span style={{ color: 'var(--text-muted)' }}>=</span>
-                <span>{formulaFor(combinedOutput.operation, tableOutputColumns, combinedOutput.baseValue)}</span>
+                <span>{formulaFor(combinedOutput.operation, tableOutputColumns, combinedOutput.base_value)}</span>
               </div>
             )}
           </div>

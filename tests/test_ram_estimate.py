@@ -102,7 +102,7 @@ def _file_input_config(path: object, *, format: str | None = None) -> dict[str, 
             "ndjson": "ndjson",
         }.get(suffix, "parquet")
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": format,
         "mode": "scan",
         "path": path_string,
@@ -123,7 +123,7 @@ def _ready_file_input_config(
 
 def _databricks_input_config(table: str) -> dict[str, object]:
     return {
-        "inputType": "databricks",
+        "input_type": "databricks",
         "http_path": "/sql/1.0/warehouses/test",
         "table": table,
         "arguments": {},
@@ -452,7 +452,7 @@ def test_json_api_input_ports_resolve_when_their_consumer_is_an_edge_join() -> N
     joined = _make_edge_join_node(
         config={
             "how": "left",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
             "on": ["quote_id"],
             "coalesce": False,
         }
@@ -923,7 +923,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
                 "selected_columns": ["quote_id", "premium", "claim_count"],
@@ -974,7 +974,7 @@ class TestEstimateSafeTrainingRows:
             node_id="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["id"],
                 "validate": "m:m",
             },
@@ -1007,7 +1007,7 @@ class TestEstimateSafeTrainingRows:
         right_path = tmp_path / "right.parquet"
         pl.DataFrame({"id": range(20), "left_value": range(20)}).write_parquet(left_path)
         pl.DataFrame({"id": range(20), "right_value": range(20)}).write_parquet(right_path)
-        config: dict[str, object] = {"how": "left", "maintainOrder": "left_right", "on": ["id"]}
+        config: dict[str, object] = {"how": "left", "maintain_order": "left_right", "on": ["id"]}
         if validate is not None:
             config["validate"] = validate
         joined = _make_transform_node(node_id="joined", config=config)
@@ -1152,7 +1152,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
             },
@@ -1214,7 +1214,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
                 "coalesce": False,
@@ -1280,7 +1280,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
                 "coalesce": False,
@@ -1313,7 +1313,7 @@ class TestEstimateSafeTrainingRows:
         self,
         tmp_path,
     ) -> None:
-        """leftOn/rightOn right keys still suffix when they collide with base columns."""
+        """left_on/right_on right keys still suffix when they collide with base columns."""
         base_path = tmp_path / "base.parquet"
         join_path = tmp_path / "join.parquet"
         rows = 1000
@@ -1346,9 +1346,9 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
-                "leftOn": ["id"],
-                "rightOn": ["jid"],
+                "maintain_order": "left_right",
+                "left_on": ["id"],
+                "right_on": ["jid"],
                 "validate": "1:1",
                 "coalesce": False,
             },
@@ -1374,7 +1374,7 @@ class TestEstimateSafeTrainingRows:
         self,
         tmp_path,
     ) -> None:
-        """Default leftOn/rightOn joins coalesce the right key like Polars."""
+        """Default left_on/right_on joins coalesce the right key like Polars."""
         base_path = tmp_path / "base.parquet"
         join_path = tmp_path / "join.parquet"
         rows = 1000
@@ -1406,9 +1406,9 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
-                "leftOn": ["id"],
-                "rightOn": ["jid"],
+                "maintain_order": "left_right",
+                "left_on": ["id"],
+                "right_on": ["jid"],
                 "validate": "1:1",
             },
         )
@@ -1465,7 +1465,7 @@ class TestEstimateSafeTrainingRows:
             label="joined",
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
                 "validate": "1:1",
             },
@@ -1632,7 +1632,7 @@ class TestDetailedEdgeJoinColumnResolution:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
                 "selected_columns": ["premium", "premium"],
             },
@@ -1657,7 +1657,7 @@ class TestDetailedEdgeJoinColumnResolution:
         joined = _make_edge_join_node(
             config={
                 "how": "right",
-                "maintainOrder": "right_left",
+                "maintain_order": "right_left",
                 "on": ["quote_id"],
             },
         )
@@ -1689,7 +1689,7 @@ class TestDetailedEdgeJoinColumnResolution:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["quote_id"],
             },
         )
@@ -1734,9 +1734,9 @@ class TestEdgeJoinKeyColumnsOnPath:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
-                "leftOn": ["quote_id"],
-                "rightOn": ["external_quote_id"],
+                "maintain_order": "left_right",
+                "left_on": ["quote_id"],
+                "right_on": ["external_quote_id"],
             },
         )
         target = _make_modelling_node(node_id="target")
@@ -1769,9 +1769,9 @@ class TestEdgeJoinKeyColumnsOnPath:
         joined = _make_edge_join_node(
             config={
                 "how": "left",
-                "maintainOrder": "left_right",
-                "leftOn": ["quote_id"],
-                "rightOn": ["external_quote_id"],
+                "maintain_order": "left_right",
+                "left_on": ["quote_id"],
+                "right_on": ["external_quote_id"],
             },
         )
         target = _make_modelling_node(node_id="target")
@@ -1980,7 +1980,7 @@ def test_cardinality_binding_collision_and_safe_edge_names_fail_closed(monkeypat
         "resolve_input_mapping_names",
         lambda source_names, mapping: (source_names[1], source_names[1]),
     )
-    node.data.config["inputMapping"] = {"left": names[0], "right": names[1]}
+    node.data.config["input_mapping"] = {"left": names[0], "right": names[1]}
     assert _cardinality_name_bindings(index, node, edges) is None
 
     missing = GraphEdge(id="missing", source="absent", target="target")
@@ -2046,7 +2046,7 @@ def _cardinality_index_for_node(
     ("node_type", "config", "expected_rows"),
     [
         (NodeType.POLARS, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
-        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3}, 12),
+        (NodeType.SCENARIO_EXPANDER, {"step_count": 3}, 12),
         (NodeType.RATING_STEP, {}, 4),
         (NodeType.EXPLORE, {"code": "df = df.filter(pl.col('value') > 0)"}, 4),
         (NodeType.MODEL_SCORE, {}, 4),
@@ -2072,7 +2072,7 @@ def test_row_cardinality_resolution_proves_closed_node_semantics(
     ("node_type", "config", "parent_count", "reason"),
     [
         (NodeType.POLARS, {}, 1, "empty_code"),
-        (NodeType.SCENARIO_EXPANDER, {"stepCount": 0}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {"step_count": 0}, 1, "invalid_scenario_steps"),
         (NodeType.SCENARIO_EXPANDER, {}, 2, "invalid_input_cardinality"),
         (NodeType.RATING_STEP, {}, 2, "invalid_input_cardinality"),
         (NodeType.OPTIMISER, {"data_input": "absent"}, 1, "invalid_optimiser_input"),
@@ -2125,7 +2125,7 @@ def test_ratebook_apply_cardinality_uses_exact_incoming_edge_name() -> None:
 
 
 def test_cardinality_helpers_fail_closed_for_invalid_bindings_and_missing_nodes() -> None:
-    index = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"alias": 1}})
+    index = _cardinality_index_for_node(NodeType.POLARS, {"input_mapping": {"alias": 1}})
     target = index.node_map["target"]
     edge = index.pruned_edges[0]
     parent = index.cardinality_by_target[(edge.source, None)]
@@ -2148,7 +2148,7 @@ def test_cardinality_binding_uses_collapsed_submodel_public_port_name() -> None:
                         "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": "definition_public_output",
+                            "definition_id": "definition_public_output",
                             "alias": "unrelated_alias",
                         },
                     },
@@ -2248,21 +2248,21 @@ def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
     cases = [
         (
             NodeType.POLARS,
-            {"code": "df = df", "inputMapping": {"df": 1}},
+            {"code": "df = df", "input_mapping": {"df": 1}},
             1,
             "invalid_input_name_binding",
         ),
-        (NodeType.SCENARIO_EXPANDER, {"stepCount": "invalid"}, 1, "invalid_scenario_steps"),
+        (NodeType.SCENARIO_EXPANDER, {"step_count": "invalid"}, 1, "invalid_scenario_steps"),
         (
             NodeType.SCENARIO_EXPANDER,
-            {"stepCount": 2, "code": "df = df.filter(pl.col('x') > 0)"},
+            {"step_count": 2, "code": "df = df.filter(pl.col('x') > 0)"},
             1,
             None,
         ),
         (NodeType.MODEL_SCORE, {"code": "df = df.filter(pl.col('x') > 0)"}, 1, None),
         (
             NodeType.MODEL_SCORE,
-            {"code": "df = df", "inputMapping": {"df": 1}},
+            {"code": "df = df", "input_mapping": {"df": 1}},
             1,
             "invalid_input_name_binding",
         ),
@@ -2271,7 +2271,7 @@ def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
         (NodeType.EXTERNAL_FILE, {"code": "df = df.filter(pl.col('x') > 0)"}, 1, None),
         (
             NodeType.EXTERNAL_FILE,
-            {"code": "df = df", "inputMapping": {"df": 1}},
+            {"code": "df = df", "input_mapping": {"df": 1}},
             1,
             "invalid_input_name_binding",
         ),
@@ -2292,7 +2292,7 @@ def test_cardinality_binding_and_node_failure_paths_fail_closed() -> None:
 
 def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms() -> None:
     proof = _ResolvedRowCardinality.proven(4, 4, ("proof",))
-    malformed = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": ["not-a-map"]})
+    malformed = _cardinality_index_for_node(NodeType.POLARS, {"input_mapping": ["not-a-map"]})
     edge = malformed.pruned_edges[0]
     assert (
         _named_cardinality_inputs(malformed, malformed.node_map["target"], ((edge, proof),)) is None
@@ -2301,14 +2301,14 @@ def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms(
     # validates every non-``None`` value, so the estimator must not treat it
     # as "no mapping" and hand back an available estimate.
     for falsey in ([], "", 0):
-        shaped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": falsey})
+        shaped = _cardinality_index_for_node(NodeType.POLARS, {"input_mapping": falsey})
         shaped_edge = shaped.pruned_edges[0]
         assert (
             _named_cardinality_inputs(shaped, shaped.node_map["target"], ((shaped_edge, proof),))
             is None
         ), falsey
 
-    mapped = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"alias": "Unnamed"}})
+    mapped = _cardinality_index_for_node(NodeType.POLARS, {"input_mapping": {"alias": "Unnamed"}})
     mapped_edge = mapped.pruned_edges[0]
     bindings = _named_cardinality_inputs(mapped, mapped.node_map["target"], ((mapped_edge, proof),))
     assert bindings is not None and bindings["alias"] == proof
@@ -2316,7 +2316,7 @@ def test_cardinality_resolution_covers_malformed_bindings_and_source_transforms(
     # Two edges collapsing onto one logical name is a graph the executor
     # refuses, so the estimator raises its error rather than quietly declining
     # to measure a run that cannot start.
-    collision = _cardinality_index_for_node(NodeType.POLARS, {"inputMapping": {"a": "b"}}, 2)
+    collision = _cardinality_index_for_node(NodeType.POLARS, {"input_mapping": {"a": "b"}}, 2)
     collision.node_map["parent-0"].data.label = "a"
     collision.node_map["parent-1"].data.label = "b"
     collision_edges = tuple(
@@ -3780,14 +3780,14 @@ def test_an_ordinary_two_port_join_is_unchanged_by_operand_counting(tmp_path: Pa
 
 
 def _alias_join_graph(path: Path, code: str, input_mapping: dict[str, str]) -> PipelineGraph:
-    """One source into a join node that renames it through ``inputMapping``."""
+    """One source into a join node that renames it through ``input_mapping``."""
     source = _make_source_node(
         node_id="src", label="src", node_type="dataInput", config=_ready_file_input_config(path)
     )
     joined = _make_transform_node(
         node_id="joined",
         label="joined",
-        config={"code": code, "inputMapping": input_mapping},
+        config={"code": code, "input_mapping": input_mapping},
     )
     return PipelineGraph(
         nodes=[source, joined],
@@ -3796,7 +3796,7 @@ def _alias_join_graph(path: Path, code: str, input_mapping: dict[str, str]) -> P
 
 
 def test_a_self_join_through_an_input_mapping_alias_is_charged_twice(tmp_path: Path) -> None:
-    """``inputMapping`` renames the frame; both operands are still resident.
+    """``input_mapping`` renames the frame; both operands are still resident.
 
     Counting by the edge's own name and defaulting the alias to one reference
     silently halved this estimate.
@@ -3888,7 +3888,7 @@ def test_edge_join_contract_decides_the_many_to_many_flag(
         node_type="dataInput",
         config=_ready_file_input_config(right_path),
     )
-    config: dict[str, object] = {"how": "inner", "maintainOrder": "left_right", "on": ["segment"]}
+    config: dict[str, object] = {"how": "inner", "maintain_order": "left_right", "on": ["segment"]}
     if validate is not None:
         config["validate"] = validate
     joined = _make_edge_join_node(node_id="joined", label="joined", config=config)

@@ -132,7 +132,7 @@ _MLFLOW_SOURCE_CONFIG_FIELDS = (
     "mlflow_destination",
     "registered_model",
     "run_id",
-    "sourceType",
+    "source_type",
     "version",
 )
 _RUNTIME_INPUT_CONFIG_FIELDS: dict[NodeType, tuple[str, ...]] = {
@@ -141,7 +141,7 @@ _RUNTIME_INPUT_CONFIG_FIELDS: dict[NodeType, tuple[str, ...]] = {
         "connection",
         "format",
         "http_path",
-        "inputType",
+        "input_type",
         "mode",
         "query",
         "table",
@@ -866,17 +866,17 @@ def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[st
 def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     """Return config fields that cause reads from the local filesystem."""
     fields = list(_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE.get(node.data.nodeType, ()))
-    if node.data.nodeType == NodeType.DATA_INPUT and node.data.config.get("inputType") in {
+    if node.data.nodeType == NodeType.DATA_INPUT and node.data.config.get("input_type") in {
         "file",
         "lakehouse",
     }:
         fields.append("path")
     if (
         node.data.nodeType == NodeType.OPTIMISER_APPLY
-        and node.data.config.get("sourceType") == "file"
+        and node.data.config.get("source_type") == "file"
     ):
         fields.append("artifact_path")
-    if node.data.nodeType == NodeType.MODEL_SCORE and node.data.config.get("sourceType") == "file":
+    if node.data.nodeType == NodeType.MODEL_SCORE and node.data.config.get("source_type") == "file":
         fields.append("model_path")
     return tuple(fields)
 
@@ -986,7 +986,7 @@ def _runtime_input_fingerprint_entry(
     Beyond the signed files and the node's runtime-input config fields, an
     MLflow-sourced ``MODEL_SCORE`` or ``OPTIMISER_APPLY`` node records the
     *resolved* backend identity, because its stored config (``run_id``,
-    ``version``, ``sourceType``, ``mlflow_destination``) stays identical when
+    ``version``, ``source_type``, ``mlflow_destination``) stays identical when
     the server URL, the local folder, or the node's destination changes
     underneath it. A registered source also records the version its alias or
     ``latest`` reference currently targets.
@@ -1005,9 +1005,9 @@ def _runtime_input_fingerprint_entry(
     if node.data.nodeType in (
         NodeType.MODEL_SCORE,
         NodeType.OPTIMISER_APPLY,
-    ) and config.get("sourceType") in ("run", "registered"):
+    ) and config.get("source_type") in ("run", "registered"):
         files["mlflow_backend"] = mlflow_backend_signature(config)
-        if config.get("sourceType") == "registered":
+        if config.get("source_type") == "registered":
             files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,

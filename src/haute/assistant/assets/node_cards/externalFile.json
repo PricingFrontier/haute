@@ -2,8 +2,8 @@
   "node_type": "externalFile",
   "authorable": true,
   "fields": {
-    "path": "The file to load, relative to the project root. The dry-run loads it, so it must exist and load as fileType.",
-    "fileType": "\"json\", \"pickle\" or \"joblib\". A model file Haute trains is scored with a modelScore node instead.",
+    "path": "The file to load, relative to the project root. The dry-run loads it, so it must exist and load as file_type.",
+    "file_type": "\"json\", \"pickle\" or \"joblib\". A model file Haute trains is scored with a modelScore node instead.",
     "steps": "Step cards over the first input: df is already the first input (no source step), the loaded object is obj, and further inputs are read by their edge names. With steps [] the node returns its first input unchanged and never uses the file."
   },
   "inputs": [
@@ -21,7 +21,7 @@
       "intent": "Add the base rate stored in a JSON reference file.",
       "config": {
         "path": "reference/tariff.json",
-        "fileType": "json",
+        "file_type": "json",
         "steps": [
           {
             "id": "logic",
@@ -37,7 +37,7 @@
       "intent": "Map each policy's region to its relativity from the tariff file, defaulting unknown regions to 1.0.",
       "config": {
         "path": "reference/tariff.json",
-        "fileType": "json",
+        "file_type": "json",
         "steps": [
           {
             "id": "logic",

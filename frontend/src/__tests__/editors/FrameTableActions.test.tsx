@@ -54,7 +54,7 @@ const GRID = {
     ["premium", "$[:].premium", "true"],
   ],
 }
-const SCHEMA = { outputMapping: [{ source_port: "policies", source_column: "policy_id" }] }
+const SCHEMA = { output_mapping: [{ source_port: "policies", source_column: "policy_id" }] }
 
 function renderActions(overrides: Partial<React.ComponentProps<typeof FrameTableActions>> = {}) {
   return render(

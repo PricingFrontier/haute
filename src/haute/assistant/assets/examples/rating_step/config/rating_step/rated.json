@@ -1,16 +1,16 @@
 {
-  "combinedOutputs": [
+  "combined_outputs": [
     {
-      "outputColumn": "fixture_result",
+      "output_column": "fixture_result",
       "operation": "multiply",
-      "baseValue": 100.0
+      "base_value": 100.0
     }
   ],
   "tables": [
     {
       "factors": ["driver_age_band"],
-      "outputColumn": "fixture_factor",
-      "defaultValue": 1.0,
+      "output_column": "fixture_factor",
+      "default_value": 1.0,
       "rows": [
         ["young", 1.2],
         ["experienced", 1.0]

@@ -6,7 +6,7 @@ every node through :func:`bind_node_inputs`, so ``haute run``, a plain
 parameters name the inputs it reads:
 
 - a Polars node, a declaration and an External File: every positional
-  parameter names one input (through the node's ``inputMapping``, when it
+  parameter names one input (through the node's ``input_mapping``, when it
   declares one);
 - a frame hook (Rating Step, Model Score, Scenario Expander, Explore) takes
   as ``df`` the frame its decorator makes from its first input, so that input
@@ -51,7 +51,7 @@ _CODE_READS_PARAMETERS: frozenset[NodeType] = frozenset({NodeType.POLARS, NodeTy
 
 _REMEDIATION = (
     "Name each parameter after the node or table connected to it, in the order of the "
-    "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
+    "node's connect() calls, or declare input_mapping={logical: connected} on the decorator."
 )
 
 

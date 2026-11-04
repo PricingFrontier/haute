@@ -82,7 +82,7 @@ def _graph_with_submodel() -> dict:
                     "label": "pricing",
                     "nodeType": "submodel",
                     "config": {
-                        "definitionId": "pricing",
+                        "definition_id": "pricing",
                         "alias": "pricing",
                     },
                 },

@@ -33,7 +33,7 @@ class TestModelScoreColumnDetectionLoud:
     "opaque", downstream optimiser/rating nodes then see missing columns
     and produce confusing errors several steps later.
 
-    Rule: a misconfigured model-score node (sourceType set, but mandatory
+    Rule: a misconfigured model-score node (source_type set, but mandatory
     reference missing) must raise ``ConfigError`` on the spot.
     """
 
@@ -57,7 +57,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._types import NodeType
 
         config: dict[str, Any] = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run-1",
             "artifact_path": "model.cbm",
             "output_column": "pred",
@@ -78,7 +78,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._builders import _model_score_columns
 
         bad_config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "",
             "artifact_path": "model.cbm",
             "output_column": "pred",
@@ -88,13 +88,13 @@ class TestModelScoreColumnDetectionLoud:
         # The error must hint at the missing field so the operator can fix
         # it without tracing through MLflow internals.
         err_text = str(exc_info.value)
-        assert "run_id" in err_text.lower() or "sourceType" in err_text
+        assert "run_id" in err_text.lower() or "source_type" in err_text
 
     def test_registered_source_without_model_name_raises(self) -> None:
         from haute._builders import _model_score_columns
 
         bad_config = {
-            "sourceType": "registered",
+            "source_type": "registered",
             "registered_model": "",
             "version": "latest",
             "output_column": "pred",
@@ -111,7 +111,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._builders import _model_score_columns
 
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "definitely-not-a-real-run",
             "artifact_path": "model.cbm",
             "output_column": "pred",
@@ -127,7 +127,7 @@ class TestModelScoreColumnDetectionLoud:
             assert "run" in str(exc_info.value).lower() or "file" in str(exc_info.value).lower()
 
     def test_empty_source_type_is_passthrough(self) -> None:
-        """An *unconfigured* node (blank sourceType) must still be OK —
+        """An *unconfigured* node (blank source_type) must still be OK —
         this is the dev-UX case of dragging an empty model-score node
         onto the canvas.  Silent passthrough here is correct.
 
@@ -140,7 +140,7 @@ class TestModelScoreColumnDetectionLoud:
         """
         from haute._builders import _model_score_columns
 
-        config: dict[str, Any] = {"sourceType": "", "output_column": "pred"}
+        config: dict[str, Any] = {"source_type": "", "output_column": "pred"}
         produced, referenced = _model_score_columns(config)
         assert produced == {"pred"}
         assert referenced == set()
@@ -153,7 +153,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._builders import _model_score_columns
 
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "real_run",
             "artifact_path": "model.cbm",
             "output_column": "pred",
@@ -175,7 +175,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
 
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "obsolete-remote-run",
             "artifact_path": "model.cbm",
             "output_column": "pred",
@@ -208,7 +208,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
 
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "obsolete-remote-run",
             "artifact_path": "model.cbm",
             "output_column": "pred",
@@ -223,7 +223,7 @@ class TestModelScoreColumnDetectionLoud:
         from haute._mlflow_io import ScoringModel
 
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run",
             "artifact_path": "model",
             "output_column": "pred",

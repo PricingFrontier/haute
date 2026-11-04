@@ -37,21 +37,21 @@ from haute.projection import declared_inputs_by_parent, overlay_declared_contrac
 MODEL_FEATURES = ["rate", "premium"]
 
 _SOURCE = {
-    "inputType": "file",
+    "input_type": "file",
     "format": "parquet",
     "mode": "scan",
     "path": "data/policies.parquet",
     "arguments": {},
 }
 _SCORE = {
-    "sourceType": "run",
+    "source_type": "run",
     "run_id": "run-1",
     "artifact_path": "model.cbm",
     "task": "regression",
     "output_column": "prediction",
 }
 _RESPONSE = {
-    "outputMapping": [
+    "output_mapping": [
         {
             "source_port": "in",
             "source_column": column,
@@ -62,7 +62,7 @@ _RESPONSE = {
     ],
 }
 _RESULTS = {
-    "outputType": "file",
+    "output_type": "file",
     "format": "csv",
     "mode": "sink",
     "path": "outputs/results.csv",
@@ -94,7 +94,7 @@ def _graph() -> PipelineGraph:
                 "n-lookup",
                 "Lookup",
                 NodeType.EXTERNAL_FILE,
-                {"path": "models/lookup.pkl", "fileType": "pickle"},
+                {"path": "models/lookup.pkl", "file_type": "pickle"},
             ),
             _node("n-opaque", "Opaque Transform", NodeType.POLARS, {"code": "df = Policies"}),
             _node(

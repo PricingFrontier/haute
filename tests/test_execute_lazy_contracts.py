@@ -894,7 +894,7 @@ def test_runtime_join_inference_rejects_invalid_input_mapping(
             nodeType=NodeType.POLARS,
             config={
                 "code": "df = left.select(['x'])",
-                "inputMapping": input_mapping,
+                "input_mapping": input_mapping,
             },
         ),
     )
@@ -942,7 +942,7 @@ def _runtime_selector_demands_for(node: GraphNode) -> dict:
 
 
 def test_runtime_selector_inference_resolves_a_selector_from_the_input_schema() -> None:
-    demands = _runtime_selector_demands_for(_selector_node(inputMapping={"rows": "src"}))
+    demands = _runtime_selector_demands_for(_selector_node(input_mapping={"rows": "src"}))
 
     assert list(demands.values()) == [{"x"}]
 
@@ -961,7 +961,7 @@ def test_runtime_selector_inference_fails_closed_when_the_edge_name_is_invalid(
 def test_runtime_selector_inference_rejects_invalid_input_mapping(
     input_mapping: object,
 ) -> None:
-    assert _runtime_selector_demands_for(_selector_node(inputMapping=input_mapping)) == {}
+    assert _runtime_selector_demands_for(_selector_node(input_mapping=input_mapping)) == {}
 
 
 def test_runtime_join_inference_maps_alias_demand_to_its_physical_edge() -> None:
@@ -972,7 +972,7 @@ def test_runtime_join_inference_maps_alias_demand_to_its_physical_edge() -> None
             nodeType=NodeType.POLARS,
             config={
                 "code": "df = alias.select(['x'])",
-                "inputMapping": {"alias": "left"},
+                "input_mapping": {"alias": "left"},
             },
         ),
     )
@@ -1076,7 +1076,7 @@ def test_bounded_lazy_execution_runtime_projects_builtin_edge_join_and_final_dia
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
-                            "maintainOrder": "left_right",
+                            "maintain_order": "left_right",
                             "on": ["quote_id"],
                             "suffix": "_right",
                             "contract": "opaque",
@@ -1163,7 +1163,7 @@ def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic()
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
-                            "maintainOrder": "left_right",
+                            "maintain_order": "left_right",
                             "on": ["quote_id"],
                             "suffix": "_right",
                             "contract": "opaque",

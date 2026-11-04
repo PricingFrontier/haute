@@ -433,14 +433,14 @@ def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[
 def _resolve_output_rows(
     node_type: NodeType, config: Mapping[str, Any], refs: Mapping[str, str], graph: PipelineGraph
 ) -> Mapping[str, Any]:
-    """*config* with each ``outputMapping`` row's ``$ref`` source_port resolved.
+    """*config* with each ``output_mapping`` row's ``$ref`` source_port resolved.
 
     A ``source_port`` names the incoming frame a row reads, by the input name
     its edge gives: a ``$ref`` resolves to that name for the node the ref
     declared. Any other config is returned as written.
     """
 
-    rows = config.get("outputMapping")
+    rows = config.get("output_mapping")
     if node_type != NodeType.OUTPUT or not isinstance(rows, list):
         return config
     resolved: list[object] = []
@@ -467,12 +467,12 @@ def _resolve_output_rows(
                 _invalid(
                     f"Output mapping source {port!r} names a node whose frames are named by "
                     "their ports",
-                    where={"field": "outputMapping"},
+                    where={"field": "output_mapping"},
                     fix="Write the source_port as the incoming edge's port name.",
                 )
             row = {**cast(Mapping[str, Any], row), "source_port": name}
         resolved.append(row)
-    return {**config, "outputMapping": resolved}
+    return {**config, "output_mapping": resolved}
 
 
 #: The node types whose tables are the workbench's: the assistant reads them
@@ -565,10 +565,10 @@ def _apply_add_node(
 #: every stepped node type.
 _LIST_ENTRY_NAMES: Mapping[tuple[NodeType, str], str] = MappingProxyType(
     {
-        (NodeType.BANDING, "factors"): "outputColumn",
-        (NodeType.RATING_STEP, "tables"): "outputColumn",
-        (NodeType.RATING_STEP, "combinedOutputs"): "outputColumn",
-        (NodeType.OUTPUT, "outputMapping"): "output_path",
+        (NodeType.BANDING, "factors"): "output_column",
+        (NodeType.RATING_STEP, "tables"): "output_column",
+        (NodeType.RATING_STEP, "combined_outputs"): "output_column",
+        (NodeType.OUTPUT, "output_mapping"): "output_path",
         (NodeType.EXPLORE, "pivots"): "id",
         (NodeType.CONSTANT, "values"): "name",
     }
@@ -577,7 +577,7 @@ _LIST_ENTRY_NAMES: Mapping[tuple[NodeType, str], str] = MappingProxyType(
 _NAME_LISTS = frozenset({"inputs", "selected_columns"})
 #: Config maps keyed by input or column names; any other map's keys can be
 #: category values, so a refusal counts them instead of naming them.
-_NAME_KEYED_MAPS = frozenset({"input_scenario_map", "inputMapping", "column_renames"})
+_NAME_KEYED_MAPS = frozenset({"input_scenario_map", "input_mapping", "column_renames"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -883,13 +883,13 @@ _HANDLE_NAMED_SOURCES = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.
 _INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
 #: The consumer config fields a rename rewrites when they name the renamed input:
 #: those the editor's rename reconciles (``frontend/src/utils/nodeUpdatePlan.ts``)
-#: and ``outputMapping`` rows' ``source_port``.
+#: and ``output_mapping`` rows' ``source_port``.
 RENAME_RECONCILED_FIELDS = (
     "steps",
-    "inputMapping",
+    "input_mapping",
     "input_scenario_map",
     *_INPUT_NAME_FIELDS,
-    "outputMapping",
+    "output_mapping",
 )
 
 
@@ -954,7 +954,7 @@ def _rewrite_consumer(
             except PolarsStepError:
                 _rename_collision(node.id, new)
             changes.extend(step_changes)
-    raw_mapping = config.get("inputMapping")
+    raw_mapping = config.get("input_mapping")
     mapping = raw_mapping if isinstance(raw_mapping, Mapping) else {}
     if (
         not isinstance(steps, list)
@@ -967,10 +967,10 @@ def _rewrite_consumer(
     if bound:
         if new in mapping.values():
             _rename_collision(node.id, new)
-        config["inputMapping"] = {
+        config["input_mapping"] = {
             logical: new if current == old else current for logical, current in mapping.items()
         }
-        changes.extend(f"inputMapping.{logical}" for logical in bound)
+        changes.extend(f"input_mapping.{logical}" for logical in bound)
     scenario_map = config.get("input_scenario_map")
     if isinstance(scenario_map, Mapping) and old in scenario_map:
         if new in scenario_map:
@@ -983,7 +983,7 @@ def _rewrite_consumer(
         if config.get(field_name) == old:
             config[field_name] = new
             changes.append(field_name)
-    output_mapping = config.get("outputMapping")
+    output_mapping = config.get("output_mapping")
     if isinstance(output_mapping, list):
         rows = [
             position
@@ -991,11 +991,11 @@ def _rewrite_consumer(
             if isinstance(entry, Mapping) and entry.get("source_port") == old
         ]
         if rows:
-            config["outputMapping"] = [
+            config["output_mapping"] = [
                 {**entry, "source_port": new} if position in rows else entry
                 for position, entry in enumerate(output_mapping, start=1)
             ]
-            changes.extend(f"outputMapping[{position}].source_port" for position in rows)
+            changes.extend(f"output_mapping[{position}].source_port" for position in rows)
     return changes, refused
 
 
@@ -3151,7 +3151,7 @@ def _validate_output_rows_read_inputs(
     is told the names the incoming edges give and the naming rule.
     """
 
-    rows = node.data.config.get("outputMapping")
+    rows = node.data.config.get("output_mapping")
     names = _incoming_input_names(result, node.id, nodes_by_id)
     for position, row in enumerate(rows if isinstance(rows, list) else [], start=1):
         if not isinstance(row, Mapping) or "enabled" not in row:
@@ -3177,9 +3177,9 @@ def _validate_output_rows_read_inputs(
                 purpose="the column comes from",
             )
         _invalid(
-            f"Row {position} of the outputMapping of node {node.id!r} reads source_port {port!r}, "
+            f"Row {position} of the output_mapping of node {node.id!r} reads source_port {port!r}, "
             f"which no incoming edge provides; its incoming edges are {connected}.",
-            where={"node": node.id, "field": "outputMapping"},
+            where={"node": node.id, "field": "output_mapping"},
             fix=fix,
             did_you_mean=suggested,
         )
@@ -3224,9 +3224,9 @@ def _validate_assistant_authored_graph(
             )
 
     mapping_changed = {
-        change.removesuffix(":outputMapping")
+        change.removesuffix(":output_mapping")
         for change in config_changes
-        if change.endswith(":outputMapping")
+        if change.endswith(":output_mapping")
     }
     for node_id in sorted(set(authored_added) | mapping_changed):
         node = nodes_by_id.get(node_id)

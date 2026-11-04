@@ -42,7 +42,7 @@ def _document(tmp_path: Path):
                     "data": {
                         "label": "child",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "child", "alias": "child"},
+                        "config": {"definition_id": "child", "alias": "child"},
                     },
                 },
             ],

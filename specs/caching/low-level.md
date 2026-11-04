@@ -104,7 +104,7 @@ A runtime-input entry (`runtime_input_entry`) signs, beside the files and model 
 reads, only the scalar config fields that say which external data, file or model a node
 reads (its source file's field from `execution._SOURCE_PATH_CONFIG_BY_NODE_TYPE` and the
 fields `_RUNTIME_INPUT_CONFIG_FIELDS` lists: an API Input's `path`; a Data Input's
-`code`, `connection`, `format`, `http_path`, `inputType`, `mode`, `path`, `query`, `table`
+`code`, `connection`, `format`, `http_path`, `input_type`, `mode`, `path`, `query`, `table`
 and `uri`; an External File's `code` and `path`; a Model Score's or Optimiser Apply's MLflow
 source fields, with Model Score's `code`, `feature_contract_path` and `model_path` and
 Optimiser Apply's `ratebook_input`). It names external state, not the node, and is always
@@ -316,7 +316,7 @@ input-cache routes open the store under that root.
 
 `src/haute/_data_points.py` owns the consumer-to-point mapping and leased reads.
 
-- No node carries `instanceOf`: a submodel instance's nodes reach every entry point
+- No node carries `instance_of`: a submodel instance's nodes reach every entry point
   expanded, carrying their definition's configuration, and map, classify, execute and
   sign as any node does.
 - `consumer_point(graph, consumer_node_id)` returns a `ConsumerPoint(consumer_node_id,

@@ -74,19 +74,23 @@ class TestBandingConfig:
     def test_basic_factors(self) -> None:
         config = {
             "factors": [
-                {"banding": "breakpoints", "column": "driver_age", "outputColumn": "age_band"},
-                {"banding": "breakpoints", "column": "vehicle_value", "outputColumn": "value_band"},
+                {"banding": "breakpoints", "column": "driver_age", "output_column": "age_band"},
+                {
+                    "banding": "breakpoints",
+                    "column": "vehicle_value",
+                    "output_column": "value_band",
+                },
             ]
         }
         refs = _extract_column_refs(config)
         assert "driver_age" in refs
         assert "vehicle_value" in refs
-        # outputColumn is created, not read -- should NOT be in refs
+        # output_column is created, not read -- should NOT be in refs
         assert "age_band" not in refs
         assert "value_band" not in refs
 
     def test_factor_with_missing_column_key(self) -> None:
-        config = {"factors": [{"outputColumn": "band"}]}
+        config = {"factors": [{"output_column": "band"}]}
         assert _extract_column_refs(config) == set()
 
     def test_malformed_factor_entries(self) -> None:
@@ -101,7 +105,7 @@ class TestRatingStepConfig:
     def test_basic_tables(self) -> None:
         config = {
             "tables": [
-                {"factors": ["age_band", "region"], "outputColumn": "base_rate"},
+                {"factors": ["age_band", "region"], "output_column": "base_rate"},
             ]
         }
         refs = _extract_column_refs(config)
@@ -137,10 +141,10 @@ class TestOutputColumnExclusion:
         assert "input_col" in refs
         assert "prediction" not in refs
 
-    def test_outputColumn_camelCase_excluded(self) -> None:  # noqa: N802 - references camelCase config key `outputColumn`
+    def test_outputColumn_camelCase_excluded(self) -> None:  # noqa: N802 - references camelCase config key `output_column`
         config = {
-            "factors": [{"banding": "breakpoints", "column": "age", "outputColumn": "age_band"}],
-            "outputColumn": "combined_rate",
+            "factors": [{"banding": "breakpoints", "column": "age", "output_column": "age_band"}],
+            "output_column": "combined_rate",
         }
         refs = _extract_column_refs(config)
         assert "age" in refs

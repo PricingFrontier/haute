@@ -25,7 +25,7 @@ def _file_output(node_id: str, path: str) -> GraphNode:
     return _node(
         node_id,
         "dataOutput",
-        outputType="file",
+        output_type="file",
         format="parquet",
         mode="sink",
         path=path,
@@ -37,7 +37,7 @@ def _table_output(node_id: str, table: str) -> GraphNode:
     return _node(
         node_id,
         "dataOutput",
-        outputType="database",
+        output_type="database",
         format="database",
         mode="write",
         connection="warehouse",
@@ -75,7 +75,7 @@ def test_colliding_artifact_keys_are_refused_before_upload(
         (tmp_path / filename).write_bytes(b"model")
     graph = PipelineGraph(
         nodes=[
-            _node(node_id, "externalFile", path=filename, fileType="pickle")
+            _node(node_id, "externalFile", path=filename, file_type="pickle")
             for node_id, filename in (first, second)
         ],
         edges=[],
@@ -94,8 +94,8 @@ def test_distinct_artifact_keys_are_bundled(tmp_path: Path) -> None:
     (tmp_path / "b.pkl").write_bytes(b"model")
     graph = PipelineGraph(
         nodes=[
-            _node("first", "externalFile", path="a.pkl", fileType="pickle"),
-            _node("second", "externalFile", path="b.pkl", fileType="pickle"),
+            _node("first", "externalFile", path="a.pkl", file_type="pickle"),
+            _node("second", "externalFile", path="b.pkl", file_type="pickle"),
         ],
         edges=[],
     )
@@ -153,7 +153,7 @@ def test_a_submodel_output_written_by_two_occurrences_is_refused() -> None:
         outputPorts=[],
     )
     occurrences = [
-        _node(alias, "submodel", definitionId="rates", alias=alias)
+        _node(alias, "submodel", definition_id="rates", alias=alias)
         for alias in ("rates_a", "rates_b")
     ]
     graph = PipelineGraph(nodes=occurrences, edges=[], submodels={"rates": definition})
@@ -207,7 +207,7 @@ def test_a_strict_parse_refuses_one_destination_and_keeps_drafts(
             NodeType.DATA_OUTPUT,
             name,
             {
-                "outputType": "file",
+                "output_type": "file",
                 "format": "parquet",
                 "mode": "sink",
                 "path": path,

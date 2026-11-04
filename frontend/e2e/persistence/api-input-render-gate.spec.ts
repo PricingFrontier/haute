@@ -43,7 +43,7 @@ function table(
   label: string,
   columns: ReturnType<typeof col>[],
 ) {
-  return { path, label, displayPath: null, emit: true, row_id_column: null, columns }
+  return { path, label, display_path: null, emit: true, row_id_column: null, columns }
 }
 
 /** All-valid baseline: 2 well-formed tables, no blanks. */

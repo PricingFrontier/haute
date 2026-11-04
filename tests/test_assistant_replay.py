@@ -728,11 +728,11 @@ async def test_an_apply_that_saves_part_of_a_stage_leaves_it_open_with_its_chang
                                 "op": "update_node",
                                 "node": "region_rating",
                                 "config": {
-                                    "combinedOutputs": [
+                                    "combined_outputs": [
                                         {
-                                            "outputColumn": output["output_column"],
+                                            "output_column": output["output_column"],
                                             "operation": output["operation"],
-                                            "baseValue": float(output["base_value"]),
+                                            "base_value": float(output["base_value"]),
                                         }
                                     ]
                                 },

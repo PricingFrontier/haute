@@ -434,7 +434,7 @@ class TestHauteClassifierPyfunc:
 
         pyfunc, _native = haute_classifier
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run",
             "artifact_path": "model",
             "task": "classification",

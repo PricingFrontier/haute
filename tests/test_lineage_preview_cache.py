@@ -39,7 +39,7 @@ def _graph():
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "input.parquet",
@@ -322,7 +322,7 @@ def test_preview_consumer_ignores_disconnected_runtime_input_changes(
         update={
             "nodeType": "dataInput",
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": str(unrelated_path),

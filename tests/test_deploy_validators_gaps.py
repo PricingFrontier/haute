@@ -165,7 +165,7 @@ class TestDataInputValidationLogging:
             "drivers",
             node_type=NodeType.DATA_INPUT,
             config={
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "query": "select * from drivers",
                 "arguments": {},

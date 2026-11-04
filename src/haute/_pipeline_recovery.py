@@ -724,7 +724,7 @@ def _recover_ast_submodel_registrations(
                             node_type=NodeType.SUBMODEL,
                             description=evidence.name,
                             config={
-                                "definitionId": evidence.definition_id or evidence.path,
+                                "definition_id": evidence.definition_id or evidence.path,
                                 "alias": evidence.name,
                             },
                             config_reference=evidence.path,
@@ -1072,7 +1072,7 @@ def _build_recovery_graph(
                     source_handles=source_handles,
                     config_reference_override=candidate.config_reference,
                     alias=(candidate.config or {}).get("alias") if candidate.config else None,
-                    instance_of=(candidate.config or {}).get("instanceOf")
+                    instance_of=(candidate.config or {}).get("instance_of")
                     if candidate.node_type == NodeType.SUBMODEL
                     else None,
                 )
@@ -1122,7 +1122,7 @@ def _build_recovery_graph(
                     node_type=source_candidate.node_type,
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
-                    instance_of=(source_candidate.config or {}).get("instanceOf")
+                    instance_of=(source_candidate.config or {}).get("instance_of")
                     if source_candidate.node_type == NodeType.SUBMODEL
                     else None,
                     source_handles=[
@@ -1236,7 +1236,7 @@ def _canonical_snapshot(
                 recoverable_request_input_source_handles(node.data.nodeType, node.data.config)
             )
         if node.data.nodeType == NodeType.SUBMODEL:
-            definition_id = node.data.config.get("definitionId")
+            definition_id = node.data.config.get("definition_id")
             definition = (
                 (graph.submodels or {}).get(definition_id)
                 if isinstance(definition_id, str)
@@ -1256,7 +1256,7 @@ def _canonical_snapshot(
             node_type=node.data.nodeType,
             label=node.data.label,
             source_handles=source_handles,
-            instance_of=node.data.config.get("instanceOf")
+            instance_of=node.data.config.get("instance_of")
             if node.data.nodeType == NodeType.SUBMODEL
             else None,
             alias=(
@@ -2000,10 +2000,10 @@ def _recover_registered_submodels(
                 node_type=NodeType.SUBMODEL,
                 description=registration.name,
                 config={
-                    "definitionId": def_id,
+                    "definition_id": def_id,
                     "alias": registration.name,
                     **(
-                        {"instanceOf": registration.instance_of}
+                        {"instance_of": registration.instance_of}
                         if registration.instance_of is not None
                         else {}
                     ),

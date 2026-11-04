@@ -147,7 +147,7 @@ def read_raw_node_settings(
         #
         # Recovery never raises on a bad field, so a step list the parser
         # rejects outright (a malformed container, or a list beside an
-        # ``inputMapping`` an edges surface refuses) is dropped rather than
+        # ``input_mapping`` an edges surface refuses) is dropped rather than
         # propagated: the node keeps the code its body already holds. The
         # key is removed, never defaulted to ``[]``, because an empty list
         # would materialise as empty code and discard that body.

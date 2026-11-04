@@ -59,7 +59,7 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     |---|---|
     | **ROW KEY** | `quote_id` |
     | **INDEX COLUMN** | `step_column` (absent or empty means `"scenario_index"`) |
-    | **STEPS** | `stepCount`: a whole number of at least 1. It is required: a node without it fails with "Scenario expander requires stepCount (the number of grid values)." |
+    | **STEPS** | `step_count`: a whole number of at least 1. It is required: a node without it fails with "Scenario expander requires step_count (the number of grid values)." |
     | **VALUE COLUMN** | `column_name` |
     | **Min** | `min_value` (absent means `0.8`) |
     | **Max** | `max_value` (absent means `1.2`) |
@@ -78,9 +78,9 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     | `column_name` | text | The column the grid value is written to, such as `scenario_value`. |
     | `min_value` | number | The grid's first value. |
     | `max_value` | number | The grid's last value. |
-    | `stepCount` | whole number | The number of grid values, at least 1. |
+    | `step_count` | whole number | The number of grid values, at least 1. |
     | `step_column` | text | The column the grid position (from 0) is written to, such as `scenario_index`. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

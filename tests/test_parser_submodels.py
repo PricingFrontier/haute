@@ -574,7 +574,7 @@ class TestMergeSubmodels:
         occurrence = result.node_map["pricing"]
         assert occurrence.data.nodeType == NodeType.SUBMODEL
         assert occurrence.data.config == {
-            "definitionId": "definition_pricing",
+            "definition_id": "definition_pricing",
             "alias": "pricing",
         }
 
@@ -589,8 +589,8 @@ class TestMergeSubmodels:
         assert set(result.submodels or {}) == {"definition_pricing"}
         assert result.node_map["pricing"].data.label == "pricing"
         assert result.node_map["pricing_2"].data.label == "pricing_2"
-        assert result.node_map["pricing_2"].data.config["definitionId"] == ("definition_pricing")
-        assert result.node_map["pricing_2"].data.config["instanceOf"] == "pricing"
+        assert result.node_map["pricing_2"].data.config["definition_id"] == ("definition_pricing")
+        assert result.node_map["pricing_2"].data.config["instance_of"] == "pricing"
 
     def test_rewrites_alias_edges_to_public_port_handles(self) -> None:
         result = _merge(

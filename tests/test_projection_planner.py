@@ -77,7 +77,7 @@ def test_terminal_output_ignores_incomplete_enabled_mapping_rows() -> None:
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "enabled": True,
                                     "source_column": "quote_id",
@@ -137,7 +137,7 @@ def test_projection_resolves_collapsed_submodel_inputs_by_public_port_name() -> 
                         "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": "definition_public_output",
+                            "definition_id": "definition_public_output",
                             "alias": "unrelated_alias",
                         },
                     },
@@ -191,7 +191,7 @@ def test_live_switch_pruning_uses_collapsed_submodel_public_output_label() -> No
                         "label": "unrelated_alias",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": "definition_public_output",
+                            "definition_id": "definition_public_output",
                             "alias": "unrelated_alias",
                         },
                     },
@@ -272,7 +272,7 @@ def test_projection_plan_is_stable_when_graph_order_changes() -> None:
                     "factors": [
                         {
                             "column": "age",
-                            "outputColumn": "age_band",
+                            "output_column": "age_band",
                             "banding": "breakpoints",
                             "rules": [],
                             "default": "other",
@@ -490,7 +490,7 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
     """Build a base/join edge-join graph with concrete-contract parents."""
     join_config: dict[str, object] = {
         "how": "left",
-        "maintainOrder": "left_right",
+        "maintain_order": "left_right",
         "contract": "opaque",
         **keys,
     }
@@ -677,7 +677,7 @@ def test_edge_join_projection_splits_left_and_right_keys_by_role():
     projection = plan(
         ProjectionRequest(
             graph=_edge_join_graph(
-                keys={"leftOn": ["base_key"], "rightOn": ["join_key"]},
+                keys={"left_on": ["base_key"], "right_on": ["join_key"]},
                 base_outputs=["base_key", "policy_id"],
                 join_outputs=["join_key", "competitor_premium"],
             ),
@@ -687,7 +687,7 @@ def test_edge_join_projection_splits_left_and_right_keys_by_role():
         )
     )
 
-    # leftOn demands the left key from base; rightOn demands the right key from join.
+    # left_on demands the left key from base; right_on demands the right key from join.
     assert pair_value(projection.edge_demands, "base", "joined") == frozenset(
         {"base_key", "policy_id"}
     )
@@ -730,7 +730,7 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                                 "nodeType": "edgeJoin",
                                 "config": {
                                     "how": "left",
-                                    "maintainOrder": "left_right",
+                                    "maintain_order": "left_right",
                                     "on": ["quote_id"],
                                     "contract": "opaque",
                                 },
@@ -793,7 +793,7 @@ def test_edge_join_projection_keeps_parallel_frames_from_one_source_distinct():
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
-                            "maintainOrder": "left_right",
+                            "maintain_order": "left_right",
                             "on": ["quote_id"],
                             "contract": "opaque",
                         },
@@ -1944,7 +1944,7 @@ def _external_file_plan(code: str, fields: list[str], *, parents: tuple[str, ...
                     "data": {
                         "label": "ext",
                         "nodeType": "externalFile",
-                        "config": {"path": "factors.json", "fileType": "json", "code": code},
+                        "config": {"path": "factors.json", "file_type": "json", "code": code},
                     },
                 },
                 {
@@ -4053,7 +4053,7 @@ def test_online_optimiser_apply_demands_exactly_the_columns_its_artifact_reads(t
     artifact_path = tmp_path / "optimiser.json"
     artifact_path.write_text(json.dumps(_ONLINE_APPLY_ARTIFACT), encoding="utf-8")
     graph = _single_parent_graph(
-        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+        "optimiserApply", {"source_type": "file", "artifact_path": str(artifact_path)}
     )
 
     projection = plan(
@@ -4084,7 +4084,7 @@ def test_deployed_optimiser_apply_plans_from_its_annotated_columns_without_a_loa
     graph = _single_parent_graph(
         "optimiserApply",
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": str(tmp_path / "optimiser.json"),
             _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: ["quote_id", "step", "adjustment", "m"],
         },
@@ -4119,7 +4119,7 @@ def test_a_malformed_deploy_optimiser_annotation_is_refused_without_a_load(
     graph = _single_parent_graph(
         "optimiserApply",
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": str(tmp_path / "optimiser.json"),
             _DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY: value,
         },
@@ -4202,7 +4202,7 @@ def test_ratebook_optimiser_apply_keeps_the_generic_rules(tmp_path):
         json.dumps({**_ONLINE_APPLY_ARTIFACT, "mode": "ratebook"}), encoding="utf-8"
     )
     graph = _single_parent_graph(
-        "optimiserApply", {"sourceType": "file", "artifact_path": str(artifact_path)}
+        "optimiserApply", {"source_type": "file", "artifact_path": str(artifact_path)}
     )
 
     projection = plan(

@@ -136,7 +136,7 @@ A preview file might look like this:
     With no editor control:
 
     - `tables[].row_id_column` names the column that identifies each record in execution traces; renaming that column in the editor carries the setting along.
-    - `tables[].displayPath` and `tables[].columns[].levels` are kept as they are.
+    - `tables[].display_path` and `tables[].columns[].levels` are kept as they are.
 
     <!-- config-keys:start -->
 
@@ -148,7 +148,7 @@ A preview file might look like this:
     | `tables` | list of object | For a structured request file, the tables read from it: each a path into the document, a label, and its columns. |
     | `tables[].path` | text | The JSONPath of the table's rows in the request document, such as `$[:]`. |
     | `tables[].label` | text | The table's name, which a connection's `source_port` names it by. |
-    | `tables[].displayPath` | text or `null` | The path the editor shows for the table, or `null` to show `path`. |
+    | `tables[].display_path` | text or `null` | The path the editor shows for the table, or `null` to show `path`. |
     | `tables[].emit` | `true` or `false` | Whether the table is one of the node's outputs. |
     | `tables[].row_id_column` | text or `null` | The column identifying each row, or `null` for none. |
     | `tables[].columns` | list of object | The table's columns. |
@@ -161,7 +161,7 @@ A preview file might look like this:
     | `tables[].columns[].format` | text | A date column's strftime pattern for its source values; ISO `%Y-%m-%d` when absent. |
     | `tables[].columns[].origin` | `"inferred"` or `"inherited"` or `"manual"` | Where the column came from: `inferred`, `inherited` from a parent table's key, or `manual`; the run never reads it. |
     | `tables[].columns[].key` | `true` or `false` | Whether the column serves as a key of its table; the run never reads it. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

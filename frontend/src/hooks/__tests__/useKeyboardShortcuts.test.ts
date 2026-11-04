@@ -185,7 +185,7 @@ describe("useKeyboardShortcuts", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     const copy = makeNode("submodel_copy", "submodel", {
@@ -194,9 +194,9 @@ describe("useKeyboardShortcuts", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "submodel_owner",
+          instance_of: "submodel_owner",
         },
       },
     })
@@ -221,7 +221,7 @@ describe("useKeyboardShortcuts", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     params = makeParams({
@@ -439,7 +439,7 @@ describe("useKeyboardShortcuts", () => {
   it("Ctrl+V pastes neither a submodel occurrence nor a boundary card, and says how to reuse a submodel", async () => {
     params.clipboard.current = {
       nodes: [
-        { id: "pricing", position: { x: 0, y: 0 }, type: "submodel", data: { label: "pricing", nodeType: "submodel", config: { definitionId: "pricing", alias: "pricing" } } } as unknown as Node,
+        { id: "pricing", position: { x: 0, y: 0 }, type: "submodel", data: { label: "pricing", nodeType: "submodel", config: { definition_id: "pricing", alias: "pricing" } } } as unknown as Node,
         { id: "input", position: { x: 0, y: 0 }, type: "submodelPort", data: { label: "INPUT", nodeType: "submodelPort", portDirection: "input", ports: [] } } as unknown as Node,
         { id: "n2", position: { x: 0, y: 0 }, data: { label: "Transform", nodeType: "polars" }, type: "pipelineNode" } as unknown as Node,
       ],
@@ -1034,7 +1034,7 @@ describe("useKeyboardShortcuts", () => {
       data: {
         label: "pricing",
         nodeType: "submodel",
-        config: { definitionId: "def_pricing", alias: "pricing" },
+        config: { definition_id: "def_pricing", alias: "pricing" },
       },
     })
     const copy = makeNode("copy", "submodel", {
@@ -1042,7 +1042,7 @@ describe("useKeyboardShortcuts", () => {
       data: {
         label: "pricing_2",
         nodeType: "submodel",
-        config: { definitionId: "def_pricing", alias: "pricing_2", instanceOf: "owner" },
+        config: { definition_id: "def_pricing", alias: "pricing_2", instance_of: "owner" },
       },
     })
     const nodeB = makeNode("b", "polars", { selected: false })

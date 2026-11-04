@@ -7,7 +7,7 @@ export { isNumericDtype }
 export function normaliseBandingFactors(config: Record<string, unknown>): BandingFactor[] {
   const raw = config.factors as BandingFactor[] | undefined
   if (Array.isArray(raw) && raw.length > 0) return raw
-  return [{ banding: "breakpoints", column: "", outputColumn: "", rules: [], default: null }]
+  return [{ banding: "breakpoints", column: "", output_column: "", rules: [], default: null }]
 }
 
 /** Numeric for a number, Date or Datetime column; Categorical for any other. */
@@ -20,7 +20,7 @@ export function inferBandingType(colName: string, colMap: Record<string, string>
 /** Whether execution applies the factor rather than skipping it as a draft
  *  (the backend's `banding_factor_is_active`). */
 function bandingFactorIsActive(factor: BandingFactor): boolean {
-  return Boolean(factor.column && factor.outputColumn && (factor.rules ?? []).length > 0)
+  return Boolean(factor.column && factor.output_column && (factor.rules ?? []).length > 0)
 }
 
 /** For each active factor, the other active factors writing its output column,
@@ -29,7 +29,7 @@ export function bandingOutputCollisions(factors: BandingFactor[]): Map<number, n
   const writers = new Map<string, number[]>()
   factors.forEach((factor, index) => {
     if (!bandingFactorIsActive(factor)) return
-    writers.set(factor.outputColumn, [...(writers.get(factor.outputColumn) ?? []), index])
+    writers.set(factor.output_column, [...(writers.get(factor.output_column) ?? []), index])
   })
   const collisions = new Map<number, number[]>()
   for (const indices of writers.values()) {

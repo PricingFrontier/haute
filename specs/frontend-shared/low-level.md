@@ -780,7 +780,11 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    asking about, so neither another document's answer nor an action started before an edit can
    reach the shared store or strand the consumer without an answer. An answer is kept with the
    identity and the fence it answered for, so a consumer stops showing it the moment either
-   moves on, and inspections also abort in flight.
+   moves on, and inspections also abort in flight. An inspection the backend refuses (400: the
+   graph as it stands gives the node nothing to read, such as a Banding, Rating Step or blank
+   Explore node without exactly one input) is the node's state, not an event: its message is
+   held as the consumer's `unreadable` for that identity, and connecting the input clears it.
+   Any other failed inspection toasts.
 3. `stores/useNodeDataStore.ts` keeps one entry per slot, so consumers of the same point share
    the generation and the running build. `run` and `refresh` post `/api/node-data/run`; a
    `started` or `joined` response registers the build under the slot, and `useBackgroundJobs`
@@ -858,7 +862,8 @@ same Vitest config.
   `frontend/src/__tests__/hooks/useBackgroundJobs.nodeData.test.ts`): one slot entry shared by
   two consumers, the epoch rising only when the data changes or a preview's own capture is
   announced — a duplicate announcement leaving the epoch untouched while a new generation
-  raises it once, and a reset making the next announcement count again — a build adopted from
+  raises it once, and a reset making the next announcement count again — a refused point held
+  as the node's `unreadable` with no toast while a failed lookup toasts, a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress
   from a build either of them started, a build this tab started stopped by another consumer

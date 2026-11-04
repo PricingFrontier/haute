@@ -42,7 +42,7 @@ def _banding_node(
     factor: dict = {
         "banding": banding,
         "column": column,
-        "outputColumn": output_column,
+        "output_column": output_column,
         "rules": rules or [],
         "default": default,
     }
@@ -179,8 +179,8 @@ class TestBandingTypeIsRequired:
     @pytest.mark.parametrize(
         "draft",
         [
-            {"banding": "continuous", "column": "", "outputColumn": "", "rules": []},
-            {"column": "", "outputColumn": "", "rules": []},
+            {"banding": "continuous", "column": "", "output_column": "", "rules": []},
+            {"column": "", "output_column": "", "rules": []},
         ],
         ids=["continuous", "missing"],
     )
@@ -198,20 +198,20 @@ class TestBandingTypeIsRequired:
             {
                 "banding": "continuous",
                 "column": "x",
-                "outputColumn": "band",
+                "output_column": "band",
                 "rules": [{"op1": "<=", "val1": 10, "assignment": "low"}],
             },
-            {"column": "x", "outputColumn": "band", "rules": [{"boundary": "10", "label": "a"}]},
+            {"column": "x", "output_column": "band", "rules": [{"boundary": "10", "label": "a"}]},
             # A draft factor still names its type.
-            {"banding": "continuous", "column": "", "outputColumn": "", "rules": []},
-            {"column": "", "outputColumn": "", "rules": []},
+            {"banding": "continuous", "column": "", "output_column": "", "rules": []},
+            {"column": "", "output_column": "", "rules": []},
         ],
         ids=["configured-continuous", "configured-missing", "draft-continuous", "draft-missing"],
     )
     def test_validate_banding_config_rejects_a_factor_without_a_supported_type(self, factor):
         from haute._rating import validate_banding_config
 
-        valid = {"banding": "categorical", "column": "", "outputColumn": "", "rules": []}
+        valid = {"banding": "categorical", "column": "", "output_column": "", "rules": []}
         with pytest.raises(
             ValueError,
             match="Banding factor 1 has unsupported banding type .*; "
@@ -380,7 +380,7 @@ class TestDateBreakpoints:
     def test_an_unreadable_or_mixed_boundary_fails_validation(self, rules, message):
         from haute._rating import validate_banding_config
 
-        factor = {"banding": "breakpoints", "column": "d", "outputColumn": "b", "rules": rules}
+        factor = {"banding": "breakpoints", "column": "d", "output_column": "b", "rules": rules}
         with pytest.raises(ValueError, match=message):
             validate_banding_config({"factors": [factor]})
 
@@ -461,7 +461,7 @@ class TestBuildNodeFn:
                 {
                     "banding": "categorical",
                     "column": "type",
-                    "outputColumn": "type_band",
+                    "output_column": "type_band",
                     "rules": {"A": "Group1", "B": "Group1", "C": "Group2"},
                 }
             ],
@@ -522,7 +522,7 @@ class TestBandingParser:
                     {
                         "banding": "breakpoints",
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         # A sidecar writes each band's upper edge and label (READ-27).
                         "rules": [{"upper": 25, "label": "young"}],
                     }
@@ -535,7 +535,7 @@ class TestBandingParser:
         f = factors[0]
         assert f["banding"] == "breakpoints"
         assert f["column"] == "age"
-        assert f["outputColumn"] == "age_band"
+        assert f["output_column"] == "age_band"
         assert f["rules"] == [{"boundary": "25", "label": "young"}]
         # A null default is left unwritten and reads back as null (READ-27).
         assert f["default"] is None
@@ -549,7 +549,7 @@ class TestBandingParser:
                     {
                         "banding": "categorical",
                         "column": "prop",
-                        "outputColumn": "prop_band",
+                        "output_column": "prop_band",
                         "rules": {"House": "Residential"},
                     }
                 ]
@@ -567,7 +567,7 @@ class TestBandingParser:
                     {
                         "banding": "categorical",
                         "column": "fuel_type",
-                        "outputColumn": "fuel_band",
+                        "output_column": "fuel_band",
                         "rules": {"Petrol": "Standard", "Electric": "Green"},
                     }
                 ]
@@ -589,7 +589,7 @@ class TestBandingParser:
                     {
                         "banding": "breakpoints",
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         # The open-ended band comes last, with no upper edge (READ-27).
                         "rules": [
                             {"upper": 25, "label": "young"},
@@ -665,7 +665,7 @@ class TestBandingCodegen:
         pf = pn.data.config["factors"][0]
         assert pf["banding"] == "categorical"
         assert pf["column"] == "code"
-        assert pf["outputColumn"] == "code_band"
+        assert pf["output_column"] == "code_band"
         assert len(pf["rules"]) == 2
 
 
@@ -688,7 +688,7 @@ def _banding_graph(factors: list[dict]) -> tuple[PipelineGraph, GraphNode]:
             label="Quote Data",
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "data.parquet",
@@ -756,7 +756,7 @@ class TestBandingStandaloneExecution:
             {
                 "banding": "breakpoints",
                 "column": "age",
-                "outputColumn": "age_band",
+                "output_column": "age_band",
                 "rules": [
                     {"boundary": "25", "label": "young"},
                     {"boundary": "", "label": "older"},
@@ -784,7 +784,7 @@ class TestBandingStandaloneExecution:
             {
                 "banding": "categorical",
                 "column": "prop",
-                "outputColumn": "prop_band",
+                "output_column": "prop_band",
                 "rules": [
                     {"value": "Semi-detached House", "assignment": "House"},
                     {"value": "Detached House", "assignment": "House"},
@@ -806,17 +806,17 @@ class TestBandingStandaloneExecution:
         plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
 
     def test_standalone_run_applies_breakpoints_with_right_closed_flag(self, tmp_path):
-        """Breakpoint rules and the rightClosed ordering flag survive the sidecar."""
+        """Breakpoint rules and the right_closed ordering flag survive the sidecar."""
         factors = [
             {
                 "banding": "breakpoints",
                 "column": "x",
-                "outputColumn": "x_band",
+                "output_column": "x_band",
                 "rules": [
                     {"boundary": "10", "label": "A"},
                     {"boundary": "20", "label": "B"},
                 ],
-                "rightClosed": False,
+                "right_closed": False,
             }
         ]
         graph, band_node = _banding_graph(factors)
@@ -826,7 +826,7 @@ class TestBandingStandaloneExecution:
         result = _run_saved_file(tmp_path, code)
 
         assert "x_band" in result.columns
-        # rightClosed=False means [lower, upper): 20 falls out (no open-ended rule).
+        # right_closed=False means [lower, upper): 20 falls out (no open-ended rule).
         assert result["x_band"].to_list() == ["A", "B", "B", None]
         plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
 
@@ -836,7 +836,7 @@ class TestBandingStandaloneExecution:
             {
                 "banding": "breakpoints",
                 "column": "age",
-                "outputColumn": "age_band",
+                "output_column": "age_band",
                 "rules": [
                     {"boundary": "25", "label": "young"},
                     {"boundary": "", "label": "older"},
@@ -845,7 +845,7 @@ class TestBandingStandaloneExecution:
             {
                 "banding": "categorical",
                 "column": "prop",
-                "outputColumn": "prop_band",
+                "output_column": "prop_band",
                 "rules": [{"value": "House", "assignment": "Residential"}],
             },
         ]
@@ -884,7 +884,7 @@ class TestBandingStandaloneExecution:
             {
                 "banding": "breakpoints",
                 "column": "age",
-                "outputColumn": "age_band",
+                "output_column": "age_band",
                 "rules": [
                     {"boundary": "25", "label": "young"},
                     {"boundary": "", "label": "older"},
@@ -894,7 +894,7 @@ class TestBandingStandaloneExecution:
             {
                 "banding": "categorical",
                 "column": "prop",
-                "outputColumn": "prop_band",
+                "output_column": "prop_band",
                 "rules": [{"value": "House", "assignment": "Residential"}],
                 "default": "Other",
             },
@@ -914,7 +914,7 @@ class TestBandingStandaloneExecution:
         parsed_factors = parsed_band.data.config["factors"]
         assert len(parsed_factors) == 2
         assert parsed_factors[0]["column"] == "age"
-        assert parsed_factors[0]["outputColumn"] == "age_band"
+        assert parsed_factors[0]["output_column"] == "age_band"
         assert parsed_factors[0]["default"] == "unknown"
         assert parsed_factors[0]["rules"] == factors[0]["rules"]
         assert parsed_factors[1]["banding"] == "categorical"
@@ -964,13 +964,13 @@ _DUPLICATE_OUTPUT_FACTORS = [
     {
         "banding": "breakpoints",
         "column": "age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [{"boundary": "25", "label": "young"}, {"boundary": "", "label": "older"}],
     },
     {
         "banding": "breakpoints",
         "column": "driver_age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [{"boundary": "40", "label": "young"}, {"boundary": "", "label": "older"}],
     },
 ]
@@ -1001,7 +1001,7 @@ class TestMultiFactor:
             {
                 "banding": "breakpoints",
                 "column": f"x{i}",
-                "outputColumn": f"x{i}_band",
+                "output_column": f"x{i}_band",
                 "rules": self._LOW_HIGH,
             }
             for i in range(12)
@@ -1011,7 +1011,7 @@ class TestMultiFactor:
             one_at_a_time = _apply_banding(
                 one_at_a_time,
                 factor["column"],
-                factor["outputColumn"],
+                factor["output_column"],
                 "breakpoints",
                 self._LOW_HIGH,
             )
@@ -1029,7 +1029,7 @@ class TestMultiFactor:
         factor = {
             "banding": "categorical",
             "column": "prop",
-            "outputColumn": "prop_band",
+            "output_column": "prop_band",
             "rules": [{"value": "House", "assignment": "Residential"}],
         }
         calls = self._count_schema_resolutions(monkeypatch)
@@ -1047,13 +1047,13 @@ class TestMultiFactor:
             {
                 "banding": "breakpoints",
                 "column": "x",
-                "outputColumn": "x_band",
+                "output_column": "x_band",
                 "rules": self._LOW_HIGH,
             },
             {
                 "banding": "breakpoints",
                 "column": "x_band",
-                "outputColumn": "again",
+                "output_column": "again",
                 "rules": self._LOW_HIGH,
             },
         ]
@@ -1070,7 +1070,7 @@ class TestMultiFactor:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "", "label": "older"},
@@ -1079,7 +1079,7 @@ class TestMultiFactor:
                 {
                     "banding": "categorical",
                     "column": "prop",
-                    "outputColumn": "prop_band",
+                    "output_column": "prop_band",
                     "rules": [
                         {"value": "House", "assignment": "Residential"},
                         {"value": "Flat", "assignment": "Residential"},
@@ -1101,13 +1101,13 @@ class TestMultiFactor:
                 {
                     "banding": "breakpoints",
                     "column": "x",
-                    "outputColumn": "x_band",
+                    "output_column": "x_band",
                     "rules": [{"boundary": "10", "label": "low"}],
                 },
                 {
                     "banding": "breakpoints",
                     "column": "",
-                    "outputColumn": "",
+                    "output_column": "",
                     "rules": [],
                 },
             ],
@@ -1131,7 +1131,7 @@ class TestMultiFactor:
             validate_banding_config({"factors": _DUPLICATE_OUTPUT_FACTORS})
 
     def test_a_draft_factor_sharing_an_output_column_does_not_count(self):
-        draft = {"banding": "breakpoints", "column": "", "outputColumn": "age_band", "rules": []}
+        draft = {"banding": "breakpoints", "column": "", "output_column": "age_band", "rules": []}
         factors = [_DUPLICATE_OUTPUT_FACTORS[0], draft]
         validate_banding_config({"factors": factors})
         _, fn, _ = _build_node_fn(_multi_banding_node("draft", factors))
@@ -1149,13 +1149,13 @@ class TestMultiFactor:
                 {
                     "banding": "breakpoints",
                     "column": "a",
-                    "outputColumn": "a_band",
+                    "output_column": "a_band",
                     "rules": [{"boundary": "5", "label": "low"}],
                 },
                 {
                     "banding": "categorical",
                     "column": "b",
-                    "outputColumn": "b_band",
+                    "output_column": "b_band",
                     "rules": [{"value": "X", "assignment": "Y"}],
                 },
             ],
@@ -1175,13 +1175,13 @@ class TestMultiFactor:
                 {
                     "banding": "breakpoints",
                     "column": "a",
-                    "outputColumn": "a_band",
+                    "output_column": "a_band",
                     "rules": [{"boundary": "5", "label": "low"}],
                 },
                 {
                     "banding": "categorical",
                     "column": "b",
-                    "outputColumn": "b_band",
+                    "output_column": "b_band",
                     "rules": [{"value": "X", "assignment": "Y"}],
                 },
             ],
@@ -1499,23 +1499,23 @@ class TestBreakpointsMode:
         assert bands[3] is None  # 20 >= 20 but no open-ended rule
 
     def test_build_banding_passes_right_closed(self):
-        """_build_banding should pass rightClosed from factor config to _apply_banding."""
+        """_build_banding should pass right_closed from factor config to _apply_banding."""
         factor = {
             "banding": "breakpoints",
             "column": "x",
-            "outputColumn": "band",
+            "output_column": "band",
             "rules": [
                 {"boundary": "10", "label": "A"},
                 {"boundary": "20", "label": "B"},
             ],
-            "rightClosed": False,
+            "right_closed": False,
         }
         node = _multi_banding_node("rc_test", [factor])
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"x": [5, 10, 15, 20]}).lazy()
         result = fn(lf).collect()
         bands = result["band"].to_list()
-        # With rightClosed=False: [lower, upper) intervals
+        # With right_closed=False: [lower, upper) intervals
         assert bands[0] == "A"  # < 10
         assert bands[1] == "B"  # >= 10, < 20
         assert bands[2] == "B"  # >= 10, < 20
@@ -1525,7 +1525,7 @@ class TestBreakpointsMode:
         factor = {
             "banding": "breakpoints",
             "column": "age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": {"25": "young", "65": "adult", "": "senior"},
         }
         node = _multi_banding_node("age_bands", [factor])
@@ -1552,7 +1552,7 @@ class TestBandingEditorMetadata:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "10", "_id": "rule_1", "label": "a"},
                     ],
@@ -1573,15 +1573,15 @@ class TestBandingEditorMetadata:
                 {
                     "banding": "breakpoints",
                     "column": "x",
-                    "outputColumn": "x_band",
+                    "output_column": "x_band",
                     "rules": {"10": "low"},
                     "default": None,
-                    "rightClosed": True,
+                    "right_closed": True,
                 }
             ]
         }
         result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
-        # rightClosed is kept; the sidecar writes the bands as a list and leaves the null
+        # right_closed is kept; the sidecar writes the bands as a list and leaves the null
         # default out (READ-27).
         (factor,) = config["factors"]
         written = {key: value for key, value in factor.items() if key != "default"}
@@ -1594,13 +1594,13 @@ class TestBandingEditorMetadata:
         {
             "banding": "age",
             "column": "proposer_age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": [{"key": "18-25", "value": 25}],
         },
         {
             "banding": "breakpoints",
             "column": "proposer_age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": [{"key": "18-25", "value": 25}],
         },
     ],
@@ -1633,7 +1633,7 @@ def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> Non
     ],
 )
 def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules, message) -> None:
-    factor = {"banding": "breakpoints", "column": "x", "outputColumn": "x_band", "rules": rules}
+    factor = {"banding": "breakpoints", "column": "x", "output_column": "x_band", "rules": rules}
     with pytest.raises(ValueError, match=re.escape(message)):
         validate_banding_config({"factors": [factor]})
 
@@ -1642,7 +1642,7 @@ def test_validate_banding_config_names_the_categorical_rule_the_writer_refuses()
     factor = {
         "banding": "categorical",
         "column": "region",
-        "outputColumn": "region_band",
+        "output_column": "region_band",
         "rules": [{"value": "north", "assignment": ""}, {"value": "", "assignment": "A"}],
     }
     from haute.errors import ConfigSettingError

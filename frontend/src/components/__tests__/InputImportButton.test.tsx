@@ -33,7 +33,7 @@ import {
 import InputImportButton from "../InputImportButton"
 import { makeInputCacheSnapshot } from "../../test-utils/factories"
 
-const csvConfig = { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" }
+const csvConfig = { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv" }
 const emittingTable = { path: "$[:]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[:].id", selected: true }] }
 
 function node(id: string, nodeType: string, config: Record<string, unknown>): SimpleNode {
@@ -111,7 +111,7 @@ describe("InputImportButton", () => {
   afterEach(cleanup)
 
   it("is offered only for Data Inputs that read a snapshot", () => {
-    renderImport(node("direct", "dataInput", { inputType: "file", format: "parquet", mode: "scan", path: "a.parquet" }))
+    renderImport(node("direct", "dataInput", { input_type: "file", format: "parquet", mode: "scan", path: "a.parquet" }))
     renderImport(node("flat", "apiInput", { path: "quotes.csv", tables: [emittingTable] }))
     // A structured Quote Input's Refresh re-reads its source instead.
     renderImport(node("quotes", "apiInput", { path: "quotes.jsonl", tables: [emittingTable] }))

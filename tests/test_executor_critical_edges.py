@@ -153,11 +153,10 @@ def test_column_reference_extraction_handles_editor_config_shapes() -> None:
             "factors": [{"column": "band"}, {"column": ""}, "not-a-factor"],
             "tables": [{"factors": ["rating", "", 42]}, "not-a-table"],
             "output_column": "excluded",
-            "outputColumn": "selected",
         }
     )
 
-    assert refs == {"target", "offset", "band", "rating"}
+    assert refs == {"selected", "target", "offset", "band", "rating"}
 
 
 def test_empty_graph_short_circuit_respects_explicit_contract_flag() -> None:
@@ -190,7 +189,7 @@ def test_execute_sink_resolves_relative_output_when_explain_fails(
                             "label": "sink",
                             "nodeType": "dataOutput",
                             "config": {
-                                "outputType": "file",
+                                "output_type": "file",
                                 "format": "parquet",
                                 "mode": "sink",
                                 "path": "outputs/out.parquet",
@@ -230,7 +229,7 @@ def test_execute_sink_fails_loudly_when_lazy_execution_drops_sink_output(
                             "label": "sink",
                             "nodeType": "dataOutput",
                             "config": {
-                                "outputType": "file",
+                                "output_type": "file",
                                 "format": "parquet",
                                 "mode": "sink",
                                 "path": str(tmp_path / "out.parquet"),

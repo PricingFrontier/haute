@@ -278,9 +278,9 @@ backend API modules own validation and persistence.
   transaction. Join type choices are exactly `inner`, `left`,
   `right`, `full`, `semi`, `anti`, and `cross`. A cross join has no key controls or persisted
   keys; every other mode requires either one-or-more same-name `on` keys or equal-length,
-  non-empty `leftOn`/`rightOn` pairs, and the two key forms cannot coexist.
+  non-empty `left_on`/`right_on` pairs, and the two key forms cannot coexist.
 - Renaming an ordinary source or an API-input frame atomically migrates downstream
-  `input_scenario_map`, `inputMapping`, a Quote Response's `outputMapping[].source_port`, and
+  `input_scenario_map`, `input_mapping`, a Quote Response's `output_mapping[].source_port`, and
   exact-name Optimiser/Optimiser Apply input selectors. A duplicate post-rename input
   name rejects the entire edit and is shown inline; no graph or mapping change is partially
   applied.
@@ -313,8 +313,8 @@ backend API modules own validation and persistence.
   for cross-editor persistence/keyboard journeys rather than duplicating every
   component shape.
 - Rating, Output, and API Input expose only their current persisted shapes:
-  Rating uses `tables[].entries` plus `combinedOutputs`; Output uses
-  `outputMapping` rows with all four required fields including `enabled` and
+  Rating uses `tables[].entries` plus `combined_outputs`; Output uses
+  `output_mapping` rows with all four required fields including `enabled` and
   nothing else, the response document being JSON (no format is chosen or
   stored); API Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
@@ -613,7 +613,7 @@ start input is known (chosen in the selector, or the node's only
 connected input) the start step is written to the config, so the node renders
 `df = <input>` and can be previewed before any step is added. A
 node without inputs cannot add steps and is told to connect an input. Renaming an upstream node rewrites the input references
-inside a stepped transform's steps instead of recording an `inputMapping` binding on it.
+inside a stepped transform's steps instead of recording an `input_mapping` binding on it.
 A node whose steps were discarded on load shows the discard reason above the code box.
 A persisted step whose shape the forms cannot edit (an unknown kind or a missing
 setting, including a kind named after an inherited JavaScript object property)
@@ -754,7 +754,7 @@ scanner or claim whole-application WCAG conformance.
 
 Display identity and executable identity are one identity. `InputSource.name` is the input's
 single name — the chip text, the code argument, and the key persisted contracts use (the
-live-switch `input_scenario_map` and a Transform's or Load File's `inputMapping`, both consumed by the
+live-switch `input_scenario_map` and a Transform's or Load File's `input_mapping`, both consumed by the
 backend). It is read per edge by the shared `edgeInputName` helper from server-owned editor
 identity metadata, so the panel can never advertise a name the code does not
 recognise.

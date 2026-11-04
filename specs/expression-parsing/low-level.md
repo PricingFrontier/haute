@@ -78,7 +78,7 @@ component) → log `pipeline_parsed`.
 child file has literal structured input/output ports present and extract its
 declared `definition_id`. Build one `SubmodelDefinition` per definition id and
 one `SUBMODEL` occurrence per registration; each occurrence uses its name as
-node id (`node.id == label == alias == name`), config `{definitionId, alias}`, and
+node id (`node.id == label == alias == name`), config `{definition_id, alias}`, and
 derives its node label directly from the name (registrations accept `(<module>.submodel, name, *, instance_of=None)`
 and reject `definition_id=`, `instance_id=`, `alias=`, and `label=`).
 Parent connect endpoints use names and declared
@@ -357,7 +357,7 @@ no alias or migration shim; direct test callers use the same current contract.
   dedicated diagnostic; every other difference raises `ParseError` before
   graph-shape validation or return.
 - **Polars parameter binding is strictly conserved**: every Polars node's
-  positional parameter set (after applying `inputMapping`) must equal the set
+  positional parameter set (after applying `input_mapping`) must equal the set
   of executable input names contributed by incoming edges (or public input port
   sanitised IDs for submodel definition nodes). Mismatches fail immediately
   with `ParseError("Pipeline function parameters do not match the node's connected inputs.")`
@@ -437,7 +437,7 @@ Tests live under `tests/`, split by concern:
   output name their parameter after the output's name (the sanitised public output
   port name from an owner; from an instance, the instance's name, or
   `<instance>_<port>` when the definition has several outputs), as codegen emits; any other parameter name is rejected
-  unless explicitly bound through `inputMapping`.
+  unless explicitly bound through `input_mapping`.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
@@ -446,7 +446,7 @@ Tests live under `tests/`, split by concern:
 - **`TestPolarsParameterBinding`** (`tests/test_parser_conservation.py`) -- tests
   the strict parameter binding acceptance gate for Polars nodes: rejects unbound
   positional parameters and unconsumed incoming edges with exact diagnostic
-  context; verifies that `inputMapping` correctly maps parameters, executes, and
+  context; verifies that `input_mapping` correctly maps parameters, executes, and
   roundtrips through codegen; confirms consumers of submodel occurrence outputs
   bind the public port name; validates that parameter-mismatched pipelines
   load in degraded mode for editor recovery while rejecting saves with HTTP 409;

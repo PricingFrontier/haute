@@ -19,8 +19,8 @@ malformed shapes (level arity mismatch, separator levels under a
 non-composite name, duplicate/empty components, missing frame columns) raise
 loud ``ValueError``s naming the table.
 
-Miss semantics (3b.5): the blanket ``defaultValue: "1.0"`` is gone.  The
-apply path opts in to the W3a ``onMissing: "neutral"`` machinery explicitly —
+Miss semantics (3b.5): the blanket ``default_value: "1.0"`` is gone.  The
+apply path opts in to the W3a ``on_missing: "neutral"`` machinery explicitly —
 unseen levels still rate 1.0 (an optimiser relativity is a multiplicative
 adjustment on an already-rated price, so "no adjustment" is the safe
 degradation for apply-to-broader-population deploy scoring; failing the whole
@@ -94,7 +94,7 @@ def _engine_matches(frame: pl.DataFrame, name: str, entries: list[dict[str, Any]
     ]
     table = _ratebook_lookup_table(name, entries, dtype_records)
     out = _apply_rating_table(frame.lazy(), table).collect()
-    return [value is not None for value in out[table["outputColumn"]].to_list()]
+    return [value is not None for value in out[table["output_column"]].to_list()]
 
 
 def _mirror_matches(frame: pl.DataFrame, name: str, entries: list[dict[str, Any]]) -> list[bool]:
@@ -396,7 +396,7 @@ class TestRealSolverEndToEnd:
                 label="apply",
                 nodeType=NodeType.OPTIMISER_APPLY,
                 config={
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": str(artifact_path),
                     "ratebook_input": "base",
                 },
@@ -459,7 +459,7 @@ class TestRealSolverEndToEnd:
                 label="apply",
                 nodeType=NodeType.OPTIMISER_APPLY,
                 config={
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": str(artifact_path),
                     "ratebook_input": "base",
                 },

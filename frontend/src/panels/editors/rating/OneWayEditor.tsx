@@ -12,7 +12,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
   onUpdateEntries: (entries: Record<string, string | number>[]) => void
 }) {
   const factor = table.factors[0]
-  const defaultValue = table.defaultValue
+  const defaultValue = table.default_value
   const entries = useMemo(() => table.entries || [], [table.entries])
   const stats = useMemo(() => tableStats(entries), [entries])
   const { regionRef, regionProps, cellProps, isCellSelected } = useGridCellSelection()

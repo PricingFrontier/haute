@@ -37,7 +37,7 @@
                     "node_type": "dataInput",
                     "name": "region_loadings",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/region_loadings.parquet",
@@ -51,7 +51,7 @@
                     "name": "loaded_quotes",
                     "config": {
                       "how": "left",
-                      "maintainOrder": "left_right",
+                      "maintain_order": "left_right",
                       "on": [
                         "region"
                       ],
@@ -92,7 +92,7 @@
                     "node_type": "dataInput",
                     "name": "region_loadings",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/region_loadings.parquet",
@@ -106,7 +106,7 @@
                     "name": "loaded_quotes",
                     "config": {
                       "how": "left",
-                      "maintainOrder": "left_right",
+                      "maintain_order": "left_right",
                       "on": [
                         "region",
                         "cover_type"

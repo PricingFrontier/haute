@@ -117,8 +117,8 @@ const CONFIG = {
   tables: [
     {
       factors: ["region"],
-      outputColumn: "region_factor",
-      defaultValue: "1.0",
+      output_column: "region_factor",
+      default_value: "1.0",
       entries: [{ region: "North", value: 1.1 }],
     },
   ],
@@ -206,8 +206,8 @@ describe("RatingStepEditor levels", () => {
       editor({
         config: {
           tables: [
-            { factors: ["region"], outputColumn: "a", defaultValue: "1.0", entries: [] },
-            { factors: ["region", "cover"], outputColumn: "b", defaultValue: "1.0", entries: [] },
+            { factors: ["region"], output_column: "a", default_value: "1.0", entries: [] },
+            { factors: ["region", "cover"], output_column: "b", default_value: "1.0", entries: [] },
           ],
         },
       }),
@@ -235,7 +235,7 @@ describe("RatingStepEditor levels", () => {
             {
               banding: "breakpoints",
               column: "premium",
-              outputColumn: "premium_band",
+              output_column: "premium_band",
               rules: [{ boundary: "100", label: "low" }, { boundary: "", label: "high" }],
             },
           ],
@@ -248,8 +248,8 @@ describe("RatingStepEditor levels", () => {
           tables: [
             {
               factors: ["premium_band"],
-              outputColumn: "premium_factor",
-              defaultValue: "1.0",
+              output_column: "premium_factor",
+              default_value: "1.0",
               entries: [],
             },
           ],
@@ -383,8 +383,8 @@ describe("RatingStepEditor levels", () => {
           tables: [
             {
               factors: ["region", "cover", "age"],
-              outputColumn: "region_factor",
-              defaultValue: "1.0",
+              output_column: "region_factor",
+              default_value: "1.0",
               entries: [],
             },
           ],
@@ -430,12 +430,12 @@ describe("RatingStepEditor levels", () => {
           tables: [
             {
               factors: ["region"],
-              outputColumn: "region_factor",
-              defaultValue: "1.0",
+              output_column: "region_factor",
+              default_value: "1.0",
               entries: [{ region: "r0", value: 1.1 }],
             },
             // A second table so "cover" is asked about and has levels to count.
-            { factors: ["cover"], outputColumn: "cover_factor", defaultValue: "1.0", entries: [] },
+            { factors: ["cover"], output_column: "cover_factor", default_value: "1.0", entries: [] },
           ],
         },
       }),
@@ -480,8 +480,8 @@ describe("RatingStepEditor levels", () => {
       tables: [
         {
           factors: ["size", "age", "region"],
-          outputColumn: "region_factor",
-          defaultValue: "1.0",
+          output_column: "region_factor",
+          default_value: "1.0",
           entries,
         },
       ],
@@ -543,7 +543,7 @@ describe("RatingStepEditor levels", () => {
             {
               banding: "breakpoints",
               column: "premium",
-              outputColumn: "premium_band",
+              output_column: "premium_band",
               rules: [{ boundary: "100", label: "low" }, { boundary: "", label: "high" }],
             },
           ],
@@ -556,8 +556,8 @@ describe("RatingStepEditor levels", () => {
           tables: [
             {
               factors: ["premium_band"],
-              outputColumn: "premium_factor",
-              defaultValue: "1.0",
+              output_column: "premium_factor",
+              default_value: "1.0",
               entries: [],
             },
           ],
@@ -611,7 +611,7 @@ describe("RatingStepEditor levels", () => {
         {editor({
           config: {
             tables: [
-              { factors: ["cover"], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+              { factors: ["cover"], output_column: "region_factor", default_value: "1.0", entries: [] },
             ],
           },
         })}

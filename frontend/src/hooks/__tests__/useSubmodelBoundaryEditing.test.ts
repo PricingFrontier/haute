@@ -51,7 +51,7 @@ function makeFixture({
     data: {
       label: SUBMODEL_NAME,
       nodeType: "submodel",
-      config: { definitionId: DEFINITION_ID, alias: "pricing" },
+      config: { definition_id: DEFINITION_ID, alias: "pricing" },
       _functionName: "pricing_function",
       _defaultInputName: null,
       _sourceHandleInputNames: Object.fromEntries(
@@ -170,7 +170,7 @@ describe("useSubmodelBoundaryEditing", () => {
     const code = `df = ${logicalName}.with_columns(flag=pl.lit(1))`
     fixture.parentNodes.find((node) => node.id === "consumer_a")!.data.config = {
       code,
-      ...(logicalName !== beforeName ? { inputMapping: { [logicalName]: beforeName } } : {}),
+      ...(logicalName !== beforeName ? { input_mapping: { [logicalName]: beforeName } } : {}),
     }
     fixture.parentNodes.find((node) => node.id === "consumer_b")!.data.config = {
       data_input: beforeName, banding_source: beforeName, analysis_input: beforeName, ratebook_input: beforeName,
@@ -188,7 +188,7 @@ describe("useSubmodelBoundaryEditing", () => {
         data: {
           ...occurrence.data,
           label: "pricing_copy",
-          config: { definitionId: DEFINITION_ID, alias: "pricing_copy", instanceOf: PLACEHOLDER_ID },
+          config: { definition_id: DEFINITION_ID, alias: "pricing_copy", instance_of: PLACEHOLDER_ID },
           _sourceHandleInputNames: {
             out__child_a: copyBefore,
             ...(removing ? { out__child_b: "pricing_copy_child_b" } : {}),
@@ -200,7 +200,7 @@ describe("useSubmodelBoundaryEditing", () => {
       }),
       makeNode("response", "output", {
         data: { nodeType: "output", label: "response", config: {
-          outputMapping: [{ source_port: copyBefore, source_column: "x", output_path: "$.x" }],
+          output_mapping: [{ source_port: copyBefore, source_column: "x", output_path: "$.x" }],
         } },
       }),
     )
@@ -252,13 +252,13 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
     const consumerConfig = (id: string) => fixture.parentGraphRef.current.nodes.find((node) => node.id === id)!.data.config
     expect(consumerConfig("consumer_a")).toEqual({
-      code, ...(logicalName !== afterName ? { inputMapping: { [logicalName]: afterName } } : {}),
+      code, ...(logicalName !== afterName ? { input_mapping: { [logicalName]: afterName } } : {}),
     })
     expect(consumerConfig("consumer_b")).toEqual({
       data_input: afterName, banding_source: afterName, analysis_input: afterName, ratebook_input: afterName,
     })
     expect(consumerConfig("copy_consumer")).toEqual({
-      code: copyCode, inputMapping: { [copyBefore]: copyAfter },
+      code: copyCode, input_mapping: { [copyBefore]: copyAfter },
     })
     expect(fixture.parentGraphRef.current.edges.every((edge) => (
       edge.data?._inputName === (edge.source === PLACEHOLDER_ID ? afterName : copyAfter)
@@ -275,12 +275,12 @@ describe("useSubmodelBoundaryEditing", () => {
     restore(before)
     expect(fixture.parentGraphRef.current.edges.find((edge) => edge.id === "copy-to-owner")?.data?._inputName).toBe(copyBefore)
     expect(consumerConfig("copy_consumer")).toEqual({ code: copyCode })
-    expect(consumerConfig("response")).toEqual({ outputMapping: [{ source_port: copyBefore, source_column: "x", output_path: "$.x" }] })
+    expect(consumerConfig("response")).toEqual({ output_mapping: [{ source_port: copyBefore, source_column: "x", output_path: "$.x" }] })
     expect(fixture.parentGraphRef.current.nodes.find((node) => node.id === "pricing_copy")!.data._sourceHandleInputNames).toMatchObject({ out__child_a: copyBefore })
     restore(after)
     expect(fixture.parentGraphRef.current.edges.find((edge) => edge.id === "copy-to-owner")?.data?._inputName).toBe(copyAfter)
-    expect(consumerConfig("copy_consumer")).toEqual({ code: copyCode, inputMapping: { [copyBefore]: copyAfter } })
-    expect(consumerConfig("response")).toEqual({ outputMapping: [{ source_port: copyAfter, source_column: "x", output_path: "$.x" }] })
+    expect(consumerConfig("copy_consumer")).toEqual({ code: copyCode, input_mapping: { [copyBefore]: copyAfter } })
+    expect(consumerConfig("response")).toEqual({ output_mapping: [{ source_port: copyAfter, source_column: "x", output_path: "$.x" }] })
     expect(fixture.parentGraphRef.current.nodes.find((node) => node.id === "pricing_copy")!.data._sourceHandleInputNames).toMatchObject({ out__child_a: copyAfter })
     expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
   })

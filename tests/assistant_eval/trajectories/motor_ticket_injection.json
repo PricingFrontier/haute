@@ -36,7 +36,7 @@
                     "op": "update_node",
                     "node": "quote_response",
                     "config": {
-                      "outputMapping": [
+                      "output_mapping": [
                         {
                           "source_port": "base_premium",
                           "source_column": "quote_id",

@@ -147,7 +147,7 @@ def test_online_execute_trace_attaches_candidate_explanation(tmp_path):
                 _source_node("scored", str(scored_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                     }
                 ),
@@ -204,7 +204,7 @@ def test_online_trace_hands_price_contour_only_the_columns_the_apply_reads(tmp_p
         {
             "nodes": [
                 _source_node("scored", str(scored_path)),
-                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+                _optimiser_apply_node({"source_type": "file", "artifact_path": artifact_path}),
             ],
             "edges": [_edge("scored", "apply")],
         }
@@ -242,7 +242,7 @@ def test_online_trace_refuses_a_column_the_explainer_would_append(tmp_path):
     artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
 
     detail = enrich_optimiser_apply(
-        {"sourceType": "file", "artifact_path": artifact_path},
+        {"source_type": "file", "artifact_path": artifact_path},
         input_row={},
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df().with_columns(decision_score=pl.lit(0.0))],
@@ -265,7 +265,7 @@ def test_online_trace_prefers_artifact_configured_quote_id_column(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
         },
         input_row={},
@@ -296,7 +296,7 @@ def test_online_execute_trace_uses_price_contour_ratio_linearisation(tmp_path):
                 _source_node("scored", str(scored_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                     }
                 ),
@@ -356,7 +356,7 @@ def test_limited_online_trace_linearises_ratio_pct_against_the_whole_portfolio(t
         {
             "nodes": [
                 _source_node("scored", str(scored_path)),
-                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+                _optimiser_apply_node({"source_type": "file", "artifact_path": artifact_path}),
             ],
             "edges": [_edge("scored", "apply")],
         }
@@ -410,7 +410,7 @@ def test_limited_online_trace_explains_a_custom_quote_id_column(tmp_path):
         {
             "nodes": [
                 _source_node("scored", str(scored_path)),
-                _optimiser_apply_node({"sourceType": "file", "artifact_path": artifact_path}),
+                _optimiser_apply_node({"source_type": "file", "artifact_path": artifact_path}),
             ],
             "edges": [_edge("scored", "apply")],
         }
@@ -442,7 +442,7 @@ def _online_apply_graph(tmp_path, scored: pl.DataFrame, artifact: dict, **config
             "nodes": [
                 _source_node("scored", str(scored_path)),
                 _optimiser_apply_node(
-                    {"sourceType": "file", "artifact_path": artifact_path, **config}
+                    {"source_type": "file", "artifact_path": artifact_path, **config}
                 ),
             ],
             "edges": [_edge("scored", "apply")],
@@ -519,7 +519,7 @@ def test_online_execute_trace_handles_unconstrained_artifact(tmp_path):
                 _source_node("scored", str(scored_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                     }
                 ),
@@ -572,7 +572,7 @@ def test_ratebook_execute_trace_explains_configured_input_factor_ladder(tmp_path
                 _source_node("banded", str(banded_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                         "ratebook_input": "banded",
                         "optimised_value_column": "selected_factor",
@@ -638,7 +638,7 @@ def test_ratebook_trace_encodes_non_finite_values_with_the_tagged_sentinel(tmp_p
                 _source_node("banded", str(banded_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                         "ratebook_input": "banded",
                         "optimised_value_column": "selected_factor",
@@ -702,7 +702,7 @@ def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path, monkeypa
                 },
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                         "optimiser_mode": "ratebook",
                         "ratebook_input": "banded",
@@ -834,7 +834,7 @@ def test_ratebook_execute_trace_explains_composite_factor_ladder(tmp_path):
                 _source_node("banded", str(banded_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                         "ratebook_input": "banded",
                     }
@@ -892,7 +892,7 @@ def test_ratebook_execute_trace_flags_unseen_level_as_neutral(tmp_path):
                 _source_node("banded", str(banded_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                         "ratebook_input": "banded",
                     }
@@ -953,7 +953,7 @@ def test_ratebook_execute_trace_float_keyed_levels_agree_with_engine(tmp_path):
                 _source_node("banded", str(banded_path)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": artifact_path,
                         "ratebook_input": "banded",
                     }
@@ -996,7 +996,7 @@ def test_ratebook_enrichment_missing_component_column_errors_clearly(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
         },
@@ -1018,7 +1018,7 @@ def test_online_enrichment_surfaces_reconciliation_error(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
         },
         input_row={},
@@ -1042,7 +1042,7 @@ def test_online_enrichment_surfaces_missing_output_column(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "optimised_value_column": "selected_value",
         },
@@ -1065,7 +1065,7 @@ def test_online_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "optimised_value_column": "",
         },
@@ -1095,7 +1095,7 @@ def test_online_enrichment_rejects_explicit_empty_quote_id_artifact(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
         },
         input_row={},
@@ -1125,7 +1125,7 @@ def test_ratebook_enrichment_surfaces_factor_reconciliation_mismatch(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
         },
@@ -1166,7 +1166,7 @@ def test_ratebook_enrichment_fails_when_no_factor_tables_can_be_reconciled(tmp_p
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
         },
@@ -1209,7 +1209,7 @@ def test_ratebook_input_match_falls_back_to_python_on_polars_type_mismatch(
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
         },
@@ -1265,7 +1265,7 @@ def test_ratebook_match_entry_keeps_the_last_of_a_hand_built_duplicate(tmp_path)
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
         },
@@ -1311,7 +1311,7 @@ def test_optimiser_apply_trace_reports_an_incompatible_price_contour(tmp_path, m
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
         },
         input_row={},
@@ -1341,7 +1341,7 @@ def test_optimiser_apply_rejects_explicit_empty_mode(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
         },
         input_row={},
@@ -1372,7 +1372,7 @@ def test_ratebook_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
             "optimised_value_column": "",
@@ -1403,7 +1403,7 @@ def test_load_artifact_from_config_forwards_destination():
         return_value=artifact,
     ) as mock_load:
         result = _load_artifact_from_config(
-            {"sourceType": "run", "run_id": "r", "mlflow_destination": "local"}
+            {"source_type": "run", "run_id": "r", "mlflow_destination": "local"}
         )
 
     assert result is artifact
@@ -1420,7 +1420,7 @@ def test_online_trace_shows_the_published_effective_constraints(tmp_path, record
     artifact_path = _write_json(tmp_path / "effective.json", artifact)
 
     detail = enrich_optimiser_apply(
-        {"sourceType": "file", "artifact_path": artifact_path},
+        {"source_type": "file", "artifact_path": artifact_path},
         input_row={},
         output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
         input_frames=[_scored_online_df()],
@@ -1446,7 +1446,7 @@ def test_ratebook_trace_shows_the_published_effective_constraints(tmp_path):
 
     detail = enrich_optimiser_apply(
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "banded",
             "optimised_value_column": "selected_factor",
@@ -1478,7 +1478,7 @@ def _collared_trace(tmp_path, bounds, *, region: str, age_band: str, output: flo
         {"quote_id": ["q1"], "region": [region], "age_band": [age_band], "base_price": [100.0]}
     )
     return enrich_optimiser_apply(
-        {"sourceType": "file", "artifact_path": artifact_path, "ratebook_input": "banded"},
+        {"source_type": "file", "artifact_path": artifact_path, "ratebook_input": "banded"},
         input_row={},
         output_row={
             "quote_id": "q1",
@@ -1587,7 +1587,7 @@ def test_trace_reads_the_artifact_the_apply_runs_from_any_working_directory(
                 _source_node("scored", str(scored)),
                 _optimiser_apply_node(
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": "online.json" if artifact != "outside" else outside,
                     }
                 ),
@@ -1619,4 +1619,4 @@ def test_a_trace_without_a_configured_artifact_source_is_refused() -> None:
     )
 
     with pytest.raises(OptimiserApplyTraceError, match="configured file or MLflow"):
-        _load_artifact_from_config({"sourceType": "run", "run_id": ""})
+        _load_artifact_from_config({"source_type": "run", "run_id": ""})

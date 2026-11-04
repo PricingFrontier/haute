@@ -506,7 +506,8 @@ def _attach_bundled_optimiser_artifacts(
         config = node.data.config
         bundled = (
             _remap_artifact(node.id, config, remap, "artifact_path")
-            if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file"
+            if node.data.nodeType == NodeType.OPTIMISER_APPLY
+            and config.get("source_type") == "file"
             else None
         )
         if bundled is None:
@@ -548,7 +549,7 @@ def _remap_artifact(
 
 def model_artifact_field(config: Mapping[str, Any]) -> str:
     """The config key whose basename names a Model Scoring node's bundled model."""
-    return "model_path" if config.get("sourceType") == "file" else "artifact_path"
+    return "model_path" if config.get("source_type") == "file" else "artifact_path"
 
 
 def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
@@ -578,7 +579,7 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
 
     message = (
         f"modelScore node {node.id!r} cannot be served: it has no usable "
-        "model source (set sourceType with a run_id or "
+        "model source (set source_type with a run_id or "
         "registered_model, or a model file) and no bundled model artifact, so the "
         "deployed endpoint would serve it as a silent identity "
         "passthrough that omits the model from every quote."
@@ -961,7 +962,7 @@ def _score_graph_lazy(
 
         # Intercept: an External File served from its bundled copy runs the body every
         # Load File runs (its steps or code, its input names), reading that copy by the
-        # node's fileType.
+        # node's file_type.
         if node_type == NodeType.EXTERNAL_FILE and remap:
             remapped_path = _remap_artifact(nid, config, remap, "path")
             if remapped_path is not None:
@@ -982,7 +983,7 @@ def _score_graph_lazy(
         # Intercept: a file-sourced Optimiser Apply loads its bundled copy, then applies it
         # through the body every Optimiser Apply runs. One sourced from MLflow loads at
         # request time from its own destination, exactly as the builder does.
-        if node_type == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file" and remap:
+        if node_type == NodeType.OPTIMISER_APPLY and config.get("source_type") == "file" and remap:
             remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
             if remapped_path is not None:
                 _opt_remapped: str = remapped_path

@@ -16,9 +16,9 @@ export function validateConfigRefs(nodes: Node[]): ConfigRefWarning[] {
     if (node.data.nodeType !== "submodel") continue
     const config = node.data.config
     if (!isSubmodelInstanceConfig(config)) throw new Error(`Submodel "${node.id}" has invalid identity configuration.`)
-    const owner = config.instanceOf
+    const owner = config.instance_of
     if (owner !== undefined && !nodeIds.has(owner)) {
-      warnings.push({ nodeId: node.id, nodeLabel: String(node.data.label), field: "instanceOf", referencedId: owner })
+      warnings.push({ nodeId: node.id, nodeLabel: String(node.data.label), field: "instance_of", referencedId: owner })
     }
   }
   return warnings

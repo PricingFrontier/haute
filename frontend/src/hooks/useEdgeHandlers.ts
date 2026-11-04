@@ -710,7 +710,7 @@ export default function useEdgeHandlers({
     const data = nodeData(node)
     const nt = data.nodeType
     const containedSingletons = nt === NODE_TYPES.SUBMODEL && isSubmodelInstanceConfig(data.config)
-      ? singletonTypesInSubmodelDefinition(data.config.definitionId, submodels)
+      ? singletonTypesInSubmodelDefinition(data.config.definition_id, submodels)
       : new Set<NodeTypeValue>()
     setContextMenu({
       x: event.clientX,
@@ -720,7 +720,7 @@ export default function useEdgeHandlers({
       isSubmodel: nt === NODE_TYPES.SUBMODEL,
       isSubmodelCopy: nt === NODE_TYPES.SUBMODEL
         && isSubmodelInstanceConfig(data.config)
-        && data.config.instanceOf !== undefined,
+        && data.config.instance_of !== undefined,
       isSingleton: isSingletonType(nt) || containedSingletons.size > 0,
     })
   }, [setContextMenu, submodels])

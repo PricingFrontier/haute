@@ -97,8 +97,8 @@ function makeSubmodelInputParams() {
   }
   params.graphRef.current.nodes = [
     identifiedNode("source"), identifiedNode("other"),
-    identifiedNode("owner", NODE_TYPES.SUBMODEL, { config: { definitionId: "pricing", alias: "owner" } }),
-    identifiedNode("copy", NODE_TYPES.SUBMODEL, { config: { definitionId: "pricing", alias: "copy", instanceOf: "owner" } }),
+    identifiedNode("owner", NODE_TYPES.SUBMODEL, { config: { definition_id: "pricing", alias: "owner" } }),
+    identifiedNode("copy", NODE_TYPES.SUBMODEL, { config: { definition_id: "pricing", alias: "copy", instance_of: "owner" } }),
   ]
   params.validateConnection = (connection) => validatePipelineConnection(
     connection, params.graphRef.current.nodes as unknown as SimpleNode[],
@@ -1753,7 +1753,7 @@ describe("useEdgeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     } as unknown as Node
     const copy = {
@@ -1762,9 +1762,9 @@ describe("useEdgeHandlers", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "scoring",
+          instance_of: "scoring",
         },
       },
     } as unknown as Node
@@ -1815,7 +1815,7 @@ describe("useEdgeHandlers", () => {
       data: {
         label: "Inputs",
         nodeType: NODE_TYPES.SUBMODEL,
-        config: { definitionId: "definition_inputs", alias: "inputs" },
+        config: { definition_id: "definition_inputs", alias: "inputs" },
       },
     } as unknown as Node
     const submodels = {
@@ -1897,7 +1897,7 @@ describe("useEdgeHandlers", () => {
           _defaultInputName: "server_dataOutput_1",
           _sourceHandleInputNames: {},
           config: {
-            outputType: "file",
+            output_type: "file",
             format: "parquet",
             mode: "sink",
             path: "",

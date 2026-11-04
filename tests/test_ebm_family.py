@@ -676,7 +676,7 @@ def test_deploy_bundles_an_ebm_run_contract_when_logged(tmp_path: Path) -> None:
                     "data": {
                         "nodeType": "modelScore",
                         "config": {
-                            "sourceType": "run",
+                            "source_type": "run",
                             "run_id": "run",
                             "artifact_path": "ebm.ebm",
                         },

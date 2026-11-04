@@ -44,9 +44,9 @@ function makeOccurrence(instanceId = INSTANCE_ID, instanceOf?: string) {
       label: alias,
       nodeType: "submodel",
       config: {
-        definitionId: DEFINITION_ID,
+        definition_id: DEFINITION_ID,
         alias,
-        ...(instanceOf ? { instanceOf } : {}),
+        ...(instanceOf ? { instance_of: instanceOf } : {}),
       },
     },
   })
@@ -875,7 +875,7 @@ describe("useSubmodelNavigation", () => {
       data: {
         label: "other",
         nodeType: "submodel",
-        config: { definitionId: "definition_other", alias: "other" },
+        config: { definition_id: "definition_other", alias: "other" },
       },
     })
     const params = makeParams({
@@ -1118,14 +1118,14 @@ describe("useSubmodelNavigation", () => {
       data: {
         label: "scoring_primary",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring_primary" },
+        config: { definition_id: "definition_scoring", alias: "scoring_primary" },
       },
     })
     const secondary = makeNode("scoring_secondary", "submodel", {
       data: {
         label: "scoring_secondary",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring_secondary" },
+        config: { definition_id: "definition_scoring", alias: "scoring_secondary" },
       },
     })
     const definition = {
@@ -1223,7 +1223,7 @@ describe("useSubmodelNavigation", () => {
       data: {
         label: "scoring_primary",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring_primary" },
+        config: { definition_id: "definition_scoring", alias: "scoring_primary" },
       },
     })
     const params = makeParams({

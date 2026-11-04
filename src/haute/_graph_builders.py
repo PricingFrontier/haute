@@ -251,11 +251,11 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     """Return physical names used to infer a parsed node's incoming edges.
 
     A mapped Transform or Load File signature intentionally keeps the logical
-    parameter names its code reads.  Its ``inputMapping`` (a Transform's
+    parameter names its code reads.  Its ``input_mapping`` (a Transform's
     decorator, a Load File's sidecar) records the current physical edge names,
     so implicit edge reconstruction must apply that mapping before matching
     node identifiers.  Instances keep their existing semantics: their signature
-    is already physical and ``inputMapping`` describes the referenced original.
+    is already physical and ``input_mapping`` describes the referenced original.
     """
     logical_params = list(node_info["edge_param_names"])
     node_type = node_info.get("node_type")
@@ -264,7 +264,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
         # A hook's df is the frame its decorator produced, not an input named df.
         return naming
     config = node_info.get("config", {})
-    input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
+    input_mapping = config.get("input_mapping") if isinstance(config, dict) else None
     if (
         node_type is None
         or not stepped_surface_allows_input_references(node_type)
@@ -274,7 +274,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
         return logical_params
     if not isinstance(input_mapping, dict):
         raise ConfigError(
-            "inputMapping must be an object mapping logical input names to "
+            "input_mapping must be an object mapping logical input names to "
             "current edge input names.",
             input_mapping=input_mapping,
         )
@@ -283,7 +283,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     resolved_logical_params = resolve_input_mapping_names(edge_params, input_mapping)
     if resolved_logical_params != logical_params:
         raise ConfigError(
-            "inputMapping logical names must match the function's positional input parameters.",
+            "input_mapping logical names must match the function's positional input parameters.",
             logical_params=logical_params,
             resolved_logical_params=resolved_logical_params,
         )

@@ -64,7 +64,7 @@ def _source_node(node_id: str, label: str, path: str) -> dict[str, Any]:
             "label": label,
             "nodeType": "dataInput",
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "mode": "scan",
                 "path": path,

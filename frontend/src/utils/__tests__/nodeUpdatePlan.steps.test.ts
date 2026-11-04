@@ -38,12 +38,12 @@ function renamed(node: Node, newLabel: string): Record<string, unknown> {
 
 const STEPS = [
   { id: "s", kind: "source", input: "quotes" },
-  { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r" },
+  { id: "j", kind: "join", input: "rates", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_r" },
   { id: "c", kind: "concat", inputs: ["rates"], how: "vertical" },
 ]
 
 describe("prepareNodeUpdate on stepped transforms", () => {
-  it("rewrites source, join and concat references and never adds inputMapping", () => {
+  it("rewrites source, join and concat references and never adds input_mapping", () => {
     const quotes = makeNode("quotes", "quotes")
     const rates = makeNode("rates", "rates")
     const consumer = makeNode("consumer", "Consumer", {
@@ -69,10 +69,10 @@ describe("prepareNodeUpdate on stepped transforms", () => {
     const prepared = result as PreparedNodeUpdate
     const target = prepared.nodes.find((n) => n.id === "consumer")
     const config = target?.data.config as Record<string, unknown>
-    expect(config.inputMapping).toBeUndefined()
+    expect(config.input_mapping).toBeUndefined()
     expect(config.steps).toEqual([
       { id: "s", kind: "source", input: "quotes" },
-      { id: "j", kind: "join", input: "Rate_Book", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r" },
+      { id: "j", kind: "join", input: "Rate_Book", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_r" },
       { id: "c", kind: "concat", inputs: ["Rate_Book"], how: "vertical" },
     ])
   })

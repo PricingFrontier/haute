@@ -516,11 +516,11 @@ export default function useTracing({
           "Submodel instance " + node.id + " has malformed canonical identity config",
         )
       }
-      const definition = submodels[data.config.definitionId]
-      if (!isSubmodelDefinition(definition, data.config.definitionId)) {
+      const definition = submodels[data.config.definition_id]
+      if (!isSubmodelDefinition(definition, data.config.definition_id)) {
         throw new Error(
           "Submodel instance " + node.id + " references missing or malformed definition "
-          + data.config.definitionId,
+          + data.config.definition_id,
         )
       }
       for (const child of definition.graph.nodes) {

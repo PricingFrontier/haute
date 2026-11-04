@@ -44,7 +44,7 @@ export type Condition = {
   value?: Operand
   values?: LiteralOperand[]
   /** A membership list of numbers says which kind: Polars 2 compares a column only with its own kind. */
-  numberType?: NumberType
+  number_type?: NumberType
 }
 
 export type MatchMode = "all" | "any"
@@ -91,7 +91,7 @@ export type Expr =
       of?: Operand
       over: string[]
       /** Row order within each partition; needs at least one `over` column. */
-      orderBy?: OrderKey[]
+      order_by?: OrderKey[]
       /** Rank direction (`rank` and `dense_rank` only). */
       descending?: boolean
       /** The quantile in [0, 1] (`quantile` only). */
@@ -125,7 +125,7 @@ export type CastStep = StatementStep & { kind: "cast"; casts: CastEntry[]; stric
 export type SortStep = StatementStep & {
   kind: "sort"
   keys: OrderKey[]
-  nullsLast: boolean
+  nulls_last: boolean
 }
 export type UniqueStep = StatementStep & { kind: "unique"; columns: string[]; keep: "first" | "last" | "any" | "none" }
 export type ColumnAggregation = {
@@ -155,13 +155,13 @@ export type JoinStep = StatementStep & {
   kind: "join"
   input: string
   how: JoinHow
-  leftOn: string[]
-  rightOn: string[]
+  left_on: string[]
+  right_on: string[]
   suffix: string
   /** Key cardinality Polars checks at run time; absent means unchecked. */
   validate?: JoinValidate
   /** Output row order, always stated: Polars 2 keeps a join's order only when told to. */
-  maintainOrder: JoinMaintainOrder
+  maintain_order: JoinMaintainOrder
 }
 export type ConcatStep = StatementStep & { kind: "concat"; inputs: string[]; how: "vertical" | "diagonal" }
 export type FillNullStep = StatementStep & {
@@ -185,8 +185,8 @@ export type UnpivotStep = StatementStep & {
   kind: "unpivot"
   on: string[]
   index: string[]
-  variableName: string
-  valueName: string
+  variable_name: string
+  value_name: string
 }
 export type VariableStep = StatementStep & { kind: "variable"; name: string; value: LiteralOperand }
 /** Authored Python statements run against the current frame. */

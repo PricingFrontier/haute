@@ -185,14 +185,14 @@ describe("OptimiserApplyEditor", () => {
     const props = defaultProps()
     render(<OptimiserApplyEditor {...props} />)
     fireEvent.click(screen.getByText("Registered"))
-    expect(props.onUpdate).toHaveBeenCalledWith({ sourceType: "registered", optimiser_mode: "" })
+    expect(props.onUpdate).toHaveBeenCalledWith({ source_type: "registered", optimiser_mode: "" })
   })
 
   it("calls onUpdate when toggling source type to run", () => {
     const props = defaultProps()
     render(<OptimiserApplyEditor {...props} />)
     fireEvent.click(screen.getByText("Experiment Run"))
-    expect(props.onUpdate).toHaveBeenCalledWith({ sourceType: "run", optimiser_mode: "" })
+    expect(props.onUpdate).toHaveBeenCalledWith({ source_type: "run", optimiser_mode: "" })
   })
 
   // 3. File mode: shows artifact_path text input
@@ -339,7 +339,7 @@ describe("OptimiserApplyEditor", () => {
   // 10. Registered mode: shows model dropdown and the destination selector
   it("shows model dropdown in registered mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "registered" }
+    props.config = { source_type: "registered" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Model Name")).toBeInTheDocument()
     expect(screen.getByText("Select a model...")).toBeInTheDocument()
@@ -352,7 +352,7 @@ describe("OptimiserApplyEditor", () => {
       { name: "opt-model", latest_versions: [{ version: "1", status: "READY", run_id: "r1" }] },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "registered" }
+    props.config = { source_type: "registered" }
     render(<OptimiserApplyEditor {...props} />)
     const modelSelect = screen.getByDisplayValue("Select a model...")
     fireEvent.change(modelSelect, { target: { value: "opt-model" } })
@@ -366,7 +366,7 @@ describe("OptimiserApplyEditor", () => {
       { version: "2", run_id: "r2", status: "READY", description: "stable" },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "registered", registered_model: "opt-model" }
+    props.config = { source_type: "registered", registered_model: "opt-model" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Version")).toBeInTheDocument()
     expect(screen.getByText(/v2 - READY \(stable\)/)).toBeInTheDocument()
@@ -375,7 +375,7 @@ describe("OptimiserApplyEditor", () => {
   // 13. Run mode: shows experiment/run dropdowns
   it("shows experiment dropdown in run mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Experiment")).toBeInTheDocument()
     expect(screen.getByText("Select an experiment...")).toBeInTheDocument()
@@ -387,7 +387,7 @@ describe("OptimiserApplyEditor", () => {
       { experiment_id: "exp-opt-1", name: "Optimiser Exp" },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<OptimiserApplyEditor {...props} />)
     const expSelect = screen.getByDisplayValue("Select an experiment...")
     fireEvent.change(expSelect, { target: { value: "exp-opt-1" } })
@@ -448,7 +448,7 @@ describe("OptimiserApplyEditor", () => {
   // 17. The destination selector replaces the status badge outside file mode
   it("destination selector is shown in registered mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "registered" }
+    props.config = { source_type: "registered" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeInTheDocument()
     expect(screen.queryByTestId("mlflow-badge")).not.toBeInTheDocument()
@@ -456,14 +456,14 @@ describe("OptimiserApplyEditor", () => {
 
   it("destination selector is shown in run mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByRole("radiogroup", { name: "MLflow destination" })).toBeInTheDocument()
   })
 
   it("browses the node's own destination", () => {
     const props = defaultProps()
-    props.config = { sourceType: "registered", mlflow_destination: "server" }
+    props.config = { source_type: "registered", mlflow_destination: "server" }
     render(<OptimiserApplyEditor {...props} />)
     expect(vi.mocked(useMlflowBrowser)).toHaveBeenCalledWith({
       destination: "server",
@@ -476,7 +476,7 @@ describe("OptimiserApplyEditor", () => {
   it("clears the selection and the optimiser mode when the destination changes", () => {
     const props = defaultProps()
     props.config = {
-      sourceType: "run",
+      source_type: "run",
       mlflow_destination: "local",
       run_id: "run-abc",
       run_name: "best-run",
@@ -509,7 +509,7 @@ describe("OptimiserApplyEditor", () => {
 
   it("leaves the config alone when the chosen destination is already selected", () => {
     const props = defaultProps()
-    props.config = { sourceType: "registered", mlflow_destination: "server" }
+    props.config = { source_type: "registered", mlflow_destination: "server" }
     render(<OptimiserApplyEditor {...props} />)
 
     fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
@@ -523,7 +523,7 @@ describe("OptimiserApplyEditor", () => {
       { name: "opt-model", latest_versions: [{ version: "1", status: "READY", run_id: "r1" }] },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "registered", mlflow_destination: "local" }
+    props.config = { source_type: "registered", mlflow_destination: "local" }
     render(<OptimiserApplyEditor {...props} />)
     fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
     expect(screen.getByTestId("mlflow-selection-cleared")).toBeInTheDocument()
@@ -552,14 +552,14 @@ describe("OptimiserApplyEditor", () => {
 
   it("does not show artifact_path input in registered mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "registered" }
+    props.config = { source_type: "registered" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.queryByPlaceholderText("artifacts/optimiser_v1.json")).not.toBeInTheDocument()
   })
 
   it("shows Run ID text input in run mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Run ID")).toBeInTheDocument()
     const runIdInput = screen.getByPlaceholderText("e.g. a1b2c3d4e5f6...")
@@ -803,7 +803,7 @@ describe("OptimiserApplyEditor", () => {
       { run_id: "run-1", run_name: "opt-run", metrics: { converged: 1, total_objective: 3.14 }, artifacts: [] },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<OptimiserApplyEditor {...props} />)
     expect(screen.getByText("Run")).toBeInTheDocument()
     // The run option should contain the run name and mode
@@ -824,7 +824,7 @@ describe("OptimiserApplyEditor", () => {
       },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "run", run_id: "frontier-ratebook-run" }
+    props.config = { source_type: "run", run_id: "frontier-ratebook-run" }
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
@@ -858,7 +858,7 @@ describe("OptimiserApplyEditor", () => {
     ]
     const props = defaultProps()
     props.config = {
-      sourceType: "run",
+      source_type: "run",
       run_id: "online-run",
       optimiser_mode: "ratebook",
       ratebook_input: "age-banding-node",
@@ -889,7 +889,7 @@ describe("OptimiserApplyEditor", () => {
     ]
     const props = defaultProps()
     props.config = {
-      sourceType: "registered",
+      source_type: "registered",
       registered_model: "registered-opt",
       alias: "champion",
       ratebook_input: "age_veh_banding",
@@ -916,7 +916,7 @@ describe("OptimiserApplyEditor", () => {
       },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "registered", registered_model: "registered-opt", version: "2" }
+    props.config = { source_type: "registered", registered_model: "registered-opt", version: "2" }
     props.inputSources = [
       {
         sourceNodeId: "optimiser-input-node",
@@ -950,7 +950,7 @@ describe("OptimiserApplyEditor", () => {
     ]
     const props = defaultProps()
     props.config = {
-      sourceType: "registered",
+      source_type: "registered",
       registered_model: "registered-opt",
       version: "3",
       ratebook_input: "age-banding-node",
@@ -988,7 +988,7 @@ describe("OptimiserApplyEditor", () => {
     ]
     const props = defaultProps()
     props.config = {
-      sourceType: "registered",
+      source_type: "registered",
       registered_model: "new-online-model",
       version: "2",
       ratebook_input: "age-banding-node",
@@ -1015,7 +1015,7 @@ describe("OptimiserApplyEditor", () => {
 
   it("persisted model shows as fallback option in registered mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "registered", registered_model: "old-model" }
+    props.config = { source_type: "registered", registered_model: "old-model" }
     mockMlflow.models = []
     render(<OptimiserApplyEditor {...props} />)
     const options = screen.getAllByRole("option")
@@ -1029,7 +1029,7 @@ describe("OptimiserApplyEditor", () => {
       { version: "5", run_id: "r5", status: "READY", description: "" },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "registered", registered_model: "my-opt", version: "latest" }
+    props.config = { source_type: "registered", registered_model: "my-opt", version: "latest" }
     render(<OptimiserApplyEditor {...props} />)
     const versionSelect = screen.getByDisplayValue("latest")
     fireEvent.change(versionSelect, { target: { value: "5" } })

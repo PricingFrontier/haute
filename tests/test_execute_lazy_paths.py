@@ -28,7 +28,7 @@ def test_resolve_graph_paths_rewrites_inputs_but_not_outputs() -> None:
                 "source",
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data/source.parquet",
@@ -39,7 +39,7 @@ def test_resolve_graph_paths_rewrites_inputs_but_not_outputs() -> None:
                 "sink",
                 NodeType.DATA_OUTPUT,
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "parquet",
                     "mode": "sink",
                     "path": "outputs/result.parquet",
@@ -51,7 +51,7 @@ def test_resolve_graph_paths_rewrites_inputs_but_not_outputs() -> None:
                 "score",
                 NodeType.MODEL_SCORE,
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "artifact_path": "artifacts/model.joblib",
                     "feature_contract_path": "artifacts/model.features.json",
                 },
@@ -98,7 +98,7 @@ def test_resolve_graph_paths_rewrites_optimiser_apply_artifact_path_for_file_sou
             _node(
                 "apply",
                 NodeType.OPTIMISER_APPLY,
-                {"sourceType": "file", "artifact_path": "artifacts/solve.json"},
+                {"source_type": "file", "artifact_path": "artifacts/solve.json"},
             )
         ],
     )
@@ -122,7 +122,7 @@ def test_resolve_graph_paths_does_not_rewrite_non_file_optimiser_apply() -> None
             _node(
                 "apply",
                 NodeType.OPTIMISER_APPLY,
-                {"sourceType": "job", "artifact_path": "artifacts/solve.json"},
+                {"source_type": "job", "artifact_path": "artifacts/solve.json"},
             )
         ],
     )
@@ -160,7 +160,7 @@ def test_lazy_graph_path_resolution_rejects_outside_project(
                 "source",
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "path": str(outside),
                 },
             )

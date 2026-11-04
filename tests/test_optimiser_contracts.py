@@ -109,7 +109,7 @@ def test_scenario_expander_streaming_output_is_quote_contiguous_for_optimiser(
                     "column_name": "scenario_value",
                     "min_value": 0.8,
                     "max_value": 1.1,
-                    "stepCount": 4,
+                    "step_count": 4,
                     "step_column": "scenario_index",
                 },
             },
@@ -473,7 +473,7 @@ def _make_expander_optimiser_graph(data_path: str) -> dict:
                             "column_name": "scenario_value",
                             "min_value": 0.8,
                             "max_value": 1.2,
-                            "stepCount": 5,
+                            "step_count": 5,
                             "step_column": "scenario_index",
                             "code": (
                                 "df = df.with_columns([\n"

@@ -190,7 +190,7 @@ def _capstone_root_graph(
             NodeType.DATA_INPUT,
             _opaque(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": r"data\raw {quotes}\left (gross).parquet",
@@ -271,12 +271,12 @@ def _capstone_root_graph(
             _opaque(
                 {
                     "how": "left",
-                    "leftOn": ["quote_id"],
-                    "rightOn": ["quote_id"],
+                    "left_on": ["quote_id"],
+                    "right_on": ["quote_id"],
                     "suffix": "_joined",
                     "coalesce": True,
                     "validate": "m:1",
-                    "maintainOrder": "left",
+                    "maintain_order": "left",
                 }
             ),
             description="C1 raw id remap " + description,
@@ -299,7 +299,7 @@ def _capstone_root_graph(
             NodeType.MODEL_SCORE,
             _opaque(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run-{abc}(1)",
                     "run_name": 'best "run"',
                     "artifact_path": r"models\score {v1}.cbm",
@@ -320,7 +320,7 @@ def _capstone_root_graph(
                         {
                             "banding": "breakpoints",
                             "column": "prediction (gross)",
-                            "outputColumn": "score_band",
+                            "output_column": "score_band",
                             "rules": [{"boundary": "100", "label": "{low}"}],
                             "default": "other",
                         }
@@ -338,16 +338,16 @@ def _capstone_root_graph(
                     "tables": [
                         {
                             "factors": ["score_band"],
-                            "outputColumn": "rate_factor",
-                            "defaultValue": "1.0",
+                            "output_column": "rate_factor",
+                            "default_value": "1.0",
                             "entries": [{"score_band": "{low}", "value": "1.25"}],
                         }
                     ],
-                    "combinedOutputs": [
+                    "combined_outputs": [
                         {
-                            "outputColumn": "rated premium",
+                            "output_column": "rated premium",
                             "operation": "multiply",
-                            "baseValue": 1.0,
+                            "base_value": 1.0,
                         }
                     ],
                     "code": _simple_user_code(user_text),
@@ -365,7 +365,7 @@ def _capstone_root_graph(
                     "column_name": "scenario (value)",
                     "min_value": 0.0,
                     "max_value": 1.0,
-                    "stepCount": 3,
+                    "step_count": 3,
                     "step_column": "step_index",
                     "code": _simple_user_code(user_text),
                 }
@@ -396,7 +396,7 @@ def _capstone_root_graph(
             NodeType.OPTIMISER_APPLY,
             _opaque(
                 {
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": r"artifacts\optimiser {v1}.json",
                     "version_column": "__optimiser_version__",
                     "optimised_value_column": "selected (price)",
@@ -428,7 +428,7 @@ def _capstone_root_graph(
             # identifier-named field.
             _opaque(
                 {
-                    "outputMapping": [
+                    "output_mapping": [
                         {
                             "source_port": "in",
                             "source_column": column,
@@ -451,7 +451,7 @@ def _capstone_root_graph(
             NodeType.DATA_OUTPUT,
             _opaque(
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "csv",
                     "mode": "sink",
                     "path": "outputs/final (gross).csv",
@@ -485,7 +485,7 @@ def _capstone_root_graph(
             _opaque(
                 {
                     "path": r"models\external {quote}.pkl",
-                    "fileType": "pickle",
+                    "file_type": "pickle",
                     "code": _simple_user_code(user_text),
                 }
             ),
@@ -497,7 +497,7 @@ def _capstone_root_graph(
             NodeType.DATA_INPUT,
             _opaque(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "csv",
                     "mode": "scan",
                     "path": r"data\wide {quotes}\input (raw).csv",
@@ -518,7 +518,7 @@ def _capstone_root_graph(
             NodeType.DATA_OUTPUT,
             _opaque(
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "ndjson",
                     "mode": "sink",
                     "path": "outputs/wide (result).jsonl",

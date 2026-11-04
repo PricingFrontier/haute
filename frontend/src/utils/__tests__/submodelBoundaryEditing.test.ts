@@ -35,8 +35,8 @@ function state(bound = false): SubmodelBoundaryEditState {
     }],
   }
   const parentNodes = [
-    makeNode("pricing", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing" } } }),
-    makeNode("pricing_2", "submodel", { data: { label: "pricing_2", nodeType: "submodel", config: { definitionId: definition.definitionId, alias: "pricing_2" } } }),
+    makeNode("pricing", "submodel", { data: { label: "pricing", nodeType: "submodel", config: { definition_id: definition.definitionId, alias: "pricing" } } }),
+    makeNode("pricing_2", "submodel", { data: { label: "pricing_2", nodeType: "submodel", config: { definition_id: definition.definitionId, alias: "pricing_2" } } }),
     makeNode("consumer"),
   ]
   const parentEdges: PipelineEdge[] = bound
@@ -90,7 +90,7 @@ describe("submodelBoundaryEditing", () => {
   it("chooses an instance input by name, sole unbound input, or explicit pick, never position", () => {
     const definition = state().submodels.definition_pricing as SubmodelDefinition
     const ports = ["policy", "rates", "claims"].map((name) => ({ name, targets: [] }))
-    const target = makeNode("copy", "submodel", { data: { label: "copy", config: { definitionId: definition.definitionId, alias: "copy", instanceOf: "pricing" } } })
+    const target = makeNode("copy", "submodel", { data: { label: "copy", config: { definition_id: definition.definitionId, alias: "copy", instance_of: "pricing" } } })
     const incoming = (name: string): PipelineEdge => ({ id: name, source: name, target: "copy", targetHandle: `in__${name}` })
     expect(chooseInstanceInput(target, ports, [], "rates")).toEqual({ name: "rates" })
     expect(() => chooseInstanceInput(target, ports, [incoming("rates")], "rates")).toThrow(/rates.*already bound/)
@@ -240,7 +240,7 @@ describe("submodelBoundaryEditing", () => {
         ...node.data,
         config: {
           ...(node.data.config as Record<string, unknown>),
-          instanceOf: "pricing",
+          instance_of: "pricing",
         },
       },
     } : node)
@@ -279,7 +279,7 @@ describe("submodelBoundaryEditing", () => {
         ...node.data,
         config: {
           ...(node.data.config as Record<string, unknown>),
-          instanceOf: "pricing",
+          instance_of: "pricing",
         },
       },
     } : node)
@@ -383,7 +383,7 @@ describe("submodelBoundaryEditing", () => {
         ...node.data,
         config: {
           ...(node.data.config as Record<string, unknown>),
-          instanceOf: "pricing",
+          instance_of: "pricing",
         },
       },
     } : node)

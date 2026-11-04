@@ -40,15 +40,15 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
     [
         {
             "factors": ["region"],
-            "outputColumn": "region_factor",
+            "output_column": "region_factor",
             "entries": [{"region": "north", "value": 1.1}, {"region": "south", "value": 0}],
         },
         {
             "factors": ["age", "region"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
-            "defaultValue": 1.0,
-            "factorDtypes": {"age": {"kind": "Int64"}},
+            "output_column": "f",
+            "on_missing": "neutral",
+            "default_value": 1.0,
+            "factor_dtypes": {"age": {"kind": "Int64"}},
             "entries": [
                 {"age": 25, "region": "north", "value": 1.2},
                 {"age": 25, "region": "south", "value": 1.3},
@@ -58,13 +58,13 @@ def _round_trip(tmp_path: Path, config: dict) -> tuple[str, dict]:
         {
             # The editor holds a default as typed, text; it reads back as that text.
             "factors": ["region"],
-            "outputColumn": "h",
-            "defaultValue": "1",
+            "output_column": "h",
+            "default_value": "1",
             "entries": [{"region": "north", "value": 1.1}],
         },
         {
             "factors": ["a", "b", "c"],
-            "outputColumn": "g",
+            "output_column": "g",
             "entries": [
                 {"a": "x", "b": 1, "c": True, "value": 2},
                 {"a": "y", "b": 2, "c": False, "value": 3},
@@ -88,7 +88,7 @@ def test_a_table_round_trips_through_its_grid(tmp_path: Path, table: dict) -> No
 def test_the_grid_writes_a_row_a_line_and_a_missing_cell_as_null() -> None:
     table = {
         "factors": ["band", "region"],
-        "outputColumn": "f",
+        "output_column": "f",
         "entries": [
             {"band": "a", "region": "north", "value": 1.0},
             {"band": "a", "region": "south", "value": 0},
@@ -109,7 +109,7 @@ def test_changing_one_rate_changes_one_line() -> None:
         for band in ("a", "b", "c", "d")
         for region in ("n", "s", "e", "w")
     ]
-    table = {"factors": ["band", "region"], "outputColumn": "f", "entries": entries}
+    table = {"factors": ["band", "region"], "output_column": "f", "entries": entries}
     before = node_config_json(NodeType.RATING_STEP, {"tables": [table]}, node_label="r")
     entries[5] = {**entries[5], "value": 0.25}
     after = node_config_json(NodeType.RATING_STEP, {"tables": [table]}, node_label="r")
@@ -120,8 +120,8 @@ def test_changing_one_rate_changes_one_line() -> None:
 def test_a_missing_cell_misses_and_a_zero_is_a_rate() -> None:
     grid = {
         "factors": ["band", "region"],
-        "outputColumn": "f",
-        "defaultValue": 9.0,
+        "output_column": "f",
+        "default_value": 9.0,
         "columns": ["north", "south"],
         "rows": [["a", 0, None]],
     }
@@ -136,7 +136,7 @@ def test_a_sidecar_in_the_row_array_form_is_refused_naming_the_conversion(
     sidecar = tmp_path / "config" / "rating_step" / "rate.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_bytes(
-        b'{"tables": [{"factors": ["k"], "outputColumn": "f", '
+        b'{"tables": [{"factors": ["k"], "output_column": "f", '
         b'"entries": [{"k": "a", "value": 1}]}]}'
     )
     with pytest.raises(ConfigSettingError, match=GRID_CONVERSION):
@@ -176,12 +176,12 @@ def test_a_config_with_no_tables_list_is_written_as_it_is() -> None:
 
 
 def test_the_save_leaves_a_level_its_type_cannot_hold_to_the_run() -> None:
-    """The save refuses levels equal under factorDtypes; a level the type cannot convert is
+    """The save refuses levels equal under factor_dtypes; a level the type cannot convert is
     not a duplicate, so the save passes it and the run reports it."""
     table = {
         "factors": ["age"],
-        "factorDtypes": {"age": {"kind": "Int64"}},
-        "outputColumn": "f",
+        "factor_dtypes": {"age": {"kind": "Int64"}},
+        "output_column": "f",
         "entries": [{"age": "not a number", "value": 1.0}, {"age": "25", "value": 2.0}],
     }
     refuse_levels_equal_under_factor_dtypes({"tables": [table]})

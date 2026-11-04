@@ -210,7 +210,7 @@ function applyConfigMapping(
   changes: MappingChanges,
   scope: RenameGraphScope,
   node: Node,
-  field: "input_scenario_map" | "inputMapping" | "data_input" | "banding_source" | "analysis_input" | "ratebook_input",
+  field: "input_scenario_map" | "input_mapping" | "data_input" | "banding_source" | "analysis_input" | "ratebook_input",
   pairs: readonly RenamePair[],
   keys: boolean,
 ): NodeUpdatePlanFailure | null {
@@ -226,7 +226,7 @@ function applyConfigMapping(
     }
     if (mapped.value === config[field]) return null
     scopeChanges.set(node.id, { ...config, [field]: mapped.value })
-  } else if (field === "inputMapping") {
+  } else if (field === "input_mapping") {
     const mappedValue = remapRecordValues(config[field], pairs)
     if (mappedValue === config[field]) return null
     scopeChanges.set(node.id, { ...config, [field]: mappedValue })
@@ -277,7 +277,7 @@ function isCodedOrdinaryTransform(node: Node): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
   const config = (node.data.config ?? {}) as Record<string, unknown>
   // A stepped transform's `code` is the rendering of its steps; renames
-  // rewrite the step references instead of recording an inputMapping.
+  // rewrite the step references instead of recording an input_mapping.
   if (Array.isArray(config.steps)) return false
   return typeof config.code === "string" && config.code.trim().length > 0
 }
@@ -286,7 +286,7 @@ function isCodedOrdinaryTransform(node: Node): boolean {
  * A stepped ordinary transform addresses its inputs by their current edge
  * names inside `config.steps` (`source.input`, `join.input`, `concat.inputs`).
  * A rename rewrites those references so the re-rendered code follows the edge;
- * it never adds `inputMapping` to a stepped transform.
+ * it never adds `input_mapping` to a stepped transform.
  */
 function rewriteSteppedTransformInputs(
   changes: MappingChanges,
@@ -312,7 +312,7 @@ function rewriteSteppedTransformInputs(
 /**
  * A coded ordinary transform references its inputs by name in `config.code`.
  * A rename never edits that code: it records the logical→edge binding on the
- * transform's `inputMapping` instead, so the generated parameter names and the
+ * transform's `input_mapping` instead, so the generated parameter names and the
  * code stay exactly as authored while the edge carries the new name.
  */
 function preserveCodedTransformBindings(
@@ -329,8 +329,8 @@ function preserveCodedTransformBindings(
   const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
   const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
   const mapping: Record<string, string> = {}
-  if (isPlainObject(config.inputMapping)) {
-    for (const [logical, current] of Object.entries(config.inputMapping)) {
+  if (isPlainObject(config.input_mapping)) {
+    for (const [logical, current] of Object.entries(config.input_mapping)) {
       if (typeof current === "string") mapping[logical] = current
     }
   }
@@ -375,10 +375,10 @@ function preserveCodedTransformBindings(
     seen.add(logical)
   }
   const nextConfig: Record<string, unknown> = { ...config }
-  if (Object.keys(mapping).length === 0) delete nextConfig.inputMapping
-  else nextConfig.inputMapping = mapping
+  if (Object.keys(mapping).length === 0) delete nextConfig.input_mapping
+  else nextConfig.input_mapping = mapping
   const unchanged =
-    JSON.stringify(nextConfig.inputMapping ?? null) === JSON.stringify(config.inputMapping ?? null)
+    JSON.stringify(nextConfig.input_mapping ?? null) === JSON.stringify(config.input_mapping ?? null)
   if (unchanged) return null
   scopeChanges.set(target.id, nextConfig)
   changes.set(scope, scopeChanges)
@@ -394,14 +394,14 @@ function collectMappingChanges(
       if (affected.target.data.nodeType === NODE_TYPES.OUTPUT) {
         const scopeChanges = changes.get(affected.scope) ?? new Map<string, Record<string, unknown>>()
         const config = (affected.target.data.config ?? {}) as Record<string, unknown>
-        if (config.outputMapping !== undefined) {
-          if (!Array.isArray(config.outputMapping)) return { ok: false, error: "Quote Response outputMapping must be a list." }
+        if (config.output_mapping !== undefined) {
+          if (!Array.isArray(config.output_mapping)) return { ok: false, error: "Quote Response output_mapping must be a list." }
           const renames = new Map(affected.pairs.map(({ from, to }) => [from, to]))
           const destinations = new Set<string>()
           const mapping = []
-          for (const entry of config.outputMapping) {
+          for (const entry of config.output_mapping) {
             if (!isPlainObject(entry) || typeof entry.source_port !== "string" || !entry.source_port) {
-              return { ok: false, error: "Quote Response outputMapping entry requires source_port." }
+              return { ok: false, error: "Quote Response output_mapping entry requires source_port." }
             }
             const source_port = renames.get(entry.source_port) ?? entry.source_port
             const destination = JSON.stringify([entry.output_path, source_port])
@@ -413,7 +413,7 @@ function collectMappingChanges(
             }
             mapping.push({ ...entry, source_port })
           }
-          scopeChanges.set(affected.target.id, { ...config, outputMapping: mapping })
+          scopeChanges.set(affected.target.id, { ...config, output_mapping: mapping })
           changes.set(affected.scope, scopeChanges)
         }
       }
@@ -432,7 +432,7 @@ function collectMappingChanges(
         changes,
         affected.scope,
         affected.target,
-        "inputMapping",
+        "input_mapping",
         affected.pairs,
         false,
       )

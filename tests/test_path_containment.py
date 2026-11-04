@@ -790,7 +790,7 @@ def _data_input(label: str) -> object:
             label=label,
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "mode": "scan",
                 "path": "data/rows.csv",

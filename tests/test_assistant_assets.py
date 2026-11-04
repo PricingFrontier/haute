@@ -67,7 +67,7 @@ class TestAuthoringGuide:
         assert "never pre-bound" not in guide
         assert "sees only `df`" in guide
         assert "`obj`" in guide
-        assert "inputMapping" not in guide
+        assert "input_mapping" not in guide
 
 
 class TestExemplars:
@@ -98,7 +98,7 @@ class TestExemplars:
             assert node_types & {"apiInput", "dataInput"}, name
             assert "output" in node_types, name
             output_nodes = [node for node in graph["nodes"] if node["type"] == "output"]
-            assert all(node["config"]["outputMapping"] for node in output_nodes), name
+            assert all(node["config"]["output_mapping"] for node in output_nodes), name
 
         for manifest in _assets.example_bundle_manifests():
             bundle = _assets._bundle_root(str(manifest["id"]))
@@ -107,7 +107,7 @@ class TestExemplars:
                 if resource["role"] != "output_config":
                     continue
                 config = json.loads(bundle.joinpath(resource["path"]).read_text(encoding="utf-8"))
-                assert config["outputMapping"], (manifest["id"], resource["path"])
+                assert config["output_mapping"], (manifest["id"], resource["path"])
 
     def test_every_example_is_a_bundle(self):
         """One example format: no single-file example sits beside the bundles."""
@@ -147,7 +147,7 @@ class TestExemplars:
         factor = nodes["banded"]["config"]["factors"][0]
         assert factor["banding"] == "categorical"
         assert {"value": "detached", "assignment": "house"} in factor["rules"]
-        assert nodes["response"]["config"]["outputMapping"][0]["output_path"].startswith("$[:].")
+        assert nodes["response"]["config"]["output_mapping"][0]["output_path"].startswith("$[:].")
 
     def test_summary_is_first_docstring_line(self):
         for name, summary in example_index():

@@ -81,7 +81,7 @@ def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
 
 
 def scenario_step_count(config: Mapping[str, Any]) -> int:
-    """The scenario grid size, ``stepCount``: a required whole number of at least 1.
+    """The scenario grid size, ``step_count``: a required whole number of at least 1.
 
     There is no absent-key default: a new node is created with an explicit
     count (``node_defaults.json``), and a config without one is a defect the
@@ -89,22 +89,22 @@ def scenario_step_count(config: Mapping[str, Any]) -> int:
     """
     from haute.errors import NodeConfigError
 
-    raw = config.get("stepCount")
+    raw = config.get("step_count")
     if raw is None:
         raise NodeConfigError(
-            "Scenario expander requires stepCount (the number of grid values).",
-            setting="stepCount",
+            "Scenario expander requires step_count (the number of grid values).",
+            setting="step_count",
         )
     if isinstance(raw, bool) or not isinstance(raw, int | float) or int(raw) != raw:
         raise NodeConfigError(
-            f"Scenario expander stepCount must be a whole number, got {raw!r}",
-            setting="stepCount",
+            f"Scenario expander step_count must be a whole number, got {raw!r}",
+            setting="step_count",
         )
     steps = int(raw)
     if steps < 1:
         raise NodeConfigError(
-            f"Scenario expander requires stepCount >= 1, got {steps}",
-            setting="stepCount",
+            f"Scenario expander requires step_count >= 1, got {steps}",
+            setting="step_count",
         )
     return steps
 
@@ -200,7 +200,7 @@ def resolve_api_input_from_config(
 
     config_with_anchored_path = {**config, "path": path}
     return read_data_source(
-        {"sourceType": "flat_file", **config_with_anchored_path},
+        {"source_type": "flat_file", **config_with_anchored_path},
         profile=profile,
         columns=columns,
     )
@@ -272,13 +272,13 @@ def validate_external_file_config(config: Mapping[str, Any]) -> None:
     path = config.get("path")
     if not isinstance(path, str) or not path.strip():
         raise ConfigSettingError("external file config requires non-empty 'path'", setting="path")
-    file_type = config.get("fileType")
+    file_type = config.get("file_type")
     if not isinstance(file_type, str) or not file_type.strip():
         raise ConfigSettingError(
-            "external file config requires non-empty 'fileType'", setting="fileType"
+            "external file config requires non-empty 'file_type'", setting="file_type"
         )
     if file_type not in EXTERNAL_FILE_TYPES:
-        raise ConfigSettingError(unsupported_external_file_type(file_type), setting="fileType")
+        raise ConfigSettingError(unsupported_external_file_type(file_type), setting="file_type")
 
 
 def load_external_object_from_config(
@@ -294,11 +294,11 @@ def load_external_object_from_config(
 
 def load_external_file_at(path: str, config: Mapping[str, Any]) -> object:
     """Load the object at *path* as the Load File node *config* reads its file: by its
-    ``fileType``. A deployment reads its bundled copy so."""
+    ``file_type``. A deployment reads its bundled copy so."""
     validate_external_file_config(config)
     from haute._io import load_external_object
 
-    return load_external_object(path, config["fileType"])
+    return load_external_object(path, config["file_type"])
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +421,7 @@ def expand_scenarios_bounded(
     builds every expanded row before a ``head(n)`` keeps its first few — 110M
     rows to show 100 of a 10M-row frame on an 11-step grid. This form exposes
     the SAME expansion as a scan, so a pushed limit of ``n`` rows expands only
-    the first ``ceil(n / stepCount)`` input rows, and Polars pushes it only
+    the first ``ceil(n / step_count)`` input rows, and Polars pushes it only
     where the query result is unchanged. The executor uses it for the
     interactive preview; a full run expands through the expression.
     """
@@ -468,12 +468,12 @@ def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
 
 def require_optimiser_apply_source_type(config: Mapping[str, Any]) -> None:
     """Refuse an Optimiser Apply that names an artifact without saying where it comes from."""
-    if config.get("artifact_path", "") and not config.get("sourceType", ""):
+    if config.get("artifact_path", "") and not config.get("source_type", ""):
         from haute.errors import ConfigError
 
         raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
+            "optimiserApply node with artifact_path requires source_type='file'",
+            missing_field="source_type",
         )
 
 
@@ -488,7 +488,7 @@ def load_configured_optimiser_artifact(
     (absent = auto).
     """
     require_optimiser_apply_source_type(config)
-    source_type = config.get("sourceType", "")
+    source_type = config.get("source_type", "")
     artifact_path = config.get("artifact_path", "")
     run_id = config.get("run_id", "")
     registered_model = config.get("registered_model", "")
@@ -619,7 +619,7 @@ def assemble_output_from_config(
     all: an empty frame under that schema is returned.
     """
     cfg = _resolve_node_config(config, base_dir, NodeType.OUTPUT)
-    mapping = cfg.get("outputMapping")
+    mapping = cfg.get("output_mapping")
 
     from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY
     from haute._output_assembler import (
@@ -631,7 +631,7 @@ def assemble_output_from_config(
 
     if mapping is None:
         raise OutputMappingSchemaError(
-            f"OUTPUT node {label or '<unnamed>'!r} requires `outputMapping`.",
+            f"OUTPUT node {label or '<unnamed>'!r} requires `output_mapping`.",
         )
 
     positional = [lf.lazy() for lf in dfs]

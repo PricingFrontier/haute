@@ -103,7 +103,7 @@ def _file_input_config(path: str) -> dict:
         ".ipc": ("ipc", "scan"),
     }[Path(path).suffix.lower()]
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name,
         "mode": mode,
         "path": path,
@@ -123,7 +123,7 @@ def _file_output_config(path: str) -> dict:
         ".ipc": "ipc",
     }[Path(path).suffix.lower()]
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": format_name,
         "mode": "sink" if format_name in {"csv", "parquet"} else "write",
         "path": path,

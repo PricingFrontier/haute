@@ -24,7 +24,7 @@ export interface OutputMappingEntryV2 {
 
 /** The response document is always JSON, so the config holds only the mapping. */
 export interface OutputConfigV2 {
-  outputMapping: OutputMappingEntryV2[]
+  output_mapping: OutputMappingEntryV2[]
 }
 
 /** Tagged-union classification of a raw OUTPUT config. */
@@ -34,14 +34,14 @@ export type OutputConfigShape =
 
 /**
  * Classify a raw config:
- *   - v2    — has an `outputMapping` array
+ *   - v2    — has an `output_mapping` array
  *   - empty — otherwise
  */
 export function classifyConfig(
   config: Record<string, unknown> | undefined | null,
 ): OutputConfigShape {
   if (!config) return { kind: "empty", raw: {} }
-  const hasMapping = Array.isArray((config as { outputMapping?: unknown }).outputMapping)
+  const hasMapping = Array.isArray((config as { output_mapping?: unknown }).output_mapping)
   if (hasMapping) {
     return { kind: "v2", v2: readV2(config as Record<string, unknown>) }
   }
@@ -50,17 +50,17 @@ export function classifyConfig(
 
 /** Read the canonical mapping array without alternate field defaults. */
 export function readV2(config: Record<string, unknown>): OutputConfigV2 {
-  const outputMapping = Array.isArray((config as { outputMapping?: unknown }).outputMapping)
-    ? (config.outputMapping as OutputMappingEntryV2[])
+  const outputMapping = Array.isArray((config as { output_mapping?: unknown }).output_mapping)
+    ? (config.output_mapping as OutputMappingEntryV2[])
     : []
-  return { outputMapping }
+  return { output_mapping: outputMapping }
 }
 
 /** Serialise a v2 config back to the raw shape persisted to disk. Emits ONLY
  * the four entry fields — never the editor-only row status. */
 export function writeV2(v2: OutputConfigV2): Record<string, unknown> {
   return {
-    outputMapping: v2.outputMapping.map((e) => ({
+    output_mapping: v2.output_mapping.map((e) => ({
       source_port: e.source_port,
       source_column: e.source_column,
       output_path: e.output_path,
@@ -71,7 +71,7 @@ export function writeV2(v2: OutputConfigV2): Record<string, unknown> {
 
 /** Empty v2 config — used when the editor opens against a brand-new OUTPUT. */
 export function emptyV2(): OutputConfigV2 {
-  return { outputMapping: [] }
+  return { output_mapping: [] }
 }
 
 /**

@@ -79,7 +79,7 @@ def _with_submodel(
     input_ports: list[dict[str, Any]] | None = None,
     output_ports: list[dict[str, Any]] | None = None,
 ) -> PipelineGraph:
-    occurrence = _node(alias, node_type="submodel", definitionId="rates", alias=alias)
+    occurrence = _node(alias, node_type="submodel", definition_id="rates", alias=alias)
     definition = SubmodelDefinition(
         definitionId="rates",
         file="modules/rates.py",
@@ -138,7 +138,7 @@ _RULE_CASES = [
         id="quote-input-frame-constants",
     ),
     pytest.param(
-        _consumes(_node("claims"), _node("rated", inputMapping={"pl": "claims"})),
+        _consumes(_node("claims"), _node("rated", input_mapping={"pl": "claims"})),
         [("reserved_input", "pl")],
         id="input-mapping-alias",
     ),
@@ -186,7 +186,11 @@ def test_generated_clone_name_collision_is_refused_before_execution(
             _node("other", code="df = pl.DataFrame({'value': [2]}).lazy()"),
             _node("consumer", code="df = pl.concat([copy, other])"),
             _node(
-                "copy", node_type="submodel", definitionId="rates", alias="copy", instanceOf="rates"
+                "copy",
+                node_type="submodel",
+                definition_id="rates",
+                alias="copy",
+                instance_of="rates",
             ),
         ),
     )
@@ -237,17 +241,21 @@ def test_generated_names_from_two_instances_cannot_collide() -> None:
     graph.nodes.extend(
         [
             _node(
-                "second_owner", node_type="submodel", definitionId="second", alias="second_owner"
+                "second_owner", node_type="submodel", definition_id="second", alias="second_owner"
             ),
             _node(
-                "copy", node_type="submodel", definitionId="rates", alias="copy", instanceOf="rates"
+                "copy",
+                node_type="submodel",
+                definition_id="rates",
+                alias="copy",
+                instance_of="rates",
             ),
             _node(
                 "copy__part",
                 node_type="submodel",
-                definitionId="second",
+                definition_id="second",
                 alias="copy__part",
-                instanceOf="second_owner",
+                instance_of="second_owner",
             ),
         ]
     )
@@ -269,8 +277,8 @@ def test_generated_names_from_two_instances_cannot_collide() -> None:
             id="quote-input-table",
         ),
         pytest.param(
-            _consumes(_node("claims"), _node("rated", inputMapping={"pl": "claims"})),
-            "receives an input named `pl` (inputMapping alias for 'claims')",
+            _consumes(_node("claims"), _node("rated", input_mapping={"pl": "claims"})),
+            "receives an input named `pl` (input_mapping alias for 'claims')",
             id="input-mapping",
         ),
         pytest.param(

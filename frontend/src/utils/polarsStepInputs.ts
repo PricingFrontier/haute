@@ -4,7 +4,7 @@ import { isPlainObject } from "../types/guards"
  * Input references inside a stepped transform's `config.steps`
  * (`source.input`, `join.input`, `concat.inputs`). Topology rewrites that
  * rename an incoming edge (node renames, Edge Join insertion) rewrite these
- * references in place instead of recording an `inputMapping`, which a stepped
+ * references in place instead of recording an `input_mapping`, which a stepped
  * original transform never carries.
  */
 

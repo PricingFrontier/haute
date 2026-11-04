@@ -65,7 +65,7 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _data_input(project: Path, name: str) -> dict[str, Any]:
-    return {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(project / name)}
+    return {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(project / name)}
 
 
 def _online(data_input: str) -> dict[str, Any]:
@@ -600,7 +600,7 @@ def scored_graph(
                 "M",
                 "modelScore",
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run-1",
                     "artifact_path": "model.pyfunc",
                     "task": "regression",

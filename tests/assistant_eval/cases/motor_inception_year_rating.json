@@ -30,7 +30,7 @@
                 "factors": [
                   "age_band"
                 ],
-                "outputColumn": "age_relativity",
+                "output_column": "age_relativity",
                 "entries": [
                   {
                     "age_band": "17-24",
@@ -45,14 +45,14 @@
                     "value": 1.2
                   }
                 ],
-                "defaultValue": 1.0
+                "default_value": 1.0
               },
               {
                 "factors": [
                   "region",
                   "vehicle_group"
                 ],
-                "outputColumn": "region_vehicle_relativity",
+                "output_column": "region_vehicle_relativity",
                 "entries": [
                   {
                     "region": "North",
@@ -100,13 +100,13 @@
                     "value": 1.7
                   }
                 ],
-                "defaultValue": 1.0
+                "default_value": 1.0
               },
               {
                 "factors": [
                   "inception_year"
                 ],
-                "outputColumn": "inception_relativity",
+                "output_column": "inception_relativity",
                 "entries": [
                   {
                     "inception_year": "2024",
@@ -117,7 +117,7 @@
                     "value": 1.04
                   }
                 ],
-                "defaultValue": 1.0
+                "default_value": 1.0
               }
             ]
           }

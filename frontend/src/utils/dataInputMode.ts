@@ -8,7 +8,7 @@
  */
 export function dataInputIsDirect(config: Record<string, unknown>): boolean {
   return (
-    config.inputType === "file" &&
+    config.input_type === "file" &&
     config.format === "parquet" &&
     (config.mode == null || config.mode === "" || config.mode === "scan")
   )

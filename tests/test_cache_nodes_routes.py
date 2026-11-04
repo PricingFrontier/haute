@@ -62,7 +62,7 @@ def _graph(project: Path, *, source_config: dict[str, Any] | None = None) -> dic
                         "nodeType": "dataInput",
                         "config": source_config
                         or {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -121,7 +121,7 @@ def _entry(payload: dict[str, Any], node_id: str) -> dict[str, Any]:
 
 def _csv_config(path: Path, **arguments: Any) -> dict[str, Any]:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": str(path),
@@ -281,7 +281,7 @@ def test_an_input_snapshot_is_reported_on_its_reader_and_nowhere_else(
     csv_path = project / "quotes.csv"
     pl.DataFrame({"premium": [1.0, 2.0, 3.0]}).write_csv(csv_path)
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": str(csv_path),
@@ -330,7 +330,7 @@ def test_a_node_reading_another_nodes_cache_reports_no_size(
                                 {
                                     "banding": "breakpoints",
                                     "column": "premium",
-                                    "outputColumn": "band",
+                                    "output_column": "band",
                                     "rules": [],
                                 }
                             ]
@@ -370,7 +370,7 @@ def test_an_unwired_node_is_a_row_not_a_failed_request(client: TestClient, proje
                                 {
                                     "banding": "breakpoints",
                                     "column": "premium",
-                                    "outputColumn": "band",
+                                    "output_column": "band",
                                     "rules": [],
                                 }
                             ]
@@ -501,13 +501,13 @@ def test_one_misconfigured_data_input_does_not_fail_the_whole_report(
     """
     pl.DataFrame({"premium": [1.0]}).write_parquet(project / "ok.parquet")
     healthy = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": str(project / "ok.parquet"),
         "arguments": {},
     }
-    broken = {"inputType": "file", "format": "csv", "mode": "scan", "arguments": {}}
+    broken = {"input_type": "file", "format": "csv", "mode": "scan", "arguments": {}}
 
     graph = _graph_of(
         project, [_data_input_node("ok", healthy), _data_input_node("broken", broken)]

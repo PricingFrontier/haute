@@ -84,7 +84,7 @@ def _graph(path: Path) -> dict[str, Any]:
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(path),
@@ -115,7 +115,7 @@ def _graph_with_transform(path: Path) -> dict[str, Any]:
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(path),

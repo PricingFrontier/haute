@@ -76,9 +76,9 @@ def _examples():
             "feature_contract_path": "models/features.json",
         }
     )
-    by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
+    by_type[NodeType.EXTERNAL_FILE].data.config.update({"file_type": "joblib"})
     quotes = by_type[NodeType.API_INPUT].data.config["tables"][0]
-    quotes.update({"displayPath": "quotes[]", "row_id_column": "quote_id"})
+    quotes.update({"display_path": "quotes[]", "row_id_column": "quote_id"})
     quote_id, premium = quotes["columns"]
     quote_id.update({"status": "Confirmed", "origin": "manual", "key": True})
     premium.update({"status": "Inferred", "origin": "inferred", "key": False})
@@ -164,11 +164,11 @@ def _examples():
             "run_name": "Best run",
         }
     )
-    by_type[NodeType.BANDING].data.config["factors"][0]["rightClosed"] = False
+    by_type[NodeType.BANDING].data.config["factors"][0]["right_closed"] = False
     by_type[NodeType.RATING_STEP].data.config["tables"][0].update(
         {
-            "factorDtypes": {"score_band": {"kind": "String"}},
-            "onMissing": "neutral",
+            "factor_dtypes": {"score_band": {"kind": "String"}},
+            "on_missing": "neutral",
         }
     )
     chart = _chart()
@@ -239,7 +239,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "connection": "warehouse",
                 "query": "SELECT _id FROM quotes",
@@ -249,7 +249,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "uri": "sqlite:///pricing.db",
                 "query": "SELECT _id FROM quotes",
@@ -259,7 +259,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "databricks",
+                "input_type": "databricks",
                 "http_path": "/sql/warehouses/test",
                 "table": "catalog.schema.quotes",
                 "query": "SELECT _id FROM catalog.schema.quotes",
@@ -269,7 +269,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "inline",
+                "input_type": "inline",
                 "format": "records",
                 "mode": "read",
                 "records": [{"_id": 17, "nested": {"_key": "value"}}],
@@ -282,7 +282,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "lakehouse",
+                "input_type": "lakehouse",
                 "format": "delta",
                 "mode": "scan",
                 "path": "data/lakehouse",
@@ -292,7 +292,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "database",
+                "output_type": "database",
                 "format": "database",
                 "mode": "write",
                 "connection": "warehouse",
@@ -303,7 +303,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "database",
+                "output_type": "database",
                 "format": "database",
                 "mode": "write",
                 "uri": "sqlite:///pricing.db",
@@ -314,7 +314,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "lakehouse",
+                "output_type": "lakehouse",
                 "format": "delta",
                 "mode": "write",
                 "path": "outputs/lakehouse",
@@ -324,7 +324,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "databricks",
+                "output_type": "databricks",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.schema.scored",
                 "write_mode": "append",
@@ -339,7 +339,7 @@ def _examples():
                 "suffix": "_lookup",
                 "coalesce": False,
                 "validate": "m:1",
-                "maintainOrder": "left",
+                "maintain_order": "left",
             },
         ),
         # Frame-mode step lists: the sidecar owns them and codegen renders
@@ -348,7 +348,7 @@ def _examples():
             NodeType.EXTERNAL_FILE,
             {
                 "path": "models/external.pkl",
-                "fileType": "pickle",
+                "file_type": "pickle",
                 "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
         ),
@@ -358,19 +358,19 @@ def _examples():
                 "tables": [
                     {
                         "factors": ["score_band"],
-                        "outputColumn": "rate_factor",
-                        "defaultValue": "1.0",
+                        "output_column": "rate_factor",
+                        "default_value": "1.0",
                         "entries": [{"score_band": "low", "value": "1.25"}],
                     }
                 ],
-                "combinedOutputs": [],
+                "combined_outputs": [],
                 "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
         ),
         (
             NodeType.MODEL_SCORE,
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run-1",
                 "artifact_path": "models/score.cbm",
                 "task": "regression",
@@ -385,7 +385,7 @@ def _examples():
                 "column_name": "scenario_value",
                 "min_value": 0.0,
                 "max_value": 1.0,
-                "stepCount": 3,
+                "step_count": 3,
                 "step_column": "step_index",
                 "steps": [{"id": "l", "kind": "limit", "n": 2}],
             },
@@ -500,20 +500,20 @@ def _examples():
 # These fields represent graph relationships rather than independent settings.
 # Their round-trip contracts are tested with real owner/copy and boundary graphs.
 _STRUCTURAL_POLICY = {
-    NodeType.POLARS: {"inputMapping"},
-    NodeType.MODEL_SCORE: {"inputMapping"},
-    NodeType.SUBMODEL: {"definitionId", "alias", "instanceOf"},
+    NodeType.POLARS: {"input_mapping"},
+    NodeType.MODEL_SCORE: {"input_mapping"},
+    NodeType.SUBMODEL: {"definition_id", "alias", "instance_of"},
 }
 
 # Keys every shape inherits from NodeConfigBase. ``selected_columns``,
 # ``column_renames`` and an opaque ``contract`` are exercised on every type above.
-# ``inputMapping`` is a graph relationship (test_rename_stable_binding.py,
+# ``input_mapping`` is a graph relationship (test_rename_stable_binding.py,
 # test_parser_conservation.py), and a declared column contract is checked against,
 # and on a config-driven type replaced by, the contract its builder derives at
 # parse, its parent keys being node ids (test_column_contracts_adoption.py,
 # test_codegen.py).
 _UNIVERSAL_POLICY = {
-    "inputMapping",
+    "input_mapping",
     "contract.inputs",
     "contract.outputs",
     "contract.inputs_by_parent",

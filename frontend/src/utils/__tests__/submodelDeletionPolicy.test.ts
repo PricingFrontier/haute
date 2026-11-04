@@ -8,7 +8,7 @@ const owner: Node = {
   data: {
     label: "scoring",
     nodeType: "submodel",
-    config: { definitionId: "definition_scoring", alias: "scoring" },
+    config: { definition_id: "definition_scoring", alias: "scoring" },
   },
 }
 
@@ -19,9 +19,9 @@ const copy: Node = {
     label: "scoring_2",
     nodeType: "submodel",
     config: {
-      definitionId: "definition_scoring",
+      definition_id: "definition_scoring",
       alias: "scoring_2",
-      instanceOf: "scoring",
+      instance_of: "scoring",
     },
   },
 }

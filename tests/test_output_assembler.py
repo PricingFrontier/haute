@@ -283,7 +283,7 @@ def test_assemble_data_model_example_round_trip() -> None:
     ]
 
 
-# ─── Public boundary — {frames + outputMapping} → document, and validation ───
+# ─── Public boundary — {frames + output_mapping} → document, and validation ───
 
 
 def test_assemble_from_mapping_renames_duplicates_and_skips_disabled() -> None:
@@ -1050,7 +1050,7 @@ def test_config_assembly_ignores_incomplete_enabled_mapping_port() -> None:
         pl.DataFrame({"value": [1]}),
         pl.DataFrame({"other": [2]}),
         config={
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "phantom",
                     "source_column": "",
@@ -1175,7 +1175,7 @@ def test_output_contract_excludes_blank_source_column() -> None:
     from haute._builders import _output_columns
 
     config = {
-        "outputMapping": [
+        "output_mapping": [
             _entry("p", "policy_id", "$[:].id"),
             _entry("p", "", "$[:].ghost"),  # half-built row — no source column yet
         ]
@@ -1456,8 +1456,8 @@ def test_the_deploy_scorer_s_key_keeps_the_output_node_s_rows_apart() -> None:
         # The in-memory engine runs the assembly's scan on this thread.
         return frame.collect(engine="in-memory").to_dicts()
 
-    assert assembled({"outputMapping": mapping}) == [{"id": 1}]
-    assert assembled({"outputMapping": mapping, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True}) == [
+    assert assembled({"output_mapping": mapping}) == [{"id": 1}]
+    assert assembled({"output_mapping": mapping, DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True}) == [
         {"id": 1},
         {"id": 1},
     ]

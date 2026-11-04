@@ -63,7 +63,7 @@ def _managed_graph(
                         "label": "child",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": definition_id,
+                            "definition_id": definition_id,
                             "alias": "child",
                         },
                     },

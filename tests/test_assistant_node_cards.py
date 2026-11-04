@@ -99,7 +99,7 @@ def _frame_source(name: str) -> dict[str, Any]:
         "node_type": "dataInput",
         "name": name,
         "config": {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": f"data/{name}.parquet",
@@ -362,7 +362,7 @@ _WALKTHROUGH_GUESSES = [
                 {
                     "banding": "breakpoints",
                     "column": "driver_age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"lower": 17, "upper": 24, "label": "17-24"},
                         {"lower": 25, "upper": 59, "label": "25-59"},
@@ -382,7 +382,7 @@ _WALKTHROUGH_GUESSES = [
                 {
                     "banding": "continuous",
                     "column": "driver_age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"op1": "<=", "val1": 24, "assignment": "17-24"},
                         {"op1": ">", "val1": 24, "op2": "<=", "val2": 59, "assignment": "25-59"},
@@ -398,7 +398,7 @@ _WALKTHROUGH_GUESSES = [
     pytest.param(
         NodeType.OUTPUT,
         {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "priced",
                     "source_column": "quote_id",
@@ -420,7 +420,7 @@ _WALKTHROUGH_GUESSES = [
     pytest.param(
         NodeType.OUTPUT,
         {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "priced",
                     "source_column": "quote_id",

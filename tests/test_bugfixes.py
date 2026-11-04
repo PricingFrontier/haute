@@ -226,7 +226,7 @@ class TestDataInputConfigPath:
     """Verify that _build_node_fn for data sources uses config.path correctly."""
 
     def test_a_source_without_a_provider_is_refused_when_built(self):
-        """A Data Input names its provider (the palette gives ``inputType``): a config
+        """A Data Input names its provider (the palette gives ``input_type``): a config
         without one is refused when the node is built, naming the setting."""
         from haute.errors import NodeConfigError
         from haute.executor import _build_node_fn
@@ -239,7 +239,9 @@ class TestDataInputConfigPath:
                 config={"path": ""},
             ),
         )
-        with pytest.raises(NodeConfigError, match="Node 'src' \\(dataInput\\) setting 'inputType'"):
+        with pytest.raises(
+            NodeConfigError, match="Node 'src' \\(dataInput\\) setting 'input_type'"
+        ):
             _build_node_fn(node, source_names=[])
 
     def test_valid_config_path_loads_data(self, tmp_path):
@@ -635,7 +637,7 @@ class TestParserConfigLoadWarning:
         config_dir = pipeline_dir / "config" / "data_input"
         config_dir.mkdir(parents=True)
         (config_dir / "src.json").write_text(
-            '{"inputType":"file","format":"parquet","mode":"scan",'
+            '{"input_type":"file","format":"parquet","mode":"scan",'
             '"path":"d.parquet","arguments":{}}'
         )
         (pipeline_dir / "main.py").write_text(
@@ -660,7 +662,7 @@ class TestParserConfigLoadWarning:
         config_dir.mkdir(parents=True)
         (config_dir / "bands.json").write_bytes(
             b'{"factors": [{"banding": "categorical", "column": "age", '
-            b'"outputColumn": "age_band", "rules": [{"value": "young", '
+            b'"output_column": "age_band", "rules": [{"value": "young", '
             b'"assignment": "20\x9627"}], "default": "other"}]}'
         )
         (pipeline_dir / "main.py").write_text(

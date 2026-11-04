@@ -491,7 +491,7 @@ class TestAllNodeTypesRoundtrip:
                         {
                             "banding": "breakpoints",
                             "column": "x",
-                            "outputColumn": "x_band",
+                            "output_column": "x_band",
                             "rules": [
                                 {"boundary": "1", "label": "low"},
                                 {"boundary": "100", "label": "high"},
@@ -508,7 +508,7 @@ class TestAllNodeTypesRoundtrip:
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [
                                 {"region": "A", "value": 1.0},
                                 {"region": "B", "value": 1.5},
@@ -522,7 +522,7 @@ class TestAllNodeTypesRoundtrip:
                 "mscore",
                 NodeType.MODEL_SCORE,
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "abc123",
                     "artifact_path": "model.cbm",
                     "task": "regression",
@@ -538,7 +538,7 @@ class TestAllNodeTypesRoundtrip:
                     "column_name": "scenario_val",
                     "min_value": 0.8,
                     "max_value": 1.2,
-                    "stepCount": 3,
+                    "step_count": 3,
                     "step_column": "scenario_idx",
                 },
             ),
@@ -557,7 +557,7 @@ class TestAllNodeTypesRoundtrip:
                 "opt_apply",
                 NodeType.OPTIMISER_APPLY,
                 {
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": "optimiser.json",
                 },
             ),
@@ -567,7 +567,7 @@ class TestAllNodeTypesRoundtrip:
                 NodeType.EXTERNAL_FILE,
                 {
                     "path": _posix_path(lookup_path),
-                    "fileType": "json",
+                    "file_type": "json",
                     "code": "",
                 },
             ),
@@ -681,7 +681,7 @@ class TestSubmodelLifecycle:
         sm_node = sm_nodes[0]
         assert sm_node.id == "inner_group"
         assert sm_node.data.config == {
-            "definitionId": "inner_group",
+            "definition_id": "inner_group",
             "alias": "inner_group",
         }
         sm_definition = new_graph.submodels["inner_group"]
@@ -757,7 +757,7 @@ class TestConfigRoundtrip:
                 {
                     "banding": "categorical",
                     "column": "region",
-                    "outputColumn": "region_band",
+                    "output_column": "region_band",
                     "rules": [
                         {"value": "urban", "assignment": "city"},
                         {"value": "rural", "assignment": "country"},
@@ -784,27 +784,27 @@ class TestConfigRoundtrip:
         factors = band_node[0].data.config.get("factors", [])
         assert len(factors) == 1
         assert factors[0]["column"] == "region"
-        assert factors[0]["outputColumn"] == "region_band"
+        assert factors[0]["output_column"] == "region_band"
 
     def test_rating_step_config_roundtrip(self, tmp_path, _widen_sandbox_root):
         rating_config = {
             "tables": [
                 {
                     "factors": ["age_band"],
-                    "outputColumn": "age_factor",
+                    "output_column": "age_factor",
                     "entries": [
                         {"age_band": "young", "value": 1.5},
                         {"age_band": "middle", "value": 1.0},
                         {"age_band": "senior", "value": 1.2},
                     ],
-                    "defaultValue": "1.0",
+                    "default_value": "1.0",
                 }
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
                 {
-                    "outputColumn": "total_factor",
+                    "output_column": "total_factor",
                     "operation": "multiply",
-                    "baseValue": 1,
+                    "base_value": 1,
                 }
             ],
         }
@@ -825,14 +825,14 @@ class TestConfigRoundtrip:
         assert len(rt_node) == 1
         tables = rt_node[0].data.config.get("tables", [])
         assert len(tables) == 1
-        assert tables[0]["outputColumn"] == "age_factor"
+        assert tables[0]["output_column"] == "age_factor"
         entries = tables[0].get("entries", [])
         assert len(entries) == 3
-        assert rt_node[0].data.config["combinedOutputs"] == rating_config["combinedOutputs"]
+        assert rt_node[0].data.config["combined_outputs"] == rating_config["combined_outputs"]
 
     def test_model_score_config_roundtrip(self, tmp_path, _widen_sandbox_root):
         ms_config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run_abc123",
             "artifact_path": "model.cbm",
             "task": "regression",

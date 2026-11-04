@@ -546,7 +546,7 @@ def reconcile_config(
             if key in source or key == "steps":
                 continue
             reason = "Missing from the saved configuration; the palette default was used."
-            if node_type is NodeType.EDGE_JOIN and key == "maintainOrder":
+            if node_type is NodeType.EDGE_JOIN and key == "maintain_order":
                 # The order a new join of this type gets, as the editor writes it.
                 default = DEFAULT_JOIN_ORDER.get(str(candidate.get("how")), default)
                 reason = (

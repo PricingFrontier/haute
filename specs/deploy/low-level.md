@@ -214,11 +214,11 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
    download. Each model-score node's source is read through `parse_model_source`, the
-   parser every other Model Scoring consumer uses: a node with no `sourceType` is untouched
+   parser every other Model Scoring consumer uses: a node with no `source_type` is untouched
    and is not bundled (the preview passes it through too), a chosen source with an empty
    `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
    run source without an `artifact_path` is discovered when served, and any other invalid
-   source raises its `ConfigError`. A file source (`sourceType: "file"`) is copied from the
+   source raises its `ConfigError`. A file source (`source_type: "file"`) is copied from the
    project: its `model_path` resolves with scoring's rule (the project before the
    pipeline directory, unlike other local artefacts, so the bundle holds the file the
    preview scored) and must exist, and the model is bundled under
@@ -392,7 +392,7 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
      `1:m` or `m:m` adds a keyed `LookupCheck`, whether or not the join keeps the rows. A
      cross join's other side passes when it is `one`, or `carried` with a one-row
      `LookupCheck`.
-   - The response: the `outputMapping` port that emits at the top level (array prefix
+   - The response: the `output_mapping` port that emits at the top level (array prefix
      `()`, `_output_assembler._array_prefix`) must carry a `request` frame; a mapping with
      no top-level port is refused (`replaces`). Every port emitting at a nested level
      whose frame is from the request is refused (`unproven`, "response nests '<port>'
@@ -809,10 +809,10 @@ not exist, listing the catalogs the token can see (many workspaces have no `main
    preamble namespace, and executor post-processing);
    `externalFile` with a remapped bundled path (the body every Load File runs,
    `_builders.external_file_node_fn`, its object read from the bundled copy by the node's
-   `fileType` through `_node_apply.load_external_file_at`, the loader the builder's own
+   `file_type` through `_node_apply.load_external_file_at`, the loader the builder's own
    path reads through: its steps or code, or a passthrough without either). The body
    takes the logical source names supplied by the shared `resolve_orig_source_names`
-   builder context and the node's `inputMapping`, exactly as the editor's Load File
+   builder context and the node's `input_mapping`, exactly as the editor's Load File
    builder does. These shared bindings apply to an owner or
    instance of any submodel, including a one-node wrapper; no deploy-specific
    logical-name binding is permitted. A file-sourced `optimiserApply` with a remapped
@@ -1059,7 +1059,7 @@ what they cover:
   a response inside a submodel found; the scorer refusing a graph that still holds an
   occurrence, naming it. `test_load_file_deploy_preserves_logical_inputs` checks
   grouped and wrapped Load File owners and instances whose code reads logical names
-  preserved by `inputMapping`, comparing deployed rows with the editor's rows.
+  preserved by `input_mapping`, comparing deployed rows with the editor's rows.
 - **`test_served_haute.py`** — a released haute pinned, an editable one refused, one installed from
   Git repacked into a wheel with its package and metadata but not the installer's records,
   scripts (one recorded by an absolute path among them) or compiled files, a valid RECORD that

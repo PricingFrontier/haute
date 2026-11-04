@@ -602,7 +602,7 @@ def _limit_level_plan(
 
 
 # ---------------------------------------------------------------------------
-# Public boundary — {frames + outputMapping} → JSON document
+# Public boundary — {frames + output_mapping} → JSON document
 # ---------------------------------------------------------------------------
 
 
@@ -695,7 +695,7 @@ def _nesting_key_error(
 
 
 def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
-    """Validate an ``outputMapping`` structurally — schema-only and loud.
+    """Validate an ``output_mapping`` structurally — schema-only and loud.
 
     Fires on the mapping regardless of data, before any frame is collected.
     Checks (raising :class:`OutputMappingSchemaError`):
@@ -790,7 +790,7 @@ def assemble_output_from_mapping(
     row_limit: int | None = None,  # pragma: no mutate
     top_level_per_row: bool = False,
 ) -> list[Any]:
-    """Assemble the OUTPUT JSON document from source frames + an ``outputMapping``.
+    """Assemble the OUTPUT JSON document from source frames + an ``output_mapping``.
 
     The stable assembler boundary: each mapping entry renames a source column to
     its destination ``output_path`` (a column duplicated to several paths appears

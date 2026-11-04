@@ -199,10 +199,10 @@ def test_join_output_fixture_matches_polars(case: dict[str, object]) -> None:
         "kind": "join",
         "input": "claims",
         "how": case["how"],
-        "leftOn": case["leftOn"],
-        "rightOn": case["rightOn"],
+        "left_on": case["left_on"],
+        "right_on": case["right_on"],
         "suffix": fixture["suffix"],
-        "maintainOrder": steps.DEFAULT_JOIN_ORDER[str(case["how"])],
+        "maintain_order": steps.DEFAULT_JOIN_ORDER[str(case["how"])],
     }
     code = steps.render_polars_steps(
         [{"id": "s", "kind": "source", "input": "quotes"}, join],

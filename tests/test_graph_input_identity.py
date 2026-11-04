@@ -143,7 +143,7 @@ def test_submodel_edge_is_named_by_its_port() -> None:
         data=NodeData(
             label="pricing_secondary",
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
+            config={"definition_id": "pricing_definition", "alias": "pricing_secondary"},
         ),
     )
     edge = _edge("pricing_instance", source_handle="out__written_premium")
@@ -176,7 +176,7 @@ def test_submodel_edge_needs_no_definition_for_its_port_name() -> None:
         data=NodeData(
             label="pricing_secondary",
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": "pricing_definition", "alias": "pricing_secondary"},
+            config={"definition_id": "pricing_definition", "alias": "pricing_secondary"},
         ),
     )
 
@@ -225,7 +225,7 @@ def test_polars_inputs_keep_frame_names_when_source_labels_and_aliases_change(
         data=NodeData(
             label="Inputs display",
             nodeType=node_type,
-            config={"definitionId": "child", "alias": "Inputs_alias"},
+            config={"definition_id": "child", "alias": "Inputs_alias"},
         ),
     )
     source_handles = tuple(f"{handle_prefix}{name}" for name in frame_names)

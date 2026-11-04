@@ -347,21 +347,21 @@ async def resolve_pipeline_editor_identities(
                     if (
                         owner is None
                         or owner.data.nodeType != NodeType.SUBMODEL
-                        or owner.data.config.get("instanceOf") is not None
+                        or owner.data.config.get("instance_of") is not None
                     ):
                         raise ValueError(
                             f"Submodel {node.node_id!r} requires an editable owner "
                             f"{node.instance_of!r} in the naming context."
                         )
-                    definition_id = owner.data.config.get("definitionId")
-                elif node.instance_of != occurrence.data.config.get("instanceOf"):
+                    definition_id = owner.data.config.get("definition_id")
+                elif node.instance_of != occurrence.data.config.get("instance_of"):
                     raise ValueError(
                         f"Submodel {node.node_id!r} instance_of differs from the naming context."
                     )
                 else:
-                    definition_id = occurrence.data.config.get("definitionId")
+                    definition_id = occurrence.data.config.get("definition_id")
                 if not isinstance(definition_id, str):
-                    raise ValueError(f"Submodel {node.node_id!r} requires a definitionId.")
+                    raise ValueError(f"Submodel {node.node_id!r} requires a definition_id.")
                 definition = (body.graph.submodels or {}).get(definition_id)
                 if definition is None:
                     raise ValueError(
@@ -2058,7 +2058,7 @@ def _canonical_snapshot_graph(
                 target_recovery_id=node.recovery_id,
             )
         if node.node_type == NodeType.SUBMODEL:
-            definition_id = node.config.get("definitionId")
+            definition_id = node.config.get("definition_id")
             if isinstance(definition_id, str):
                 referenced_definitions.add(definition_id)
         canonical_nodes.append(

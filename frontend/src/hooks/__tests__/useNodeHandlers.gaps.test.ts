@@ -197,7 +197,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
 
   it("rejects an instance whose resolved identity does not match", async () => {
     const params = makeParams()
-    const source = makeNode("source", "submodel", { data: { label: "score", nodeType: "submodel", config: { definitionId: "def", alias: "score" } } })
+    const source = makeNode("source", "submodel", { data: { label: "score", nodeType: "submodel", config: { definition_id: "def", alias: "score" } } })
     params.graphRef.current = { nodes: [source], edges: [] }
     params.resolveNodeIdentities = vi.fn(async () => [makeNode("wrong")])
     const { result } = renderHook(() => useNodeHandlers(params))
@@ -260,7 +260,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
       data: {
         label: "source",
         nodeType: "submodel",
-        config: { definitionId: "definition_source", alias: "source" },
+        config: { definition_id: "definition_source", alias: "source" },
       },
     })
     params.graphRef.current = { nodes: [source], edges: [] }
@@ -277,7 +277,7 @@ describe("useNodeHandlers - handleRenameNode", () => {
     await vi.waitFor(() => expect(params.resolveNodeIdentities).toHaveBeenCalledOnce())
     const requestedNodes = params.resolveNodeIdentities.mock.calls[0][0]
     expect(requestedNodes[0].data.config).toEqual({
-      definitionId: "definition_source", alias: "source_2", instanceOf: "source",
+      definition_id: "definition_source", alias: "source_2", instance_of: "source",
     })
 
     const editedGraph = { nodes: [source, makeNode("newer-edit")], edges: [] }

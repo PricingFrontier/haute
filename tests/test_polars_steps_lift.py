@@ -211,7 +211,7 @@ def memberships(draw: st.DrawFn, column: str, operator: str) -> Step:
         "values": [literal(literal_type, value) for value in drawn],
     }
     if number_type:
-        condition["numberType"] = number_type
+        condition["number_type"] = number_type
     return condition
 
 
@@ -303,7 +303,7 @@ def windows(
     if window["over"] and draw(st.booleans()):
         flag = draw(st.booleans())
         order = draw(distinct(columns, 1, 2))
-        window["orderBy"] = [
+        window["order_by"] = [
             {"column": c, "descending": flag} if flag or draw(st.booleans()) else {"column": c}
             for c in order
         ]
@@ -488,8 +488,8 @@ def unpivots(draw: st.DrawFn) -> Step:
         "kind": "unpivot",
         "on": on,
         "index": index,
-        "variableName": variable_name,
-        "valueName": value_name,
+        "variable_name": variable_name,
+        "value_name": value_name,
     }
 
 
@@ -501,10 +501,10 @@ def joins(draw: st.DrawFn) -> Step:
         "kind": "join",
         "input": draw(st.sampled_from(INPUTS)),
         "how": how,
-        "leftOn": draw(st.lists(columns, min_size=size, max_size=size, unique=True)),
-        "rightOn": draw(st.lists(columns, min_size=size, max_size=size, unique=True)),
+        "left_on": draw(st.lists(columns, min_size=size, max_size=size, unique=True)),
+        "right_on": draw(st.lists(columns, min_size=size, max_size=size, unique=True)),
         "suffix": draw(st.sampled_from(["_right", "_r"])),
-        "maintainOrder": draw(st.sampled_from(JOIN_MAINTAIN_ORDER)),
+        "maintain_order": draw(st.sampled_from(JOIN_MAINTAIN_ORDER)),
     }
     if how in JOIN_VALIDATED_HOW and draw(st.booleans()):
         step["validate"] = draw(st.sampled_from(JOIN_VALIDATE))
@@ -611,7 +611,7 @@ STEPS: dict[str, Callable[[tuple[str, ...]], Strategy]] = {
                 min_size=1,
                 max_size=3,
             ),
-            "nullsLast": st.booleans(),
+            "nulls_last": st.booleans(),
         }
     ),
     "unique": lambda v: st.fixed_dictionaries(
@@ -948,7 +948,7 @@ def test_settings_the_code_does_not_hold_are_left_out() -> None:
                 "of": col("a"),
                 "over": ["k"],
                 "descending": True,
-                "orderBy": [{"column": "d"}],
+                "order_by": [{"column": "d"}],
             },
         },
         {
@@ -980,7 +980,7 @@ def test_settings_the_code_does_not_hold_are_left_out() -> None:
                 "agg": "first",
                 "of": col("a"),
                 "over": ["k"],
-                "orderBy": [{"column": "d", "descending": False}],
+                "order_by": [{"column": "d", "descending": False}],
             },
         },
         {
@@ -997,7 +997,7 @@ def test_membership_numbers_rebuild_as_their_number_type_writes_them() -> None:
             "column": "a",
             "operator": "is_in",
             "values": [literal("number", value) for value in values],
-            "numberType": number_type,
+            "number_type": number_type,
         }
 
     steps = [

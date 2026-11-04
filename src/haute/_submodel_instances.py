@@ -343,7 +343,7 @@ def _reject_output_mapping_collisions(
             destination in by_destination and by_destination[destination] != source_column
         ):
             raise ParseError(
-                "Submodel boundary outputMapping rename collides.",
+                "Submodel boundary output_mapping rename collides.",
                 node_id=node_id,
                 output_path=output_path,
             )
@@ -359,7 +359,7 @@ def rewrite_boundary_input_names(
 
     Selector fields and live-switch map keys follow the new physical edge name.
     Free Transform and Load File code retains its public logical name through
-    ``inputMapping``, their steps have the references rewritten, and instance
+    ``input_mapping``, their steps have the references rewritten, and instance
     mappings only update existing physical values.
     """
     rewritten: list[GraphNode] = []
@@ -371,25 +371,25 @@ def rewrite_boundary_input_names(
         fields = _INPUT_SELECTOR_FIELDS.get(node.data.nodeType, frozenset())
         config = dict(node.data.config)
         changed = False
-        if node.data.nodeType == NodeType.OUTPUT and "outputMapping" in config:
-            raw_output_mapping = config["outputMapping"]
+        if node.data.nodeType == NodeType.OUTPUT and "output_mapping" in config:
+            raw_output_mapping = config["output_mapping"]
             if not isinstance(raw_output_mapping, list):
                 raise ParseError(
-                    "Submodel boundary OUTPUT outputMapping must be a list.",
+                    "Submodel boundary OUTPUT output_mapping must be a list.",
                     node_id=node.id,
                 )
             output_mapping: list[dict[str, Any]] = []
             for entry_index, entry in enumerate(raw_output_mapping):
                 if not isinstance(entry, dict):
                     raise ParseError(
-                        "Submodel boundary OUTPUT outputMapping entries must be objects.",
+                        "Submodel boundary OUTPUT output_mapping entries must be objects.",
                         node_id=node.id,
                         entry_index=entry_index,
                     )
                 source_port = entry.get("source_port")
                 if not isinstance(source_port, str) or not source_port:
                     raise ParseError(
-                        "Submodel boundary OUTPUT outputMapping source_port must be a "
+                        "Submodel boundary OUTPUT output_mapping source_port must be a "
                         "non-empty string.",
                         node_id=node.id,
                         entry_index=entry_index,
@@ -403,7 +403,7 @@ def rewrite_boundary_input_names(
                 output_mapping.append(rewritten_entry)
             if output_mapping != raw_output_mapping:
                 _reject_output_mapping_collisions(node.id, output_mapping)
-                config["outputMapping"] = output_mapping
+                config["output_mapping"] = output_mapping
                 changed = True
 
         for field in fields:
@@ -440,7 +440,7 @@ def rewrite_boundary_input_names(
                 config["input_scenario_map"] = scenario_map
                 changed = True
 
-        raw_mapping = config.get("inputMapping")
+        raw_mapping = config.get("input_mapping")
         if raw_mapping is not None:
             if not isinstance(raw_mapping, dict) or any(
                 not isinstance(logical, str)
@@ -450,7 +450,7 @@ def rewrite_boundary_input_names(
                 for logical, current in raw_mapping.items()
             ):
                 raise ParseError(
-                    "Submodel boundary inputMapping must map non-empty string names.",
+                    "Submodel boundary input_mapping must map non-empty string names.",
                     node_id=node.id,
                 )
             input_mapping: dict[str, str] = {}
@@ -471,7 +471,7 @@ def rewrite_boundary_input_names(
         if names_inputs and isinstance(steps, list):
             # Steps hold the edge names themselves, so the boundary rename
             # rewrites the references inside the steps rather than recording
-            # an ``inputMapping`` indirection.
+            # an ``input_mapping`` indirection.
             try:
                 renamed_steps = rename_step_inputs(steps, renames)
             except PolarsStepError as exc:
@@ -491,7 +491,7 @@ def rewrite_boundary_input_names(
                 if logical in input_mapping:
                     raise ParseError(
                         "Submodel boundary cannot preserve a Polars logical input name "
-                        "already used by inputMapping.",
+                        "already used by input_mapping.",
                         node_id=node.id,
                         logical_input_name=logical,
                         mapped_input_name=input_mapping[logical],
@@ -506,12 +506,12 @@ def rewrite_boundary_input_names(
         )
         if duplicate_currents:
             raise ParseError(
-                "Submodel boundary inputMapping produces duplicate physical inputs.",
+                "Submodel boundary input_mapping produces duplicate physical inputs.",
                 node_id=node.id,
                 duplicate_input_names=duplicate_currents,
             )
         if input_mapping != (raw_mapping or {}):
-            config["inputMapping"] = input_mapping
+            config["input_mapping"] = input_mapping
             changed = True
         if not changed:
             rewritten.append(node)

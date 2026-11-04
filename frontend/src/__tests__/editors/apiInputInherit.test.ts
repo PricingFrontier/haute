@@ -31,7 +31,7 @@ function col(name: string, path: string, type: ColumnType = "str"): ApiInputColu
   return { name, path, type, status: "Inferred", selected: true, levels: null }
 }
 function tbl(path: string, columns: ApiInputColumnV2[]): ApiInputTableV2 {
-  return { path, label: path, displayPath: null, emit: true, row_id_column: null, columns }
+  return { path, label: path, display_path: null, emit: true, row_id_column: null, columns }
 }
 function inv(...keys: InventoryKey[]): Map<string, InventoryKey> {
   return new Map(keys.map((k) => [k.path, k]))
@@ -226,7 +226,7 @@ describe("ambiguousNames - different paths sharing a name (ruled 2026-07-14)", (
   const table = (path: string, cols: Array<[string, string]>): ApiInputTableV2 => ({
     path,
     label: path,
-    displayPath: null,
+    display_path: null,
     emit: true,
     columns: cols.map(([name, p]) => ({
       name,

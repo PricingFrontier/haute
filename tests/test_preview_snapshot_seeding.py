@@ -136,7 +136,7 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNod
 
 
 def _parquet(path: Path) -> dict[str, Any]:
-    return {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(path)}
+    return {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(path)}
 
 
 def _code(code: str) -> dict[str, Any]:
@@ -654,7 +654,7 @@ def test_join_below_limited_model_score_captures_the_full_scored_output(
                 "M",
                 NodeType.MODEL_SCORE,
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run-1",
                     "artifact_path": "model.pyfunc",
                     "task": "regression",
@@ -1600,7 +1600,7 @@ def test_preview_inputs_lists_only_inputs_the_seeded_execution_reads(
                 _node(
                     "policies",
                     NodeType.DATA_INPUT,
-                    {"inputType": "file", "format": "csv", "path": str(project / "policies.csv")},
+                    {"input_type": "file", "format": "csv", "path": str(project / "policies.csv")},
                 )
                 if node.id == "policies"
                 else node
@@ -1660,7 +1660,7 @@ def test_unused_unavailable_input_is_neither_listed_nor_fails_the_preview(
                 _node(
                     "ragged",
                     NodeType.DATA_INPUT,
-                    {"inputType": "file", "format": "csv", "path": str(project / "ragged.csv")},
+                    {"input_type": "file", "format": "csv", "path": str(project / "ragged.csv")},
                 ),
                 _node("elsewhere", NodeType.POLARS, _code("df = ragged.head(1)")),
             ],
@@ -1837,7 +1837,7 @@ def _renamed_edge_join(project: Path, selected: list[str] | None) -> PipelineGra
     pl.DataFrame({"_id": [1, 2]}).write_parquet(project / "keys.parquet")
     config: dict[str, Any] = {
         "how": "left",
-        "maintainOrder": "left_right",
+        "maintain_order": "left_right",
         "on": ["_id"],
         "column_renames": {"_id": "identifier", "segment": "region"},
     }
@@ -1975,7 +1975,7 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
 
     join_config: dict[str, Any] = {
         "how": "left",
-        "maintainOrder": "left_right",
+        "maintain_order": "left_right",
         "on": ["_id"],
         "selected_columns": ["_id", "premium", "segment"],
         "column_renames": {"_id": "identifier", "segment": "region"},
@@ -2276,7 +2276,7 @@ def test_a_preview_scores_a_capture_drained_model_score_in_batches(
         model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
     )
     score_config = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": "abc123",
         "artifact_path": "model.cbm",
         "task": "regression",
@@ -2342,7 +2342,7 @@ def test_a_preview_scores_only_the_rows_a_bounded_capture_reads(
         model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
     )
     score_config = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": "abc123",
         "artifact_path": "model.cbm",
         "task": "regression",
@@ -2401,7 +2401,7 @@ def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
 
     def score(output: str, code: str = "") -> dict[str, Any]:
         return {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -2457,7 +2457,7 @@ def _scored_join_graph(project: Path) -> PipelineGraph:
                 "scored",
                 NodeType.MODEL_SCORE,
                 {
-                    "sourceType": "file",
+                    "source_type": "file",
                     "model_path": "freq.cbm",
                     "task": "regression",
                     "output_column": "pred",

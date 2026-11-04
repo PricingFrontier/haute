@@ -61,7 +61,11 @@ def _joined(project: Path, policies: tuple[NodeType, dict[str, Any]]) -> Pipelin
             (
                 "claims",
                 NodeType.DATA_INPUT,
-                {"inputType": "file", "format": "parquet", "path": str(project / "claims.parquet")},
+                {
+                    "input_type": "file",
+                    "format": "parquet",
+                    "path": str(project / "claims.parquet"),
+                },
             ),
             ("J", NodeType.POLARS, _code("df = policies.join(claims, on='id', how='left')")),
             ("B", NodeType.POLARS, _code("df = J.with_columns(pl.lit(1).alias('band'))")),
@@ -88,7 +92,7 @@ def _csv_api_input(project: Path, **declared: Any) -> tuple[NodeType, dict[str, 
 
 def _csv_data_input(project: Path) -> tuple[NodeType, dict[str, Any]]:
     return NodeType.DATA_INPUT, {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": str(project / "policies.csv"),
     }

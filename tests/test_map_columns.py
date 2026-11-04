@@ -296,7 +296,7 @@ def test_a_polars_frame_s_maps_are_stored_as_entries(tmp_path: Path) -> None:
 
 
 def _parquet_input(**extra: object) -> dict[str, object]:
-    return {"inputType": "file", "format": "parquet", "path": "maps.parquet", **extra}
+    return {"input_type": "file", "format": "parquet", "path": "maps.parquet", **extra}
 
 
 def test_a_parquet_snapshot_keeps_every_map_entry(tmp_path: Path) -> None:
@@ -373,7 +373,7 @@ def test_a_flat_quote_input_refuses_a_parquet_file_with_a_map(tmp_path: Path) ->
     path = _write_map_parquet(tmp_path / "maps.parquet")
 
     with pytest.raises(SchemaMismatchError, match=r"has map column\(s\) \['m'\]"):
-        read_data_source({"sourceType": "flat_file", "path": str(path)})
+        read_data_source({"source_type": "flat_file", "path": str(path)})
 
 
 @pytest.mark.parametrize("source", ["parts", "parts/*.parquet"])
@@ -384,7 +384,7 @@ def test_a_snapshot_of_several_parquet_files_holding_a_map_is_refused(
     (tmp_path / "parts").mkdir()
     for name in ("a.parquet", "b.parquet"):
         _write_map_parquet(tmp_path / "parts" / name)
-    config = {"inputType": "file", "format": "parquet", "path": source, "mode": "read"}
+    config = {"input_type": "file", "format": "parquet", "path": source, "mode": "read"}
 
     with pytest.raises(PolarsIoConfigError, match=r"names several files and has map column"):
         build_input_snapshot(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
@@ -394,7 +394,7 @@ def test_a_snapshot_of_several_parquet_files_without_a_map_is_unaffected(tmp_pat
     (tmp_path / "parts").mkdir()
     for index, name in enumerate(("a.parquet", "b.parquet")):
         pl.DataFrame({"id": [index]}).write_parquet(tmp_path / "parts" / name)
-    config = {"inputType": "file", "format": "parquet", "path": "parts", "mode": "read"}
+    config = {"input_type": "file", "format": "parquet", "path": "parts", "mode": "read"}
     store = SourceCacheStore(tmp_path)
 
     build_input_snapshot(config, store=store, base_dir=tmp_path)
@@ -472,9 +472,9 @@ class Arrow:
 
 
 direct = resolve_data_input(
-    {"inputType": "file", "format": "parquet", "path": "ext.parquet"}, store=store, base_dir=root
+    {"input_type": "file", "format": "parquet", "path": "ext.parquet"}, store=store, base_dir=root
 )
-ipc = {"inputType": "file", "format": "ipc", "path": "ext.arrow"}
+ipc = {"input_type": "file", "format": "ipc", "path": "ext.arrow"}
 build_input_snapshot(ipc, store=store, base_dir=root)
 arrow = store.build(
     SourceCacheIdentity(provider="databricks", descriptor={"table": "c.s.ext"}),

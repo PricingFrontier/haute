@@ -67,16 +67,16 @@ This is the only supported submodel representation. A submodel is represented
 by one shared **definition** and any number of parent-graph **instances**:
 
 - `PipelineGraph.submodels` is a definition registry keyed by immutable,
-  opaque `definitionId`. A definition owns its file, internal graph, metadata,
+  opaque `definition_id`. A definition owns its file, internal graph, metadata,
   and public port contract. Loading the same resolved file more than once must
   resolve it once and reuse the same registry entry. The canonical graph is a
   typed model only; it exposes no dictionary-style compatibility access or
   mutation API.
 - Every occurrence is represented solely by a `NodeType.SUBMODEL` node in the
   parent graph. Its node id is the occurrence's canonical name (`node.id == label == alias == name`);
-  its typed config contains `definitionId`, the canonical identifier `alias`, and optional `instanceOf`.
-  Exactly one occurrence for each definition omits `instanceOf` and is the
-  editable definition owner. Every created instance points `instanceOf` at
+  its typed config contains `definition_id`, the canonical identifier `alias`, and optional `instance_of`.
+  Exactly one occurrence for each definition omits `instance_of` and is the
+  editable definition owner. Every created instance points `instance_of` at
   that owner; chains, self-references, missing owners, cross-definition owners,
   and multiple owners are invalid. The node owns its occurrence name
   and position, while its incident parent edges own its bindings.
@@ -143,7 +143,7 @@ by one shared **definition** and any number of parent-graph **instances**:
 
 Creating another instance is a pure parent-graph mutation performed by the
 canvas: it adds a new occurrence with a fresh immutable id and stable alias
-whose `instanceOf` points at the definition owner, and does not create or copy
+whose `instance_of` points at the definition owner, and does not create or copy
 a file. A definition containing a document-wide singleton node (`apiInput`,
 `workbenchInput`, `output` or `workbenchOutput`) cannot be instantiated because flattening would
 create another executable occurrence of that singleton. Removing an instance
@@ -213,11 +213,11 @@ consumers therefore require no generated alias/port rename. Expansion resolves
 public input and output names to the concrete upstream or qualified child
 source names inside cloned and remaining configs. Code that names its inputs,
 a Transform's or a Load File's (the stepped surfaces whose steps may name their
-inputs), keeps its public logical name through an explicit `inputMapping`
+inputs), keeps its public logical name through an explicit `input_mapping`
 whenever the physical expanded source name differs; steps on those surfaces
 have their input references rewritten instead. Every schema-owned incoming-frame reference is
 migrated with that edge identity, including selector fields, live-switch maps,
-`inputMapping` values, and each OUTPUT `outputMapping[].source_port`. Edge and
+`input_mapping` values, and each OUTPUT `output_mapping[].source_port`. Edge and
 config rewrites are one atomic transform, so no consumer retains a stale
 identity.
 
@@ -270,7 +270,7 @@ must resolve the original pipeline-owned sidecars.
   submission time; an effect-mirrored ref is never the source of a create
   request.  Creation sets the occurrence node id to the sanitised name (`node.id = sm_name`);
   the initial definition id and alias are the sanitised name, and the occurrence config is exactly
-  `{definitionId, alias}`. A grouping whose result breaks the codegen naming rule where the
+  `{definition_id, alias}`. A grouping whose result breaks the codegen naming rule where the
   submitted graph did not (a reserved or built-in name, a name a selected child or another node
   takes) is refused with HTTP 400 and the rule's messages, and nothing changes. Violations are
   compared by kind, name and the labels involved, so one the graph already had does not block
@@ -391,7 +391,7 @@ definition, and an instance of a single node is another occurrence of a
 one-node definition. Nothing below depends on how many nodes a definition
 holds. There is no other reuse mechanism: `@pipeline.instance`,
 an `of=` keyword on a node decorator and an `instanceOf` on an ordinary node are
-refused (see Failure model), and nothing migrates them. `inputMapping` on a
+refused (see Failure model), and nothing migrates them. `input_mapping` on a
 plain Transform or Load File is not reuse: it keeps the names its code reads
 across a rewire.
 
@@ -401,7 +401,7 @@ across a rewire.
   inputs, at most one frame each. The edge set is the whole mapping; there is
   no separate mapping field. Flattening binds each public input's targets to
   its edge's frame and keeps the names the definition's code reads
-  (`inputMapping` on Transform and Load File code, renamed step references),
+  (`input_mapping` on Transform and Load File code, renamed step references),
   as it does for every occurrence.
 - **Binding a dropped connection.** A connection dropped on an instance binds
   the public input named like the incoming frame's executable name; failing
@@ -426,7 +426,7 @@ across a rewire.
   own name when the definition declares one public output, and each output
   `<instance>_<port>` when it declares several. An occurrence card labels
   each output with its name. Renaming an instance renames its frames for its
-  consumers, coded consumers keeping their code through `inputMapping` as for
+  consumers, coded consumers keeping their code through `input_mapping` as for
   any rename, and so does a definition edit that takes it from one public
   output to several or back; renaming the owner renames nothing downstream.
   An edit that would give a consumer two inputs of one name is refused before

@@ -5,7 +5,7 @@
     "wiring": "Exactly two incoming edges: one with target_handle \"base\" (the rows to keep) and one with target_handle \"join\" (the lookup frame).",
     "how": "\"left\" keeps every base row; also \"inner\", \"full\", \"semi\", \"anti\" or \"cross\".",
     "on": "Key columns present under the same name in both frames.",
-    "leftOn / rightOn": "Key columns when the names differ: leftOn on the base frame, rightOn on the join frame, in matching order. Use these instead of on.",
+    "left_on / right_on": "Key columns when the names differ: left_on on the base frame, right_on on the join frame, in matching order. Use these instead of on.",
     "validate": "Optional key check: \"m:1\" when each base row matches at most one lookup row, \"1:1\", \"1:m\" or \"m:m\".",
     "suffix": "Appended to a join-frame column whose name clashes with a base column; default \"_right\".",
     "coalesce": "Optional; true merges the key columns of a full join."
@@ -34,9 +34,9 @@
       "intent": "Attach each policy's region relativity by region code.",
       "config": {
         "how": "left",
-        "maintainOrder": "left_right",
-        "leftOn": ["region_code"],
-        "rightOn": ["code"]
+        "maintain_order": "left_right",
+        "left_on": ["region_code"],
+        "right_on": ["code"]
       },
       "produces": ["policy_id", "region_code", "region_relativity"]
     },
@@ -45,9 +45,9 @@
       "intent": "Attach region relativities, checking each policy matches at most one region.",
       "config": {
         "how": "left",
-        "maintainOrder": "left_right",
-        "leftOn": ["region_code"],
-        "rightOn": ["code"],
+        "maintain_order": "left_right",
+        "left_on": ["region_code"],
+        "right_on": ["code"],
         "validate": "m:1",
         "suffix": "_region"
       },

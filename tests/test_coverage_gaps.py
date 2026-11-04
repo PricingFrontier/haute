@@ -72,7 +72,7 @@ class TestConfigValidationEdgeCases:
         from haute._node_config_models import NodeConfigBase
 
         universal = frozenset(NodeConfigBase.__annotations__)
-        assert universal == {"inputMapping", "contract", "selected_columns", "column_renames"}
+        assert universal == {"input_mapping", "contract", "selected_columns", "column_renames"}
         for node_type, keys in VALID_KEYS.items():
             assert universal <= keys, node_type
 

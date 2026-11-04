@@ -267,11 +267,11 @@ describe("filterIncomingEdges", () => {
       graphNode("source", NODE_TYPES.POLARS),
       graphNode("target", NODE_TYPES.POLARS),
       graphNode("submodel", NODE_TYPES.SUBMODEL, {
-        definitionId: "pricing",
+        definition_id: "pricing",
         alias: "pricing",
       }),
       graphNode("empty-submodel", NODE_TYPES.SUBMODEL, {
-        definitionId: "empty",
+        definition_id: "empty",
         alias: "empty",
       }),
       graphNode("input-port", NODE_TYPES.SUBMODEL_PORT, {}, {

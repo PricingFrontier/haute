@@ -658,7 +658,7 @@ class _Reader:
                 {"column": column, "descending": flag}
                 for column, flag in zip(columns, descending, strict=True)
             ],
-            "nullsLast": False if nulls_last is None else _flag(nulls_last),
+            "nulls_last": False if nulls_last is None else _flag(nulls_last),
         }
 
     def _unique(self, call: _Call) -> Step:
@@ -679,10 +679,10 @@ class _Reader:
             "kind": "join",
             "input": _name(call.args[0]),
             "how": _text(call.keyword("how")),
-            "leftOn": _texts(call.keywords["left_on"]) if "left_on" in call.keywords else [],
-            "rightOn": _texts(call.keywords["right_on"]) if "right_on" in call.keywords else [],
+            "left_on": _texts(call.keywords["left_on"]) if "left_on" in call.keywords else [],
+            "right_on": _texts(call.keywords["right_on"]) if "right_on" in call.keywords else [],
             "suffix": _text(call.keyword("suffix")),
-            "maintainOrder": _text(call.keyword("maintain_order")),
+            "maintain_order": _text(call.keyword("maintain_order")),
         }
         if "validate" in call.keywords:
             step["validate"] = _text(call.keywords["validate"])
@@ -708,8 +708,8 @@ class _Reader:
             "kind": "unpivot",
             "on": _texts(keywords["on"]),
             "index": _texts(keywords["index"]),
-            "variableName": _text(keywords["variable_name"]),
-            "valueName": _text(keywords["value_name"]),
+            "variable_name": _text(keywords["variable_name"]),
+            "value_name": _text(keywords["value_name"]),
         }
 
     def _grouping(self, value: ast.expr) -> tuple[list[str], list[ast.expr]]:
@@ -894,7 +894,7 @@ class _Reader:
                 raise _NoMatchError
             (kind,) = kinds
             if kind in ("integer", "float"):
-                condition["numberType"] = kind
+                condition["number_type"] = kind
                 kind = "number"
             condition["values"] = [_literal(kind, value) for value in values]
             return condition
@@ -903,7 +903,7 @@ class _Reader:
             parse = _only(_namespace(series, "to_decimal", "str"), 0, ("scale",))
             texts = _texts(_only(_pl(parse.receiver, "Series"), 1).args[0])
             condition["values"] = [_literal("number", _decimal_value(text)) for text in texts]
-            condition["numberType"] = "decimal"
+            condition["number_type"] = "decimal"
             return condition
         parse = _only(_namespace(series, "to_date", "str"))
         texts = _texts(_only(_pl(parse.receiver, "Series"), 1).args[0])
@@ -1037,7 +1037,7 @@ class _Reader:
             if "order_by" in call.keywords:
                 _only(call, 1, ("order_by", "descending"))
                 flag = _flag(call.keywords["descending"])
-                window["orderBy"] = [
+                window["order_by"] = [
                     {"column": column, "descending": flag}
                     for column in _texts(call.keywords["order_by"])
                 ]
@@ -1265,7 +1265,7 @@ def _normal_condition(condition: Mapping[str, Any]) -> Step:
         literals = ("text",) if text_only else LITERAL_TYPES
         normal["value"] = _normal_operand(condition["value"], "value", literals)
     if "values" in condition:
-        number_type = condition.get("numberType")
+        number_type = condition.get("number_type")
         normal["values"] = [
             _normal_literal(item)
             if number_type is None
@@ -1367,10 +1367,10 @@ def _normal_window(expr: Mapping[str, Any]) -> Step:
         normal["quantile"] = expr["quantile"]
     if agg in _RANKS.values():
         normal["descending"] = expr.get("descending", False)
-    if expr.get("orderBy") is not None:
-        normal["orderBy"] = [
+    if expr.get("order_by") is not None:
+        normal["order_by"] = [
             {"column": entry["column"], "descending": entry.get("descending", False)}
-            for entry in expr["orderBy"]
+            for entry in expr["order_by"]
         ]
     if expr.get("where") is not None:
         normal["where"] = _normal_group(expr["where"])

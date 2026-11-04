@@ -19,7 +19,7 @@ describe("occurrence output identities", () => {
       { source_port: "old", source_column: "x", output_path: "$.x", enabled: disabledIndex !== 0 },
       { source_port: "new", source_column: "y", output_path: "$.x", enabled: disabledIndex !== 1 },
     ]
-    const response = makeNode("response", "response", NODE_TYPES.OUTPUT, { outputMapping })
+    const response = makeNode("response", "response", NODE_TYPES.OUTPUT, { output_mapping: outputMapping })
     const input = {
       nodeId: source.id, data: renamedData(source, "new"), refreshSourceIdentity: true, readOnly: false,
       graph: { nodes: [source, response], edges: [makeEdge("e", source.id, response.id, null, "old")] },
@@ -30,7 +30,7 @@ describe("occurrence output identities", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(result.error)
     expect(result.nodes[1].data.config).toEqual({
-      outputMapping: outputMapping.map((entry) => ({ ...entry, source_port: "new" })),
+      output_mapping: outputMapping.map((entry) => ({ ...entry, source_port: "new" })),
     })
     expect(input).toEqual(before)
   })
@@ -38,10 +38,10 @@ describe("occurrence output identities", () => {
   it.each(["rename", "add output", "remove output"])("reconciles %s and all consumers in one undoable edit", (edit) => {
     const from = edit === "remove output" ? "copy_premium" : "copy"
     const to = edit === "rename" ? "renamed" : edit === "add output" ? "copy_premium" : "copy"
-    const source = makeNode("copy", "copy", NODE_TYPES.SUBMODEL, { definitionId: "pricing", alias: "copy", instanceOf: "owner" })
+    const source = makeNode("copy", "copy", NODE_TYPES.SUBMODEL, { definition_id: "pricing", alias: "copy", instance_of: "owner" })
     source.data._sourceHandleInputNames = { out__premium: from }
     const response = makeNode("response", "response", NODE_TYPES.OUTPUT, {
-      outputMapping: [{ source_port: from, source_column: "premium", output_path: "$.premium" }],
+      output_mapping: [{ source_port: from, source_column: "premium", output_path: "$.premium" }],
     })
     const coded = makeNode("coded", "coded", NODE_TYPES.POLARS, { code: `df = ${from}` })
     const stepped = makeNode("stepped", "stepped", NODE_TYPES.POLARS, { steps: [{ kind: "source", input: from }] })
@@ -55,9 +55,9 @@ describe("occurrence output identities", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(result.error)
     expect(result.nodes.find((n) => n.id === "response")?.data.config).toEqual({
-      outputMapping: [{ source_port: to, source_column: "premium", output_path: "$.premium" }],
+      output_mapping: [{ source_port: to, source_column: "premium", output_path: "$.premium" }],
     })
-    expect(result.nodes.find((n) => n.id === "coded")?.data.config).toMatchObject({ inputMapping: { [from]: to } })
+    expect(result.nodes.find((n) => n.id === "coded")?.data.config).toMatchObject({ input_mapping: { [from]: to } })
     expect(result.nodes.find((n) => n.id === "stepped")?.data.config).toEqual({ steps: [{ kind: "source", input: to }] })
     useGraphStore.setState({ ...previous, undoStack: [], redoStack: [] })
     useGraphStore.getState().setNodesAndEdgesAndSubmodels(result.nodes, result.edges, result.submodels)
@@ -71,7 +71,7 @@ describe("occurrence output identities", () => {
 
     const collision = structuredClone(next)
     collision.nodes.find((node) => node.id === "response")!.data.config = {
-      outputMapping: [
+      output_mapping: [
         { source_port: from, source_column: "premium", output_path: "$.premium" },
         { source_port: to, source_column: "other", output_path: "$.premium" },
       ],
@@ -89,7 +89,7 @@ describe("occurrence output identities", () => {
     const source = makeNode("source", "old", type, type === NODE_TYPES.API_INPUT ? { tables: [table("old", true)] } : {})
     source.data._sourceHandleInputNames = { old: "old" }
     const response = makeNode("response", "response", NODE_TYPES.OUTPUT, {
-      outputMapping: [{ source_port: "old", source_column: "x", output_path: "$.x" }],
+      output_mapping: [{ source_port: "old", source_column: "x", output_path: "$.x" }],
     })
     const nextData = type === NODE_TYPES.API_INPUT
       ? { ...source.data, config: { tables: [{ ...table("new", true), path: "$[:].old" }] }, _sourceHandleInputNames: { new: "new" } }
@@ -100,8 +100,8 @@ describe("occurrence output identities", () => {
     const result = prepareNodeUpdate(input)
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error(result.error)
-    expect(result.nodes[1].data.config).toEqual({ outputMapping: [{ source_port: "new", source_column: "x", output_path: "$.x" }] })
-    response.data.config = { outputMapping: [
+    expect(result.nodes[1].data.config).toEqual({ output_mapping: [{ source_port: "new", source_column: "x", output_path: "$.x" }] })
+    response.data.config = { output_mapping: [
       { source_port: "old", source_column: "x", output_path: "$.x" },
       { source_port: "new", source_column: "y", output_path: "$.x" },
     ] }
@@ -199,7 +199,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const targetNode = prepared.nodes.find((n) => n.id === "consumer")
     expect(targetNode?.data.config).toEqual({
       code: 'df = src.select("v")',
-      inputMapping: { src: "Renamed_Src" },
+      input_mapping: { src: "Renamed_Src" },
     })
     const updatedEdge = prepared.edges.find((e) => e.id === "e1")
     expect(updatedEdge?.data?._inputName).toBe("Renamed_Src")
@@ -227,16 +227,16 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     expect(result.ok).toBe(true)
     const prepared = result as PreparedNodeUpdate
     const targetEmpty = prepared.nodes.find((n) => n.id === "consumer_empty")
-    expect((targetEmpty?.data.config as Record<string, unknown>).inputMapping).toBeUndefined()
+    expect((targetEmpty?.data.config as Record<string, unknown>).input_mapping).toBeUndefined()
     const targetAbsent = prepared.nodes.find((n) => n.id === "consumer_absent")
-    expect((targetAbsent?.data.config as Record<string, unknown>).inputMapping).toBeUndefined()
+    expect((targetAbsent?.data.config as Record<string, unknown>).input_mapping).toBeUndefined()
   })
 
   it("3. existing mapping value rewritten, logical kept", () => {
     const src = makeNode("src", "src", NODE_TYPES.POLARS)
     const consumer = makeNode("consumer", "Consumer", NODE_TYPES.POLARS, {
       code: 'df = raw.select("v")',
-      inputMapping: { raw: "src" },
+      input_mapping: { raw: "src" },
     })
     const edge = makeEdge("e1", "src", "consumer", null, "src")
 
@@ -255,7 +255,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const targetNode = prepared.nodes.find((n) => n.id === "consumer")
     expect(targetNode?.data.config).toEqual({
       code: 'df = raw.select("v")',
-      inputMapping: { raw: "Renamed_Src" },
+      input_mapping: { raw: "Renamed_Src" },
     })
   })
 
@@ -263,7 +263,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const src = makeNode("src", "Renamed Src", NODE_TYPES.POLARS)
     const consumer = makeNode("consumer", "Consumer", NODE_TYPES.POLARS, {
       code: 'df = src.select("v")',
-      inputMapping: { src: "Renamed_Src" },
+      input_mapping: { src: "Renamed_Src" },
     })
     const edge = makeEdge("e1", "src", "consumer", null, "Renamed_Src")
 
@@ -280,7 +280,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     expect(result.ok).toBe(true)
     const prepared = result as PreparedNodeUpdate
     const targetNode = prepared.nodes.find((n) => n.id === "consumer")
-    expect((targetNode?.data.config as Record<string, unknown>).inputMapping).toBeUndefined()
+    expect((targetNode?.data.config as Record<string, unknown>).input_mapping).toBeUndefined()
     expect(targetNode?.data.config).toEqual({
       code: 'df = src.select("v")',
     })
@@ -311,11 +311,11 @@ describe("prepareNodeUpdate rename stable bindings", () => {
 
     expect(result.ok).toBe(true)
     const prepared = result as PreparedNodeUpdate
-    expect((prepared.nodes.find((n) => n.id === "c1")?.data.config as Record<string, unknown>).inputMapping)
+    expect((prepared.nodes.find((n) => n.id === "c1")?.data.config as Record<string, unknown>).input_mapping)
       .toEqual({ src: "Renamed_Src" })
-    expect((prepared.nodes.find((n) => n.id === "c2")?.data.config as Record<string, unknown>).inputMapping)
+    expect((prepared.nodes.find((n) => n.id === "c2")?.data.config as Record<string, unknown>).input_mapping)
       .toEqual({ src: "Renamed_Src" })
-    expect((prepared.nodes.find((n) => n.id === "c3")?.data.config as Record<string, unknown>).inputMapping)
+    expect((prepared.nodes.find((n) => n.id === "c3")?.data.config as Record<string, unknown>).input_mapping)
       .toBeUndefined()
   })
 
@@ -355,7 +355,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const src = makeNode("src", "src", NODE_TYPES.POLARS)
     const consumer = makeNode("consumer", "Consumer", NODE_TYPES.POLARS, {
       code: 'df = other.join(src, on="id")',
-      inputMapping: { other: "third" },
+      input_mapping: { other: "third" },
     })
     const edgeThird = makeEdge("e_third", "third", "consumer", null, "third")
     const edgeSrc = makeEdge("e_src", "src", "consumer", null, "src")
@@ -409,7 +409,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const targetNode = prepared.nodes.find((n) => n.id === "consumer")
     expect(targetNode?.data.config).toEqual({
       code: 'df = policies.select("c")',
-      inputMapping: { policies: "quotes" },
+      input_mapping: { policies: "quotes" },
     })
   })
 
@@ -435,7 +435,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const targetNode = prepared.nodes.find((n) => n.id === "consumer")
     expect(targetNode?.data.config).toEqual({
       code: 'df = src.select("v")',
-      inputMapping: { src: "My_Source_2" },
+      input_mapping: { src: "My_Source_2" },
     })
   })
 
@@ -461,7 +461,7 @@ describe("prepareNodeUpdate rename stable bindings", () => {
     const prepared = result as PreparedNodeUpdate
     expect(prepared.nodes.find((n) => n.id === "consumer")?.data.config).toEqual({
       code: "df = df.join(src, on='k')",
-      inputMapping: { src: "Renamed_Src" },
+      input_mapping: { src: "Renamed_Src" },
     })
   })
 })

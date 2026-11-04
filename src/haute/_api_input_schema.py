@@ -27,7 +27,7 @@ What lives in v2:
     collide are rejected by B2.
   - ``emit``: bool. ``true`` means this table contributes a data-frame
     at runtime.
-  - ``displayPath``: optional UI alias; not load-bearing for the
+  - ``display_path``: optional UI alias; not load-bearing for the
     runtime.
   - ``row_id_column``: optional ``str | None`` — name of a column within
     this table to use as the row ID in the trace UI.
@@ -180,7 +180,7 @@ class TableV2(TypedDict, total=False):
     """The JSONPath of the table's rows in the request document, such as `$[:]`."""
     label: str
     """The table's name, which a connection's `source_port` names it by."""
-    displayPath: str | None
+    display_path: str | None
     """The path the editor shows for the table, or `null` to show `path`."""
     emit: bool
     """Whether the table is one of the node's outputs."""

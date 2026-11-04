@@ -152,7 +152,7 @@ def _lineage_graph() -> PipelineGraph:
         GraphNode(
             id="n0",
             data=NodeData(
-                label="n0", nodeType=NodeType.DATA_INPUT, config={"inputType": "dataframe"}
+                label="n0", nodeType=NodeType.DATA_INPUT, config={"input_type": "dataframe"}
             ),
         )
     ]

@@ -10,8 +10,8 @@ describe("canonical data IO node types", () => {
 
   it("uses complete canonical defaults", () => {
     // A new Data Input starts in step mode: an empty step list, no code key.
-    expect(NODE_TYPE_META[NODE_TYPES.DATA_INPUT].defaultConfig).toEqual({ inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] })
-    expect(NODE_TYPE_META[NODE_TYPES.DATA_OUTPUT].defaultConfig).toEqual({ outputType: "file", format: "parquet", mode: "sink", path: "", arguments: {} })
+    expect(NODE_TYPE_META[NODE_TYPES.DATA_INPUT].defaultConfig).toEqual({ input_type: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] })
+    expect(NODE_TYPE_META[NODE_TYPES.DATA_OUTPUT].defaultConfig).toEqual({ output_type: "file", format: "parquet", mode: "sink", path: "", arguments: {} })
   })
 
   it("registers data input as a source and data output as a sink", () => {

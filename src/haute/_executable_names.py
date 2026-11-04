@@ -244,9 +244,9 @@ def _name_claims(graph: PipelineGraph) -> Iterator[_NameClaim]:
     for module, scoped in _named_graphs(graph):
         for occurrence in scoped.nodes:
             config = occurrence.data.config
-            if occurrence.data.nodeType != NodeType.SUBMODEL or config.get("instanceOf") is None:
+            if occurrence.data.nodeType != NodeType.SUBMODEL or config.get("instance_of") is None:
                 continue
-            definition_id = config.get("definitionId")
+            definition_id = config.get("definition_id")
             alias = config.get("alias")
             # Naming also runs on incomplete editor candidates; their shape is validated separately.
             if not isinstance(definition_id, str) or not isinstance(alias, str):
@@ -303,7 +303,7 @@ def received_inputs(graph: PipelineGraph) -> Iterator[tuple[NameParty, list[Rece
     """Every node with the inputs its body receives, as the executor binds them.
 
     A node's inputs are its incoming edges' input names, the logical names its
-    ``inputMapping`` binds in their place, and, in a submodel definition, the
+    ``input_mapping`` binds in their place, and, in a submodel definition, the
     public input ports routed to it.
     """
     ports: dict[tuple[str, str], list[str]] = {}
@@ -357,12 +357,12 @@ def _edge_inputs(module: str, scoped: PipelineGraph) -> dict[str, list[ReceivedI
 
 
 def _mapping_inputs(node: GraphNode) -> Iterator[ReceivedInput]:
-    """Every logical name ``inputMapping`` binds in place of an edge-derived one."""
-    mapping = node.data.config.get("inputMapping")
+    """Every logical name ``input_mapping`` binds in place of an edge-derived one."""
+    mapping = node.data.config.get("input_mapping")
     if isinstance(mapping, dict):
         for logical, current in mapping.items():
             if isinstance(logical, str):
-                yield ReceivedInput(logical, f"inputMapping alias for {current!r}")
+                yield ReceivedInput(logical, f"input_mapping alias for {current!r}")
 
 
 def input_binding_violations(graph: PipelineGraph) -> list[NameViolation]:
@@ -459,7 +459,7 @@ def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
         if node.data.nodeType == NodeType.DATA_OUTPUT:
             record(node, ROOT_MODULE)
         elif node.data.nodeType == NodeType.SUBMODEL:
-            definition_id = node.data.config.get("definitionId")
+            definition_id = node.data.config.get("definition_id")
             definition = definitions.get(str(definition_id))
             if definition is None:
                 continue
@@ -522,6 +522,6 @@ def reserved_input_problem(names: Iterable[str]) -> str | None:
             return (
                 f"An input is named `{name}`, which node code binds to "
                 f"{RESERVED_NAMES[name]}. Rename the upstream node, frame, port "
-                "or inputMapping alias."
+                "or input_mapping alias."
             )
     return None

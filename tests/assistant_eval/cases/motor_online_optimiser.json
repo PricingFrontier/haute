@@ -35,7 +35,7 @@
         "modified_nodes": [],
         "node_configs": {
           "price_scenarios": {
-            "stepCount": 5,
+            "step_count": 5,
             "column_name": "price_factor",
             "min_value": 0.9,
             "max_value": 1.1,

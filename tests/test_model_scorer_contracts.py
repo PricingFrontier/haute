@@ -134,7 +134,7 @@ def test_score_from_config_respects_scenario_context(tmp_path: Path) -> None:
     config_path.write_text(
         json.dumps(
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run-123",
                 "artifact_path": "model.cbm",
                 "task": "regression",

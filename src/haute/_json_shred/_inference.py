@@ -533,7 +533,7 @@ def _assemble_inference_schema(
                 {
                     "path": table_path,
                     "label": base_label,
-                    "displayPath": table_path,
+                    "display_path": table_path,
                     "emit": array_depth(level) == 0,  # pragma: no mutate  # root only
                     "row_id_column": None,
                     "columns": columns,

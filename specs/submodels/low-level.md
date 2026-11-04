@@ -47,7 +47,7 @@ SubmodelOutputPort { name: str,
                      source: SubmodelEndpoint }
 SubmodelDefinition { definitionId, file, graph,
                      inputPorts[], outputPorts[], ...metadata }
-SubmodelInstanceConfig { definitionId, alias, instanceOf?: InstanceId }
+SubmodelInstanceConfig { definition_id, alias, instance_of?: InstanceId }
 PipelineGraph { nodes[], edges[], submodels: map[definitionId, definition] }
 ```
 
@@ -70,9 +70,9 @@ Its config is validated as `SubmodelInstanceConfig`; an occurrence's
 display name is its alias (`node.data.label == config.alias` is enforced on
 validation, raising `ParseError` on mismatch), and its position remains an
 ordinary mutable node field. No parallel instance registry
-is permitted. For each definition exactly one occurrence has no `instanceOf`
+is permitted. For each definition exactly one occurrence has no `instance_of`
 and owns definition editing. Every other occurrence has a non-empty
-`instanceOf` that points directly to that owner. The resolver rejects owner
+`instance_of` that points directly to that owner. The resolver rejects owner
 chains, self references, missing or cross-definition owners, and multiple or
 missing owners. Definitions are deduplicated by canonical resolved file during
 parse, while explicit persisted ids remain authoritative and conflicting ids
@@ -136,7 +136,7 @@ import could name, tells the author to move the definition into
 
 Expansion is a pure transform per instance:
 
-1. Resolve `config.definitionId` and validate the complete definition and every
+1. Resolve `config.definition_id` and validate the complete definition and every
    parent binding before removing an occurrence.
 2. Clone definition nodes and edges with qualified ids derived from the
    immutable instance id plus local id; record reversible origin metadata.
@@ -158,7 +158,7 @@ Expansion is a pure transform per instance:
    and a renamed clone's siblings from its definition name to its clone name. When
    this changes the physical name of an input that a Transform's or a Load
    File's free code reads by name, preserve the public logical name with
-   `inputMapping` (the same `stepped_surface_allows_input_references` rule that
+   `input_mapping` (the same `stepped_surface_allows_input_references` rule that
    makes steps on those surfaces have their references rewritten instead), so a
    Load File child reading its second input by name runs after expansion as it
    did before grouping. An unbound, ambiguous, or otherwise stale declared reference
@@ -172,7 +172,7 @@ Expansion is a pure transform per instance:
 
 Create-instance and remove-instance are I/O-free graph operations. Creation
 normalises the selected source to its owner and persists that id in
-`instanceOf`. A plain node's Create Instance first wraps the node in a one-node
+`instance_of`. A plain node's Create Instance first wraps the node in a one-node
 definition through `POST /api/submodel/instance` (below). Dissolve is addressed only by immutable `instance_id` and expands
 exactly that occurrence. Dissolving an owner while any unselected instance
 references it is rejected; instances must be dissolved first.
@@ -234,7 +234,7 @@ output's name: on the owner, the sanitised public output port name; on an
 instance, the instance's sanitised name when its definition declares one
 public output, and `<instance>_<port>` (the sanitised instance and port names
 joined by `_`) for each output when it declares several. It reads both facts
-from the graph: the occurrence's `instanceOf`, and every public output the
+from the graph: the occurrence's `instance_of`, and every public output the
 definition declares, connected or not. An occurrence card labels each output
 with its name.
 
@@ -247,7 +247,7 @@ request carries the document graph, a node whose `instance_of` or handles
 differ from the graph's is refused (`422`).
 When a creation candidate is separate from the naming graph, its `instance_of`
 identifies the existing editable owner. The server takes that owner's
-`definitionId` and carries it and `instanceOf` into the inserted naming
+`definition_id` and carries it and `instance_of` into the inserted naming
 candidate, validates its declared output handles, and reserves its generated
 clone names before accepting or allocating an alias. A missing owner, a copy
 used as owner or an unavailable definition is refused (`422`).
@@ -260,7 +260,7 @@ output to several or back.
 That commit renames the frames for their consumers as an ordinary rename does
 (see [frontend-node-editors](../frontend-node-editors/low-level.md)): input
 mappings, scenario-map keys, selectors, step references and response mappings
-(`outputMapping[].source_port`) follow, and the whole edit is refused before it
+(`output_mapping[].source_port`) follow, and the whole edit is refused before it
 applies when a consumer would then read two inputs under one name. Renaming the
 owner renames nothing downstream. Distinct names are not guaranteed, since
 port names and occurrence names are separate (an owner output `rating_2` beside
@@ -317,7 +317,7 @@ column), never an empty result. The instance's panel lists the warnings by
 input.
 
 **Removed node-level instances.** No graph node but a `SUBMODEL` occurrence
-carries `instanceOf`. The parser refuses `@pipeline.instance(...)` and an `of=`
+carries `instance_of`. The parser refuses `@pipeline.instance(...)` and an `of=`
 keyword on any node decorator, config validation refuses `instanceOf` on every
 other node type, and the editor's recovery shows such a node unavailable with
 the parser's message. `Pipeline` has no `instance` method.
@@ -427,13 +427,13 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    is its `out__<name>` or `in__<name>` handle.
    Rewrite every schema-owned incoming-frame reference from the public boundary
    name to the expanded physical name: exact selector fields,
-   `input_scenario_map` keys, `inputMapping` values, and every OUTPUT
-   `outputMapping[].source_port`. A malformed referenced mapping fails with
+   `input_scenario_map` keys, `input_mapping` values, and every OUTPUT
+   `output_mapping[].source_port`. A malformed referenced mapping fails with
    contextual `ParseError`; it is never retained as a stale logical name.
    A rename that collides on a target's input names or on an OUTPUT mapping
    fails with `ParseError`; malformed mapping shapes are validated on renamed
    nodes. Two distinct old input names for one target mapping to one new name
-   is a collision, as is a rewritten `outputMapping` in which two active
+   is a collision, as is a rewritten `output_mapping` in which two active
    entries become identical in `(source_port, source_column, output_path)` or
    two entries share `output_path` and `source_port` with different
    `source_column`.
@@ -453,7 +453,7 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
 1. Trim and sanitise `name`; reject blank names, repeated/stale selections,
    fewer than two children, or any selected `SUBMODEL` node without mutating
    the input graph.
-2. Derive `definitionId = alias = sm_name` and
+2. Derive `definition_id = alias = sm_name` and
    `modules/<sm_name>.py`, and set the occurrence id to `sm_name`.
    Reject definition-id, alias, remaining-parent-node-id, and
    case-insensitive file collisions.
@@ -477,11 +477,11 @@ supplies pre-read bytes to authenticate exact caller content against concurrent 
    subtract it from every selected child position before storing the definition
    graph. Internal positions are therefore occurrence-local.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
-   config is exactly `{definitionId, alias}`. Rewire parent edges only through
+   config is exactly `{definition_id, alias}`. Rewire parent edges only through
    `in__<name>`/`out__<name>` handles. Remaining parent consumers
    keep the input name they were authored with: the public output port name
    becomes the physical input. If that changes the name, the previous name
-   is recorded as the logical name through `inputMapping`, with schema-owned
+   is recorded as the logical name through `input_mapping`, with schema-owned
    selectors rewritten, exactly as
    flattening does across the same boundary (F13).
 8. Return a new parent graph with the prior registry entries preserved plus the
@@ -548,14 +548,14 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
    crossing edge), targeting the node with the edge's target handle; a name
    equal to the output's takes the next free suffix (`_2`, `_3`), since public
    names are unique across both directions, and the node keeps reading the
-   name it read before through the boundary rename (`inputMapping` on free
+   name it read before through the boundary rename (`input_mapping` on free
    code, rewritten step references and selectors), its config changing only
    there. The owner occurrence is named by the node's executable name (its id,
    label and alias) and placed at the node's position, and the node's parent
    edges are re-targeted to `in__<name>` and re-sourced from `out__<name>`;
    consumers keep their input names, since an owner's output is read by its
    port name.
-5. Place an instance of the definition with `instanceOf` the owner, named and
+5. Place an instance of the definition with `instance_of` the owner, named and
    positioned as the browser names and places a submodel copy (`<name>_2`,
    collision-free), with no bindings. Its allocation candidate includes the
    definition and owner, so allocation also skips aliases whose clone names
@@ -624,7 +624,7 @@ whatever its arguments.
 Changing a definition's output count across the one/multiple boundary recomputes
 parent edge names for every occurrence. Existing consumer bindings are reconciled
 atomically with those identities: coded transforms retain their exact authored
-code through logical `inputMapping` bindings; input mappings, scenario maps, and
+code through logical `input_mapping` bindings; input mappings, scenario maps, and
 scalar input selectors follow renamed edges. A collision refuses the entire edit.
 
 - **Duplicate/nonexistent node ids in `node_ids` fail atomically.** Duplicate
@@ -758,7 +758,7 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 
 - `tests/test_submodel_identity.py` — the SUB-L03 contract: an owner and a copy
   parse to occurrences whose node id, label and alias are the name and whose
-  `definitionId` is the child file's declaration; `definition_id=`,
+  `definition_id` is the child file's declaration; `definition_id=`,
   `instance_id=` and `alias=` keywords, a missing name and a non-canonical
   name fail to parse with the fix named; a definition imported any way but
   `from modules import <module>` (an alias, `*`, a relative or dotted import, the
@@ -873,7 +873,7 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `frontend/src/utils/__tests__/nodeUpdatePlan.test.ts` — an instance rename
   and a definition edit crossing between one and several outputs renaming the
   instance's frames for their consumers (input mappings, step references and
-  a Quote Response's `outputMapping[].source_port`), undone and redone as one
+  a Quote Response's `output_mapping[].source_port`), undone and redone as one
   step, and refused whole on a collision between enabled response mappings;
   disabled duplicate mappings follow the rename without blocking it.
 - `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts` — boundary

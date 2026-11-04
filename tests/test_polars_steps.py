@@ -162,9 +162,9 @@ GOLDEN_STEPS: list[dict[str, Any]] = [
         "join",
         input="rates",
         how="left",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_rate",
     ),
     step(
@@ -272,9 +272,9 @@ LONG_STEPS: list[dict[str, Any]] = [
         "join",
         input="rates",
         how="left",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_rates",
     ),
     step("l", "limit", n=5),
@@ -595,7 +595,7 @@ def test_a_variable_may_take_a_name_the_code_binds_only_in_its_own_scope(code: s
             'df = df.with_columns(pl.col("a").cast(pl.Int64), pl.col("b").cast(pl.String))',
         ),
         (
-            step("x", "sort", keys=[{"column": "a", "descending": True}], nullsLast=True),
+            step("x", "sort", keys=[{"column": "a", "descending": True}], nulls_last=True),
             'df = df.sort("a", descending=True, nulls_last=True, maintain_order=True)',
         ),
         (
@@ -612,9 +612,9 @@ def test_a_variable_may_take_a_name_the_code_binds_only_in_its_own_scope(code: s
                 "join",
                 input="rates",
                 how="cross",
-                maintainOrder="left_right",
-                leftOn=[],
-                rightOn=[],
+                maintain_order="left_right",
+                left_on=[],
+                right_on=[],
                 suffix="_r",
             ),
             'df = df.join(rates, how="cross", suffix="_r", maintain_order="left_right")',
@@ -639,7 +639,7 @@ def test_a_variable_may_take_a_name_the_code_binds_only_in_its_own_scope(code: s
                 match="any",
                 conditions=[
                     cond("a", "is_null"),
-                    cond("b", "not_in", values=[num(1), num(2)], numberType="integer"),
+                    cond("b", "not_in", values=[num(1), num(2)], number_type="integer"),
                 ],
             ),
             'df = df.filter(pl.col("a").is_null() | ~pl.col("b").is_in([1, 2]))',
@@ -649,7 +649,7 @@ def test_a_variable_may_take_a_name_the_code_binds_only_in_its_own_scope(code: s
                 "x",
                 "filter",
                 match="all",
-                conditions=[cond("p", "is_in", values=[num(100), num(300)], numberType="float")],
+                conditions=[cond("p", "is_in", values=[num(100), num(300)], number_type="float")],
             ),
             'df = df.filter(pl.col("p").is_in([100.0, 300.0]))',
         ),
@@ -658,7 +658,7 @@ def test_a_variable_may_take_a_name_the_code_binds_only_in_its_own_scope(code: s
                 "x",
                 "filter",
                 match="all",
-                conditions=[cond("m", "is_in", values=[num(1.5), num(2)], numberType="decimal")],
+                conditions=[cond("m", "is_in", values=[num(1.5), num(2)], number_type="decimal")],
             ),
             "df = df.filter(\n"
             '    pl.col("m").is_in(pl.Series(["1.5", "2"]).str.to_decimal(scale=1).implode())\n'
@@ -913,9 +913,9 @@ INVALID_PAYLOADS: list[tuple[str, list[Any] | object, int | None, str]] = [
                 "join",
                 input="rates",
                 how="cross",
-                maintainOrder="left_right",
-                leftOn=["a"],
-                rightOn=[],
+                maintain_order="left_right",
+                left_on=["a"],
+                right_on=[],
                 suffix="_r",
             ),
         ],
@@ -931,9 +931,9 @@ INVALID_PAYLOADS: list[tuple[str, list[Any] | object, int | None, str]] = [
                 "join",
                 input="rates",
                 how="left",
-                maintainOrder="left_right",
-                leftOn=["a"],
-                rightOn=[],
+                maintain_order="left_right",
+                left_on=["a"],
+                right_on=[],
                 suffix="_r",
             ),
         ],
@@ -1035,9 +1035,9 @@ def test_rename_step_inputs_rewrites_every_reference_and_rejects_collisions() ->
             "join",
             input="b",
             how="left",
-            maintainOrder="left_right",
-            leftOn=["k"],
-            rightOn=["k"],
+            maintain_order="left_right",
+            left_on=["k"],
+            right_on=["k"],
             suffix="_b",
         ),
         step("c", "concat", inputs=["b", "d"], how="vertical"),
@@ -1072,7 +1072,7 @@ def window(
     if of is not None:
         expr["of"] = col(of) if isinstance(of, str) else of
     if order_by is not None:
-        expr["orderBy"] = [{"column": c, "descending": d} for c, d in order_by]
+        expr["order_by"] = [{"column": c, "descending": d} for c, d in order_by]
     if descending is not None:
         expr["descending"] = descending
     if where is not None:
@@ -1335,11 +1335,11 @@ def window(
                 "join",
                 input="rates",
                 how="left",
-                leftOn=["region"],
-                rightOn=["region"],
+                left_on=["region"],
+                right_on=["region"],
                 suffix="_r",
                 validate="m:1",
-                maintainOrder="left",
+                maintain_order="left",
             ),
             "df = df.join(\n"
             "    rates,\n"
@@ -1456,9 +1456,9 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="cross",
-                maintainOrder="left_right",
-                leftOn=[],
-                rightOn=[],
+                maintain_order="left_right",
+                left_on=[],
+                right_on=[],
                 suffix="_r",
                 validate="m:1",
             ),
@@ -1471,9 +1471,9 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="left",
-                maintainOrder="left_right",
-                leftOn=["r"],
-                rightOn=["r"],
+                maintain_order="left_right",
+                left_on=["r"],
+                right_on=["r"],
                 suffix="_r",
                 validate="many",
             ),
@@ -1521,9 +1521,9 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="semi",
-                maintainOrder="left",
-                leftOn=["region"],
-                rightOn=["region"],
+                maintain_order="left",
+                left_on=["region"],
+                right_on=["region"],
                 suffix="_r",
                 validate="m:1",
             ),
@@ -1536,9 +1536,9 @@ def test_window_quantile_renders() -> None:
                 "join",
                 input="rates",
                 how="cross",
-                maintainOrder="left_right",
-                leftOn=[],
-                rightOn=[],
+                maintain_order="left_right",
+                left_on=[],
+                right_on=[],
                 suffix="_r",
                 validate="m:1",
             ),
@@ -1847,7 +1847,7 @@ def test_extended_vocabulary_executes(tmp_path: Path) -> None:
                 },
             ],
         ),
-        step("srt", "sort", keys=[{"column": "region", "descending": False}], nullsLast=False),
+        step("srt", "sort", keys=[{"column": "region", "descending": False}], nulls_last=False),
     ]
     graph = PipelineGraph(
         nodes=[policies, _stepped("s", summary_steps), _stepped("r", grouped_steps)],
@@ -2397,8 +2397,8 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                 "unpivot",
                 on=["premium", "sum_insured"],
                 index=["quote_id"],
-                variableName="measure",
-                valueName="value",
+                variable_name="measure",
+                value_name="value",
             ),
             "df = df.unpivot(\n"
             '    on=["premium", "sum_insured"],\n'
@@ -2408,7 +2408,7 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
             ")",
         ),
         (
-            step("x", "unpivot", on=["premium"], index=[], variableName="m", valueName="v"),
+            step("x", "unpivot", on=["premium"], index=[], variable_name="m", value_name="v"),
             'df = df.unpivot(on=["premium"], index=[], variable_name="m", value_name="v")',
         ),
     ],
@@ -2590,32 +2590,32 @@ def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expecte
             "must be one of",
         ),
         (
-            step("x", "unpivot", on=[], index=[], variableName="m", valueName="v"),
+            step("x", "unpivot", on=[], index=[], variable_name="m", value_name="v"),
             "at least one column",
         ),
         (
-            step("x", "unpivot", on=["a", "g"], index=["g"], variableName="m", valueName="v"),
+            step("x", "unpivot", on=["a", "g"], index=["g"], variable_name="m", value_name="v"),
             "both unpivoted and kept as index",
         ),
         (
-            step("x", "unpivot", on=["a"], index=["g"], variableName="v", valueName="v"),
+            step("x", "unpivot", on=["a"], index=["g"], variable_name="v", value_name="v"),
             "different names",
         ),
         (
-            step("x", "unpivot", on=["a"], index=["g"], variableName="g", valueName="v"),
+            step("x", "unpivot", on=["a"], index=["g"], variable_name="g", value_name="v"),
             "already an index column",
         ),
         (
-            step("x", "unpivot", on=["*"], index=[], variableName="m", valueName="v"),
+            step("x", "unpivot", on=["*"], index=[], variable_name="m", value_name="v"),
             "not the pattern '*'",
         ),
         (
-            step("x", "unpivot", on=["^measure_.*$"], index=[], variableName="m", valueName="v"),
+            step("x", "unpivot", on=["^measure_.*$"], index=[], variable_name="m", value_name="v"),
             "not the pattern",
         ),
         (step("x", "select", columns=["*"]), "not the pattern '*'"),
         (
-            step("x", "sort", keys=[{"column": "*", "descending": False}], nullsLast=False),
+            step("x", "sort", keys=[{"column": "*", "descending": False}], nulls_last=False),
             "not the pattern '*'",
         ),
         (
@@ -2753,8 +2753,8 @@ def test_reshaping_and_dtype_selectors_execute(tmp_path: Path) -> None:
             "unpivot",
             on=["premium", "digit"],
             index=["qid"],
-            variableName="measure",
-            valueName="value",
+            variable_name="measure",
+            value_name="value",
         ),
         step(
             "o",
@@ -2763,7 +2763,7 @@ def test_reshaping_and_dtype_selectors_execute(tmp_path: Path) -> None:
                 {"column": "qid", "descending": False},
                 {"column": "measure", "descending": False},
             ],
-            nullsLast=False,
+            nulls_last=False,
         ),
     ]
     graph = PipelineGraph(
@@ -2885,7 +2885,7 @@ def test_generated_reshaping_code_stays_inside_the_lineage_model() -> None:
     assert analyze_polars_cardinality(pivot_code, {"rows": 100}).output_upper_bound == 100
 
     unpivot_code = code(
-        step("u", "unpivot", on=["a", "i"], index=["g"], variableName="m", valueName="v"),
+        step("u", "unpivot", on=["a", "i"], index=["g"], variable_name="m", value_name="v"),
         step("f", "filter", match="all", conditions=[cond("v", "gt", value=num(0))]),
     )
     unpivoted = analyze_polars_lineage(unpivot_code, schema)
@@ -3414,9 +3414,9 @@ def test_join_validation_fails_loudly_on_duplicate_keys(tmp_path: Path) -> None:
                 "join",
                 input="dup",
                 how="left",
-                maintainOrder="left_right",
-                leftOn=["region"],
-                rightOn=["region"],
+                maintain_order="left_right",
+                left_on=["region"],
+                right_on=["region"],
                 suffix="_r",
                 validate="m:1",
             ),
@@ -3549,7 +3549,7 @@ def test_executor_runs_every_step_kind(tmp_path: Path) -> None:
         ],
         "sort": [
             source(),
-            step("x", "sort", keys=[{"column": "premium", "descending": True}], nullsLast=True),
+            step("x", "sort", keys=[{"column": "premium", "descending": True}], nulls_last=True),
         ],
         "unique": [source(), step("x", "unique", columns=["region"], keep="first")],
         "concat": [source(), step("x", "concat", inputs=["rates"], how="diagonal")],
@@ -3714,11 +3714,11 @@ def test_incomplete_steps_fail_at_run_time_naming_the_step(tmp_path: Path) -> No
 
 def test_stepped_original_rejects_input_mapping(tmp_path: Path) -> None:
     quotes, rates = _frames(tmp_path)
-    node = _stepped("t", [source()], inputMapping={"quotes": "quotes"})
+    node = _stepped("t", [source()], input_mapping={"quotes": "quotes"})
     graph = PipelineGraph(nodes=[quotes, rates, node], edges=[make_edge("quotes", "t")])
-    with pytest.raises(ConfigError, match="cannot carry inputMapping"):
+    with pytest.raises(ConfigError, match="cannot carry input_mapping"):
         graph_to_code(graph, pipeline_name="main")
-    with pytest.raises(ConfigError, match="cannot carry inputMapping"):
+    with pytest.raises(ConfigError, match="cannot carry input_mapping"):
         _build_node_fn(node, source_names=["quotes"], source_ids=["quotes"])
 
 
@@ -4158,7 +4158,7 @@ def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_cod
     quotes, rates = _frames(tmp_path)
     steps = [
         source(),
-        step("o", "sort", keys=[{"column": "premium", "descending": True}], nullsLast=False),
+        step("o", "sort", keys=[{"column": "premium", "descending": True}], nulls_last=False),
     ]
     graph = PipelineGraph(
         nodes=[quotes, rates, _stepped("t", steps)],
@@ -4367,7 +4367,7 @@ def test_a_leading_bare_string_step_is_a_fixed_point_with_its_value(tmp_path: Pa
             label="quotes",
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": str(data),
@@ -4545,7 +4545,7 @@ def test_node_scoped_save_updates_the_transform_s_code(tmp_path: Path) -> None:
     (tmp_path / "a.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "",
@@ -4621,7 +4621,7 @@ def test_flatten_rewrites_stepped_consumer_inputs() -> None:
         data=NodeData(
             label="score",
             nodeType="submodel",
-            config={"definitionId": "definition_scoring", "alias": "score"},
+            config={"definition_id": "definition_scoring", "alias": "score"},
         ),
     )
     consumer = GraphNode(
@@ -4641,7 +4641,7 @@ def test_flatten_rewrites_stepped_consumer_inputs() -> None:
     result = flatten_graph(graph)
     flat = result.node_map["consumer"].data.config
     assert flat["steps"] == [source("Internal_Output")]
-    assert "inputMapping" not in flat
+    assert "input_mapping" not in flat
     assert flat["code"] == "df = Internal_Output"
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Consumer(Internal_Output: pl.LazyFrame)" in generated
@@ -4679,7 +4679,7 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
         data=NodeData(
             label="score",
             nodeType="submodel",
-            config={"definitionId": "definition_scoring", "alias": "score"},
+            config={"definition_id": "definition_scoring", "alias": "score"},
         ),
     )
     consumer = GraphNode(
@@ -4703,9 +4703,9 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
     inner_flat = next(n for n in flat.nodes if n.data.label == "Inner")
     consumer_flat = flat.node_map["consumer"]
     assert inner_flat.data.config["steps"][0]["input"] == "quotes"
-    assert "inputMapping" not in inner_flat.data.config
+    assert "input_mapping" not in inner_flat.data.config
     assert consumer_flat.data.config["steps"][0]["input"] == _sanitize_label(inner_flat.data.label)
-    assert "inputMapping" not in consumer_flat.data.config
+    assert "input_mapping" not in consumer_flat.data.config
 
     results = execute_graph(flat, target_node_id="consumer")
     assert results["consumer"].status == "ok", results["consumer"].error
@@ -5120,9 +5120,9 @@ def test_frame_start_renders_without_a_source_step() -> None:
         "join",
         input="rates",
         how="inner",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_r",
     )
     with pytest.raises(PolarsStepError, match="Unknown input 'rates'; connected inputs: none"):
@@ -5182,9 +5182,9 @@ def test_node_data_materialises_data_input_steps() -> None:
         "join",
         input="rates",
         how="inner",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_r",
     )
     joined = node([join])
@@ -5198,7 +5198,7 @@ def test_node_data_materialises_data_input_steps() -> None:
 
     # A type outside the surface table keeps a `steps` key untouched; a
     # stepped type refuses anything but a list (the Scenario Expander's grid
-    # size lives under `stepCount`).
+    # size lives under `step_count`).
     other = GraphNode(id="o", data=NodeData(label="o", nodeType="output", config={"steps": 5}))
     assert other.data.config == {"steps": 5}
     with pytest.raises(ValueError, match="must be a list"):
@@ -5212,7 +5212,7 @@ def test_data_input_sidecar_and_validation_carry_steps() -> None:
     config = {**make_file_input_config("quotes.parquet"), "steps": [step("l", "limit", n=2)]}
     assert validate_data_input_config(config)["steps"] == config["steps"]
     databricks = {
-        "inputType": "databricks",
+        "input_type": "databricks",
         "http_path": "p",
         "table": "t",
         "arguments": {},
@@ -5264,9 +5264,9 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
         "join",
         input="rates",
         how="inner",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_r",
     )
     unknown = _stepped_input(quotes, [join])
@@ -5322,7 +5322,7 @@ def _bundled_scoring_graph(steps: list[dict[str, Any]]) -> PipelineGraph:
                         "label": "static_ds",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "csv",
                             "mode": "scan",
                             "path": "original/factors.csv",
@@ -5337,7 +5337,7 @@ def _bundled_scoring_graph(steps: list[dict[str, Any]]) -> PipelineGraph:
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "static_ds",
                                     "source_column": col,
@@ -5567,7 +5567,7 @@ def _external_file(tmp_path: Path, steps: list[dict[str, Any]], **extra: Any) ->
     obj_path = tmp_path / "factors.pkl"
     with obj_path.open("wb") as handle:
         pickle.dump({"factor": 2.0}, handle)
-    config = {"path": str(obj_path), "fileType": "pickle", "steps": steps, **extra}
+    config = {"path": str(obj_path), "file_type": "pickle", "steps": steps, **extra}
     return GraphNode(id="ext", data=NodeData(label="ext", nodeType="externalFile", config=config))
 
 
@@ -5576,12 +5576,12 @@ def _rating_step(steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
         "tables": [
             {
                 "factors": ["region"],
-                "outputColumn": "rate_factor",
-                "defaultValue": "1.0",
+                "output_column": "rate_factor",
+                "default_value": "1.0",
                 "entries": [{"region": "north", "value": "1.25"}],
             }
         ],
-        "combinedOutputs": [],
+        "combined_outputs": [],
         "steps": steps,
         **extra,
     }
@@ -5593,7 +5593,7 @@ def _scenario_expander(steps: list[dict[str, Any]]) -> GraphNode:
         "column_name": "scenario_value",
         "min_value": 0.0,
         "max_value": 1.0,
-        "stepCount": 3,
+        "step_count": 3,
         "step_column": "scenario_index",
         "steps": steps,
     }
@@ -5604,7 +5604,7 @@ def _scenario_expander(steps: list[dict[str, Any]]) -> GraphNode:
 
 def _model_score(steps: list[dict[str, Any]]) -> GraphNode:
     config = {
-        "sourceType": "registered",
+        "source_type": "registered",
         "registered_model": "catalog.models.pricing",
         "version": "1",
         "task": "regression",
@@ -5630,9 +5630,9 @@ def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> N
         "join",
         input="rates",
         how="inner",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_r",
     )
     steps = [join, step("l", "limit", n=2)]
@@ -5677,9 +5677,9 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
         "join",
         input="policies",
         how="inner",
-        maintainOrder="left_right",
-        leftOn=["region"],
-        rightOn=["region"],
+        maintain_order="left_right",
+        left_on=["region"],
+        right_on=["region"],
         suffix="_r",
     )
     unknown = _external_file(tmp_path, [join])
@@ -5698,9 +5698,9 @@ def test_external_file_unknown_input_and_input_mapping_fail_loudly(tmp_path: Pat
     assert node.data.config["steps"] == [join]
     assert node.data.editor.steps_discarded is None
 
-    mapped = _external_file(tmp_path, [step("l", "limit", n=1)], inputMapping={"quotes": "quotes"})
+    mapped = _external_file(tmp_path, [step("l", "limit", n=1)], input_mapping={"quotes": "quotes"})
     graph = PipelineGraph(nodes=[quotes, mapped], edges=[make_edge("quotes", "ext")])
-    with pytest.raises(ConfigError, match="cannot carry inputMapping"):
+    with pytest.raises(ConfigError, match="cannot carry input_mapping"):
         execute_graph(graph, target_node_id="ext", execution_context=_capped_context())
 
 
@@ -5727,7 +5727,7 @@ def test_flatten_rewrites_a_stepped_external_file_input() -> None:
         data=NodeData(
             label="score",
             nodeType="submodel",
-            config={"definitionId": "definition_scoring", "alias": "score"},
+            config={"definition_id": "definition_scoring", "alias": "score"},
         ),
     )
     join = step(
@@ -5735,9 +5735,9 @@ def test_flatten_rewrites_a_stepped_external_file_input() -> None:
         "join",
         input="results",
         how="inner",
-        maintainOrder="left_right",
-        leftOn=["k"],
-        rightOn=["k"],
+        maintain_order="left_right",
+        left_on=["k"],
+        right_on=["k"],
         suffix="_r",
     )
     consumer = GraphNode(
@@ -5745,7 +5745,7 @@ def test_flatten_rewrites_a_stepped_external_file_input() -> None:
         data=NodeData(
             label="Consumer",
             nodeType="externalFile",
-            config={"path": "models/obj.pkl", "fileType": "pickle", "steps": [join]},
+            config={"path": "models/obj.pkl", "file_type": "pickle", "steps": [join]},
         ),
     )
     graph = PipelineGraph(
@@ -5759,7 +5759,7 @@ def test_flatten_rewrites_a_stepped_external_file_input() -> None:
     )
     flat = flatten_graph(graph).node_map["consumer"].data.config
     assert flat["steps"] == [{**join, "input": "Internal_Output"}]
-    assert "inputMapping" not in flat
+    assert "input_mapping" not in flat
 
 
 def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
@@ -5811,7 +5811,7 @@ def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
     assert "def grid(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(4)\n    return df\n" in code
     assert node.data.config["steps"] == steps
-    assert node.data.config["stepCount"] == 3
+    assert node.data.config["step_count"] == 3
     assert node.data.editor.steps_discarded is None
 
     broken = _scenario_expander([source()])
@@ -5882,7 +5882,7 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "scored",
                                     "source_column": "prediction",
@@ -6414,7 +6414,7 @@ def test_deploy_injected_data_input_applies_post_load_code(
         'df = df.with_columns(pl.col("x").alias("doubled"))'
     )
     src_config: dict[str, Any] = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": str(parquet_file),
@@ -6425,7 +6425,7 @@ def test_deploy_injected_data_input_applies_post_load_code(
         src_config["steps"] = [step("fc", "free_code", code=authored_code)]
 
     out_config: dict[str, Any] = {
-        "outputMapping": [
+        "output_mapping": [
             {
                 "source_port": "src",
                 "source_column": "doubled",
@@ -6491,7 +6491,7 @@ def test_empty_model_score_steps_preserve_projection(
             label="src",
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "src.parquet",
@@ -6504,7 +6504,7 @@ def test_empty_model_score_steps_preserve_projection(
         label="model",
         nodeType=NodeType.MODEL_SCORE,
         config={
-            "sourceType": "registered",
+            "source_type": "registered",
             "registered_model": "test_model",
             "output_column": "prediction",
             _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: ["x"],
@@ -6932,15 +6932,15 @@ def test_formulas_parse_text_dates_strictly_or_to_null() -> None:
         ),
         (_filter(cond("a", "is_in", values=_members(1))), "number type must be one of"),
         (
-            _filter(cond("a", "is_in", values=_members(1, 2.5), numberType="integer")),
+            _filter(cond("a", "is_in", values=_members(1, 2.5), number_type="integer")),
             "must be whole numbers to match a whole-number column",
         ),
         (
-            _filter(cond("a", "is_in", values=[text("x")], numberType="float")),
+            _filter(cond("a", "is_in", values=[text("x")], number_type="float")),
             "are not numbers, so they take no number type",
         ),
         (
-            _filter(cond("a", "gt", value=num(1), numberType="float")),
+            _filter(cond("a", "gt", value=num(1), number_type="float")),
             "takes no number type",
         ),
     ],
@@ -6996,7 +6996,7 @@ def test_a_numeric_membership_matches_by_value_on_every_width(
     frame = pl.DataFrame({"x": column})
 
     def kept_by(operator: str) -> list[Any]:
-        condition = cond("x", operator, values=_members(*members), numberType=number_type)
+        condition = cond("x", operator, values=_members(*members), number_type=number_type)
         return _run_steps(_filter(condition), frame)["x"].to_list()
 
     assert kept_by("is_in") == expected
@@ -7005,7 +7005,7 @@ def test_a_numeric_membership_matches_by_value_on_every_width(
 
 def test_decimal_members_stay_exact() -> None:
     column = pl.Series("x", ["0.1", "0.2", "0.3", "0.0000001"]).str.to_decimal(scale=7)
-    steps = _filter(cond("x", "is_in", values=_members(0.1, 0.3, 1e-07), numberType="decimal"))
+    steps = _filter(cond("x", "is_in", values=_members(0.1, 0.3, 1e-07), number_type="decimal"))
 
     code = render_polars_steps(steps, ["quotes"], start="input").code
     assert 'pl.Series(["0.1", "0.3", "0.0000001"]).str.to_decimal(scale=7).implode()' in code
@@ -7162,7 +7162,7 @@ def test_a_membership_whose_column_changes_kind_fails_naming_its_step(tmp_path: 
     pl.DataFrame({"premium": [100.0, 2.5]}).write_parquet(path)
     quotes = _ready_source("quotes", path)
     # Recorded for whole numbers, the column is now a float column.
-    steps = _filter(cond("premium", "is_in", values=_members(100), numberType="integer"))
+    steps = _filter(cond("premium", "is_in", values=_members(100), number_type="integer"))
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
 
     result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]

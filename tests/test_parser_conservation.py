@@ -270,14 +270,14 @@ class TestKeywordOnlyParameterConservation:
         assert _live_row(regenerated, tmp_path) == expected
 
     def test_a_parameter_shadows_the_physical_name_its_input_was_renamed_from(self) -> None:
-        """With inputMapping the signature's input is the logical name, so a parameter may
+        """With input_mapping the signature's input is the logical name, so a parameter may
         share the upstream node's name; the canvas binds the parameter there, as the
         generated function does."""
         source = (
             _SCALED.replace("def source() -> pl.LazyFrame:", "def factor() -> pl.LazyFrame:")
             .replace(
                 "@pipeline.polars\ndef scaled(",
-                '@pipeline.polars(inputMapping={"source": "factor"})\ndef scaled(',
+                '@pipeline.polars(input_mapping={"source": "factor"})\ndef scaled(',
             )
             .replace('pipeline.connect("source", "scaled")', 'pipeline.connect("factor", "scaled")')
         )
@@ -373,7 +373,7 @@ class TestKeywordOnlyParameterConservation:
     ) -> None:
         sidecar = tmp_path / "config" / "load_file" / "loaded.json"
         sidecar.parent.mkdir(parents=True)
-        sidecar.write_text('{"path": "model.pkl", "fileType": "pickle"}', encoding="utf-8")
+        sidecar.write_text('{"path": "model.pkl", "file_type": "pickle"}', encoding="utf-8")
         main = _write(
             tmp_path,
             "main.py",
@@ -1470,7 +1470,8 @@ class TestPolarsParameterBinding:
         assert (
             exc_info.value.context["remediation"]
             == "Name each parameter after the node or table connected to it, in the order of the "
-            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
+            "node's connect() calls, or declare input_mapping={logical: connected} on the "
+            "decorator."
         )
 
     def test_incoming_edge_not_matching_any_parameter_rejected(self) -> None:
@@ -1505,7 +1506,8 @@ class TestPolarsParameterBinding:
         assert (
             exc_info.value.context["remediation"]
             == "Name each parameter after the node or table connected to it, in the order of the "
-            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
+            "node's connect() calls, or declare input_mapping={logical: connected} on the "
+            "decorator."
         )
 
     def test_input_mapping_succeeds_executes_and_roundtrips(self) -> None:
@@ -1522,7 +1524,7 @@ class TestPolarsParameterBinding:
             def src() -> pl.LazyFrame:
                 return pl.LazyFrame({"x": [1, 2, 3]})
 
-            @pipeline.polars(inputMapping={"raw_data": "src"})
+            @pipeline.polars(input_mapping={"raw_data": "src"})
             def transform(raw_data: pl.LazyFrame) -> pl.LazyFrame:
                 return raw_data.with_columns((pl.col("x") * 2).alias("x2"))
 
@@ -1543,7 +1545,7 @@ class TestPolarsParameterBinding:
 
         files = graph_to_code_multi(graph, pipeline_name="test_mapping", source_file="main.py")
         assert "def transform(raw_data: pl.LazyFrame)" in files["main.py"]
-        assert 'inputMapping={"raw_data": "src"}' in files["main.py"].replace("'", '"')
+        assert 'input_mapping={"raw_data": "src"}' in files["main.py"].replace("'", '"')
         reparsed = parse_pipeline_source(files["main.py"], source_file="main.py")
         assert len(reparsed.nodes) == 2
         assert len(reparsed.edges) == 1
@@ -1851,7 +1853,8 @@ class TestPolarsParameterBinding:
         assert (
             exc_info.value.context["remediation"]
             == "Name each parameter after the node or table connected to it, in the order of the "
-            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
+            "node's connect() calls, or declare input_mapping={logical: connected} on the "
+            "decorator."
         )
 
 

@@ -138,7 +138,7 @@ def _snapshot_parquet_data_input(
 ) -> dict[str, object]:
     """Return a parquet input config, publishing its snapshot when requested."""
     config: dict[str, object] = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": path,
@@ -320,7 +320,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                             "column_name": "premium_multiplier",
                             "min_value": 1.0,
                             "max_value": 2.0,
-                            "stepCount": 2,
+                            "step_count": 2,
                             "code": (
                                 "df = df.with_columns("
                                 "premium=pl.col('premium') * pl.col('premium_multiplier'))"
@@ -1146,7 +1146,7 @@ class TestSolveRoute:
                                     {
                                         "banding": "breakpoints",
                                         "column": "proposer_age",
-                                        "outputColumn": "proposer_age_band",
+                                        "output_column": "proposer_age_band",
                                         "rules": [
                                             {"boundary": "27", "label": "20-27"},
                                             {"boundary": "34", "label": "28-34"},
@@ -1157,7 +1157,7 @@ class TestSolveRoute:
                                     {
                                         "banding": "categorical",
                                         "column": "channel",
-                                        "outputColumn": "channel_band",
+                                        "output_column": "channel_band",
                                         "rules": [
                                             {
                                                 "value": "compare_the_market",
@@ -3124,7 +3124,7 @@ class TestEstimateRoute:
                                 "column_name": "premium_multiplier",
                                 "min_value": 1.0,
                                 "max_value": 2.0,
-                                "stepCount": 2,
+                                "step_count": 2,
                                 "code": (
                                     "df = df.with_columns("
                                     "premium=pl.col('premium') * "
@@ -4493,7 +4493,7 @@ def _make_expander_graph(data_path: str) -> dict:
                             "column_name": "scenario_value",
                             "min_value": 0.8,
                             "max_value": 1.2,
-                            "stepCount": 5,
+                            "step_count": 5,
                             "step_column": "scenario_index",
                         },
                     },
@@ -5661,7 +5661,7 @@ class TestExecutePipelineArgs:
                                     {
                                         "banding": "breakpoints",
                                         "column": "territory",
-                                        "outputColumn": "territory_band",
+                                        "output_column": "territory_band",
                                     }
                                 ]
                             },

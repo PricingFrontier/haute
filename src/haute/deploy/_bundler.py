@@ -119,13 +119,13 @@ def collect_artifacts(
             artifacts.add(nid, artifact_name, abs_path)
 
         elif node_type == NodeType.OPTIMISER_APPLY:
-            source_type = config.get("sourceType", "")
+            source_type = config.get("source_type", "")
             raw_path = config.get("artifact_path", "")
             if not raw_path:
                 continue
             if source_type != "file":
                 raise ValueError(
-                    f"optimiserApply node {nid!r} with artifact_path must set sourceType='file'"
+                    f"optimiserApply node {nid!r} with artifact_path must set source_type='file'"
                 )
             abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "artifact_path")
             artifact_name = _artifact_name(nid, abs_path)
@@ -476,7 +476,7 @@ def _shipped_file_inputs(
         for node in graph.nodes
         if node.data.nodeType == NodeType.DATA_INPUT
         and node.id not in input_node_ids
-        and node.data.config.get("inputType") in _FILE_INPUT_TYPES
+        and node.data.config.get("input_type") in _FILE_INPUT_TYPES
     ]
 
 

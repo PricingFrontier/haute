@@ -842,7 +842,7 @@ class SavePipelineService:
                     "Submodel module path ownership changed for "
                     f"{submitted_definition.recorded_path!r} "
                     f"(persisted {previous_definition.recorded_path!r}): "
-                    f"definitionId {previous_definition.definition_id!r} cannot be "
+                    f"definition_id {previous_definition.definition_id!r} cannot be "
                     f"replaced by {submitted_definition.definition_id!r}. "
                     "Reload the pipeline before saving."
                 )

@@ -27,7 +27,7 @@ def _node(node_id: str, label: str | None = None, node_type: str = "polars", **c
 
 
 def _occurrence(node_id: str, alias: str) -> GraphNode:
-    return _node(node_id, alias, "submodel", definitionId="rates", alias=alias)
+    return _node(node_id, alias, "submodel", definition_id="rates", alias=alias)
 
 
 def _rates_definition() -> SubmodelDefinition:
@@ -73,7 +73,7 @@ def test_generated_clone_names_refuse_renames_and_are_skipped_by_allocation(
     project: Path, client: TestClient, role: str
 ) -> None:
     copy = _node(
-        "copy_id", "copy", "submodel", definitionId="rates", alias="copy", instanceOf="rates"
+        "copy_id", "copy", "submodel", definition_id="rates", alias="copy", instance_of="rates"
     )
     ordinary = _node("ordinary", "spare")
     candidate = _candidate("ordinary", "copy__rate_child")
@@ -140,9 +140,9 @@ def test_new_occurrence_reserves_clone_names_before_it_is_in_the_context(
             "rates_2",
             identity["label"],
             "submodel",
-            definitionId="rates",
+            definition_id="rates",
             alias=identity["alias"],
-            instanceOf="rates",
+            instance_of="rates",
         )
     )
     SavePipelineService(project).validate_graph(graph, source_file="main.py")
@@ -156,9 +156,9 @@ def test_new_occurrence_requires_its_owners_definition_and_outputs(
     if invalid == "ordinary":
         owner = _node("rates")
     elif invalid == "copy":
-        owner.data.config["instanceOf"] = "another"
+        owner.data.config["instance_of"] = "another"
     elif invalid == "definition":
-        owner.data.config["definitionId"] = "missing"
+        owner.data.config["definition_id"] = "missing"
     candidate = {
         **_candidate("new", "rates_2", "submodel", alias="rates_2"),
         "instance_of": "absent" if invalid == "missing" else "rates",
@@ -288,7 +288,7 @@ def _instance_mapping_to_pl() -> PipelineGraph:
         nodes=[
             _node("claims"),
             _node("rated"),
-            _node("rated_again", inputMapping={"pl": "claims"}),
+            _node("rated_again", input_mapping={"pl": "claims"}),
         ],
         edges=[
             GraphEdge(id="e1", source="claims", target="rated"),

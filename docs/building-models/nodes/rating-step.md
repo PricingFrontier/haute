@@ -114,20 +114,20 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     |---|---|
     | The tables | `tables`: a list with one object per table |
     | **FACTORS** | `tables[].factors`: the input columns to match on, at most 3 |
-    | **OUTPUT COLUMN** | `tables[].outputColumn` |
-    | **DEFAULT** | `tables[].defaultValue`, a number such as `1.0` (absent when empty) |
-    | **ON MISS** | `tables[].onMissing`: `"error"` (**Stop the run**, also what an absent key means) or `"neutral"` (**Leave empty**) |
+    | **OUTPUT COLUMN** | `tables[].output_column` |
+    | **DEFAULT** | `tables[].default_value`, a number such as `1.0` (absent when empty) |
+    | **ON MISS** | `tables[].on_missing`: `"error"` (**Stop the run**, also what an absent key means) or `"neutral"` (**Leave empty**) |
     | The relativities | a grid: with one factor, `tables[].rows` holds a line per level, the level and its relativity; with two or three, `tables[].columns` lists the last factor's levels and each line of `tables[].rows` holds the other factors' levels, then a relativity per column, `null` where there is no entry |
-    | The combined outputs | `combinedOutputs`: a list with one object per combined output |
-    | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
-    | **OPERATION** | `combinedOutputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
-    | **BASE VALUE** | `combinedOutputs[].baseValue`, as text such as `"1.0"` |
+    | The combined outputs | `combined_outputs`: a list with one object per combined output |
+    | **COMBINED OUTPUT COLUMN** | `combined_outputs[].output_column` |
+    | **OPERATION** | `combined_outputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
+    | **BASE VALUE** | `combined_outputs[].base_value`, as text such as `"1.0"` |
     | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
     With no editor control:
 
-    - `tables[].factorDtypes`: the data types of the factor columns, which Haute records.
+    - `tables[].factor_dtypes`: the data types of the factor columns, which Haute records.
 
     With `"neutral"`, a combined output treats the table's empty output as the operation's neutral element (×1.0 / +0.0).
 
@@ -136,8 +136,8 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     ```json
     {
       "factors": ["area"],
-      "outputColumn": "area_factor",
-      "defaultValue": "1.0",
+      "output_column": "area_factor",
+      "default_value": "1.0",
       "rows": [
         ["London", 1.25],
         ["Manchester", 1.1],
@@ -156,16 +156,16 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
     | `tables` | list of object | The rating tables. |
     | `tables[].factors` | list of text | The factor columns the table is keyed by, at most three. |
-    | `tables[].factorDtypes` | map of text to map of text to any JSON value | For each factor, the type its levels are read as. |
-    | `tables[].outputColumn` | text | The column the looked-up value is written to. |
-    | `tables[].defaultValue` | text or number or `null` | The value of a factor combination the table does not hold; `null` for none. |
-    | `tables[].onMissing` | `"error"` or `"neutral"` | With no default, whether a missing combination fails the run (`error`) or takes the neutral value (`neutral`). |
+    | `tables[].factor_dtypes` | map of text to map of text to any JSON value | For each factor, the type its levels are read as. |
+    | `tables[].output_column` | text | The column the looked-up value is written to. |
+    | `tables[].default_value` | text or number or `null` | The value of a factor combination the table does not hold; `null` for none. |
+    | `tables[].on_missing` | `"error"` or `"neutral"` | With no default, whether a missing combination fails the run (`error`) or takes the neutral value (`neutral`). |
     | `tables[].entries` | list of map of text to any JSON value | The table's rows, each a level of every factor and its `value`; the config file writes them as a grid of `columns` and `rows`. |
-    | `combinedOutputs` | list of object | Columns combined from the tables' values. |
-    | `combinedOutputs[].outputColumn` | text | The combined column. |
-    | `combinedOutputs[].operation` | `"multiply"` or `"add"` or `"min"` or `"max"` | How the tables' values are combined. |
-    | `combinedOutputs[].baseValue` | text or number | The value the combination starts from: a number, or the editor's text of one. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `combined_outputs` | list of object | Columns combined from the tables' values. |
+    | `combined_outputs[].output_column` | text | The combined column. |
+    | `combined_outputs[].operation` | `"multiply"` or `"add"` or `"min"` or `"max"` | How the tables' values are combined. |
+    | `combined_outputs[].base_value` | text or number | The value the combination starts from: a number, or the editor's text of one. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

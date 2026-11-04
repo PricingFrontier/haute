@@ -72,7 +72,7 @@ def _edge(
 
 def _data_input(path: str, **extra: object) -> dict:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": path,
@@ -124,7 +124,7 @@ _API_INPUT = {
 }
 _EDGE_JOIN = {
     "how": "left",
-    "maintainOrder": "left_right",
+    "maintain_order": "left_right",
     "on": ["policy_id"],
     "suffix": "_claim",
 }
@@ -138,7 +138,7 @@ _BANDING = {
         {
             "banding": "breakpoints",
             "column": "driver_age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": [{"boundary": "25", "label": "young"}],
             "default": "other",
         }
@@ -148,14 +148,14 @@ _RATING_STEP = {
     "tables": [
         {
             "factors": ["area"],
-            "outputColumn": "area_factor",
-            "defaultValue": "1.0",
+            "output_column": "area_factor",
+            "default_value": "1.0",
             "entries": [{"area": "A", "value": "1.2"}],
         }
     ],
 }
 _MODEL_SCORE = {
-    "sourceType": "run",
+    "source_type": "run",
     "run_id": "run-1",
     "artifact_path": "model.cbm",
     "task": "regression",
@@ -166,7 +166,7 @@ _SCENARIO_EXPANDER = {
     "column_name": "price_step",
     "min_value": 0.9,
     "max_value": 1.1,
-    "stepCount": 3,
+    "step_count": 3,
     "step_column": "step_index",
 }
 _OPTIMISER = {
@@ -180,7 +180,7 @@ _OPTIMISER = {
     "tolerance": 0.001,
 }
 _OPTIMISER_APPLY = {
-    "sourceType": "file",
+    "source_type": "file",
     "artifact_path": "artifacts/optimiser.json",
     "version_column": "__optimiser_version__",
     "optimised_value_column": "selected_price",
@@ -193,9 +193,9 @@ _MODELLING = {
     "metrics": ["rmse"],
     "feature_columns": ["driver_age"],
 }
-_EXTERNAL_FILE = {"path": "models/lookup.pkl", "fileType": "pickle"}
+_EXTERNAL_FILE = {"path": "models/lookup.pkl", "file_type": "pickle"}
 _OUTPUT = {
-    "outputMapping": [
+    "output_mapping": [
         {
             "source_port": "in",
             "source_column": "premium",
@@ -205,7 +205,7 @@ _OUTPUT = {
     ],
 }
 _DATA_OUTPUT = {
-    "outputType": "file",
+    "output_type": "file",
     "format": "csv",
     "mode": "sink",
     "path": "outputs/prices.csv",
@@ -273,7 +273,7 @@ def _shared_definition() -> dict:
 
 
 def _occurrence(node_id: str, alias: str, definition_id: str, **extra: str) -> GraphNode:
-    config = {"definitionId": definition_id, "alias": alias, **extra}
+    config = {"definition_id": definition_id, "alias": alias, **extra}
     return GraphNode(
         id=node_id,
         type="submodel",
@@ -378,7 +378,7 @@ def _corpus_graph() -> PipelineGraph:
         _node("sink", "Results File", NodeType.DATA_OUTPUT, _DATA_OUTPUT),
         _occurrence("occ", "territory_rating", "territory_rating"),
         _occurrence(
-            "occ-copy", "territory_rating_second_copy", "territory_rating", instanceOf="occ"
+            "occ-copy", "territory_rating_second_copy", "territory_rating", instance_of="occ"
         ),
         _occurrence("occ-shared", "shared_territory_rate_tables", "shared_rates"),
     ]
@@ -830,7 +830,7 @@ LONE_BREAKS = {
                     "Quarterly Results Written Back To The Store",
                     NodeType.DATA_OUTPUT,
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "csv",
                         "mode": "sink",
                         "path": "out.csv",

@@ -271,7 +271,7 @@ def test_codegen_emits_name_and_never_label_or_portid():
                     "nodeType": "submodel",
                     "label": "inst1",
                     "config": {
-                        "definitionId": "sub_test",
+                        "definition_id": "sub_test",
                         "alias": "inst1",
                     },
                 },

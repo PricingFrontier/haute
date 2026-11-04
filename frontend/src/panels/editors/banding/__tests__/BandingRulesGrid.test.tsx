@@ -20,7 +20,7 @@ function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
   return {
     banding: "categorical",
     column: "vehicle_type",
-    outputColumn: "vehicle_group",
+    output_column: "vehicle_group",
     rules: [],
     default: null,
     ...overrides,

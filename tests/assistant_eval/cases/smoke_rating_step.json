@@ -40,7 +40,7 @@
                 "factors": [
                   "driver_age"
                 ],
-                "outputColumn": "age_factor",
+                "output_column": "age_factor",
                 "entries": [
                   {
                     "driver_age": 25,
@@ -51,19 +51,19 @@
                     "value": 1.0
                   }
                 ],
-                "defaultValue": 1.0
+                "default_value": 1.0
               }
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
               {
-                "outputColumn": "technical_premium",
+                "output_column": "technical_premium",
                 "operation": "multiply",
-                "baseValue": 100.0
+                "base_value": 100.0
               }
             ]
           },
           "age_price_response": {
-            "outputMapping": [
+            "output_mapping": [
               {
                 "source_port": "age_rating",
                 "source_column": "quote_id",

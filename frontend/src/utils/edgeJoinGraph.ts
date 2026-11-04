@@ -288,7 +288,7 @@ export function insertEdgeJoinNodeFromSources({
 /**
  * Complete an Edge Join insertion after the server has attached executable
  * identities to the whole candidate graph. Structural changes are safe to
- * prepare locally, but the downstream inputMapping cannot be rewritten until
+ * prepare locally, but the downstream input_mapping cannot be rewritten until
  * the new join's server-owned default input name is known.
  */
 export function finalizeResolvedEdgeJoinInsertion(
@@ -425,9 +425,9 @@ function assertDownstreamInputMappingCanBeRewritten(
   const config = { ...(target.data.config as Record<string, unknown> | undefined) }
   // A stepped transform rewrites its step references in place (no mapping).
   if (isSteppedTransformConfig(config)) return
-  const rawInputMapping = config.inputMapping
+  const rawInputMapping = config.input_mapping
   if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
-    throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
+    throw new Error("Cannot rewrite a malformed input_mapping; expected an object")
   }
   const hasInputMapping = isPlainObject(rawInputMapping)
   // A Transform's or Load File's code names its inputs, so it keeps the old name.
@@ -437,7 +437,7 @@ function assertDownstreamInputMappingCanBeRewritten(
   let matchedOldCurrentInput = false
   for (const currentName of Object.values(hasInputMapping ? rawInputMapping : {})) {
     if (typeof currentName !== "string") {
-      throw new Error("Cannot rewrite a malformed inputMapping; values must be strings")
+      throw new Error("Cannot rewrite a malformed input_mapping; values must be strings")
     }
     if (currentName === oldCurrentInputName) matchedOldCurrentInput = true
   }
@@ -447,7 +447,7 @@ function assertDownstreamInputMappingCanBeRewritten(
     && Object.prototype.hasOwnProperty.call(rawInputMapping ?? {}, oldCurrentInputName)
   ) {
     throw new Error(
-      `Cannot preserve input name "${oldCurrentInputName}" because inputMapping already uses it`,
+      `Cannot preserve input name "${oldCurrentInputName}" because input_mapping already uses it`,
     )
   }
 }
@@ -463,16 +463,16 @@ function rewriteDownstreamInputMapping(
   const config = { ...(node.data.config as Record<string, unknown> | undefined) }
   if (isSteppedTransformConfig(config)) {
     // A stepped transform addresses inputs by edge name inside its steps and
-    // never carries inputMapping, so the join name replaces the old input
+    // never carries input_mapping, so the join name replaces the old input
     // reference directly.
     const renamed = renameStepInputs(config.steps, new Map([[oldCurrentInputName, newCurrentInputName]]))
     if (!renamed.ok) throw new Error(`Cannot rewrite stepped transform inputs: "${renamed.duplicate}" would be referenced by more than one input`)
     if (!renamed.changed) return node
     return { ...node, data: { ...node.data, config: { ...config, steps: renamed.steps } } }
   }
-  const rawInputMapping = config.inputMapping
+  const rawInputMapping = config.input_mapping
   if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
-    throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
+    throw new Error("Cannot rewrite a malformed input_mapping; expected an object")
   }
   const hasInputMapping = isPlainObject(rawInputMapping)
   const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(node.data.nodeType))
@@ -483,7 +483,7 @@ function rewriteDownstreamInputMapping(
   const nextInputMapping: Record<string, unknown> = {}
   for (const [inputName, currentName] of Object.entries(inputMapping)) {
     if (typeof currentName !== "string") {
-      throw new Error("Cannot rewrite a malformed inputMapping; values must be strings")
+      throw new Error("Cannot rewrite a malformed input_mapping; values must be strings")
     }
     if (currentName === oldCurrentInputName) {
       nextInputMapping[inputName] = newCurrentInputName
@@ -495,7 +495,7 @@ function rewriteDownstreamInputMapping(
   if (shouldCreateMapping && !matchedOldCurrentInput) {
     if (Object.prototype.hasOwnProperty.call(nextInputMapping, oldCurrentInputName)) {
       throw new Error(
-        `Cannot preserve input name "${oldCurrentInputName}" because inputMapping already uses it`,
+        `Cannot preserve input name "${oldCurrentInputName}" because input_mapping already uses it`,
       )
     }
     nextInputMapping[oldCurrentInputName] = newCurrentInputName
@@ -507,7 +507,7 @@ function rewriteDownstreamInputMapping(
       ...node.data,
       config: {
         ...config,
-        inputMapping: nextInputMapping,
+        input_mapping: nextInputMapping,
       },
     },
   }

@@ -18,16 +18,6 @@ from haute.errors import ConfigError
 EDGE_JOIN_DEFAULT_HOW = "left"
 EDGE_JOIN_DEFAULT_SUFFIX = "_right"
 
-EDGE_JOIN_DECORATOR_TO_CONFIG: dict[str, str] = {
-    "left_on": "leftOn",
-    "right_on": "rightOn",
-    "maintain_order": "maintainOrder",
-}
-
-EDGE_JOIN_CONFIG_TO_DECORATOR: dict[str, str] = {
-    value: key for key, value in EDGE_JOIN_DECORATOR_TO_CONFIG.items()
-}
-
 _ALLOWED_HOW = frozenset({"inner", "left", "right", "full", "semi", "anti", "cross"})
 # Keep these role handles in sync with frontend/src/utils/edgeJoinRoles.ts.
 _ROLE_HANDLES = frozenset({"base", "join"})
@@ -38,7 +28,7 @@ JoinKey = str | list[str]
 
 
 def normalise_edge_join_decorator_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Convert edge-join decorator kwargs into graph config keys."""
+    """The edge-join decorator's keywords as its config: each keyword is its config key."""
     legacy = sorted(_LEGACY_ROLE_DECORATOR_ARGS.intersection(kwargs))
     if legacy:
         raise ConfigError(
@@ -46,14 +36,11 @@ def normalise_edge_join_decorator_kwargs(kwargs: dict[str, Any]) -> dict[str, An
             "use incoming target ports 'base' and 'join'.",
             legacy_arguments=legacy,
         )
-    config: dict[str, Any] = {}
-    for key, value in kwargs.items():
-        config[EDGE_JOIN_DECORATOR_TO_CONFIG.get(key, key)] = value
-    return config
+    return dict(kwargs)
 
 
 def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[str, Any]]:
-    """Return decorator kwargs in stable snake-case order."""
+    """The config's settings as decorator keywords, in a stable order."""
     items: list[tuple[str, Any]] = []
     # Column metadata belongs to the node, rather than LazyFrame.join, but
     # must survive the same decorator round trip as the join settings.
@@ -66,8 +53,7 @@ def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[s
         if key == "suffix" and value == EDGE_JOIN_DEFAULT_SUFFIX:
             # The default a join reads for an absent suffix (READ-13).
             continue
-        decorator_key = EDGE_JOIN_CONFIG_TO_DECORATOR.get(key, key)
-        items.append((decorator_key, value))
+        items.append((key, value))
     return items
 
 
@@ -101,25 +87,25 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         )
 
     on = _normalise_key(config.get("on"), "on")
-    left_on = _normalise_key(config.get("leftOn"), "leftOn")
-    right_on = _normalise_key(config.get("rightOn"), "rightOn")
+    left_on = _normalise_key(config.get("left_on"), "left_on")
+    right_on = _normalise_key(config.get("right_on"), "right_on")
 
     if how == "cross":
         if on is not None or left_on is not None or right_on is not None:
             raise ConfigError("edgeJoin cross joins must not configure join keys.")
     else:
         if on is not None and (left_on is not None or right_on is not None):
-            raise ConfigError("edgeJoin config cannot combine on with leftOn/rightOn.")
+            raise ConfigError("edgeJoin config cannot combine on with left_on/right_on.")
         if on is None:
             if left_on is None or right_on is None:
                 raise ConfigError(
-                    "edgeJoin non-cross joins require join keys via on or leftOn/rightOn.",
+                    "edgeJoin non-cross joins require join keys via on or left_on/right_on.",
                 )
             if _key_count(left_on) != _key_count(right_on):
                 raise ConfigError(
-                    "edgeJoin leftOn and rightOn must contain the same number of keys.",
-                    leftOn=left_on,
-                    rightOn=right_on,
+                    "edgeJoin left_on and right_on must contain the same number of keys.",
+                    left_on=left_on,
+                    right_on=right_on,
                 )
 
     kwargs: dict[str, Any] = {"how": how}
@@ -155,7 +141,7 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         kwargs["coalesce"] = coalesce
 
     require_edge_join_order(config)
-    kwargs["maintain_order"] = config["maintainOrder"]
+    kwargs["maintain_order"] = config["maintain_order"]
 
     return kwargs
 
@@ -167,13 +153,13 @@ def require_edge_join_order(config: Mapping[str, Any]) -> None:
     keeps a join's input order only when told to. The parse, save and execution
     all run this check.
     """
-    maintain_order = config.get("maintainOrder")
+    maintain_order = config.get("maintain_order")
     if maintain_order not in JOIN_MAINTAIN_ORDER:
         raise ConfigError(
-            "edgeJoin maintainOrder must state the joined rows' order: one of "
+            "edgeJoin maintain_order must state the joined rows' order: one of "
             + ", ".join(repr(order) for order in JOIN_MAINTAIN_ORDER)
             + ".",
-            maintainOrder=maintain_order,
+            maintain_order=maintain_order,
             supported=list(JOIN_MAINTAIN_ORDER),
         )
 
@@ -181,7 +167,7 @@ def require_edge_join_order(config: Mapping[str, Any]) -> None:
 def edge_join_key_columns_by_role(config: dict[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
     """Return the (base_keys, join_keys) demanded by an edge-join's keys.
 
-    ``on=[k]`` demands ``k`` from both roles; ``leftOn``/``rightOn`` demand the
+    ``on=[k]`` demands ``k`` from both roles; ``left_on``/``right_on`` demand the
     left keys from the base role and the right keys from the join role.  Cross
     joins demand no keys.  Config is validated through :func:`build_edge_join_kwargs`
     so stale/missing keys fail loudly with :class:`ConfigError`.

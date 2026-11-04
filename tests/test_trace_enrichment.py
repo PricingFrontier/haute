@@ -2504,7 +2504,7 @@ def test_a_breakpoint_verdict_agrees_with_the_band_the_engine_applied(dtype, val
 
     factor = {
         "column": "x",
-        "outputColumn": "band",
+        "output_column": "band",
         "banding": "breakpoints",
         "rules": [{"boundary": boundary, "label": "low"}],
         "default": "high",
@@ -2645,7 +2645,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "vehicle_type",
-                    "outputColumn": "vehicle_band",
+                    "output_column": "vehicle_band",
                     "banding": "categorical",
                     "rules": [
                         {"value": "sedan", "assignment": "A"},
@@ -2680,7 +2680,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "vehicle_type",
-                    "outputColumn": "vehicle_band",
+                    "output_column": "vehicle_band",
                     "banding": "categorical",
                     "rules": [
                         {"value": "sedan", "assignment": "A"},
@@ -2704,7 +2704,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "score",
-                    "outputColumn": "score_band",
+                    "output_column": "score_band",
                     "banding": "categorical",
                     "rules": [{"value": 1, "assignment": "one"}],
                     "default": "one",
@@ -2726,14 +2726,14 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "65", "label": "adult"},
                         {"boundary": "", "label": "senior"},
                     ],
-                    "rightClosed": False,
+                    "right_closed": False,
                     "default": "unknown",
                 }
             ]
@@ -2760,14 +2760,14 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "65", "label": "adult"},
                         {"boundary": "", "label": "senior"},
                     ],
-                    "rightClosed": True,
+                    "right_closed": True,
                 }
             ]
         }
@@ -2794,7 +2794,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "start",
-                    "outputColumn": "start_band",
+                    "output_column": "start_band",
                     "banding": "breakpoints",
                     "rules": {"2024-06-30": "June", "": "July+"},
                 }
@@ -2816,7 +2816,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "fuel_type",
-                    "outputColumn": "fuel_band",
+                    "output_column": "fuel_band",
                     "banding": "categorical",
                     "rules": {"Petrol": "Standard", "Electric": "Green"},
                 }
@@ -2839,10 +2839,10 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": {"25": "young", "65": "adult", "": "senior"},
-                    "rightClosed": True,
+                    "right_closed": True,
                 }
             ]
         }
@@ -2862,13 +2862,13 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [{"boundary": "25", "label": "young"}],
                 },
                 {
                     "column": "region",
-                    "outputColumn": "region_band",
+                    "output_column": "region_band",
                     "banding": "categorical",
                     "rules": [{"value": "north", "assignment": "N"}],
                 },
@@ -2895,13 +2895,13 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [{"boundary": "25", "label": "young"}],
                 },
                 {
                     "column": "region",
-                    "outputColumn": "region_band",
+                    "output_column": "region_band",
                     "banding": "categorical",
                     "rules": [{"value": "north", "assignment": "N"}],
                 },
@@ -2928,7 +2928,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "score",
-                    "outputColumn": "score_band",
+                    "output_column": "score_band",
                     "banding": "breakpoints",
                     "rules": [
                         {"boundary": "0", "label": "negative"},
@@ -2952,14 +2952,14 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [{"boundary": "25", "label": "young"}],
                     "default": None,
                 },
                 {
                     "column": "region",
-                    "outputColumn": "region_band",
+                    "output_column": "region_band",
                     "banding": "categorical",
                     "rules": [{"value": "north", "assignment": "N"}],
                     "default": None,
@@ -2983,7 +2983,7 @@ class TestEnrichBandingRealConfig:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [{"boundary": "25", "label": "young"}],
                     "default": "unknown",
@@ -3009,8 +3009,8 @@ class TestEnrichSingleTable:
                 {"region": "north", "value": 1.1},
                 {"region": "south", "value": 0.9},
             ],
-            "outputColumn": "rate",
-            "defaultValue": None,
+            "output_column": "rate",
+            "default_value": None,
         }
         result = _enrich_single_table(
             table,
@@ -3032,8 +3032,8 @@ class TestEnrichSingleTable:
             "entries": [
                 {"state": "CA", "vehicle_type": "sedan", "value": 1.15},
             ],
-            "outputColumn": "territory_factor",
-            "defaultValue": "1.0",
+            "output_column": "territory_factor",
+            "default_value": "1.0",
         }
         result = _enrich_single_table(
             table,
@@ -3067,8 +3067,8 @@ class TestEnrichSingleTable:
             "entries": [
                 {"region": "north", "rate": 1.1},
             ],
-            "outputColumn": "rate",
-            "defaultValue": "0.5",
+            "output_column": "rate",
+            "default_value": "0.5",
         }
         result = _enrich_single_table(
             table,
@@ -3086,8 +3086,8 @@ class TestEnrichSingleTable:
         table = {
             "factors": ["region"],
             "entries": [{"region": "north", "rate": 1.1}],
-            "outputColumn": "rate",
-            "defaultValue": None,
+            "output_column": "rate",
+            "default_value": None,
         }
         result = _enrich_single_table(
             table,
@@ -3105,8 +3105,8 @@ class TestEnrichSingleTable:
         table = {
             "factors": ["region"],
             "entries": [],
-            "outputColumn": "rate",
-            "defaultValue": "not_a_number",
+            "output_column": "rate",
+            "default_value": "not_a_number",
         }
         result = _enrich_single_table(
             table,
@@ -3123,8 +3123,8 @@ class TestEnrichSingleTable:
         table = {
             "factors": ["region"],
             "entries": [],
-            "outputColumn": "rate",
-            "defaultValue": "",
+            "output_column": "rate",
+            "default_value": "",
         }
         result = _enrich_single_table(
             table,
@@ -3140,8 +3140,8 @@ class TestEnrichSingleTable:
         table = {
             "factors": ["region"],
             "entries": [],
-            "outputColumn": "rate",
-            "defaultValue": "inf",
+            "output_column": "rate",
+            "default_value": "inf",
         }
         result = _enrich_single_table(
             table,
@@ -3161,8 +3161,8 @@ class TestEnrichSingleTable:
                 {"region": "north", "tier": "gold", "value": 1.5},
                 {"region": "north", "tier": "silver", "value": 1.2},
             ],
-            "outputColumn": "rate",
-            "defaultValue": None,
+            "output_column": "rate",
+            "default_value": None,
         }
         result = _enrich_single_table(
             table,
@@ -3190,8 +3190,8 @@ class TestEnrichSingleTable:
                 {"region": "north", "value": 1.1, "version": "old"},
                 {"region": "north", "value": 1.3, "version": "new"},
             ],
-            "outputColumn": "region_factor",
-            "defaultValue": None,
+            "output_column": "region_factor",
+            "default_value": None,
         }
         result = _enrich_single_table(
             table,
@@ -3210,8 +3210,8 @@ class TestEnrichSingleTable:
         table = {
             "factors": ["region"],
             "entries": [{"region": "north", "value": 1.1}],
-            "outputColumn": "region_factor",
-            "defaultValue": None,
+            "output_column": "region_factor",
+            "default_value": None,
         }
         result = _enrich_single_table(
             table,
@@ -3228,8 +3228,8 @@ class TestEnrichSingleTable:
         table = {
             "factors": ["region"],
             "entries": [{"region": "north", "value": 1.1}],
-            "outputColumn": "region_factor",
-            "defaultValue": "1.0",
+            "output_column": "region_factor",
+            "default_value": "1.0",
         }
         result = _enrich_single_table(
             table,
@@ -3255,8 +3255,8 @@ class TestEnrichRatingStepRealConfig:
                         {"region": "north", "value": 1.1},
                         {"region": "south", "value": 0.9},
                     ],
-                    "outputColumn": "rate",
-                    "defaultValue": None,
+                    "output_column": "rate",
+                    "default_value": None,
                 }
             ]
         }
@@ -3290,26 +3290,26 @@ class TestEnrichRatingStepRealConfig:
                             "value": 0.9,
                         }
                     ],
-                    "outputColumn": "vehicle_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "vehicle_factor",
+                    "default_value": "1.0",
                 },
                 {
                     "factors": ["channel"],
                     "entries": [{"channel": "direct", "value": 1.2}],
-                    "outputColumn": "channel_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "channel_factor",
+                    "default_value": "1.0",
                 },
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
                 {
-                    "outputColumn": "technical_premium_factor",
+                    "output_column": "technical_premium_factor",
                     "operation": "multiply",
-                    "baseValue": "100",
+                    "base_value": "100",
                 },
                 {
-                    "outputColumn": "additive_adjustment",
+                    "output_column": "additive_adjustment",
                     "operation": "add",
-                    "baseValue": "10",
+                    "base_value": "10",
                 },
             ],
         }
@@ -3355,11 +3355,11 @@ class TestEnrichRatingStepRealConfig:
 
         config = {
             "tables": [],
-            "combinedOutputs": [
+            "combined_outputs": [
                 {
-                    "outputColumn": "base_premium",
+                    "output_column": "base_premium",
                     "operation": "multiply",
-                    "baseValue": "100",
+                    "base_value": "100",
                 }
             ],
         }
@@ -3388,11 +3388,11 @@ class TestEnrichRatingStepRealConfig:
 
         config = {
             "tables": [],
-            "combinedOutputs": [
+            "combined_outputs": [
                 {
-                    "outputColumn": "technical_premium",
+                    "output_column": "technical_premium",
                     "operation": "divide",
-                    "baseValue": "100",
+                    "base_value": "100",
                 }
             ],
         }
@@ -3412,14 +3412,14 @@ class TestEnrichRatingStepRealConfig:
                 {
                     "factors": ["region"],
                     "entries": [{"region": "north", "value": 1.1}],
-                    "outputColumn": "rate_a",
-                    "defaultValue": None,
+                    "output_column": "rate_a",
+                    "default_value": None,
                 },
                 {
                     "factors": ["tier"],
                     "entries": [{"tier": "gold", "value": 2.0}],
-                    "outputColumn": "rate_b",
-                    "defaultValue": None,
+                    "output_column": "rate_b",
+                    "default_value": None,
                 },
             ],
         }
@@ -3452,7 +3452,7 @@ class TestEnrichModelScoreRealConfig:
 
         config = {
             "output_column": "prediction",
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc123",
             "task": "regression",
         }
@@ -3474,7 +3474,7 @@ class TestEnrichModelScoreRealConfig:
 
         config = {
             "output_column": "score",
-            "sourceType": "registered",
+            "source_type": "registered",
             "registered_model": "my_model",
             "version": "3",
             "task": "classification",
@@ -3561,7 +3561,7 @@ class TestEnrichModelScoreRealConfig:
         )
         config = {
             "output_column": "pred",
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc",
             "artifact_path": "model.cbm",
             "contract": {"inputs": ["feat_a"]},
@@ -3606,7 +3606,7 @@ class TestEnrichModelScoreRealConfig:
         )
         config = {
             "output_column": "conversion_prediction",
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc",
             "artifact_path": "conversion.rsglm",
             "contract": {"inputs": ["difference_to_market"]},
@@ -3637,7 +3637,7 @@ class TestEnrichModelScoreRealConfig:
         )
         config = {
             "output_column": "conversion_prediction",
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc",
             "artifact_path": "conversion.rsglm",
             "contract": {"inputs": ["difference_to_market"]},
@@ -3674,7 +3674,7 @@ class TestEnrichModelScoreRealConfig:
 
         config = {
             "output_column": "pred",
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc",
             "artifact_path": "model.unknown",
             "contract": {"inputs": ["feat_a"]},
@@ -3703,7 +3703,7 @@ class TestEnrichScenarioExpansionRealConfig:
             "step_column": "step_idx",
             "min_value": 0,
             "max_value": 100,
-            "stepCount": 5,
+            "step_count": 5,
         }
         input_row = {"id": 1}
         output_row = {"id": 1, "scenario": "high", "step_idx": 3}

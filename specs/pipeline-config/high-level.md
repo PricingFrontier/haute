@@ -92,7 +92,7 @@ inputs, in the parser and in a standalone run alike, so `haute run`, a plain `im
 a deployed scorer wire a node the same way. A node's inputs are the connections its
 `connect()` calls state, and one more for each parameter named after another node that no
 `connect()` joins to it. Each parameter names one input: every positional parameter of a
-Polars node (through a declared `inputMapping`), of a declaration and of an External File
+Polars node (through a declared `input_mapping`), of a declaration and of an External File
 (whose keyword-only `obj` is the loaded object); a frame hook (Rating Step, Model Score,
 Scenario Expander, Explore) takes as `df` the frame its decorator makes from its first input,
 which no parameter names and a `connect()` states, and its other parameters name the other
@@ -440,6 +440,39 @@ when it runs or when training or a solve starts. The models are part of the gene
 contract, so a node's config in every response is typed by its node type, and the node
 reference's tables of config keys are generated from them.
 
+**Keys are snake_case.** Every key a Haute schema owns is snake_case, in a node's config and its
+sidecar, in a Polars step, in `.haute.json`, the global constants and the Workbench form folder,
+and the browser's config types carry the same keys (READ-29). Before READ-29 these keys were
+camelCase, and the loader refuses that form; `scripts/one_off/read_29_snake_case_keys.py`
+converts a project. The keys renamed:
+
+| Before | Now | Where |
+|---|---|---|
+| `inputMapping` | `input_mapping` | any node's config, and the transform decorator's keyword in `main.py` |
+| `inputType`, `outputType` | `input_type`, `output_type` | Data Input, Data Output |
+| `sourceType` | `source_type` | Model Score, Optimiser Apply |
+| `fileType` | `file_type` | External File |
+| `leftOn`, `rightOn`, `maintainOrder` | `left_on`, `right_on`, `maintain_order` | Edge Join, and the join step |
+| `outputMapping` | `output_mapping` | Output |
+| `outputColumn`, `rightClosed` | `output_column`, `right_closed` | a banding factor |
+| `outputColumn`, `defaultValue`, `onMissing`, `factorDtypes` | `output_column`, `default_value`, `on_missing`, `factor_dtypes` | a rating table |
+| `timeUnit`, `timeZone` | `time_unit`, `time_zone` | a rating table's dtype descriptor |
+| `combinedOutputs`, and its `outputColumn`, `baseValue` | `combined_outputs`, `output_column`, `base_value` | Rating Step |
+| `stepCount` | `step_count` | Scenario Expander |
+| `definitionId`, `instanceOf` | `definition_id`, `instance_of` | Submodel |
+| `displayPath` | `display_path` | an API Input table |
+| `orderBy` | `order_by` | a window expression |
+| `nullsLast` | `nulls_last` | the sort step |
+| `numberType` | `number_type` | a condition's list of numbers |
+| `variableName`, `valueName` | `variable_name`, `value_name` | the unpivot step |
+
+A key the analyst names never changes, whatever its casing: a column, a categorical level, an
+input name in `input_mapping`, a factor in `factor_dtypes`, a source in `by_source`, a constant,
+a sheet or a table. Values are not keys either: node type names such as `dataInput` stay as they
+are. The graph the server and the browser exchange is not a saved file and keeps its own keys
+(`nodeType`, `sourceHandle`, a submodel definition's `definitionId`, `inputPorts` and
+`outputPorts`).
+
 For tabular Data Input values specifically, a relative `path` is interpreted
 from the Haute project root by both canvas execution and standalone runs. The
 standalone runtime discovers the project root from the pipeline file and uses the
@@ -577,7 +610,7 @@ sees the same program without knowing about steps and a stale `code` in a browse
 payload is overwritten on ingress; in-process config replacement uses the validated
 `GraphNode.with_config` helper rather than an unvalidated model copy so the invariant
 also holds after assistant and submodel operations. A stepped transform addresses its
-inputs by their current edge names and never carries `inputMapping` (a config with both
+inputs by their current edge names and never carries `input_mapping` (a config with both
 fails loudly), and submodel flattening rewrites the input references inside a stepped
 transform's steps instead of recording a mapping. A transform with an unfinished step
 is saved with the raising placeholder for its body and its whole step list, the steps
@@ -622,13 +655,13 @@ renders a node's steps (the node data model, the parser's reconcile, the executo
 builder, codegen, the deploy interceptors and the render endpoint) obtains the
 eligible names from it. Only an `edges` surface has its step references rewritten when
 an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
-stepped `edges` original never carries `inputMapping`. A node
+stepped `edges` original never carries `input_mapping`. A node
 type outside that table that carries a `steps` key is left alone. A Scenario
-Expander's grid size is its required `stepCount` (a whole number of at least 1, read
+Expander's grid size is its required `step_count` (a whole number of at least 1, read
 by the executor builder, the standalone runtime's helper, the chunk planner, the RAM
 estimator and the trace enrichment through one `scenario_step_count` function with no
 absent-key default; a new node is created with an explicit 21), so `steps` on that
-type is free for its step list. A missing or malformed `stepCount` is a config defect the
+type is free for its step list. A missing or malformed `step_count` is a config defect the
 user can fix, so `scenario_step_count` raises `NodeConfigError` (stable code
 `node_config_invalid`, safe field `setting`): a preview, trace, output write or job reports
 it as the public contract failure (HTTP 422, background `contract_error`) with the message
@@ -853,7 +886,8 @@ repaired.
 Missing, unreadable, or invalid-JSON sidecar files raise a config error naming the path.
 Using a folder-backed node type without a `config=` sidecar raises, naming the concrete
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at
-read time rather than silently keeping the last value. Two node functions sharing a name are
+read time rather than silently keeping the last value. Every failure to read a sidecar names
+its file, also in a run outside the editor, where no parser wraps the error. Two node functions sharing a name are
 rejected, both at live decorator-registration time and again at static parse time (the
 function name becomes the graph node id, so a silent collision would drop a node).
 Registration also applies the codegen specification's executable-name rule, naming the node:

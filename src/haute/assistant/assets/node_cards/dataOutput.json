@@ -2,7 +2,7 @@
   "node_type": "dataOutput",
   "authorable": true,
   "fields": {
-    "outputType": "Where the frame is written: \"file\", \"database\", \"lakehouse\" or \"databricks\". Each type has its own required keys.",
+    "output_type": "Where the frame is written: \"file\", \"database\", \"lakehouse\" or \"databricks\". Each type has its own required keys.",
     "format": "For a file: \"parquet\", \"csv\", \"json\", \"ndjson\", \"ipc\" or \"avro\".",
     "mode": "\"sink\" streams the lazy frame to the file; \"write\" collects it first.",
     "path": "The destination path relative to the project root. Nothing is written while authoring or previewing; the file is written when the output is run.",
@@ -27,7 +27,7 @@
       "name": "minimal",
       "intent": "Write the priced policies to a Parquet file.",
       "config": {
-        "outputType": "file",
+        "output_type": "file",
         "format": "parquet",
         "mode": "sink",
         "path": "outputs/priced.parquet",
@@ -39,7 +39,7 @@
       "name": "realistic",
       "intent": "Write only the policy id and premium to a CSV file for the rating team.",
       "config": {
-        "outputType": "file",
+        "output_type": "file",
         "format": "csv",
         "mode": "sink",
         "path": "outputs/premiums.csv",

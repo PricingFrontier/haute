@@ -1655,7 +1655,7 @@ function FlowEditor() {
     if (data.nodeType !== NODE_TYPES.SUBMODEL || !isSubmodelInstanceConfig(data.config)) {
       return false
     }
-    return singletonTypesInSubmodelDefinition(data.config.definitionId, submodels).size > 0
+    return singletonTypesInSubmodelDefinition(data.config.definition_id, submodels).size > 0
   }, [selectedNodes, submodels])
   const canRunSubmodelAction = !editingReadOnly && (
     selectedSubmodelId !== null
@@ -1845,7 +1845,7 @@ function FlowEditor() {
     const selected = graphRef.current.nodes.filter((node) => (
       rootIds.has(node.id)
       || (node.data?.nodeType === "submodel"
-        && definitions.has(String((node.data?.config as Record<string, unknown> | undefined)?.definitionId)))
+        && definitions.has(String((node.data?.config as Record<string, unknown> | undefined)?.definition_id)))
     ))
     if (selected.length === 0) return
     onNodesChange(graphRef.current.nodes.map((node) => ({

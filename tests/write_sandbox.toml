@@ -591,7 +591,7 @@ strict = [
 ]
 "tests/test_submodel_routes.py" = [
     "001032abfbb1ed71",  # TestDissolveSubmodel.test_dissolve_retains_configured_pipeline_module_until_save
-    "ce825b9940410349",  # TestGetSubmodel.test_get_uses_configured_pipeline_root
+    "6fe982d26f70144d",  # TestGetSubmodel.test_get_uses_configured_pipeline_root
     "c3924fa7d594ba21",  # TestGetSubmodel.test_get_uses_configured_pipeline_root
 ]
 

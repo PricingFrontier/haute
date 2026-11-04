@@ -2,7 +2,7 @@
   "artifact_path": "claim_frequency.cbm",
   "output_column": "expected_frequency",
   "run_id": "00000000000000000000000000000000",
-  "sourceType": "run",
+  "source_type": "run",
   "steps": [],
   "task": "regression"
 }

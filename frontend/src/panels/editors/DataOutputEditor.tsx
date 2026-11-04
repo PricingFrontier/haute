@@ -24,7 +24,7 @@ import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { isPlainObject } from "../../types/guards"
 
 const OUTPUT_COMMON_KEYS = [
-  "inputMapping",
+  "input_mapping",
   "selected_columns",
   "column_renames",
   "contract",
@@ -73,7 +73,7 @@ function outputConfigReady(
 
   const knownKeys = new Set<string>([
     ...OUTPUT_COMMON_KEYS,
-    "outputType",
+    "output_type",
     "format",
     "mode",
     "arguments",
@@ -86,7 +86,7 @@ function outputConfigReady(
 
 const DATABRICKS_OUTPUT_KEYS = new Set<string>([
   ...OUTPUT_COMMON_KEYS,
-  "outputType",
+  "output_type",
   "http_path",
   "table",
   "write_mode",
@@ -228,7 +228,7 @@ export default function DataOutputEditor({
     (group) => group.output_available,
   )
   const group = groups.find(
-    (candidate) => candidate.name === config.outputType,
+    (candidate) => candidate.name === config.output_type,
   )
   const format = group?.formats.find(
     (candidate) => candidate.name === config.format,

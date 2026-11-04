@@ -16,9 +16,9 @@ graph as the repository's default pipeline.
 
 ## Key types and data structures
 
-- **Data Input sidecar**: `inputType` `file`, `format` `csv`, `mode` `scan`, a
+- **Data Input sidecar**: `input_type` `file`, `format` `csv`, `mode` `scan`, a
   project-root-relative `path`, and empty `arguments`.
-- **Output sidecar**: `outputMapping` entries (`source_port`, `source_column`,
+- **Output sidecar**: `output_mapping` entries (`source_port`, `source_column`,
   `output_path`, `enabled`); the response document is JSON.
 - **Generated pipeline**: the decorators carry their sidecar paths (and a contract
   only where it adds information); the Data Input and Output nodes are declarations

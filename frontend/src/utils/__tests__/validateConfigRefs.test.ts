@@ -4,7 +4,7 @@ import type { Node } from "@xyflow/react"
 
 function makeNode(id: string, label: string, config: Record<string, unknown> = {}, nodeType = "polars"): Node {
   return { id, position: { x: 0, y: 0 }, data: { label, nodeType, config:
-    nodeType === "submodel" ? { definitionId: "definition", alias: id, ...config } : config,
+    nodeType === "submodel" ? { definition_id: "definition", alias: id, ...config } : config,
   } }
 }
 
@@ -39,19 +39,19 @@ describe("validateConfigRefs", () => {
     expect(warnings).toEqual([])
   })
 
-  it("detects stale instanceOf reference", () => {
+  it("detects stale instance_of reference", () => {
     const nodes = [
-      makeNode("inst1", "Instance", { instanceOf: "original_gone" }, "submodel"),
+      makeNode("inst1", "Instance", { instance_of: "original_gone" }, "submodel"),
     ]
     const warnings = validateConfigRefs(nodes)
     expect(warnings).toHaveLength(1)
-    expect(warnings[0].field).toBe("instanceOf")
+    expect(warnings[0].field).toBe("instance_of")
   })
 
   it("detects multiple broken refs across nodes", () => {
     const nodes = [
       makeNode("n1", "Node1", { data_input: "missing1" }),
-      makeNode("n2", "Node2", { instanceOf: "missing2" }, "submodel"),
+      makeNode("n2", "Node2", { instance_of: "missing2" }, "submodel"),
     ]
     const warnings = validateConfigRefs(nodes)
     expect(warnings).toHaveLength(1)
@@ -73,18 +73,18 @@ describe("validateConfigRefs", () => {
   })
 
   it("does not accept an ordinary node as an occurrence owner", () => {
-    expect(validateConfigRefs([makeNode("owner", "owner"), makeNode("copy", "copy", { instanceOf: "owner" }, "submodel")]))
-      .toEqual([{ nodeId: "copy", nodeLabel: "copy", field: "instanceOf", referencedId: "owner" }])
+    expect(validateConfigRefs([makeNode("owner", "owner"), makeNode("copy", "copy", { instance_of: "owner" }, "submodel")]))
+      .toEqual([{ nodeId: "copy", nodeLabel: "copy", field: "instance_of", referencedId: "owner" }])
   })
 
   it("accepts an occurrence whose owner is in its parent graph", () => {
-    expect(validateConfigRefs([makeNode("owner", "owner", {}, "submodel"), makeNode("copy", "copy", { instanceOf: "owner" }, "submodel")])).toEqual([])
+    expect(validateConfigRefs([makeNode("owner", "owner", {}, "submodel"), makeNode("copy", "copy", { instance_of: "owner" }, "submodel")])).toEqual([])
   })
 
   it("rejects malformed occurrence identity even when its owner exists", () => {
     const nodes = [
       makeNode("owner", "owner", {}, "submodel"),
-      makeNode("copy", "copy", { definitionId: "", instanceOf: "owner" }, "submodel"),
+      makeNode("copy", "copy", { definition_id: "", instance_of: "owner" }, "submodel"),
     ]
     expect(() => validateConfigRefs(nodes)).toThrow('Submodel "copy" has invalid identity configuration.')
   })
@@ -107,7 +107,7 @@ describe("formatConfigRefWarnings", () => {
   it("formats multiple warnings with count", () => {
     const result = formatConfigRefWarnings([
       { nodeId: "n1", nodeLabel: "N1", field: "data_input", referencedId: "x" },
-      { nodeId: "n2", nodeLabel: "N2", field: "instanceOf", referencedId: "y" },
+      { nodeId: "n2", nodeLabel: "N2", field: "instance_of", referencedId: "y" },
     ])
     expect(result).toContain("2 nodes")
   })

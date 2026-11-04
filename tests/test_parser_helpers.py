@@ -755,7 +755,7 @@ class TestResolveNodeConfig:
         with pytest.raises(ConfigError):
             _resolve_node_config(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -821,7 +821,7 @@ class TestResolveNodeConfig:
         with pytest.raises(ConfigError) as excinfo:
             _resolve_node_config(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -951,7 +951,7 @@ class TestResolveNodeConfig:
     def test_external_config_file(self, tmp_path):
         """With config= key, loads JSON from file."""
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "data.csv",
@@ -975,7 +975,7 @@ class TestResolveNodeConfig:
     def test_data_input_hook_extracts_its_code(self, tmp_path):
         """A Data Input ``df`` hook's post-load code becomes the node's code."""
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -1000,7 +1000,7 @@ class TestResolveNodeConfig:
     def test_data_input_without_post_code_gives_empty_code(self, tmp_path):
         """A Data Input declaration (its docstring alone) has empty code."""
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -1063,7 +1063,7 @@ class TestResolveNodeConfig:
         kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "contract": "opaque"}
         original = dict(kwargs)
         settings = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -1077,7 +1077,7 @@ class TestResolveNodeConfig:
     def test_no_mutation_polars_path(self):
         """The no-sidecar path must not mutate the input dict (B21)."""
         kwargs: dict[str, Any] = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -1280,7 +1280,7 @@ class TestExtractDecoratedNodes:
         (cfg_dir / "source.json").write_text(
             json.dumps(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -1643,7 +1643,7 @@ class TestFunctionBodySource:
             NodeType.DATA_OUTPUT,
             "sortie",
             {
-                "outputType": "file",
+                "output_type": "file",
                 "format": "parquet",
                 "mode": "sink",
                 "path": "out.parquet",

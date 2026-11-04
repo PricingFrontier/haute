@@ -653,7 +653,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                     label="score",
                     nodeType="modelScore",
                     config={
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "run-123",
                         "task": "regression",
                         "output_column": "prediction",
@@ -742,7 +742,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
                     label="conversion_scoring",
                     nodeType="modelScore",
                     config={
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "run-123",
                         "task": "regression",
                         "output_column": "conversion_prediction",
@@ -873,7 +873,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
                     label="score",
                     nodeType="modelScore",
                     config={
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "run-123",
                         "task": "regression",
                         "output_column": "prediction",

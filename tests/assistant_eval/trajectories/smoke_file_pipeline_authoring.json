@@ -33,7 +33,7 @@
                     "name": "nb_batch",
                     "ref": "source",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/nb_batch.parquet",
@@ -66,7 +66,7 @@
                     "name": "curated_quotes",
                     "ref": "sink",
                     "config": {
-                      "outputType": "file",
+                      "output_type": "file",
                       "format": "parquet",
                       "mode": "sink",
                       "path": "data/curated_quotes.parquet",

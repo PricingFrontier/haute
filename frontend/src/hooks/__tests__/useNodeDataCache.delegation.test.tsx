@@ -60,7 +60,7 @@ const nodes = [
     data: {
       label: "source",
       nodeType: "dataInput",
-      config: { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" },
+      config: { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv" },
     },
   },
   { id: "banding", data: { label: "Banding", nodeType: "banding", config: { factors: [] } } },

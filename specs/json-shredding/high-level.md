@@ -287,7 +287,7 @@ specification defines it.
 strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
 `cross` rejects every key field. Every other strategy requires either a
 non-empty `on` key (one name or a list shared by both frames) or both
-non-empty `leftOn` and `rightOn` keys with equal lengths; `on` cannot coexist
+non-empty `left_on` and `right_on` keys with equal lengths; `on` cannot coexist
 with the paired form. A `coalesce` option, when set, is `true` or `false`. The base and join frames are explicit roles, not inferred
 from edge order. Every persisted
 incoming edge carries its role as `targetHandle="base"` or `targetHandle="join"`;

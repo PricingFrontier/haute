@@ -70,7 +70,7 @@ def _file_input_config(
         ".ipc": ("ipc", "scan"),
     }.get(suffix, ("parquet", "scan"))
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name or resolved_format,
         "mode": mode or resolved_mode,
         "path": path,
@@ -83,7 +83,7 @@ def _file_input_config(
 
 def _databricks_input_config(*, code: str | None = None) -> dict:
     config = {
-        "inputType": "databricks",
+        "input_type": "databricks",
         "http_path": "/sql/1.0/warehouses/test",
         "table": "catalog.schema.tbl",
         "arguments": {},
@@ -95,7 +95,7 @@ def _databricks_input_config(*, code: str | None = None) -> dict:
 
 def _file_output_config(path: str, format_name: str) -> dict:
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": format_name,
         "mode": "sink" if format_name in {"csv", "parquet"} else "write",
         "path": path,
@@ -427,7 +427,7 @@ class TestNodeToCode:
                     "label": "Output",
                     "nodeType": "output",
                     "config": {
-                        "outputMapping": [
+                        "output_mapping": [
                             {
                                 "source_port": "transform",
                                 "source_column": "a",
@@ -440,7 +440,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["transform"])
-        # v2: the outputMapping lives in the JSON schema mapping; the decorator
+        # v2: the output_mapping lives in the JSON schema mapping; the decorator
         # assembles the document through the shared assembler the executor
         # calls (not a passthrough, not a `.select(...)` baked into the body).
         assert code == _declaration(
@@ -513,7 +513,7 @@ class TestNodeToCode:
                     "label": "Score",
                     "nodeType": "modelScore",
                     "config": {
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "abc123",
                         "artifact_path": "model.cbm",
                         "task": "regression",
@@ -542,7 +542,7 @@ class TestNodeToCode:
         function, whatever the working directory.
         """
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -596,8 +596,8 @@ class TestNodeToCode:
                         "tables": [
                             {
                                 "factors": ["region"],
-                                "outputColumn": "region_factor",
-                                "defaultValue": 1.0,
+                                "output_column": "region_factor",
+                                "default_value": 1.0,
                                 "entries": [{"region": "North", "value": 1.1}],
                             }
                         ]
@@ -617,7 +617,7 @@ class TestNodeToCode:
         [
             pytest.param(
                 "Model",
-                {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"},
+                {"path": "model.pkl", "file_type": "pickle", "code": "df = obj.predict(df)"},
                 ["features"],
                 # Every input stays a parameter, the loaded object arrives as
                 # ``obj``, and the body binds ``df`` to the first input itself.
@@ -630,7 +630,7 @@ class TestNodeToCode:
             ),
             pytest.param(
                 "Rates",
-                {"path": "rates.joblib", "fileType": "joblib", "code": "df = obj.predict(df)"},
+                {"path": "rates.joblib", "file_type": "joblib", "code": "df = obj.predict(df)"},
                 [],
                 # A disconnected External File has no inputs and no binding line.
                 '@pipeline.external_file(config="config/load_file/Rates.json")\n'
@@ -654,7 +654,7 @@ class TestNodeToCode:
         assert code == expected
         assert "load_external_object" not in code
         assert config["path"] not in code
-        assert config["fileType"] not in code
+        assert config["file_type"] not in code
         _compile_node_code(code)
 
 
@@ -802,7 +802,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": "artifacts/ratebook.json",
                                 "ratebook_input": "age_veh_banding",
                             },
@@ -857,7 +857,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "online-run",
                                 "optimiser_mode": "online",
                                 "ratebook_input": "stale_banding",
@@ -907,7 +907,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "missing-run",
                                 "ratebook_input": "age_veh_banding",
                             },
@@ -958,7 +958,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": "artifacts/ratebook.json",
                                 "ratebook_input": "age_veh_banding",
                             },
@@ -1281,7 +1281,7 @@ class TestSelectedColumnsCodegen:
                             {
                                 "banding": "breakpoints",
                                 "column": "area",
-                                "outputColumn": "area_factor",
+                                "output_column": "area_factor",
                                 "rules": [{"boundary": "10", "label": "1.0"}],
                             }
                         ],
@@ -1490,7 +1490,7 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_output_with_none_fields(self):
-        """Output node with an empty outputMapping is still a plain declaration:
+        """Output node with an empty output_mapping is still a plain declaration:
         its decorator routes through the assembler."""
         node = _n(
             {
@@ -1549,7 +1549,7 @@ class TestCodegenEdgeCases:
                 "data": {
                     "label": "Model",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": ""},
                 },
             }
         )
@@ -1571,7 +1571,7 @@ class TestCodegenEdgeCases:
                     "nodeType": "externalFile",
                     "config": {
                         "path": "model.pkl",
-                        "fileType": "pickle",
+                        "file_type": "pickle",
                         "code": "df = df.with_columns(prediction=pl.lit(obj))",
                     },
                 },
@@ -1668,7 +1668,7 @@ class TestTemplateParamConsistency:
                             {
                                 "banding": "breakpoints",
                                 "column": "age",
-                                "outputColumn": "age_factor",
+                                "output_column": "age_factor",
                                 "rules": [{"boundary": "100", "label": "1.0"}],
                             }
                         ],
@@ -1695,13 +1695,13 @@ class TestTemplateParamConsistency:
                             {
                                 "banding": "breakpoints",
                                 "column": "age",
-                                "outputColumn": "age_f",
+                                "output_column": "age_f",
                                 "rules": [],
                             },
                             {
                                 "banding": "discrete",
                                 "column": "region",
-                                "outputColumn": "region_f",
+                                "output_column": "region_f",
                                 "rules": [],
                             },
                         ],
@@ -1727,7 +1727,7 @@ class TestTemplateParamConsistency:
                         "tables": [
                             {
                                 "factors": ["x"],
-                                "outputColumn": "f",
+                                "output_column": "f",
                                 "entries": [{"x": "a", "value": 1.0}],
                             }
                         ]
@@ -1777,7 +1777,7 @@ class TestTemplateParamConsistency:
                             {
                                 "banding": "breakpoints",
                                 "column": "x",
-                                "outputColumn": "x_f",
+                                "output_column": "x_f",
                                 "rules": [],
                             }
                         ],
@@ -2392,10 +2392,10 @@ def test_every_config_backed_builder_emits_its_config_decorator(node_type: NodeT
     [
         ({"tables": "nope"}, "tables must be a list"),
         ({"tables": [{"factors": "region"}]}, r"tables\[0\]\.factors must be a list"),
-        ({"tables": [], "combinedOutputs": "nope"}, "combinedOutputs must be a list"),
+        ({"tables": [], "combined_outputs": "nope"}, "combined_outputs must be a list"),
         (
-            {"tables": [], "combinedOutputs": [{"outputColumn": ""}]},
-            r"combinedOutputs\[0\] requires outputColumn",
+            {"tables": [], "combined_outputs": [{"output_column": ""}]},
+            r"combined_outputs\[0\] requires output_column",
         ),
     ],
 )
@@ -2450,7 +2450,7 @@ class TestPassthroughAndBehaviouralCodegen:
             pytest.param(
                 "optimiserApply",
                 "optimiser_apply",
-                {"sourceType": "file", "artifact_path": "models/opt", "version": "3"},
+                {"source_type": "file", "artifact_path": "models/opt", "version": "3"},
                 "apply_optimisation",
                 id="optimiser_apply",
             ),
@@ -2891,7 +2891,7 @@ class TestCanonicalBindingRejection:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     },
                 ],
@@ -2992,7 +2992,7 @@ class TestDeclaredSubmodelOutputs:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     }
                 ],
@@ -3578,7 +3578,7 @@ class TestGenTransformEdgeCases:
                                 "code": (
                                     "df = raw_rows.with_columns(value_doubled=pl.col('value') * 2)"
                                 ),
-                                "inputMapping": {
+                                "input_mapping": {
                                     "raw_rows": "Replacement_Parent",
                                 },
                             },
@@ -3601,12 +3601,12 @@ class TestGenTransformEdgeCases:
         )
 
         code = graph_to_code(graph, pipeline_name="stable_mapping")
-        assert '@pipeline.polars(inputMapping={"raw_rows": "Replacement_Parent"})' in code
+        assert '@pipeline.polars(input_mapping={"raw_rows": "Replacement_Parent"})' in code
         assert "def enriched(raw_rows: pl.LazyFrame)" in code
 
         parsed = parse_pipeline_source(code)
         parsed_enriched = next(node for node in parsed.nodes if node.id == "enriched")
-        assert parsed_enriched.data.config["inputMapping"] == {"raw_rows": "Replacement_Parent"}
+        assert parsed_enriched.data.config["input_mapping"] == {"raw_rows": "Replacement_Parent"}
         assert [
             (edge.source, edge.target) for edge in parsed.edges if edge.target == "enriched"
         ] == [
@@ -3690,7 +3690,7 @@ class TestGenExternalFileEdgeCases:
                 "data": {
                     "label": "ExtModel",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": ""},
                 },
             }
         )
@@ -3709,7 +3709,7 @@ class TestGenExternalFileEdgeCases:
                 "data": {
                     "label": "ExtNone",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": None},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": None},
                 },
             }
         )
@@ -3830,13 +3830,13 @@ class TestRoundTripEdgeCases:
                             {
                                 "banding": "breakpoints",
                                 "column": "age",
-                                "outputColumn": "age_factor",
+                                "output_column": "age_factor",
                                 "rules": [{"boundary": "100", "label": "1.0"}],
                             },
                             {
                                 "banding": "discrete",
                                 "column": "region",
-                                "outputColumn": "region_factor",
+                                "output_column": "region_factor",
                                 "rules": [{"match": "North", "assignment": "1.2"}],
                                 "default": "1.0",
                             },
@@ -3867,21 +3867,21 @@ class TestRoundTripEdgeCases:
                         "tables": [
                             {
                                 "factors": ["region"],
-                                "outputColumn": "region_factor",
-                                "defaultValue": 1.0,
+                                "output_column": "region_factor",
+                                "default_value": 1.0,
                                 "entries": [{"region": "North", "value": 1.1}],
                             },
                             {
                                 "factors": ["age_band"],
-                                "outputColumn": "age_factor",
+                                "output_column": "age_factor",
                                 "entries": [{"age_band": "18-25", "value": 1.5}],
                             },
                         ],
-                        "combinedOutputs": [
+                        "combined_outputs": [
                             {
-                                "outputColumn": "total_factor",
+                                "output_column": "total_factor",
                                 "operation": "add",
-                                "baseValue": 0,
+                                "base_value": 0,
                             }
                         ],
                     },
@@ -4076,7 +4076,7 @@ class TestGraphToCodeSingleFileGuard:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     },
                 ],
@@ -4187,7 +4187,7 @@ class TestSubmodelImportSafePath:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     },
                 ],

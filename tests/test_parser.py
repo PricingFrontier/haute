@@ -1188,8 +1188,8 @@ pipeline.submodel(sub_b.submodel, "b")
         occurrences = {
             node.id: node.data.config for node in graph.nodes if node.data.nodeType == "submodel"
         }
-        assert occurrences["a"] == {"definitionId": "definition_a", "alias": "a"}
-        assert occurrences["b"] == {"definitionId": "definition_b", "alias": "b"}
+        assert occurrences["a"] == {"definition_id": "definition_a", "alias": "a"}
+        assert occurrences["b"] == {"definition_id": "definition_b", "alias": "b"}
 
 
 class TestEmptySubmodelFile:

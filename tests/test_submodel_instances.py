@@ -114,9 +114,9 @@ def _instance(
     y: float = 0,
 ) -> GraphNode:
     name = alias if alias is not None else instance_id
-    config: dict[str, object] = {"definitionId": definition_id, "alias": name}
+    config: dict[str, object] = {"definition_id": definition_id, "alias": name}
     if instance_of is not None:
-        config["instanceOf"] = instance_of
+        config["instance_of"] = instance_of
     return _node(
         instance_id,
         NodeType.SUBMODEL,
@@ -647,8 +647,10 @@ def test_instance_clones_and_their_consumers_keep_input_names(target: str | None
     finish = flat.node_map[qualified_runtime_node_id("rating_ie", "finish")]
     assert scale.data.label == "rating_ie__scale"
     assert finish.data.label == "rating_ie__finish"
-    assert finish.data.config["inputMapping"] == {"scale": "rating_ie__scale"}
-    assert flat.node_map["consumer"].data.config["inputMapping"]["rating_ie"] == "rating_ie__finish"
+    assert finish.data.config["input_mapping"] == {"scale": "rating_ie__scale"}
+    assert (
+        flat.node_map["consumer"].data.config["input_mapping"]["rating_ie"] == "rating_ie__finish"
+    )
     if target is None:
         assert flat.node_map[qualified_runtime_node_id("rating", "scale")].data.label == "scale"
 
@@ -898,7 +900,7 @@ def test_only_submodel_nodes_are_resolved_as_occurrences() -> None:
     ordinary = _node(
         "ordinary",
         config={
-            "definitionId": "definition_scoring",
+            "definition_id": "definition_scoring",
             "alias": "looks_like_an_occurrence",
         },
     )
@@ -917,7 +919,7 @@ def test_only_submodel_nodes_are_resolved_as_occurrences() -> None:
     [
         {},
         {"alias": "scoring"},
-        {"definitionId": 123, "alias": "scoring"},
+        {"definition_id": 123, "alias": "scoring"},
     ],
 )
 def test_submodel_occurrence_identity_is_always_required(
@@ -935,7 +937,7 @@ def test_submodel_occurrence_identity_is_always_required(
         submodels={"definition_scoring": _definition()},
     )
 
-    with pytest.raises(ParseError, match="identity|config|definitionId"):
+    with pytest.raises(ParseError, match="identity|config|definition_id"):
         validate_submodel_instances(graph)
 
 
@@ -956,17 +958,17 @@ def test_definition_registry_never_infers_definition_identity() -> None:
 def test_submodel_instance_config_preserves_owner_reference_aliases() -> None:
     config = SubmodelInstanceConfig.model_validate(
         {
-            "definitionId": "definition_scoring",
+            "definition_id": "definition_scoring",
             "alias": "scoring_copy",
-            "instanceOf": "instance_owner",
+            "instance_of": "instance_owner",
         }
     )
 
     assert config.instance_of == "instance_owner"
-    assert config.model_dump(by_alias=True)["instanceOf"] == "instance_owner"
-    owner = SubmodelInstanceConfig(definitionId="definition_scoring", alias="scoring")
+    assert config.model_dump(by_alias=True)["instance_of"] == "instance_owner"
+    owner = SubmodelInstanceConfig(definition_id="definition_scoring", alias="scoring")
     assert owner.model_dump(by_alias=True) == {
-        "definitionId": "definition_scoring",
+        "definition_id": "definition_scoring",
         "alias": "scoring",
     }
 
@@ -1024,7 +1026,7 @@ def test_instance_validation_rejects_invalid_owner_topology(
         submodels=definitions or {"definition_scoring": _definition()},
     )
 
-    with pytest.raises(ParseError, match="owner|instanceOf"):
+    with pytest.raises(ParseError, match="owner|instance_of"):
         validate_submodel_instances(graph)
 
 
@@ -1038,7 +1040,7 @@ def test_targeted_flatten_rejects_dissolving_owner_with_remaining_copy() -> None
         submodels={"definition_scoring": _definition()},
     )
 
-    with pytest.raises(ParseError, match="owner|instanceOf"):
+    with pytest.raises(ParseError, match="owner|instance_of"):
         flatten_graph(graph, target_instance_id="instance_owner")
 
 
@@ -1193,7 +1195,7 @@ def test_flatten_expands_two_instances_with_independent_bindings_and_references(
 
 def test_flatten_preserves_strict_data_input_domain_config() -> None:
     config: dict[str, object] = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "nb_batch.parquet",
@@ -1220,7 +1222,7 @@ def test_flatten_preserves_strict_data_input_domain_config() -> None:
 
     assert flattened_config == config
     assert validate_data_input_config(flattened_config) == {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "nb_batch.parquet",
@@ -1403,7 +1405,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
                 "response",
                 NodeType.OUTPUT,
                 config={
-                    "outputMapping": [
+                    "output_mapping": [
                         {
                             "source_port": "results",
                             "source_column": "premium",
@@ -1434,7 +1436,7 @@ def test_flatten_rewrites_public_output_source_port_in_multi_frame_mapping() -> 
 
     result = flatten_graph(graph)
 
-    assert result.node_map["response"].data.config["outputMapping"] == [
+    assert result.node_map["response"].data.config["output_mapping"] == [
         {
             "source_port": "Internal_Output",
             "source_column": "premium",
@@ -1467,7 +1469,7 @@ def test_rewrite_boundary_input_names_rejects_malformed_output_mapping(
     node = _node(
         "response",
         NodeType.OUTPUT,
-        config={"outputMapping": output_mapping},
+        config={"output_mapping": output_mapping},
     )
 
     with pytest.raises(ParseError) as exc_info:
@@ -1519,7 +1521,7 @@ def test_flatten_preserves_public_input_label_for_ordinary_polars_code() -> None
     result = flatten_graph(graph)
     consumer = result.node_map[qualified_runtime_node_id("instance_a", "consumer")]
 
-    assert consumer.data.config["inputMapping"] == {"policy": "External_policies"}
+    assert consumer.data.config["input_mapping"] == {"policy": "External_policies"}
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Child_transform(policy: pl.LazyFrame)" in generated
     assert "df = policy" in generated
@@ -1546,7 +1548,7 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
         label="Loader",
         config={
             "path": str(lookup),
-            "fileType": "json",
+            "file_type": "json",
             # The first input is df; the second is read by its name.
             "code": "df = df.join(rates, on='k').with_columns("
             "premium=pl.col('x') * pl.col('rate') * obj['factor'])",
@@ -1603,7 +1605,7 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
     flattened = flatten_graph(grouped)
     loader_id = qualified_runtime_node_id("pricing", "loader")
 
-    assert flattened.node_map[loader_id].data.config["inputMapping"] == {
+    assert flattened.node_map[loader_id].data.config["input_mapping"] == {
         "policies": "Policy_table",
         "rates": "Rate_table",
     }
@@ -1670,7 +1672,9 @@ def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> Non
 
     result = flatten_graph(graph)
 
-    assert result.node_map["consumer"].data.config["inputMapping"] == {"results": "Internal_Output"}
+    assert result.node_map["consumer"].data.config["input_mapping"] == {
+        "results": "Internal_Output"
+    }
     generated = graph_to_code_multi(result, pipeline_name="main")["main.py"]
     assert "def Consumer(results: pl.LazyFrame)" in generated
     assert "df = results" in generated
@@ -1865,7 +1869,7 @@ def test_codegen_records_the_owning_pipeline_directory_by_registration_depth(
     refuses a definition file anywhere else: the pipeline could not import it.
     """
     score_config = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": "abc123",
         "artifact_path": "model.cbm",
         "task": "regression",
@@ -1973,7 +1977,7 @@ def test_submodel_node_reads_its_sidecar_from_the_owning_pipeline_directory(
     sidecar = tmp_path / "config" / "data_input" / "quotes.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text(
-        json.dumps({"inputType": "file", "format": "parquet", "path": "quotes.parquet"}),
+        json.dumps({"input_type": "file", "format": "parquet", "path": "quotes.parquet"}),
         encoding="utf-8",
     )
     child = tmp_path / "modules" / "loader.py"
@@ -2072,10 +2076,10 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
     }
     assert {
         instance_id: (
-            node.data.config["definitionId"],
+            node.data.config["definition_id"],
             node.data.config["alias"],
             node.data.label,
-            node.data.config.get("instanceOf"),
+            node.data.config.get("instance_of"),
         )
         for instance_id, node in occurrences.items()
     } == {
@@ -2125,10 +2129,10 @@ def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_binding
     }
     assert {
         instance_id: (
-            node.data.config["definitionId"],
+            node.data.config["definition_id"],
             node.data.config["alias"],
             node.data.label,
-            node.data.config.get("instanceOf"),
+            node.data.config.get("instance_of"),
         )
         for instance_id, node in renamed_occurrences.items()
     } == {
@@ -2194,8 +2198,8 @@ def test_grouping_creates_one_canonical_definition_and_first_occurrence() -> Non
     occurrence = next(
         node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
     )
-    assert occurrence.data.config == {"definitionId": "pricing", "alias": "pricing"}
-    assert set(occurrence.data.config) == {"definitionId", "alias"}
+    assert occurrence.data.config == {"definition_id": "pricing", "alias": "pricing"}
+    assert set(occurrence.data.config) == {"definition_id", "alias"}
 
     definition = (result.graph.submodels or {})["pricing"]
     assert definition.file == "modules/pricing.py"
@@ -2358,7 +2362,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
                 "child_instance",
                 config={
                     "code": "df = drivers",
-                    "inputMapping": {
+                    "input_mapping": {
                         "drivers": "drivers",
                         "stable_input": "stable_input",
                     },
@@ -2394,7 +2398,7 @@ def test_grouping_preserves_child_input_configs_and_uses_public_labels() -> None
         "drivers": "live",
         "stable_input": "batch",
     }
-    assert children["child_instance"].data.config["inputMapping"] == {
+    assert children["child_instance"].data.config["input_mapping"] == {
         "drivers": "drivers",
         "stable_input": "stable_input",
     }
@@ -2483,7 +2487,7 @@ def test_rewrite_boundary_input_names_rejects_duplicate_output_mapping_entries()
         "response",
         NodeType.OUTPUT,
         config={
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "Published_results",
                     "source_column": "premium",
@@ -2511,7 +2515,7 @@ def test_rewrite_boundary_input_names_rejects_duplicate_output_mapping_entries()
             },
         )
 
-    assert "outputMapping rename collides" in str(exc_info.value)
+    assert "output_mapping rename collides" in str(exc_info.value)
     assert exc_info.value.context["node_id"] == "response"
     assert exc_info.value.context["output_path"] == "$.premium"
 
@@ -2522,7 +2526,7 @@ def test_rewrite_boundary_input_names_rejects_contradicting_output_mapping_entri
         "response",
         NodeType.OUTPUT,
         config={
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "Published_results",
                     "source_column": "premium",
@@ -2550,7 +2554,7 @@ def test_rewrite_boundary_input_names_rejects_contradicting_output_mapping_entri
             },
         )
 
-    assert "outputMapping rename collides" in str(exc_info.value)
+    assert "output_mapping rename collides" in str(exc_info.value)
     assert exc_info.value.context["output_path"] == "$.premium"
 
 
@@ -2681,7 +2685,7 @@ def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolv
         assert definition.input_ports[0].name == ("calc_2" if self_named_input else "policies")
         assert definition.output_ports[0].name == "calc"
         if self_named_input:
-            assert child.data.config["inputMapping"] == {"calc": "calc_2"}
+            assert child.data.config["input_mapping"] == {"calc": "calc_2"}
         assert wrapped.node_map["consumer"].data.config == {"code": "df = calc"}
         assert execute_graph(flatten_graph(wrapped), target_node_id="consumer")[
             "consumer"
@@ -2714,7 +2718,7 @@ def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolv
         assert inner.data.nodeType == NodeType.POLARS
         assert inner.position == {"x": 120, "y": 230}
         # The reloaded consumer's ``df = calc`` rebuilds as a source step (READ-22), and a
-        # stepped transform has its step references rewritten, never an inputMapping.
+        # stepped transform has its step references rewritten, never an input_mapping.
         assert expanded.node_map["consumer"].data.config == {
             "code": "df = calc_node",
             "steps": [{"id": "source-1", "kind": "source", "input": "calc_node"}],

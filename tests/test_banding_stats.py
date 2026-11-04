@@ -81,7 +81,7 @@ def _graph(project: Path, factors: list[dict[str, Any]]) -> dict[str, Any]:
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -118,7 +118,7 @@ def _graph_with_transform(
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -178,9 +178,9 @@ def _factor(**updates: Any) -> dict[str, Any]:
     factor: dict[str, Any] = {
         "banding": "breakpoints",
         "column": "premium",
-        "outputColumn": "band",
+        "output_column": "band",
         "rules": [],
-        "rightClosed": True,
+        "right_closed": True,
     }
     factor.update(updates)
     return factor
@@ -564,7 +564,7 @@ def test_statistics_are_never_computed_from_data_that_is_not_there(
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),

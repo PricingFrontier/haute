@@ -370,7 +370,7 @@ class TestColumnProfiles:
         (config_dir / "quotes.json").write_text(
             json.dumps(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": str(project_root / "data" / "quotes.parquet"),
@@ -925,8 +925,8 @@ class TestUnresolvableButInspectableNodes:
         graph = parse_pipeline_to_graph(project_root / "main.py")
         table = {
             "factors": ["quote_id"],
-            "outputColumn": "rate",
-            "defaultValue": "1.0",
+            "output_column": "rate",
+            "default_value": "1.0",
             "entries": [{"quote_id": "q1", "value": "1.1"}],
         }
         for node_id, node_type, extra in (
@@ -1032,7 +1032,7 @@ class TestUnresolvableButInspectableNodes:
                             "nodeType": "dataInput",
                             "config": {
                                 "path": "data/quotes.parquet",
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                             },
                         },
@@ -2502,7 +2502,7 @@ class TestExecutorArms:
                         "name": "book",
                         "ref": "book",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "excel",
                             "mode": "read",
                             "path": "book.xlsx",
@@ -2769,7 +2769,7 @@ class TestStepsFirstAuthoring:
             pytest.param(
                 2,
                 "loaded",
-                {"path": "loadings.json", "fileType": "json"},
+                {"path": "loadings.json", "file_type": "json"},
                 "quote_id",
                 {"quote_id": ["q1", "q2"], "zone": ["A", "B"], "loading": [1.1, 0.9]},
                 id="load-file-with-obj-and-a-second-input",
@@ -3323,7 +3323,7 @@ def policies() -> pl.LazyFrame:
 _AGE_FACTOR = {
     "banding": "breakpoints",
     "column": "driver_age",
-    "outputColumn": "age_band",
+    "output_column": "age_band",
     "rules": [{"boundary": "24", "label": "young"}, {"boundary": "", "label": "older"}],
     "default": "unknown",
 }
@@ -3369,7 +3369,7 @@ class TestConfigErrors:
         dated = {
             "banding": "breakpoints",
             "column": "inception_date",
-            "outputColumn": "inception_year",
+            "output_column": "inception_year",
             "rules": [{"boundary": "2024", "label": "2024"}, {"boundary": "", "label": "later"}],
             "default": "unknown",
         }
@@ -3396,9 +3396,9 @@ class TestConfigErrors:
                 "tables": [
                     {
                         "factors": ["age_band"],
-                        "outputColumn": "age_factor",
+                        "output_column": "age_factor",
                         "entries": [{"factor_values": ["young"], "value": 1.2}],
-                        "defaultValue": 1.0,
+                        "default_value": 1.0,
                     }
                 ]
             },
@@ -3438,9 +3438,9 @@ class TestConfigErrors:
                 "tables": [
                     {
                         "factors": ["age_band"],
-                        "outputColumn": "age_factor",
+                        "output_column": "age_factor",
                         "entries": [{"age_band": "young", "value": 1.2}],
-                        "defaultValue": 1.0,
+                        "default_value": 1.0,
                     }
                 ]
             },
@@ -3494,7 +3494,7 @@ async def test_categorical_rules_on_a_date_column_point_at_breakpoints(rating_pr
     inception = {
         "banding": "categorical",
         "column": "inception_date",
-        "outputColumn": "inception_band",
+        "output_column": "inception_band",
         "rules": [{"value": "2024-03-01", "assignment": "early"}],
         "default": "later",
     }
@@ -3517,7 +3517,7 @@ async def test_categorical_rules_on_an_integer_code_column_are_accepted(rating_p
     ages = {
         "banding": "categorical",
         "column": "driver_age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [{"value": "19", "assignment": "young"}],
         "default": "older",
     }
@@ -3873,7 +3873,7 @@ class TestActionableErrors:
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         response = next(node for node in graph.nodes if node.id == "response")
-        assert [row["source_port"] for row in response.data.config["outputMapping"]] == [
+        assert [row["source_port"] for row in response.data.config["output_mapping"]] == [
             "region_band"
         ]
 
@@ -3898,7 +3898,7 @@ class TestActionableErrors:
                         "op": "add_node",
                         "node_type": "output",
                         "name": "response",
-                        "config": {"outputMapping": [row]},
+                        "config": {"output_mapping": [row]},
                     },
                     {"op": "add_edge", "source": "quotes", "target": "response"},
                 ],
@@ -3907,7 +3907,7 @@ class TestActionableErrors:
 
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
-        assert error["where"] == {"op_index": 0, "node": "response", "field": "outputMapping"}
+        assert error["where"] == {"op_index": 0, "node": "response", "field": "output_mapping"}
         assert "'rated_quotes'" in error["message"] and "'quotes'" in error["message"]
         assert error["fix"] == (
             "The edges into 'response' provide the input 'quotes'; set row 1's source_port "
@@ -3978,7 +3978,7 @@ class TestActionableErrors:
                         "op": "add_node",
                         "node_type": "output",
                         "name": "response",
-                        "config": {"outputMapping": [row]},
+                        "config": {"output_mapping": [row]},
                     },
                     *(
                         {
@@ -3995,7 +3995,7 @@ class TestActionableErrors:
 
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
-        assert error["where"] == {"op_index": 1, "node": "response", "field": "outputMapping"}
+        assert error["where"] == {"op_index": 1, "node": "response", "field": "output_mapping"}
         assert error["fix"] == fix
         assert error.get("did_you_mean") == did_you_mean
 

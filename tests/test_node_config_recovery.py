@@ -20,7 +20,7 @@ def test_data_input_retains_valid_path_and_mode_when_argument_is_invalid() -> No
     result = reconcile_config(
         NodeType.DATA_INPUT,
         {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "quotes.parquet",
@@ -34,8 +34,8 @@ def test_data_input_retains_valid_path_and_mode_when_argument_is_invalid() -> No
 
 @pytest.mark.parametrize("input_type", ["oracle", 1, True, [], {}])
 def test_unknown_discriminant_is_not_defaulted(input_type: object) -> None:
-    result = reconcile_config(NodeType.DATA_INPUT, {"inputType": input_type, "path": "x"})
-    assert "inputType" not in result.config
+    result = reconcile_config(NodeType.DATA_INPUT, {"input_type": input_type, "path": "x"})
+    assert "input_type" not in result.config
     assert "format" not in result.config
     assert any(issue.code == "unknown_discriminant" for issue in result.issues)
 
@@ -43,12 +43,12 @@ def test_unknown_discriminant_is_not_defaulted(input_type: object) -> None:
 @pytest.mark.parametrize(
     ("node_type", "config"),
     [
-        (NodeType.DATA_INPUT, {"inputType": [], "inputMapping": {"x": []}}),
-        (NodeType.DATA_OUTPUT, {"outputType": {}, "inputMapping": {"x": []}}),
-        (NodeType.MODEL_SCORE, {"sourceType": [], "inputMapping": {"x": []}}),
-        (NodeType.MODELLING, {"algorithm": {}, "inputMapping": {"x": []}}),
-        (NodeType.OPTIMISER, {"mode": [], "inputMapping": {"x": []}}),
-        (NodeType.OPTIMISER_APPLY, {"sourceType": {}, "inputMapping": {"x": []}}),
+        (NodeType.DATA_INPUT, {"input_type": [], "input_mapping": {"x": []}}),
+        (NodeType.DATA_OUTPUT, {"output_type": {}, "input_mapping": {"x": []}}),
+        (NodeType.MODEL_SCORE, {"source_type": [], "input_mapping": {"x": []}}),
+        (NodeType.MODELLING, {"algorithm": {}, "input_mapping": {"x": []}}),
+        (NodeType.OPTIMISER, {"mode": [], "input_mapping": {"x": []}}),
+        (NodeType.OPTIMISER_APPLY, {"source_type": {}, "input_mapping": {"x": []}}),
     ],
 )
 def test_shape_invalid_discriminants_do_not_reach_semantic_validators(
@@ -86,9 +86,9 @@ def test_validation_uses_exact_live_switch_input_names() -> None:
 @pytest.mark.parametrize(
     ("config", "path", "allowed"),
     [
-        ({"how": "asof", "on": ["quote_id"], "maintainOrder": "left"}, "/how", "'cross'"),
+        ({"how": "asof", "on": ["quote_id"], "maintain_order": "left"}, "/how", "'cross'"),
         (
-            {"how": "left", "on": ["quote_id"], "validate": "1:x", "maintainOrder": "left"},
+            {"how": "left", "on": ["quote_id"], "validate": "1:x", "maintain_order": "left"},
             "/validate",
             "'m:m'",
         ),
@@ -117,7 +117,7 @@ def _engine_refusal(check: Callable[[], object]) -> str:
     [
         pytest.param(
             NodeType.EDGE_JOIN,
-            {"how": "left", "maintainOrder": "left"},
+            {"how": "left", "maintain_order": "left"},
             build_edge_join_kwargs,
             "",
             "invalid_group",
@@ -125,9 +125,9 @@ def _engine_refusal(check: Callable[[], object]) -> str:
         ),
         pytest.param(
             NodeType.SCENARIO_EXPANDER,
-            {"stepCount": 0},
+            {"step_count": 0},
             scenario_step_count,
-            "/stepCount",
+            "/step_count",
             "invalid_value",
             id="scenario-step-count",
         ),
@@ -141,7 +141,7 @@ def _engine_refusal(check: Callable[[], object]) -> str:
         ),
         pytest.param(
             NodeType.MODEL_SCORE,
-            {"sourceType": "run", "run_id": ""},
+            {"source_type": "run", "run_id": ""},
             parse_model_source,
             "/run_id",
             "required",
@@ -149,7 +149,7 @@ def _engine_refusal(check: Callable[[], object]) -> str:
         ),
         pytest.param(
             NodeType.EXTERNAL_FILE,
-            {"path": "", "fileType": "json"},
+            {"path": "", "file_type": "json"},
             validate_external_file_config,
             "/path",
             "required",
@@ -200,8 +200,8 @@ def test_a_constant_name_that_is_not_text_is_an_issue_not_a_crash(name: object) 
 @pytest.mark.parametrize(
     ("node_type", "config"),
     [
-        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3}),
-        (NodeType.SCENARIO_EXPANDER, {"stepCount": 3, "min_value": 1.2, "max_value": 0.8}),
+        (NodeType.SCENARIO_EXPANDER, {"step_count": 3}),
+        (NodeType.SCENARIO_EXPANDER, {"step_count": 3, "min_value": 1.2, "max_value": 0.8}),
         (NodeType.CONSTANT, {"values": [{"name": "Prämie 2024", "value": "1"}, {"value": "2"}]}),
         (NodeType.CONSTANT, {}),
     ],
@@ -221,16 +221,16 @@ def test_recovery_refuses_nothing_the_engine_runs(
         (NodeType.EDGE_JOIN, {"how": "asof", "on": [1]}, None),
         (NodeType.LIVE_SWITCH, {"input_scenario_map": {"a/b": ""}}, ["quotes"]),
         (NodeType.LIVE_SWITCH, {"input_scenario_map": {"quotes": 3}}, None),
-        (NodeType.SCENARIO_EXPANDER, {"stepCount": "many"}, None),
+        (NodeType.SCENARIO_EXPANDER, {"step_count": "many"}, None),
         (NodeType.CONSTANT, {"values": [{"name": "a"}, {"name": "a"}]}, None),
-        (NodeType.EXTERNAL_FILE, {"fileType": "catboost"}, None),
-        (NodeType.MODEL_SCORE, {"sourceType": "registered"}, None),
-        (NodeType.OPTIMISER_APPLY, {"sourceType": "run"}, ["df"]),
+        (NodeType.EXTERNAL_FILE, {"file_type": "catboost"}, None),
+        (NodeType.MODEL_SCORE, {"source_type": "registered"}, None),
+        (NodeType.OPTIMISER_APPLY, {"source_type": "run"}, ["df"]),
         (NodeType.MODELLING, {"algorithm": "glm"}, None),
         (NodeType.OPTIMISER, {"max_iter": 0}, None),
         (NodeType.POLARS, {"code": "df = ("}, None),
         (NodeType.POLARS, {"contract": {"inputs": 3}}, None),
-        (NodeType.DATA_INPUT, {"inputType": "oracle"}, None),
+        (NodeType.DATA_INPUT, {"input_type": "oracle"}, None),
     ],
 )
 def test_every_issue_path_is_a_json_pointer(
@@ -246,16 +246,16 @@ def test_every_issue_path_is_a_json_pointer(
 def test_nested_factor_preserves_valid_sibling_when_one_leaf_is_bad() -> None:
     result = reconcile_config(
         NodeType.BANDING,
-        {"factors": [{"banding": "breakpoints", "column": "age", "rightClosed": "no"}]},
+        {"factors": [{"banding": "breakpoints", "column": "age", "right_closed": "no"}]},
     )
     assert result.config["factors"] == [{"banding": "breakpoints", "column": "age"}]
-    assert any(change.path == "/factors/0/rightClosed" for change in result.changes)
+    assert any(change.path == "/factors/0/right_closed" for change in result.changes)
 
 
 def test_existing_database_branch_is_not_given_file_defaults() -> None:
     result = reconcile_config(
         NodeType.DATA_INPUT,
-        {"inputType": "database", "format": "database", "connection": "dsn", "query": "select 1"},
+        {"input_type": "database", "format": "database", "connection": "dsn", "query": "select 1"},
     )
     assert "path" not in result.config
     assert result.config["connection"] == "dsn"
@@ -278,7 +278,7 @@ def test_structured_contract_is_accepted() -> None:
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "x.parquet",
@@ -289,7 +289,7 @@ def test_structured_contract_is_accepted() -> None:
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "connection": "dsn",
                 "query": "select 1",
@@ -298,23 +298,23 @@ def test_structured_contract_is_accepted() -> None:
         ),
         (
             NodeType.DATA_INPUT,
-            {"inputType": "lakehouse", "format": "delta", "mode": "scan", "path": "table"},
+            {"input_type": "lakehouse", "format": "delta", "mode": "scan", "path": "table"},
             None,
         ),
         (
             NodeType.DATA_INPUT,
-            {"inputType": "databricks", "http_path": "http", "table": "catalog.schema.table"},
+            {"input_type": "databricks", "http_path": "http", "table": "catalog.schema.table"},
             None,
         ),
         (
             NodeType.DATA_INPUT,
-            {"inputType": "inline", "format": "records", "mode": "read", "records": [{"x": 1}]},
+            {"input_type": "inline", "format": "records", "mode": "read", "records": [{"x": 1}]},
             None,
         ),
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "file",
+                "output_type": "file",
                 "format": "parquet",
                 "mode": "sink",
                 "path": "x.parquet",
@@ -325,7 +325,7 @@ def test_structured_contract_is_accepted() -> None:
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "database",
+                "output_type": "database",
                 "format": "database",
                 "connection": "dsn",
                 "table": "target",
@@ -334,19 +334,19 @@ def test_structured_contract_is_accepted() -> None:
         ),
         (
             NodeType.DATA_OUTPUT,
-            {"outputType": "lakehouse", "format": "delta", "mode": "sink", "path": "target"},
+            {"output_type": "lakehouse", "format": "delta", "mode": "sink", "path": "target"},
             None,
         ),
         (NodeType.POLARS, {"code": "result = df"}, None),
         (
             NodeType.EDGE_JOIN,
-            {"how": "left", "maintainOrder": "left_right", "on": "id", "suffix": "_right"},
+            {"how": "left", "maintain_order": "left_right", "on": "id", "suffix": "_right"},
             None,
         ),
         (
             NodeType.MODEL_SCORE,
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run",
                 "task": "regression",
                 "output_column": "prediction",
@@ -356,7 +356,7 @@ def test_structured_contract_is_accepted() -> None:
         (
             NodeType.MODEL_SCORE,
             {
-                "sourceType": "registered",
+                "source_type": "registered",
                 "registered_model": "model",
                 "version": "1",
                 "task": "regression",
@@ -367,7 +367,7 @@ def test_structured_contract_is_accepted() -> None:
         (
             NodeType.MODEL_SCORE,
             {
-                "sourceType": "file",
+                "source_type": "file",
                 "model_path": "models/freq.cbm",
                 "task": "regression",
                 "output_column": "prediction",
@@ -381,7 +381,7 @@ def test_structured_contract_is_accepted() -> None:
                     {
                         "banding": "breakpoints",
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "rules": [{"boundary": "10", "label": "young"}],
                     }
                 ]
@@ -394,7 +394,7 @@ def test_structured_contract_is_accepted() -> None:
                 "tables": [
                     {
                         "factors": ["age_band"],
-                        "outputColumn": "rate",
+                        "output_column": "rate",
                         "entries": [{"age_band": "young", "value": "1.1"}],
                     }
                 ]
@@ -404,7 +404,7 @@ def test_structured_contract_is_accepted() -> None:
         (
             NodeType.OUTPUT,
             {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "df",
                         "source_column": "x",
@@ -416,7 +416,7 @@ def test_structured_contract_is_accepted() -> None:
             None,
         ),
         (NodeType.EXPLORE, {}, None),
-        (NodeType.EXTERNAL_FILE, {"path": "model.pkl", "fileType": "pickle"}, None),
+        (NodeType.EXTERNAL_FILE, {"path": "model.pkl", "file_type": "pickle"}, None),
         (NodeType.LIVE_SWITCH, {"input_scenario_map": {"df": "live"}}, ["df"]),
         (
             NodeType.MODELLING,
@@ -447,23 +447,23 @@ def test_structured_contract_is_accepted() -> None:
                 "step_column": "scenario_index",
                 "min_value": 0.0,
                 "max_value": 1.0,
-                "stepCount": 2,
+                "step_count": 2,
             },
             None,
         ),
         (
             NodeType.OPTIMISER_APPLY,
-            {"sourceType": "file", "artifact_path": "opt.json", "optimiser_mode": "online"},
+            {"source_type": "file", "artifact_path": "opt.json", "optimiser_mode": "online"},
             ["df"],
         ),
         (
             NodeType.OPTIMISER_APPLY,
-            {"sourceType": "run", "run_id": "run", "optimiser_mode": "online"},
+            {"source_type": "run", "run_id": "run", "optimiser_mode": "online"},
             ["df"],
         ),
         (
             NodeType.OPTIMISER_APPLY,
-            {"sourceType": "registered", "registered_model": "model", "optimiser_mode": "online"},
+            {"source_type": "registered", "registered_model": "model", "optimiser_mode": "online"},
             ["df"],
         ),
         (
@@ -497,7 +497,7 @@ def test_recover_preserves_valid_absence_of_optional_fields() -> None:
     # A JSON file input legitimately omits mode; recovery must not inject the
     # parquet-oriented palette default and break the config (json cannot scan).
     raw = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "json",
         "path": "quotes.json",
         "arguments": {},
@@ -510,7 +510,7 @@ def test_recover_preserves_valid_absence_of_optional_fields() -> None:
 
 
 def test_recover_fills_absent_fields_from_the_palette_of_the_same_branch() -> None:
-    raw = {"inputType": "file", "format": "parquet", "path": "quotes.parquet"}
+    raw = {"input_type": "file", "format": "parquet", "path": "quotes.parquet"}
     result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
     # The palette is a parquet file scan, this config's branch, so what the saved
     # file lacks takes its default; an absent ``steps`` stays absent (code mode).
@@ -522,7 +522,7 @@ def test_recover_fills_absent_fields_from_the_palette_of_the_same_branch() -> No
 
 
 def test_recover_gives_a_field_added_since_the_save_its_palette_default() -> None:
-    """A Scenario Expander saved before ``stepCount`` existed comes back runnable."""
+    """A Scenario Expander saved before ``step_count`` existed comes back runnable."""
     raw = {
         "quote_id": "qid",
         "column_name": "price",
@@ -531,8 +531,8 @@ def test_recover_gives_a_field_added_since_the_save_its_palette_default() -> Non
         "max_value": 0.3,
     }
     result = reconcile_config(NodeType.SCENARIO_EXPANDER, dict(raw))
-    assert result.config == {**raw, "stepCount": 21}
-    assert ("/stepCount", "defaulted") in {(c.path, c.outcome) for c in result.changes}
+    assert result.config == {**raw, "step_count": 21}
+    assert ("/step_count", "defaulted") in {(c.path, c.outcome) for c in result.changes}
     assert not [issue for issue in result.issues if issue.severity == "error"]
 
 
@@ -545,18 +545,18 @@ def test_recover_gives_an_edge_join_saved_without_its_order_the_order_for_its_ty
     """Polars 2 keeps a join's order only when told to, so Edge Join's order is required."""
     raw = {"how": how, "on": ["policy_id"], "suffix": "_right"}
 
-    assert ("/maintainOrder", "required") in {
+    assert ("/maintain_order", "required") in {
         (issue.path, issue.code) for issue in validate_recovery_config(NodeType.EDGE_JOIN, raw)
     }
     result = reconcile_config(NodeType.EDGE_JOIN, dict(raw))
-    assert result.config == {**raw, "maintainOrder": order}
-    assert ("/maintainOrder", "defaulted") in {(c.path, c.outcome) for c in result.changes}
+    assert result.config == {**raw, "maintain_order": order}
+    assert ("/maintain_order", "defaulted") in {(c.path, c.outcome) for c in result.changes}
     assert not [issue for issue in result.issues if issue.severity == "error"]
 
 
 def test_an_unknown_edge_join_order_is_reported() -> None:
-    raw = {"how": "left", "on": ["policy_id"], "maintainOrder": "sideways"}
-    assert ("/maintainOrder", "invalid_value") in {
+    raw = {"how": "left", "on": ["policy_id"], "maintain_order": "sideways"}
+    assert ("/maintain_order", "invalid_value") in {
         (issue.path, issue.code) for issue in validate_recovery_config(NodeType.EDGE_JOIN, raw)
     }
 
@@ -567,11 +567,11 @@ def test_an_unknown_edge_join_order_is_reported() -> None:
         pytest.param(NodeType.DATA_INPUT, {"path": "quotes.parquet"}, id="no-discriminant"),
         pytest.param(
             NodeType.DATA_INPUT,
-            {"inputType": "file", "format": "parquet", "mode": "read", "path": "q.parquet"},
+            {"input_type": "file", "format": "parquet", "mode": "read", "path": "q.parquet"},
             id="other-mode",
         ),
         pytest.param(
-            NodeType.MODEL_SCORE, {"sourceType": "run", "run_id": "abc"}, id="other-provider"
+            NodeType.MODEL_SCORE, {"source_type": "run", "run_id": "abc"}, id="other-provider"
         ),
     ],
 )
@@ -585,7 +585,7 @@ def test_recover_never_fills_from_another_branch_palette(
 
 def test_recover_missing_required_locator_is_a_gap_not_a_refusal() -> None:
     """A missing locator is what the config lacks: reported as required, never refused."""
-    raw = {"inputType": "file", "format": "parquet", "mode": "read", "arguments": {}, "code": ""}
+    raw = {"input_type": "file", "format": "parquet", "mode": "read", "arguments": {}, "code": ""}
     result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
     assert "path" not in result.config
     assert [(issue.path, issue.code) for issue in result.issues if issue.severity == "error"] == [
@@ -595,7 +595,7 @@ def test_recover_missing_required_locator_is_a_gap_not_a_refusal() -> None:
 
 def test_reset_still_seeds_the_full_palette_default() -> None:
     result = reconcile_config(
-        NodeType.DATA_INPUT, {"inputType": "file", "path": "keep.parquet"}, reset=True
+        NodeType.DATA_INPUT, {"input_type": "file", "path": "keep.parquet"}, reset=True
     )
     assert result.config["format"] == "parquet"
     assert result.config["mode"] == "scan"
@@ -606,18 +606,18 @@ def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
     first = {
         "banding": "breakpoints",
         "column": "age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [{"boundary": "30", "label": "young"}],
         "default": "other",
-        "rightClosed": True,
+        "right_closed": True,
     }
     last = {
         "banding": "categorical",
         "column": "region",
-        "outputColumn": "region_band",
+        "output_column": "region_band",
         "rules": {"north": "N"},
         "default": None,
-        "rightClosed": False,
+        "right_closed": False,
     }
     result = reconcile_config(NodeType.BANDING, {"factors": [first, "corrupt", last]})
     assert result.config["factors"] == [first, last]
@@ -630,12 +630,12 @@ def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
 
 
 def test_a_file_sourced_model_score_without_its_file_names_model_path() -> None:
-    issues = validate_recovery_config(NodeType.MODEL_SCORE, {"sourceType": "file"})
+    issues = validate_recovery_config(NodeType.MODEL_SCORE, {"source_type": "file"})
     assert [(issue.path, issue.code) for issue in issues] == [("/model_path", "required")]
 
 
 def test_a_load_file_naming_catboost_is_an_unsupported_file_type() -> None:
     issues = validate_recovery_config(
-        NodeType.EXTERNAL_FILE, {"path": "model.cbm", "fileType": "catboost"}
+        NodeType.EXTERNAL_FILE, {"path": "model.cbm", "file_type": "catboost"}
     )
-    assert [(issue.path, issue.code) for issue in issues] == [("/fileType", "invalid_value")]
+    assert [(issue.path, issue.code) for issue in issues] == [("/file_type", "invalid_value")]

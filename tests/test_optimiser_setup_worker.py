@@ -131,7 +131,7 @@ def _optimiser_config(**overrides: Any) -> dict[str, Any]:
 
 
 def _file_input(path: Path) -> dict[str, Any]:
-    return {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(path)}
+    return {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(path)}
 
 
 def _online_graph(path: Path, **overrides: Any) -> dict[str, Any]:
@@ -233,7 +233,7 @@ def _scenario_chain_graph(path: Path) -> dict[str, Any]:
                             "column_name": "premium_multiplier",
                             "min_value": 0.8,
                             "max_value": 1.2,
-                            "stepCount": 3,
+                            "step_count": 3,
                             "step_column": "scenario_index",
                             "contract": {
                                 "inputs": [],

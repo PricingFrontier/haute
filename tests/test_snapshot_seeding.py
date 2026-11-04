@@ -46,7 +46,7 @@ def test_recipe_builders_refuse_non_frame_inputs() -> None:
         raise AssertionError("recipe inspection must not execute the builder")
 
     joined.edge_join_roles = (0, 1)
-    joined.edge_join_config = {"how": "left", "maintainOrder": "left_right", "on": "id"}
+    joined.edge_join_config = {"how": "left", "maintain_order": "left_right", "on": "id"}
     node = _node("join", NodeType.EDGE_JOIN, {})
     assert (
         execute_lazy_module._edge_join_recipe(joined, node, [pl.DataFrame({"id": [1]}), object()])
@@ -95,7 +95,7 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNod
 
 
 def _parquet(path: Path, code: str = "") -> dict[str, Any]:
-    config: dict[str, Any] = {"inputType": "file", "format": "parquet", "mode": "scan"}
+    config: dict[str, Any] = {"input_type": "file", "format": "parquet", "mode": "scan"}
     config["path"] = str(path)
     if code:
         config["code"] = code
@@ -1180,7 +1180,7 @@ def _scored_graph(project: Path, **model_config: Any) -> PipelineGraph:
                 "M",
                 NodeType.MODEL_SCORE,
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run-1",
                     "artifact_path": "model.pyfunc",
                     "task": "regression",
@@ -1684,7 +1684,7 @@ def test_lazy_run_join_capture_is_chunked_into_parts(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                     "column_renames": {"a": "alpha"},
@@ -1834,7 +1834,7 @@ def test_captured_chunk_local_node_reports_input_sliced_across_slices(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -1912,7 +1912,7 @@ def test_captured_chunk_local_node_empty_input_publishes_and_metrics_validate(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -1961,7 +1961,7 @@ def test_composed_passthrough_recipe_over_filtered_parent_is_input_sliced_and_eq
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -2048,7 +2048,7 @@ def test_passthrough_recipe_over_rejected_parent_records_parent_rejection(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -2126,7 +2126,7 @@ def test_passthrough_over_parent_with_no_recipe_gets_no_recipe_entry(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -2200,7 +2200,7 @@ def test_passthrough_recipe_with_multiple_edges_follows_selected_edge_schema(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "d"],
                 },
@@ -2277,7 +2277,7 @@ def test_link_proof_refuses_captured_parent_output_and_omits_child_recipe(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -2287,7 +2287,7 @@ def test_link_proof_refuses_captured_parent_output_and_omits_child_recipe(
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -2361,7 +2361,7 @@ def test_composed_shaped_passthrough_recipe_is_input_sliced_and_preserves_shaped
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },
@@ -2451,7 +2451,7 @@ def test_two_hop_passthrough_chain_recipe_over_filtered_parent_is_input_sliced_a
                 NodeType.EDGE_JOIN,
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": "id",
                     "selected_columns": ["id", "a", "d"],
                 },

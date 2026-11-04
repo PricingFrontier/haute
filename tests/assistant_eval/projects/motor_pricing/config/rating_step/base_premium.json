@@ -1,9 +1,9 @@
 {
-  "combinedOutputs": [
+  "combined_outputs": [
     {
-      "outputColumn": "premium",
+      "output_column": "premium",
       "operation": "multiply",
-      "baseValue": 320.0
+      "base_value": 320.0
     }
   ],
   "steps": [
@@ -16,8 +16,8 @@
   "tables": [
     {
       "factors": ["age_band"],
-      "outputColumn": "age_relativity",
-      "defaultValue": 1.0,
+      "output_column": "age_relativity",
+      "default_value": 1.0,
       "rows": [
         ["17-24", 1.8],
         ["25-59", 1.0],
@@ -26,8 +26,8 @@
     },
     {
       "factors": ["region", "vehicle_group"],
-      "outputColumn": "region_vehicle_relativity",
-      "defaultValue": 1.0,
+      "output_column": "region_vehicle_relativity",
+      "default_value": 1.0,
       "columns": ["A", "B", "C"],
       "rows": [
         ["North", 0.9, 1.0, 1.2],

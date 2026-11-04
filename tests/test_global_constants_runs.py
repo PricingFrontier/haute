@@ -98,7 +98,7 @@ class TestExecutorRuns:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": str(lookup),
-                                "fileType": "json",
+                                "file_type": "json",
                                 "code": (
                                     "df = df.with_columns("
                                     "scaled=pl.lit(obj['base'] * global_constants.rate))"
@@ -303,7 +303,7 @@ class TestExecutorRuns:
                 "data": {
                     "label": "ms",
                     "nodeType": "modelScore",
-                    "config": {"sourceType": "run", "run_id": "r1", "task": "regression"},
+                    "config": {"source_type": "run", "run_id": "r1", "task": "regression"},
                 },
             }
         )
@@ -367,7 +367,7 @@ def _served_model_score(tmp_path: Path, code: str, preamble: str = "") -> pl.Dat
                         "label": "ms",
                         "nodeType": "modelScore",
                         "config": {
-                            "sourceType": "run",
+                            "source_type": "run",
                             "run_id": "r1",
                             "artifact_path": "model.cbm",
                             "task": "regression",
@@ -383,7 +383,7 @@ def _served_model_score(tmp_path: Path, code: str, preamble: str = "") -> pl.Dat
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "ms",
                                     "source_column": "priced",

@@ -21,7 +21,7 @@ def _factor(rules: list[dict], **settings: object) -> dict:
     return {
         "banding": "breakpoints",
         "column": "x",
-        "outputColumn": "x_band",
+        "output_column": "x_band",
         "rules": rules,
         **settings,
     }
@@ -51,7 +51,7 @@ def test_bands_round_trip_with_their_edges_as_written(
 ) -> None:
     rules = [{"boundary": b, "label": f"band {i}"} for i, b in enumerate(boundaries)]
     rules.append({"boundary": "", "label": "top"})
-    config = {"factors": [_factor(rules, rightClosed=right_closed)]}
+    config = {"factors": [_factor(rules, right_closed=right_closed)]}
 
     text, loaded = _round_trip(tmp_path, config)
 
@@ -59,7 +59,7 @@ def test_bands_round_trip_with_their_edges_as_written(
         assert fragment in text
     assert '{"label": "top"}' in text
     assert loaded["factors"][0]["rules"] == rules
-    assert loaded["factors"][0]["rightClosed"] is right_closed
+    assert loaded["factors"][0]["right_closed"] is right_closed
 
 
 def test_the_open_ended_band_comes_last_and_a_null_default_is_left_out(tmp_path: Path) -> None:
@@ -76,7 +76,7 @@ def test_categorical_banding_keeps_its_map(tmp_path: Path) -> None:
     factor = {
         "banding": "categorical",
         "column": "c",
-        "outputColumn": "c_band",
+        "output_column": "c_band",
         "rules": [
             {"value": "Frame", "assignment": "Frame"},
             {"value": "Brick", "assignment": "Masonry"},
@@ -93,7 +93,7 @@ def test_a_sidecar_with_breakpoints_as_a_map_is_refused_naming_the_conversion(
     sidecar = tmp_path / "config" / "banding" / "bands.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_bytes(
-        b'{"factors": [{"banding": "breakpoints", "column": "x", "outputColumn": "b", '
+        b'{"factors": [{"banding": "breakpoints", "column": "x", "output_column": "b", '
         b'"rules": {"4": "1-4", "": "5+"}}]}'
     )
     with pytest.raises(ConfigSettingError, match=BANDS_CONVERSION):
@@ -104,7 +104,7 @@ def test_only_the_last_band_may_be_open_ended(tmp_path: Path) -> None:
     sidecar = tmp_path / "config" / "banding" / "bands.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_bytes(
-        b'{"factors": [{"banding": "breakpoints", "column": "x", "outputColumn": "b", '
+        b'{"factors": [{"banding": "breakpoints", "column": "x", "output_column": "b", '
         b'"rules": [{"label": "low"}, {"upper": 4, "label": "1-4"}]}]}'
     )
     with pytest.raises(ConfigSettingError, match="only the last band"):

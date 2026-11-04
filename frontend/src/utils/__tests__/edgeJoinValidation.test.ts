@@ -40,7 +40,7 @@ function edgeJoin(config: Record<string, unknown>): Node {
     data: {
       label: "Edge Join",
       nodeType: "edgeJoin",
-      config: { maintainOrder: "left_right", ...config },
+      config: { maintain_order: "left_right", ...config },
     },
   })
 }
@@ -91,8 +91,8 @@ describe("edgeJoinValidation", () => {
     })
     const join = edgeJoin({
       how: "left",
-      leftOn: ["policy_id"],
-      rightOn: ["driver_policy_id"],
+      left_on: ["policy_id"],
+      right_on: ["driver_policy_id"],
     })
     const analysis = analyzeEdgeJoinNode({
       nodeId: "join",
@@ -145,7 +145,7 @@ describe("edgeJoinValidation", () => {
 
   it("flags an edgeJoin whose row order is missing or unknown", () => {
     for (const maintainOrder of [undefined, "", "sideways"]) {
-      const nodes = [node("base"), node("lookup"), edgeJoin({ how: "left", on: ["policy_id"], maintainOrder })]
+      const nodes = [node("base"), node("lookup"), edgeJoin({ how: "left", on: ["policy_id"], maintain_order: maintainOrder })]
 
       const issue = findFirstInvalidEdgeJoin(nodes, connectedEdges)
 
@@ -171,15 +171,15 @@ describe("edgeJoinValidation", () => {
       node("lookup"),
       edgeJoin({
         how: "left",
-        leftOn: ["policy_id", "state"],
-        rightOn: ["policy_id"],
+        left_on: ["policy_id", "state"],
+        right_on: ["policy_id"],
       }),
     ]
 
     const issue = findFirstInvalidEdgeJoin(nodes, connectedEdges)
 
     expect(issue?.analysis.diagnostics).toContain(
-      "leftOn and rightOn must contain the same number of keys.",
+      "left_on and right_on must contain the same number of keys.",
     )
   })
 
@@ -202,7 +202,7 @@ describe("edgeJoinValidation", () => {
   // the caller vouches for may be quoted back as "the current upstream
   // columns" — a save gate that blocks on a stale one blocks a valid save.
   describe("column diagnostics only speak for a vouched-for stash", () => {
-    const missingKeyConfig = { how: "left", on: ["policy_id"], maintainOrder: "left_right" }
+    const missingKeyConfig = { how: "left", on: ["policy_id"], maintain_order: "left_right" }
     const MISSING = "Same-name key policy_id is not in the current upstream columns."
 
     it("reports a missing key when both stashes match the fence", () => {
@@ -271,7 +271,7 @@ describe("edgeJoinValidation", () => {
     it("treats an api-input's authored columns as current without any fence", () => {
       // They come from the node's own config, not from a preview capture, so
       // no stash can be stale and the diagnostic is always well-founded.
-      // Keyed through leftOn so only the base side's currency decides.
+      // Keyed through left_on so only the base side's currency decides.
       const apiInput = node("api", {
         data: {
           label: "Quote API",
@@ -284,7 +284,7 @@ describe("edgeJoinValidation", () => {
           _columns: [],
         },
       })
-      const join = edgeJoin({ how: "left", leftOn: ["policy_id"], rightOn: ["state"] })
+      const join = edgeJoin({ how: "left", left_on: ["policy_id"], right_on: ["state"] })
       const nodes = [apiInput, stampedInput("lookup", ["state"]), join]
       const edges = [
         edge("quotes", "api", "join", "base", "quotes"),
@@ -304,7 +304,7 @@ describe("edgeJoinValidation", () => {
       const workbenchInput = node("wb_in", {
         data: { label: "Quote", nodeType: "workbenchInput", config: {}, _columns: [] },
       })
-      const join = edgeJoin({ how: "left", leftOn: ["policy_id"], rightOn: ["state"] })
+      const join = edgeJoin({ how: "left", left_on: ["policy_id"], right_on: ["state"] })
       const nodes = [workbenchInput, stampedInput("lookup", ["state"]), join]
       const edges = [
         edge("policy", "wb_in", "join", "base", "policy"),

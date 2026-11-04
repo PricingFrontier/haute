@@ -62,7 +62,7 @@ def _source_node(project: Path) -> dict[str, Any]:
             "label": "source",
             "nodeType": "dataInput",
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": str(project / "quotes.parquet"),

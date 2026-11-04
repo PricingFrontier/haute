@@ -168,7 +168,7 @@ def _conservative_graph() -> PipelineGraph:
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": "total",
@@ -221,7 +221,7 @@ def _provable_group_by_graph() -> PipelineGraph:
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": "premium",

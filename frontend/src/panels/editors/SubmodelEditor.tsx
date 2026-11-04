@@ -37,12 +37,12 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
   const nodes = useGraphStore((state) => state.nodes)
   const edges = useGraphStore((state) => state.edges)
   const definition = useGraphStore((state) =>
-    isSubmodelInstanceConfig(config) ? state.submodels[config.definitionId] : undefined,
+    isSubmodelInstanceConfig(config) ? state.submodels[config.definition_id] : undefined,
   )
   const incoming = edges.filter((edge) => edge.target === nodeId)
   const warnings = (nodes.find((node) => node.id === nodeId)?.data._schemaWarnings as SchemaWarning[] | undefined) ?? []
   const warningsByInput = new Map<string, SchemaWarning[]>()
-  if (config.instanceOf) {
+  if (config.instance_of) {
     for (const warning of warnings) {
       if (warning.status !== "missing" && warning.status !== "unavailable") continue
       if (!warning.input) throw new Error(`Submodel warning for ${nodeId} has no public input`)
@@ -61,7 +61,7 @@ export default function SubmodelEditor({ nodeId, config, accentColor, readOnly =
       useToastStore.getState().addToast("error", apiErrorMessage(error))
     }
   }
-  if (!isSubmodelInstanceConfig(config) || !isSubmodelDefinition(definition, config.definitionId)) {
+  if (!isSubmodelInstanceConfig(config) || !isSubmodelDefinition(definition, config.definition_id)) {
     return (
       <div role="alert" className="px-4 py-3 text-xs" style={{ color: "var(--danger)" }}>
         Submodel occurrence or definition is invalid.

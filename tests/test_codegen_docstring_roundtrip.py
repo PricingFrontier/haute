@@ -458,7 +458,7 @@ class TestPipelineNameDocstringSafety:
                         "data": {
                             "label": "sm_alias",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                            "config": {"definition_id": "definition_sm", "alias": "sm_alias"},
                         },
                     }
                 ],
@@ -548,7 +548,7 @@ class TestTortureEndToEnd:
                         "data": {
                             "label": "torture_sm",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "torture_sm", "alias": "torture_sm"},
+                            "config": {"definition_id": "torture_sm", "alias": "torture_sm"},
                         },
                     }
                 ],
@@ -624,7 +624,7 @@ class TestTortureEndToEnd:
                         "data": {
                             "label": "torture_sm",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "torture_sm", "alias": "torture_sm"},
+                            "config": {"definition_id": "torture_sm", "alias": "torture_sm"},
                         },
                     }
                 ],

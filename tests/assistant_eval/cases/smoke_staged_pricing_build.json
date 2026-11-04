@@ -50,7 +50,7 @@
         "modified_nodes": [],
         "node_configs": {
           "nb_batch": {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "path": "data/nb_batch.parquet"
           },
@@ -59,7 +59,7 @@
               {
                 "banding": "categorical",
                 "column": "region",
-                "outputColumn": "region_group",
+                "output_column": "region_group",
                 "rules": [
                   {
                     "value": "north",
@@ -80,7 +80,7 @@
                 "factors": [
                   "region_group"
                 ],
-                "outputColumn": "region_factor",
+                "output_column": "region_factor",
                 "entries": [
                   {
                     "region_group": "core",
@@ -91,19 +91,19 @@
                     "value": 0.9
                   }
                 ],
-                "defaultValue": 1.0
+                "default_value": 1.0
               }
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
               {
-                "outputColumn": "technical_premium",
+                "output_column": "technical_premium",
                 "operation": "multiply",
-                "baseValue": 500.0
+                "base_value": 500.0
               }
             ]
           },
           "quote_response": {
-            "outputMapping": [
+            "output_mapping": [
               {
                 "source_port": "region_rating",
                 "source_column": "quote_id",

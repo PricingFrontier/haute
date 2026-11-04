@@ -253,7 +253,7 @@ class TestBindNodeInputs:
 _RATING_TABLES = [
     {
         "factors": ["region"],
-        "outputColumn": "region_factor",
+        "output_column": "region_factor",
         "entries": [{"region": "north", "value": 0.9}, {"region": "south", "value": 1.1}],
     }
 ]
@@ -265,7 +265,7 @@ _TARGETS: dict[str, tuple[GraphNode, str]] = {
             "target",
             NodeType.OUTPUT,
             {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "rows",
                         "source_column": "region",
@@ -298,7 +298,7 @@ _TARGETS: dict[str, tuple[GraphNode, str]] = {
             NodeType.EXTERNAL_FILE,
             {
                 "path": "factor.json",
-                "fileType": "json",
+                "file_type": "json",
                 "code": "df = rows.join(extra, how='cross')",
             },
         ),
@@ -431,7 +431,7 @@ def _priced_graph(project: Path) -> PipelineGraph:
                 "result",
                 NodeType.OUTPUT,
                 {
-                    "outputMapping": [
+                    "output_mapping": [
                         {
                             "source_port": port,
                             "source_column": column,
@@ -530,7 +530,7 @@ def test_ported_inputs_connected_join_first_run_alike(project: Path) -> None:
     joined = _node(
         "joined",
         NodeType.EDGE_JOIN,
-        {"how": "left", "maintainOrder": "left_right", "on": ["key"]},
+        {"how": "left", "maintain_order": "left_right", "on": ["key"]},
     )
     graph = PipelineGraph(
         nodes=[policies, regions, joined],

@@ -5,8 +5,8 @@ export type BandingMode = "breakpoints" | "categorical"
 export type BandingFactor = {
   banding: BandingMode
   column: string
-  outputColumn: string
+  output_column: string
   rules: (CategoricalRule | BreakpointRule)[]
   default?: string | null
-  rightClosed?: boolean  // for breakpoint mode: whether upper bound is inclusive (default true)
+  right_closed?: boolean  // for breakpoint mode: whether upper bound is inclusive (default true)
 }

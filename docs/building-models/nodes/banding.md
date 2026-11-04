@@ -116,20 +116,20 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     |---|---|
     | **TYPE** | `factors[].banding`: `"breakpoints"` (**Numeric**) or `"categorical"` (**Categorical**) |
     | **INPUT COLUMN** | `factors[].column` |
-    | **OUTPUT COLUMN** | `factors[].outputColumn` |
+    | **OUTPUT COLUMN** | `factors[].output_column` |
     | **DEFAULT** | `factors[].default` (`null` when empty) |
     | **BREAKPOINTS** | `factors[].rules`: one `{"upper": ..., "label": ...}` a band, its **Up to** boundary and its **Band name**, in order, an open-ended final band with no `upper` |
     | **RULES** | `factors[].rules`: a map from each **Value** to its **Maps To** group |
     | **COLUMNS** tab | `selected_columns` |
 
-    With no editor control: `factors[].rightClosed`, for breakpoints. `true` (the default) makes each band include its upper boundary; `false` makes it include its lower one. The table header shows it as **(incl.)** or **(excl.)**, but only the sidecar can change it.
+    With no editor control: `factors[].right_closed`, for breakpoints. `true` (the default) makes each band include its upper boundary; `false` makes it include its lower one. The table header shows it as **(incl.)** or **(excl.)**, but only the sidecar can change it.
 
     ```json
     {
       "factors": [{
         "banding": "breakpoints",
         "column": "driver_age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [
           {"upper": 25, "label": "18-25"},
           {"upper": 65, "label": "26-65"},
@@ -139,7 +139,7 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
       }, {
         "banding": "categorical",
         "column": "fuel_type",
-        "outputColumn": "fuel_band",
+        "output_column": "fuel_band",
         "rules": { "Petrol": "Standard", "Diesel": "Standard", "Electric": "Green" },
         "default": "Other"
       }]
@@ -155,11 +155,11 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     | `factors` | list of object | The factors, each an input column, an output column and its bands. |
     | `factors[].banding` | `"breakpoints"` or `"categorical"` | Whether the column is banded by numeric or date boundaries or by category. |
     | `factors[].column` | text | The input column banded. |
-    | `factors[].outputColumn` | text | The column the band is written to. |
+    | `factors[].output_column` | text | The column the band is written to. |
     | `factors[].rules` | list of map of text to any JSON value or map of text to any JSON value | The bands, as rule rows; the config file writes breakpoints as a list of `upper` and `label`, and categories as a map from each value to its group. |
     | `factors[].default` | text or `null` | The band of a value no rule matches; `null` leaves it empty. |
-    | `factors[].rightClosed` | `true` or `false` | For breakpoints, whether each band includes its upper boundary (`true`, the default) or its lower one. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `factors[].right_closed` | `true` or `false` | For breakpoints, whether each band includes its upper boundary (`true`, the default) or its lower one. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

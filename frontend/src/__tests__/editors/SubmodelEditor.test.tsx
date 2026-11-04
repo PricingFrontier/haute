@@ -7,12 +7,12 @@ import { makeNode } from "../../test-utils/factories"
 import useGraphStore from "../../stores/useGraphStore"
 import SubmodelEditor from "../../panels/editors/SubmodelEditor"
 afterEach(() => { cleanup(); useGraphStore.setState({ submodels: {} }) })
-const config = { definitionId: "definition_pricing", alias: "pricing" }
+const config = { definition_id: "definition_pricing", alias: "pricing" }
 const definition = { definitionId: "definition_pricing", file: "pipelines/pricing.py", graph: { nodes: [{ id: "prepare" }, { id: "score" }], edges: [] }, inputPorts: [{ name: "policy", targets: [{ nodeId: "prepare", handleId: null }] }], outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: null } }] }
 const renderEditor = () => { useGraphStore.setState({ submodels: { definition_pricing: definition } }); return render(<SubmodelEditor nodeId="pricing" config={config} accentColor="#64748b" />) }
 describe("SubmodelEditor", () => {
   it("lists occurrence warnings by input, including unavailable errors, and clears them on refresh", () => {
-    const instanceConfig = { ...config, alias: "copy", instanceOf: "pricing" }
+    const instanceConfig = { ...config, alias: "copy", instance_of: "pricing" }
     const nodes = [makeNode("copy", "submodel", { data: { label: "copy", config: instanceConfig } })]
     const warnings: SchemaWarning[] = [
       { input: "policy", column: "region", status: "missing", detail: null },
@@ -29,7 +29,7 @@ describe("SubmodelEditor", () => {
     expect(within(section).getByText("limit")).toBeVisible()
     expect(within(section).getByText("rates")).toBeVisible()
     expect(within(section).getByText(warnings[2].detail!)).toBeVisible()
-    view.rerender(<SubmodelEditor nodeId="copy" config={{ ...instanceConfig, instanceOf: undefined }} accentColor="#64748b" />)
+    view.rerender(<SubmodelEditor nodeId="copy" config={{ ...instanceConfig, instance_of: undefined }} accentColor="#64748b" />)
     expect(screen.queryByRole("region", { name: "Missing columns" })).toBeNull()
     view.rerender(<SubmodelEditor nodeId="copy" config={instanceConfig} accentColor="#64748b" />)
     const refreshed = applyPreviewResultColumnsToNodes(useGraphStore.getState().nodes, "submodel_runtime/copy/score", makePreviewResponse({
@@ -40,7 +40,7 @@ describe("SubmodelEditor", () => {
     expect(screen.queryByRole("region", { name: "Missing columns" })).toBeNull()
   })
   it("shows every public input and retargets a live instance connection in one undoable edit", () => {
-    const instanceConfig = { ...config, alias: "copy", instanceOf: "pricing" }
+    const instanceConfig = { ...config, alias: "copy", instance_of: "pricing" }
     const nodes = [makeNode("copy", "submodel", { data: { label: "copy", config: instanceConfig } }),
       makeNode("a", "polars", { data: { _defaultInputName: "quotes" } }),
       makeNode("b", "polars", { data: { _defaultInputName: "lookup" } })]
