@@ -639,10 +639,10 @@ class Pipeline(NodeRegistry):
         def transform(read_data: pl.LazyFrame) -> pl.LazyFrame:
             return read_data.filter(pl.col("premium") > 0)
 
-        @pipeline.output(config="config/quote_response/result.json")
-        def result(transform): ...
+        @pipeline.output(config="config/quote_response/quote_response.json")
+        def quote_response(transform): ...
 
-        pipeline.connect("read_data", "transform").connect("transform", "result")
+        pipeline.connect("read_data", "transform").connect("transform", "quote_response")
         result = pipeline.run(source="live")
     """
 
