@@ -16,10 +16,8 @@ from typing import Any
 
 from haute.errors import NodeConfigError
 
-__all__ = ["CONSTANTS_CONVERSION", "constants_for_sidecar", "constants_from_sidecar"]
+__all__ = ["constants_for_sidecar", "constants_from_sidecar"]
 
-#: The conversion a Constant sidecar still holding rows needs.
-CONSTANTS_CONVERSION = "scripts/one_off/read_28_constant_maps.py"
 _INTEGER_TEXT = re.compile(r"-?(?:0|[1-9]\d*)")
 
 
@@ -64,16 +62,15 @@ def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def constants_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
-    """A Constant sidecar's ``values`` map read back into rows; rows refused, naming the
-    conversion."""
+    """A Constant sidecar's ``values`` map read back into rows; rows refused."""
     values = config.get("values")
     if values is None:
         return config
     if isinstance(values, list):
         raise NodeConfigError(
             "This Constant sidecar holds its values as rows of name and value, the form before "
-            f"constants were written as a map. Convert the project's Constant sidecars with "
-            f"{CONSTANTS_CONVERSION}.",
+            "constants were written as a map. Write them as a map from each constant's name "
+            "to its value.",
             setting="values",
         )
     if not isinstance(values, dict):

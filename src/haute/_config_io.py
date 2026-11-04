@@ -166,8 +166,8 @@ def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str
     """A sidecar's settings as the editor and the engine hold them, its file format decoded:
     rating tables from grids, banding from band lists, constants from a map, and a setting
     left out at its default given it again (READ-10, 26, 27, 28). A file in a form before
-    one of those is refused, naming its conversion. Nothing else is checked, so Recover can
-    read a sidecar whose keys the contract no longer takes."""
+    one of those is refused. Nothing else is checked, so Recover can read a sidecar whose
+    keys the contract no longer takes."""
     # A setting a sidecar leaves out at its default reads as that default (READ-10), so
     # the config is the one the node had before it was written.
     for key, default in _SIDECAR_DEFAULTS.get(node_type, {}).items():

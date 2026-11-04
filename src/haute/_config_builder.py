@@ -439,10 +439,6 @@ def validate_step_container(
         )
 
 
-#: The one-off script that moves a project's Polars steps out of ``config/polars/``.
-POLARS_CODE_CONVERSION = "scripts/one_off/read_22_polars_code.py"
-
-
 def _with_lifted_steps(config: dict[str, Any], func_name: str) -> dict[str, Any]:
     """*config* of a transform with the steps rebuilt from its code (READ-22).
 
@@ -604,8 +600,8 @@ def _resolve_node_config(
         # A transform's steps live in its code alone (READ-22).
         raise ConfigError(
             f"Node {func_name!r} takes its steps from {config_ref}, the form before a Polars "
-            "node's steps lived in its code alone. Convert the project with "
-            f"{POLARS_CODE_CONVERSION}.",
+            "node's steps lived in its code alone. Write the steps in the function's body "
+            "and remove config=.",
             func_name=func_name,
             node_type=node_type.value,
             original_path=config_ref,

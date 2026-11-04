@@ -147,13 +147,13 @@ def test_the_column_settings_are_decorator_keywords(tmp_path: Path) -> None:
     assert _kinds(node) == ["source", "filter", "with_column", "limit"]
 
 
-def test_a_config_keyword_on_a_transform_is_refused_naming_the_conversion(
+def test_a_config_keyword_on_a_transform_is_refused(
     tmp_path: Path,
 ) -> None:
     code = _written(tmp_path, _graph(tmp_path, STEPS)).replace(
         "@pipeline.polars\n", '@pipeline.polars(config="config/polars/t.json")\n'
     )
-    with pytest.raises(ConfigError, match="read_22_polars_code.py"):
+    with pytest.raises(ConfigError, match="Write the steps in the function.s body"):
         _loaded(tmp_path, code)
 
 
@@ -213,31 +213,3 @@ def test_an_unfinished_middle_step_waits_in_the_sidecar_and_the_node_fails_to_ru
 def test_the_rendered_code_is_what_the_steps_render(tmp_path: Path) -> None:
     node = _loaded(tmp_path, _written(tmp_path, _graph(tmp_path, STEPS)))
     assert node.data.config["code"] == render_polars_steps(STEPS, ["quotes"], start="input").code
-
-
-def test_the_conversion_refuses_a_submodel_node_on_a_config_file_changing_nothing(
-    tmp_path: Path,
-) -> None:
-    """``scripts/one_off/read_22_polars_code.py`` converts pipeline files only; a submodel's
-    Polars node on a ``config=`` file stops it before any file changes, not skipped."""
-    import importlib.util
-
-    script = Path(__file__).parents[1] / "scripts" / "one_off" / "read_22_polars_code.py"
-    spec = importlib.util.spec_from_file_location("read_22_polars_code", script)
-    assert spec is not None and spec.loader is not None
-    conversion = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(conversion)
-    pipeline = tmp_path / "main.py"
-    pipeline.write_bytes(b'@pipeline.polars(config="config/polars/t.json")\ndef t(): ...\n')
-    sidecar = tmp_path / "config" / "polars" / "t.json"
-    sidecar.parent.mkdir(parents=True)
-    sidecar.write_bytes(b'{"steps": []}\n')
-    module = tmp_path / "modules" / "rating.py"
-    module.parent.mkdir()
-    module.write_bytes(b'@submodel.polars(config="config/polars/r.json")\ndef r(): ...\n')
-
-    with pytest.raises(SystemExit, match="rating.py"):
-        conversion.convert([tmp_path])
-
-    assert pipeline.read_bytes().startswith(b'@pipeline.polars(config="config/polars/t.json")')
-    assert sidecar.is_file()

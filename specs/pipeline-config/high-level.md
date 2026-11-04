@@ -443,8 +443,8 @@ reference's tables of config keys are generated from them.
 **Keys are snake_case.** Every key a Haute schema owns is snake_case, in a node's config and its
 sidecar, in a Polars step, in `.haute.json`, the global constants and the Workbench form folder,
 and the browser's config types carry the same keys (READ-29). Before READ-29 these keys were
-camelCase, and the loader refuses that form; `scripts/one_off/read_29_snake_case_keys.py`
-converts a project. The keys renamed:
+camelCase, and the loader refuses that form, naming each key's snake_case name. The keys
+renamed:
 
 | Before | Now | Where |
 |---|---|---|
@@ -494,7 +494,7 @@ steps, so a hand edit to one statement or a comment keeps the rest. A body that 
 not rebuild at all (one whose lines cannot be split into statements) loads as a
 code-only transform. Each step's id is its kind and its place (`filter-3`), given anew at
 each load. A `@pipeline.polars(config=...)` is the form before READ-22 and is refused,
-naming `scripts/one_off/read_22_polars_code.py`. One renderer (`src/haute/_polars_steps.py`) validates the closed step
+saying the steps go in the function's body. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive
 line range and raising a step-indexed error for any malformed or incomplete step.
 Each structured step renders one statement in common Python style, as ruff and the
@@ -904,7 +904,7 @@ one a line (`haute._constant_config`, READ-28): a value that reads as a number a
 reads back to the text it was typed as is a JSON number, anything else as typed; each
 runs as before, and the editor reads the map back into its rows. A row without a name
 is not written, two rows with one name are refused, and a sidecar still holding rows is
-refused, naming its one-off conversion. An
+refused, naming the map form. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent

@@ -62,9 +62,6 @@ SNAKE_CASE_KEYS: dict[str, str] = {
     "valueName": "value_name",
 }
 
-#: The one-off conversion that renames them in a project.
-SNAKE_CASE_CONVERSION = "scripts/one_off/read_29_snake_case_keys.py"
-
 
 def camel_case_key_message(where: str, keys: Sequence[str]) -> str | None:
     """The refusal for *keys* in their camelCase form, or ``None`` when none of them is."""
@@ -72,10 +69,7 @@ def camel_case_key_message(where: str, keys: Sequence[str]) -> str | None:
     if not renamed:
         return None
     pairs = ", ".join(f"{key!r} is now {SNAKE_CASE_KEYS[key]!r}" for key in renamed)
-    return (
-        f"{where} uses the camelCase keys Haute wrote before its keys were snake_case: "
-        f"{pairs}. Convert the project with {SNAKE_CASE_CONVERSION}."
-    )
+    return f"{where} uses the camelCase keys Haute wrote before its keys were snake_case: {pairs}."
 
 
 #: Every error :func:`validate_node_config` raises for a config it refuses, for a boundary

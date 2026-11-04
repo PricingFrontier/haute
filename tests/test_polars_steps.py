@@ -4417,7 +4417,7 @@ def test_parse_keeps_incomplete_steps_saved_through_the_placeholder(tmp_path: Pa
 
 def test_parse_refuses_a_transform_that_names_a_steps_sidecar(tmp_path: Path) -> None:
     """``config=`` on a transform is the form before READ-22, however its file reads: the
-    parse refuses it, naming the conversion, before it reads the file."""
+    parse refuses it, saying where the steps go, before it reads the file."""
     quotes, _rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, _stepped("t", [source()])], edges=[make_edge("quotes", "t")]
@@ -4429,7 +4429,7 @@ def test_parse_refuses_a_transform_that_names_a_steps_sidecar(tmp_path: Path) ->
     sidecar = tmp_path / "config" / "polars" / "t.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text(json.dumps({"steps": {"kind": "source"}}), encoding="utf-8")
-    with pytest.raises(ConfigError, match="read_22_polars_code.py"):
+    with pytest.raises(ConfigError, match="Write the steps in the function.s body"):
         parse_pipeline_source(code, _base_dir=tmp_path)
 
 

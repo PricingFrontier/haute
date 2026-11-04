@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from haute._banding_config import BANDS_CONVERSION, bands_from_sidecar
+from haute._banding_config import bands_from_sidecar
 from haute._config_io import load_node_config, node_config_json
 from haute._types import NodeType
 from haute._validation_error import ConfigSettingError
@@ -87,7 +87,7 @@ def test_categorical_banding_keeps_its_map(tmp_path: Path) -> None:
     assert loaded["factors"][0]["rules"] == factor["rules"]
 
 
-def test_a_sidecar_with_breakpoints_as_a_map_is_refused_naming_the_conversion(
+def test_a_sidecar_with_breakpoints_as_a_map_is_refused_naming_the_list_form(
     tmp_path: Path,
 ) -> None:
     sidecar = tmp_path / "config" / "banding" / "bands.json"
@@ -96,7 +96,7 @@ def test_a_sidecar_with_breakpoints_as_a_map_is_refused_naming_the_conversion(
         b'{"factors": [{"banding": "breakpoints", "column": "x", "output_column": "b", '
         b'"rules": {"4": "1-4", "": "5+"}}]}'
     )
-    with pytest.raises(ConfigSettingError, match=BANDS_CONVERSION):
+    with pytest.raises(ConfigSettingError, match="Write them as a list of bands"):
         load_node_config("config/banding/bands.json", base_dir=tmp_path)
 
 

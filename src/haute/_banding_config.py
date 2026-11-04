@@ -228,8 +228,6 @@ def _compact_rule_rows(
     return compact
 
 
-#: The conversion a banding sidecar with breakpoints as a map needs.
-BANDS_CONVERSION = "scripts/one_off/read_27_band_lists.py"
 _INTEGER_TEXT = re.compile(r"-?(?:0|[1-9]\d*)")
 
 
@@ -290,8 +288,7 @@ def bands_read_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
     """A banding sidecar with each breakpoint factor's bands read back into the editor's and
     the engine's rule rows (READ-27). Read from a file only: a row the editor sends without
     a ``boundary`` stays a row its validation refuses. A sidecar that writes breakpoints as
-    an edge-to-label map, the form before bands were written as a list, is refused, naming
-    the conversion."""
+    an edge-to-label map, the form before bands were written as a list, is refused."""
     factors = config.get("factors")
     if not isinstance(factors, list):
         return config
@@ -307,8 +304,8 @@ def bands_read_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
         if isinstance(rules, dict):
             raise ConfigSettingError(
                 "This banding sidecar writes breakpoints as a map from each band's edge to "
-                f"its label, the form before bands were written as a list. Convert the "
-                f"project's banding sidecars with {BANDS_CONVERSION}.",
+                "its label, the form before bands were written as a list. Write them as a "
+                'list of bands, each an "upper" edge and a "label".',
                 setting="factors",
             )
         read.append({**factor, "rules": bands_from_sidecar(rules)} if rules is not None else factor)

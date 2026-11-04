@@ -157,11 +157,12 @@ def test_a_schema_file_holding_an_id_is_refused(project: Path) -> None:
         _read(project)
 
 
-def test_a_revision_saved_before_the_change_is_refused_naming_its_conversion(
+def test_a_revision_saved_before_the_change_is_refused_naming_the_revision(
     project: Path,
 ) -> None:
     """The schema pane's SQL from the default branch reads its form at that revision: one
-    saved with ids is refused naming the conversion, not handed to the parser (READ-20)."""
+    saved with ids is refused naming the revision and the file, not taken for the working
+    tree's form."""
     from haute._workbench_config import read_workbench_config
     from haute._workbench_folder import WorkbenchFormError, form_at_ref
 
@@ -181,8 +182,9 @@ def test_a_revision_saved_before_the_change_is_refused_naming_its_conversion(
     git("add", "-A")
     git("commit", "-q", "-m", "form saved with ids")
 
-    with pytest.raises(WorkbenchFormError, match="read_23_schema_names.py"):
+    with pytest.raises(WorkbenchFormError, match="The form on HEAD cannot be read") as refused:
         form_at_ref(read_workbench_config(project), "HEAD")
+    assert refused.value.context.get("path") == "rating/workbench/schema/policy.json"
 
 
 def test_two_columns_differing_only_in_case_are_refused_on_save_and_on_read(

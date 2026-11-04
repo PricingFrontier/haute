@@ -1011,28 +1011,14 @@ def form_at_ref(config: WorkbenchConfig, ref: str) -> FormSpec | None:
     try:
         spec, _ = form_from_files(config, files, param_values_at(root, ref))
     except WorkbenchFormError as exc:
-        # A revision saved before a format change holds files this Haute refuses: say which
-        # conversion brings it across rather than only what the parser refused (READ-20).
+        # The refusal names the revision as well as the file, so it is not taken for the
+        # working tree's.
         path = str(exc.context.get("path") or "")
         raise WorkbenchFormError(
-            f"The form on {ref} cannot be read with this Haute ({exc.message}). If that "
-            "revision was saved before a change to the form folder's files, convert it there "
-            f"with {_conversion_for(path)}, commit and push, then compare again.",
+            f"The form on {ref} cannot be read with this Haute: {exc.message}",
             path=path or None,
         ) from exc
     return spec
-
-
-def _conversion_for(path: str) -> str:
-    """The one-off conversions that bring a form folder file at *path* across (READ-20)."""
-    if "sheets/" in path:
-        return "scripts/one_off/read_24_sheet_names.py"
-    if "schema/" in path:
-        return (
-            "scripts/one_off/read_23_schema_names.py and "
-            "scripts/one_off/read_25_options_by_reference.py"
-        )
-    return "the one-off conversion scripts in scripts/one_off/"
 
 
 # -- What deploy and the release refuse --------------------------------------------------
