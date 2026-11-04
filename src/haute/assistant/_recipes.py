@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from haute._graph_utils import _sanitize_func_name
+from haute._types import SINGLETON_NODE_NAMES, NodeType
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -51,7 +52,8 @@ def _descriptor(
     )
     source = string_schema("Existing saved graph node id that supplies the recipe input.")
     output_name = string_schema(
-        "Optional new response output graph node connected after the recipe node."
+        "Optional new response output graph node connected after the recipe node: always "
+        '"quote_response", the one name a pipeline\'s response node has.'
     )
     output_columns = {
         "type": "array",
@@ -386,6 +388,14 @@ def _output_operations(
         raise RecipeError(
             "recipe_argument_invalid",
             "output_name must be a non-empty string.",
+            argument="output_name",
+        )
+    fixed = SINGLETON_NODE_NAMES[NodeType.OUTPUT]
+    if _sanitize_func_name(output_name) != fixed:
+        # A pipeline holds one response node, named by its type alone (READ-46).
+        raise RecipeError(
+            "recipe_argument_invalid",
+            f"output_name is always {fixed!r}: a pipeline's response node has one name.",
             argument="output_name",
         )
     if (

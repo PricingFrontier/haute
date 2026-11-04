@@ -7,7 +7,8 @@ import { e2eGit, e2eProjectRoot, e2eWorkingBranch } from "./projectIsolation"
 
 // Shared steps for the git journeys (git-restore, git-branches, git-recovery):
 // what an analyst does in the editor, and what the project's files and history
-// read afterwards. The e2e pipeline's "priced" node is the one edited: renaming
+// read afterwards. The e2e pipeline's "enriched" transform is the one edited
+// (its Quote Response is always "quote_response" and can't be renamed): renaming
 // it renames its function in rating/main.py, so the canvas, the file on disk and
 // each version's copy of it can all be read for the same change.
 
@@ -74,7 +75,7 @@ export function toast(page: Page, text: RegExp | string): Locator {
 
 export function canvasNode(page: Page, label: string): Locator {
   // A node's accessible name reads "<type> node: <label>…"; the trailing
-  // boundary keeps "priced" from matching "priced_v1".
+  // boundary keeps "enriched" from matching "enriched_v1".
   return page.getByRole("button", { name: new RegExp(` node: ${label}(?![\\w])`) })
 }
 

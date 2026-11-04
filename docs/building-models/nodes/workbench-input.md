@@ -30,7 +30,9 @@ The tables are the workbench's schema, edited in the Workbench view: **Edit in W
 A Workbench Input needs the project's workbench: in a project whose workbench is not enabled, its previews and runs stop with "The Workbench Input reads its tables from the project's workbench, which haute.toml does not enable."
 
 ??? note "In the pipeline file"
-    The node's decorator in the pipeline's `.py` file names its JSON sidecar, `@pipeline.workbench_input(config="config/workbench_input/<node name>.json")`, which holds none of its tables: they and the sample are the workbench's files, the pipeline folder's `workbench/`, which the pipeline reads wherever it runs from its source, in the editor, in `haute run` and in its own `run()`.
+    A pipeline holds one Workbench Input, so the node is always named `workbench_input`, and it has no rename.
+
+    The node's decorator in the pipeline's `.py` file names its JSON sidecar, `@pipeline.workbench_input(config="config/workbench_input/workbench_input.json")`, which holds none of its tables: they and the sample are the workbench's files, the pipeline folder's `workbench/`, which the pipeline reads wherever it runs from its source, in the editor, in `haute run` and in its own `run()`.
 
     | Setting in the editor | Stored as |
     |---|---|

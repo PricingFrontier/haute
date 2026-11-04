@@ -1140,7 +1140,7 @@ class TestGraphToCodeWithBuilders:
                     {
                         "id": "out",
                         "data": {
-                            "label": "Result",
+                            "label": "quote_response",
                             "nodeType": "output",
                             "config": make_output_config(["age", "sv"]),
                         },
@@ -1157,7 +1157,7 @@ class TestGraphToCodeWithBuilders:
         code = graph_to_code(graph, pipeline_name="pricing")
         compile(code, "<test>", "exec")
         # Each signature names its source, so no connect() repeats an edge (READ-30) ...
-        for signature in ("Band(Source)", "Expand(Band)", "Opt(Expand)", "Result(Opt)"):
+        for signature in ("Band(Source)", "Expand(Band)", "Opt(Expand)", "quote_response(Opt)"):
             assert f"def {signature}: ...\n" in code
         assert "pipeline.connect" not in code
         # ... and the parser infers every edge from them.
@@ -1169,7 +1169,7 @@ class TestGraphToCodeWithBuilders:
             ("Source", "Band"),
             ("Band", "Expand"),
             ("Expand", "Opt"),
-            ("Opt", "Result"),
+            ("Opt", "quote_response"),
         ]
 
 
@@ -1289,17 +1289,18 @@ class TestCodegenExecValidation:
         pl.DataFrame({"quote_id": [7, 11]}).write_parquet(haute_scratch / "quotes.parquet")
         config_dir = haute_scratch / "config" / "quote_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "quotes.json").write_text(
+        (config_dir / "quote_input.json").write_text(
             json.dumps({"path": "quotes.parquet"}), encoding="utf-8"
         )
         node = _make_codegen_node(
             "apiInput",
             {"path": "tests/fixtures/data/api_input.json"},
-            label="quotes",
+            label="quote_input",
         )
         code = _node_to_code(node)
         assert code == (
-            '@pipeline.api_input(config="config/quote_input/quotes.json")\ndef quotes(): ...\n'
+            '@pipeline.api_input(config="config/quote_input/quote_input.json")\n'
+            "def quote_input(): ...\n"
         )
         assert "tests/fixtures/data/api_input.json" not in code
 
@@ -1317,7 +1318,9 @@ class TestCodegenExecValidation:
         project = tmp_path / "project"
         config_dir = project / "config" / "quote_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "quotes.json").write_text('{"path": "data/quotes.json"}', encoding="utf-8")
+        (config_dir / "quote_input.json").write_text(
+            '{"path": "data/quotes.json"}', encoding="utf-8"
+        )
 
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
@@ -1326,7 +1329,7 @@ class TestCodegenExecValidation:
         node = _make_codegen_node(
             "apiInput",
             {"path": "data/quotes.json"},
-            label="quotes",
+            label="quote_input",
         )
         code = _node_to_code(node)
 
@@ -1341,7 +1344,7 @@ class TestCodegenExecValidation:
         """Generated JSON apiInput reports the config action, not a cache action."""
         config_dir = tmp_path / "config" / "quote_input"
         config_dir.mkdir(parents=True)
-        (config_dir / "quotes.json").write_text(
+        (config_dir / "quote_input.json").write_text(
             """
             {
               "path": "data/quotes.json",
@@ -1368,7 +1371,7 @@ class TestCodegenExecValidation:
         node = _make_codegen_node(
             "apiInput",
             {"path": "data/quotes.json"},
-            label="quotes",
+            label="quote_input",
         )
         code = _node_to_code(node)
 
@@ -1404,14 +1407,14 @@ class TestCodegenExecValidation:
                     },
                 ],
             },
-            label="result",
+            label="quote_response",
         )
         code = _node_to_code(node, source_names=["upstream"])
         assert code == (
-            '@pipeline.output(config="config/quote_response/result.json")\n'
-            "def result(upstream): ...\n"
+            '@pipeline.output(config="config/quote_response/quote_response.json")\n'
+            "def quote_response(upstream): ...\n"
         )
-        cfg_file = tmp_path / "config" / "quote_response" / "result.json"
+        cfg_file = tmp_path / "config" / "quote_response" / "quote_response.json"
         cfg_file.parent.mkdir(parents=True)
         cfg_file.write_text(json.dumps(node.data.config))
 
@@ -1446,12 +1449,12 @@ class TestCodegenExecValidation:
                 },
             ],
         }
-        node = _make_codegen_node("output", config, label="Quote_Response")
+        node = _make_codegen_node("output", config, label="quote_response")
         frame_names = ["quotes", "drivers", "licences", "vehicles"]
         code = _node_to_code(node, source_names=frame_names)
-        assert "def Quote_Response(quotes, drivers, licences, vehicles): ...\n" in code
+        assert "def quote_response(quotes, drivers, licences, vehicles): ...\n" in code
         _compile_node_code(code)
-        cfg_file = tmp_path / "config" / "quote_response" / "Quote_Response.json"
+        cfg_file = tmp_path / "config" / "quote_response" / "quote_response.json"
         cfg_file.parent.mkdir(parents=True)
         cfg_file.write_text(json.dumps(config), encoding="utf-8")
 

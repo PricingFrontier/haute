@@ -31,8 +31,8 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
     return quotes.with_columns(vehicle_age=2026 - pl.col("vehicle_year"))
 
 
-@pipeline.output(config="config/quote_response/priced.json")
-def priced(enriched): ...
+@pipeline.output(config="config/quote_response/quote_response.json")
+def quote_response(enriched): ...
 ```
 
 Every node type except `polars` is configured: its decorator names its settings

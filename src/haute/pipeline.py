@@ -51,9 +51,10 @@ from haute._types import (
     SubmodelEndpoint,
     SubmodelInputPort,
     SubmodelOutputPort,
+    singleton_name_problem,
 )
 from haute._workbench_output import as_response, quote_identity
-from haute.errors import ExecutionError
+from haute.errors import ConfigError, ExecutionError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
@@ -437,6 +438,9 @@ class NodeRegistry:
 
         def _register(f: Callable) -> Callable:
             node_type = NodeType(config.get("_node_type", NodeType.POLARS))
+            named = singleton_name_problem(node_type, f.__name__)
+            if named is not None:
+                raise ConfigError(named, func_name=f.__name__, node_type=node_type.value)
             if is_configured(node_type, config):
                 # A configured source's hook takes df, yet it has no inputs.
                 is_source = node_type in SOURCE_NODE_TYPES

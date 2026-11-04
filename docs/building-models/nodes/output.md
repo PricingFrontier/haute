@@ -58,7 +58,9 @@ The API response then holds only the quote ID, the final premium, and the area f
     A Quote Response or Workbench Output node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/quote_response/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.output(config="config/quote_response/<node name>.json")`.
+    A pipeline holds one Quote Response, so the node is always named `quote_response`, and it has no rename.
+
+    The node's settings are stored in a JSON sidecar, `config/quote_response/quote_response.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.output(config="config/quote_response/quote_response.json")`.
 
     | Setting in the editor | Stored as |
     |---|---|

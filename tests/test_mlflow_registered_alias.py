@@ -350,11 +350,11 @@ class TestDeployRecordsTheResolvedAlias:
         (tmp_path / "pipeline.py").write_text(
             "import haute\n\n"
             'pipeline = haute.Pipeline("freq_quote", description="Scores freq.")\n\n\n'
-            '@pipeline.api_input(config="config/request.json")\ndef quote(): ...\n\n\n'
+            '@pipeline.api_input(config="config/request.json")\ndef quote_input(): ...\n\n\n'
             '@pipeline.model_score(config="config/score.json")\ndef scored(quote): ...\n\n\n'
-            '@pipeline.output(config="config/output.json")\ndef response(scored): ...\n\n\n'
-            'pipeline.connect("quote", "scored", source_port="quote")\n'
-            'pipeline.connect("scored", "response")\n'
+            '@pipeline.output(config="config/output.json")\ndef quote_response(scored): ...\n\n\n'
+            'pipeline.connect("quote_input", "scored", source_port="quote")\n'
+            'pipeline.connect("scored", "quote_response")\n'
         )
 
         file_config = next(

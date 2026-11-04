@@ -203,9 +203,12 @@ def _capstone_root_graph(
             ),
             description=description,
         ),
+        # A Quote Input, Quote Response, Workbench Input and Workbench Output are named by
+        # their type (READ-46): the unicode label is the Model Score's, and braces the
+        # Constant's and the wide Data Input and Output's.
         _node(
             api,
-            "API Input \u6771\u4eac",
+            "quote_input",
             NodeType.API_INPUT,
             _opaque(
                 {
@@ -239,7 +242,7 @@ def _capstone_root_graph(
         # neither; unconnected, since a round trip never runs it.
         _node(
             workbench,
-            "Workbench Input {Brace}",
+            "workbench_input",
             NodeType.WORKBENCH_INPUT,
             _opaque({}),
             description="workbench " + description,
@@ -248,7 +251,7 @@ def _capstone_root_graph(
         # trip never runs it.
         _node(
             workbench_output,
-            "Workbench Output {Brace}",
+            "workbench_output",
             NodeType.WORKBENCH_OUTPUT,
             _opaque({}),
             description="workbench output " + description,
@@ -298,7 +301,7 @@ def _capstone_root_graph(
         ),
         _node(
             score,
-            "Model Score",
+            "Model Score \u6771\u4eac",
             NodeType.MODEL_SCORE,
             _opaque(
                 {
@@ -425,7 +428,7 @@ def _capstone_root_graph(
         ),
         _node(
             output,
-            "Output Node",
+            "quote_response",
             NodeType.OUTPUT,
             # A response path names a JSON key, so each adversarial column fills an
             # identifier-named field.
@@ -874,7 +877,7 @@ def test_inline_nodes_canonicalize_only_empty_column_selection(
 def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() -> None:
     api = _node(
         "api-source",
-        "Request Bundle",
+        "quote_input",
         NodeType.API_INPUT,
         _opaque(
             {

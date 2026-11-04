@@ -65,12 +65,14 @@ from haute._polars_steps_lift import canonical_steps
 from haute._sandbox import _bound_names
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
+    SINGLETON_NODE_NAMES,
     GraphEdge,
     GraphNode,
     NodeData,
     NodeType,
     PipelineGraph,
     SubmodelDefinition,
+    singleton_name_problem,
 )
 from haute.assistant._catalog import INPUT_NAMING_RULE, capability_manifest, new_logic_steps
 from haute.assistant._wire_ops import (
@@ -522,6 +524,14 @@ def _apply_add_node(
     _validate_config(op.node_type, op.config, operation="add_node")
 
     node_id = _sanitize_func_name(op.name)
+    if singleton_name_problem(op.node_type, node_id) is not None:
+        fixed = SINGLETON_NODE_NAMES[op.node_type]
+        _invalid(
+            f"Cannot add node {op.name!r}: this node type is always named {fixed!r}, "
+            "since a pipeline holds one",
+            where={"node": node_id},
+            fix=f"Name it {fixed!r}.",
+        )
     if _node_index(graph, node_id) is not None:
         _invalid(
             f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists",
@@ -1068,6 +1078,13 @@ def _apply_rename_node(
     _refuse_workbench_input(graph, old_id, "rename")
     index = _node_index(graph, old_id)
     assert index is not None
+    fixed = SINGLETON_NODE_NAMES.get(NodeType(graph.nodes[index].data.nodeType))
+    if fixed is not None:
+        _invalid(
+            f"Cannot rename {old_id!r}: it is always named {fixed!r}, since a pipeline holds one",
+            where={"node": old_id},
+            fix="Leave its name as it is.",
+        )
     new_id = _sanitize_func_name(op.new_name)
     if new_id != old_id and _node_index(graph, new_id) is not None:
         _invalid(

@@ -1886,7 +1886,13 @@ _QUOTE_INPUT = {
 
 def _add_quote_input_and_transform(config: dict[str, object]) -> list[dict[str, object]]:
     return [
-        {"op": "add_node", "node_type": "apiInput", "name": "quote", "ref": "q", "config": config},
+        {
+            "op": "add_node",
+            "node_type": "apiInput",
+            "name": "quote_input",
+            "ref": "q",
+            "config": config,
+        },
         {
             "op": "add_node",
             "node_type": "polars",
@@ -1925,7 +1931,7 @@ class TestDeclaredQuoteInputSchemas:
         assert declared == [
             {
                 "kind": "input_schema_declared",
-                "node": "quote",
+                "node": "quote_input",
                 "table": "policy",
                 "tier": "declared",
                 "column_count": 2,
@@ -1983,7 +1989,7 @@ class TestDeclaredQuoteInputSchemas:
         assert raised.value.status_code == 400
         detail = str(raised.value.detail)
         assert "table 'quotes'" in detail
-        assert "Quote Input 'quote'" in detail
+        assert "Quote Input 'quote_input'" in detail
         assert "node 'quotes'" in detail
         assert source.read_text(encoding="utf-8") == PIPELINE_SOURCE
         assert len(service.plan_store) == 0

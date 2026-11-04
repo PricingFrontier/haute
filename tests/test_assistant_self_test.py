@@ -267,11 +267,11 @@ class TestPortfolio:
         assert by_id["smoke_join_roles"].turns[0].expectations.required_edges == (
             ("nb_batch", "quote_with_competitor", "base"),
             ("competitor_insight", "quote_with_competitor", "join"),
-            ("quote_with_competitor", "enriched_quotes", None),
+            ("quote_with_competitor", "quote_response", None),
         )
         assert by_id["smoke_rating_step"].turns[0].expectations.required_edges == (
             ("quotes", "age_rating", None),
-            ("age_rating", "age_price_response", None),
+            ("age_rating", "quote_response", None),
         )
         assert by_id["motor_region_loading_join"].turns[0].expectations.required_edges == (
             ("base_premium", "loaded_quotes", "base"),

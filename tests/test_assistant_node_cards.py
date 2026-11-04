@@ -25,7 +25,7 @@ from haute._input_providers import build_input_snapshot
 from haute._polars_io_registry import data_input_is_direct
 from haute._polars_steps_lift import canonical_steps
 from haute._source_cache import SourceCacheStore
-from haute._types import NodeType, PipelineGraph
+from haute._types import SINGLETON_NODE_NAMES, NodeType, PipelineGraph
 from haute.assistant._node_cards import CARD_CONFIG_NAMES, node_card, node_card_fixture
 from haute.assistant._tools import dry_run_graph_edits
 from haute.assistant._wire_ops import OpValidationError
@@ -42,6 +42,14 @@ import haute
 pipeline = haute.Pipeline("cards", description="Node card fixture.")
 """
 _CARD_NODE = "card"
+
+
+def _card_node(node_type: NodeType | str) -> str:
+    """The card node's name: a request input or response node has its type's one name
+    (READ-46), any other card node is ``card``."""
+
+    return SINGLETON_NODE_NAMES.get(NodeType(node_type), _CARD_NODE)
+
 
 _AUTHORABLE = [node_type for node_type in NodeType if node_card(node_type)["authorable"]]
 _CASES = [
@@ -117,9 +125,10 @@ def _card_operations(
     a frame one configuration does not use is not left disconnected.
     """
 
+    card_node = _card_node(card["node_type"])
     edges = []
     for item in _card_inputs(card, config):
-        edge = {"op": "add_edge", "source": item["edge"], "target": _CARD_NODE}
+        edge = {"op": "add_edge", "source": item["edge"], "target": card_node}
         for handle in ("source_handle", "target_handle"):
             if handle in item:
                 edge[handle] = item[handle]
@@ -132,7 +141,7 @@ def _card_operations(
         {
             "op": "add_node",
             "node_type": card["node_type"],
-            "name": _CARD_NODE,
+            "name": card_node,
             "config": config["config"],
         },
         *edges,
@@ -233,10 +242,8 @@ _JOB_ROUTES = {
 }
 
 
-def _run_job(client: Any, route: str, graph: PipelineGraph) -> dict[str, Any]:
-    response = client.post(
-        route, json={"graph": graph.model_dump(mode="json"), "node_id": _CARD_NODE}
-    )
+def _run_job(client: Any, route: str, graph: PipelineGraph, node_id: str) -> dict[str, Any]:
+    response = client.post(route, json={"graph": graph.model_dump(mode="json"), "node_id": node_id})
     assert response.status_code == 200, response.text
     status_url = f"{route}/status/{response.json()['job_id']}"
     deadline = time.monotonic() + 120
@@ -297,7 +304,8 @@ def test_every_card_configuration_applies_and_executes(
     asyncio.run(service.apply(_SOURCE_FILE, plan.plan_hash))
 
     graph = flatten_graph(parse_pipeline_to_graph(project / _SOURCE_FILE))
-    saved = graph.node_map[_CARD_NODE].data.config
+    card_node = _card_node(node_type)
+    saved = graph.node_map[card_node].data.config
     authored = dict(config["config"])
     if node_type == NodeType.POLARS:
         # A transform's steps live only in its code and come back with ids from kind
@@ -329,7 +337,7 @@ def test_every_card_configuration_applies_and_executes(
         upstream = _executed(graph, item["edge"])
         columns = upstream.frame_columns.get(item.get("source_handle"), upstream.columns)
         assert {column.name: column.dtype for column in columns} == item["columns"]
-    result = _executed(graph, _CARD_NODE)
+    result = _executed(graph, card_node)
     # A multi-frame API Input reports each table's columns under its label.
     produced = {
         column.name
@@ -343,7 +351,7 @@ def test_every_card_configuration_applies_and_executes(
         assert [{key: row[key] for key in keys} for row in result.preview] == expected
     route = _JOB_ROUTES.get(node_type)
     if route is not None:
-        _run_job(request.getfixturevalue("client"), route, graph)
+        _run_job(request.getfixturevalue("client"), route, graph, card_node)
 
 
 @pytest.mark.parametrize(

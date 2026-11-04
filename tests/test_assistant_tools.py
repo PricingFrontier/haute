@@ -2910,7 +2910,7 @@ def _quote_table(label: str, path: str, columns: dict[str, str]) -> dict[str, ob
 _CLAIMS_QUOTE_INPUT = {
     "op": "add_node",
     "node_type": "apiInput",
-    "name": "quote_inputs",
+    "name": "quote_input",
     "config": {
         "path": "quote.json",
         "tables": [
@@ -3862,7 +3862,7 @@ class TestActionableErrors:
                         "recipe": "response_output",
                         "arguments": {
                             "source": "$bands",
-                            "output_name": "response",
+                            "output_name": "quote_response",
                             "output_columns": ["region_group"],
                         },
                     },
@@ -3874,7 +3874,7 @@ class TestActionableErrors:
         assert "error" not in applied, applied
 
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
-        response = next(node for node in graph.nodes if node.id == "response")
+        response = next(node for node in graph.nodes if node.id == "quote_response")
         assert [row["source_port"] for row in response.data.config["output_mapping"]] == [
             "region_band"
         ]
@@ -3899,20 +3899,24 @@ class TestActionableErrors:
                     {
                         "op": "add_node",
                         "node_type": "output",
-                        "name": "response",
+                        "name": "quote_response",
                         "config": {"output_mapping": [row]},
                     },
-                    {"op": "add_edge", "source": "quotes", "target": "response"},
+                    {"op": "add_edge", "source": "quotes", "target": "quote_response"},
                 ],
             },
         )
 
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
-        assert error["where"] == {"op_index": 0, "node": "response", "field": "output_mapping"}
+        assert error["where"] == {
+            "op_index": 0,
+            "node": "quote_response",
+            "field": "output_mapping",
+        }
         assert "'rated_quotes'" in error["message"] and "'quotes'" in error["message"]
         assert error["fix"] == (
-            "The edges into 'response' provide the input 'quotes'; set row 1's source_port "
+            "The edges into 'quote_response' provide the input 'quotes'; set row 1's source_port "
             "to 'quotes'. " + _input_naming_rule()
         )
         assert error["did_you_mean"] == ["quotes"]
@@ -3923,18 +3927,18 @@ class TestActionableErrors:
             pytest.param(
                 # An edge from a Quote Input is named by its frame, so naming the
                 # node is answered with the frame, never a plain add_edge from it.
-                "quote_inputs",
+                "quote_input",
                 ("additional_driver_claims",),
-                "The edges into 'response' provide the input 'additional_driver_claims'; "
+                "The edges into 'quote_response' provide the input 'additional_driver_claims'; "
                 "set row 1's source_port to 'additional_driver_claims'. " + _input_naming_rule(),
                 ["additional_driver_claims"],
                 id="the-quote-input-node",
             ),
             pytest.param(
-                "quote_inputs",
+                "quote_input",
                 (),
-                "'response' has no incoming edge, so row 1 reads nothing. Add "
-                '{"op": "add_edge", "source": "<upstream node>", "target": "response"} to '
+                "'quote_response' has no incoming edge, so row 1 reads nothing. Add "
+                '{"op": "add_edge", "source": "<upstream node>", "target": "quote_response"} to '
                 'this plan, with "source_handle": "<frame>" when the source is a Quote '
                 "Input, and set row 1's source_port to the name that edge gives. "
                 + _input_naming_rule(),
@@ -3944,7 +3948,7 @@ class TestActionableErrors:
             pytest.param(
                 "ad_driver_claims",
                 ("quote", "additional_driver_claims"),
-                "The edges into 'response' provide the inputs 'quote', "
+                "The edges into 'quote_response' provide the inputs 'quote', "
                 "'additional_driver_claims'; set row 1's source_port to "
                 "'additional_driver_claims' if that is the frame the column comes from. "
                 + _input_naming_rule(),
@@ -3979,14 +3983,14 @@ class TestActionableErrors:
                     {
                         "op": "add_node",
                         "node_type": "output",
-                        "name": "response",
+                        "name": "quote_response",
                         "config": {"output_mapping": [row]},
                     },
                     *(
                         {
                             "op": "add_edge",
-                            "source": "quote_inputs",
-                            "target": "response",
+                            "source": "quote_input",
+                            "target": "quote_response",
                             "source_handle": handle,
                         }
                         for handle in handles
@@ -3997,7 +4001,11 @@ class TestActionableErrors:
 
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
-        assert error["where"] == {"op_index": 1, "node": "response", "field": "output_mapping"}
+        assert error["where"] == {
+            "op_index": 1,
+            "node": "quote_response",
+            "field": "output_mapping",
+        }
         assert error["fix"] == fix
         assert error.get("did_you_mean") == did_you_mean
 
@@ -4048,7 +4056,7 @@ class TestActionableErrors:
             pytest.param(
                 # An edge from a Quote Input is named by its frame, never the
                 # node, so the fix is not a plain add_edge from the node.
-                "quote_inputs",
+                "quote_input",
                 (),
                 _NO_EDGE_FIX,
                 None,
@@ -4109,7 +4117,7 @@ class TestActionableErrors:
                     *(
                         {
                             "op": "add_edge",
-                            "source": "quote_inputs",
+                            "source": "quote_input",
                             "target": "claims_agg",
                             "source_handle": handle,
                         }
@@ -5672,17 +5680,17 @@ class TestBriefBoundaries:
             claims: pl.LazyFrame({"quote_id": ["q1"], "amount": [1.0]}),
         }
         monkeypatch.setattr(
-            _tools, "_resolve_schema_outputs", lambda *_a, **_k: {"quote_inputs": ports}
+            _tools, "_resolve_schema_outputs", lambda *_a, **_k: {"quote_input": ports}
         )
-        graph = PipelineGraph(nodes=[_node("quote_inputs", "apiInput")], edges=[])
+        graph = PipelineGraph(nodes=[_node("quote_input", "apiInput")], edges=[])
 
         nodes = _tools._brief_nodes(graph, graph)
 
         assert nodes == (
             BriefNode(
-                "quote_inputs",
+                "quote_input",
                 "apiInput",
-                "quote_inputs",
+                "quote_input",
                 None,
                 (),
                 (

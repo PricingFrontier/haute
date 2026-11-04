@@ -814,7 +814,7 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.api_input(api_input=True)
-    def quotes() -> pl.DataFrame:
+    def quote_input() -> pl.DataFrame:
         raise AssertionError("score() should seed API inputs without calling the source")
 
     @pipeline.data_input
@@ -822,9 +822,9 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(quotes, lookup): ...
+    def join_rates(quote_input, lookup): ...
 
-    pipeline.connect("quotes", "join_rates", target_port="base")
+    pipeline.connect("quote_input", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
 
     result = pipeline.score(pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]}))

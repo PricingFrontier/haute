@@ -110,6 +110,12 @@ describe("ContextMenu", () => {
     expect(screen.queryByText("Duplicate")).not.toBeInTheDocument()
   })
 
+  it("offers no Rename for a singleton node, which is named by its type (READ-46)", () => {
+    render(<ContextMenu {...makeProps({ isSingleton: true })} />)
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument()
+    expect(screen.getByText("Delete")).toBeInTheDocument()
+  })
+
   it("shows Duplicate when isSingleton is false", () => {
     render(<ContextMenu {...makeProps({ isSingleton: false })} />)
     expect(screen.getByText("Duplicate")).toBeInTheDocument()

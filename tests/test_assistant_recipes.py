@@ -164,6 +164,17 @@ class TestRecipePlanning:
         # The node the recipe creates declares the ref it was given.
         assert [operation.ref for operation in parsed if operation.op == "add_node"][0] == "made"
 
+    def test_a_response_output_takes_the_response_node_s_one_name(self):
+        """A pipeline holds one response node, named by its type alone (READ-46)."""
+        from haute.assistant._recipes import RecipeError, expand_recipe
+
+        arguments = _arguments("response_output")
+        expand_recipe("response_output", arguments, ref="made")
+        arguments["output_name"] = "priced_response"
+        with pytest.raises(RecipeError, match="always 'quote_response'") as exc:
+            expand_recipe("response_output", arguments, ref="made")
+        assert exc.value.context["argument"] == "output_name"
+
     @pytest.mark.parametrize(
         "rules",
         [
@@ -429,7 +440,7 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
     from haute.assistant._recipes import expand_recipe
 
     arguments = _arguments(recipe_id)
-    arguments["output_name"] = "response"
+    arguments["output_name"] = "quote_response"
     output_column = {
         "categorical_banding": "region_group",
         "reference_join": "region",
@@ -447,7 +458,7 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
         {
             "op": "add_node",
             "node_type": "output",
-            "name": "response",
+            "name": "quote_response",
             "ref": "made_output",
             "config": {
                 "output_mapping": [
@@ -471,7 +482,9 @@ def test_a_recipe_output_reads_the_created_node_by_its_id() -> None:
     from haute.assistant._recipes import expand_recipe
 
     arguments = _arguments("categorical_banding")
-    arguments.update(name="Region Band", output_name="response", output_columns=["region_group"])
+    arguments.update(
+        name="Region Band", output_name="quote_response", output_columns=["region_group"]
+    )
 
     recipe = expand_recipe("categorical_banding", arguments, ref="made")
 
@@ -481,7 +494,7 @@ def test_a_recipe_output_reads_the_created_node_by_its_id() -> None:
 
 @pytest.mark.parametrize(
     "partial_output",
-    [{"output_name": "response"}, {"output_columns": ["premium"]}],
+    [{"output_name": "quote_response"}, {"output_columns": ["premium"]}],
 )
 def test_recipe_rejects_partial_output_mapping(partial_output: dict[str, object]) -> None:
     from haute.assistant._recipes import RecipeError, expand_recipe

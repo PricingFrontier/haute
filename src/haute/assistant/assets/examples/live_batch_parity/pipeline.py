@@ -9,7 +9,7 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.api_input(config="config/request.json")
-def live_request(): ...
+def quote_input(): ...
 
 
 @pipeline.data_input(config="config/batch.json")
@@ -21,7 +21,7 @@ def selected(live_request, batch_rows): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(selected): ...
+def quote_response(selected): ...
 
 
-pipeline.connect("live_request", "selected", source_port="live_request")
+pipeline.connect("quote_input", "selected", source_port="live_request")

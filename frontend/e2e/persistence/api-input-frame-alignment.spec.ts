@@ -20,12 +20,12 @@ const quotesConfigPath = resolve(
   "rating",
   "config",
   "quote_input",
-  "quotes.json",
+  "quote_input.json",
 )
 const pipelinePath = resolve(e2eProjectRoot, "rating", "main.py")
 
-const API_NODE_ID = "quotes"
-const API_NODE_LABEL = "quotes"
+const API_NODE_ID = "quote_input"
+const API_NODE_LABEL = "quote_input"
 const DOWNSTREAM_NODE_ID = "enriched"
 const MAX_CENTRE_DELTA_PX = 3
 const LONG_FRAME_LABEL = "policyholders_with_exceptionally_long_frame_identity_2026"

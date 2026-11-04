@@ -2,7 +2,7 @@
   "operations": [
     {
       "op": "update_node",
-      "node": "response",
+      "node": "quote_response",
       "config": {
         "output_mapping": [
           {

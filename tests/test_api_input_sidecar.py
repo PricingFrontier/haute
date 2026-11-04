@@ -157,7 +157,7 @@ pipeline = haute.Pipeline("quotes")
 
 
 @pipeline.api_input(config="config/quote_input/quotes.json")
-def quotes(): ...
+def quote_input(): ...
 
 
 @pipeline.polars
@@ -168,10 +168,10 @@ def priced(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/quote_response/response.json")
-def response(priced): ...
+def quote_response(priced): ...
 
 
-pipeline.connect("quotes", "priced", source_port="quotes")
+pipeline.connect("quote_input", "priced", source_port="quotes")
 '''
 
 
@@ -208,9 +208,9 @@ def _response(project: Path, sidecar: str) -> Any:
     (project / "config" / "quote_input" / "quotes.json").write_text(sidecar, encoding="utf-8")
     _preview_cache.clear()
     graph = parse_pipeline_file(project / "main.py")
-    results = execute_graph(graph, target_node_id="response")
-    assert results["response"].status == "ok", results["response"].error
-    return results["response"].preview
+    results = execute_graph(graph, target_node_id="quote_response")
+    assert results["quote_response"].status == "ok", results["quote_response"].error
+    return results["quote_response"].preview
 
 
 def test_a_project_whose_columns_leave_their_settings_out_answers_the_same(

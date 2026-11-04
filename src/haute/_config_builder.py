@@ -34,7 +34,7 @@ from haute._polars_steps import (
 from haute._polars_steps_lift import StepLiftError, lift_steps
 from haute._project_context import current_project
 from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._types import NodeEditorState, NodeType
+from haute._types import NodeEditorState, NodeType, singleton_name_problem
 from haute.errors import ConfigError, ContractMismatchError, HauteError, ParseError
 
 __all__ = [
@@ -430,6 +430,10 @@ def _resolve_node_config(
 
     reject_removed_node_reuse_kwargs(decorator_kwargs)
     reject_camel_case_decorator_kwargs(decorator_kwargs, func_name)
+    if func_name and explicit_node_type is not None:
+        named = singleton_name_problem(explicit_node_type, func_name)
+        if named is not None:
+            raise ConfigError(named, func_name=func_name, node_type=explicit_node_type.value)
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or NodeType.POLARS

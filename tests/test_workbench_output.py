@@ -156,19 +156,19 @@ def _priced(response_tables: list[dict[str, Any]] | None = None) -> PipelineGrap
     return PipelineGraph(
         nodes=[
             _node(
-                "request",
+                "workbench_input",
                 NodeType.WORKBENCH_INPUT,
                 {"tables": copy.deepcopy(_REQUEST_TABLES), "sample": copy.deepcopy(_SAMPLE)},
             ),
             _node("priced", NodeType.POLARS, {"code": _PRICED}),
             _node("item_premiums", NodeType.POLARS, {"code": _ITEM_PREMIUMS}),
-            _node("response", NodeType.WORKBENCH_OUTPUT, {"tables": tables}),
+            _node("workbench_output", NodeType.WORKBENCH_OUTPUT, {"tables": tables}),
         ],
         edges=[
-            _edge("request", "priced", frame="policy"),
-            _edge("request", "item_premiums", frame="items"),
-            _edge("priced", "response", table="pricing"),
-            _edge("item_premiums", "response", table="item_prices"),
+            _edge("workbench_input", "priced", frame="policy"),
+            _edge("workbench_input", "item_premiums", frame="items"),
+            _edge("priced", "workbench_output", table="pricing"),
+            _edge("item_premiums", "workbench_output", table="item_prices"),
         ],
     )
 
@@ -227,7 +227,7 @@ def _run(graph: PipelineGraph, read: Callable[[WorkbenchOutputTables], Any]) -> 
         outputs, _, _, _ = execute_lazy_graph(
             graph, _build_node_fn, source="live", execution_context=context
         )
-        return read(outputs["response"])
+        return read(outputs["workbench_output"])
     finally:
         context.release_admission(preserve_primary_error=True)
 
@@ -265,7 +265,7 @@ def _unfilled() -> PipelineGraph:
     """The priced graph, its pricing table declaring `referral`, a String upstream, an
     Integer, and two columns no frame column is named exactly: `discount` and `State`."""
     graph = _priced()
-    pricing = graph.node_map["response"].data.config["tables"][0]
+    pricing = graph.node_map["workbench_output"].data.config["tables"][0]
     pricing["columns"] = [
         _column("premium", "float"),
         _column("limit", "float"),
@@ -303,7 +303,7 @@ def test_a_table_its_frame_fills_none_of_keeps_the_frames_rows(project: Path, ro
     # Every column of `item_prices` is nulls, `item_id` a String declared an Integer and
     # `discount` no frame column, yet the table has as many rows as its frame.
     graph = _priced()
-    graph.node_map["response"].data.config["tables"][1]["columns"] = [
+    graph.node_map["workbench_output"].data.config["tables"][1]["columns"] = [
         _column("item_id", "int"),
         _column("discount", "float"),
     ]
@@ -332,7 +332,7 @@ def test_a_column_of_nulls_fills_a_column_of_any_type(project: Path) -> None:
 def test_a_workbench_output_previews_before_the_workbench_has_a_sample(project: Path) -> None:
     # Each input table is then one row of nulls: each one-row table still has its one row.
     graph = _priced()
-    del graph.node_map["request"].data.config["sample"]
+    del graph.node_map["workbench_input"].data.config["sample"]
 
     tables = _tables(graph)
 
@@ -356,7 +356,7 @@ def test_a_table_nothing_is_connected_to_is_nulls(project: Path) -> None:
 
 def test_a_workbench_output_with_nothing_connected_runs(project: Path) -> None:
     graph = _priced()
-    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+    graph.edges = [edge for edge in graph.edges if edge.target != "workbench_output"]
     pipeline_file = _write(graph, project, "main")
     workbench_project(project, FORM_TABLES, FORM_SAMPLE)
 
@@ -369,11 +369,11 @@ def test_a_workbench_output_with_nothing_connected_runs(project: Path) -> None:
     # snapshots, and as the pipeline file runs.
     previewed = execute_graph(
         with_tables(parse_pipeline_file(pipeline_file), held_tables(graph)),
-        target_node_id="response",
+        target_node_id="workbench_output",
         port_labels=["pricing", "item_prices"],
         shared_snapshots=True,
         staging_token=new_staging_token(),
-    )["response"]
+    )["workbench_output"]
     assert previewed.status == "ok", previewed.error
     assert {label: each.preview for label, each in previewed.port_previews.items()} == {
         "pricing": [{"premium": None, "limit": None, "referral": None}],
@@ -393,13 +393,13 @@ def test_the_editor_previews_a_table_at_a_time(project: Path) -> None:
     assert saved.source_file
     results = execute_graph(
         saved,
-        target_node_id="response",
+        target_node_id="workbench_output",
         port_label="item_prices",
         shared_snapshots=True,
         staging_token=new_staging_token(),
     )
 
-    previewed = results["response"]
+    previewed = results["workbench_output"]
     assert previewed.status == "ok", previewed.error
     assert list(previewed.frame_columns) == ["pricing", "item_prices"]
     assert previewed.preview == _RESPONSE[0]["item_prices"]
@@ -411,8 +411,8 @@ def _three_tables() -> PipelineGraph:
     graph = _priced(tables)
     summary = "df = policy.select('state', premium=pl.col('limit') / 10)"
     graph.nodes.append(_node("summarised", NodeType.POLARS, {"code": summary}))
-    graph.edges.append(_edge("request", "summarised", frame="policy"))
-    graph.edges.append(_edge("summarised", "response", table="summary"))
+    graph.edges.append(_edge("workbench_input", "summarised", frame="policy"))
+    graph.edges.append(_edge("summarised", "workbench_output", table="summary"))
     return graph
 
 
@@ -436,15 +436,15 @@ def test_the_editor_previews_every_table_in_one_run(
 
     results = execute_graph(
         saved,
-        target_node_id="response",
+        target_node_id="workbench_output",
         port_labels=labels,
         shared_snapshots=True,
         staging_token=new_staging_token(),
     )
 
-    previewed = results["response"]
+    previewed = results["workbench_output"]
     assert previewed.status == "ok", previewed.error
-    assert runs == ["response"]
+    assert runs == ["workbench_output"]
     assert list(previewed.port_previews) == labels
     assert previewed.port_previews["item_prices"].preview == _RESPONSE[0]["item_prices"]
     assert previewed.port_previews["summary"].preview == [{"state": "NY", "premium": 100.0}]
@@ -456,11 +456,11 @@ def test_the_editor_previews_every_table_in_one_run(
     for label in labels:
         alone = execute_graph(
             saved,
-            target_node_id="response",
+            target_node_id="workbench_output",
             port_label=label,
             shared_snapshots=True,
             staging_token=new_staging_token(),
-        )["response"]
+        )["workbench_output"]
         each = previewed.port_previews[label]
         assert (each.preview, each.row_count, each.preview_truncated) == (
             alone.preview,
@@ -475,14 +475,16 @@ def test_a_preview_of_a_table_the_workbench_output_does_not_fill_says_so(project
 
     previewed = execute_graph(
         saved,
-        target_node_id="response",
+        target_node_id="workbench_output",
         port_labels=["pricing", "missing"],
         shared_snapshots=True,
         staging_token=new_staging_token(),
-    )["response"]
+    )["workbench_output"]
 
     assert previewed.status == "error"
-    assert previewed.error.startswith("response has no table 'missing' to preview; its tables")
+    assert previewed.error.startswith(
+        "workbench_output has no table 'missing' to preview; its tables"
+    )
 
 
 def test_the_preview_route_answers_every_table_asked_for_from_one_request(
@@ -498,7 +500,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     summary = form_table("summary", "output", ("state", "str"), ("premium", "float"))
     workbench_project(project, [*FORM_TABLES, summary], FORM_SAMPLE)
     client = TestClient(app)
-    body = {"graph": saved.model_dump(), "node_id": "response", "row_limit": 100}
+    body = {"graph": saved.model_dump(), "node_id": "workbench_output", "row_limit": 100}
 
     answer = client.post(
         "/api/pipeline/preview", json={**body, "port_labels": ["pricing", "summary"]}
@@ -525,7 +527,7 @@ def test_a_workbench_outputs_cell_is_traced_from_the_node_filling_its_table(proj
     traced = execute_trace(
         _priced(),
         row_index=1,
-        target_node_id="response",
+        target_node_id="workbench_output",
         column="premium",
         row_values=_RESPONSE[0]["item_prices"][1],
         port_label="item_prices",
@@ -536,11 +538,11 @@ def test_a_workbench_outputs_cell_is_traced_from_the_node_filling_its_table(proj
         "premium",
         60.0,
     )
-    assert [step.node_id for step in traced.steps] == ["request", "item_premiums"]
+    assert [step.node_id for step in traced.steps] == ["workbench_input", "item_premiums"]
     # A Workbench Output with one table needs no table named.
     one_table = _priced([_RESPONSE_TABLES[0]])
     one_table.edges = [edge for edge in one_table.edges if edge.source != "item_premiums"]
-    traced = execute_trace(one_table, target_node_id="response", column="premium")
+    traced = execute_trace(one_table, target_node_id="workbench_output", column="premium")
     assert (traced.target_node_id, traced.output_value) == ("priced", 100.0)
 
 
@@ -549,19 +551,25 @@ def test_a_workbench_outputs_cell_fed_straight_from_the_input_is_traced_from_its
 ) -> None:
     # The table is one frame of the Workbench Input, which emits one frame per table.
     graph = _priced([_table("items", ("item_id", "str"), ("value", "float"), many=True)])
-    graph.nodes = [node for node in graph.nodes if node.id in ("request", "response")]
-    graph.edges = [_edge("request", "response", frame="items", table="items")]
+    graph.nodes = [
+        node for node in graph.nodes if node.id in ("workbench_input", "workbench_output")
+    ]
+    graph.edges = [_edge("workbench_input", "workbench_output", frame="items", table="items")]
 
     traced = execute_trace(
         graph,
         row_index=1,
-        target_node_id="response",
+        target_node_id="workbench_output",
         column="value",
         row_values={"item_id": "B", "value": 30.0},
         port_label="items",
     )
 
-    assert (traced.target_node_id, traced.column, traced.output_value) == ("request", "value", 30.0)
+    assert (traced.target_node_id, traced.column, traced.output_value) == (
+        "workbench_input",
+        "value",
+        30.0,
+    )
 
 
 def test_a_workbench_outputs_cell_beside_nulls_is_traced_from_its_frame(project: Path) -> None:
@@ -571,14 +579,20 @@ def test_a_workbench_outputs_cell_beside_nulls_is_traced_from_its_frame(project:
     row = {"premium": 100.0, "limit": 1000.0, "referral": None, "discount": None, "State": None}
 
     traced = execute_trace(
-        graph, target_node_id="response", column="premium", row_values=row, port_label="pricing"
+        graph,
+        target_node_id="workbench_output",
+        column="premium",
+        row_values=row,
+        port_label="pricing",
     )
 
     assert (traced.target_node_id, traced.column, traced.output_value) == ("priced", "premium", 100)
     # A column of nulls has no value to trace.
     for unfilled in ("referral", "discount", "State"):
         with pytest.raises(ValueError, match=f"fills '{unfilled}' with nulls, as the frame"):
-            execute_trace(graph, target_node_id="response", column=unfilled, port_label="pricing")
+            execute_trace(
+                graph, target_node_id="workbench_output", column=unfilled, port_label="pricing"
+            )
 
 
 @pytest.mark.parametrize(
@@ -592,9 +606,11 @@ def test_a_workbench_outputs_cell_beside_nulls_is_traced_from_its_frame(project:
 def test_a_workbench_outputs_cell_it_cannot_place_says_why(
     project: Path, port_label: str | None, column: str, message: str
 ) -> None:
-    refusal = f"^Target node 'response' is a Workbench Output.*{message}"
+    refusal = f"^Target node 'workbench_output' is a Workbench Output.*{message}"
     with pytest.raises(ValueError, match=refusal):
-        execute_trace(_priced(), target_node_id="response", column=column, port_label=port_label)
+        execute_trace(
+            _priced(), target_node_id="workbench_output", column=column, port_label=port_label
+        )
 
 
 def test_a_workbench_output_table_with_nothing_connected_has_nothing_to_trace(
@@ -604,7 +620,9 @@ def test_a_workbench_output_table_with_nothing_connected_has_nothing_to_trace(
     graph.edges = [edge for edge in graph.edges if edge.targetHandle != "pricing"]
 
     with pytest.raises(ValueError, match="nothing connected to its 'pricing' table"):
-        execute_trace(graph, target_node_id="response", column="premium", port_label="pricing")
+        execute_trace(
+            graph, target_node_id="workbench_output", column="premium", port_label="pricing"
+        )
 
 
 def test_generated_code_runs_a_workbench_output(project: Path) -> None:
@@ -612,14 +630,18 @@ def test_generated_code_runs_a_workbench_output(project: Path) -> None:
     workbench_project(project, FORM_TABLES, FORM_SAMPLE)
 
     code = pipeline_file.read_text(encoding="utf-8")
-    assert '@pipeline.workbench_output(config="config/workbench_output/response.json")' in code
-    assert 'pipeline.connect("priced", "response", target_port="pricing")' in code
+    assert (
+        '@pipeline.workbench_output(config="config/workbench_output/workbench_output.json")' in code
+    )
+    assert 'pipeline.connect("priced", "workbench_output", target_port="pricing")' in code
     parsed = parse_pipeline_file(pipeline_file)
-    assert parsed.node_map["response"].data.nodeType is NodeType.WORKBENCH_OUTPUT
+    assert parsed.node_map["workbench_output"].data.nodeType is NodeType.WORKBENCH_OUTPUT
     # Its config file holds none of its tables: the form's are given where it runs.
-    assert "tables" not in parsed.node_map["response"].data.config
+    assert "tables" not in parsed.node_map["workbench_output"].data.config
     assert sorted(
-        (edge.source, edge.targetHandle) for edge in parsed.edges if edge.target == "response"
+        (edge.source, edge.targetHandle)
+        for edge in parsed.edges
+        if edge.target == "workbench_output"
     ) == [("item_premiums", "item_prices"), ("priced", "pricing")]
 
     # Run on its own, it reads the form's tables and sample; each row of a table the form
@@ -654,17 +676,17 @@ def _one_table_quote() -> PipelineGraph:
     request = _table("quote", ("state", "str"), ("limit", "int"))
     return PipelineGraph(
         nodes=[
-            _node("request", NodeType.WORKBENCH_INPUT, {"tables": [request]}),
+            _node("workbench_input", NodeType.WORKBENCH_INPUT, {"tables": [request]}),
             _node("priced", NodeType.POLARS, {"code": _PRICED.replace("policy", "quote")}),
             _node(
-                "response",
+                "workbench_output",
                 NodeType.WORKBENCH_OUTPUT,
                 {"tables": [_table("pricing", ("premium", "float"), ("state", "str"))]},
             ),
         ],
         edges=[
-            _edge("request", "priced", frame="quote"),
-            _edge("priced", "response", table="pricing"),
+            _edge("workbench_input", "priced", frame="quote"),
+            _edge("priced", "workbench_output", table="pricing"),
         ],
     )
 
@@ -674,12 +696,12 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
     # One quote, as a deployed pipeline's request holds it: each table under its name.
     request = pl.DataFrame([{"quote": {"state": "TX", "limit": 500}}])
 
-    assert find_output_node(graph) == "response"
+    assert find_output_node(graph) == "workbench_output"
     scored = score_graph(
         graph=graph,
         input_df=request,
         input_node_ids=find_deploy_input_nodes(graph),
-        output_node_id="response",
+        output_node_id="workbench_output",
     )
     assert render_output_document(scored) == [{"pricing": {"premium": 50.0, "state": "TX"}}]
 
@@ -692,7 +714,7 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
         ],
     )
     resolved = resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
-    assert resolved.output_node_id == "response"
+    assert resolved.output_node_id == "workbench_output"
     assert list(resolved.output_schema) == ["pricing"]
 
     # `[deploy].output_fields` names the response's fields, which a Workbench Output's tables
@@ -701,7 +723,7 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
         graph=graph,
         input_df=request,
         input_node_ids=find_deploy_input_nodes(graph),
-        output_node_id="response",
+        output_node_id="workbench_output",
         output_fields=["pricing"],
     )
     assert render_output_document(picked) == [{"pricing": {"premium": 50.0, "state": "TX"}}]
@@ -711,7 +733,7 @@ def test_deploy_answers_with_nulls_for_what_the_pipeline_does_not_fill(project: 
     # `state` is a String upstream declared an Integer, `discount` no frame column, and
     # `layers` a table nothing is connected to: each null, left out of the answer.
     graph = _one_table_quote()
-    graph.node_map["response"].data.config["tables"] = [
+    graph.node_map["workbench_output"].data.config["tables"] = [
         _table("pricing", ("premium", "float"), ("state", "int"), ("discount", "float")),
         _table("layers", ("layer", "int"), many=True),
     ]
@@ -721,7 +743,7 @@ def test_deploy_answers_with_nulls_for_what_the_pipeline_does_not_fill(project: 
         graph=graph,
         input_df=request,
         input_node_ids=find_deploy_input_nodes(graph),
-        output_node_id="response",
+        output_node_id="workbench_output",
     )
 
     assert render_output_document(scored) == [{"pricing": {"premium": 50.0}}]
@@ -741,7 +763,9 @@ def _identified() -> PipelineGraph:
     return PipelineGraph(
         nodes=[
             _node(
-                "request", NodeType.WORKBENCH_INPUT, {"tables": [details, items], "sample": sample}
+                "workbench_input",
+                NodeType.WORKBENCH_INPUT,
+                {"tables": [details, items], "sample": sample},
             ),
             _node(
                 "item_premiums",
@@ -759,7 +783,7 @@ def _identified() -> PipelineGraph:
                 {"code": "df = items.select(premium=pl.col('value').sum())"},
             ),
             _node(
-                "response",
+                "workbench_output",
                 NodeType.WORKBENCH_OUTPUT,
                 {
                     "tables": [
@@ -770,10 +794,10 @@ def _identified() -> PipelineGraph:
             ),
         ],
         edges=[
-            _edge("request", "item_premiums", frame="items"),
-            _edge("request", "total", frame="items"),
-            _edge("total", "response", table="pricing"),
-            _edge("item_premiums", "response", table="item_prices"),
+            _edge("workbench_input", "item_premiums", frame="items"),
+            _edge("workbench_input", "total", frame="items"),
+            _edge("total", "workbench_output", table="pricing"),
+            _edge("item_premiums", "workbench_output", table="item_prices"),
         ],
     )
 
@@ -797,7 +821,7 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
         graph=graph,
         input_df=request,
         input_node_ids=find_deploy_input_nodes(graph),
-        output_node_id="response",
+        output_node_id="workbench_output",
     )
 
     # The total dropped them and the items' frame held a reference of its own: the response
@@ -858,7 +882,7 @@ def test_a_workbench_outputs_cell_beside_the_quotes_identity_is_traced_from_its_
     traced = execute_trace(
         _identified(),
         row_index=1,
-        target_node_id="response",
+        target_node_id="workbench_output",
         column="item_id",
         row_values=row,
         port_label="item_prices",
@@ -873,19 +897,22 @@ def test_a_workbench_outputs_cell_beside_the_quotes_identity_is_traced_from_its_
     for blank in ("quote_reference", "quote_option"):
         with pytest.raises(ValueError, match=f"holds the quote's '{blank}' blank, as the"):
             execute_trace(
-                _identified(), target_node_id="response", column=blank, port_label="item_prices"
+                _identified(),
+                target_node_id="workbench_output",
+                column=blank,
+                port_label="item_prices",
             )
 
 
 def _no_tables(graph: PipelineGraph) -> None:
-    graph.node_map["response"].data.config["tables"] = []
-    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+    graph.node_map["workbench_output"].data.config["tables"] = []
+    graph.edges = [edge for edge in graph.edges if edge.target != "workbench_output"]
 
 
 def _no_columns(graph: PipelineGraph) -> None:
-    for table in graph.node_map["response"].data.config["tables"]:
+    for table in graph.node_map["workbench_output"].data.config["tables"]:
         table["columns"] = []
-    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+    graph.edges = [edge for edge in graph.edges if edge.target != "workbench_output"]
 
 
 def _on_no_table(graph: PipelineGraph) -> None:
@@ -906,7 +933,7 @@ def _fills_none_of_pricing(code: str) -> Callable[[PipelineGraph], None]:
     """`pricing` declaring only columns its frame does not fill, the frame made by *code*."""
 
     def change(graph: PipelineGraph) -> None:
-        graph.node_map["response"].data.config["tables"][0]["columns"] = [
+        graph.node_map["workbench_output"].data.config["tables"][0]["columns"] = [
             _column("referral", "int"),
             _column("discount", "float"),
         ]
@@ -993,7 +1020,7 @@ def test_a_workbench_output_config_with_a_mapping_is_refused(project: Path) -> N
     # sidecar is read, rather than ignored, which would fill the columns differently.
     pipeline_file = _write(_priced(), project, "main")
     workbench_project(project, FORM_TABLES, FORM_SAMPLE)
-    sidecar = project / "config" / "workbench_output" / "response.json"
+    sidecar = project / "config" / "workbench_output" / "workbench_output.json"
     config = json.loads(sidecar.read_text(encoding="utf-8"))
     sidecar.write_text(
         json.dumps({**config, "mapping": {"pricing": {"premium": "limit"}}}), encoding="utf-8"

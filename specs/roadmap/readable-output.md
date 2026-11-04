@@ -43,6 +43,7 @@ The owner decided the following on 4 November 2026:
 - An Explore node's settings live in a sidecar, so they do not crowd `main.py`.
 - Every stepped node's code is its only copy of its steps, as a Polars node's is.
 - commercial-pricing's two `"steps": []` lines are removed by hand, in a commit of their own, with no script.
+- A pipeline holds one request input and one response node, so each is named by its type alone, `quote_input`, `quote_response`, `workbench_input` or `workbench_output`, with no number after it (`Workbench_Input_1`). The name is fixed. commercial-pricing's two are renamed by hand.
 
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 

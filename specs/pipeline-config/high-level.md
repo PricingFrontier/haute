@@ -153,6 +153,14 @@ Every mutation of a persisted document, including Save, names the `source_revisi
 based on and fails closed when the on-disk document has moved; initial creation names no
 revision and succeeds only while the target file is absent.
 
+**The request input and the response node are named by their type.** A pipeline holds at
+most one request input and one response node, so each has one name: a Quote Input is
+`quote_input`, a Quote Response `quote_response`, a Workbench Input `workbench_input` and
+a Workbench Output `workbench_output` (`SINGLETON_NODE_NAMES`, READ-46), in a pipeline or a
+submodel module. A file whose function for one of them has another name is refused, naming
+the name it must have, as is a standalone run of it; a save, a deploy and an assistant
+edit refuse a graph that names one otherwise.
+
 **Wiring.** In the statically parsed source graph, edges come from exactly two declared
 sources: explicit `connect()` calls and function parameter names matching other node names.
 Explicit calls take precedence and

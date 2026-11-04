@@ -74,6 +74,20 @@ _FAN_IN = {
     "outputs": [],
     "inputs_by_parent": {"n-declared": ["area", "premium"], "n-rates": ["area", "rate"]},
 }
+#: The Quote Response's contract in each graph. A pipeline holds one Quote Response
+#: (READ-46), so each is a graph of its own: one its mapping implies, one declaring just what
+#: the mapping implies, and one declaring ``inputs_by_parent`` fan-in.
+_RESPONSE_CONTRACTS: dict[str, dict] = {
+    "fan_in": {
+        "contract": {
+            "inputs": ["premium", "quote_id"],
+            "outputs": [],
+            "inputs_by_parent": {"n-score": ["premium", "quote_id"]},
+        }
+    },
+    "implied": {},
+    "declared": {"contract": {"inputs": ["premium", "quote_id"], "outputs": []}},
+}
 
 
 def _node(node_id: str, label: str, node_type: NodeType, config: dict) -> GraphNode:
@@ -84,8 +98,11 @@ def _edge(source: str, target: str) -> GraphEdge:
     return GraphEdge(id=f"{source}->{target}", source=source, target=target)
 
 
-def _graph() -> PipelineGraph:
-    """Node ids differ from function names, so fan-in parents must be renamed on save."""
+def _graph(response: str = "fan_in") -> PipelineGraph:
+    """Node ids differ from function names, so fan-in parents must be renamed on save.
+
+    Its Quote Response holds the *response* contract of ``_RESPONSE_CONTRACTS``.
+    """
     return PipelineGraph(
         nodes=[
             _node("n-policies", "Policies", NodeType.DATA_INPUT, _SOURCE),
@@ -125,25 +142,11 @@ def _graph() -> PipelineGraph:
                 NodeType.MODEL_SCORE,
                 {**_SCORE, "output_column": "severity", "code": "df = df.head(5)"},
             ),
-            _node("n-response", "Response", NodeType.OUTPUT, _RESPONSE),
             _node(
-                "n-response-declared",
-                "Response Declared",
+                "n-response",
+                "quote_response",
                 NodeType.OUTPUT,
-                {**_RESPONSE, "contract": {"inputs": ["premium", "quote_id"], "outputs": []}},
-            ),
-            _node(
-                "n-response-fan-in",
-                "Response Fan In",
-                NodeType.OUTPUT,
-                {
-                    **_RESPONSE,
-                    "contract": {
-                        "inputs": ["premium", "quote_id"],
-                        "outputs": [],
-                        "inputs_by_parent": {"n-score": ["premium", "quote_id"]},
-                    },
-                },
+                {**_RESPONSE, **_RESPONSE_CONTRACTS[response]},
             ),
             _node("n-results", "Results", NodeType.DATA_OUTPUT, _RESULTS),
             _node(
@@ -167,8 +170,6 @@ def _graph() -> PipelineGraph:
             _edge("n-fan-in", "n-score"),
             _edge("n-fan-in", "n-severity"),
             _edge("n-score", "n-response"),
-            _edge("n-score", "n-response-declared"),
-            _edge("n-score", "n-response-fan-in"),
             _edge("n-score", "n-results"),
             _edge("n-score", "n-results-declared"),
         ],
@@ -214,6 +215,7 @@ def _write_save(graph: PipelineGraph, directory: Path) -> str:
 class Saved:
     """A first save of the graph, the graph parsed back from it, and a second save."""
 
+    response: str
     graph: PipelineGraph
     code: str
     sidecars: dict[str, str]
@@ -226,15 +228,14 @@ class Saved:
         return next(parsed for parsed in self.parsed.nodes if parsed.id == name)
 
 
-@pytest.fixture(scope="module")
-def saved(tmp_path_factory: pytest.TempPathFactory) -> Saved:
-    directory = tmp_path_factory.mktemp("contracts")
-    graph = _graph()
+def _save_and_read_back(response: str, directory: Path) -> Saved:
+    graph = _graph(response)
     with patch("haute._mlflow_io.load_mlflow_model", _loaded_model):
         code = _write_save(graph, directory)
         parsed = parse_pipeline_file(directory / "main.py")
         second = graph_to_code(parsed, pipeline_name="contracts")
     return Saved(
+        response=response,
         graph=graph,
         code=code,
         sidecars=collect_node_configs(graph),
@@ -242,6 +243,18 @@ def saved(tmp_path_factory: pytest.TempPathFactory) -> Saved:
         second=second,
         second_sidecars=collect_node_configs(parsed),
     )
+
+
+@pytest.fixture(scope="module")
+def saved(tmp_path_factory: pytest.TempPathFactory) -> Saved:
+    """The save whose Quote Response declares its fan-in."""
+    return _save_and_read_back("fan_in", tmp_path_factory.mktemp("contracts"))
+
+
+@pytest.fixture(scope="module", params=list(_RESPONSE_CONTRACTS))
+def any_saved(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> Saved:
+    """A save with each of the Quote Response's contracts."""
+    return _save_and_read_back(request.param, tmp_path_factory.mktemp("contracts"))
 
 
 def _contract_keywords(code: str) -> dict[str, object]:
@@ -258,8 +271,8 @@ def _contract_keywords(code: str) -> dict[str, object]:
     return keywords
 
 
-def _node_labelled(label: str) -> GraphNode:
-    return next(node for node in _graph().nodes if node.data.label == label)
+def _node_labelled(label: str, response: str = "fan_in") -> GraphNode:
+    return next(node for node in _graph(response).nodes if node.data.label == label)
 
 
 def _builder_contract(node: GraphNode) -> Contract:
@@ -285,25 +298,33 @@ def test_keyword_is_omitted_for_an_opaque_contract(saved: Saved, label: str) -> 
 
 
 @pytest.mark.parametrize(
-    "label",
-    ["Response", "Response Declared", "Results", "Results Declared", "Severity"],
+    ("label", "response"),
+    [
+        ("quote_response", "implied"),
+        ("quote_response", "declared"),
+        ("Results", "fan_in"),
+        ("Results Declared", "fan_in"),
+        ("Severity", "fan_in"),
+    ],
+    ids=["Response", "Response Declared", "Results", "Results Declared", "Severity"],
 )
-def test_keyword_is_omitted_for_a_contract_the_settings_imply(saved: Saved, label: str) -> None:
+def test_keyword_is_omitted_for_a_contract_the_settings_imply(label: str, response: str) -> None:
     """The parser derives the same contract from the node's own settings."""
-    node = _node_labelled(label)
+    node = _node_labelled(label, response)
     implied = resolve_parse_time_contract(node.data.nodeType, node.data.config)
 
     assert _effective_contract(node) == implied
     assert implied != Contract.opaque()
-    assert _sanitize_func_name(label) not in _contract_keywords(saved.code)
+    code = graph_to_code(_graph(response), pipeline_name="contracts")
+    assert _sanitize_func_name(label) not in _contract_keywords(code)
 
 
 def test_only_the_informative_contracts_are_emitted(saved: Saved) -> None:
     assert sorted(_contract_keywords(saved.code)) == [
         "Declared_Transform",
         "Fan_In",
-        "Response_Fan_In",
         "Score",
+        "quote_response",
     ]
     assert '"opaque"' not in saved.code
 
@@ -342,7 +363,7 @@ def test_keyword_is_kept_for_inputs_by_parent_naming_parents_by_function(saved: 
         },
     }
     # The sides alone are implied by the Output's mapping; the fan-in is not.
-    assert keywords["Response_Fan_In"] == {
+    assert keywords["quote_response"] == {
         "inputs": ["premium", "quote_id"],
         "outputs": [],
         "inputs_by_parent": {"Score": ["premium", "quote_id"]},
@@ -358,7 +379,8 @@ def _parent_ids(graph: PipelineGraph, node: GraphNode) -> list[str]:
     return [edge.source for edge in graph.edges if edge.target == node.id]
 
 
-def test_saved_file_parses_back_to_the_same_effective_contract(saved: Saved) -> None:
+def test_saved_file_parses_back_to_the_same_effective_contract(any_saved: Saved) -> None:
+    saved = any_saved
     names = {node.id: _sanitize_func_name(node.data.label) for node in saved.graph.nodes}
     for node in saved.graph.nodes:
         parsed = saved.parsed_node(node)
@@ -371,29 +393,30 @@ def test_saved_file_parses_back_to_the_same_effective_contract(saved: Saved) -> 
         assert parsed_declared == renamed, node.data.label
 
 
-def test_second_save_is_byte_identical(saved: Saved) -> None:
+def test_second_save_is_byte_identical(any_saved: Saved) -> None:
+    saved = any_saved
     assert saved.second == saved.code
     # Reading a file back invents no contract where the keyword was omitted:
     # those nodes' sidecars are rewritten unchanged too.
     kept = set(_contract_keywords(saved.code))
     omitted = {path: text for path, text in saved.sidecars.items() if Path(path).stem not in kept}
+    implied_response = {"quote_response"} if saved.response != "fan_in" else set()
     assert {Path(path).stem for path in omitted} == {
         "Policies",
         "Rates",
         "Lookup",
         "Severity",
-        "Response",
-        "Response_Declared",
         "Results",
         "Results_Declared",
+        *implied_response,
     }
     assert {path: saved.second_sidecars[path] for path in omitted} == omitted
 
 
 def test_second_save_without_the_model_keeps_its_inputs(
-    saved: Saved, monkeypatch: pytest.MonkeyPatch
+    any_saved: Saved, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Offline, the parsed annotation still supplies the inputs the model would."""
     monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", _unreachable_model)
 
-    assert graph_to_code(saved.parsed, pipeline_name="contracts") == saved.code
+    assert graph_to_code(any_saved.parsed, pipeline_name="contracts") == any_saved.code

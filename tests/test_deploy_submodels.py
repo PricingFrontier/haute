@@ -58,7 +58,7 @@ pipeline = haute.Pipeline("submodel_quote", description="Prices the quote throug
 
 
 @pipeline.api_input(config="config/request.json")
-def quote(): ...
+def quote_input(): ...
 
 
 '''
@@ -175,12 +175,12 @@ def _score_bundle(resolved: ResolvedDeploy, build: Path, quotes: list[dict]) -> 
 
 _ONE_SUBMODEL = """\
 @pipeline.output(config="config/output.json")
-def response(factored): ...
+def quote_response(factored): ...
 
 
 pipeline.submodel(factors.submodel, "factors")
-pipeline.connect("quote", "factors", source_port="quote", target_port="rows")
-pipeline.connect("factors", "response", source_port="factored")
+pipeline.connect("quote_input", "factors", source_port="quote", target_port="rows")
+pipeline.connect("factors", "quote_response", source_port="factored")
 """
 
 
@@ -202,8 +202,8 @@ def test_a_served_pipeline_answers_with_its_submodels_columns(
     assert answers == [{"fixture_value": 30, "factor": 3}]
     assert resolved.output_schema == {"fixture_value": "Int64", "factor": "Int32"}
     assert {node.id for node in resolved.pruned_graph.nodes} == {
-        "quote",
-        "response",
+        "quote_input",
+        "quote_response",
         "submodel_runtime/factors/scaled",
         "submodel_runtime/factors/factor",
     }
@@ -217,14 +217,14 @@ def test_artifacts_inside_submodels_bundle_under_flat_distinct_files(
         monkeypatch,
         """\
 @pipeline.output(config="config/output.json")
-def response(second): ...
+def quote_response(second): ...
 
 
 pipeline.submodel(rated.submodel, "first")
 pipeline.submodel(rated.submodel, "second", instance_of="first")
-pipeline.connect("quote", "first", source_port="quote", target_port="rows")
+pipeline.connect("quote_input", "first", source_port="quote", target_port="rows")
 pipeline.connect("first", "second", source_port="rated", target_port="rows")
-pipeline.connect("second", "response", source_port="rated")
+pipeline.connect("second", "quote_response", source_port="rated")
 """,
         {"rated": _RATES},
         {"rated": ["fixture_value"]},
@@ -274,7 +274,7 @@ def test_load_file_deploy_preserves_logical_inputs(
     init_repo(project)
     use_project(project)
     (tmp_path / "project/data/rates.json").write_text('{"factor": 2}', encoding="utf-8")
-    request = parse_pipeline_file(project / "pipeline.py").node_map["quote"]
+    request = parse_pipeline_file(project / "pipeline.py").node_map["quote_input"]
     plain = PipelineGraph(
         nodes=[
             request,
@@ -322,9 +322,9 @@ def test_load_file_deploy_preserves_logical_inputs(
                 ),
             ),
             GraphNode(
-                id="response",
+                id="quote_response",
                 data=NodeData(
-                    label="response",
+                    label="quote_response",
                     nodeType=NodeType.OUTPUT,
                     config={
                         "output_mapping": [
@@ -340,12 +340,16 @@ def test_load_file_deploy_preserves_logical_inputs(
             ),
         ],
         edges=[
-            GraphEdge(id="input", source="quote", sourceHandle="quote", target="rates"),
-            GraphEdge(id="alternative", source="quote", sourceHandle="quote", target="alternative"),
-            GraphEdge(id="extra", source="quote", sourceHandle="quote", target="policies_extra"),
+            GraphEdge(id="input", source="quote_input", sourceHandle="quote", target="rates"),
+            GraphEdge(
+                id="alternative", source="quote_input", sourceHandle="quote", target="alternative"
+            ),
+            GraphEdge(
+                id="extra", source="quote_input", sourceHandle="quote", target="policies_extra"
+            ),
             GraphEdge(id="adjustment", source="policies_extra", target="rates"),
             GraphEdge(id="after", source="rates", target="after"),
-            GraphEdge(id="response", source="after", target="response"),
+            GraphEdge(id="response", source="after", target="quote_response"),
         ],
     )
     if wrapped:
@@ -365,7 +369,7 @@ def test_load_file_deploy_preserves_logical_inputs(
                 ),
             )
         )
-    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+    graph.edges = [edge for edge in graph.edges if edge.target != "quote_response"]
     graph.edges.append(
         GraphEdge(id="copy_input", source="alternative", target=instance, targetHandle="in__quote")
     )
@@ -379,18 +383,18 @@ def test_load_file_deploy_preserves_logical_inputs(
     )
     selected = owner if occurrence == "owner" else instance
     response_edge = GraphEdge(
-        id="response", source=selected, sourceHandle=f"out__{output}", target="response"
+        id="response", source=selected, sourceHandle=f"out__{output}", target="quote_response"
     )
     graph.edges.append(response_edge)
-    graph.node_map["response"].data.config["output_mapping"][0]["source_port"] = edge_input_name(
-        response_edge, graph.node_map[selected], submodels=graph.submodels
+    graph.node_map["quote_response"].data.config["output_mapping"][0]["source_port"] = (
+        edge_input_name(response_edge, graph.node_map[selected], submodels=graph.submodels)
     )
     quotes = [{"quote_id": "q1", "fixture_value": 10}]
     (tmp_path / "project/data/quote.json").write_text(json.dumps(quotes), encoding="utf-8")
-    graph.node_map["quote"].data.config["path"] = "data/quote.json"
+    graph.node_map["quote_input"].data.config["path"] = "data/quote.json"
     with project_scope(ProjectContext.at(project)):
         expected = [{"premium": 31 if occurrence == "owner" else 71}]
-        assert execute_graph(flatten_executable_graph(graph))["response"].preview == expected
+        assert execute_graph(flatten_executable_graph(graph))["quote_response"].preview == expected
         SavePipelineService(project).save_graph_transactionally(
             graph=graph,
             name="logical_inputs",
@@ -427,17 +431,17 @@ def scaled(rows: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @submodel.output(config="config/output.json")
-def response(scaled): ...
+def quote_response(scaled): ...
 
 
-submodel.connect("scaled", "response")
+submodel.connect("scaled", "quote_response")
 """
     project = _project(
         tmp_path,
         monkeypatch,
         """\
 pipeline.submodel(priced.submodel, "priced")
-pipeline.connect("quote", "priced", source_port="quote", target_port="rows")
+pipeline.connect("quote_input", "priced", source_port="quote", target_port="rows")
 """,
         {"priced": priced},
         {"scaled": ["fixture_value"]},
@@ -445,7 +449,7 @@ pipeline.connect("quote", "priced", source_port="quote", target_port="rows")
 
     resolved = _resolve(project)
 
-    assert resolved.output_node_id == "submodel_runtime/priced/response"
+    assert resolved.output_node_id == "submodel_runtime/priced/quote_response"
     answers = _score_bundle(resolved, tmp_path / "build", [{"quote_id": "q1", "fixture_value": 10}])
     assert answers == [{"fixture_value": 30}]
 

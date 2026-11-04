@@ -10,7 +10,7 @@ const ratingDir = resolve(e2eProjectRoot, "rating")
 const pipelinePath = resolve(ratingDir, "main.py")
 const dataInputDir = resolve(ratingDir, "config", "data_input")
 const lookupDataPath = resolve(ratingDir, "data", "lookup.csv")
-const quoteConfigPath = resolve(ratingDir, "config", "quote_input", "quotes.json")
+const quoteConfigPath = resolve(ratingDir, "config", "quote_input", "quote_input.json")
 const quoteDataPath = resolve(e2eProjectRoot, "data", "quotes", "sample_quote.json")
 
 type Point = { x: number; y: number }
@@ -165,8 +165,8 @@ function seedPipeline(): void {
       '@pipeline.data_input(config="config/data_input/lookup_rows.json")',
       "def lookup_rows(): ...",
       "",
-      '@pipeline.api_input(config="config/quote_input/quotes.json")',
-      "def quotes(): ...",
+      '@pipeline.api_input(config="config/quote_input/quote_input.json")',
+      "def quote_input(): ...",
       "",
       "@pipeline.polars",
       "def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
@@ -431,7 +431,7 @@ test.describe("Edge Join insertion workflow", () => {
 
   test("drills into an unsaved submodel containing an API Input", async ({ page }) => {
     await captureInitialGraph(page)
-    const apiInput = page.getByRole("button", { name: /Quote Input node: quotes/i })
+    const apiInput = page.getByRole("button", { name: /Quote Input node: quote_input/i })
     await expect(apiInput).toBeVisible()
     await apiInput.click()
     await dispatchAppShortcut(page, "a")
@@ -445,8 +445,8 @@ test.describe("Edge Join insertion workflow", () => {
     await dispatchNodeDoubleClick(page, "api_input_group")
 
     await expect(page.getByRole("button", { name: "api_input_group", exact: true })).toBeVisible()
-    await expect(page.getByRole("button", { name: /Quote Input node: quotes/i })).toBeVisible()
-    await expect(page.getByTestId("rf__node-quotes").locator('[data-handleid="api_lookup"]')).toBeVisible()
+    await expect(page.getByRole("button", { name: /Quote Input node: quote_input/i })).toBeVisible()
+    await expect(page.getByTestId("rf__node-quote_input").locator('[data-handleid="api_lookup"]')).toBeVisible()
     await expect(page.getByText("Something went wrong", { exact: true })).toHaveCount(0)
   })
 
@@ -483,7 +483,7 @@ test.describe("Edge Join insertion workflow", () => {
     await expect(layoutButton).toBeEnabled()
 
     const firstJoinToEnriched = findEdge(afterFirstReload, reloadedFirstJoin.id, "enriched")
-    await dragSourceToEdge(page, await sourceHandle(page, "quotes", "api_lookup"), firstJoinToEnriched.id)
+    await dragSourceToEdge(page, await sourceHandle(page, "quote_input", "api_lookup"), firstJoinToEnriched.id)
     const renderedEdgeJoins = page.locator(".react-flow__node-edgeJoin")
     await expect(renderedEdgeJoins).toHaveCount(2)
     const renderedEdgeJoinIds = await renderedEdgeJoins.evaluateAll((elements) =>
@@ -503,20 +503,20 @@ test.describe("Edge Join insertion workflow", () => {
     await expect(secondPreview.getByRole("cell", { name: "0.25" }).first()).toBeVisible()
 
     const secondSave = await saveAndCapture(page)
-    const secondSavedJoin = findEdgeJoin(secondSave.graph, "quotes")
-    expectJoinTopology(secondSave.graph, secondSavedJoin, reloadedFirstJoin.id, "quotes", "enriched")
+    const secondSavedJoin = findEdgeJoin(secondSave.graph, "quote_input")
+    expectJoinTopology(secondSave.graph, secondSavedJoin, reloadedFirstJoin.id, "quote_input", "enriched")
     expect(
       secondSave.graph.edges.find((edge) => edge.target === secondSavedJoin.id && edge.targetHandle === "join"),
       "API join role edge preserves the emitted frame handle",
-    ).toMatchObject({ source: "quotes", sourceHandle: "api_lookup" })
+    ).toMatchObject({ source: "quote_input", sourceHandle: "api_lookup" })
 
     const finalGraph = await reloadAndCaptureGraph(page)
     const finalFirstJoin = findEdgeJoin(finalGraph, "lookup_rows")
-    const finalSecondJoin = findEdgeJoin(finalGraph, "quotes")
+    const finalSecondJoin = findEdgeJoin(finalGraph, "quote_input")
     expectJoinTopology(finalGraph, finalFirstJoin, "raw_rows", "lookup_rows", finalSecondJoin.id)
-    expectJoinTopology(finalGraph, finalSecondJoin, finalFirstJoin.id, "quotes", "enriched")
+    expectJoinTopology(finalGraph, finalSecondJoin, finalFirstJoin.id, "quote_input", "enriched")
     const apiJoinRole = finalGraph.edges.find((edge) => edge.target === finalSecondJoin.id && edge.targetHandle === "join")
-    expect(apiJoinRole, "reloaded API join role edge").toMatchObject({ source: "quotes", sourceHandle: "api_lookup" })
+    expect(apiJoinRole, "reloaded API join role edge").toMatchObject({ source: "quote_input", sourceHandle: "api_lookup" })
 
     await page.getByTestId("rf__node-enriched").click()
     const enrichedPreview = page.getByRole("table").first()

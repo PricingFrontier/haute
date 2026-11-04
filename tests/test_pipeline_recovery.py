@@ -630,7 +630,7 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    config = tmp_path / "config" / "quote_input" / "request.json"
+    config = tmp_path / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
         """{
@@ -652,29 +652,29 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
         import haute
         pipeline = haute.Pipeline("identity-document")
 
-        @pipeline.api_input(config="config/quote_input/request.json")
-        def request(): ...
+        @pipeline.api_input(config="config/quote_input/quote_input.json")
+        def quote_input(): ...
 
         @pipeline.polars
         def consume(quotes):
             return quotes
 
-        pipeline.connect("request", "consume", source_port="quotes")
+        pipeline.connect("quote_input", "consume", source_port="quotes")
         """,
     )
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     assert document.load_status == "ready"
-    request = next(node for node in document.nodes if node.authored_id == "request")
-    assert request.function_name == "request"
+    request = next(node for node in document.nodes if node.authored_id == "quote_input")
+    assert request.function_name == "quote_input"
     assert request.default_input_name is None
-    assert request.config_reference == "config/quote_input/request.json"
+    assert request.config_reference == "config/quote_input/quote_input.json"
     assert request.source_handle_input_names == {
         "quotes": "quotes",
         "vehicles": "vehicles",
     }
-    edge = next(item for item in document.edges if item.source_authored_id == "request")
+    edge = next(item for item in document.edges if item.source_authored_id == "quote_input")
     assert edge.input_name == "quotes"
     assert document.capabilities.reserved_api_input_frame_labels == sorted(
         document.capabilities.reserved_api_input_frame_labels
@@ -687,7 +687,7 @@ def test_ready_document_keeps_incomplete_api_input_config_repairable(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    config = tmp_path / "config" / "quote_input" / "request.json"
+    config = tmp_path / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
         """{
@@ -717,15 +717,15 @@ def test_ready_document_keeps_incomplete_api_input_config_repairable(
         import haute
         pipeline = haute.Pipeline("identity-document")
 
-        @pipeline.api_input(config="config/quote_input/request.json")
-        def request(): ...
+        @pipeline.api_input(config="config/quote_input/quote_input.json")
+        def quote_input(): ...
         """,
     )
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     assert document.load_status == "ready"
-    request = next(node for node in document.nodes if node.authored_id == "request")
+    request = next(node for node in document.nodes if node.authored_id == "quote_input")
     assert len(request.config["tables"]) == 4
     assert request.config["tables"][0]["columns"][1]["name"] == ""
     assert request.config["tables"][3]["label"] == ""
@@ -3386,13 +3386,16 @@ def test_remove_connection_takes_out_one_duplicate_at_a_time(
 def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
     tmp_path: Path,
 ) -> None:
-    """An input may name a table after itself; a connect() binding that table is no mistake."""
+    """An input may name a table after itself; a connect() binding that table is no mistake.
+
+    A Quote Input is named by its type (READ-46), so its table takes that name.
+    """
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    config = tmp_path / "config" / "quote_input" / "quotes.json"
+    config = tmp_path / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
-        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
+        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quote_input", '
         '"emit": true, "columns": [{"name": "id", "path": "$[:].id", "type": "int", '
         '"status": "Confirmed", "selected": true}]}]}',
         encoding="utf-8",
@@ -3403,12 +3406,12 @@ def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
         import haute
         pipeline = haute.Pipeline("frames")
 
-        @pipeline.api_input(config="config/quote_input/quotes.json")
-        def quotes(): ...
+        @pipeline.api_input(config="config/quote_input/quote_input.json")
+        def quote_input(): ...
 
         @pipeline.polars
-        def priced(quotes):
-            return quotes
+        def priced(quote_input):
+            return quote_input
 
         @pipeline.polars
         def rates():
@@ -3417,7 +3420,7 @@ def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
         @pipeline.edge_join(how="left", on=["id"])
         def joined(priced, rates): ...
 
-        pipeline.connect("quotes", "priced", source_port="quotes")
+        pipeline.connect("quote_input", "priced", source_port="quote_input")
         pipeline.connect("priced", "joined", target_port="base")
         pipeline.connect("rates", "joined", target_port="join")
         """,
@@ -3780,7 +3783,7 @@ def test_a_submodel_copy_naming_a_missing_original_is_its_own_to_remove(
 
 def _quote_input_project(root: Path, consumer: str, connect: str) -> Path:
     """A Quote Input with one table, `quotes`, and a consumer written as given."""
-    config = root / "config" / "quote_input" / "request.json"
+    config = root / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
         '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
@@ -3792,8 +3795,8 @@ def _quote_input_project(root: Path, consumer: str, connect: str) -> Path:
         root / "main.py",
         "import haute\n"
         'pipeline = haute.Pipeline("frames")\n\n'
-        '@pipeline.api_input(config="config/quote_input/request.json")\n'
-        "def request(): ...\n\n" + consumer + "\n" + connect,
+        '@pipeline.api_input(config="config/quote_input/quote_input.json")\n'
+        "def quote_input(): ...\n\n" + consumer + "\n" + connect,
     )
 
 
@@ -3808,11 +3811,11 @@ def test_a_quote_input_connection_naming_no_table_is_a_connection_to_remove(
     pipeline_file = _quote_input_project(
         tmp_path,
         "@pipeline.polars\ndef consume(quotes):\n    return quotes\n",
-        'pipeline.connect("request", "consume")\n',
+        'pipeline.connect("quote_input", "consume")\n',
     )
     with pytest.raises(ParseError, match="does not name the table it takes") as refused:
         parse_pipeline_file(pipeline_file)
-    assert refused.value.context["frame_missing_edges"] == ["request -> consume"]
+    assert refused.value.context["frame_missing_edges"] == ["quote_input -> consume"]
     use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.load_status == "degraded"
@@ -3834,7 +3837,7 @@ def test_a_parameter_named_after_a_quote_input_is_its_nodes_to_recover(tmp_path:
     from haute.schemas import PipelineRepairRecoverRequest
 
     pipeline_file = _quote_input_project(
-        tmp_path, "@pipeline.polars\ndef consume(request):\n    return request\n", ""
+        tmp_path, "@pipeline.polars\ndef consume(quote_input):\n    return quote_input\n", ""
     )
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     consume = next(node for node in document.nodes if node.authored_id == "consume")

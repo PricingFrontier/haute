@@ -17,6 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
+from types import MappingProxyType
 from typing import (
     Any,
     ClassVar,
@@ -136,6 +137,44 @@ REQUEST_INPUT_NODE_TYPES: frozenset[NodeType] = frozenset(
 #: score() and deploy answer with either alike, and a pipeline holds one. The
 #: editor's ``RESPONSE_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is the twin.
 RESPONSE_NODE_TYPES: frozenset[NodeType] = frozenset({NodeType.OUTPUT, NodeType.WORKBENCH_OUTPUT})
+
+#: The one name each request input and response node has (READ-46): a pipeline holds one
+#: of each, so its type names it, never numbered. The editor's ``SINGLETON_NODE_NAMES``
+#: (``frontend/src/utils/nodeTypes.ts``) is the twin.
+SINGLETON_NODE_NAMES: Mapping[NodeType, str] = MappingProxyType(
+    {
+        NodeType.API_INPUT: "quote_input",
+        NodeType.OUTPUT: "quote_response",
+        NodeType.WORKBENCH_INPUT: "workbench_input",
+        NodeType.WORKBENCH_OUTPUT: "workbench_output",
+    }
+)
+
+#: How an analyst knows each of them, for messages.
+_SINGLETON_LABELS: Mapping[NodeType, str] = MappingProxyType(
+    {
+        NodeType.API_INPUT: "Quote Input",
+        NodeType.OUTPUT: "Quote Response",
+        NodeType.WORKBENCH_INPUT: "Workbench Input",
+        NodeType.WORKBENCH_OUTPUT: "Workbench Output",
+    }
+)
+
+
+def singleton_name_problem(node_type: NodeType | str, name: str) -> str | None:
+    """Why a node of *node_type* cannot be called *name*, or ``None`` when it can: a request
+    input or response node has its type's one name (READ-46)."""
+    try:
+        kind = NodeType(node_type)
+    except ValueError:
+        return None
+    fixed = SINGLETON_NODE_NAMES.get(kind)
+    if fixed is None or name == fixed:
+        return None
+    return (
+        f"A {_SINGLETON_LABELS[kind]} is always named {fixed!r}, since a pipeline holds one; "
+        f"rename {name!r} to {fixed!r}, and each connect() that names it."
+    )
 
 
 # ---------------------------------------------------------------------------

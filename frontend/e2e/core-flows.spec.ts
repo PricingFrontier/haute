@@ -609,19 +609,24 @@ test.describe("core browser flows", () => {
     await expect(branchSelect).not.toBeVisible()
     await expect(page.getByTestId("branch-indicator-name")).toContainText("browser-e2e-flow")
 
+    // The Quote Response is named by its type alone, so its name can't be edited (READ-46).
+    const labelInput = page.locator("input.node-label-input")
+    await page.getByRole("button", { name: /node: quote_response\b/ }).click()
+    await expect(labelInput).toHaveValue("quote_response")
+    await expect(labelInput).toBeDisabled()
+
     // Edit a node and save — the save must write the file AND record a
     // ledger auto-commit (one commit per save, P1).
-    const pricedNode = page.getByRole("button", { name: /priced/i })
-    await expect(pricedNode).toBeVisible()
-    await pricedNode.click()
+    const enrichedNode = page.getByRole("button", { name: /node: enriched\b/ })
+    await expect(enrichedNode).toBeVisible()
+    await enrichedNode.click()
 
-    const labelInput = page.locator("input.node-label-input")
-    await expect(labelInput).toHaveValue("priced")
-    await labelInput.fill("priced_browser")
+    await expect(labelInput).toHaveValue("enriched")
+    await labelInput.fill("enriched_browser")
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
-    await expect.poll(() => readFileSync(gitMainPath, "utf8")).toContain("def priced_browser")
+    await expect.poll(() => readFileSync(gitMainPath, "utf8")).toContain("def enriched_browser")
 
     await expect
       .poll(() =>

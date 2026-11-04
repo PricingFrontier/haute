@@ -4,9 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `examples/reference/main.py` | Generated `pipeline` graph object named `reference`: the `quotes` Data Input, the `features` Polars transform and the `priced` output, wired in a line. |
+| `examples/reference/main.py` | Generated `pipeline` graph object named `reference`: the `quotes` Data Input, the `features` Polars transform and the `quote_response` output, wired in a line. |
 | `examples/reference/config/data_input/quotes.json` | Data Input sidecar: a scanned CSV at the project-root-relative path `examples/reference/data/quotes.csv`. |
-| `examples/reference/config/quote_response/priced.json` | Output sidecar mapping `quote_id`, `vehicle_age`, `driver_band` and `sum_insured` from the `features` port to `$[:].<column>`. |
+| `examples/reference/config/quote_response/quote_response.json` | Output sidecar mapping `quote_id`, `vehicle_age`, `driver_band` and `sum_insured` from the `features` port to `$[:].<column>`. |
 | `examples/reference/data/quotes.csv` | Six synthetic quotes: `quote_id`, `driver_age`, `vehicle_year`, `region`, `sum_insured`. |
 | `examples/reference/utility/__init__.py` | The project's utility package, empty apart from the docstring the editor's utility routes write when they create it; the pipeline imports nothing from it. |
 
@@ -30,7 +30,7 @@ graph as the repository's default pipeline.
 1. `haute run` (or the editor) resolves `examples/reference/main.py` from the root
    `haute.toml` and parses it into the three-node graph.
 2. Execution prepares the `quotes` Data Input's snapshot from the CSV, runs
-   `features`, and assembles `priced` from its mapping.
+   `features`, and assembles `quote_response` from its mapping.
 3. `haute run` prints each node's row and column counts and the last node's rows.
 
 ## Edge cases and invariants
@@ -51,7 +51,7 @@ graph as the repository's default pipeline.
 
 - `tests/test_reference_pipeline.py` copies the tracked root `haute.toml` and
   `examples/` into an empty directory and runs `haute run` there: every node
-  succeeds and `priced` returns six rows of four columns.
+  succeeds and `quote_response` returns six rows of four columns.
 - `tests/test_docs_accuracy.py` requires every tracked `examples/` Python, JSON and
   CSV file to appear in this module map.
 - `tests/test_repository_hygiene.py` requires pipeline sidecars to live under

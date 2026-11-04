@@ -6,7 +6,7 @@
     "policies": {"x": 280, "y": 0},
     "premium_explore": {"x": 1680, "y": 120},
     "priced_batch": {"x": 1680, "y": 240},
-    "quote_request": {"x": 0, "y": 0},
+    "quote_input": {"x": 0, "y": 0},
     "quote_response": {"x": 1680, "y": 0},
     "rating_bands": {"x": 1120, "y": 0},
     "rating_features": {"x": 560, "y": 0}

@@ -466,14 +466,14 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("one_port_score")
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
         def consume(quotes: pl.DataFrame) -> pl.DataFrame:
             return quotes
 
-        p.connect("api_source", "consume", source_port="quotes")
+        p.connect("quote_input", "consume", source_port="quotes")
         return p
 
     @staticmethod
@@ -481,7 +481,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("two_port_score")
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
@@ -495,8 +495,8 @@ class TestPipelinePortAwareExecution:
                 }
             )
 
-        p.connect("api_source", "combine", source_port="quotes")
-        p.connect("api_source", "combine", source_port="drivers")
+        p.connect("quote_input", "combine", source_port="quotes")
+        p.connect("quote_input", "combine", source_port="drivers")
         return p
 
     def test_run_selects_the_frame_from_a_one_frame_api_input_dict(self):
@@ -504,14 +504,14 @@ class TestPipelinePortAwareExecution:
         expected = pl.DataFrame({"quote_id": [17]})
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             return {"quotes": expected}
 
         @p.polars
         def consume(quotes: pl.DataFrame) -> pl.DataFrame:
             return quotes
 
-        p.connect("api_source", "consume", source_port="quotes")
+        p.connect("quote_input", "consume", source_port="quotes")
 
         result = p.run(source="batch")
         assert isinstance(result, pl.DataFrame)
@@ -521,7 +521,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("many_frame_run")
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             return {
                 "quotes": pl.DataFrame({"quote_id": [17]}),
                 "drivers": pl.DataFrame({"driver_id": [31]}),
@@ -538,8 +538,8 @@ class TestPipelinePortAwareExecution:
                 }
             )
 
-        p.connect("api_source", "combine", source_port="quotes")
-        p.connect("api_source", "combine", source_port="drivers")
+        p.connect("quote_input", "combine", source_port="quotes")
+        p.connect("quote_input", "combine", source_port="drivers")
 
         assert p.run(source="batch").to_dict(as_series=False) == {
             "quote_id": [17],
@@ -550,7 +550,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("source_only_score")
 
         @p.api_input
-        def api_source() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("score() must seed the apiInput source")
 
         seed = pl.DataFrame({"quote_id": [17]})
@@ -566,14 +566,14 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("unnamed_port_score")
 
         @p.api_input
-        def api_source() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
-        def consume(api_source: pl.DataFrame) -> pl.DataFrame:
-            return api_source
+        def consume(quote_input: pl.DataFrame) -> pl.DataFrame:
+            return quote_input
 
-        p.connect("api_source", "consume")
+        p.connect("quote_input", "consume")
         seed = pl.DataFrame({"quote_id": [17]})
 
         assert p.score(seed).to_dict(as_series=False) == {"quote_id": [17]}
@@ -661,7 +661,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("source_only_dict_score")
 
         @p.api_input
-        def api_source() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("score() must seed the apiInput source")
 
         with pytest.raises(ExecutionError) as exc_info:
@@ -726,7 +726,7 @@ class TestDecoratorAliases:
         reg = NodeRegistry("test")
 
         @reg.api_input
-        def src() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame()
 
         assert reg.nodes[0].config["_node_type"] == NodeType.API_INPUT
@@ -949,7 +949,7 @@ class TestPipelineEdgeCases:
         p = Pipeline("seed_api")
 
         @p.api_input(api_input=True)
-        def live_src() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
         @p.data_input
@@ -957,10 +957,10 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"y": [77]})
 
         @p.polars
-        def combine(live_src: pl.DataFrame, static_src: pl.DataFrame) -> pl.DataFrame:
-            return live_src.hstack(static_src)
+        def combine(quote_input: pl.DataFrame, static_src: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(static_src)
 
-        p.connect("live_src", "combine").connect("static_src", "combine")
+        p.connect("quote_input", "combine").connect("static_src", "combine")
         input_df = pl.DataFrame({"x": [42]})
         result = p.score(input_df)
         assert result["x"].to_list() == [42]
@@ -1004,18 +1004,20 @@ class TestPipelineEdgeCases:
         p = Pipeline("all_api")
 
         @p.api_input(api_input=True)
-        def src1() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
-        @p.api_input(api_input=True)
+        # A pipeline holds one Quote Input (READ-46): the second source is marked live by
+        # the flag alone.
+        @p.data_input(api_input=True)
         def src2() -> pl.DataFrame:
             return pl.DataFrame({"x": [888]})
 
         @p.polars
-        def merge(src1: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
-            return src1.hstack(src2.rename({"x": "y"}))
+        def merge(quote_input: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(src2.rename({"x": "y"}))
 
-        p.connect("src1", "merge").connect("src2", "merge")
+        p.connect("quote_input", "merge").connect("src2", "merge")
         input_df = pl.DataFrame({"x": [42]})
         with pytest.raises(ExecutionError, match="multiple live input"):
             p.score(input_df)
@@ -1024,7 +1026,7 @@ class TestPipelineEdgeCases:
         p = Pipeline("mixed")
 
         @p.api_input(api_input=True)
-        def live() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
         @p.data_input
@@ -1032,10 +1034,10 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"y": [55]})
 
         @p.polars
-        def combine(live: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
-            return live.hstack(static)
+        def combine(quote_input: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(static)
 
-        p.connect("live", "combine").connect("static", "combine")
+        p.connect("quote_input", "combine").connect("static", "combine")
         input_df = pl.DataFrame({"x": [10]})
         result = p.score(input_df)
         assert result["x"].to_list() == [10]
@@ -1184,16 +1186,16 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def result(src: pl.DataFrame) -> pl.DataFrame:
+        def quote_response(src: pl.DataFrame) -> pl.DataFrame:
             return src.with_columns(kept=pl.lit("output"))
 
         @p.data_output
-        def audit(result: pl.DataFrame) -> pl.DataFrame:
-            return result.with_columns(sink=pl.lit("side_effect"))
+        def audit(quote_response: pl.DataFrame) -> pl.DataFrame:
+            return quote_response.with_columns(sink=pl.lit("side_effect"))
 
-        # 'audit' is wired after 'result' so it sorts last in topo order, but
-        # 'result' is the declared output that must be returned.
-        p.connect("src", "result").connect("result", "audit")
+        # 'audit' is wired after 'quote_response' so it sorts last in topo order, but
+        # 'quote_response' is the declared output that must be returned.
+        p.connect("src", "quote_response").connect("quote_response", "audit")
         out = p.run(source="batch")
         assert "kept" in out.columns
         assert "sink" not in out.columns
@@ -1225,15 +1227,17 @@ class TestOutputResolution:
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
+        # A pipeline holds one Quote Response (READ-46); a Workbench Output is a response
+        # node too.
         @p.output
-        def out_a(src: pl.DataFrame) -> pl.DataFrame:
+        def quote_response(src: pl.DataFrame) -> pl.DataFrame:
             return src
 
-        @p.output
-        def out_b(src: pl.DataFrame) -> pl.DataFrame:
+        @p.workbench_output
+        def workbench_output(src: pl.DataFrame) -> pl.DataFrame:
             return src
 
-        p.connect("src", "out_a").connect("src", "out_b")
+        p.connect("src", "quote_response").connect("src", "workbench_output")
         with pytest.raises(ExecutionError, match="multiple response nodes"):
             p.run(source="batch")
 
@@ -1241,18 +1245,18 @@ class TestOutputResolution:
         p = Pipeline("score_out")
 
         @p.api_input
-        def live() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def result(live: pl.DataFrame) -> pl.DataFrame:
-            return live.with_columns(kept=pl.lit("output"))
+        def quote_response(quote_input: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.with_columns(kept=pl.lit("output"))
 
         @p.data_output
-        def audit(result: pl.DataFrame) -> pl.DataFrame:
-            return result.with_columns(sink=pl.lit("side_effect"))
+        def audit(quote_response: pl.DataFrame) -> pl.DataFrame:
+            return quote_response.with_columns(sink=pl.lit("side_effect"))
 
-        p.connect("live", "result").connect("result", "audit")
+        p.connect("quote_input", "quote_response").connect("quote_response", "audit")
         out = p.score(pl.DataFrame({"x": [7]}))
         assert "kept" in out.columns
         assert "sink" not in out.columns
@@ -1367,7 +1371,7 @@ class TestApiInputDecoratorMarksSeed:
         p = Pipeline("decorated")
 
         @p.api_input
-        def live() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("api_input source must be seeded, not called")
 
         @p.data_input
@@ -1375,10 +1379,10 @@ class TestApiInputDecoratorMarksSeed:
             return pl.DataFrame({"y": [5]})
 
         @p.polars
-        def combine(live: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
-            return live.hstack(static)
+        def combine(quote_input: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(static)
 
-        p.connect("live", "combine").connect("static", "combine")
+        p.connect("quote_input", "combine").connect("static", "combine")
         result = p.score(pl.DataFrame({"x": [9]}))
         assert result["x"].to_list() == [9]
         assert result["y"].to_list() == [5]
@@ -1920,11 +1924,11 @@ class TestStandaloneSubmodels:
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             '@submodel.api_input(config="config/api_input/payload.json")\n'
-            "def payload(): ...\n\n\n"
+            "def quote_input(): ...\n\n\n"
             f'@submodel.rating_step(config="{rated_config}")\n'
             "def rated(df: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:\n"
             '    return df.join(lookup.lazy(), how="cross")\n\n\n'
-            'submodel.connect("payload", "rated", source_port="lookup")\n',
+            'submodel.connect("quote_input", "rated", source_port="lookup")\n',
             encoding="utf-8",
         )
         source = (
