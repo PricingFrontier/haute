@@ -12,7 +12,7 @@ import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TypeVar
@@ -29,7 +29,6 @@ from haute._pipeline_recovery import (
     load_pipeline_editor_document,
     pipeline_document_fingerprint,
 )
-from haute._polars_steps import STEPS_FROM_CODE
 from haute._project_context import current_project
 from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
@@ -40,7 +39,7 @@ from haute._sidecar import (
     _normalise_sidecar_sources,
     _read_sidecar_json,
     read_sidecar_state,
-    with_unfinished_steps,
+    unfinished_step_list,
 )
 from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import InvalidRequestError, NotFoundError, ParseError
@@ -730,35 +729,29 @@ def _sidecar_position_key(node: GraphNode) -> str:
     return _sanitize_func_name(node.data.label)
 
 
-def _unfinished_steps(graph: PipelineGraph) -> dict[str, list[dict[str, Any]]]:
+def _unfinished_steps(
+    graph: PipelineGraph, port_inputs: Mapping[str, Sequence[str]] | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Each stepped node's step list that its save writes as the raising placeholder, by
-    position key (READ-22, READ-44): one that cannot be rendered, or not against the
-    inputs connected to it, as codegen renders it and the save warns of it. A step naming
-    an input that is not connected renders on its own, so its node's ``steps_error`` alone
-    would not say so."""
-    from haute._builders import stepped_code_problem
+    position key (READ-22, READ-44; :func:`unfinished_step_list`). A node's inputs are its
+    incoming edges' names, and in a submodel module the public ports that reach it,
+    *port_inputs* by node, which its function names after each port."""
     from haute._graph_utils import edge_input_name
-    from haute._polars_steps import step_input_names
 
     node_map = {node.id: node for node in graph.nodes}
     held: dict[str, list[dict[str, Any]]] = {}
     for node in graph.nodes:
-        steps = node.data.config.get("steps")
-        if node.data.nodeType not in STEPS_FROM_CODE or not isinstance(steps, list):
-            continue
-        node_type = NodeType(node.data.nodeType)
-        if node.data.editor.steps_error is None:
-            names = [
+        names = [
+            *(port_inputs or {}).get(node.id, ()),
+            *(
                 edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
                 for edge in graph.edges
                 if edge.target == node.id and edge.source in node_map
-            ]
-            problem = stepped_code_problem(
-                node.data.config, node_type, step_input_names(node_type, names)
-            )
-            if problem is None:
-                continue
-        held[_sidecar_position_key(node)] = steps
+            ),
+        ]
+        steps = unfinished_step_list(node, names)
+        if steps is not None:
+            held[_sidecar_position_key(node)] = steps
     return dict(sorted(held.items()))
 
 
@@ -767,8 +760,12 @@ def save_sidecar(
     graph: PipelineGraph,
     *,
     managed_parent: str | None = None,
+    port_inputs: Mapping[str, Sequence[str]] | None = None,
 ) -> list[str]:
     """Write node positions + source state to the sidecar .haute.json file.
+
+    A submodel module's *port_inputs* name, by node, the public input ports that reach
+    it, which count as its inputs when its unfinished steps are decided.
 
     Keys are the identities the parser restores on re-parse: the sanitised
     function name for ordinary nodes and the occurrence alias for a
@@ -826,7 +823,7 @@ def save_sidecar(
     model_kwargs: dict[str, Any] = {"positions": positions}
     # A stepped node whose steps cannot be rendered yet is saved with the raising
     # placeholder, so its step list is kept here until it is complete (READ-22, READ-44).
-    unfinished = _unfinished_steps(graph)
+    unfinished = _unfinished_steps(graph, port_inputs)
     if unfinished:
         model_kwargs["unfinished_steps"] = dict(sorted(unfinished.items()))
     if graph.sources and graph.sources != ["live"]:
@@ -999,9 +996,6 @@ def parse_pipeline_to_graph(
         position = positions.get(node.id)
         if position is not None:
             node.position = position
-    graph = graph.model_copy(
-        update={"nodes": with_unfinished_steps(graph.nodes, sidecar.get("unfinished_steps"))}
-    )
 
     # Populate source state from sidecar
     raw_sources = _normalise_sidecar_sources(sidecar.get("sources"))
@@ -1030,15 +1024,13 @@ def parse_pipeline_to_graph(
         child_graph = definition.graph
         child_sidecar = load_sidecar(child_path)
         child_positions = _normalise_sidecar_positions(child_sidecar.get("positions"))
-        child_nodes = with_unfinished_steps(
-            [
-                node.model_copy(update={"position": child_positions[node.id]})
-                if node.id in child_positions
-                else node
-                for node in child_graph.nodes
-            ],
-            child_sidecar.get("unfinished_steps"),
-        )
+        # The parse gave a node saved with unfinished steps its list from this sidecar.
+        child_nodes = [
+            node.model_copy(update={"position": child_positions[node.id]})
+            if node.id in child_positions
+            else node
+            for node in child_graph.nodes
+        ]
         child_graph = child_graph.model_copy(
             update={
                 "nodes": child_nodes,

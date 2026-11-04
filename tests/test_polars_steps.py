@@ -69,7 +69,7 @@ from haute.assistant._ops import apply_ops
 from haute.assistant._wire_ops import UpdateNodeOp
 from haute.chunking import classify_chunk_local_polars_code
 from haute.codegen import graph_to_code, graph_to_code_multi
-from haute.errors import ConfigError, RequestRefusedError
+from haute.errors import ConfigError, ParseError, RequestRefusedError
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._helpers import parse_pipeline_to_graph, save_sidecar
@@ -5305,6 +5305,26 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     assert reloaded.data.config["steps"] == broken.data.config["steps"]
     assert reloaded.data.config["code"] == ""
     assert reloaded.data.editor.steps_error == "Step 1: Add at least one condition."
+
+    # `haute run` and a deploy parse the file themselves: the steps come back there too, so
+    # the node fails naming its step, never reading the source unchanged, and a deploy
+    # refuses it before preparing anything.
+    from haute.deploy._scorer import _reject_incomplete_stepped_nodes
+
+    run_graph = parse_pipeline_file(tmp_path / "main.py", flatten=True)
+    ran = execute_graph(run_graph)["quotes"]
+    assert ran.status == "error"
+    assert "Step 1: Add at least one condition." in str(ran.error)
+    with pytest.raises(ConfigError, match="Step 1: Add at least one condition."):
+        _reject_incomplete_stepped_nodes(run_graph, {"quotes"})
+
+    # A placeholder whose steps .haute.json does not hold would skip them: it is refused.
+    (tmp_path / "main.haute.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ParseError, match="'quotes' is saved with unfinished steps.*holds none"):
+        parse_pipeline_file(tmp_path / "main.py", flatten=True)
+    (tmp_path / "main.haute.json").unlink()
+    with pytest.raises(ParseError, match="main.haute.json, but that file does not exist"):
+        parse_pipeline_file(tmp_path / "main.py")
 
 
 def _bundled_scoring_graph(steps: list[dict[str, Any]]) -> PipelineGraph:

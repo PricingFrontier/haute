@@ -629,8 +629,9 @@ is saved with the raising placeholder for its body and its whole step list, the 
 before and after the unfinished one included, in the pipeline's `.haute.json` under
 the node's name (`unfinished_steps`), and the save warns which step; so the node fails
 in the editor, `haute run`, a standalone run and a deploy alike, never returning the
-steps before the unfinished one. Loading in the editor gives such a node the steps the
-sidecar holds, in a degraded document too; a save of the one node keeps them in its
+steps before the unfinished one. Every load of the file gives such a node the steps the
+sidecar holds (the editor's, `haute run`'s and a deploy's parse, a degraded document and
+Recover alike); a save of the one node keeps them in its
 file's sidecar as a whole save does; once every step is complete the next save renders
 them into the body and drops them from the sidecar. A sidecar entry for a node whose body is not the
 placeholder is ignored, and the next save drops it.
@@ -664,7 +665,7 @@ to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as
 `df`), `none` for the surfaces whose code sees only `df` (Data Input, Rating Step,
 Model Score, Scenario Expander, Explore), where a join or concat is refused. Every path that
-renders a node's steps (the node data model, the parser's reconcile, the executor
+renders a node's steps (the node data model, the parser's rebuild, the executor
 builder, codegen, the deploy interceptors and the render endpoint) obtains the
 eligible names from it. Only an `edges` surface has its step references rewritten when
 an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
@@ -682,18 +683,17 @@ user can fix, so `scenario_step_count` raises `NodeConfigError` (stable code
 `node_config_invalid`, safe field `setting`): a preview, trace, output write or job reports
 it as the public contract failure (HTTP 422, background `contract_error`) with the message
 naming the setting, never as an internal error. The planner and estimator, which only ask
-whether they can plan the node, still see it as a `ValueError`. The node-data invariant, the sidecar filter and the reconcile rule
-apply to every stepped type: a Data Input's `steps` persist in its required
-`config/data_input/<name>.json` sidecar beside its source settings, `code` is always
-their rendering (or empty, with a steps error), and on load the parser compares the
-code extracted from the body with the rendering after the same extraction, so a
-rendering the extractor normalises (a lone `df = (df.head(2))` free-code step loses
-its brackets) still reloads in step mode; a discarded sidecar is recorded only
-for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
-is next written without `steps`. An unrenderable Data Input step list is saved
-as a hook whose body is the generated placeholder, so a standalone run raises rather
-than silently reading the source unchanged, and reload keeps the steps behind empty
-code exactly as for a transform. A new Data Input starts in step mode with an
+whether they can plan the node, still see it as a `ValueError`. The node-data invariant applies to every stepped type:
+`code` is always the steps' rendering (or empty, with a steps error), and on load the
+steps are rebuilt from the body (READ-44), the rebuild modelling what the extractor
+normalises (a lone `df = (df.head(2))` free-code step loses its brackets) so the node
+still reloads in step mode. A Data Input's sidecar holds its source settings and never
+`steps`. An unrenderable Data Input step list is saved as a hook whose body is the
+generated placeholder, with the list in the pipeline's `.haute.json`, so `haute run`, a
+deploy and a standalone run raise rather than silently reading the source unchanged,
+and every load gives the node its steps back, exactly as for a transform; a placeholder
+whose list that file does not hold is refused, naming the node, since running it would
+skip the steps. A new Data Input starts in step mode with an
 empty list.
 
 A `free_code` step carries a `code` string containing Python statements and can

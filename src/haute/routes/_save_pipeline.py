@@ -23,7 +23,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -56,6 +56,7 @@ from haute._types import (
     GLOBAL_CONSTANTS_NAME,
     REQUEST_INPUT_NODE_TYPES,
     SINK_ONLY_NODE_TYPES,
+    SubmodelDefinition,
 )
 from haute.errors import (
     ConfigError,
@@ -175,6 +176,17 @@ class _ManagedChildSidecar(NamedTuple):
 
     source_path: Path
     graph: PipelineGraph
+    #: By node, the public input ports that reach it: inputs its function names.
+    port_inputs: dict[str, list[str]]
+
+
+def _port_inputs(definition: SubmodelDefinition) -> dict[str, list[str]]:
+    """By node, the public input ports of *definition* that reach it."""
+    reached: dict[str, list[str]] = {}
+    for port in definition.input_ports:
+        for target in port.targets:
+            reached.setdefault(target.node_id, []).append(port.name)
+    return reached
 
 
 class _DefinitionFile(NamedTuple):
@@ -1471,6 +1483,7 @@ class SavePipelineService:
                 _ManagedChildSidecar(
                     source_path=child_path,
                     graph=definition.graph,
+                    port_inputs=_port_inputs(definition),
                 )
             )
 
@@ -1988,6 +2001,7 @@ class SavePipelineService:
         touched: list[_TouchedFile] | None = None,
         *,
         managed_parent: str | None = None,
+        port_inputs: Mapping[str, Sequence[str]] | None = None,
         identity_check: Callable[[Path], None] | None = None,
     ) -> list[str]:
         """Persist node positions and source state to ``.haute.json``.
@@ -2009,7 +2023,9 @@ class SavePipelineService:
             if sidecar_path.exists():
                 previous_bytes = sidecar_path.read_bytes()
             touched.append(_TouchedFile(target=sidecar_path, previous_bytes=previous_bytes))
-        warnings = save_sidecar(py_path, graph, managed_parent=managed_parent)
+        warnings = save_sidecar(
+            py_path, graph, managed_parent=managed_parent, port_inputs=port_inputs
+        )
         if touched is not None:
             # Record the committed identity so rollback restores only our bytes.
             touched[-1] = touched[-1]._replace(written_digest=_artifact_digest(sidecar_path))
@@ -2034,6 +2050,7 @@ class SavePipelineService:
                     child.graph.active_source,
                     touched,
                     managed_parent=parent_relative,
+                    port_inputs=child.port_inputs,
                     identity_check=self._require_artifact_identity,
                 )
             )

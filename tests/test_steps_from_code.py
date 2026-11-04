@@ -19,7 +19,7 @@ from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps_lift import canonical_steps
 from haute._types import NodeType
 from haute.codegen import graph_to_code
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_source
 from haute.routes._helpers import parse_pipeline_to_graph, save_sidecar
@@ -244,3 +244,104 @@ def test_a_step_naming_an_input_not_connected_waits_in_the_pipeline_sidecar(
     assert held["unfinished_steps"] == {"n": steps}
     loaded = next(n for n in parse_pipeline_to_graph(tmp_path / "main.py").nodes if n.id == "n")
     assert loaded.data.config["steps"] == steps
+
+
+@pytest.mark.parametrize("node_type", SURFACES, ids=SURFACE_IDS)
+def test_a_run_parses_the_unfinished_steps_back_and_refuses_a_placeholder_without_them(
+    tmp_path: Path, node_type: NodeType
+) -> None:
+    """``haute run`` and a deploy parse the file themselves: the node takes its steps from
+    ``.haute.json`` and fails naming the unfinished one. Without them, a frame surface would
+    pass its frame on with its steps skipped, so it is refused; a Transform with no code
+    fails when run, so it loads."""
+    from haute.parser import parse_pipeline_file
+
+    _saved(tmp_path, _graph(node_type, UNFINISHED))
+
+    ran = next(n for n in parse_pipeline_file(tmp_path / "main.py").nodes if n.id == "n")
+    assert ran.data.config["steps"] == UNFINISHED
+    assert ran.data.editor.steps_error is not None
+
+    (tmp_path / "main.haute.json").write_text("{}", encoding="utf-8")
+    if node_type == NodeType.POLARS:
+        bare = next(n for n in parse_pipeline_file(tmp_path / "main.py").nodes if n.id == "n")
+        assert "steps" not in bare.data.config
+        return
+    with pytest.raises(ParseError, match="'n' is saved with unfinished steps.*holds none"):
+        parse_pipeline_file(tmp_path / "main.py")
+
+
+def _external_file_joining_rates() -> PipelineGraph:
+    """An External File whose step joins ``rates``, which is not connected to it: the steps
+    render, but not against its inputs, so its body is saved as the placeholder."""
+    quotes = GraphNode(
+        id="quotes",
+        data=NodeData(
+            label="quotes",
+            nodeType=NodeType.DATA_INPUT,
+            config=make_file_input_config("quotes.parquet"),
+        ),
+    )
+    node = GraphNode(
+        id="n",
+        data=NodeData(
+            label="n",
+            nodeType=NodeType.EXTERNAL_FILE,
+            config={**SURFACES[NodeType.EXTERNAL_FILE], "steps": [_join("rates")]},
+        ),
+    )
+    return PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", "n")])
+
+
+def test_a_degraded_document_gives_a_frame_surface_its_unfinished_steps(tmp_path: Path) -> None:
+    """Another node's broken setting degrades the document; the stepped node still opens
+    with the steps ``.haute.json`` holds, as a Transform's do (READ-44)."""
+    _saved(tmp_path, _graph(NodeType.EXTERNAL_FILE, UNFINISHED))
+    quotes_sidecar = tmp_path / config_path_for_node(NodeType.DATA_INPUT, "quotes")
+    quotes_sidecar.write_text('{"colour": "red"}', encoding="utf-8")
+
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+
+    assert document.load_status == "degraded"
+    opened = next(node for node in document.nodes if node.recovery_id == "n")
+    assert opened.config is not None
+    assert opened.config["steps"] == UNFINISHED
+
+
+def test_recover_keeps_the_unfinished_steps_held_for_the_node(tmp_path: Path) -> None:
+    """Recovering an unrelated setting regenerates the node from its settings and its steps:
+    the steps ``.haute.json`` holds, unfinished against its inputs, stay there behind the
+    placeholder rather than being overwritten by a declaration."""
+    from haute._pipeline_repair import apply_recover_unavailable_node_plan
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    (tmp_path / "haute.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    _saved(tmp_path, _external_file_joining_rates())
+    held = json.loads((tmp_path / "main.haute.json").read_text(encoding="utf-8"))
+    assert held["unfinished_steps"] == {"n": [_join("rates")]}
+    sidecar = tmp_path / config_path_for_node(NodeType.EXTERNAL_FILE, "n")
+    sidecar.write_text(
+        json.dumps({**_sidecar(tmp_path, NodeType.EXTERNAL_FILE), "colour": "red"}),
+        encoding="utf-8",
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "n")
+    assert target.availability == "unavailable"
+
+    result = apply_recover_unavailable_node_plan(
+        project_root=tmp_path,
+        request=PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+
+    assert "raise NotImplementedError" in (tmp_path / "main.py").read_text(encoding="utf-8")
+    held = json.loads((tmp_path / "main.haute.json").read_text(encoding="utf-8"))
+    assert held["unfinished_steps"] == {"n": [_join("rates")]}
+    recovered = next(node for node in result.document.nodes if node.authored_id == "n")
+    assert recovered.config is not None
+    assert recovered.config["steps"] == [_join("rates")]

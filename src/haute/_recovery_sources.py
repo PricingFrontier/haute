@@ -9,7 +9,7 @@ from typing import Any
 
 from haute._artifact_paths import conflict, read_artifact, safe_path
 from haute._ast_helpers import _function_body_source, _get_decorator_kwargs
-from haute._code_extraction import is_declaration_body
+from haute._code_extraction import holds_incomplete_steps_placeholder, is_declaration_body
 from haute._config_builder import (
     _attach_code_from_body,
     _with_lifted_steps,
@@ -22,6 +22,7 @@ from haute._config_io import (
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
+from haute._sidecar import read_sidecar_state
 from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
@@ -158,6 +159,13 @@ def read_raw_node_settings(
             node_type,
             declaration=body_dropped or is_declaration_body(body),
         )
+        if not body_dropped and holds_incomplete_steps_placeholder(body):
+            # Its steps wait in the file's .haute.json, their only copy (READ-22, READ-44):
+            # the recovered node keeps them, and is written as the placeholder again.
+            held = read_sidecar_state(safe_path(root, source_file))
+            saved = held.data.unfinished_steps.get(function.name) if held.data else None
+            if isinstance(saved, list):
+                raw["steps"] = saved
     try:
         keyword_parameters = keyword_parameters_from_signature(
             function.args, node_type=node_type, stepped=bool(reference), node_id=function.name

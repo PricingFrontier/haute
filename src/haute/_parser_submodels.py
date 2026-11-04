@@ -578,12 +578,16 @@ def parse_submodel_source(
     source: str,
     source_file: str = "",
     _base_dir: Path | None = None,
+    *,
+    _unfinished_steps_from_sidecars: bool = False,
 ) -> PipelineGraph:
     """Parse submodel source code and return a PipelineGraph.
 
     *_base_dir* is the directory of the pipeline that registers the file: its
     ``config=`` references resolve there, and the constructor's ``pipeline_dir``
-    must lead there from the file.
+    must lead there from the file. With *_unfinished_steps_from_sidecars*, a node
+    saved with an unfinished step list takes it from the module's ``.haute.json``,
+    as the pipeline's nodes take theirs.
     """
 
     try:
@@ -625,6 +629,14 @@ def parse_submodel_source(
     explicit_connects = _extract_connect_calls(tree, receiver="submodel")
     edges = _build_edges(raw_nodes, explicit_connects)
     rf_nodes = _build_rf_nodes(raw_nodes)
+    if _unfinished_steps_from_sidecars and source_file:
+        from haute._sidecar import with_saved_unfinished_steps
+
+        rf_nodes = with_saved_unfinished_steps(
+            rf_nodes,
+            {str(node["func_name"]) for node in raw_nodes if node["steps_placeholder"]},
+            Path(source_file),
+        )
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,
         explicit_connects=explicit_connects,

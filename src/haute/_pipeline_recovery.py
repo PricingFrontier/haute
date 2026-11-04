@@ -62,6 +62,7 @@ from haute._parser_submodels import (
     submodel_imports,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarReadResult,
@@ -1472,10 +1473,10 @@ class _FileGraph:
 def _with_unfinished_candidate_steps(
     candidate: _RecoveredCandidate, unfinished: Mapping[str, Any]
 ) -> _RecoveredCandidate:
-    """*candidate*, a transform saved with an unfinished step list, given its steps from
+    """*candidate*, a stepped node saved with an unfinished step list, given its steps from
     the sidecar by the rule a parsed graph's nodes are (:func:`with_unfinished_steps`)."""
     if (
-        candidate.node_type != NodeType.POLARS
+        candidate.node_type not in STEPS_FROM_CODE
         or candidate.config is None
         or candidate.authored_id not in unfinished
     ):
@@ -1484,7 +1485,7 @@ def _with_unfinished_candidate_steps(
         id=candidate.authored_id,
         data=NodeData(
             label=candidate.authored_id,
-            nodeType=NodeType.POLARS,
+            nodeType=candidate.node_type,
             config=candidate.config,
             editor=candidate.editor,
         ),
