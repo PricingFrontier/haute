@@ -146,7 +146,7 @@ export default function ExplorePreview({
     ? profileMessage || "Profiling data"
     : profileError
       ? `Profiling failed: ${profileError}`
-      : null
+      : cache.unreadable
 
   return (
     <PreviewRunContext.Provider value={run}>

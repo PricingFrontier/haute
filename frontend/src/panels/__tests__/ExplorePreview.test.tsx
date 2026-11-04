@@ -617,6 +617,15 @@ describe("ExplorePreview", () => {
     expect(screen.getByTestId("explore-preview-frame")).not.toHaveTextContent(/cached/i)
   })
 
+  it("says in its status line why a node without its input has no data", async () => {
+    const message = "Node 'explore_1' must have exactly one incoming connection to read its data (found 0)."
+    mockGetNodeDataPoint.mockRejectedValue(Object.assign(new Error(message), { status: 400, detail: message }))
+    renderExplore()
+
+    expect(await screen.findByText(`pricing | ${message}`)).toBeVisible()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("asks the shared build for the data and shows its progress", async () => {
     renderExplore()
     // Refreshing the node is what caches its data; the pane itself offers no
