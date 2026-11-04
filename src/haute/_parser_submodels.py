@@ -10,7 +10,7 @@ Handles:
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -580,6 +580,7 @@ def parse_submodel_source(
     _base_dir: Path | None = None,
     *,
     _unfinished_steps_from_sidecars: bool = False,
+    _read_sidecar_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> PipelineGraph:
     """Parse submodel source code and return a PipelineGraph.
 
@@ -636,6 +637,7 @@ def parse_submodel_source(
             rf_nodes,
             {str(node["func_name"]) for node in raw_nodes if node["steps_placeholder"]},
             Path(source_file),
+            read_bytes=_read_sidecar_bytes,
         )
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,

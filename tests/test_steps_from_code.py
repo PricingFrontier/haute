@@ -17,8 +17,8 @@ import pytest
 from haute._config_io import collect_node_configs, config_path_for_node, load_node_config
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps_lift import canonical_steps
-from haute._types import NodeType
-from haute.codegen import graph_to_code
+from haute._types import NodeType, SubmodelDefinition, SubmodelEndpoint, SubmodelOutputPort
+from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, ParseError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_source
@@ -267,7 +267,7 @@ def test_a_run_parses_the_unfinished_steps_back_and_refuses_a_placeholder_withou
         bare = next(n for n in parse_pipeline_file(tmp_path / "main.py").nodes if n.id == "n")
         assert "steps" not in bare.data.config
         return
-    with pytest.raises(ParseError, match="'n' is saved with unfinished steps.*holds none"):
+    with pytest.raises(ParseError, match="'n' is saved with unfinished steps.*does not hold them"):
         parse_pipeline_file(tmp_path / "main.py")
 
 
@@ -345,3 +345,108 @@ def test_recover_keeps_the_unfinished_steps_held_for_the_node(tmp_path: Path) ->
     recovered = next(node for node in result.document.nodes if node.authored_id == "n")
     assert recovered.config is not None
     assert recovered.config["steps"] == [_join("rates")]
+
+
+def test_the_editor_shows_a_placeholder_without_its_steps_as_unavailable(tmp_path: Path) -> None:
+    """The editor reads ``.haute.json`` through its load's capture: a frame surface whose
+    unfinished steps that file does not hold is unavailable, never a ready node passing its
+    input through."""
+    _saved(tmp_path, _graph(NodeType.EXTERNAL_FILE, UNFINISHED))
+    (tmp_path / "main.haute.json").write_text("{}", encoding="utf-8")
+
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+
+    node = next(node for node in document.nodes if node.authored_id == "n")
+    assert node.availability == "unavailable"
+    [diagnostic] = [d for d in document.diagnostics if d.diagnostic_id in node.diagnostic_ids]
+    assert "is saved with unfinished steps" in diagnostic.message
+
+
+def _module_with_unfinished_data_input(root: Path) -> SubmodelDefinition:
+    """A pipeline registering a submodel module whose Data Input is saved with unfinished
+    steps: the module's body is the placeholder and its ``.haute.json`` holds the list."""
+    import polars as pl
+
+    (root / ".git").mkdir()
+    (root / "haute.toml").write_text('[project]\nname = "owner"\n', encoding="utf-8")
+    pl.DataFrame({"premium": [1.0, 2.0]}).write_parquet(root / "quotes.parquet")
+    quotes = GraphNode(
+        id="quotes",
+        data=NodeData(
+            label="quotes",
+            nodeType=NodeType.DATA_INPUT,
+            config={**make_file_input_config("quotes.parquet"), "steps": UNFINISHED},
+        ),
+    )
+    definition = SubmodelDefinition(
+        definition_id="loader",
+        file="modules/loader.py",
+        graph=PipelineGraph(nodes=[quotes], edges=[], pipeline_name="loader"),
+        input_ports=[],
+        output_ports=[SubmodelOutputPort(name="out", source=SubmodelEndpoint(node_id="quotes"))],
+    )
+    occurrence = GraphNode(
+        id="loader",
+        type="submodel",
+        data=NodeData(
+            label="loader",
+            nodeType=NodeType.SUBMODEL,
+            config={"definition_id": "loader", "alias": "loader"},
+        ),
+    )
+    graph = PipelineGraph(nodes=[occurrence], edges=[], submodels={"loader": definition})
+    configs = {**collect_node_configs(graph), **collect_node_configs(definition.graph)}
+    for rel, content in configs.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(content.encode("utf-8"))
+    for rel, code in graph_to_code_multi(graph, pipeline_name="main").items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(code.encode("utf-8"))
+    save_sidecar(root / "main.py", graph)
+    save_sidecar(root / "modules" / "loader.py", definition.graph)
+    return definition
+
+
+def test_a_submodel_modules_unfinished_steps_come_from_its_own_sidecar(tmp_path: Path) -> None:
+    """A module's node takes its list from the module's ``.haute.json`` in a run, a deploy and
+    the editor; without it the parse refuses the module and the editor shows the node
+    unavailable."""
+    from haute.executor import execute_graph
+    from haute.parser import parse_pipeline_file
+    from tests._project import use_project
+
+    _module_with_unfinished_data_input(tmp_path)
+    use_project(tmp_path)
+
+    flat = parse_pipeline_file(tmp_path / "main.py", flatten=True)
+    [node] = flat.nodes
+    assert node.data.config["steps"] == UNFINISHED
+    ran = execute_graph(flat)[node.id]
+    assert ran.status == "error"
+    assert "Step 2: Add at least one condition." in str(ran.error)
+
+    (tmp_path / "modules" / "loader.haute.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ParseError, match="'quotes' is saved with unfinished steps"):
+        parse_pipeline_file(tmp_path / "main.py")
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    [module] = (document.submodels or {}).values()
+    [child] = module.graph.nodes
+    assert child.availability == "unavailable"
+
+
+def test_a_modules_public_input_counts_as_its_nodes_input_when_its_steps_are_kept() -> None:
+    """A finished step list reading a public input port renders against it, so a module's
+    save keeps no unfinished copy of it; without the port, the same list is unfinished."""
+    from haute.routes._helpers import _unfinished_steps
+
+    steps = [
+        {"id": "s", "kind": "source", "input": "policies"},
+        {"id": "l", "kind": "limit", "n": 1},
+    ]
+    node = GraphNode(
+        id="n", data=NodeData(label="n", nodeType=NodeType.POLARS, config={"steps": steps})
+    )
+    module = PipelineGraph(nodes=[node], edges=[])
+
+    assert _unfinished_steps(module, {"n": ["policies"]}) == {}
+    assert _unfinished_steps(module) == {"n": steps}

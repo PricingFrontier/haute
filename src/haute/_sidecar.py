@@ -130,32 +130,47 @@ def unfinished_step_list(
     return None if problem is None else steps
 
 
+def missing_unfinished_steps(node_type: NodeType | str, held: bool) -> bool:
+    """Whether a node whose body is the unfinished-steps placeholder, given *held* (its list
+    is in the file's ``.haute.json``), must be refused: one whose code runs on a frame it
+    was given (any stepped node but a Transform) would, with no code and no steps, pass
+    that frame on with its steps skipped. A Transform with no code fails when run."""
+    return not held and node_type != NodeType.POLARS
+
+
+def missing_unfinished_steps_message(node_id: str, py_path: Path) -> str:
+    """The refusal of a placeholder whose unfinished steps the file's ``.haute.json`` does
+    not hold, as the parse and the editor's recovery both give it."""
+    return (
+        f"Node {node_id!r} is saved with unfinished steps, which wait in "
+        f"{py_path.with_suffix('.haute.json').name}, but that file does not hold them, so "
+        "running it would skip them. Write its steps again, or replace its body with `...` "
+        "to start afresh."
+    )
+
+
 def with_saved_unfinished_steps(
-    nodes: list[GraphNode], placeholders: set[str], py_path: Path
+    nodes: list[GraphNode],
+    placeholders: set[str],
+    py_path: Path,
+    *,
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> list[GraphNode]:
     """*nodes*, parsed from *py_path*, given the unfinished step lists its ``.haute.json``
-    holds (READ-22, READ-44), as every canonical load applies them: ``haute run``, a deploy
-    and the editor then fail such a node naming its unfinished step. *placeholders* are the
-    nodes whose body is the placeholder those lists are saved with. One whose code runs on
-    a frame it was given (any stepped node but a Transform) and whose list the file does not
-    hold is refused: with no code and no steps it would pass that frame on, its steps
-    skipped. A Transform with no code fails when run, so it loads."""
-    read = read_sidecar_state(py_path)
+    holds (READ-22, READ-44), as every load applies them: ``haute run``, a deploy and the
+    editor then fail such a node naming its unfinished step. *placeholders* are the nodes
+    whose body is the placeholder those lists are saved with; one the file does not hold
+    is refused (:func:`missing_unfinished_steps`). *read_bytes* reads the file; editor
+    recovery passes its load's capture."""
+    read = read_sidecar_state(py_path, read_bytes=read_bytes)
     held = read.data.unfinished_steps if read.data is not None else {}
     given = with_unfinished_steps(nodes, held)
     for node in given:
-        if (
-            node.id in placeholders
-            and node.data.nodeType != NodeType.POLARS
-            and "steps" not in node.data.config
+        if node.id in placeholders and missing_unfinished_steps(
+            node.data.nodeType, "steps" in node.data.config
         ):
-            reason = {"absent": "does not exist", "valid": "holds none for it"}.get(
-                read.state, f"cannot be read ({read.state})"
-            )
             raise ParseError(
-                f"Node {node.id!r} is saved with unfinished steps, which wait in "
-                f"{read.path.name}, but that file {reason}, so running it would skip them. "
-                "Write its steps again, or replace its body with `...` to start afresh.",
+                missing_unfinished_steps_message(node.id, py_path),
                 node_id=node.id,
                 source_file=str(py_path),
             )

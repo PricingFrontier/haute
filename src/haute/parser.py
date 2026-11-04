@@ -194,6 +194,7 @@ def parse_pipeline_source(
     _read_submodel_source: Callable[[Path], str] | None = None,
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
     _unfinished_steps_from_sidecars: bool = False,
+    _read_sidecar_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> PipelineGraph:
     """Parse pipeline source code strictly, refusing any executable-name violation.
 
@@ -210,6 +211,7 @@ def parse_pipeline_source(
         _read_submodel_source=_read_submodel_source,
         _read_global_constants_bytes=_read_global_constants_bytes,
         _unfinished_steps_from_sidecars=_unfinished_steps_from_sidecars,
+        _read_sidecar_bytes=_read_sidecar_bytes,
     )
     if violations:
         raise ParseError(format_name_violations(violations), source_file=source_file or None)
@@ -227,6 +229,7 @@ def parse_pipeline_source_with_name_violations(
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
     _read_utility_source: UtilityReader | None = None,
     _unfinished_steps_from_sidecars: bool = False,
+    _read_sidecar_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> tuple[PipelineGraph, list[NameViolation]]:
     """Parse pipeline source code and return a PipelineGraph with its name violations.
 
@@ -251,8 +254,8 @@ def parse_pipeline_source_with_name_violations(
         _unfinished_steps_from_sidecars: Give each node saved with an unfinished step
             list its steps from the ``.haute.json`` beside its file, the pipeline's and
             each submodel module's (:func:`haute._sidecar.with_saved_unfinished_steps`).
-            The file loaders set it; editor recovery reads those files through its own
-            capture and applies them itself.
+            The file loaders set it, and so does the editor, reading each file through
+            its load's capture (*_read_sidecar_bytes*).
     """
     # Invalid syntax is refused: canonical consumers never receive a recovered graph.
     try:
@@ -291,6 +294,7 @@ def parse_pipeline_source_with_name_violations(
             rf_nodes,
             {str(node["func_name"]) for node in raw_nodes if node["steps_placeholder"]},
             Path(source_file),
+            read_bytes=_read_sidecar_bytes,
         )
     preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
@@ -399,6 +403,7 @@ def parse_pipeline_source_with_name_violations(
                 source_file=str(sm_filepath),
                 _base_dir=sm_base_dir,
                 _unfinished_steps_from_sidecars=_unfinished_steps_from_sidecars,
+                _read_sidecar_bytes=_read_sidecar_bytes,
             )
             definition_id = child_graph._parser_definition_id
             if definition_id is None:
