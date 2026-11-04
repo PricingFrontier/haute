@@ -5310,7 +5310,7 @@ def _minimal_optimiser_setup_graph() -> PipelineGraph:
                         "label": "source",
                         "nodeType": NodeType.DATA_INPUT.value,
                         "config": {
-                            "inputType": "inline",
+                            "input_type": "inline",
                             "format": "records",
                             "records": [
                                 {

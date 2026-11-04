@@ -102,7 +102,7 @@ function StatefulHarness({
 
 const lastConfig = (spy: ReturnType<typeof vi.fn>) =>
   spy.mock.calls[spy.mock.calls.length - 1][0] as {
-    outputMapping: { source_port: string; source_column: string; output_path: string; enabled: boolean }[]
+    output_mapping: { source_port: string; source_column: string; output_path: string; enabled: boolean }[]
   }
 
 const expand = (p: string) => fireEvent.click(screen.getByTestId(`${p}-toggle`))
@@ -127,7 +127,7 @@ describe("OutputEditor - inline path edit", () => {
   beforeEach(() => installClipboard())
 
   const singlePolicyConfig = {
-    outputMapping: [
+    output_mapping: [
       { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
       { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
       // a different frame must NOT be touched by a policies-frame edit.
@@ -165,7 +165,7 @@ describe("OutputEditor - inline path edit", () => {
     fireEvent.keyDown(input, { key: "Enter" })
 
     const cfg = lastConfig(onUpdateSpy)
-    const byCol = Object.fromEntries(cfg.outputMapping.map((e) => [e.source_column, e.output_path]))
+    const byCol = Object.fromEntries(cfg.output_mapping.map((e) => [e.source_column, e.output_path]))
     expect(byCol["policy_id"]).toBe("$[:].policies.policy_id")
     expect(byCol["premium"]).toBe("$[:].policies.premium")
     // The drivers frame is untouched.
@@ -185,7 +185,7 @@ describe("OutputEditor - inline path edit", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-path-edit-apply"))
 
     const cfg = lastConfig(onUpdateSpy)
-    const byCol = Object.fromEntries(cfg.outputMapping.map((e) => [e.source_column, e.output_path]))
+    const byCol = Object.fromEntries(cfg.output_mapping.map((e) => [e.source_column, e.output_path]))
     expect(byCol["policy_id"]).toBe("$[:].policies.policy_id")
   })
 
@@ -238,7 +238,7 @@ describe("OutputEditor - wired FrameTableActions", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
         }}
@@ -258,7 +258,7 @@ describe("OutputEditor - wired FrameTableActions", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
           ],
@@ -271,8 +271,8 @@ describe("OutputEditor - wired FrameTableActions", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
     const json = JSON.parse(writeText.mock.calls[0][0] as string)
     // Only the policies frame's row is in this frame's schema (not drivers).
-    expect(json.outputMapping).toHaveLength(1)
-    expect(json.outputMapping[0].source_column).toBe("policy_id")
+    expect(json.output_mapping).toHaveLength(1)
+    expect(json.output_mapping[0].source_column).toBe("policy_id")
   })
 
   it("Paste-in replaces the frame's rows from tab-separated text", () => {
@@ -280,7 +280,7 @@ describe("OutputEditor - wired FrameTableActions", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "old", output_path: "$[:].old", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
           ],
@@ -296,14 +296,14 @@ describe("OutputEditor - wired FrameTableActions", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-table-paste-apply"))
 
     const cfg = lastConfig(onUpdateSpy)
-    const policies = cfg.outputMapping.filter((e) => e.source_port === "policies")
+    const policies = cfg.output_mapping.filter((e) => e.source_port === "policies")
     expect(policies.map((e) => e.source_column).sort()).toEqual(["policy_id", "premium"])
     // The header row was dropped; the enabled flag parsed (premium → false).
     const premium = policies.find((e) => e.source_column === "premium")
     expect(premium?.output_path).toBe("$[:].premium")
     expect(premium?.enabled).toBe(false)
     // drivers frame preserved.
-    expect(cfg.outputMapping.some((e) => e.source_port === "drivers")).toBe(true)
+    expect(cfg.output_mapping.some((e) => e.source_port === "drivers")).toBe(true)
   })
 
   it("the top-level frames-paths table exposes Copy/Share but no Paste-in", async () => {
@@ -312,7 +312,7 @@ describe("OutputEditor - wired FrameTableActions", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
         }}

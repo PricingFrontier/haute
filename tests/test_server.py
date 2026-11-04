@@ -34,7 +34,7 @@ from tests.conftest import (
 
 def _file_input_config(path: str) -> dict:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": path,
@@ -44,7 +44,7 @@ def _file_input_config(path: str) -> dict:
 
 def _file_output_config(path: str) -> dict:
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": "parquet",
         "mode": "sink",
         "path": path,
@@ -315,7 +315,7 @@ class TestPreviewNode:
         csv_path = pipeline_dir / "data" / "input.csv"
         pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_csv(csv_path)
         graph.nodes[0].data.config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": csv_path.as_posix(),
@@ -387,8 +387,8 @@ class TestPreviewNode:
         assert resp.status_code == 422, resp.text
         assert resp.json()["detail"] == {
             "error_code": "node_config_invalid",
-            "message": "Scenario expander requires stepCount (the number of grid values).",
-            "setting": "stepCount",
+            "message": "Scenario expander requires step_count (the number of grid values).",
+            "setting": "step_count",
         }
 
     def test_preview_rejects_unassigned_submodel_input_draft(
@@ -420,7 +420,7 @@ class TestPreviewNode:
                         "label": "sm",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": "sm",
+                            "definition_id": "sm",
                             "alias": "sm",
                         },
                     },
@@ -904,7 +904,7 @@ class TestExecuteSinkEndpoint:
 
     def test_output_destination_names_a_databricks_table(self, client: TestClient) -> None:
         config = {
-            "outputType": "databricks",
+            "output_type": "databricks",
             "http_path": "/sql/1.0/warehouses/abc",
             "table": "workspace.pricing.scored",
             "write_mode": "overwrite",
@@ -1058,7 +1058,7 @@ class TestExecuteSinkEndpoint:
                         "label": "sink",
                         "nodeType": "dataOutput",
                         "config": {
-                            "outputType": "unsupported",
+                            "output_type": "unsupported",
                             "format": "parquet",
                             "mode": "sink",
                             "path": "/secure/output.parquet",
@@ -1183,7 +1183,7 @@ def _submodel_instance_node(graph: dict, definition_id: str) -> dict:
         node
         for node in graph["nodes"]
         if node["data"]["nodeType"] == "submodel"
-        and node["data"]["config"].get("definitionId") == definition_id
+        and node["data"]["config"].get("definition_id") == definition_id
     ]
     assert len(matches) == 1
     instance = matches[0]
@@ -5032,7 +5032,7 @@ class TestSubmodelOutputPorts:
         # Verify the submodel node was created
         sm_node = _submodel_instance_node(data["graph"], "output_test")
         config = sm_node["data"]["config"]
-        assert config["definitionId"] == "output_test"
+        assert config["definition_id"] == "output_test"
         definition_nodes = data["graph"]["submodels"]["output_test"]["graph"]["nodes"]
         assert {node["id"] for node in definition_nodes} == set(selected)
 
@@ -5702,7 +5702,7 @@ def _shared_child_graph(child_code: str) -> dict:
                 "data": {
                     "label": "child",
                     "nodeType": "submodel",
-                    "config": {"definitionId": "child", "alias": "child"},
+                    "config": {"definition_id": "child", "alias": "child"},
                 },
             }
         ],

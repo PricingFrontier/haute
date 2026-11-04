@@ -273,7 +273,7 @@ class TestPruner:
                             "label": "batch_src",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "d.parquet",
@@ -530,7 +530,7 @@ class TestPruner:
                         "data": {
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "d.parquet",
@@ -601,7 +601,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_abc",
                                 "artifact_path": "model.cbm",
                             },
@@ -627,7 +627,7 @@ class TestBundler:
                         "id": "ms1",
                         "data": {
                             "nodeType": "modelScore",
-                            "config": {"sourceType": "run"},
+                            "config": {"source_type": "run"},
                         },
                     },
                 ],
@@ -673,7 +673,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": str(data_file),
@@ -695,7 +695,7 @@ class TestBundler:
     # -- Registered model tests (B1 fix) ------------------------------------
 
     def test_registered_model_resolved_and_bundled(self, tmp_path, monkeypatch):
-        """MODEL_SCORE with sourceType='registered' resolves via MLflow and bundles."""
+        """MODEL_SCORE with source_type='registered' resolves via MLflow and bundles."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -711,7 +711,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-prod-model",
                                 "version": "3",
                             },
@@ -733,7 +733,7 @@ class TestBundler:
         assert artifacts[name].is_file()
 
     def test_registered_model_latest_version(self, tmp_path, monkeypatch):
-        """sourceType='registered' with version='latest' resolves correctly."""
+        """source_type='registered' with version='latest' resolves correctly."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -748,7 +748,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-model",
                                 "version": "latest",
                             },
@@ -768,7 +768,7 @@ class TestBundler:
         assert sorted(artifacts) == ["ms_latest__feature_contract.json", "ms_latest__model.cbm"]
 
     def test_registered_model_empty_version(self, tmp_path, monkeypatch):
-        """sourceType='registered' with empty version (defaults to latest)."""
+        """source_type='registered' with empty version (defaults to latest)."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -783,7 +783,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-model",
                                 "version": "",
                             },
@@ -806,7 +806,7 @@ class TestBundler:
         ]
 
     def test_registered_model_skipped_without_model_name(self):
-        """sourceType='registered' with no registered_model is silently skipped."""
+        """source_type='registered' with no registered_model is silently skipped."""
         from haute.deploy._bundler import collect_artifacts
 
         graph = _g(
@@ -817,7 +817,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "",
                                 "version": "1",
                             },
@@ -842,7 +842,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "nonexistent-model",
                                 "version": "1",
                             },
@@ -877,7 +877,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_direct",
                                 "artifact_path": "direct.cbm",
                             },
@@ -888,7 +888,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "prod-model",
                                 "version": "2",
                             },
@@ -911,7 +911,7 @@ class TestBundler:
         assert artifacts["ms_reg__registered.cbm"].is_file()
 
     def test_run_based_model_still_works_with_explicit_source_type(self, tmp_path, monkeypatch):
-        """sourceType='run' explicitly set still works (no regression)."""
+        """source_type='run' explicitly set still works (no regression)."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -926,7 +926,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_explicit",
                                 "artifact_path": "model.cbm",
                             },
@@ -944,7 +944,7 @@ class TestBundler:
         assert "ms_explicit_run__model.cbm" in artifacts
 
     def test_model_score_without_source_type_is_not_bundled(self, tmp_path, monkeypatch):
-        """MODEL_SCORE without sourceType is untouched, as in the preview: nothing bundles."""
+        """MODEL_SCORE without source_type is untouched, as in the preview: nothing bundles."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -1026,7 +1026,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "prod-model",
                                 "version": "4",
                                 "mlflow_destination": "local",
@@ -1369,7 +1369,7 @@ class TestScorer:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",

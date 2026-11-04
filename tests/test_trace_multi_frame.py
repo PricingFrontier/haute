@@ -89,7 +89,7 @@ def test_edge_join_with_multi_frame_base_correlates_join_parent() -> None:
                 nodeType=NodeType.EDGE_JOIN,
                 config={
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["policy_id"],
                     "suffix": "_right",
                 },
@@ -150,7 +150,7 @@ def test_edge_join_same_multi_frame_source_uses_physical_port_roles() -> None:
                 nodeType=NodeType.EDGE_JOIN,
                 config={
                     "how": "inner",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["policy_id"],
                     "suffix": "_right",
                 },
@@ -345,7 +345,7 @@ def _multi_edge_output_graph(api_config: dict[str, Any]) -> dict[str, Any]:
                 "data": {
                     "label": "out",
                     "nodeType": NodeType.OUTPUT.value,
-                    "config": {"outputMapping": _output_mapping()},
+                    "config": {"output_mapping": _output_mapping()},
                 },
             },
         ],
@@ -417,7 +417,7 @@ def _aggregated_join_side_graph(api_config: dict[str, Any]) -> dict[str, Any]:
                     "nodeType": NodeType.EDGE_JOIN.value,
                     "config": {
                         "how": "left",
-                        "maintainOrder": "left_right",
+                        "maintain_order": "left_right",
                         "on": ["policy_id"],
                         "suffix": "_right",
                     },

@@ -18,14 +18,14 @@ describe("stepProblem", () => {
       { id: "w", kind: "with_column", name: "n", expr: { type: "function", fn: "round", operand: col("a"), args: [{ kind: "literal", type: "number", value: 2 }] } },
       { id: "c", kind: "with_column", name: "c", expr: { type: "conditional", branches: [{ match: "any", conditions: [{ column: "a", operator: "is_null" }], then: col("a") }], otherwise: col("b") } },
       { id: "g", kind: "group_by", keys: ["k"], aggregations: [{ column: "a", agg: "sum", name: "s" }] },
-      { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", maintainOrder: "left_right" },
+      { id: "j", kind: "join", input: "rates", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_r", maintain_order: "left_right" },
       { id: "fn", kind: "fill_null", columns: [], fill: { kind: "strategy", strategy: "forward" } },
       { id: "v", kind: "variable", name: "x", value: { kind: "literal", type: "number", value: 1 } },
       {
         id: "ow",
         kind: "with_column",
         name: "rn",
-        expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a", descending: true }] },
+        expr: { type: "window", agg: "row_number", over: ["k"], order_by: [{ column: "a", descending: true }] },
       },
       { id: "rk", kind: "with_column", name: "rk", expr: { type: "window", agg: "dense_rank", of: { kind: "column", name: "a" }, over: [], descending: true } },
       { id: "q", kind: "with_column", name: "q", expr: { type: "window", agg: "quantile", of: { kind: "column", name: "a" }, over: ["k"], quantile: 0.9 } },
@@ -45,7 +45,7 @@ describe("stepProblem", () => {
           { column: "a", agg: "sum", name: "north", where: { match: "all", conditions: [{ column: "k", operator: "eq", value: { kind: "literal", type: "text", value: "north" } }] } },
         ],
       },
-      { id: "jv", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", validate: "m:1", maintainOrder: "left" },
+      { id: "jv", kind: "join", input: "rates", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_r", validate: "m:1", maintain_order: "left" },
       { id: "un", kind: "unique", columns: ["k"], keep: "none" },
     ]
     for (const step of steps) expect(stepProblem(step)).toBeNull()
@@ -65,7 +65,7 @@ describe("stepProblem", () => {
   it("accepts the renderer's own shorthand shapes and canonicalises them for the forms", () => {
     const shorthand: Step[] = [
       { id: "n", kind: "with_column", name: "m", expr: { type: "operand", operand: { kind: "literal", type: "null" } as never } },
-      { id: "r", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a" }] } as never },
+      { id: "r", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", over: ["k"], order_by: [{ column: "a" }] } as never },
       { id: "c", kind: "with_column", name: "key", expr: { type: "concat", parts: [col("a"), col("b")] } as never },
     ]
     // An order key without a direction is shorthand; a row number has no value.
@@ -73,10 +73,10 @@ describe("stepProblem", () => {
     expect(canonicalStep(shorthand[0])).toEqual({ ...shorthand[0], expr: { type: "operand", operand: { kind: "literal", type: "null", value: null } } })
     expect(canonicalStep(shorthand[1])).toEqual({
       ...shorthand[1],
-      expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a", descending: false }] },
+      expr: { type: "window", agg: "row_number", over: ["k"], order_by: [{ column: "a", descending: false }] },
     })
     expect(canonicalStep(shorthand[2])).toEqual({ ...shorthand[2], expr: { type: "concat", parts: [col("a"), col("b")], separator: "" } })
-    expect(stepProblem({ id: "r", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", of: { kind: "column", name: "a" }, over: [], orderBy: [{ column: "a", descending: "yes" }] } })).toMatch(
+    expect(stepProblem({ id: "r", kind: "with_column", name: "s", expr: { type: "window", agg: "sum", of: { kind: "column", name: "a" }, over: [], order_by: [{ column: "a", descending: "yes" }] } })).toMatch(
       /malformed direction/,
     )
   })
@@ -157,7 +157,7 @@ describe("stepProblem", () => {
       { id: "d", kind: "drop", columns: [], dtypes: ["String"] },
       { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "", agg: "len", name: "n" }, { dtype: "Float64", agg: "mean", suffix: "_mean" }] },
       { id: "p", kind: "pivot", index: ["region"], on: "channel", columns: [{ value: { kind: "literal", type: "text", value: "web" }, name: "web" }], values: "premium", agg: "mean" },
-      { id: "u", kind: "unpivot", on: ["premium", "sum_insured"], index: ["quote_id"], variableName: "measure", valueName: "value" },
+      { id: "u", kind: "unpivot", on: ["premium", "sum_insured"], index: ["quote_id"], variable_name: "measure", value_name: "value" },
     ]
     for (const step of steps) expect(stepProblem(step)).toBeNull()
     expect(summarizeStep(steps[0])).toBe("region, every Float64, every Int64")
@@ -172,7 +172,7 @@ describe("stepProblem", () => {
     expect(stepProblem({ id: "g", kind: "group_by", keys: [], aggregations: [{ agg: "mean", name: "x" }] })).toMatch(/missing "column"/)
     expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [{ value: col("c"), name: "n" }], values: "a", agg: "sum" })).toMatch(/plain value/)
     expect(stepProblem({ id: "p", kind: "pivot", index: [], on: "c", columns: [], values: "a", agg: "std" })).toMatch(/unsupported aggregate/)
-    expect(stepProblem({ id: "u", kind: "unpivot", on: "premium", index: [], variableName: "m", valueName: "v" })).toMatch(/missing its "on" setting/)
+    expect(stepProblem({ id: "u", kind: "unpivot", on: "premium", index: [], variable_name: "m", value_name: "v" })).toMatch(/missing its "on" setting/)
   })
 
   it("counts filter and fill nesting from the nested expression, like the renderer", () => {
@@ -196,7 +196,7 @@ describe("stepProblem", () => {
 
   it("summarises the extended vocabulary in plain words", () => {
     expect(
-      summarizeStep({ id: "ow", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ column: "a", descending: true }] } }),
+      summarizeStep({ id: "ow", kind: "with_column", name: "rn", expr: { type: "window", agg: "row_number", over: ["k"], order_by: [{ column: "a", descending: true }] } }),
     ).toBe("rn = row number over k ordered by a desc")
     expect(summarizeStep({ id: "t", kind: "with_column", name: "tot", expr: { type: "window", agg: "sum", of: { kind: "column", name: "a" }, over: [] } })).toBe("tot = sum of a over all rows")
     expect(
@@ -205,7 +205,7 @@ describe("stepProblem", () => {
     expect(
       summarizeStep({ id: "g", kind: "group_by", keys: [], aggregations: [{ column: "a", agg: "sum", name: "s", where: { match: "all", conditions: [] } }, { column: "", agg: "len", name: "n" }] }),
     ).toBe("whole frame: s = sum of a where …, n = row count")
-    expect(summarizeStep({ id: "j", kind: "join", input: "rates", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_r", validate: "m:1", maintainOrder: "left_right" })).toBe("left join rates on k (m:1)")
+    expect(summarizeStep({ id: "j", kind: "join", input: "rates", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_r", validate: "m:1", maintain_order: "left_right" })).toBe("left join rates on k (m:1)")
   })
 
   it.each([
@@ -234,19 +234,19 @@ describe("stepProblem", () => {
       /malformed value/,
     ],
     ["condition without column", { id: "f", kind: "filter", match: "all", conditions: [{ operator: "eq" }] }, /condition 1 is malformed/],
-    ["window with a malformed order list", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "row_number", over: ["k"], orderBy: [{ descending: true }] } }, /order row 1 is missing "column"/],
+    ["window with a malformed order list", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "row_number", over: ["k"], order_by: [{ descending: true }] } }, /order row 1 is missing "column"/],
     ["window with a text quantile", { id: "w", kind: "with_column", name: "n", expr: { type: "window", agg: "quantile", of: { kind: "column", name: "a" }, over: [], quantile: "0.5" } }, /malformed quantile/],
     ["concat without parts", { id: "w", kind: "with_column", name: "n", expr: { type: "concat", separator: "" } }, /missing its parts/],
     ["concat with a malformed part", { id: "w", kind: "with_column", name: "n", expr: { type: "concat", parts: [col("a"), "b"], separator: "" } }, /part 2 is missing its value/],
     ["null literal carrying a value", { id: "w", kind: "with_column", name: "n", expr: { type: "operand", operand: { kind: "literal", type: "null", value: 0 } } }, /malformed value/],
     ["aggregation with a malformed row filter", { id: "g", kind: "group_by", keys: [], aggregations: [{ column: "a", agg: "sum", name: "s", where: { match: "all" } }] }, /filter is missing its conditions/],
-    ["join with a malformed validation", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", maintainOrder: "left_right", validate: 1 }, /malformed validation/],
-    ["join without a row order", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "" }, /maintainOrder/],
-    ["join with an unknown row order", { id: "j", kind: "join", input: "r", how: "left", leftOn: [], rightOn: [], suffix: "", maintainOrder: "sideways" }, /unknown row order/],
+    ["join with a malformed validation", { id: "j", kind: "join", input: "r", how: "left", left_on: [], right_on: [], suffix: "", maintain_order: "left_right", validate: 1 }, /malformed validation/],
+    ["join without a row order", { id: "j", kind: "join", input: "r", how: "left", left_on: [], right_on: [], suffix: "" }, /maintain_order/],
+    ["join with an unknown row order", { id: "j", kind: "join", input: "r", how: "left", left_on: [], right_on: [], suffix: "", maintain_order: "sideways" }, /unknown row order/],
     ["cast with a malformed format", { id: "c", kind: "cast", strict: true, casts: [{ column: "a", dtype: "Date", format: 7 }] }, /malformed format/],
     [
       "membership with an unknown number type",
-      { id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "is_in", values: [], numberType: "complex" }] },
+      { id: "f", kind: "filter", match: "all", conditions: [{ column: "a", operator: "is_in", values: [], number_type: "complex" }] },
       /unknown number type/,
     ],
     ["unknown kind", { id: "x", kind: "explode" }, /Unknown step kind/],

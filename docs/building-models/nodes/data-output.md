@@ -65,11 +65,11 @@ Writing a scored dataset to parquet:
     You can have multiple Data Output nodes in a pipeline  - for example, to write both a parquet file and a CSV, or to save results at different stages.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/data_output/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.data_output(config="config/data_output/<node name>.json")`. Every configuration chooses exactly one destination with `outputType`.
+    The node's settings are stored in a JSON sidecar, `config/data_output/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.data_output(config="config/data_output/<node name>.json")`. Every configuration chooses exactly one destination with `output_type`.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **PROVIDER** | `outputType`: `"file"`, `"lakehouse"`, `"database"` or `"databricks"` |
+    | **PROVIDER** | `output_type`: `"file"`, `"lakehouse"`, `"database"` or `"databricks"` |
     | **FORMAT** | `format`: `"parquet"`, `"csv"`, `"ndjson"`, `"json"`, `"ipc"`, `"ipc_stream"`, `"avro"` or `"excel"` for a file; `"delta"` or `"iceberg"` for a lakehouse; `"database"` for a database |
     | **MODE** | `mode`: `"sink"` or `"write"`; absent uses the format's usual mode |
     | **FILENAME OR PATH**, **TABLE LOCATOR** | `path` |
@@ -88,7 +88,7 @@ Writing a scored dataset to parquet:
 
     ```json
     {
-      "outputType": "databricks",
+      "output_type": "databricks",
       "http_path": "/sql/1.0/warehouses/abc123",
       "table": "main.pricing.scored_policies",
       "write_mode": "overwrite",
@@ -100,7 +100,7 @@ Writing a scored dataset to parquet:
 
     ```json
     {
-      "outputType": "file",
+      "output_type": "file",
       "format": "parquet",
       "mode": "sink",
       "path": "scored_policies"
@@ -114,16 +114,16 @@ Writing a scored dataset to parquet:
     | Key | Type | Description |
     |---|---|---|
     | `arguments` | map of text to any JSON value | Arguments passed to the Polars write or sink call, by parameter name. |
-    | `mode` | `"sink"` or `"write"` | Whether the frame is streamed to the destination (`sink`) or collected and written (`write`). With `outputType` `"file"`, `"database"`, `"lakehouse"`. |
-    | `outputType` | `"file"` | The destination: a file. |
-    | `format` | text | The file format, such as `parquet` or `csv`. With `outputType` `"file"`, `"database"`, `"lakehouse"`. |
-    | `path` | text | The file written, relative to the project root or absolute. With `outputType` `"file"`, `"lakehouse"`. |
-    | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `outputType` `"database"`. |
-    | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `outputType` `"database"`. |
-    | `table` | text | The table written. With `outputType` `"database"`, `"databricks"`. |
-    | `http_path` | text | The SQL warehouse's HTTP path. With `outputType` `"databricks"`. |
-    | `write_mode` | `"overwrite"` or `"append"` | Whether a load replaces the table's rows or adds to them. With `outputType` `"databricks"`. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `mode` | `"sink"` or `"write"` | Whether the frame is streamed to the destination (`sink`) or collected and written (`write`). With `output_type` `"file"`, `"database"`, `"lakehouse"`. |
+    | `output_type` | `"file"` | The destination: a file. |
+    | `format` | text | The file format, such as `parquet` or `csv`. With `output_type` `"file"`, `"database"`, `"lakehouse"`. |
+    | `path` | text | The file written, relative to the project root or absolute. With `output_type` `"file"`, `"lakehouse"`. |
+    | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `output_type` `"database"`. |
+    | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `output_type` `"database"`. |
+    | `table` | text | The table written. With `output_type` `"database"`, `"databricks"`. |
+    | `http_path` | text | The SQL warehouse's HTTP path. With `output_type` `"databricks"`. |
+    | `write_mode` | `"overwrite"` or `"append"` | Whether a load replaces the table's rows or adds to them. With `output_type` `"databricks"`. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

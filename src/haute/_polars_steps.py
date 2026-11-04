@@ -93,10 +93,10 @@ __all__ = [
 ]
 
 
-#: Why a stepped original transform refuses ``inputMapping``: its steps name
+#: Why a stepped original transform refuses ``input_mapping``: its steps name
 #: their inputs by edge name, so a rename rewrites the steps instead.
 STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE = (
-    "A stepped transform addresses its inputs by their edge names and cannot carry inputMapping."
+    "A stepped transform addresses its inputs by their edge names and cannot carry input_mapping."
 )
 
 #: Where ``df`` comes from when a step list starts: ``input`` means the first
@@ -490,16 +490,18 @@ _STEP_KEYS: dict[str, frozenset[str]] = {
     "drop": frozenset({"columns", "dtypes"}),
     "rename": frozenset({"renames"}),
     "cast": frozenset({"casts", "strict"}),
-    "sort": frozenset({"keys", "nullsLast"}),
+    "sort": frozenset({"keys", "nulls_last"}),
     "unique": frozenset({"columns", "keep"}),
     "group_by": frozenset({"keys", "aggregations"}),
-    "join": frozenset({"input", "how", "leftOn", "rightOn", "suffix", "validate", "maintainOrder"}),
+    "join": frozenset(
+        {"input", "how", "left_on", "right_on", "suffix", "validate", "maintain_order"}
+    ),
     "concat": frozenset({"inputs", "how"}),
     "fill_null": frozenset({"columns", "fill"}),
     "limit": frozenset({"n"}),
     "variable": frozenset({"name", "value"}),
     "pivot": frozenset({"index", "on", "columns", "values", "agg"}),
-    "unpivot": frozenset({"on", "index", "variableName", "valueName"}),
+    "unpivot": frozenset({"on", "index", "variable_name", "value_name"}),
     "free_code": frozenset({"code"}),
 }
 
@@ -1350,12 +1352,12 @@ class _Renderer:
 
     def _condition(self, value: object, label: str) -> str:
         condition = self._object(value, label)
-        self._keys(condition, ("column", "operator", "value", "values", "numberType"), label)
+        self._keys(condition, ("column", "operator", "value", "values", "number_type"), label)
         column = self._column(condition.get("column"), f"{label} column")
         operator = self._choice(condition.get("operator"), OPERATORS, f"{label} operator")
         has_value = "value" in condition
         has_values = "values" in condition
-        if "numberType" in condition and operator not in _MEMBERSHIP_OPERATORS:
+        if "number_type" in condition and operator not in _MEMBERSHIP_OPERATORS:
             raise self.fail(f"{label} operator {operator!r} takes no number type.")
         if operator in _COMPARISON_OPERATORS or operator in _STRING_OPERATORS:
             if not has_value or has_values:
@@ -1387,7 +1389,9 @@ class _Renderer:
             return f"{column}.{_NO_VALUE_OPERATORS[operator]}()"
         if has_value or not has_values:
             raise self.fail(f"{label} operator {operator!r} needs a list of values.")
-        members = self._members(condition["values"], f"{label} values", condition.get("numberType"))
+        members = self._members(
+            condition["values"], f"{label} values", condition.get("number_type")
+        )
         rendered = f"{column}.is_in({members})"
         return rendered if operator == "is_in" else f"~{rendered}"
 
@@ -1395,7 +1399,7 @@ class _Renderer:
         """A membership list, its values typed as the column they are compared with.
 
         Polars 2 compares a column only with values of its own kind: numbers are
-        written as the condition's ``numberType`` says (whole numbers, floats, or
+        written as the condition's ``number_type`` says (whole numbers, floats, or
         decimals parsed from their exact text), and dates as one list of dates.
         """
         if not isinstance(value, list) or not value:
@@ -1587,7 +1591,7 @@ class _Renderer:
     def _window(self, expr: Mapping[str, Any], label: str) -> str:
         self._keys(
             expr,
-            ("type", "agg", "of", "over", "orderBy", "descending", "quantile", "where"),
+            ("type", "agg", "of", "over", "order_by", "descending", "quantile", "where"),
             label,
         )
         over = self._str_list(expr.get("over"), f"{label} over", allow_empty=True)
@@ -1630,7 +1634,7 @@ class _Renderer:
                 "forward_fill": f"{column}.fill_null(strategy='forward')",
                 "backward_fill": f"{column}.fill_null(strategy='backward')",
             }[agg]
-        order_by = expr.get("orderBy")
+        order_by = expr.get("order_by")
         if order_by is None:
             if not over:
                 return base
@@ -1817,7 +1821,7 @@ class _Renderer:
             self._check_column_name(sort_column, f"Sort key {i + 1} column")
             columns.append(sort_column)
             descending.append(self._bool(entry.get("descending"), f"Sort key {i + 1} descending"))
-        nulls_last = self._bool(step["nullsLast"], "Nulls last")
+        nulls_last = self._bool(step["nulls_last"], "Nulls last")
         # Polars' defaults (ascending, nulls first) are left unsaid. A stable
         # sort keeps tied rows in the order they arrive, so the same input
         # always gives the same rows in the same order.
@@ -1936,8 +1940,8 @@ class _Renderer:
     def _render_unpivot(self, step: Mapping[str, Any]) -> str:
         on = self._str_list(step["on"], "Unpivot columns", allow_empty=False)
         index = self._str_list(step["index"], "Unpivot index", allow_empty=True)
-        variable = self._str(step["variableName"], "Unpivot name column")
-        value = self._str(step["valueName"], "Unpivot value column")
+        variable = self._str(step["variable_name"], "Unpivot name column")
+        value = self._str(step["value_name"], "Unpivot value column")
         overlap = sorted(set(on) & set(index))
         if overlap:
             raise self.fail(f"Columns {overlap!r} cannot be both unpivoted and kept as index.")
@@ -1954,8 +1958,8 @@ class _Renderer:
     def _render_join(self, step: Mapping[str, Any]) -> str:
         other = self._input(step["input"], "Join input")
         how = self._choice(step["how"], JOIN_HOW, "Join type")
-        left_on = self._str_list(step["leftOn"], "Left keys", allow_empty=True)
-        right_on = self._str_list(step["rightOn"], "Right keys", allow_empty=True)
+        left_on = self._str_list(step["left_on"], "Left keys", allow_empty=True)
+        right_on = self._str_list(step["right_on"], "Right keys", allow_empty=True)
         suffix = self._str(step["suffix"], "Suffix")
         extra = ""
         if "validate" in step:
@@ -1963,7 +1967,7 @@ class _Renderer:
             if how not in JOIN_VALIDATED_HOW:
                 raise self.fail("Only inner, left and full joins can validate their keys.")
             extra += f", validate={validate!r}"
-        order = self._choice(step["maintainOrder"], JOIN_MAINTAIN_ORDER, "Join order")
+        order = self._choice(step["maintain_order"], JOIN_MAINTAIN_ORDER, "Join order")
         extra += f", maintain_order={order!r}"
         if how == "cross":
             if left_on or right_on:

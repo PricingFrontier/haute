@@ -35,7 +35,7 @@ export function captureParentOutputState(
   const occurrences = new Set(nodes.filter((node) => (
     node.data.nodeType === NODE_TYPES.SUBMODEL
     && isSubmodelInstanceConfig(node.data.config)
-    && node.data.config.definitionId === definitionId
+    && node.data.config.definition_id === definitionId
   )).map((node) => node.id))
   const outgoing = edges.filter((edge) => occurrences.has(edge.source))
   const consumers = new Set(outgoing.map((edge) => edge.target))
@@ -112,7 +112,7 @@ function buildCanonicalSubmodelViewGraph(
   const placeholder = parentNodes.find((node) => node.id === instanceId)
   if (!placeholder) throw new Error(`Submodel instance ${instanceId} is missing from the parent graph`)
   const config = placeholder.data.config
-  if (!isSubmodelInstanceConfig(config) || config.definitionId !== definition.definitionId) {
+  if (!isSubmodelInstanceConfig(config) || config.definition_id !== definition.definitionId) {
     throw new Error(
       `Submodel instance ${instanceId} does not reference definition ${definition.definitionId}`,
     )
@@ -131,7 +131,7 @@ function buildCanonicalSubmodelViewGraph(
     const candidateConfig = node.data.config
     return node.data.nodeType === "submodel"
       && isSubmodelInstanceConfig(candidateConfig)
-      && candidateConfig.definitionId === definition.definitionId
+      && candidateConfig.definition_id === definition.definitionId
       ? [node.id]
       : []
   })])

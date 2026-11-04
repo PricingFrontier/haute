@@ -1888,7 +1888,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "original.parquet",
@@ -1935,7 +1935,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "lookup.csv",
@@ -1986,7 +1986,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "lookup.csv",
@@ -2036,7 +2036,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "lookup.csv",
@@ -2294,7 +2294,7 @@ class TestScoreGraphExternalFileRemap:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": "original/lookup.pkl",
-                                "fileType": "pickle",
+                                "file_type": "pickle",
                                 "code": "df = df.with_columns(pl.lit(99).alias('ext_val'))",
                             },
                         },
@@ -2363,7 +2363,7 @@ class TestScoreGraphExternalFileRemap:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": str(lookup),
-                                "fileType": "json",
+                                "file_type": "json",
                                 "code": "df = df.with_columns(base=pl.lit(obj['base']))",
                             },
                         },
@@ -2420,7 +2420,7 @@ class TestScoreGraphExternalFileRemap:
                 "data": {
                     "label": "ext",
                     "nodeType": "externalFile",
-                    "config": {"path": str(lookup), "fileType": "json", "code": code},
+                    "config": {"path": str(lookup), "file_type": "json", "code": code},
                 },
             },
             {
@@ -2491,7 +2491,7 @@ class TestScoreGraphExternalFileRemap:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": "original/lookup.pkl",
-                                "fileType": "pickle",
+                                "file_type": "pickle",
                                 "code": "",
                             },
                         },
@@ -2560,7 +2560,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": "artifacts/opt_artifact.json",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
@@ -2656,7 +2656,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "opt",
                             "nodeType": "optimiserApply",
-                            "config": {"sourceType": "file", "artifact_path": str(original)},
+                            "config": {"source_type": "file", "artifact_path": str(original)},
                         },
                     },
                     {
@@ -2752,7 +2752,7 @@ class TestScoreGraphOptimiserApplyRemap:
                                     {
                                         "banding": "categorical",
                                         "column": "region",
-                                        "outputColumn": "region_band",
+                                        "output_column": "region_band",
                                         "rules": {
                                             "London": "South",
                                             "Manchester": "North",
@@ -2768,7 +2768,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": (
                                     "artifacts/ratebook.json" if bundled else str(artifact_path)
                                 ),
@@ -2869,7 +2869,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_abc",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
@@ -2942,7 +2942,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_abc",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
@@ -3024,7 +3024,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3123,7 +3123,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "remote-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3223,7 +3223,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "remote-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3477,7 +3477,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3565,7 +3565,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3664,7 +3664,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3771,7 +3771,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3861,7 +3861,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "remote-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3951,7 +3951,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -4070,7 +4070,7 @@ class TestBundledModelContractInputs:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "obsolete-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -5754,7 +5754,7 @@ class TestValidateDeployEdgeCases:
                         "data": {
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "lookup.parquet",
@@ -6057,7 +6057,7 @@ class TestOmittableRequestColumns:
                         "data": {
                             "label": node_id,
                             "nodeType": "modelScore",
-                            "config": {"sourceType": "file", "model_path": f"{node_id}.cbm"},
+                            "config": {"source_type": "file", "model_path": f"{node_id}.cbm"},
                         },
                     }
                     for node_id in ("freq", "sev", "unbundled")

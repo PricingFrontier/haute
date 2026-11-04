@@ -406,7 +406,7 @@ class TestPipeline:
         def rated(source: pl.DataFrame) -> pl.LazyFrame:
             table = {
                 "factors": ["region"],
-                "outputColumn": "factor",
+                "output_column": "factor",
                 "entries": [{"region": "north", "value": 2.0}],
             }
             return _apply_rating_table(source.lazy(), table)
@@ -1467,7 +1467,7 @@ class TestGlobalConstantsRuntimeApi:
                         "data": {
                             "label": "sm_alias",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                            "config": {"definition_id": "definition_sm", "alias": "sm_alias"},
                         },
                     },
                 ],
@@ -1845,11 +1845,11 @@ class TestStandaloneSubmodels:
                 "tables": [
                     {
                         "factors": ["year"],
-                        "outputColumn": "rel",
+                        "output_column": "rel",
                         "entries": [{"year": 2010, "value": 1.5}],
                     }
                 ],
-                "combinedOutputs": [],
+                "combined_outputs": [],
             },
         )
         (tmp_path / "modules").mkdir()
@@ -1901,11 +1901,11 @@ class TestStandaloneSubmodels:
                 "tables": [
                     {
                         "factors": ["year"],
-                        "outputColumn": "rel",
+                        "output_column": "rel",
                         "entries": [{"year": 2010, "value": 1.5}],
                     }
                 ],
-                "combinedOutputs": [],
+                "combined_outputs": [],
             },
         )
         (tmp_path / "modules").mkdir()

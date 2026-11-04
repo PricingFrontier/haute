@@ -41,7 +41,7 @@ export interface ApiInputColumnV2 {
 export interface ApiInputTableV2 {
   path: string
   label: string
-  displayPath?: string | null
+  display_path?: string | null
   emit: boolean
   row_id_column?: string | null
   columns: ApiInputColumnV2[]
@@ -192,7 +192,7 @@ export function readV2(
     // editor flags the blank field (requireNonBlank / validateTableLabel).
     if (dropIncomplete && (!path || !label)) continue
     const emit = tt.emit === true
-    const displayPath = typeof tt.displayPath === "string" ? tt.displayPath : null
+    const displayPath = typeof tt.display_path === "string" ? tt.display_path : null
     const row_id_column =
       typeof tt.row_id_column === "string" ? tt.row_id_column : null
     const rawCols = Array.isArray(tt.columns) ? (tt.columns as unknown[]) : []
@@ -241,7 +241,7 @@ export function readV2(
     tables.push({
       path,
       label,
-      displayPath,
+      display_path: displayPath,
       emit,
       row_id_column,
       columns,
@@ -266,7 +266,7 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
     tables: v2.tables.map((t) => ({
       path: t.path,
       label: t.label,
-      displayPath: t.displayPath ?? null,
+      display_path: t.display_path ?? null,
       emit: t.emit,
       row_id_column: t.row_id_column ?? null,
       columns: t.columns.map((c) => ({

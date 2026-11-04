@@ -5,7 +5,7 @@ End-to-end proof of the OUTPUT assembler on the canonical data-model example
 (``data_model_example.json``) is shredded by the v2 apiInput into four ports
 (policies / drivers / licenses / vehicles, with W1 ancestor keys distributed
 into the child tables), and the OUTPUT node reassembles them via its
-``outputMapping`` into the *same* nested document.
+``output_mapping`` into the *same* nested document.
 
 This exercises the parts the kill-v1 cutover's flat tests do not:
 - a genuinely **multi-port** OUTPUT (one apiInput feeding four edges, each a
@@ -165,7 +165,7 @@ def _roundtrip_graph(config: dict[str, Any]) -> PipelineGraph:
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": _output_mapping()},
+                    config={"output_mapping": _output_mapping()},
                 ),
             ),
         ],
@@ -224,7 +224,7 @@ def test_nested_output_renders_through_deploy_scorer() -> None:
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": mapping},
+                    config={"output_mapping": mapping},
                 ),
             ),
         ],

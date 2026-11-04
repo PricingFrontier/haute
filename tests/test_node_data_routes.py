@@ -324,7 +324,7 @@ def _graph(
                         "nodeType": "dataInput",
                         "config": source_config
                         or {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -346,7 +346,7 @@ def _graph(
                                 {
                                     "banding": "breakpoints",
                                     "column": "premium",
-                                    "outputColumn": "band",
+                                    "output_column": "band",
                                     "rules": [],
                                 }
                             ]
@@ -904,7 +904,7 @@ def test_a_build_that_prepares_its_input_snapshot_completes_current(
     graph = _graph(
         project,
         source_config={
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": str(csv_path),
@@ -951,7 +951,12 @@ def test_source_kinds_delegate_or_read_directly(client: TestClient, project: Pat
         project,
         extra_nodes=direct_nodes,
         extra_edges=[make_edge("source", "band_source").model_dump()],
-        source_config={"inputType": "file", "format": "csv", "mode": "scan", "path": str(csv_path)},
+        source_config={
+            "input_type": "file",
+            "format": "csv",
+            "mode": "scan",
+            "path": str(csv_path),
+        },
     )
 
     reads_directly = client.post("/api/node-data/run", json=_body(direct, "band_source")).json()
@@ -1045,7 +1050,7 @@ def test_a_build_after_input_preparation_is_found_by_point_and_joined(
     graph = _graph(
         project,
         source_config={
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": str(csv_path),
@@ -1183,7 +1188,7 @@ def _chain_graph(project: Path) -> dict[str, Any]:
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -1446,7 +1451,7 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
                         "label": "quotes",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -1460,7 +1465,7 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
                         "label": "claims",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(claims_path),
@@ -1475,7 +1480,7 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
-                            "maintainOrder": "left_right",
+                            "maintain_order": "left_right",
                             "on": "policy_id",
                             "selected_columns": ["policy_id", "premium", "claim_amount"],
                             "column_renames": {"claim_amount": "loss"},
@@ -1579,7 +1584,7 @@ def _captured_join_graph(project: Path, claims_path: Path) -> dict[str, Any]:
                         "label": "quotes",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -1593,7 +1598,7 @@ def _captured_join_graph(project: Path, claims_path: Path) -> dict[str, Any]:
                         "label": "claims",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(claims_path),
@@ -1608,7 +1613,7 @@ def _captured_join_graph(project: Path, claims_path: Path) -> dict[str, Any]:
                         "nodeType": "edgeJoin",
                         "config": {
                             "how": "left",
-                            "maintainOrder": "left_right",
+                            "maintain_order": "left_right",
                             "on": "policy_id",
                             "selected_columns": ["policy_id", "premium", "claim_amount"],
                             "column_renames": {"claim_amount": "loss"},
@@ -1772,7 +1777,7 @@ def test_explicit_build_of_a_data_input_with_code_is_chunked_where_its_code_allo
                         "label": "quotes",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": source_format,
                             "mode": "scan",
                             "path": str(project / f"quotes.{source_format}"),
@@ -1840,7 +1845,7 @@ def test_explicit_build_of_a_chunk_local_filter_is_input_sliced_and_equals_nativ
                         "label": "quotes",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),

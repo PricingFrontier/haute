@@ -58,7 +58,7 @@ def test_banding_trace_shows_source_value_and_lineage(tmp_path):
                 _banding_node(
                     {
                         "column": "driver_age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "25", "label": "young"},
@@ -114,7 +114,7 @@ def test_banding_trace_continues_lineage_through_computed_input(tmp_path):
                 _banding_node(
                     {
                         "column": "driver_age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "25", "label": "young"},
@@ -163,7 +163,7 @@ def test_banding_trace_uses_latest_upstream_modifier_for_input_value(tmp_path):
                 _banding_node(
                     {
                         "column": "driver_age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "21", "label": "younger"},
@@ -208,7 +208,7 @@ def test_banding_trace_continues_lineage_through_prior_banding(tmp_path):
                 _banding_node(
                     {
                         "column": "driver_age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "25", "label": "young"},
@@ -221,7 +221,7 @@ def test_banding_trace_continues_lineage_through_prior_banding(tmp_path):
                 _banding_node(
                     {
                         "column": "age_band",
-                        "outputColumn": "risk_band",
+                        "output_column": "risk_band",
                         "banding": "categorical",
                         "rules": [
                             {"value": "young", "assignment": "low"},
@@ -267,14 +267,14 @@ def test_breakpoint_banding_trace_shows_boundary_match(tmp_path):
                 _banding_node(
                     {
                         "column": "driver_age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "25", "label": "young"},
                             {"boundary": "60", "label": "adult"},
                             {"boundary": "", "label": "senior"},
                         ],
-                        "rightClosed": True,
+                        "right_closed": True,
                     }
                 ),
             ],

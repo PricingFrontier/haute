@@ -499,13 +499,13 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
     case "cast":
       return { id, kind, casts: [{ column: "", dtype: "Float64" }], strict: true }
     case "sort":
-      return { id, kind, keys: [{ column: "", descending: false }], nullsLast: false }
+      return { id, kind, keys: [{ column: "", descending: false }], nulls_last: false }
     case "unique":
       return { id, kind, columns: [], keep: "first" }
     case "group_by":
       return { id, kind, keys: [], aggregations: [{ column: "", agg: "sum", name: "" }] }
     case "join":
-      return { id, kind, input: "", how: "left", leftOn: [], rightOn: [], suffix: "_right", maintainOrder: DEFAULT_JOIN_ORDER.left }
+      return { id, kind, input: "", how: "left", left_on: [], right_on: [], suffix: "_right", maintain_order: DEFAULT_JOIN_ORDER.left }
     case "concat":
       return { id, kind, inputs: [], how: "vertical" }
     case "fill_null":
@@ -517,7 +517,7 @@ export function createStep(kind: Exclude<StepKind, "source">, id: string): Step 
     case "pivot":
       return { id, kind, index: [], on: "", columns: [], values: "", agg: "sum" }
     case "unpivot":
-      return { id, kind, on: [], index: [], variableName: "variable", valueName: "value" }
+      return { id, kind, on: [], index: [], variable_name: "variable", value_name: "value" }
     case "free_code":
       return { id, kind, code: "" }
   }
@@ -601,7 +601,7 @@ function conditionsProblem(value: unknown, where: string, depth = 1): string | n
       const problem = operandProblem(condition.value, `${where} condition ${index + 1}`, depth)
       if (problem) return problem
     }
-    if (condition.numberType !== undefined && !NUMBER_TYPES.some((t) => t.value === condition.numberType)) {
+    if (condition.number_type !== undefined && !NUMBER_TYPES.some((t) => t.value === condition.number_type)) {
       return `${where} condition ${index + 1} has an unknown number type.`
     }
     if (condition.values !== undefined) {
@@ -701,10 +701,10 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
         if (filter) return filter
       }
       const over = stringListProblem(expr.over, `${where} over`)
-      if (over || expr.orderBy === undefined) return over
-      const order = rowsProblem(expr.orderBy, [["column", "string"]], `${where} order`)
+      if (over || expr.order_by === undefined) return over
+      const order = rowsProblem(expr.order_by, [["column", "string"]], `${where} order`)
       if (order) return order
-      const badDirection = (expr.orderBy as Array<Record<string, unknown>>).some((k) => k.descending !== undefined && typeof k.descending !== "boolean")
+      const badDirection = (expr.order_by as Array<Record<string, unknown>>).some((k) => k.descending !== undefined && typeof k.descending !== "boolean")
       return badDirection ? `${where} order has a malformed direction.` : null
     }
     case "concat":
@@ -738,16 +738,16 @@ const REQUIRED_FIELDS: Record<StepKind, Array<[string, Shape]>> = {
   drop: [["columns", "array"]],
   rename: [["renames", "array"]],
   cast: [["casts", "array"], ["strict", "boolean"]],
-  sort: [["keys", "array"], ["nullsLast", "boolean"]],
+  sort: [["keys", "array"], ["nulls_last", "boolean"]],
   unique: [["columns", "array"], ["keep", "string"]],
   group_by: [["keys", "array"], ["aggregations", "array"]],
-  join: [["input", "string"], ["how", "string"], ["leftOn", "array"], ["rightOn", "array"], ["suffix", "string"], ["maintainOrder", "string"]],
+  join: [["input", "string"], ["how", "string"], ["left_on", "array"], ["right_on", "array"], ["suffix", "string"], ["maintain_order", "string"]],
   concat: [["inputs", "array"], ["how", "string"]],
   fill_null: [["columns", "array"], ["fill", "object"]],
   limit: [["n", "number"]],
   variable: [["name", "string"], ["value", "object"]],
   pivot: [["index", "array"], ["on", "string"], ["columns", "array"], ["values", "string"], ["agg", "string"]],
-  unpivot: [["on", "array"], ["index", "array"], ["variableName", "string"], ["valueName", "string"]],
+  unpivot: [["on", "array"], ["index", "array"], ["variable_name", "string"], ["value_name", "string"]],
   free_code: [["code", "string"]],
 }
 
@@ -819,8 +819,8 @@ export function stepProblem(step: unknown): string | null {
       return stringListProblem(record.on, `${where} columns`) ?? stringListProblem(record.index, `${where} index`)
     case "join":
       if (record.validate !== undefined && typeof record.validate !== "string") return `${where} has a malformed validation.`
-      if (!JOIN_MAINTAIN_ORDER_VALUES.has(record.maintainOrder as string)) return `${where} has an unknown row order.`
-      return stringListProblem(record.leftOn, `${where} left keys`) ?? stringListProblem(record.rightOn, `${where} right keys`)
+      if (!JOIN_MAINTAIN_ORDER_VALUES.has(record.maintain_order as string)) return `${where} has an unknown row order.`
+      return stringListProblem(record.left_on, `${where} left keys`) ?? stringListProblem(record.right_on, `${where} right keys`)
     case "concat":
       return stringListProblem(record.inputs, `${where} inputs`)
     case "variable":
@@ -903,9 +903,9 @@ function canonicalOperand(operand: Operand): Operand {
 function canonicalExpr(expr: Expr): Expr {
   switch (expr.type) {
     case "window": {
-      const orderBy = expr.orderBy?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
+      const orderBy = expr.order_by?.map((k) => ({ column: k.column, descending: k.descending ?? false }))
       const where = expr.where ? { where: { ...expr.where, conditions: expr.where.conditions.map(canonicalCondition) } } : {}
-      return { ...expr, ...(expr.of ? { of: canonicalOperand(expr.of) } : {}), ...(orderBy ? { orderBy } : {}), ...where }
+      return { ...expr, ...(expr.of ? { of: canonicalOperand(expr.of) } : {}), ...(orderBy ? { order_by: orderBy } : {}), ...where }
     }
     case "concat":
       return { ...expr, parts: expr.parts.map(canonicalOperand), separator: expr.separator ?? "" }

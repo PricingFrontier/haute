@@ -915,7 +915,7 @@ def test_a_seed_whose_inputs_moved_is_not_traced_above(
     claims = pl.DataFrame({"id": list(range(_ROWS)), "d": [value / 10 for value in range(_ROWS)]})
     claims.write_csv(project / "claims.csv")
     csv_input = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": str(project / "claims.csv"),

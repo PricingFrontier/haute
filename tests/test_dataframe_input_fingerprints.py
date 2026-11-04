@@ -48,7 +48,7 @@ def test_dataframe_graph_input_fingerprint_tracks_file_backed_runtime_artifacts(
             _node(
                 "apply",
                 NodeType.OPTIMISER_APPLY,
-                sourceType="file",
+                source_type="file",
                 artifact_path=str(artifact),
             ),
             _node("target", NodeType.POLARS),

@@ -46,7 +46,7 @@ def _palette_names() -> Mapping[str, str]:
 
 
 def field_words(key: str) -> str:
-    """A configuration key in plain lower-case words: `outputColumn` reads `output column`."""
+    """A configuration key in plain lower-case words: `output_column` reads `output column`."""
 
     return " ".join(_CAMEL_BOUNDARY.sub(" ", key).replace("_", " ").lower().split())
 

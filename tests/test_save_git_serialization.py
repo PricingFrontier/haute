@@ -47,7 +47,7 @@ BANDING = {
         {
             "banding": "breakpoints",
             "column": "age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": [{"boundary": "30", "label": "young"}],
             # As the editor holds it: a null default, left unwritten and read back as null
             # (READ-27).
@@ -64,7 +64,7 @@ PIPELINE = (
 
 # A Data Input whose locator is empty: the document is degraded and the node scoped-editable.
 INCOMPLETE_INPUT = {
-    "inputType": "file",
+    "input_type": "file",
     "format": "parquet",
     "mode": "scan",
     "path": "",

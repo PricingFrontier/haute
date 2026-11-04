@@ -41,7 +41,7 @@
                           "factors": [
                             "region"
                           ],
-                          "outputColumn": "region_factor",
+                          "output_column": "region_factor",
                           "entries": [
                             {
                               "region": "North",
@@ -56,10 +56,10 @@
                               "value": 1.05
                             }
                           ],
-                          "defaultValue": 1.0
+                          "default_value": 1.0
                         }
                       ],
-                      "combinedOutputs": [],
+                      "combined_outputs": [],
                       "steps": []
                     }
                   },

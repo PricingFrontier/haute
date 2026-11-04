@@ -200,7 +200,7 @@ class TestLoadMlflowOptimiserArtifactRun:
             )
 
     def test_invalid_source_type_raises(self):
-        with pytest.raises(ValueError, match="Invalid sourceType"):
+        with pytest.raises(ValueError, match="Invalid source_type"):
             load_mlflow_optimiser_artifact(
                 source_type="invalid",
             )

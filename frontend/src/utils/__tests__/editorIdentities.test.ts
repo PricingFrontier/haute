@@ -45,9 +45,9 @@ describe("editor identity resolution", () => {
       ],
     })
     const occurrence = node("pricing", "Tarif café", "submodel", {
-      definitionId: "pricing-definition",
+      definition_id: "pricing-definition",
       alias: "pricing_secondary",
-      instanceOf: "pricing_owner",
+      instance_of: "pricing_owner",
     })
     const definition: SubmodelDefinition = {
       definitionId: "pricing-definition",
@@ -217,7 +217,7 @@ describe("editor identity resolution", () => {
       inputPorts: [{ name: "policy", targets: [{ nodeId: child.id, handleId: null }] }],
       outputPorts: [],
     }
-    const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
+    const root = node("instance", "Pricing", "submodel", { definition_id: "pricing", alias: "pricing" })
     const resolve = vi.fn(async (request): Promise<EditorIdentityBatchResponse> => ({
       violations: null,
       identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
@@ -269,7 +269,7 @@ describe("editor identity resolution", () => {
 
   it("rejects a submodel node without alias", () => {
     const occurrence = node("pricing", "Tarif café", "submodel", {
-      definitionId: "pricing-definition",
+      definition_id: "pricing-definition",
     })
     const definition: SubmodelDefinition = {
       definitionId: "pricing-definition",
@@ -310,7 +310,7 @@ describe("naming against the document", () => {
       outputPorts: [],
     }
     const copy = node("copy", "X copy", "polars")
-    const pasted = node("pasted", "rates copy", "submodel", { definitionId: "rates", alias: "rates" })
+    const pasted = node("pasted", "rates copy", "submodel", { definition_id: "rates", alias: "rates" })
     const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
       violations: [],
       identities: [identity("copy", "X copy 2", null, null), identity("pasted", "rates_2", "rates_2", null)],
@@ -327,7 +327,7 @@ describe("naming against the document", () => {
 
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ graph: context, allocate: true }))
     expect(resolved.nodes.map((n) => n.data.label)).toEqual(["X copy 2", "rates_2"])
-    expect(resolved.nodes[1].data.config).toMatchObject({ definitionId: "rates", alias: "rates_2" })
+    expect(resolved.nodes[1].data.config).toMatchObject({ definition_id: "rates", alias: "rates_2" })
   })
 
   it("refuses the whole batch when the server names a collision", async () => {

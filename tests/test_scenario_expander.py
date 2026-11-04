@@ -33,7 +33,7 @@ class TestCodegen:
             "column_name": "scenario_value",
             "min_value": 0.8,
             "max_value": 1.2,
-            "stepCount": 21,
+            "step_count": 21,
             "step_column": "scenario_index",
         }
         node = _make_node(config, label="expand_scenarios")
@@ -69,7 +69,7 @@ class TestExecutor:
             "column_name": "scenario_value",
             "min_value": 0.5,
             "max_value": 1.5,
-            "stepCount": 5,
+            "step_count": 5,
             "step_column": "scenario_index",
         }
         node = _make_node(config)
@@ -87,7 +87,7 @@ class TestExecutor:
             "column_name": "price",
             "min_value": 1.0,
             "max_value": 2.0,
-            "stepCount": 3,
+            "step_count": 3,
             "step_column": "idx",
         }
         node = _make_node(config)
@@ -106,7 +106,7 @@ class TestExecutor:
             "column_name": "price",
             "min_value": 0.1,
             "max_value": 0.3,
-            "stepCount": 3,
+            "step_count": 3,
         }
         _, fn, _ = _build_node_fn(_make_node(config), source_names=["upstream"])
 
@@ -119,21 +119,21 @@ class TestExecutor:
 
     def test_missing_step_count_is_rejected(self):
         """The grid size is required: no absent-key default, at build time or at call time."""
-        with pytest.raises(ValueError, match="requires stepCount"):
+        with pytest.raises(ValueError, match="requires step_count"):
             _build_node_fn(_make_node({}), source_names=["upstream"])
         from haute._node_apply import expand_scenarios_from_config
 
-        with pytest.raises(ValueError, match="requires stepCount"):
+        with pytest.raises(ValueError, match="requires step_count"):
             expand_scenarios_from_config(pl.DataFrame({"a": [1]}).lazy(), {})
         with pytest.raises(ValueError, match="whole number"):
-            expand_scenarios_from_config(pl.DataFrame({"a": [1]}).lazy(), {"stepCount": 2.5})
+            expand_scenarios_from_config(pl.DataFrame({"a": [1]}).lazy(), {"step_count": 2.5})
 
     @pytest.mark.parametrize(
         ("config", "message"),
         [
-            ({}, "Scenario expander requires stepCount (the number of grid values)."),
-            ({"stepCount": 2.5}, "Scenario expander stepCount must be a whole number, got 2.5"),
-            ({"stepCount": 0}, "Scenario expander requires stepCount >= 1, got 0"),
+            ({}, "Scenario expander requires step_count (the number of grid values)."),
+            ({"step_count": 2.5}, "Scenario expander step_count must be a whole number, got 2.5"),
+            ({"step_count": 0}, "Scenario expander requires step_count >= 1, got 0"),
         ],
     )
     def test_invalid_step_count_is_a_public_node_config_error(self, config, message):
@@ -151,12 +151,12 @@ class TestExecutor:
         assert exc_info.value.to_payload() == {
             "error_code": "node_config_invalid",
             "message": message,
-            "setting": "stepCount",
+            "setting": "step_count",
         }
 
     def test_explicit_default_step_count_expands_the_grid(self):
         """A new node's explicit default of 21 (no value column without column_name)."""
-        node = _make_node({"stepCount": 21})
+        node = _make_node({"step_count": 21})
         _, fn, _ = _build_node_fn(node, source_names=["upstream"])
         input_df = pl.DataFrame({"a": [1]}).lazy()
         result = fn(input_df).collect()
@@ -171,7 +171,7 @@ class TestInteractiveExpansion:
         "column_name": "price_adjustment",
         "min_value": 0.5,
         "max_value": 1.5,
-        "stepCount": 3,
+        "step_count": 3,
         "step_column": "price_strategy",
     }
 
@@ -229,7 +229,7 @@ class TestInteractiveExpansion:
 
         assert result.height == 7
         assert result["quote_id"].to_list() == ["q0"] * 3 + ["q1"] * 3 + ["q2"]
-        # ceil(7 / stepCount) upstream rows, not all 1_000.
+        # ceil(7 / step_count) upstream rows, not all 1_000.
         assert sum(read) == 3
 
     def test_a_full_run_keeps_expanding_through_the_expression(self):

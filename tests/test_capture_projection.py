@@ -103,7 +103,7 @@ def _model_score_node(
         NodeType.MODEL_SCORE,
         output_column=output_column,
         code=code,
-        sourceType=source_type,
+        source_type=source_type,
         run_id=run_id,
     )
 
@@ -145,13 +145,13 @@ class TestGetColumnContract:
                     {
                         "banding": "breakpoints",
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "rules": _RULE,
                     },
                     {
                         "banding": "breakpoints",
                         "column": "region",
-                        "outputColumn": "region_band",
+                        "output_column": "region_band",
                         "rules": _RULE,
                     },
                 ]
@@ -192,14 +192,14 @@ class TestGetColumnContract:
             NodeType.RATING_STEP,
             {
                 "tables": [
-                    {"factors": ["age", "region"], "outputColumn": "age_factor"},
-                    {"factors": ["vehicle_type"], "outputColumn": "vehicle_factor"},
+                    {"factors": ["age", "region"], "output_column": "age_factor"},
+                    {"factors": ["vehicle_type"], "output_column": "vehicle_factor"},
                 ],
-                "combinedOutputs": [
+                "combined_outputs": [
                     {
-                        "outputColumn": "combined",
+                        "output_column": "combined",
                         "operation": "multiply",
-                        "baseValue": 1,
+                        "base_value": 1,
                     }
                 ],
             },
@@ -210,7 +210,7 @@ class TestGetColumnContract:
     def test_rating_step_no_combined(self):
         produced, _ = get_column_contract(
             NodeType.RATING_STEP,
-            {"tables": [{"factors": ["x"], "outputColumn": "x_out"}]},
+            {"tables": [{"factors": ["x"], "output_column": "x_out"}]},
         )
         assert produced == {"x_out"}
 
@@ -219,10 +219,10 @@ class TestGetColumnContract:
             NodeType.RATING_STEP,
             {
                 "tables": [
-                    {"factors": ["age"], "outputColumn": "age_factor"},
-                    {"factors": ["region"], "outputColumn": "region_factor"},
+                    {"factors": ["age"], "output_column": "age_factor"},
+                    {"factors": ["region"], "output_column": "region_factor"},
                 ],
-                "combinedOutputs": [],
+                "combined_outputs": [],
             },
         )
         assert produced == {"age_factor", "region_factor"}
@@ -238,16 +238,16 @@ class TestGetColumnContract:
             NodeType.RATING_STEP,
             {
                 "tables": [
-                    {"factors": ["age"], "outputColumn": "age_factor"},
-                    {"factors": ["region"], "outputColumn": "region_factor"},
+                    {"factors": ["age"], "output_column": "age_factor"},
+                    {"factors": ["region"], "output_column": "region_factor"},
                 ],
-                "combinedOutputs": [
+                "combined_outputs": [
                     {
-                        "outputColumn": "technical_premium",
+                        "output_column": "technical_premium",
                         "operation": "multiply",
-                        "baseValue": 100,
+                        "base_value": 100,
                     },
-                    {"outputColumn": "additive_score", "operation": "add", "baseValue": 0},
+                    {"output_column": "additive_score", "operation": "add", "base_value": 0},
                 ],
             },
         )
@@ -263,8 +263,8 @@ class TestGetColumnContract:
         produced, referenced = get_column_contract(
             NodeType.RATING_STEP,
             {
-                "tables": [{"factors": ["age"], "outputColumn": "age_factor"}],
-                "combinedOutputs": [],
+                "tables": [{"factors": ["age"], "output_column": "age_factor"}],
+                "combined_outputs": [],
             },
         )
         assert produced == {"age_factor"}
@@ -275,11 +275,11 @@ class TestGetColumnContract:
             NodeType.RATING_STEP,
             {
                 "tables": [],
-                "combinedOutputs": [
+                "combined_outputs": [
                     {
-                        "outputColumn": "technical_premium",
+                        "output_column": "technical_premium",
                         "operation": "multiply",
-                        "baseValue": 100,
+                        "base_value": 100,
                     },
                 ],
             },
@@ -291,7 +291,7 @@ class TestGetColumnContract:
         produced, referenced = get_column_contract(
             NodeType.RATING_STEP,
             {
-                "tables": [{"factors": ["x"], "outputColumn": "x_factor"}],
+                "tables": [{"factors": ["x"], "output_column": "x_factor"}],
                 "code": "df = df.with_columns(pl.col('y').alias('z'))",
             },
         )
@@ -312,13 +312,13 @@ class TestGetColumnContract:
         assert produced == {"score"}
 
     def test_model_score_no_source_type_opaque_referenced(self):
-        _, referenced = get_column_contract(NodeType.MODEL_SCORE, {"sourceType": ""})
+        _, referenced = get_column_contract(NodeType.MODEL_SCORE, {"source_type": ""})
         assert referenced is None
 
     def test_model_score_with_code_opaque_referenced(self):
         _, referenced = get_column_contract(
             NodeType.MODEL_SCORE,
-            {"sourceType": "run", "code": "df = df.filter(pl.col('x') > 0)"},
+            {"source_type": "run", "code": "df = df.filter(pl.col('x') > 0)"},
         )
         assert referenced is None
 
@@ -330,7 +330,7 @@ class TestGetColumnContract:
         with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
             produced, referenced = get_column_contract(
                 NodeType.MODEL_SCORE,
-                {"sourceType": "run", "run_id": "abc123", "task": "regression"},
+                {"source_type": "run", "run_id": "abc123", "task": "regression"},
             )
         assert produced == {"prediction"}
         assert referenced == {"feat_a", "feat_b", "feat_c"}
@@ -343,7 +343,7 @@ class TestGetColumnContract:
             with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: patches with generic Exception to test propagation
                 get_column_contract(
                     NodeType.MODEL_SCORE,
-                    {"sourceType": "run", "run_id": "abc123", "task": "regression"},
+                    {"source_type": "run", "run_id": "abc123", "task": "regression"},
                 )
 
     # -- SCENARIO_EXPANDER ----------------------------------------------
@@ -408,7 +408,7 @@ class TestGetColumnContract:
         # etc.) which is not introspectable without loading it.
         produced, referenced = get_column_contract(
             NodeType.OPTIMISER_APPLY,
-            {"artifact_path": "/tmp/opt.json", "sourceType": "file"},
+            {"artifact_path": "/tmp/opt.json", "source_type": "file"},
         )
         assert produced == {"__optimiser_version__"}
         assert referenced is None
@@ -418,7 +418,7 @@ class TestGetColumnContract:
             NodeType.OPTIMISER_APPLY,
             {
                 "artifact_path": "/tmp/opt.json",
-                "sourceType": "file",
+                "source_type": "file",
                 "optimised_value_column": "selected_price_factor",
             },
         )
@@ -516,7 +516,7 @@ class TestComputeNeededColumns:
                     {
                         "banding": "breakpoints",
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "rules": _RULE,
                     }
                 ],
@@ -584,7 +584,7 @@ class TestComputeNeededColumns:
                     {
                         "banding": "breakpoints",
                         "column": "a",
-                        "outputColumn": "a_band",
+                        "output_column": "a_band",
                         "rules": _RULE,
                     }
                 ],
@@ -595,7 +595,7 @@ class TestComputeNeededColumns:
                     {
                         "banding": "breakpoints",
                         "column": "b",
-                        "outputColumn": "b_band",
+                        "output_column": "b_band",
                         "rules": _RULE,
                     }
                 ],
@@ -770,7 +770,7 @@ class TestComputeNeededColumns:
     def test_rating_step_subtraction(self):
         """RatingStep output column is subtracted from upstream needs.
 
-        Source → RatingStep(factors=[col], outputColumn=col_factor) → Output(fields=[col_factor])
+        Source → RatingStep(factors=[col], output_column=col_factor) → Output(fields=[col_factor])
         Source should only need {col}, not {col_factor}.
         """
         nodes = [
@@ -778,7 +778,7 @@ class TestComputeNeededColumns:
             _rating_step_node(
                 "rs",
                 tables=[
-                    {"factors": ["col"], "outputColumn": "col_factor"},
+                    {"factors": ["col"], "output_column": "col_factor"},
                 ],
             ),
             _output_node("out", fields=["col_factor"]),
@@ -1110,7 +1110,7 @@ def _output_select_build_fn(data: dict[str, list[Any]]):
         if node.data.nodeType == NodeType.DATA_INPUT:
             return node.id, lambda: pl.DataFrame(data).lazy(), True
         if node.data.nodeType == NodeType.OUTPUT:
-            mapping = node.data.config.get("outputMapping") or []
+            mapping = node.data.config.get("output_mapping") or []
             fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
             if fields:
                 return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
@@ -1197,7 +1197,7 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
             lf = dfs[0]
             for f in _factors:
                 col = f.get("column", "")
-                out = f.get("outputColumn", "")
+                out = f.get("output_column", "")
                 if col and out:
                     lf = lf.with_columns(pl.col(col).cast(pl.Float64).alias(out))
             return lf
@@ -1205,7 +1205,7 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
         return nid, banding_fn, False
 
     if nt == NodeType.OUTPUT:
-        mapping = node.data.config.get("outputMapping") or []
+        mapping = node.data.config.get("output_mapping") or []
         fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
 
         def output_fn(*dfs, _fields=fields):
@@ -1325,7 +1325,7 @@ class TestCaptureProjection:
                     {
                         "banding": "breakpoints",
                         "column": "a",
-                        "outputColumn": "a_band",
+                        "output_column": "a_band",
                         "rules": _RULE,
                     }
                 ],
@@ -1404,7 +1404,7 @@ class TestCaptureProjection:
                 d = {"key": [1], "b": [20], "extra2": [88]}
                 return nid, lambda d=d: pl.DataFrame(d).lazy(), True
             if nid == "out":
-                mapping = node.data.config.get("outputMapping") or []
+                mapping = node.data.config.get("output_mapping") or []
                 fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return nid, lambda *dfs: dfs[0].join(dfs[1], on="key", how="left"), False
@@ -1460,7 +1460,7 @@ class TestCaptureProjection:
             if nid == "j":
                 return nid, lambda *dfs: dfs[0].join(dfs[1], on="key", how="left"), False
             if nid == "out":
-                mapping = node.data.config.get("outputMapping") or []
+                mapping = node.data.config.get("output_mapping") or []
                 fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return nid, lambda *dfs: dfs[0], False
@@ -1503,7 +1503,7 @@ class TestCaptureProjection:
                     {
                         "banding": "breakpoints",
                         "column": "a",
-                        "outputColumn": "band",
+                        "output_column": "band",
                         "rules": _RULE,
                     }
                 ],

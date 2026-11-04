@@ -87,7 +87,7 @@ class TestNodeBuildContextProperties:
 
     def test_config_returns_node_config_dict(self) -> None:
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "data.csv",
@@ -235,9 +235,9 @@ class TestBuildOutput:
 
     @staticmethod
     def _cfg(fields: list[str], *, source_port: str = "in") -> dict:
-        """A v2 flat outputMapping (one top-level array element per field)."""
+        """A v2 flat output_mapping (one top-level array element per field)."""
         return {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": source_port,
                     "source_column": f,
@@ -262,7 +262,7 @@ class TestBuildOutput:
         assert result.to_dicts() == [{"x": 1, "y": 2}]
 
     def test_empty_config_raises(self) -> None:
-        with pytest.raises(OutputMappingSchemaError, match="requires `outputMapping`"):
+        with pytest.raises(OutputMappingSchemaError, match="requires `output_mapping`"):
             _build("output", {}, source_names=["upstream"])
 
     def test_empty_mapping_renders_empty_document(self) -> None:
@@ -272,7 +272,7 @@ class TestBuildOutput:
 
     def test_disabled_entry_is_skipped(self) -> None:
         cfg = self._cfg(["x", "y"])
-        cfg["outputMapping"][1]["enabled"] = False
+        cfg["output_mapping"][1]["enabled"] = False
         _, fn, _ = _build("output", cfg, source_names=["upstream"])
         result = fn(pl.DataFrame({"x": [1], "y": [2]}).lazy()).collect()
         assert result.columns == ["x"]
@@ -315,14 +315,14 @@ class TestBuildBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "25", "label": "young"},
                             {"boundary": "65", "label": "adult"},
                             {"boundary": "", "label": "senior"},
                         ],
-                        "rightClosed": False,
+                        "right_closed": False,
                     }
                 ],
             },
@@ -341,7 +341,7 @@ class TestBuildBanding:
                 "factors": [
                     {
                         "column": "vehicle",
-                        "outputColumn": "vehicle_group",
+                        "output_column": "vehicle_group",
                         "banding": "categorical",
                         "rules": [
                             {"value": "sedan", "assignment": "car"},
@@ -364,17 +364,17 @@ class TestBuildBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "50", "label": "under50"},
                             {"boundary": "", "label": "50plus"},
                         ],
-                        "rightClosed": False,
+                        "right_closed": False,
                     },
                     {
                         "column": "region",
-                        "outputColumn": "region_group",
+                        "output_column": "region_group",
                         "banding": "categorical",
                         "rules": [
                             {"value": "north", "assignment": "cold"},
@@ -416,7 +416,7 @@ class TestBuildBanding:
                 "factors": [
                     {
                         "column": "",
-                        "outputColumn": "out",
+                        "output_column": "out",
                         "banding": "breakpoints",
                         "rules": [{"boundary": "10", "label": "low"}],
                     }
@@ -436,7 +436,7 @@ class TestBuildBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [],
                     }
@@ -455,7 +455,7 @@ class TestBuildBanding:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "default": "unknown",
                         "rules": [{"boundary": "25", "label": "young"}],
@@ -485,7 +485,7 @@ class TestInputLessNodes:
             ("banding", {"factors": []}),
             (
                 "scenarioExpander",
-                {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
+                {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "step_count": 3},
             ),
         ],
     )
@@ -506,7 +506,7 @@ class TestBuildScenarioExpander:
     def test_is_not_a_source_node(self) -> None:
         _, _, is_source = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "step_count": 3},
             source_names=["upstream"],
         )
         assert is_source is False
@@ -515,7 +515,7 @@ class TestBuildScenarioExpander:
         """Expanding an empty input should yield 0 rows but correct columns."""
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 3},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "step_count": 3},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"id": pl.Series([], dtype=pl.Int32)}).lazy()
@@ -526,7 +526,7 @@ class TestBuildScenarioExpander:
     def test_single_step(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "val", "min_value": 1.0, "max_value": 1.0, "stepCount": 1},
+            {"column_name": "val", "min_value": 1.0, "max_value": 1.0, "step_count": 1},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"x": [100]}).lazy()
@@ -541,7 +541,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "stepCount": 3,
+                "step_count": 3,
                 "step_column": "my_idx",
             },
             source_names=["upstream"],
@@ -555,7 +555,7 @@ class TestBuildScenarioExpander:
         """Empty column_name produces index column only, no value column."""
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "", "stepCount": 3, "step_column": "idx"},
+            {"column_name": "", "step_count": 3, "step_column": "idx"},
             source_names=["upstream"],
         )
         input_df = pl.DataFrame({"x": [1]}).lazy()
@@ -574,7 +574,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "stepCount": 3,
+                "step_count": 3,
                 "code": 'df = df.filter(pl.col("sv") >= 1.0)',
             },
             source_names=["upstream"],
@@ -593,7 +593,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.8,
                 "max_value": 1.2,
-                "stepCount": 3,
+                "step_count": 3,
                 "code": "",
             },
             source_names=["upstream"],
@@ -610,7 +610,7 @@ class TestBuildScenarioExpander:
                 "column_name": "sv",
                 "min_value": 0.5,
                 "max_value": 1.5,
-                "stepCount": 3,
+                "step_count": 3,
                 "code": 'df = df.with_columns(pl.col("sv").alias("factor"))',
             },
             source_names=["upstream"],
@@ -695,7 +695,7 @@ class TestBuildApiInput:
 
         result = read_data_source(
             {
-                "sourceType": "flat_file",
+                "source_type": "flat_file",
                 "path": str(data_file),
                 "schema_overrides": {"quote_id": "String", "premium": "Float64"},
             },
@@ -902,7 +902,7 @@ class TestBuildDataInputWithCode:
         _, fn, is_source = _build(
             "dataInput",
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": str(data_file),
@@ -917,9 +917,9 @@ class TestBuildDataInputWithCode:
         assert fn().collect()["premium"].to_list() == [300.0]
 
     def test_one_without_a_provider_is_refused_when_built_before_its_code_runs(self) -> None:
-        # The palette gives every Data Input its ``inputType``; a config without one
+        # The palette gives every Data Input its ``input_type``; a config without one
         # is refused when the node is built, so its code never runs.
-        with pytest.raises(NodeConfigError, match="setting 'inputType'"):
+        with pytest.raises(NodeConfigError, match="setting 'input_type'"):
             _build("dataInput", {"code": "raise RuntimeError('ran')"})
 
 
@@ -935,7 +935,7 @@ class TestBuildDataInputSelectedColumns:
                     "label": "din",
                     "nodeType": "dataInput",
                     "config": {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "mode": "scan",
                         "path": str(data_file),
@@ -1052,7 +1052,7 @@ class TestBuildDataSink:
     def test_passthrough(self) -> None:
         _, fn, is_source = _build(
             "dataOutput",
-            {"outputType": "file", "path": "out.parquet", "format": "parquet"},
+            {"output_type": "file", "path": "out.parquet", "format": "parquet"},
             source_names=["upstream"],
         )
         assert is_source is False

@@ -43,20 +43,20 @@ def test_a_rating_step_sidecar_orders_its_tables_and_writes_a_grid_row_a_line() 
         "tables": [
             {
                 "entries": [{"value": 1.1, "region": "north"}, {"region": "south", "value": 0.9}],
-                "outputColumn": "region_factor",
-                "defaultValue": None,
+                "output_column": "region_factor",
+                "default_value": None,
                 "factors": ["region"],
             }
         ],
-        "combinedOutputs": [],
+        "combined_outputs": [],
     }
     assert node_config_json(NodeType.RATING_STEP, config, node_label="rate") == (
         "{\n"
         '  "tables": [\n'
         "    {\n"
         '      "factors": ["region"],\n'
-        '      "outputColumn": "region_factor",\n'
-        '      "defaultValue": null,\n'
+        '      "output_column": "region_factor",\n'
+        '      "default_value": null,\n'
         '      "rows": [\n'
         '        ["north", 1.1],\n'
         '        ["south", 0.9]\n'
@@ -69,7 +69,7 @@ def test_a_rating_step_sidecar_orders_its_tables_and_writes_a_grid_row_a_line() 
 
 def test_a_data_input_sidecar_leaves_out_empty_arguments() -> None:
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": "q.csv",
@@ -110,7 +110,7 @@ def test_global_constants_and_a_test_quote_use_the_printer() -> None:
 
 
 def test_saving_twice_gives_identical_bytes() -> None:
-    config = {"tables": [{"factors": ["k"], "outputColumn": "f", "entries": []}]}
+    config = {"tables": [{"factors": ["k"], "output_column": "f", "entries": []}]}
     once = node_config_json(NodeType.RATING_STEP, config, node_label="rate")
     import json
 

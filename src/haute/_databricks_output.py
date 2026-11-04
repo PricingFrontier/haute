@@ -189,7 +189,7 @@ def write_databricks_output(
         write_polars_output(
             _spark_compatible(lf),
             {
-                "outputType": "file",
+                "output_type": "file",
                 "format": "parquet",
                 "mode": "sink",
                 "path": str(local),

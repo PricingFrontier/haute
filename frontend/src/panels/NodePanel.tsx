@@ -569,8 +569,8 @@ function unavailableDefinitionNodes(
 ): PipelineGraph["nodes"] {
   const config = (node.data as HauteNodeData).config
   if (effectiveNodeType(node) !== NODE_TYPES.SUBMODEL || !isSubmodelInstanceConfig(config)) return []
-  const definition = submodels?.[config.definitionId]
-  if (!isSubmodelDefinition(definition, config.definitionId)) return []
+  const definition = submodels?.[config.definition_id]
+  if (!isSubmodelDefinition(definition, config.definition_id)) return []
   return definition.graph.nodes.filter((inner) => (
     (inner.data as HauteNodeData)._loadAvailability === "unavailable"
   ))

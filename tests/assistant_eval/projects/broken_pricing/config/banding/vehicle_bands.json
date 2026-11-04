@@ -3,7 +3,7 @@
     {
       "banding": "breakpoints",
       "column": "vehicle_age",
-      "outputColumn": "vehicle_age_band",
+      "output_column": "vehicle_age_band",
       "rules": [
         {"upper": 3, "label": "new"},
         {"upper": 10, "label": "mid"},

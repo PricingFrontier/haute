@@ -371,7 +371,7 @@ class TestResolveOrigSourceNames:
                 data=NodeData(
                     label="target",
                     nodeType="polars",
-                    config={"inputMapping": {"raw_rows": "Edge_Join_1"}},
+                    config={"input_mapping": {"raw_rows": "Edge_Join_1"}},
                 ),
             ),
         }
@@ -403,12 +403,12 @@ class TestResolveOrigSourceNames:
                 data=NodeData(
                     label="target",
                     nodeType="polars",
-                    config={"inputMapping": mapping},
+                    config={"input_mapping": mapping},
                 ),
             ),
         }
 
-        with pytest.raises(ConfigError, match="inputMapping"):
+        with pytest.raises(ConfigError, match="input_mapping"):
             resolve_orig_source_names(
                 node_map["target"],
                 node_map,

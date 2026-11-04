@@ -109,8 +109,8 @@ function liveHandles(
   if (type === NODE_TYPES.SUBMODEL) {
     const config = nodeConfig(node)
     if (!isSubmodelInstanceConfig(config)) return new Set()
-    const definition = submodels[config.definitionId]
-    if (!isSubmodelDefinition(definition, config.definitionId)) return new Set()
+    const definition = submodels[config.definition_id]
+    if (!isSubmodelDefinition(definition, config.definition_id)) return new Set()
     if (direction === "target") {
       return new Set(definition.inputPorts.map(port => `in__${port.name}`))
     }

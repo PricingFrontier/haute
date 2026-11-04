@@ -61,7 +61,7 @@ When the active source is `live`, the node outputs data from the `quotes` input.
     |---|---|---|
     | `input_scenario_map` | map of text to text | For each connected input, the source that routes to it, such as `live` or `batch`. |
     | `inputs` | list of text | The connected inputs, in the order of the function's parameters (recorded by the parse). |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

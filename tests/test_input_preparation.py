@@ -120,7 +120,7 @@ def _project(
 
 
 def _csv_config(path: Path, **extra: object) -> dict[str, object]:
-    return {"inputType": "file", "format": "csv", "path": str(path), **extra}
+    return {"input_type": "file", "format": "csv", "path": str(path), **extra}
 
 
 # ---------------------------------------------------------------- (1) parity
@@ -142,11 +142,11 @@ def _parity_cases(tmp_path: Path) -> list[tuple[dict[str, object], pl.DataFrame]
             frame,
         ),
         (_csv_config(inferred), frame),
-        ({"inputType": "file", "format": "ndjson", "path": str(ndjson)}, frame),
-        ({"inputType": "file", "format": "json", "mode": "read", "path": str(plain)}, frame),
+        ({"input_type": "file", "format": "ndjson", "path": str(ndjson)}, frame),
+        ({"input_type": "file", "format": "json", "mode": "read", "path": str(plain)}, frame),
         (
             {
-                "inputType": "inline",
+                "input_type": "inline",
                 "format": "records",
                 "records": frame.to_dicts(),
             },
@@ -2015,7 +2015,7 @@ def test_a_spawned_build_relays_the_rows_it_writes_to_its_parent(
         connection.executemany("INSERT INTO policies VALUES (?)", [(1,), (2,), (3,)])
         connection.commit()
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT id FROM policies ORDER BY id",

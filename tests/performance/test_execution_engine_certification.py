@@ -296,7 +296,7 @@ def test_extreme_many_to_many_join_skew_is_estimated_and_rejected_without_execut
                 "how": "inner",
                 "on": ["id"],
                 "validate": "m:m",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
             },
         ),
     )

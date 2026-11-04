@@ -840,7 +840,7 @@ def _prove_categorical_factors_band_text(
                 continue
             raise AssistantOperationError(
                 "invalid_config",
-                f"Banding output {factor.get('outputColumn')!r} bands {column!r}, a {dtype} "
+                f"Banding output {factor.get('output_column')!r} bands {column!r}, a {dtype} "
                 "column, with categorical rules, which match only the listed values; a "
                 "decimal or date range is banded with breakpoints.",
                 where={"node": node.id, "field": "factors"},
@@ -955,7 +955,7 @@ def _prove_load_file_loads(node_id: str, config: Mapping[str, Any]) -> None:
     """
 
     path = config.get("path")
-    file_type = config.get("fileType")
+    file_type = config.get("file_type")
     if not isinstance(path, str) or not path.strip():
         raise _not_ready(node_id, "Load File has no path. Set the file it loads.")
     try:

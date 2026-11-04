@@ -88,9 +88,9 @@ def _occurrence(
     *,
     instance_of: str | None = None,
 ) -> GraphNode:
-    config: dict[str, object] = {"definitionId": "definition_pricing", "alias": name}
+    config: dict[str, object] = {"definition_id": "definition_pricing", "alias": name}
     if instance_of is not None:
-        config["instanceOf"] = instance_of
+        config["instance_of"] = instance_of
     return GraphNode(
         id=name,
         data=NodeData(

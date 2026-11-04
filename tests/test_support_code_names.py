@@ -70,7 +70,7 @@ def _with_submodel_preamble(root_preamble: str, child_preamble: str) -> Pipeline
         inputPorts=[],
         outputPorts=[],
     )
-    occurrence = _node("rates_1", "submodel", definitionId="rates", alias="rates_1")
+    occurrence = _node("rates_1", "submodel", definition_id="rates", alias="rates_1")
     return PipelineGraph(
         nodes=[occurrence], edges=[], submodels={"rates": definition}, preamble=root_preamble
     )
@@ -85,7 +85,7 @@ def _registering_rates(occurrence: str, *nodes: GraphNode, preamble: str = "") -
         inputPorts=[],
         outputPorts=[],
     )
-    registered = _node(occurrence, "submodel", definitionId="rates", alias=occurrence)
+    registered = _node(occurrence, "submodel", definition_id="rates", alias=occurrence)
     return PipelineGraph(
         nodes=[registered, *nodes], edges=[], submodels={"rates": definition}, preamble=preamble
     )
@@ -252,7 +252,7 @@ def _with_input_port(port: str, preamble: str) -> PipelineGraph:
         inputPorts=[{"name": port, "targets": [{"nodeId": "child"}]}],
         outputPorts=[],
     )
-    occurrence = _node("rates_1", "submodel", definitionId="rates", alias="rates_1")
+    occurrence = _node("rates_1", "submodel", definition_id="rates", alias="rates_1")
     return PipelineGraph(
         nodes=[occurrence], edges=[], submodels={"rates": definition}, preamble=preamble
     )
@@ -293,7 +293,7 @@ def _with_input_port(port: str, preamble: str) -> PipelineGraph:
         ),
         pytest.param(
             PipelineGraph(
-                nodes=[_node("source"), _node("rated", inputMapping={"rate_lookup": "source"})],
+                nodes=[_node("source"), _node("rated", input_mapping={"rate_lookup": "source"})],
                 edges=[GraphEdge(id="e", source="source", target="rated")],
                 preamble=_RATE_LOOKUP,
             ),
@@ -384,7 +384,7 @@ def test_a_submodel_preserved_block_is_support_code() -> None:
         inputPorts=[],
         outputPorts=[],
     )
-    occurrence = _node("rates_1", "submodel", definitionId="rates", alias="rates_1")
+    occurrence = _node("rates_1", "submodel", definition_id="rates", alias="rates_1")
     graph = PipelineGraph(
         nodes=[occurrence, _node("rate_lookup")], edges=[], submodels={"rates": definition}
     )

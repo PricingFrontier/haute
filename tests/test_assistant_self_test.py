@@ -282,7 +282,7 @@ class TestPortfolio:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Configuration matching leaves free a key a factor does not state, so a
-        breakpoint factor that adds `rightClosed: false` holds every key its case
+        breakpoint factor that adds `right_closed: false` holds every key its case
         states. Execution catches that inverted closure only on a row that sits
         on a boundary, so each boundary a case states is a value of the column
         its golden bands."""
@@ -311,7 +311,11 @@ class TestPortfolio:
                                 if column.dtype == pl.Date
                                 else float(rule["boundary"])
                             )
-                            assert (column == value).any(), (case.id, factor["outputColumn"], value)
+                            assert (column == value).any(), (
+                                case.id,
+                                factor["output_column"],
+                                value,
+                            )
                     covered.add(case.id)
 
         assert covered == {

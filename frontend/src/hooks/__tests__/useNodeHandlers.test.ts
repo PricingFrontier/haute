@@ -55,7 +55,7 @@ describe("useNodeHandlers", () => {
     useGraphStore.getState().loadGraphSnapshot({ nodes: [original], edges: [], submodels: {}, preamble: "" })
     const occurrence = (name: string, instanceOf?: string) => makeNode(name, "submodel", {
       data: { label: name, nodeType: "submodel", config: {
-        definitionId: "rate_calc", alias: name, ...(instanceOf ? { instanceOf } : {}),
+        definition_id: "rate_calc", alias: name, ...(instanceOf ? { instance_of: instanceOf } : {}),
       } },
     })
     const wrapped = {
@@ -242,7 +242,7 @@ describe("useNodeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     params.graphRef.current = { nodes: [owner], edges: [] }
@@ -283,9 +283,9 @@ describe("useNodeHandlers", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "scoring",
+          instance_of: "scoring",
         },
       },
     })
@@ -428,7 +428,7 @@ describe("useNodeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     params.graphRef.current = { nodes: [submodel], edges: [] }
@@ -517,7 +517,7 @@ describe("useNodeHandlers", () => {
         label: "scoring",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring",
           file: "modules/scoring.py",
           childNodeIds: ["internal_input", "internal_output"],
@@ -530,7 +530,7 @@ describe("useNodeHandlers", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
         },
       },
@@ -552,9 +552,9 @@ describe("useNodeHandlers", () => {
     expect(created.data.nodeType).toBe("submodel")
     expect(created.data.label).toBe("scoring_3")
     expect(created.data.config).toEqual({
-      definitionId: "definition_scoring",
+      definition_id: "definition_scoring",
       alias: "scoring_3",
-      instanceOf: source.id,
+      instance_of: source.id,
     })
     expect(created.position).toEqual({ x: 160, y: 280 })
     expect(created.data.config).not.toHaveProperty("graph")
@@ -568,7 +568,7 @@ describe("useNodeHandlers", () => {
       data: {
         label: "inputs",
         nodeType: "submodel",
-        config: { definitionId: "definition_inputs", alias: "inputs" },
+        config: { definition_id: "definition_inputs", alias: "inputs" },
       },
     })
     params.graphRef.current = { nodes: [source], edges: [] }
@@ -607,7 +607,7 @@ describe("useNodeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     const copies = Array.from({ length: 9 }, (_, index) =>
@@ -616,9 +616,9 @@ describe("useNodeHandlers", () => {
           label: `scoring_${index + 2}`,
           nodeType: "submodel",
           config: {
-            definitionId: "definition_scoring",
+            definition_id: "definition_scoring",
             alias: `scoring_${index + 2}`,
-            instanceOf: "scoring",
+            instance_of: "scoring",
           },
         },
       }))
@@ -640,14 +640,14 @@ describe("useNodeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     const aliasOccupier = makeNode("other_submodel", "submodel", {
       data: {
         label: "other_submodel",
         nodeType: "submodel",
-        config: { definitionId: "definition_other", alias: "other_submodel" },
+        config: { definition_id: "definition_other", alias: "other_submodel" },
       },
     })
     const nodeIdOccupier = makeNode("scoring_2")
@@ -664,9 +664,9 @@ describe("useNodeHandlers", () => {
     const created = params.setSelectedNode.mock.calls[0][0] as Node
     expect(created.id).toBe("scoring_3")
     expect(created.data.config).toEqual({
-      definitionId: "definition_scoring",
+      definition_id: "definition_scoring",
       alias: "scoring_3",
-      instanceOf: source.id,
+      instance_of: source.id,
     })
   })
 
@@ -676,7 +676,7 @@ describe("useNodeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     })
     params.graphRef.current = { nodes: [source], edges: [] }
@@ -691,9 +691,9 @@ describe("useNodeHandlers", () => {
     expect(created.id).not.toMatch(/^submodel_\d+$/)
     expect(created.data.label).toBe("scoring_2")
     expect(created.data.config).toEqual({
-      definitionId: "definition_scoring",
+      definition_id: "definition_scoring",
       alias: "scoring_2",
-      instanceOf: "scoring",
+      instance_of: "scoring",
     })
   })
 
@@ -724,9 +724,9 @@ describe("useNodeHandlers", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "missing_owner",
+          instance_of: "missing_owner",
         },
       },
     })
@@ -750,7 +750,7 @@ describe("useNodeHandlers", () => {
         label: "scoring",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring",
         },
       },
@@ -760,9 +760,9 @@ describe("useNodeHandlers", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: base.id,
+          instance_of: base.id,
         },
       },
     })
@@ -776,9 +776,9 @@ describe("useNodeHandlers", () => {
     const created = params.setSelectedNode.mock.calls[0][0] as Node
     expect(created.id).toBe("scoring_3")
     expect(created.data.config).toEqual({
-      definitionId: "definition_scoring",
+      definition_id: "definition_scoring",
       alias: "scoring_3",
-      instanceOf: base.id,
+      instance_of: base.id,
     })
   })
 

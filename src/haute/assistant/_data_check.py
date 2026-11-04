@@ -1072,7 +1072,7 @@ def _lineage_exclusion(lineage: PipelineGraph, base_dir: Path | None) -> _Exclus
 def _opaque_load_file(node: GraphNode) -> bool:
     return (
         node.data.nodeType == NodeType.EXTERNAL_FILE
-        and str(node.data.config.get("fileType") or "") in _OPAQUE_LOAD_FILE_TYPES
+        and str(node.data.config.get("file_type") or "") in _OPAQUE_LOAD_FILE_TYPES
     )
 
 
@@ -1080,10 +1080,10 @@ def _artifact_exclusion(node: GraphNode) -> _Exclusion | None:
     """``artifact_not_local`` for a model or optimiser artifact a preview would fetch."""
     config = node.data.config
     if node.data.nodeType == NodeType.OPTIMISER_APPLY:
-        if config.get("sourceType") == "file":
+        if config.get("source_type") == "file":
             return None
         return _Exclusion("artifact_not_local", node.id)
-    if node.data.nodeType != NodeType.MODEL_SCORE or not config.get("sourceType"):
+    if node.data.nodeType != NodeType.MODEL_SCORE or not config.get("source_type"):
         # An unconfigured Model Score passes its input through and loads nothing.
         return None
     cached = _cached_run_model(config)
@@ -1108,7 +1108,7 @@ def _cached_run_model(config: Mapping[str, Any]) -> DiskCachedRunModel | None:
     """
     run_id = str(config.get("run_id") or "")
     artifact_path = str(config.get("artifact_path") or "")
-    if config.get("sourceType") != "run" or not run_id or not artifact_path:
+    if config.get("source_type") != "run" or not run_id or not artifact_path:
         return None
     try:
         return disk_cached_run_model(
@@ -1382,7 +1382,7 @@ def identity_components(lineage: PipelineGraph) -> dict[str, Any]:
         node.id: mlflow_backend_signature(node.data.config)
         for node in sorted(lineage.nodes, key=lambda item: item.id)
         if node.data.nodeType == NodeType.MODEL_SCORE
-        and node.data.config.get("sourceType") == "run"
+        and node.data.config.get("source_type") == "run"
     }
     return {"paths": sorted(paths), "backends": backends}
 
@@ -1556,7 +1556,7 @@ class _DataCheckQueries:
         for index, factor in enumerate(factors[:DATA_CHECK_MAX_FACTORS]):
             mode = str(factor.get("banding", "") or "")
             require_banding_type(mode, subject=f"Banding factor {index}")
-            output_column = str(factor.get("outputColumn") or "")
+            output_column = str(factor.get("output_column") or "")
             if not banding_factor_is_active(factor):
                 plan.factors.append(_FactorPlan(index, output_column, measured=False))
                 continue
@@ -1565,7 +1565,7 @@ class _DataCheckQueries:
                 frame.collect_schema().get(factor["column"]),
                 mode,
                 factor["rules"],
-                bool(factor.get("rightClosed", True)),
+                bool(factor.get("right_closed", True)),
                 output_column=output_column,
             )
             plan.factors.append(
@@ -1590,7 +1590,7 @@ class _DataCheckQueries:
         schema: dict[str, Any] = dict(frame.collect_schema())
         parts: list[pl.LazyFrame] = []
         for index, table in enumerate(tables[:DATA_CHECK_MAX_TABLES]):
-            output_column = str(table.get("outputColumn") or "")
+            output_column = str(table.get("output_column") or "")
             built = rating_table_lookup(table, schema)
             if built is None:
                 entries = table.get("entries")
@@ -1742,17 +1742,17 @@ def _written_columns(node: GraphNode) -> frozenset[str]:
     node_type = node.data.nodeType
     if node_type == NodeType.BANDING:
         return frozenset(
-            str(factor["outputColumn"])
+            str(factor["output_column"])
             for factor in normalise_banding_factors(config)
             if banding_factor_is_active(factor)
         )
     if node_type == NodeType.RATING_STEP:
         outputs = {
-            str(table.get("outputColumn"))
+            str(table.get("output_column"))
             for table in normalise_rating_tables(config)
-            if table.get("outputColumn")
+            if table.get("output_column")
         }
-        outputs.update(str(item["outputColumn"]) for item in normalise_combined_outputs(config))
+        outputs.update(str(item["output_column"]) for item in normalise_combined_outputs(config))
         return frozenset(outputs)
     steps = config.get("steps")
     if isinstance(steps, list):

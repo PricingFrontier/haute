@@ -42,34 +42,10 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-29 | Planned | P3 | Every key Haute's schemas own is snake_case on disk; keys the analyst names are untouched. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
-
-### READ-29 — Every key Haute's schemas own is snake_case
-**Why:** Configs mix camelCase keys (`outputColumn`, `defaultValue`, `onMissing`, `inputMapping`, `maintainOrder`) with snake_case keys (`output_column` on Model Score, `selected_columns`), while `main.py` uses snake_case throughout.
-
-**Plan:**
-- Rename every key Haute's schemas own to snake_case:
-  - in node configs, the sidecar and the form folder;
-  - in the browser's config types, which carry configs as stored;
-  - in the assistant's catalogue.
-- The specification lists the full map of old to new keys.
-- Keys the analyst names never change: column names, categorical levels, source names in `by_source`, constant names, sheet and table names.
-- The conversion for this change renames every listed key in one pass, so each file changes once for it.
-- Coordinate with `PCFG-R07` (typed config models), which owns that boundary; the browser contract is generated from the server's models, so a renamed key reaches it through `npm --prefix frontend run generate:contracts`.
-
-**Acceptance:**
-- No schema-owned camelCase key remains in a saved file or schema.
-- A camelCase column name, categorical level and source name survive conversion and a save unchanged.
-- The assistant's catalogue test and the browser contract match.
-
-**Dependencies:** `PCFG-R07` in the [pipeline-config roadmap](pipeline-config.md).
-
-**Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_banding_config.py`;
-`src/haute/assistant/_catalog.py`.
 
 ### READ-33 — A column or table renamed against the default branch keeps its values
 **Why:** Workbench tables and columns are known by their names, so a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.

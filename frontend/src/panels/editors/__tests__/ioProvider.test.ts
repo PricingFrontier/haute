@@ -45,7 +45,7 @@ describe("ioBranchConfig", () => {
       .toEqual({
         contract: { columns: [] },
         selected_columns: ["a"],
-        inputType: "file",
+        input_type: "file",
         format: "csv",
         mode: "scan",
         arguments: {},
@@ -55,7 +55,7 @@ describe("ioBranchConfig", () => {
     expect(ioBranchConfig({ direction: "output", config, group: fileGroup, commonKeys: ["contract"] }))
       .toEqual({
         contract: { columns: [] },
-        outputType: "file",
+        output_type: "file",
         format: "xlsx",
         mode: "write",
         arguments: {},
@@ -72,7 +72,7 @@ describe("ioBranchConfig", () => {
       commonKeys: [],
       requestedFormat: csv,
       preserveProviderFields: true,
-    })).toEqual({ outputType: "file", format: "csv", mode: "sink", arguments: {}, path: "old.csv", rows: "" })
+    })).toEqual({ output_type: "file", format: "csv", mode: "sink", arguments: {}, path: "old.csv", rows: "" })
     expect(ioBranchConfig({ direction: "input", config, group: fileGroup, commonKeys: [], requestedFormat: writeOnly }).format)
       .toBe("csv")
   })

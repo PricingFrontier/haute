@@ -36,12 +36,12 @@
         "modified_nodes": [],
         "node_configs": {
           "nb_batch": {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "path": "data/nb_batch.parquet"
           },
           "curated_quotes": {
-            "outputType": "file",
+            "output_type": "file",
             "format": "parquet",
             "path": "data/curated_quotes.parquet"
           }

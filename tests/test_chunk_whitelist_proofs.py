@@ -67,7 +67,7 @@ def _node(node_id: str, node_type: str, config: dict[str, object] | None = None)
         }
         config = {
             **config,
-            "inputType": "file",
+            "input_type": "file",
             "format": formats.get(suffix, suffix),
         }
     return {

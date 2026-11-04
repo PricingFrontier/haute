@@ -56,7 +56,7 @@ def _edge(source: str, target: str, *, target_handle: str | None = None) -> Grap
 
 def _snapshot_parquet_input(path: Path, **extra: Any) -> dict[str, Any]:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": str(path),
@@ -153,7 +153,7 @@ def _scenario_graph(
                     "how": "left",
                     "on": ["region_key"],
                     "suffix": "_lookup",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "contract": "opaque",
                 },
             ),

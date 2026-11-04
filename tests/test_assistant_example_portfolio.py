@@ -271,7 +271,7 @@ def test_ratebook_solve_save_and_versioned_apply(
     applied = apply_optimiser_apply_from_config(
         rating_factors,
         config={
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": str(saved_path),
             "version_column": "ratebook_version",
             "optimised_value_column": "selected_factor",

@@ -163,19 +163,19 @@ function canonicalOccurrence(
   if (!isSubmodelInstanceConfig(config)) {
     throw new Error(`Submodel instance ${nodeId} has malformed identity config`)
   }
-  const definition = submodels[config.definitionId]
-  if (!isSubmodelDefinition(definition, config.definitionId)) {
+  const definition = submodels[config.definition_id]
+  if (!isSubmodelDefinition(definition, config.definition_id)) {
     throw new Error(
-      `Submodel instance ${nodeId} references missing or malformed definition ${config.definitionId}`,
+      `Submodel instance ${nodeId} references missing or malformed definition ${config.definition_id}`,
     )
   }
   const label = config.alias
   return {
     instanceId: nodeId,
-    definitionId: config.definitionId,
+    definitionId: config.definition_id,
     alias: config.alias,
     label,
-    readOnly: config.instanceOf !== undefined,
+    readOnly: config.instance_of !== undefined,
     definition,
   }
 }
@@ -185,7 +185,7 @@ function instanceCount(nodes: Node[], definitionId: string): number {
     const config = node.data.config
     return node.data.nodeType === "submodel"
       && isSubmodelInstanceConfig(config)
-      && config.definitionId === definitionId
+      && config.definition_id === definitionId
   }).length
 }
 

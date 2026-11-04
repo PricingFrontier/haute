@@ -1115,12 +1115,12 @@ def test_canonical_snapshot_rejects_unavailable_nodes_and_submodels() -> None:
     cases = [
         ([node("broken", "unavailable")], None, "node_unavailable"),
         (
-            [node("pricing", node_type=NodeType.SUBMODEL, config={"definitionId": "pricing"})],
+            [node("pricing", node_type=NodeType.SUBMODEL, config={"definition_id": "pricing"})],
             None,
             "submodel_unavailable",
         ),
         (
-            [node("pricing", node_type=NodeType.SUBMODEL, config={"definitionId": "pricing"})],
+            [node("pricing", node_type=NodeType.SUBMODEL, config={"definition_id": "pricing"})],
             {"pricing": unavailable_definition},
             "submodel_unavailable",
         ),
@@ -1139,7 +1139,7 @@ def test_recovery_revision_tracks_malformed_config_and_missing_sidecar(
 
     config = tmp_path / "config" / "data_input" / "source.json"
     config.parent.mkdir(parents=True)
-    config.write_bytes(b'{"inputType":')
+    config.write_bytes(b'{"input_type":')
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1152,7 +1152,7 @@ def test_recovery_revision_tracks_malformed_config_and_missing_sidecar(
     )
 
     first = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    config.write_bytes(b'{"inputType": "file"')
+    config.write_bytes(b'{"input_type": "file"')
     second = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     (tmp_path / "main.haute.json").write_text("{}", encoding="utf-8")
     third = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)

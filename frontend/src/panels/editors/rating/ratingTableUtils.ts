@@ -11,19 +11,19 @@ type PrimitiveRatingFactorKind =
 
 export type RatingFactorDtype =
   | { kind: PrimitiveRatingFactorKind }
-  | { kind: "Datetime"; timeUnit: "ms" | "us" | "ns"; timeZone: string | null }
-  | { kind: "Duration"; timeUnit: "ms" | "us" | "ns" }
+  | { kind: "Datetime"; time_unit: "ms" | "us" | "ns"; time_zone: string | null }
+  | { kind: "Duration"; time_unit: "ms" | "us" | "ns" }
   | { kind: "Decimal"; precision: number | null; scale: number }
   | { kind: "Enum"; categories: string[] }
 
 export type RatingTable = {
   factors: string[]
-  factorDtypes?: Record<string, RatingFactorDtype>
-  outputColumn: string
-  /** Fills every miss; absent (or null) means a miss follows `onMissing`. */
-  defaultValue?: string | null
+  factor_dtypes?: Record<string, RatingFactorDtype>
+  output_column: string
+  /** Fills every miss; absent (or null) means a miss follows `on_missing`. */
+  default_value?: string | null
   /** What a miss does without a usable default: `"error"` (the engine's default) or `"neutral"`. */
-  onMissing?: string
+  on_missing?: string
   entries: Record<string, string | number>[]
 }
 
@@ -39,7 +39,7 @@ export type RatingTableStatus = {
 
 /** A new table has no default, so a level it does not list stops the run. */
 export function newRatingTable(): RatingTable {
-  return { factors: [], outputColumn: "", entries: [] }
+  return { factors: [], output_column: "", entries: [] }
 }
 
 function isEntry(value: unknown): value is Record<string, string | number> {
@@ -73,15 +73,15 @@ function normaliseRatingFactorDtype(value: unknown): RatingFactorDtype | undefin
   }
   if (kind === "Datetime") {
     if (
-      !hasExactKeys(value, ["kind", "timeUnit", "timeZone"])
-      || !isRatingTimeUnit(value.timeUnit)
-      || (value.timeZone !== null && typeof value.timeZone !== "string")
+      !hasExactKeys(value, ["kind", "time_unit", "time_zone"])
+      || !isRatingTimeUnit(value.time_unit)
+      || (value.time_zone !== null && typeof value.time_zone !== "string")
     ) return undefined
-    return { kind, timeUnit: value.timeUnit, timeZone: value.timeZone }
+    return { kind, time_unit: value.time_unit, time_zone: value.time_zone }
   }
   if (kind === "Duration") {
-    if (!hasExactKeys(value, ["kind", "timeUnit"]) || !isRatingTimeUnit(value.timeUnit)) return undefined
-    return { kind, timeUnit: value.timeUnit }
+    if (!hasExactKeys(value, ["kind", "time_unit"]) || !isRatingTimeUnit(value.time_unit)) return undefined
+    return { kind, time_unit: value.time_unit }
   }
   if (kind === "Decimal") {
     if (
@@ -119,9 +119,9 @@ function normaliseFactorDtypes(raw: unknown, factors: string[]): Record<string, 
   return Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined
 }
 
-function normaliseDefaultValue(raw: unknown): { defaultValue?: string | null } {
-  if (typeof raw === "string" || raw === null) return { defaultValue: raw }
-  if (typeof raw === "number") return { defaultValue: String(raw) }
+function normaliseDefaultValue(raw: unknown): { default_value?: string | null } {
+  if (typeof raw === "string" || raw === null) return { default_value: raw }
+  if (typeof raw === "number") return { default_value: String(raw) }
   return {}
 }
 
@@ -129,17 +129,17 @@ function normaliseRatingTable(raw: unknown): RatingTable {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return newRatingTable()
 
   const table = raw as Record<string, unknown>
-  const outputColumn = typeof table.outputColumn === "string" ? table.outputColumn : ""
+  const outputColumn = typeof table.output_column === "string" ? table.output_column : ""
   const factors = Array.isArray(table.factors)
     ? table.factors.filter((factor): factor is string => typeof factor === "string")
     : []
-  const factorDtypes = normaliseFactorDtypes(table.factorDtypes, factors)
+  const factorDtypes = normaliseFactorDtypes(table.factor_dtypes, factors)
   return {
     factors,
-    ...(factorDtypes ? { factorDtypes } : {}),
-    outputColumn,
-    ...normaliseDefaultValue(table.defaultValue),
-    ...(typeof table.onMissing === "string" ? { onMissing: table.onMissing } : {}),
+    ...(factorDtypes ? { factor_dtypes: factorDtypes } : {}),
+    output_column: outputColumn,
+    ...normaliseDefaultValue(table.default_value),
+    ...(typeof table.on_missing === "string" ? { on_missing: table.on_missing } : {}),
     entries: Array.isArray(table.entries) ? table.entries.filter(isEntry) : [],
   }
 }
@@ -156,11 +156,11 @@ export function ratingTableStatus(
   tables: RatingTable[],
 ): RatingTableStatus {
   const issues: string[] = []
-  const outputColumn = table.outputColumn.trim()
+  const outputColumn = table.output_column.trim()
 
   if (!outputColumn) {
     issues.push("Output column is required")
-  } else if (tables.some((other, otherIdx) => otherIdx !== idx && other.outputColumn.trim() === outputColumn)) {
+  } else if (tables.some((other, otherIdx) => otherIdx !== idx && other.output_column.trim() === outputColumn)) {
     issues.push("Output column name must be unique")
   }
 

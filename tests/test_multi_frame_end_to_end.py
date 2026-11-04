@@ -10,7 +10,7 @@ The canonical multi-port witness is the data-model example
 (``tests/fixtures/output_assembler/data_model_example.json``): a single nested
 document shredded by a v2 apiInput into four ports (policies / drivers / licenses
 / vehicles, with W1 ancestor keys distributed into the child tables), then
-reassembled by the OUTPUT node's ``outputMapping`` back into the *same* nested
+reassembled by the OUTPUT node's ``output_mapping`` back into the *same* nested
 document. Under that identity round-trip the input document IS the expected
 output, so the fixture is a copy of ``data_model_example.json``. The test reuses
 the apiInput/OUTPUT config + expected-document helpers already imported by
@@ -93,7 +93,7 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
     """React-Flow ``Graph`` shape: a four-port apiInput → OUTPUT.
 
     Unlike the dry-run route (which supplies a *volatile* mapping), this graph
-    carries the real ``outputMapping`` on the OUTPUT node so the SAME graph dict
+    carries the real ``output_mapping`` on the OUTPUT node so the SAME graph dict
     drives both ``/save`` and ``/preview`` — the end-to-end chain the plan wants.
     """
     return {
@@ -111,7 +111,7 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
                 "data": {
                     "label": "out",
                     "nodeType": NodeType.OUTPUT.value,
-                    "config": {"outputMapping": _output_mapping()},
+                    "config": {"output_mapping": _output_mapping()},
                 },
             },
         ],

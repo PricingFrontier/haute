@@ -248,7 +248,7 @@ orphaned halves).
     no Python class docstring reaches the provider-visible schema. `name` carries one
     too: when the analyst names the node ("add X", "as X", "called X", "named X"), that
     exact name, with no suffix such as `_node` or `_input`.
-    An `outputMapping` row's `source_port` that starts with `$` names a batch ref, as a
+    An `output_mapping` row's `source_port` that starts with `$` names a batch ref, as a
     node id may: it resolves to the input name the referenced node's edge gives (its
     sanitised label), on `add_node` and `update_node` alike, and an undeclared ref, or one
     whose node an earlier operation deleted, is the unknown-reference error; this is how the `response_output` recipe after a node the
@@ -263,13 +263,13 @@ orphaned halves).
     (`haute._config_io.palette_default_config`, read from `node_defaults.json`, the file
     the editor palette uses) with the model's `config` merged over it key by key, so an
     assistant-created node matches a palette-created one: a Data Input carries
-    `inputType`, and every stepped type carries `steps: []` and opens in the step
+    `input_type`, and every stepped type carries `steps: []` and opens in the step
     builder. There is therefore no assistant path to a new code-mode node. Two cases
     take less than the whole palette config. A config that selects a branch other than
     the palette's (a Data Input or Data Output provider, a Model Score or Apply
     Optimisation source, an Optimiser mode or a training algorithm, the discriminants
     config recovery also uses) keeps only the palette's `steps`, as the palette belongs
-    to one branch and must not fill another's fields. A config naming `instanceOf` is
+    to one branch and must not fill another's fields. A config naming `instance_of` is
     refused: only a submodel occurrence carries it.
   - `update_node {node, config}` — shallow key merge into the existing config; an explicit
     JSON `null` value removes that key. The operation schema's `config` description
@@ -467,7 +467,7 @@ Argument descriptions distinguish a requested graph-node name
 from its output-column name. Transform, join, and rating recipes also accept optional non-empty
 `output_name` and `output_columns` fields, which must be present together. The latter is a
 non-empty unique array of simple JSON-field column names. When present, the deterministic
-planner adds one response `output` node, a canonical JSON `outputMapping` for exactly those
+planner adds one response `output` node, a canonical JSON `output_mapping` for exactly those
 columns, and an edge from the recipe node in the same expansion. The standalone
 `response_output` recipe requires `source`, `output_name`, and `output_columns` and
 creates the same canonical mapping directly after the saved source. A bare output name or
@@ -483,7 +483,7 @@ argument and the text form it must take (`"true"` or `"false"` for a boolean, th
 for an integer). Planning
 refuses a `value` equal to an earlier rule's, because the saved banding sidecar keys rules by their text and
 refuses a repeated key when the plan is applied. The reference-join `how` enum is `inner`,
-`left`, `right`, `full`, `semi`, or `anti`; the recipe always emits `leftOn`/`rightOn`, so
+`left`, `right`, `full`, `semi`, or `anti`; the recipe always emits `left_on`/`right_on`, so
 `cross` is neither advertised nor accepted. The
 rating-step recipe's provider-facing table contract is closed and positional: each
 table requires one to three unique ordered `factors`, an `output_column`, a finite numeric
@@ -1380,7 +1380,7 @@ the turn that follows.
    A node setting a config parser refuses raises `ConfigSettingError` (a
    `HauteValidationError`, so still a `ValueError` and a per-node failure in an editor
    preview) from `_banding_config`, `_rating` and `_rating_step_config`, carrying
-   `setting` (`factors`, `tables` or `combinedOutputs`), an optional `fix` (a breakpoint
+   `setting` (`factors`, `tables` or `combined_outputs`), an optional `fix` (a breakpoint
    kind mismatch names the boundaries the column takes, "a Date column's boundaries are
    dates like 2024-12-31"; a rating row without its factor names the row shape) and
    `values`, the configured values the message quotes. Before save validation,
@@ -1429,10 +1429,10 @@ the turn that follows.
    present unchanged, each map key present with an equal value (`None`, which removes
    the key, keeps none). The error is located at the operation, node and key, names the
    entries it would change or drop by their identity where that is metadata
-   (`outputColumn` for banding factors, rating tables and combined outputs,
+   (`output_column` for banding factors, rating tables and combined outputs,
    `output_path` for response rows, `id` for pivots and steps, `name` for constants, the
    entry itself for `inputs` and `selected_columns`, the key for `input_scenario_map`,
-   `inputMapping` and `column_renames`) and otherwise by entry position or as a count of
+   `input_mapping` and `column_renames`) and otherwise by entry position or as a count of
    a map's keys, never a rule value. Under a withholding policy it is `config_withheld`:
    its message says the model cannot read that configuration under the project's
    egress policy, and its fix says to ask the analyst on a `NEEDS_INPUT:` line instead
@@ -1761,9 +1761,9 @@ the turn that follows.
 - **Ops apply in order against the evolving graph** — `add_node` followed by `add_edge`
   addressing the new node via `$ref` within one batch is valid and covered by tests.
 - **A response row reads an incoming frame** — for an output node the plan adds or whose
-  `outputMapping` it writes, every active row's `source_port` must be the input name of
+  `output_mapping` it writes, every active row's `source_port` must be the input name of
   one of its incoming edges (`_validate_output_rows_read_inputs`); otherwise the plan
-  fails as `invalid_ops` located at the node and `outputMapping`, listing the incoming
+  fails as `invalid_ops` located at the node and `output_mapping`, listing the incoming
   edges. When the port names an unconnected node whose plain edge (no source handle)
   gives that name, the fix adds that edge; otherwise, as when the port names a Quote
   Input or a submodel node, whose edges are named by the frame or port they select, the
@@ -1982,18 +1982,18 @@ the turn that follows.
   the target that name the old input, as the editor's rename does
   (`frontend/src/utils/nodeUpdatePlan.ts`): the input references of a Transform's or
   External File's steps (`input` on a source or join, `inputs` on a concat, through
-  `haute._polars_steps.rename_step_inputs`), `inputMapping` values,
+  `haute._polars_steps.rename_step_inputs`), `input_mapping` values,
   `input_scenario_map` keys, `data_input`, `banding_source`, `analysis_input` and
-  `ratebook_input` and `outputMapping` rows' `source_port`.
+  `ratebook_input` and `output_mapping` rows' `source_port`.
   Each rewritten node is an updated node of the semantic diff, with one config change
-  per field: `<node>:steps[<id>].input` (or `.inputs`), `<node>:inputMapping.<logical>`,
+  per field: `<node>:steps[<id>].input` (or `.inputs`), `<node>:input_mapping.<logical>`,
   `<node>:input_scenario_map.<name>`, `<node>:<field>` and
-  `<node>:outputMapping[i].source_port`. A rewrite that would give a target two inputs
+  `<node>:output_mapping[i].source_port`. A rewrite that would give a target two inputs
   of one name, or a mapping two entries of one key, fails the plan as an op error
   naming the target. Code is never rewritten: the operation lists `steps[i].code` when
   a free-code step reads the old name, a code-mode node's `code` when it reads the name
   (unparsable code is listed, since it cannot be shown not to) unless its
-  `inputMapping` binds that name to another edge. When that list is not empty the plan fails
+  `input_mapping` binds that name to another edge. When that list is not empty the plan fails
   with the stable code `rename_has_consumers`, a message naming each consumer and
   field, and a `consumers` array of `{node, field}` records; nothing is renamed. The
   check runs against the working graph, so an earlier operation of the batch that
@@ -2251,7 +2251,7 @@ the turn that follows.
 | Authored-code failure (a Polars error, an exception raised from node code, or a preamble failure) while `inspect_node`'s schema or profile part, dry-run or apply resolves a schema or frame | engine, rendered by `_tools` | Structured `schema_unresolvable` (`preamble_failed` when the preamble fails during plan validation) error with the exception type, line or step, and only the named columns the egress policy already discloses (the failing node's input schemas, the model's own plan text, saved code only under `allow_executable_source`); the error's own text only when `allow_row_samples` is true; an unreadable egress policy withholds the text and names why |
 | Working-branch state `"git-unavailable"` | `_config.mutations_readiness` | Status 200 with `mutations_enabled: false` and the fixed Git-unavailable reason; a mutation tool call returns `authority_denied` with it |
 | A node write that would not land (a written key missing from the materialised config, a `steps` write whose rendering fails, steps the save's reparse would discard) | `_ops` operation replay, `_application` dry-run reparse proof | Structured `op_not_applied` tool error naming the node and the key or step problem; nothing is written |
-| A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `fileType`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |
+| A Modelling or Load File node the plan adds or updates that is not ready (no target, an incomplete objective, a configured column its input lacks, a file that is missing or does not load as its `file_type`) | `_application._prove_nodes_ready` | Structured `node_not_ready` tool error naming the node and the product's message; nothing is written. A malformed modelling value fails earlier as save validation's 400, `operation_failed` |
 | A rename whose consumers' code reads the old input name | `_ops` operation replay | Structured `rename_has_consumers` tool error listing each consumer and field, with a `consumers` array of `{node, field}`; nothing is written |
 | Unexpected exception inside `dry_run_graph_edits` | `_tools` tool boundary | `operation_failed`, never `invalid_plan`. `invalid_plan` is a specific authorization verdict the domain layer raises; reusing it as the catch-all told the model its plan had been judged and rejected when nothing had judged it |
 | Turn timeout / tool-call cap | `_loop` | Terminal `failed` event naming the limit |
@@ -2545,7 +2545,7 @@ fixture for route tests). The implemented coverage is:
   scorable model, a rating table): `update_node {code}` and `{steps: null, code}` are
   refused at dry-run with the file unchanged; a Transform's `[source, free_code]` and a
   frame-start surface's `[free_code]` write apply and the saved body holds them; a
-  Data Input added with only a path saves with the palette's `inputType`; the
+  Data Input added with only a path saves with the palette's `input_type`; the
   `node_config` projection survives a real save and reparse on every code-carrying
   palette type; a saved config that no longer matches its `node_config` digest is a
   committed verification failure; steps whose generated body would not reparse
@@ -3001,14 +3001,14 @@ eligibility. The changed nodes come from the plan's `SemanticDiff` through the
 same seed derivation `diff_seed_nodes` uses (one shared helper with a flag for
 the preamble widening, not a copy). Eligibility applies the high-level
 precedence with: `SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`; a Load File's
-`fileType`; a Model Scoring node's locality, decided by the same
+`file_type`; a Model Scoring node's locality, decided by the same
 `resolve_backend` (configuration only) and disk-cache path helpers
 (`_disk_cache_root`, `_artifact_cache_path`, with the contract artifact its run logged
 or the marker recording that it logged none)
 that the fast path of `load_mlflow_model` in `src/haute/_mlflow_io.py` uses, as
 a file-existence test only, so the check counts as local exactly what a preview
 would load without a tracking or registry call; an Apply Optimisation node's
-`sourceType`; the lineage (`source_lineage_graph` in `src/haute/execution.py`,
+`source_type`; the lineage (`source_lineage_graph` in `src/haute/execution.py`,
 under the candidate graph's `active_source`); and each snapshot-backed input's
 published state from `input_snapshot_read_status`, a shared read-only helper
 in `src/haute/routes/input_cache.py` that the input-cache status route

@@ -90,7 +90,7 @@ def test_a_data_input_declaration_loads_its_sidecar_source(project: Path) -> Non
         project,
         NodeType.DATA_INPUT,
         "quotes",
-        {"inputType": "file", "format": "parquet", "path": "quotes.parquet"},
+        {"input_type": "file", "format": "parquet", "path": "quotes.parquet"},
     )
     namespace = _run_file(
         project,
@@ -160,7 +160,7 @@ def test_a_banding_declaration_refuses_two_active_factors_writing_one_column(
         {
             "banding": "categorical",
             "column": column,
-            "outputColumn": "band",
+            "output_column": "band",
             "rules": [{"value": "a", "assignment": "A"}],
         }
         for column in ("x", "y")
@@ -290,7 +290,7 @@ def test_an_output_declaration_assembles_its_document(tmp_path: Path) -> None:
         NodeType.OUTPUT,
         "response",
         {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "rows",
                     "source_column": "premium",
@@ -335,7 +335,7 @@ def test_a_model_score_declaration_appends_its_predictions(tmp_path: Path) -> No
         NodeType.MODEL_SCORE,
         "score",
         {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -407,7 +407,7 @@ def test_a_data_input_hook_runs_on_the_loaded_rows(project: Path) -> None:
         project,
         NodeType.DATA_INPUT,
         "quotes",
-        {"inputType": "file", "format": "parquet", "path": "quotes.parquet"},
+        {"input_type": "file", "format": "parquet", "path": "quotes.parquet"},
     )
     namespace = _run_file(
         project,
@@ -426,7 +426,7 @@ def test_a_data_input_hook_runs_on_the_loaded_rows(project: Path) -> None:
 def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project: Path) -> None:
     (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
     config = write_node_config(
-        project, NodeType.EXTERNAL_FILE, "lookup", {"path": "factor.json", "fileType": "json"}
+        project, NodeType.EXTERNAL_FILE, "lookup", {"path": "factor.json", "file_type": "json"}
     )
     namespace = _run_file(
         project,
@@ -451,14 +451,14 @@ def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project
 def test_an_external_file_binds_through_the_input_mapping_its_sidecar_holds(
     project: Path, connected: bool
 ) -> None:
-    """The run binds the hook's parameter through its sidecar's ``inputMapping``, and infers
+    """The run binds the hook's parameter through its sidecar's ``input_mapping``, and infers
     its edge through it when no ``connect()`` states one, as the parser does."""
     (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
     config = write_node_config(
         project,
         NodeType.EXTERNAL_FILE,
         "lookup",
-        {"path": "factor.json", "fileType": "json", "inputMapping": {"original": "rows"}},
+        {"path": "factor.json", "file_type": "json", "input_mapping": {"original": "rows"}},
     )
     namespace = _run_file(
         project,

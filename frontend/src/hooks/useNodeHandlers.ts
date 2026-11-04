@@ -286,7 +286,7 @@ export default function useNodeHandlers({
       return
     }
     const containedSingletons = singletonTypesInSubmodelDefinition(
-      config.definitionId,
+      config.definition_id,
       submodels,
     )
     if (containedSingletons.size > 0) {
@@ -299,15 +299,15 @@ export default function useNodeHandlers({
       )
       return
     }
-    const ownerId = config.instanceOf ?? original.id
+    const ownerId = config.instance_of ?? original.id
     const owner = n.find((node) => node.id === ownerId)
     const ownerConfig = owner ? nodeData(owner).config : undefined
     if (
       !owner
       || nodeData(owner).nodeType !== NODE_TYPES.SUBMODEL
       || !isSubmodelInstanceConfig(ownerConfig)
-      || ownerConfig.definitionId !== config.definitionId
-      || ownerConfig.instanceOf !== undefined
+      || ownerConfig.definition_id !== config.definition_id
+      || ownerConfig.instance_of !== undefined
     ) {
       addToast(
         "error",
@@ -318,9 +318,9 @@ export default function useNodeHandlers({
     const newAlias = nextSubmodelAlias(config.alias, occupiedIdentities)
     occupiedIdentities.add(newAlias)
     const instanceConfig = {
-      definitionId: config.definitionId,
+      definition_id: config.definition_id,
       alias: newAlias,
-      instanceOf: ownerId,
+      instance_of: ownerId,
     }
 
     const newId = String(instanceConfig.alias)

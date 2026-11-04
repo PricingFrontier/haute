@@ -208,7 +208,7 @@ class TestScoreGraphModelScoreContractOnly:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -221,7 +221,7 @@ class TestScoreGraphModelScoreContractOnly:
                             "label": "out",
                             "nodeType": "output",
                             "config": {
-                                "outputMapping": [
+                                "output_mapping": [
                                     {
                                         "source_port": "ms",
                                         "source_column": col,
@@ -382,7 +382,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "original/factors.csv",
@@ -396,7 +396,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "out",
                             "nodeType": "output",
                             "config": {
-                                "outputMapping": [
+                                "output_mapping": [
                                     {
                                         "source_port": "static_ds",
                                         "source_column": col,

@@ -151,7 +151,7 @@ its text as code. The rebuilt steps never take authority over Python they cannot
 - **Settings the code writes out are written out.**
   - A null literal carries `"value": null`.
   - A text join (`concat`) carries its `separator`, `""` when none was given.
-  - Each `orderBy` entry of a window carries `descending`.
+  - Each `order_by` entry of a window carries `descending`.
   - A `rank` or `dense_rank` window always carries `descending`.
 - **Settings the code does not hold are left out.**
   - `descending` on any other window is left out.
@@ -159,8 +159,8 @@ its text as code. The rebuilt steps never take authority over Python they cannot
     aggregate and a column-type aggregate alike.
   - A group-by row count (`len`) has no `column`.
   - An empty `dtypes` on `select` or `drop` is left out.
-  - A `where` or `orderBy` of `null` is left out.
-- **Membership numbers.** Membership numbers are stored as their `numberType` writes them:
+  - A `where` or `order_by` of `null` is left out.
+- **Membership numbers.** Membership numbers are stored as their `number_type` writes them:
   - `integer` as whole numbers;
   - `float` as floats;
   - `decimal` as the number the rendered text reads as. A whole number is an integer,

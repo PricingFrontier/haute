@@ -102,7 +102,7 @@ def _graph(
             "nodes": [
                 _node("request", "apiInput", {"path": str(sample), "tables": tables}),
                 _node("banded", "polars", {"code": band}),
-                _node("out", "output", {"outputMapping": mapping}),
+                _node("out", "output", {"output_mapping": mapping}),
             ],
             "edges": [
                 {"id": "q", "source": "request", "target": "out", "sourceHandle": "quote"},
@@ -357,7 +357,7 @@ def test_a_rejoin_of_a_quote_s_drivers_answers_a_batch_quote_by_quote(sample):
         _node(
             "joined",
             "edgeJoin",
-            {"how": "left", "on": "quote_id", "suffix": "_y", "maintainOrder": "left_right"},
+            {"how": "left", "on": "quote_id", "suffix": "_y", "maintain_order": "left_right"},
         )
     )
     rejoin["nodes"] = [n for n in rejoin["nodes"] if n["id"] != "out"]
@@ -366,7 +366,7 @@ def test_a_rejoin_of_a_quote_s_drivers_answers_a_batch_quote_by_quote(sample):
             "out",
             "output",
             {
-                "outputMapping": [_entry("joined", "min_age", "$[:].min_age")],
+                "output_mapping": [_entry("joined", "min_age", "$[:].min_age")],
             },
         )
     )
@@ -451,7 +451,7 @@ def test_a_key_a_node_rewrites_cannot_give_a_quote_another_s_drivers(sample):
 def test_a_quote_input_without_a_root_table_cannot_answer_in_order(sample):
     graph = _graph(sample, tables=[TABLES[1]]).model_dump()
     graph["edges"] = [e for e in graph["edges"] if e["id"] != "q"]
-    graph["nodes"][2]["data"]["config"]["outputMapping"] = [_entry("banded", "age", "$[:].age")]
+    graph["nodes"][2]["data"]["config"]["output_mapping"] = [_entry("banded", "age", "$[:].age")]
 
     verdict, refusals, _checks = prove_request_rows(
         PipelineGraph.model_validate(graph), ["request"], "out", {}
@@ -573,14 +573,14 @@ def test_json_and_ndjson_answer_with_the_same_rows(
         _entry("priced", "premium", "$[:].pricing.premium"),
         _entry("priced", "issued", "$[:].issued"),
         _entry("priced", "fee", "$[:].fee"),
-        *(entry for entry in out.data.config["outputMapping"] if entry["source_port"] != "quote"),
+        *(entry for entry in out.data.config["output_mapping"] if entry["source_port"] != "quote"),
     ]
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
                 *(node.model_dump(mode="json") for node in graph.nodes if node.id != "out"),
                 _node("priced", "polars", {"code": priced}),
-                _node("out", "output", {"outputMapping": mapping}),
+                _node("out", "output", {"output_mapping": mapping}),
             ],
             "edges": [
                 {"id": "q", "source": "request", "target": "priced", "sourceHandle": "quote"},

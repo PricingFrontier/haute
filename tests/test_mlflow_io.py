@@ -244,11 +244,11 @@ class TestPyfuncAutoDetect:
 
 class TestInvalidSourceType:
     def test_invalid_source_type(self, mock_mlflow_env):
-        """Raises ValueError for unknown sourceType."""
+        """Raises ValueError for unknown source_type."""
         _, _, modules_patch, resolve_patch = mock_mlflow_env
 
         with modules_patch, resolve_patch:
-            with pytest.raises(ValueError, match="Invalid sourceType"):
+            with pytest.raises(ValueError, match="Invalid source_type"):
                 load_mlflow_model(source_type="invalid", task="regression")
 
 

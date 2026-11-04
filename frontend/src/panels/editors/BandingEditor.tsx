@@ -115,8 +115,8 @@ export default function BandingEditor({
     // Auto-suggest output column
     const currentFactor = factors[idx]
     const prevSuggestion = currentFactor.column ? suggestOutputColumn(currentFactor.column) : ""
-    if (!currentFactor.outputColumn || currentFactor.outputColumn === prevSuggestion) {
-      patch.outputColumn = colName ? suggestOutputColumn(colName) : ""
+    if (!currentFactor.output_column || currentFactor.output_column === prevSuggestion) {
+      patch.output_column = colName ? suggestOutputColumn(colName) : ""
     }
     updateFactor(idx, patch)
   }
@@ -131,7 +131,7 @@ export default function BandingEditor({
   // A new factor is Numeric; choosing a column that is not numeric makes it
   // categorical.
   const addFactor = () => {
-    const added: BandingFactor = { banding: "breakpoints", column: "", outputColumn: "", rules: [], default: null }
+    const added: BandingFactor = { banding: "breakpoints", column: "", output_column: "", rules: [], default: null }
     const next = [...factors, added]
     commitFactors(next)
     setActiveIdx(next.length - 1)
@@ -171,13 +171,13 @@ export default function BandingEditor({
     const collidesWith = outputCollisions.get(i)
     const issues = [
       ...(f.column ? [] : ["No input column"]),
-      ...(f.outputColumn ? [] : ["No output column"]),
+      ...(f.output_column ? [] : ["No output column"]),
       ...(ruleCount > 0 ? [] : ["No rules yet"]),
-      ...(collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.outputColumn)] : []),
+      ...(collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.output_column)] : []),
     ]
     return {
       index: i,
-      name: f.outputColumn || f.column || `Column ${i + 1}`,
+      name: f.output_column || f.column || `Column ${i + 1}`,
       searchTerms: f.column ? [f.column] : [],
       healthy: issues.length === 0,
       issues,
@@ -199,7 +199,7 @@ export default function BandingEditor({
   // its breakpoints are dates (as on a column whose dtype is not known). Its
   // boundaries and values are then counted and drawn as wall-clock day numbers,
   // the unit of the whole-dataset statistics.
-  const rightClosed = factor.rightClosed ?? true
+  const rightClosed = factor.right_closed ?? true
   const breakpointRules = factor.banding === "breakpoints" ? (factor.rules || []) as BreakpointRule[] : []
   const boundaryKinds = breakpointKinds(breakpointRules)
   const temporal =
@@ -486,13 +486,13 @@ export default function BandingEditor({
             id={`banding-output-col-${safeIdx}`}
             key={`out-${safeIdx}`}
             dataTestId="banding-output-column"
-            value={factor.outputColumn || ""}
+            value={factor.output_column || ""}
             validate={(candidate) => {
-              const next = factors.map((f, i) => (i === safeIdx ? { ...f, outputColumn: candidate } : f))
+              const next = factors.map((f, i) => (i === safeIdx ? { ...f, output_column: candidate } : f))
               const others = bandingOutputCollisions(next).get(safeIdx)
               return others ? bandingOutputCollisionMessage(others, candidate) : null
             }}
-            onCommit={(v) => updateFactor(safeIdx, { outputColumn: v })}
+            onCommit={(v) => updateFactor(safeIdx, { output_column: v })}
             containerClassName=""
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
             style={INPUT_STYLE} />

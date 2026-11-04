@@ -647,7 +647,7 @@ def _shape_graph(path: Path, transform_code: str, group_by_code: str, output_col
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": output_column,

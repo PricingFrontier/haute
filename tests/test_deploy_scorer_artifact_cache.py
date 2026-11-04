@@ -84,7 +84,7 @@ def _model_score_graph() -> Any:
                         "label": "ms",
                         "nodeType": "modelScore",
                         "config": {
-                            "sourceType": "run",
+                            "source_type": "run",
                             "run_id": "r1",
                             "artifact_path": "model.cbm",
                             "task": "regression",
@@ -244,7 +244,7 @@ class TestModelLoadedOncePerArtifact:
         request["tables"][0]["columns"][1] |= {"name": "age", "path": "$[:].age", "type": "float"}
         (project / "config" / "request.json").write_text(json.dumps(request))
         (project / "config" / "score.json").write_text(
-            json.dumps({"sourceType": "file", "model_path": "model.cbm", "task": "regression"})
+            json.dumps({"source_type": "file", "model_path": "model.cbm", "task": "regression"})
         )
         (project / "config" / "output.json").write_text(
             json.dumps(make_output_config(["prediction"], source_port="scored"))

@@ -1,7 +1,7 @@
 """Dry-run route for the OUTPUT editor (MULTI_FRAME_PLAN piece 8).
 
 ``POST /api/output-assemble/dry-run`` validates an in-progress (volatile)
-``outputMapping``, swaps it into the target OUTPUT node, runs the graph up to
+``output_mapping``, swaps it into the target OUTPUT node, runs the graph up to
 that node, and returns the rendered response document. Exercised against the
 canonical data-model example so the route's assembled output matches the
 ``test_output_nested_roundtrip`` end-to-end proof.

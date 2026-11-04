@@ -22,43 +22,43 @@ import {
 
 describe("normaliseRatingTables", () => {
   it("returns normalised copies of existing tables when present", () => {
-    const tables = [{ factors: ["age"], outputColumn: "af", defaultValue: "1.0", entries: [] }]
+    const tables = [{ factors: ["age"], output_column: "af", default_value: "1.0", entries: [] }]
     const result = normaliseRatingTables({ tables })
-    expect(result).toEqual([{ factors: ["age"], outputColumn: "af", defaultValue: "1.0", entries: [] }])
+    expect(result).toEqual([{ factors: ["age"], output_column: "af", default_value: "1.0", entries: [] }])
     expect(result).not.toBe(tables)
     expect(result[0]).not.toBe(tables[0])
   })
 
-  it("preserves outputColumn and normalises invalid output values to blank", () => {
+  it("preserves output_column and normalises invalid output values to blank", () => {
     const result = normaliseRatingTables({
       tables: [
-        { factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-        { factors: [], outputColumn: "   ", defaultValue: "1.0", entries: [] },
-        { factors: [], defaultValue: "1.0", entries: [] },
-        { factors: [], outputColumn: 42, defaultValue: "1.0", entries: [] },
+        { factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { factors: [], output_column: "   ", default_value: "1.0", entries: [] },
+        { factors: [], default_value: "1.0", entries: [] },
+        { factors: [], output_column: 42, default_value: "1.0", entries: [] },
       ],
     })
 
-    expect(result.map(table => table.outputColumn)).toEqual(["age_factor", "   ", "", ""])
+    expect(result.map(table => table.output_column)).toEqual(["age_factor", "   ", "", ""])
   })
 
   it("returns default table when tables is undefined", () => {
     const result = normaliseRatingTables({})
     expect(result).toHaveLength(1)
     expect(result[0].factors).toEqual([])
-    expect(result[0]).not.toHaveProperty("defaultValue")
+    expect(result[0]).not.toHaveProperty("default_value")
   })
 
-  it("keeps a table's onMissing and leaves an absent defaultValue absent", () => {
+  it("keeps a table's on_missing and leaves an absent default_value absent", () => {
     const result = normaliseRatingTables({
       tables: [
-        { factors: ["age"], outputColumn: "af", onMissing: "neutral", entries: [] },
-        { factors: ["age"], outputColumn: "bf", defaultValue: null, entries: [] },
+        { factors: ["age"], output_column: "af", on_missing: "neutral", entries: [] },
+        { factors: ["age"], output_column: "bf", default_value: null, entries: [] },
       ],
     })
     expect(result).toEqual([
-      { factors: ["age"], outputColumn: "af", onMissing: "neutral", entries: [] },
-      { factors: ["age"], outputColumn: "bf", defaultValue: null, entries: [] },
+      { factors: ["age"], output_column: "af", on_missing: "neutral", entries: [] },
+      { factors: ["age"], output_column: "bf", default_value: null, entries: [] },
     ])
   })
 
@@ -79,8 +79,8 @@ describe("normaliseRatingTables", () => {
         [],
         {
           factors: ["age", 42, "region"],
-          outputColumn: "risk_factor",
-          defaultValue: 1.25,
+          output_column: "risk_factor",
+          default_value: 1.25,
           entries: [
             { age: "young", value: 1.1 },
             ["not", "an", "entry"],
@@ -89,25 +89,25 @@ describe("normaliseRatingTables", () => {
         },
         {
           factors: "age",
-          outputColumn: "fallback_factor",
-          defaultValue: { bad: true },
+          output_column: "fallback_factor",
+          default_value: { bad: true },
           entries: "not entries",
         },
       ],
     })
 
     expect(result).toEqual([
-      { factors: [], outputColumn: "", entries: [] },
-      { factors: [], outputColumn: "", entries: [] },
+      { factors: [], output_column: "", entries: [] },
+      { factors: [], output_column: "", entries: [] },
       {
         factors: ["age", "region"],
-        outputColumn: "risk_factor",
-        defaultValue: "1.25",
+        output_column: "risk_factor",
+        default_value: "1.25",
         entries: [{ age: "young", value: 1.1 }],
       },
       {
         factors: [],
-        outputColumn: "fallback_factor",
+        output_column: "fallback_factor",
         entries: [],
       },
     ])
@@ -118,16 +118,16 @@ describe("normaliseRatingTables", () => {
       tables: [
         {
           factors: ["channel"],
-          outputColumn: "channel_factor",
-          defaultValue: null,
+          output_column: "channel_factor",
+          default_value: null,
           entries: [],
         },
       ],
     })).toEqual([
       {
         factors: ["channel"],
-        outputColumn: "channel_factor",
-        defaultValue: null,
+        output_column: "channel_factor",
+        default_value: null,
         entries: [],
       },
     ])
@@ -136,10 +136,10 @@ describe("normaliseRatingTables", () => {
   it("preserves valid selected factor dtype descriptors without mutating the source", () => {
     const tables = [{
       factors: ["age", "region"],
-      outputColumn: "rating",
-      defaultValue: "1.0",
+      output_column: "rating",
+      default_value: "1.0",
       entries: [{ age: "young", region: "north", value: 1.1 }],
-      factorDtypes: {
+      factor_dtypes: {
         age: { kind: "Enum", categories: ["young", "old"] },
         region: { kind: "String" },
         removed_factor: { kind: "Int64" },
@@ -151,19 +151,19 @@ describe("normaliseRatingTables", () => {
 
     const result = normaliseRatingTables({ tables })
 
-    expect(result[0]?.factorDtypes).toEqual({
+    expect(result[0]?.factor_dtypes).toEqual({
       age: { kind: "Enum", categories: ["young", "old"] },
       region: { kind: "String" },
     })
-    expect(result[0]?.factorDtypes?.age).not.toBe(tables[0]?.factorDtypes.age)
+    expect(result[0]?.factor_dtypes?.age).not.toBe(tables[0]?.factor_dtypes.age)
     expect(result[0]?.entries).toEqual(tables[0]?.entries)
     expect(tables).toEqual(original)
   })
 
   it("preserves every structured dtype descriptor as an independent value", () => {
     const factorDtypes = {
-      timestamp: { kind: "Datetime", timeUnit: "us", timeZone: "Europe/London" },
-      elapsed: { kind: "Duration", timeUnit: "ns" },
+      timestamp: { kind: "Datetime", time_unit: "us", time_zone: "Europe/London" },
+      elapsed: { kind: "Duration", time_unit: "ns" },
       amount: { kind: "Decimal", precision: 12, scale: 2 },
       unbounded_amount: { kind: "Decimal", precision: null, scale: 4 },
       channel: { kind: "Enum", categories: ["web", "branch"] },
@@ -171,15 +171,15 @@ describe("normaliseRatingTables", () => {
     const factors = Object.keys(factorDtypes)
 
     const [result] = normaliseRatingTables({
-      tables: [{ factors, factorDtypes, outputColumn: "rating", entries: [] }],
+      tables: [{ factors, factor_dtypes: factorDtypes, output_column: "rating", entries: [] }],
     })
 
-    expect(result.factorDtypes).toEqual(factorDtypes)
+    expect(result.factor_dtypes).toEqual(factorDtypes)
     for (const factor of factors) {
-      expect(result.factorDtypes?.[factor]).not.toBe(factorDtypes[factor as keyof typeof factorDtypes])
+      expect(result.factor_dtypes?.[factor]).not.toBe(factorDtypes[factor as keyof typeof factorDtypes])
     }
-    expect(result.factorDtypes?.channel).toEqual({ kind: "Enum", categories: ["web", "branch"] })
-    expect((result.factorDtypes?.channel as { categories: string[] }).categories)
+    expect(result.factor_dtypes?.channel).toEqual({ kind: "Enum", categories: ["web", "branch"] })
+    expect((result.factor_dtypes?.channel as { categories: string[] }).categories)
       .not.toBe(factorDtypes.channel.categories)
   })
 
@@ -188,11 +188,11 @@ describe("normaliseRatingTables", () => {
     ["array metadata", []],
     ["unknown kind", { kind: "Binary" }],
     ["primitive descriptor with extra key", { kind: "String", extra: true }],
-    ["datetime missing timezone", { kind: "Datetime", timeUnit: "us" }],
-    ["datetime with invalid unit", { kind: "Datetime", timeUnit: "s", timeZone: null }],
-    ["datetime with invalid timezone", { kind: "Datetime", timeUnit: "us", timeZone: 42 }],
+    ["datetime missing timezone", { kind: "Datetime", time_unit: "us" }],
+    ["datetime with invalid unit", { kind: "Datetime", time_unit: "s", time_zone: null }],
+    ["datetime with invalid timezone", { kind: "Datetime", time_unit: "us", time_zone: 42 }],
     ["duration missing unit", { kind: "Duration" }],
-    ["duration with invalid unit", { kind: "Duration", timeUnit: "s" }],
+    ["duration with invalid unit", { kind: "Duration", time_unit: "s" }],
     ["decimal missing scale", { kind: "Decimal", precision: 12 }],
     ["decimal with boolean precision", { kind: "Decimal", precision: true, scale: 2 }],
     ["decimal with fractional precision", { kind: "Decimal", precision: 12.5, scale: 2 }],
@@ -205,21 +205,21 @@ describe("normaliseRatingTables", () => {
     const [result] = normaliseRatingTables({
       tables: [{
         factors: ["risk"],
-        factorDtypes: { risk: descriptor },
-        outputColumn: "rating",
+        factor_dtypes: { risk: descriptor },
+        output_column: "rating",
         entries: [],
       }],
     })
 
-    expect(result.factorDtypes).toBeUndefined()
+    expect(result.factor_dtypes).toBeUndefined()
   })
 
-  it.each([null, [], "invalid"])("drops a malformed factorDtypes container: %j", factorDtypes => {
+  it.each([null, [], "invalid"])("drops a malformed factor_dtypes container: %j", factorDtypes => {
     const [result] = normaliseRatingTables({
-      tables: [{ factors: ["risk"], factorDtypes, outputColumn: "rating", entries: [] }],
+      tables: [{ factors: ["risk"], factor_dtypes: factorDtypes, output_column: "rating", entries: [] }],
     })
 
-    expect(result.factorDtypes).toBeUndefined()
+    expect(result.factor_dtypes).toBeUndefined()
   })
 })
 
@@ -227,8 +227,8 @@ describe("ratingTableStatus", () => {
   it("marks a complete table as healthy", () => {
     const tables = [{
       factors: ["age_band"],
-      outputColumn: "age_factor",
-      defaultValue: "1.0",
+      output_column: "age_factor",
+      default_value: "1.0",
       entries: [{ age_band: "young", value: 1.1 }],
     }]
 
@@ -241,8 +241,8 @@ describe("ratingTableStatus", () => {
   it("reports blank output columns, missing factors, and missing entries", () => {
     const tables = [{
       factors: [],
-      outputColumn: " ",
-      defaultValue: "1.0",
+      output_column: " ",
+      default_value: "1.0",
       entries: [],
     }]
 
@@ -260,14 +260,14 @@ describe("ratingTableStatus", () => {
     const tables = [
       {
         factors: ["region"],
-        outputColumn: "region_factor",
-        defaultValue: "1.0",
+        output_column: "region_factor",
+        default_value: "1.0",
         entries: [{ region: "north", value: 1.0 }],
       },
       {
         factors: ["region"],
-        outputColumn: "region_factor",
-        defaultValue: "1.0",
+        output_column: "region_factor",
+        default_value: "1.0",
         entries: [{ region: "south", value: 1.0 }],
       },
     ]
@@ -582,8 +582,8 @@ describe("extractTableEntryFactorLevels", () => {
     expect(extractTableEntryFactorLevels([
       {
         factors: ["channel"],
-        outputColumn: "channel_factor",
-        defaultValue: "1.0",
+        output_column: "channel_factor",
+        default_value: "1.0",
         entries: [
           { channel: "direct", value: 1.0 },
           { channel: "broker", value: 1.1 },
@@ -599,8 +599,8 @@ describe("extractTableEntryFactorLevels", () => {
     expect(extractTableEntryFactorLevels([
       {
         factors: ["channel", "segment"],
-        outputColumn: "factor",
-        defaultValue: "1.0",
+        output_column: "factor",
+        default_value: "1.0",
         entries: [
           { channel: "direct", segment: "retail", value: 1.0 },
           { channel: "broker", segment: "fleet", value: 1.1 },
@@ -617,8 +617,8 @@ describe("extractTableEntryFactorLevels", () => {
     expect(extractTableEntryFactorLevels([
       {
         factors: ["channel"],
-        outputColumn: "channel_factor",
-        defaultValue: "1.0",
+        output_column: "channel_factor",
+        default_value: "1.0",
         entries: [
           { channel: null as unknown as string, value: 1.0 },
           { channel: undefined as unknown as string, value: 1.1 },
@@ -634,8 +634,8 @@ describe("extractTableEntryFactorLevels", () => {
     expect(extractTableEntryFactorLevels([
       {
         factors: ["channel"],
-        outputColumn: "channel_factor",
-        defaultValue: "1.0",
+        output_column: "channel_factor",
+        default_value: "1.0",
         entries: [],
       },
     ])).toEqual({})

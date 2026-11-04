@@ -29,7 +29,7 @@ def _make_graph(data_path: Path, artifact_path: Path) -> PipelineGraph:
                     label="apply",
                     nodeType=NodeType.OPTIMISER_APPLY,
                     config={
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": str(artifact_path),
                         "version_column": "__optimiser_version__",
                     },
@@ -93,7 +93,7 @@ def _column_config_graph(tmp_path: Path, node_type: NodeType, selected: bool) ->
             edges.append(
                 GraphEdge(id="join", source="lookup", target="subject", targetHandle="join")
             )
-            config.update({"on": ["_id"], "how": "left", "maintainOrder": "left_right"})
+            config.update({"on": ["_id"], "how": "left", "maintain_order": "left_right"})
     nodes.append(
         GraphNode(id="subject", data=NodeData(label="subject", nodeType=node_type, config=config))
     )
@@ -136,7 +136,7 @@ def test_join_rename_projection_matches_lazy_execution(tmp_path: Path, node_type
         subject.data.nodeType = node_type
         subject.data.config.pop("on")
         subject.data.config.pop("how")
-        subject.data.config.pop("maintainOrder")
+        subject.data.config.pop("maintain_order")
         subject.data.config["code"] = "df = source.join(lookup, on='_id')"
     eager = execute_graph(
         graph,

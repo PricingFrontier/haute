@@ -107,7 +107,7 @@ def test_generated_params_follow_edge_order_across_all_source_kinds(
         data=NodeData(
             label="rating",
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": "rating", "alias": "rating"},
+            config={"definition_id": "rating", "alias": "rating"},
         ),
     )
     target = _node(
@@ -182,7 +182,7 @@ def test_independent_submodel_outputs_use_public_port_names(
         data=NodeData(
             label="left",
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": "left-definition", "alias": "left"},
+            config={"definition_id": "left-definition", "alias": "left"},
         ),
     )
     right = GraphNode(
@@ -191,7 +191,7 @@ def test_independent_submodel_outputs_use_public_port_names(
         data=NodeData(
             label="right",
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": "right-definition", "alias": "right"},
+            config={"definition_id": "right-definition", "alias": "right"},
         ),
     )
     consumer = _node(

@@ -121,7 +121,7 @@ def _graph() -> PipelineGraph:
                 "source",
                 node_type=NodeType.DATA_INPUT,
                 config={
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "input.parquet",
@@ -496,8 +496,8 @@ def test_graph_identity_is_stable_for_presentation_only_changes(changed) -> None
     [
         (
             NodeType.EXTERNAL_FILE,
-            {"path": "artifact.bin", "fileType": "pickle"},
-            "fileType",
+            {"path": "artifact.bin", "file_type": "pickle"},
+            "file_type",
             "joblib",
         ),
         (
@@ -569,7 +569,7 @@ def test_database_snapshot_pointer_uses_configured_pipeline_directory(
             encoding="utf-8",
         )
         config = {
-            "inputType": "database",
+            "input_type": "database",
             "format": "database",
             "uri": "sqlite:///pricing.sqlite",
             "query": "SELECT 1",

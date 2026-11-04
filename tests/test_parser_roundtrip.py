@@ -189,7 +189,7 @@ def _data_input_config() -> st.SearchStrategy[dict[str, Any]]:
                     "files/quotes.parquet",
                 ]
             ),
-            "inputType": st.just("file"),
+            "input_type": st.just("file"),
             "format": st.just("parquet"),
             "mode": st.just("scan"),
             "arguments": st.just({}),
@@ -233,7 +233,7 @@ def _transform_config() -> st.SearchStrategy[dict[str, Any]]:
 
 
 def _output_config() -> st.SearchStrategy[dict[str, Any]]:
-    """Strategy for output config dicts (v2 ``outputMapping`` shape)."""
+    """Strategy for output config dicts (v2 ``output_mapping`` shape)."""
     return st.lists(
         st.sampled_from(["col_a", "col_b", "col_c", "col_d"]),
         min_size=1,
@@ -264,7 +264,7 @@ def _data_output_config() -> st.SearchStrategy[dict[str, Any]]:
     """Strategy for dataOutput config dicts."""
     return st.fixed_dictionaries(
         {
-            "outputType": st.just("file"),
+            "output_type": st.just("file"),
             "path": st.sampled_from(
                 [
                     "output/result.parquet",
@@ -287,7 +287,7 @@ def _banding_config() -> st.SearchStrategy[dict[str, Any]]:
                     {
                         "banding": "breakpoints",
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "rules": [
                             {"boundary": "35", "label": "young"},
                         ],
@@ -307,8 +307,8 @@ def _rating_step_config() -> st.SearchStrategy[dict[str, Any]]:
                 [
                     {
                         "factors": ["age_band"],
-                        "outputColumn": "age_factor",
-                        "defaultValue": "1.0",
+                        "output_column": "age_factor",
+                        "default_value": "1.0",
                         "entries": [{"age_band": "young", "value": 1.1}],
                     }
                 ]
@@ -479,8 +479,8 @@ def _assert_config_equivalence(
         assert parsed.get("path") == orig.get("path"), (
             f"[{node_id}] path mismatch: {parsed.get('path')!r} != {orig.get('path')!r}"
         )
-        assert parsed.get("sourceType") == orig.get("sourceType"), (
-            f"[{node_id}] sourceType mismatch"
+        assert parsed.get("source_type") == orig.get("source_type"), (
+            f"[{node_id}] source_type mismatch"
         )
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
@@ -493,12 +493,12 @@ def _assert_config_equivalence(
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.OUTPUT:
-        # OUTPUT config lives in a sidecar JSON keyed on ``outputMapping``.
+        # OUTPUT config lives in a sidecar JSON keyed on ``output_mapping``.
         # The parser may re-derive a ``contract`` annotation on load, so assert
         # on the mapping that defines the node, not the whole config dict.
-        assert parsed.get("outputMapping") == orig.get("outputMapping"), (
-            f"[{node_id}] outputMapping mismatch: "
-            f"{parsed.get('outputMapping')!r} != {orig.get('outputMapping')!r}"
+        assert parsed.get("output_mapping") == orig.get("output_mapping"), (
+            f"[{node_id}] output_mapping mismatch: "
+            f"{parsed.get('output_mapping')!r} != {orig.get('output_mapping')!r}"
         )
 
     elif node_type == NodeType.CONSTANT:
@@ -529,8 +529,8 @@ def _assert_config_equivalence(
         for of, pf in zip(orig_factors, parsed_factors):
             assert pf.get("banding") == of.get("banding"), f"[{node_id}] banding type mismatch"
             assert pf.get("column") == of.get("column"), f"[{node_id}] banding column mismatch"
-            assert pf.get("outputColumn") == of.get("outputColumn"), (
-                f"[{node_id}] banding outputColumn mismatch"
+            assert pf.get("output_column") == of.get("output_column"), (
+                f"[{node_id}] banding output_column mismatch"
             )
             assert pf.get("rules") == of.get("rules"), f"[{node_id}] banding rules mismatch"
 
@@ -543,16 +543,16 @@ def _assert_config_equivalence(
         for ot, pt in zip(orig_tables, parsed_tables):
             assert pt.get("name") == ot.get("name"), f"[{node_id}] table name mismatch"
             assert pt.get("factors") == ot.get("factors"), f"[{node_id}] table factors mismatch"
-            assert pt.get("outputColumn") == ot.get("outputColumn"), (
-                f"[{node_id}] table outputColumn mismatch"
+            assert pt.get("output_column") == ot.get("output_column"), (
+                f"[{node_id}] table output_column mismatch"
             )
             assert pt.get("entries") == ot.get("entries"), f"[{node_id}] table entries mismatch"
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.EXTERNAL_FILE:
         assert parsed.get("path") == orig.get("path"), f"[{node_id}] externalFile path mismatch"
-        assert parsed.get("fileType") == orig.get("fileType"), (
-            f"[{node_id}] externalFile fileType mismatch"
+        assert parsed.get("file_type") == orig.get("file_type"), (
+            f"[{node_id}] externalFile file_type mismatch"
         )
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
@@ -562,7 +562,7 @@ def _assert_config_equivalence(
         )
 
     elif node_type == NodeType.MODEL_SCORE:
-        for key in ("sourceType", "task", "output_column", "mlflow_destination"):
+        for key in ("source_type", "task", "output_column", "mlflow_destination"):
             assert parsed.get(key) == orig.get(key), f"[{node_id}] modelScore {key} mismatch"
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
@@ -577,7 +577,7 @@ def _assert_config_equivalence(
                 assert parsed.get(key) == orig.get(key), f"[{node_id}] optimiser {key} mismatch"
 
     elif node_type == NodeType.OPTIMISER_APPLY:
-        for key in ("sourceType", "artifact_path", "version_column", "mlflow_destination"):
+        for key in ("source_type", "artifact_path", "version_column", "mlflow_destination"):
             if orig.get(key):
                 assert parsed.get(key) == orig.get(key), (
                     f"[{node_id}] optimiserApply {key} mismatch"
@@ -661,7 +661,7 @@ class TestEdgeCases:
                         label="load_data",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -694,7 +694,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -759,7 +759,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "in.parquet",
@@ -773,7 +773,7 @@ class TestEdgeCases:
                         label="writer",
                         nodeType=NodeType.DATA_OUTPUT,
                         config={
-                            "outputType": "file",
+                            "output_type": "file",
                             "format": "parquet",
                             "mode": "sink",
                             "path": "output/result.parquet",
@@ -798,7 +798,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "in.parquet",
@@ -812,7 +812,7 @@ class TestEdgeCases:
                         label="csv_out",
                         nodeType=NodeType.DATA_OUTPUT,
                         config={
-                            "outputType": "file",
+                            "output_type": "file",
                             "format": "csv",
                             "mode": "sink",
                             "path": "output/result.csv",
@@ -837,7 +837,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -855,7 +855,7 @@ class TestEdgeCases:
                                 {
                                     "banding": "breakpoints",
                                     "column": "age",
-                                    "outputColumn": "age_band",
+                                    "output_column": "age_band",
                                     "rules": [
                                         {"boundary": "30", "label": "young"},
                                         {"boundary": "60", "label": "middle"},
@@ -883,7 +883,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -901,7 +901,7 @@ class TestEdgeCases:
                                 {
                                     "banding": "breakpoints",
                                     "column": "score",
-                                    "outputColumn": "score_band",
+                                    "output_column": "score_band",
                                     "rules": [
                                         {"boundary": "50", "label": "low"},
                                     ],
@@ -928,7 +928,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -945,8 +945,8 @@ class TestEdgeCases:
                             "tables": [
                                 {
                                     "factors": ["age_band"],
-                                    "outputColumn": "age_factor",
-                                    "defaultValue": "1.0",
+                                    "output_column": "age_factor",
+                                    "default_value": "1.0",
                                     "entries": [
                                         {"age_band": "young", "value": 0.9},
                                         {"age_band": "middle", "value": 1.0},
@@ -1008,7 +1008,7 @@ class TestEdgeCases:
                         label="load",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -1034,7 +1034,7 @@ class TestEdgeCases:
                                 {
                                     "banding": "breakpoints",
                                     "column": "age",
-                                    "outputColumn": "age_band",
+                                    "output_column": "age_band",
                                     "rules": [{"boundary": "99", "label": "all"}],
                                     "default": None,
                                 }
@@ -1051,8 +1051,8 @@ class TestEdgeCases:
                             "tables": [
                                 {
                                     "factors": ["age_band"],
-                                    "outputColumn": "factor",
-                                    "defaultValue": "1.0",
+                                    "output_column": "factor",
+                                    "default_value": "1.0",
                                     "entries": [{"age_band": "all", "value": 1.05}],
                                 }
                             ]
@@ -1094,7 +1094,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -1143,7 +1143,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -1176,7 +1176,7 @@ class TestEdgeCases:
                         label="load data",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -1212,7 +1212,7 @@ class TestEdgeCases:
                         label="csv_src",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "csv",
                             "mode": "scan",
                             "path": "data/input.csv",
@@ -1246,7 +1246,7 @@ class TestEdgeCases:
                         nodeType=NodeType.DATA_INPUT,
                         config={
                             "path": "data/input.parquet",
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "arguments": {},
@@ -1283,7 +1283,7 @@ class TestEdgeCases:
                         nodeType=NodeType.DATA_INPUT,
                         config={
                             "path": "data/input.csv",
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "csv",
                             "mode": "scan",
                             "arguments": {},
@@ -1342,7 +1342,7 @@ class TestEdgeCases:
         _assert_structural_equivalence(graph, parsed)
 
     def test_rating_step_with_default_value(self, tmp_path: Path) -> None:
-        """ratingStep with defaultValue round-trips through config file."""
+        """ratingStep with default_value round-trips through config file."""
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
@@ -1351,7 +1351,7 @@ class TestEdgeCases:
                         label="source",
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -1368,8 +1368,8 @@ class TestEdgeCases:
                             "tables": [
                                 {
                                     "factors": ["region"],
-                                    "outputColumn": "region_factor",
-                                    "defaultValue": "1.0",
+                                    "output_column": "region_factor",
+                                    "default_value": "1.0",
                                     "entries": [
                                         {"region": "north", "value": 1.1},
                                         {"region": "south", "value": 0.9},
@@ -1402,7 +1402,7 @@ class TestExcludedTypeRoundTrips:
                 label=nid,
                 nodeType=NodeType.DATA_INPUT,
                 config={
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -1423,7 +1423,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.EXTERNAL_FILE,
                         config={
                             "path": "models/lookup.pkl",
-                            "fileType": "pickle",
+                            "file_type": "pickle",
                         },
                     ),
                 ),
@@ -1446,7 +1446,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.EXTERNAL_FILE,
                         config={
                             "path": "data/factors.json",
-                            "fileType": "json",
+                            "file_type": "json",
                         },
                     ),
                 ),
@@ -1497,7 +1497,7 @@ class TestExcludedTypeRoundTrips:
                         label="scorer",
                         nodeType=NodeType.MODEL_SCORE,
                         config={
-                            "sourceType": "run",
+                            "source_type": "run",
                             "task": "regression",
                             "output_column": "prediction",
                             "run_id": "abc123",
@@ -1526,7 +1526,7 @@ class TestExcludedTypeRoundTrips:
                         label="scorer",
                         nodeType=NodeType.MODEL_SCORE,
                         config={
-                            "sourceType": "run",
+                            "source_type": "run",
                             "task": "regression",
                             "output_column": "prediction",
                             "run_id": "abc123",
@@ -1561,8 +1561,8 @@ class TestExcludedTypeRoundTrips:
                             "tables": [
                                 {
                                     "factors": ["region"],
-                                    "outputColumn": "region_factor",
-                                    "defaultValue": "1.0",
+                                    "output_column": "region_factor",
+                                    "default_value": "1.0",
                                     "entries": [{"region": "north", "value": 1.1}],
                                 }
                             ],
@@ -1592,7 +1592,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.EXTERNAL_FILE,
                         config={
                             "path": "models/lookup.pkl",
-                            "fileType": "pickle",
+                            "file_type": "pickle",
                             "code": "df = df.with_columns(lookup_loaded=pl.lit(obj is not None))",
                         },
                     ),
@@ -1690,7 +1690,7 @@ class TestExcludedTypeRoundTrips:
                         label="apply",
                         nodeType=NodeType.OPTIMISER_APPLY,
                         config={
-                            "sourceType": "file",
+                            "source_type": "file",
                             "artifact_path": "artifacts/opt.json",
                             "version_column": "__opt_v__",
                             "mlflow_destination": "server",
@@ -1718,7 +1718,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.SCENARIO_EXPANDER,
                         config={
                             "column_name": "discount",
-                            "stepCount": 5,
+                            "step_count": 5,
                         },
                     ),
                 ),
@@ -1741,7 +1741,7 @@ class TestExcludedTypeRoundTrips:
                         nodeType=NodeType.SCENARIO_EXPANDER,
                         config={
                             "column_name": "discount",
-                            "stepCount": 5,
+                            "step_count": 5,
                             "code": 'df = df.filter(pl.col("discount") >= 1.0)',
                         },
                     ),
@@ -1858,7 +1858,7 @@ def _constants_graph(*, with_submodel: bool) -> PipelineGraph:
                 "data": {
                     "label": "sm_alias",
                     "nodeType": "submodel",
-                    "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                    "config": {"definition_id": "definition_sm", "alias": "sm_alias"},
                 },
             }
         )

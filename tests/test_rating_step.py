@@ -34,7 +34,7 @@ def _rating_node(
 ) -> GraphNode:
     cfg: dict = {"tables": tables or []}
     if combined_outputs is not None:
-        cfg["combinedOutputs"] = combined_outputs
+        cfg["combined_outputs"] = combined_outputs
     if code:
         cfg["code"] = code
     return GraphNode(
@@ -58,13 +58,13 @@ class TestRatingStepP3:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "factor",
-                    "onMissing": "neutral",
+                    "output_column": "factor",
+                    "on_missing": "neutral",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
-            "combinedOutputs": [
-                {"outputColumn": "premium", "operation": operation, "baseValue": expected}
+            "combined_outputs": [
+                {"output_column": "premium", "operation": operation, "base_value": expected}
             ],
         }
         result = apply_rating_step_from_config(
@@ -79,12 +79,14 @@ class TestRatingStepP3:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "factor",
-                    "onMissing": "neutral",
+                    "output_column": "factor",
+                    "on_missing": "neutral",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
-            "combinedOutputs": [{"outputColumn": "premium", "operation": "min", "baseValue": 1.0}],
+            "combined_outputs": [
+                {"output_column": "premium", "operation": "min", "base_value": 1.0}
+            ],
         }
         result_lf = apply_rating_step_from_config(pl.DataFrame({"band": ["missing"]}), config)
         assert result_lf.collect()["premium"].to_list() == [1.0]
@@ -107,18 +109,18 @@ class TestRatingStepP3:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "first",
+                    "output_column": "first",
                     "entries": [{"band": "A", "value": 2.0}],
                 },
                 {
                     "factors": ["band"],
-                    "outputColumn": "second",
+                    "output_column": "second",
                     "entries": [{"band": "A", "value": 3.0}],
                 },
             ],
-            "combinedOutputs": [
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 10.0},
-                {"outputColumn": "total", "operation": "add", "baseValue": 1.0},
+            "combined_outputs": [
+                {"output_column": "premium", "operation": "multiply", "base_value": 10.0},
+                {"output_column": "total", "operation": "add", "base_value": 1.0},
             ],
         }
 
@@ -141,8 +143,8 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": ["age_band"],
-                "outputColumn": "age_factor",
-                "defaultValue": "1.0",
+                "output_column": "age_factor",
+                "default_value": "1.0",
                 "entries": [
                     {"age_band": "young", "value": 1.3},
                     {"age_band": "older", "value": 0.9},
@@ -158,14 +160,14 @@ class TestRatingStepExecutor:
     def test_two_way_lookup(self):
         """Two-factor table: join on two columns."""
         # PIN REVISION (3a.3): the older/Flat miss needs the explicit
-        # onMissing="neutral" opt-in; the default is fail-loud
+        # on_missing="neutral" opt-in; the default is fail-loud
         # (tests/test_rating_miss_fail_loud.py).
         tables = [
             {
                 "factors": ["age_band", "prop_band"],
-                "outputColumn": "factor",
-                "defaultValue": None,
-                "onMissing": "neutral",
+                "output_column": "factor",
+                "default_value": None,
+                "on_missing": "neutral",
                 "entries": [
                     {"age_band": "young", "prop_band": "House", "value": 1.2},
                     {"age_band": "young", "prop_band": "Flat", "value": 1.5},
@@ -189,8 +191,8 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": ["a", "b", "c"],
-                "outputColumn": "val",
-                "defaultValue": "0.0",
+                "output_column": "val",
+                "default_value": "0.0",
                 "entries": [
                     {"a": "x", "b": "y", "c": "z", "value": 2.5},
                 ],
@@ -213,14 +215,14 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
+                "output_column": "f1",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
+                "output_column": "f2",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 3.0}],
             },
         ]
@@ -244,8 +246,8 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": [],
-                "outputColumn": "out",
-                "defaultValue": None,
+                "output_column": "out",
+                "default_value": None,
                 "entries": [{"value": 1.0}],
             },
         ]
@@ -256,14 +258,14 @@ class TestRatingStepExecutor:
     @pytest.mark.parametrize(
         ("table", "setting", "shape_refuses"),
         [
-            ({"factors": "band", "outputColumn": "out", "entries": []}, "tables[0].factors", True),
+            ({"factors": "band", "output_column": "out", "entries": []}, "tables[0].factors", True),
             (
-                {"factors": ["band"], "outputColumn": "out", "entries": {}},
+                {"factors": ["band"], "output_column": "out", "entries": {}},
                 "tables[0].entries",
                 True,
             ),
             (
-                {"factors": [], "outputColumn": "out", "entries": [{"value": 1.0}]},
+                {"factors": [], "output_column": "out", "entries": [{"value": 1.0}]},
                 "tables[0].factors",
                 False,
             ),
@@ -303,16 +305,16 @@ class TestRatingStepExecutor:
         config = {
             "tables": [
                 # Incomplete: empty entries -> passthrough, no "phantom" column.
-                {"factors": ["b"], "outputColumn": "phantom", "entries": []},
+                {"factors": ["b"], "output_column": "phantom", "entries": []},
                 # Real table producing "factor".
                 {
                     "factors": ["b"],
-                    "outputColumn": "factor",
+                    "output_column": "factor",
                     "entries": [{"b": "A", "value": 2.0}],
                 },
             ],
-            "combinedOutputs": [
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            "combined_outputs": [
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         }
         out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
@@ -321,7 +323,7 @@ class TestRatingStepExecutor:
         assert out["premium"].to_list() == [200.0]
 
     def test_incomplete_table_skip_is_logged_not_silent(self):
-        """F082 fail-loud: an incomplete table configured with an outputColumn
+        """F082 fail-loud: an incomplete table configured with an output_column
         is a passthrough, so it is omitted from combined outputs — but the
         omission must be OBSERVABLE, not silent.  A WARNING names the table,
         its output column, and the reason; the real table that materialised is
@@ -333,16 +335,16 @@ class TestRatingStepExecutor:
         config = {
             "tables": [
                 # Incomplete: empty entries -> passthrough, no output column.
-                {"factors": ["b"], "outputColumn": "phantom", "entries": []},
+                {"factors": ["b"], "output_column": "phantom", "entries": []},
                 # Real table producing "factor".
                 {
                     "factors": ["b"],
-                    "outputColumn": "factor",
+                    "output_column": "factor",
                     "entries": [{"b": "A", "value": 2.0}],
                 },
             ],
-            "combinedOutputs": [
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            "combined_outputs": [
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         }
         with structlog.testing.capture_logs() as logs:
@@ -357,7 +359,7 @@ class TestRatingStepExecutor:
         assert "entries" in skips[0]["reason"]
 
     def test_disabled_table_without_output_column_is_not_warned(self):
-        """A table with no outputColumn is a deliberately disabled node, not an
+        """A table with no output_column is a deliberately disabled node, not an
         incomplete one — it must NOT emit the incomplete-skip warning."""
         import structlog
 
@@ -365,10 +367,10 @@ class TestRatingStepExecutor:
 
         config = {
             "tables": [
-                {"factors": ["b"], "outputColumn": "", "entries": []},
+                {"factors": ["b"], "output_column": "", "entries": []},
                 {
                     "factors": ["b"],
-                    "outputColumn": "factor",
+                    "output_column": "factor",
                     "entries": [{"b": "A", "value": 2.0}],
                 },
             ],
@@ -392,14 +394,14 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
+                "output_column": "f1",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
+                "output_column": "f2",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 3.0}],
             },
         ]
@@ -408,9 +410,9 @@ class TestRatingStepExecutor:
             tables,
             combined_outputs=[
                 {
-                    "outputColumn": col_name,
+                    "output_column": col_name,
                     "operation": operation,
-                    "baseValue": base_value,
+                    "base_value": base_value,
                 }
             ],
         )
@@ -420,18 +422,18 @@ class TestRatingStepExecutor:
         assert result[col_name].to_list() == expected
 
     def test_no_combined_outputs_skips_combine(self):
-        """Without combinedOutputs, no combination column is created."""
+        """Without combined_outputs, no combination column is created."""
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
+                "output_column": "f1",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
+                "output_column": "f2",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 3.0}],
             },
         ]
@@ -443,18 +445,18 @@ class TestRatingStepExecutor:
         assert result.columns == ["band", "f1", "f2"]
 
     def test_empty_combined_outputs_is_noop(self):
-        """Explicit combinedOutputs=[] creates no combined output."""
+        """Explicit combined_outputs=[] creates no combined output."""
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
+                "output_column": "f1",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
+                "output_column": "f2",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 3.0}],
             },
         ]
@@ -466,13 +468,13 @@ class TestRatingStepExecutor:
 
     def test_string_factor_values_match(self):
         """Factor values are cast to Utf8 so string bands match."""
-        # PIN REVISION (3a.3): the miss on band 2 needs onMissing="neutral".
+        # PIN REVISION (3a.3): the miss on band 2 needs on_missing="neutral".
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "out",
-                "defaultValue": None,
-                "onMissing": "neutral",
+                "output_column": "out",
+                "default_value": None,
+                "on_missing": "neutral",
                 "entries": [{"band": "1", "value": 9.9}],
             }
         ]
@@ -488,14 +490,14 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "f1",
-                "defaultValue": "1.0",
+                "output_column": "f1",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["band"],
-                "outputColumn": "f2",
-                "defaultValue": "1.0",
+                "output_column": "f2",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 3.0}],
             },
         ]
@@ -503,10 +505,10 @@ class TestRatingStepExecutor:
             "multi_outputs",
             tables,
             combined_outputs=[
-                {"outputColumn": "technical_premium", "operation": "multiply", "baseValue": 100},
-                {"outputColumn": "additive_score", "operation": "add", "baseValue": 10},
-                {"outputColumn": "minimum_factor", "operation": "min", "baseValue": 1.5},
-                {"outputColumn": "maximum_factor", "operation": "max", "baseValue": 1.5},
+                {"output_column": "technical_premium", "operation": "multiply", "base_value": 100},
+                {"output_column": "additive_score", "operation": "add", "base_value": 10},
+                {"output_column": "minimum_factor", "operation": "min", "base_value": 1.5},
+                {"output_column": "maximum_factor", "operation": "max", "base_value": 1.5},
             ],
         )
         _, fn, _ = _build_node_fn(node)
@@ -523,7 +525,7 @@ class TestRatingStepExecutor:
             "base_only_output",
             [],
             combined_outputs=[
-                {"outputColumn": "technical_premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "technical_premium", "operation": "multiply", "base_value": 100}
             ],
         )
         _, fn, _ = _build_node_fn(node)
@@ -536,8 +538,8 @@ class TestRatingStepExecutor:
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "factor",
-                "defaultValue": "1.0",
+                "output_column": "factor",
+                "default_value": "1.0",
                 "entries": [{"band": "A", "value": 2.0}],
             }
         ]
@@ -545,7 +547,7 @@ class TestRatingStepExecutor:
             "rating_code",
             tables,
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
             code="df = df.with_columns((pl.col('premium') + 5).alias('final_premium'))",
         )
@@ -562,15 +564,17 @@ class TestRatingStepExecutor:
             [
                 {
                     "factors": ["band"],
-                    "outputColumn": "factor",
+                    "output_column": "factor",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
-            combined_outputs=[{"outputColumn": "premium", "operation": "divide", "baseValue": 100}],
+            combined_outputs=[
+                {"output_column": "premium", "operation": "divide", "base_value": 100}
+            ],
         )
         with pytest.raises(
             NodeConfigError,
-            match=r"setting 'combinedOutputs\[0\]\.operation': "
+            match=r"setting 'combined_outputs\[0\]\.operation': "
             r"Input should be 'multiply', 'add', 'min' or 'max'",
         ):
             _build_node_fn(node)
@@ -580,10 +584,10 @@ class TestRatingStepExecutor:
         node = _rating_node(
             "missing_base",
             [],
-            combined_outputs=[{"outputColumn": "premium", "operation": "multiply"}],
+            combined_outputs=[{"output_column": "premium", "operation": "multiply"}],
         )
         with pytest.raises(
-            NodeConfigError, match=r"setting 'combinedOutputs\[0\]\.baseValue': Field required"
+            NodeConfigError, match=r"setting 'combined_outputs\[0\]\.base_value': Field required"
         ):
             _build_node_fn(node)
 
@@ -593,13 +597,13 @@ class TestRatingStepExecutor:
             "boolean_base",
             [],
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": True}
+                {"output_column": "premium", "operation": "multiply", "base_value": True}
             ],
         )
         with pytest.raises(
             NodeConfigError,
             match=(
-                r"setting 'combinedOutputs\[0\]\.baseValue': Input should be a valid string, "
+                r"setting 'combined_outputs\[0\]\.base_value': Input should be a valid string, "
                 r"a valid integer or a valid number"
             ),
         ):
@@ -611,7 +615,7 @@ class TestRatingStepExecutor:
             "malformed_combined_output",
             [],
             combined_outputs=[
-                {"outputColumn": "base", "operation": "multiply", "baseValue": 100},
+                {"output_column": "base", "operation": "multiply", "base_value": 100},
                 "premium",
             ],
         )
@@ -620,21 +624,21 @@ class TestRatingStepExecutor:
             _build_node_fn(node)
 
         assert caught.value.message == (
-            "Node 'malformed_combined_output' (ratingStep) setting 'combinedOutputs[1]': "
+            "Node 'malformed_combined_output' (ratingStep) setting 'combined_outputs[1]': "
             "Input should be a valid dictionary."
         )
-        assert caught.value.setting == "combinedOutputs[1]"
+        assert caught.value.setting == "combined_outputs[1]"
 
     @pytest.mark.parametrize(
         ("combined_output", "message"),
         [
             (
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": "abc"},
-                "ratingStep combinedOutputs[1].baseValue must be numeric",
+                {"output_column": "premium", "operation": "multiply", "base_value": "abc"},
+                "ratingStep combined_outputs[1].base_value must be numeric",
             ),
             (
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": "inf"},
-                "ratingStep combinedOutputs[1].baseValue must be finite",
+                {"output_column": "premium", "operation": "multiply", "base_value": "inf"},
+                "ratingStep combined_outputs[1].base_value must be finite",
             ),
         ],
         ids=["non-numeric-base", "non-finite-base"],
@@ -647,7 +651,7 @@ class TestRatingStepExecutor:
             "malformed_combined_output",
             [],
             combined_outputs=[
-                {"outputColumn": "base", "operation": "multiply", "baseValue": 100},
+                {"output_column": "base", "operation": "multiply", "base_value": 100},
                 combined_output,
             ],
         )
@@ -656,16 +660,16 @@ class TestRatingStepExecutor:
             _build_node_fn(node)
 
         assert str(caught.value) == message
-        assert caught.value.setting == "combinedOutputs"
+        assert caught.value.setting == "combined_outputs"
 
     def test_combined_outputs_blank_output_column_raises(self):
         """Configured combined outputs must have an explicit output column."""
         node = _rating_node(
             "blank_output_column",
             [],
-            combined_outputs=[{"outputColumn": " ", "operation": "multiply", "baseValue": 100}],
+            combined_outputs=[{"output_column": " ", "operation": "multiply", "base_value": 100}],
         )
-        with pytest.raises(ValueError, match="requires outputColumn"):
+        with pytest.raises(ValueError, match="requires output_column"):
             _build_node_fn(node)
 
     def test_combined_outputs_duplicate_output_column_raises(self):
@@ -675,12 +679,12 @@ class TestRatingStepExecutor:
             [
                 {
                     "factors": ["band"],
-                    "outputColumn": "premium",
+                    "output_column": "premium",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         )
         with pytest.raises(ValueError, match="duplicates another rating output column"):
@@ -704,8 +708,8 @@ class TestRatingStepParser:
                 "tables": [
                     {
                         "factors": ["age"],
-                        "outputColumn": "af",
-                        "defaultValue": 1.0,
+                        "output_column": "af",
+                        "default_value": 1.0,
                         # A sidecar writes the table as a grid (READ-26).
                         "rows": [["young", 1.5]],
                     }
@@ -730,8 +734,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         tables = n.data.config["tables"]
         assert len(tables) == 1
         assert tables[0]["factors"] == ["age"]
-        assert tables[0]["outputColumn"] == "af"
-        assert tables[0]["defaultValue"] == 1.0
+        assert tables[0]["output_column"] == "af"
+        assert tables[0]["default_value"] == 1.0
         # The node holds entries, read back from the grid.
         assert tables[0]["entries"] == [{"age": "young", "value": 1.5}]
 
@@ -765,8 +769,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
             "rating",
             {
                 "tables": [],
-                "combinedOutputs": [
-                    {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                "combined_outputs": [
+                    {"output_column": "premium", "operation": "multiply", "base_value": 100}
                 ],
             },
         )
@@ -784,8 +788,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
 '''
         parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         n = parsed.nodes[0]
-        assert n.data.config["combinedOutputs"] == [
-            {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+        assert n.data.config["combined_outputs"] == [
+            {"output_column": "premium", "operation": "multiply", "base_value": 100}
         ]
         assert "after_rating" in n.data.config["code"]
 
@@ -797,8 +801,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
             "rating",
             {
                 "tables": [],
-                "combinedOutputs": [
-                    {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                "combined_outputs": [
+                    {"output_column": "premium", "operation": "multiply", "base_value": 100}
                 ],
             },
         )
@@ -829,8 +833,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
             "rating",
             {
                 "tables": [],
-                "combinedOutputs": [
-                    {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                "combined_outputs": [
+                    {"output_column": "premium", "operation": "multiply", "base_value": 100}
                 ],
             },
         )
@@ -857,7 +861,7 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
     def test_parse_rating_code_that_reads_its_input_is_rejected(self, tmp_path):
         """Code must take the rated df; a body on the raw input would never run."""
         rating_config = write_node_config(
-            tmp_path, NodeType.RATING_STEP, "rating", {"tables": [], "combinedOutputs": []}
+            tmp_path, NodeType.RATING_STEP, "rating", {"tables": [], "combined_outputs": []}
         )
         code = f'''
 import polars as pl
@@ -885,8 +889,8 @@ class TestRatingStepCodegen:
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "factor",
-                "defaultValue": 1.0,
+                "output_column": "factor",
+                "default_value": 1.0,
                 "entries": [{"band": "A", "value": 2.0}],
             }
         ]
@@ -906,8 +910,8 @@ class TestRatingStepCodegen:
         tables = [
             {
                 "factors": ["age_band"],
-                "outputColumn": "age_factor",
-                "defaultValue": 1.0,
+                "output_column": "age_factor",
+                "default_value": 1.0,
                 "entries": [
                     {"age_band": "young", "value": 1.3},
                     {"age_band": "older", "value": 0.9},
@@ -934,31 +938,31 @@ class TestRatingStepCodegen:
         rt = rating_nodes[0].data.config["tables"]
         assert len(rt) == 1
         assert rt[0]["factors"] == ["age_band"]
-        assert rt[0]["outputColumn"] == "age_factor"
+        assert rt[0]["output_column"] == "age_factor"
         assert len(rt[0]["entries"]) == 2
 
     def test_codegen_preserves_canonical_combined_output(self, tmp_path):
-        """Codegen round-trips canonical combinedOutputs through its config file."""
+        """Codegen round-trips canonical combined_outputs through its config file."""
         from haute._config_io import collect_node_configs
 
         tables = [
             {
                 "factors": ["b"],
-                "outputColumn": "f1",
-                "defaultValue": 1.0,
+                "output_column": "f1",
+                "default_value": 1.0,
                 "entries": [{"b": "A", "value": 2.0}],
             },
             {
                 "factors": ["b"],
-                "outputColumn": "f2",
-                "defaultValue": 1.0,
+                "output_column": "f2",
+                "default_value": 1.0,
                 "entries": [{"b": "A", "value": 3.0}],
             },
         ]
         node = _rating_node(
             "rating",
             tables,
-            combined_outputs=[{"outputColumn": "total", "operation": "add", "baseValue": 0}],
+            combined_outputs=[{"output_column": "total", "operation": "add", "base_value": 0}],
         )
         src = _source_node("src")
         graph = PipelineGraph(
@@ -977,8 +981,8 @@ class TestRatingStepCodegen:
         # Roundtrip
         parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         rn = [n for n in parsed.nodes if n.data.nodeType == "ratingStep"][0]
-        assert rn.data.config["combinedOutputs"] == [
-            {"outputColumn": "total", "operation": "add", "baseValue": 0}
+        assert rn.data.config["combined_outputs"] == [
+            {"output_column": "total", "operation": "add", "base_value": 0}
         ]
 
     def test_codegen_multiply_combined_output_is_explicit(self, tmp_path):
@@ -990,14 +994,14 @@ class TestRatingStepCodegen:
         tables = [
             {
                 "factors": ["b"],
-                "outputColumn": "f1",
+                "output_column": "f1",
                 "entries": [{"b": "A", "value": 2.0}],
             },
         ]
         node = _rating_node(
             "rating",
             tables,
-            combined_outputs=[{"outputColumn": "c", "operation": "multiply", "baseValue": 1}],
+            combined_outputs=[{"output_column": "c", "operation": "multiply", "base_value": 1}],
         )
         src = _source_node("src")
         graph = PipelineGraph(
@@ -1011,8 +1015,8 @@ class TestRatingStepCodegen:
         # Verify config file contents
         configs = collect_node_configs(graph)
         rating_cfg = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_cfg["combinedOutputs"] == [
-            {"outputColumn": "c", "operation": "multiply", "baseValue": 1}
+        assert rating_cfg["combined_outputs"] == [
+            {"output_column": "c", "operation": "multiply", "base_value": 1}
         ]
 
     def test_codegen_preserves_combined_outputs_in_sidecar(self):
@@ -1022,9 +1026,9 @@ class TestRatingStepCodegen:
 
         node = _rating_node(
             "rating",
-            [{"factors": ["b"], "outputColumn": "f", "entries": []}],
+            [{"factors": ["b"], "output_column": "f", "entries": []}],
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         )
         src = _source_node("src")
@@ -1035,8 +1039,8 @@ class TestRatingStepCodegen:
 
         configs = collect_node_configs(graph)
         rating_cfg = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_cfg["combinedOutputs"] == [
-            {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+        assert rating_cfg["combined_outputs"] == [
+            {"output_column": "premium", "operation": "multiply", "base_value": 100}
         ]
 
     def test_codegen_rating_code_runs_after_combined_output(self, tmp_path):
@@ -1048,13 +1052,13 @@ class TestRatingStepCodegen:
             [
                 {
                     "factors": ["band"],
-                    "outputColumn": "factor",
-                    "defaultValue": "1.0",
+                    "output_column": "factor",
+                    "default_value": "1.0",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ],
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
             code="df = df.with_columns((pl.col('premium') + 5).alias('final_premium'))",
         )
@@ -1089,7 +1093,7 @@ class TestRatingStepCodegen:
             "rating",
             [],
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
             code=user_code,
         )
@@ -1119,13 +1123,13 @@ class TestRatingStepCodegen:
             [
                 {
                     "factors": ["age_band"],
-                    "outputColumn": "age_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "age_factor",
+                    "default_value": "1.0",
                     "entries": [{"age_band": "young", "value": 2.0}],
                 },
             ],
             combined_outputs=[
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+                {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
             code="df = df.with_columns((pl.col('premium') + 5).alias('final_premium'))",
         )
@@ -1151,7 +1155,7 @@ class TestRatingStepCanonicalSidecarIntegration:
             [
                 {
                     "factors": ["vehicle_age_band", "cover_type"],
-                    "outputColumn": "vehicle_factor",
+                    "output_column": "vehicle_factor",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -1213,7 +1217,7 @@ class TestRatingStepCanonicalSidecarIntegration:
             [
                 {
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
-                    "outputColumn": "vehicle_factor",
+                    "output_column": "vehicle_factor",
                     "entries": expected_entries,
                 }
             ],

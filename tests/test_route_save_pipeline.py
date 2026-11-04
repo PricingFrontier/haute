@@ -80,7 +80,7 @@ def _file_input_config(path: str) -> dict:
         ".ipc": ("ipc", "scan"),
     }[Path(path).suffix.lower()]
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name,
         "mode": mode,
         "path": path,
@@ -201,9 +201,9 @@ class TestValidateSingletons:
                 "pricing_copy",
                 "submodel",
                 {
-                    "definitionId": "pricing",
+                    "definition_id": "pricing",
                     "alias": "pricing_copy",
-                    "instanceOf": owner_id,
+                    "instance_of": owner_id,
                 },
             )
         )
@@ -236,12 +236,12 @@ class TestValidateSingletons:
         """A Source Switch uses submodel reuse; the removed node form is refused."""
         graph = _make_graph(
             _make_node("ls1", "Switch 1", "liveSwitch", {"input_scenario_map": {"a": "live"}}),
-            _make_node("ls2", "Switch 2", "liveSwitch", {"instanceOf": "ls1"}),
+            _make_node("ls2", "Switch 2", "liveSwitch", {"instance_of": "ls1"}),
         )
         with pytest.raises(RequestRefusedError) as exc_info:
             SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
         assert exc_info.value.status_code == 400
-        assert "instanceOf" in (exc_info.value.detail)
+        assert "instance_of" in (exc_info.value.detail)
 
     def test_no_singletons_passes(self) -> None:
         """A graph with only transform nodes passes validation."""
@@ -380,7 +380,7 @@ def _make_submodel_graph(
                 sm_name,
                 sm_name,
                 "submodel",
-                {"definitionId": sm_name, "alias": sm_name},
+                {"definition_id": sm_name, "alias": sm_name},
             )
         )
     return PipelineGraph(
@@ -427,7 +427,7 @@ class TestValidateBandingRulesTheWriterRefuses:
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [{"boundary": "40", "label": ""}, {"boundary": "", "label": "old"}],
                 },
                 "breakpoint rule '40' requires label (rules[0])",
@@ -437,7 +437,7 @@ class TestValidateBandingRulesTheWriterRefuses:
                 {
                     "banding": "categorical",
                     "column": "region",
-                    "outputColumn": "region_group",
+                    "output_column": "region_group",
                     "rules": [
                         {"value": "North", "assignment": "N"},
                         {"value": "", "assignment": ""},
@@ -450,7 +450,7 @@ class TestValidateBandingRulesTheWriterRefuses:
                 {
                     "banding": "categorical",
                     "column": "region",
-                    "outputColumn": "region_group",
+                    "output_column": "region_group",
                     "rules": [
                         {"value": "North", "assignment": "N"},
                         {"value": "South", "assignment": ""},
@@ -463,7 +463,7 @@ class TestValidateBandingRulesTheWriterRefuses:
                 {
                     "banding": "categorical",
                     "column": "region",
-                    "outputColumn": "region_group",
+                    "output_column": "region_group",
                     "rules": [
                         {"value": "North", "assignment": "N"},
                         {"value": "North", "assignment": "S"},
@@ -476,7 +476,7 @@ class TestValidateBandingRulesTheWriterRefuses:
                 {
                     "banding": "breakpoints",
                     "column": "",
-                    "outputColumn": "",
+                    "output_column": "",
                     "rules": [{"boundary": "", "label": ""}],
                 },
                 "breakpoint rule '' requires label (rules[0])",
@@ -522,15 +522,15 @@ class TestValidateScenarioExpanderGridSize:
         "step_column": "scenario_index",
         "min_value": 0.1,
         "max_value": 0.3,
-        "stepCount": 3,
+        "step_count": 3,
         "steps": [],
     }
 
     @pytest.mark.parametrize(
         ("step_count", "message"),
         [
-            (None, "requires stepCount"),
-            (0, "stepCount >= 1"),
+            (None, "requires step_count"),
+            (0, "step_count >= 1"),
             (2.5, "Input should be a valid integer"),
         ],
     )
@@ -560,16 +560,16 @@ class TestValidateScenarioExpanderGridSize:
         save(self._VALID)
         before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
         assert tmp_path / "config/expander/price_grid.json" in before
-        invalid = {key: value for key, value in self._VALID.items() if key != "stepCount"}
+        invalid = {key: value for key, value in self._VALID.items() if key != "step_count"}
         if step_count is not None:
-            invalid["stepCount"] = step_count
+            invalid["step_count"] = step_count
 
         with pytest.raises(RequestRefusedError) as exc_info:
             save(invalid)
 
         assert exc_info.value.status_code == 400
         assert "price_grid" in exc_info.value.detail
-        assert "stepCount" in exc_info.value.detail
+        assert "step_count" in exc_info.value.detail
         assert message in exc_info.value.detail
         after = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
         assert after == before
@@ -926,7 +926,7 @@ class TestSaveSimpleGraph:
             "source",
             "dataInput",
             {
-                "inputType": "inline",
+                "input_type": "inline",
                 "format": "records",
                 "mode": "read",
                 "records": [{"_id": 1, "_category": "low", "unused": 9}],
@@ -942,14 +942,14 @@ class TestSaveSimpleGraph:
         nodes = [source, _make_node("result", "result", node_type, config)]
         edges = [GraphEdge(id="input", source="source", target="result")]
         if node_type == "edgeJoin":
-            config.update({"how": "left", "maintainOrder": "left_right", "on": ["_id"]})
+            config.update({"how": "left", "maintain_order": "left_right", "on": ["_id"]})
             nodes.append(
                 _make_node(
                     "lookup",
                     "lookup",
                     "dataInput",
                     {
-                        "inputType": "inline",
+                        "input_type": "inline",
                         "format": "records",
                         "mode": "read",
                         "records": [{"_id": 1}],
@@ -1135,7 +1135,7 @@ class TestWriteCodeMultiFile:
             "sub",
             "scoring",
             "submodel",
-            {"definitionId": "scoring", "alias": "scoring"},
+            {"definition_id": "scoring", "alias": "scoring"},
         )
         graph = _make_graph(main_node)
         # Set up submodels dict so the multi-file path is taken
@@ -1737,7 +1737,7 @@ class TestSaveEndpointIntegration:
                         "label": "scoring",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": "definition_scoring",
+                            "definition_id": "definition_scoring",
                             "alias": "scoring",
                         },
                     },

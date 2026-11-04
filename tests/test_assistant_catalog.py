@@ -192,7 +192,7 @@ class TestResolvedDescriptors:
         data_input = by_id[NodeType.DATA_INPUT.value].config_schema
         assert len(data_input["oneOf"]) == 5
         assert any(
-            branch["properties"]["inputType"].get("const") == "databricks"
+            branch["properties"]["input_type"].get("const") == "databricks"
             for branch in data_input["oneOf"]
         )
 
@@ -508,9 +508,9 @@ class TestResolvedDescriptors:
 
 
 def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:
-    # A stepped Transform rejects inputMapping, so the descriptor must not teach it.
+    # A stepped Transform rejects input_mapping, so the descriptor must not teach it.
     usage = _descriptors()["polars"].usage
-    assert "inputMapping" not in usage
+    assert "input_mapping" not in usage
     assert "upstream node" in usage
 
 
@@ -719,7 +719,7 @@ class TestPaletteFacts:
         for node_type in NodeType:
             descriptor = _descriptors()[node_type.value].as_dict()
             assert descriptor["defaults"] == palette_default_config(node_type)
-        assert _descriptors()["scenarioExpander"].as_dict()["defaults"]["stepCount"] == 21
+        assert _descriptors()["scenarioExpander"].as_dict()["defaults"]["step_count"] == 21
 
     def test_the_node_index_names_each_type_with_its_palette_name_and_purpose(self) -> None:
         from haute.assistant._loop import build_system_prompt
@@ -739,14 +739,14 @@ class TestIoBranches:
         data_input = _descriptors()["dataInput"]
         data_output = _descriptors()["dataOutput"]
 
-        assert data_input.as_dict()["enum_values"]["inputType"] == [
+        assert data_input.as_dict()["enum_values"]["input_type"] == [
             "file",
             "database",
             "lakehouse",
             "databricks",
             "inline",
         ]
-        assert data_input.config_schema["properties"]["inputType"]["enum"] == (
+        assert data_input.config_schema["properties"]["input_type"]["enum"] == (
             "file",
             "database",
             "lakehouse",
@@ -755,14 +755,14 @@ class TestIoBranches:
         )
         # The file branch accepts any installed format, so format is not closed.
         assert "format" not in data_input.enum_values
-        assert data_output.as_dict()["enum_values"]["outputType"] == [
+        assert data_output.as_dict()["enum_values"]["output_type"] == [
             "file",
             "database",
             "lakehouse",
             "databricks",
         ]
-        assert data_input.required_fields == ("inputType",)
-        assert data_output.required_fields == ("outputType",)
+        assert data_input.required_fields == ("input_type",)
+        assert data_output.required_fields == ("output_type",)
 
 
 class TestUsageNotes:
@@ -770,7 +770,7 @@ class TestUsageNotes:
         nodes = _descriptors()
 
         expander = nodes["scenarioExpander"].usage
-        assert "stepCount" in expander
+        assert "step_count" in expander
         assert "source column" not in expander
         for field in ("column_name", "min_value", "max_value", "step_column"):
             assert field in expander

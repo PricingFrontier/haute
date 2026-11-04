@@ -18,7 +18,7 @@ from haute._types import NodeType
 from tests._project import use_project
 
 BROKEN_INPUT = {
-    "inputType": "file",
+    "input_type": "file",
     "format": "parquet",
     "mode": "scan",
     "path": "",
@@ -286,7 +286,7 @@ def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings
     factor = {
         "banding": "breakpoints",
         "column": "age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [{"boundary": "25", "label": "young"}],
         "default": None,
     }
@@ -298,7 +298,7 @@ def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings
     assert band.scoped_editable is True
     assert (band.config or {})["contract"] == {"inputs": ["age"], "outputs": ["age_band"]}
 
-    renamed = {**(band.config or {}), "factors": [{**factor, "outputColumn": "age_group"}]}
+    renamed = {**(band.config or {}), "factors": [{**factor, "output_column": "age_group"}]}
     saved = apply_scoped_node_save(
         project_root=tmp_path, request=_save_request(tmp_path, "band", renamed)
     )
@@ -331,7 +331,7 @@ def test_scoped_save_that_adds_code_imports_polars_for_the_hook(tmp_path):
         newline="\n",
     )
     (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
-    (tmp_path / "rate.json").write_text(json.dumps({"tables": [], "combinedOutputs": []}))
+    (tmp_path / "rate.json").write_text(json.dumps({"tables": [], "combined_outputs": []}))
     document = load_pipeline_editor_document(main, project_root=tmp_path)
     rate = next(node for node in document.nodes if node.authored_id == "rate")
     assert rate.scoped_editable is True
@@ -421,8 +421,8 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
     target = next(node for node in document.nodes if node.authored_id == "source_b")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for config in (
-        {**target.config, "inputType": ["file"]},
-        {**target.config, "inputType": {"kind": "file"}},
+        {**target.config, "input_type": ["file"]},
+        {**target.config, "input_type": {"kind": "file"}},
     ):
         response = client.post(
             "/api/pipeline/node/save",
@@ -437,7 +437,7 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "repair_action_unsupported"
         message = response.json()["detail"]["message"]
-        assert "setting 'inputType'" in message
+        assert "setting 'input_type'" in message
         assert "does not match any of the expected tags" in message
     assert {p: p.read_bytes() for p in before} == before
 
@@ -470,7 +470,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
                         "step_column": "scenario_index",
                         "min_value": 0.1,
                         "max_value": 0.3,
-                        "stepCount": 3,
+                        "step_count": 3,
                         "steps": [],
                     },
                 ),
@@ -494,7 +494,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
     target = next(node for node in document.nodes if node.authored_id == "grid")
     assert target.scoped_editable is True
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    config = {key: value for key, value in (target.config or {}).items() if key != "stepCount"}
+    config = {key: value for key, value in (target.config or {}).items() if key != "step_count"}
 
     response = client.post(
         "/api/pipeline/node/save",
@@ -511,7 +511,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
     detail = response.json()["detail"]
     assert detail["code"] == "repair_action_unsupported"
     assert "not loadable" in detail["message"]
-    assert "requires stepCount" in detail["message"]
+    assert "requires step_count" in detail["message"]
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
@@ -589,7 +589,7 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
         pytest.param(
             NodeType.OUTPUT,
             {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "in",
                         "source_column": "id",

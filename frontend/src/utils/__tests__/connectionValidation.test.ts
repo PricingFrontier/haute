@@ -64,9 +64,9 @@ const occurrence = (copy = false) => {
       description: "",
       nodeType: NODE_TYPES.SUBMODEL,
       config: {
-        definitionId: "definition_pricing",
+        definition_id: "definition_pricing",
         alias,
-        ...(copy ? { instanceOf: "pricing" } : {}),
+        ...(copy ? { instance_of: "pricing" } : {}),
       },
     },
   }

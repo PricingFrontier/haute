@@ -52,7 +52,7 @@
                     "name": "nb_batch",
                     "ref": "source",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/nb_batch.parquet",

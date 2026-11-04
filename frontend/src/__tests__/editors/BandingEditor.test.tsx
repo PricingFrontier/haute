@@ -109,8 +109,8 @@ describe("BandingEditor", () => {
   it("lists each factor by its output column", () => {
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [] },
+        { banding: "categorical", column: "region", output_column: "region_group", rules: [] },
       ],
     }
     renderEditor(
@@ -123,7 +123,7 @@ describe("BandingEditor", () => {
   it("names a factor by its input column while its output column is empty", () => {
     const config = {
       factors: [
-        { banding: "breakpoints", column: "driver_age", outputColumn: "", rules: [] },
+        { banding: "breakpoints", column: "driver_age", output_column: "", rules: [] },
       ],
     }
     renderEditor(
@@ -143,7 +143,7 @@ describe("BandingEditor", () => {
   it("adding a factor appends one and selects it", () => {
     const onUpdate = vi.fn()
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -152,7 +152,7 @@ describe("BandingEditor", () => {
 
     const factors = onUpdate.mock.calls[0][1]
     expect(factors).toHaveLength(2)
-    expect(factors[1]).toMatchObject({ column: "", outputColumn: "" })
+    expect(factors[1]).toMatchObject({ column: "", output_column: "" })
     rerender(
       <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
         <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
@@ -164,7 +164,7 @@ describe("BandingEditor", () => {
   it("adds a new factor as Numeric, whatever type the others are", () => {
     const onUpdate = vi.fn()
     const config = {
-      factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules: [] }],
+      factors: [{ banding: "categorical", column: "region", output_column: "region_group", rules: [] }],
     }
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -172,7 +172,7 @@ describe("BandingEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add column" }))
 
     const factors = onUpdate.mock.calls[0][1]
-    expect(factors[1]).toEqual({ banding: "breakpoints", column: "", outputColumn: "", rules: [], default: null })
+    expect(factors[1]).toEqual({ banding: "breakpoints", column: "", output_column: "", rules: [], default: null })
     rerender(
       <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
         <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
@@ -186,8 +186,8 @@ describe("BandingEditor", () => {
     const onUpdate = vi.fn()
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [] },
+        { banding: "categorical", column: "region", output_column: "region_group", rules: [] },
       ],
     }
     renderEditor(
@@ -197,14 +197,14 @@ describe("BandingEditor", () => {
     fireEvent.click(within(columnList()).getByRole("button", { name: "Remove age_band column" }))
 
     expect(onUpdate).toHaveBeenCalledWith("factors", [
-      expect.objectContaining({ column: "region", outputColumn: "region_group" }),
+      expect.objectContaining({ column: "region", output_column: "region_group" }),
     ])
   })
 
   it("cannot remove last factor (single factor)", () => {
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [] },
       ],
     }
     renderEditor(
@@ -216,7 +216,7 @@ describe("BandingEditor", () => {
   it("type toggle from Numeric to Categorical calls updateFactor", () => {
     const onUpdate = vi.fn()
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -266,7 +266,7 @@ describe("BandingEditor", () => {
       { name: "region", dtype: "Utf8" },
     ]
     const config = {
-      factors: [{ banding: "categorical", column: "", outputColumn: "", rules: [] }],
+      factors: [{ banding: "categorical", column: "", output_column: "", rules: [] }],
     }
     renderEditor(
       <BandingEditor
@@ -297,7 +297,7 @@ describe("BandingEditor", () => {
       { name: "region", dtype: "Utf8" },
     ]
     const config = {
-      factors: [{ banding: "breakpoints", column: "", outputColumn: "", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "", output_column: "", rules: [] }],
     }
     renderEditor(
       <BandingEditor
@@ -324,7 +324,7 @@ describe("BandingEditor", () => {
     const onUpdate = vi.fn()
     const existing = { value: "London", assignment: "South" }
     const config = {
-      factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules: [existing] }],
+      factors: [{ banding: "categorical", column: "region", output_column: "region_group", rules: [existing] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -341,7 +341,7 @@ describe("BandingEditor", () => {
   it("offers a categorical factor without rules Import from params or Add manually, which adds an empty rule", () => {
     const onUpdate = vi.fn()
     const config = {
-      factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules: [] }],
+      factors: [{ banding: "categorical", column: "region", output_column: "region_group", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -362,8 +362,8 @@ describe("BandingEditor", () => {
   it("does not list every factor in a summary below the default when 2+ factors", () => {
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [{ boundary: "25", label: "young" }] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [{ value: "London", assignment: "South" }] },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [{ boundary: "25", label: "young" }] },
+        { banding: "categorical", column: "region", output_column: "region_group", rules: [{ value: "London", assignment: "South" }] },
       ],
     }
     renderEditor(
@@ -409,7 +409,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [{ value: "London", assignment: "South" }],
       }],
     }
@@ -422,8 +422,8 @@ describe("BandingEditor", () => {
   it("clicking a factor row switches the active factor", () => {
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [] },
+        { banding: "categorical", column: "region", output_column: "region_group", rules: [] },
       ],
     }
     renderEditor(
@@ -437,13 +437,13 @@ describe("BandingEditor", () => {
 
   describe("factor list", () => {
     const factor = (column: string, outputColumn: string) => ({
-      banding: "categorical", column, outputColumn, rules: [{ value: "a", assignment: "A" }],
+      banding: "categorical", column, output_column: outputColumn, rules: [{ value: "a", assignment: "A" }],
     })
     const THREE = {
       factors: [factor("age", "first"), factor("region", "second"), factor("policy_cover_type", "cover_band")],
     }
     const outputs = (onUpdate: ReturnType<typeof vi.fn>) =>
-      (onUpdate.mock.lastCall![1] as { outputColumn: string }[]).map((f) => f.outputColumn)
+      (onUpdate.mock.lastCall![1] as { output_column: string }[]).map((f) => f.output_column)
 
     it("searches by output or input column name, selecting what stays in view", () => {
       renderEditor(<BandingEditor config={THREE} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
@@ -551,7 +551,7 @@ describe("BandingEditor", () => {
 
   it("does not show detected type hint label", () => {
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor
@@ -570,7 +570,7 @@ describe("BandingEditor", () => {
 
   it("Numeric option appears in type toggle when factor is configured", () => {
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -582,7 +582,7 @@ describe("BandingEditor", () => {
   it("greys out Numeric for a text column and says why", () => {
     const config = {
       factors: [
-        { banding: "categorical", column: "policy_cover_type", outputColumn: "cover_band", rules: [] },
+        { banding: "categorical", column: "policy_cover_type", output_column: "cover_band", rules: [] },
       ],
     }
     const onUpdate = vi.fn()
@@ -611,7 +611,7 @@ describe("BandingEditor", () => {
     ["a column whose dtype is unknown", undefined],
   ])("keeps Numeric available for %s", (_case, upstreamColumns) => {
     const config = {
-      factors: [{ banding: "categorical", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "categorical", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor
@@ -629,7 +629,7 @@ describe("BandingEditor", () => {
     const onUpdate = vi.fn()
     const columns = [{ name: "age", dtype: "int64" }]
     const config = {
-      factors: [{ banding: "categorical", column: "", outputColumn: "", rules: [] }],
+      factors: [{ banding: "categorical", column: "", output_column: "", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
@@ -651,7 +651,7 @@ describe("BandingEditor", () => {
     const onUpdate = vi.fn()
     const existingRules = [{ boundary: "20", label: "band1" }, { boundary: "", label: "band2" }]
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: existingRules }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: existingRules }],
     }
     const { unmount } = renderEditor(
       <BandingEditor nodeId="band_1" config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -684,7 +684,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "age",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [{ boundary: "25", label: "young" }, { boundary: "65", label: "mid" }],
       }],
     }
@@ -700,7 +700,7 @@ describe("BandingEditor", () => {
     const onUpdate = vi.fn()
     const columns = [{ name: "driver_age", dtype: "int64" }]
     const config = {
-      factors: [{ banding: "categorical", column: "", outputColumn: "", rules: [] }],
+      factors: [{ banding: "categorical", column: "", output_column: "", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
@@ -712,7 +712,7 @@ describe("BandingEditor", () => {
     })!
     fireEvent.change(colSelect, { target: { value: "driver_age" } })
     expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
-      expect.objectContaining({ outputColumn: "driver_age_band" }),
+      expect.objectContaining({ output_column: "driver_age_band" }),
     ]))
   })
 
@@ -722,8 +722,8 @@ describe("BandingEditor", () => {
     const rules = [{ boundary: "10", label: "young" }]
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules },
-        { banding: "breakpoints", column: "bonus", outputColumn: "bonus_band", rules },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules },
+        { banding: "breakpoints", column: "bonus", output_column: "bonus_band", rules },
       ],
     }
     renderEditor(
@@ -745,8 +745,8 @@ describe("BandingEditor", () => {
   it("roves focus through the factor rows with Up/Down, selecting as it goes", () => {
     const config = {
       factors: [
-        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
+        { banding: "breakpoints", column: "age", output_column: "age_band", rules: [] },
+        { banding: "categorical", column: "region", output_column: "region_group", rules: [] },
       ],
     }
     const onUpdate = vi.fn()
@@ -767,7 +767,7 @@ describe("BandingEditor", () => {
     ["categorical", {
       banding: "categorical",
       column: "region",
-      outputColumn: "region_group",
+      output_column: "region_group",
       rules: [
         { value: "London", assignment: "South" },
         { value: "Manchester", assignment: "North" },
@@ -776,7 +776,7 @@ describe("BandingEditor", () => {
     ["breakpoints", {
       banding: "breakpoints",
       column: "age",
-      outputColumn: "age_band",
+      output_column: "age_band",
       rules: [
         { boundary: "30", label: "young" },
         { boundary: "", label: "older" },
@@ -808,7 +808,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [
           { value: "London", assignment: "South" },
           { value: "Leeds", assignment: "North" },
@@ -830,7 +830,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "age",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [],
       }],
     }
@@ -847,7 +847,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "age",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [],
       }],
     }
@@ -867,7 +867,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "age",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [{ boundary: "25", label: "young" }],
       }],
     }
@@ -890,7 +890,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "premium",
-        outputColumn: "premium_band",
+        output_column: "premium_band",
         rules: [
           { boundary: "5200", label: "4000–5200" },
           { boundary: "6400", label: "5201–6400" },
@@ -916,7 +916,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [],
       }],
     }
@@ -939,7 +939,7 @@ describe("BandingEditor", () => {
     { dtype: "Boolean", rows: [{ band: true }, { band: false }], values: ["false", "true"] },
     { dtype: "Categorical", rows: [{ band: "B" }, { band: "A" }], values: ["A", "B"] },
   ])("offers a $dtype column's preview values as the text execution matches on", ({ dtype, rows, values }) => {
-    const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+    const config = { factors: [{ banding: "categorical", column: "band", output_column: "g", rules: [] }] }
     renderEditor(
       <BandingEditor
         config={config}
@@ -960,7 +960,7 @@ describe("BandingEditor", () => {
     (dtype) => {
       // A Float64 1.0 arrives in the preview as the number 1, while execution matches
       // the text Polars casts it to, "1.0": a chip written from the preview never matches.
-      const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+      const config = { factors: [{ banding: "categorical", column: "band", output_column: "g", rules: [] }] }
       renderEditor(
         <BandingEditor
           config={config}
@@ -976,7 +976,7 @@ describe("BandingEditor", () => {
   )
 
   it("offers only the text values of a column whose type is not known", () => {
-    const config = { factors: [{ banding: "categorical", column: "band", outputColumn: "g", rules: [] }] }
+    const config = { factors: [{ banding: "categorical", column: "band", output_column: "g", rules: [] }] }
     renderEditor(
       <BandingEditor
         config={config}
@@ -1004,7 +1004,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [existing],
       }],
     }
@@ -1025,7 +1025,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "age",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [],
       }],
     }
@@ -1049,7 +1049,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "breakpoints",
         column: "age",
-        outputColumn: "age_band",
+        output_column: "age_band",
         rules: [],
         default: "fallback",
       }],
@@ -1072,7 +1072,7 @@ describe("BandingEditor", () => {
 
   it("Input Column label is linked to its input via htmlFor", () => {
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -1083,7 +1083,7 @@ describe("BandingEditor", () => {
 
   it("Output Column label is linked to its input via htmlFor", () => {
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -1094,7 +1094,7 @@ describe("BandingEditor", () => {
 
   it("Add column button has aria-label", () => {
     const config = {
-      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -1121,7 +1121,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [],
       }],
     }
@@ -1138,7 +1138,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [{ value: "London", assignment: "South" }],
       }],
     }
@@ -1156,7 +1156,7 @@ describe("BandingEditor", () => {
       factors: [{
         banding: "categorical",
         column: "region",
-        outputColumn: "region_group",
+        output_column: "region_group",
         rules: [{ value: "London", assignment: "South" }],
       }],
     }
@@ -1175,7 +1175,7 @@ describe("BandingEditor on a date column", () => {
     { boundary: "", label: "Later" },
   ]
   const dateFactor = (column: string, rules: { boundary: string; label: string }[]) => ({
-    factors: [{ banding: "breakpoints", column, outputColumn: `${column}_band`, rules, rightClosed: true }],
+    factors: [{ banding: "breakpoints", column, output_column: `${column}_band`, rules, right_closed: true }],
   })
 
   it.each([
@@ -1188,7 +1188,7 @@ describe("BandingEditor on a date column", () => {
       { name: column, dtype },
     ]
     const config = {
-      factors: [{ banding: "categorical", column: "region", outputColumn: "region_band", rules: [] }],
+      factors: [{ banding: "categorical", column: "region", output_column: "region_band", rules: [] }],
     }
     const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
@@ -1277,7 +1277,7 @@ describe("BandingEditor saved input column", () => {
   it("marks a saved input column the upstream columns lack", () => {
     renderEditor(
       <BandingEditor
-        config={{ factors: [{ banding: "breakpoints", column: "old_age", outputColumn: "age_band", rules: [] }] }}
+        config={{ factors: [{ banding: "breakpoints", column: "old_age", output_column: "age_band", rules: [] }] }}
         onUpdate={vi.fn()}
         inputSources={[]}
         upstreamColumns={[{ name: "age", dtype: "Float64" }]}
@@ -1313,7 +1313,7 @@ describe("BandingEditor Import from params", () => {
   })
 
   const categorical = (rules: { value: string; assignment: string }[]) => ({
-    factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules }],
+    factors: [{ banding: "categorical", column: "region", output_column: "region_group", rules }],
   })
 
   /** Opens Import, chooses `file` once the folder is listed, then `column` once its header is read. */

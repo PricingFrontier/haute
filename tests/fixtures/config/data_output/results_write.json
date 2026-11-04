@@ -1,5 +1,5 @@
 {
-  "outputType": "file",
+  "output_type": "file",
   "format": "parquet",
   "mode": "sink",
   "path": "output/results.parquet",

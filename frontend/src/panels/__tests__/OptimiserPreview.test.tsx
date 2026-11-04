@@ -461,7 +461,7 @@ describe("OptimiserPreview", () => {
                   {
                     banding: "breakpoints",
                     column: "proposer_age",
-                    outputColumn: "proposer_age_band",
+                    output_column: "proposer_age_band",
                     rules: [
                       { boundary: "27", label: "20-27" },
                       { boundary: "34", label: "28-34" },
@@ -471,7 +471,7 @@ describe("OptimiserPreview", () => {
                   {
                     banding: "breakpoints",
                     column: "vehicle_age",
-                    outputColumn: "vehicle_age_band",
+                    output_column: "vehicle_age_band",
                     rules: [
                       { boundary: "3", label: "1-3" },
                       { boundary: "5", label: "4-5" },
@@ -482,7 +482,7 @@ describe("OptimiserPreview", () => {
                   {
                     banding: "categorical",
                     column: "channel",
-                    outputColumn: "channel_band",
+                    output_column: "channel_band",
                     rules: [
                       { value: "direct_web", assignment: "direct_web" },
                       { value: "broker", assignment: "broker" },

@@ -102,7 +102,7 @@ def submodel_graph() -> PipelineGraph:
                     "data": {
                         "label": "scoring",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "definition_scoring", "alias": "scoring"},
+                        "config": {"definition_id": "definition_scoring", "alias": "scoring"},
                     },
                 },
             ],

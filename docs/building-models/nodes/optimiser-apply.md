@@ -88,13 +88,13 @@ The node loads the latest version of `motor_pricing_optimiser` from the registry
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **ARTIFACT SOURCE** | `sourceType`: `"file"`, `"registered"` or `"run"` |
-    | **ARTIFACT PATH** | `artifact_path`: required when `sourceType` is `"file"` |
+    | **ARTIFACT SOURCE** | `source_type`: `"file"`, `"registered"` or `"run"` |
+    | **ARTIFACT PATH** | `artifact_path`: required when `source_type` is `"file"` |
     | MLflow destination | `mlflow_destination`: `"databricks"` or `"server"`; absent for the local folder |
-    | **MODEL NAME** | `registered_model`: required when `sourceType` is `"registered"` |
-    | **VERSION** | `version` (a version or `"latest"`), or `alias` for an alias such as `"champion"`; one of the two when `sourceType` is `"registered"` |
-    | **EXPERIMENT** | `experiment_id` (and `experiment_name`, the name the panel shows); required when `sourceType` is `"run"` |
-    | **RUN**, **RUN ID** | `run_id` (and `run_name`, the name the panel shows); required when `sourceType` is `"run"` |
+    | **MODEL NAME** | `registered_model`: required when `source_type` is `"registered"` |
+    | **VERSION** | `version` (a version or `"latest"`), or `alias` for an alias such as `"champion"`; one of the two when `source_type` is `"registered"` |
+    | **EXPERIMENT** | `experiment_id` (and `experiment_name`, the name the panel shows); required when `source_type` is `"run"` |
+    | **RUN**, **RUN ID** | `run_id` (and `run_name`, the name the panel shows); required when `source_type` is `"run"` |
     | **RATEBOOK INPUT** | `ratebook_input`: the exact input name of the connected edge. **Required** for ratebook results, even with one connected input; ignored for online results. |
     | **VERSION COLUMN** | `version_column` (defaults to `"__optimiser_version__"`) |
     | **OPTIMISED VALUE COLUMN** | `optimised_value_column` |
@@ -106,7 +106,7 @@ The node loads the latest version of `motor_pricing_optimiser` from the registry
 
     ```json
     {
-      "sourceType": "registered",
+      "source_type": "registered",
       "registered_model": "motor_pricing_optimiser",
       "version": "latest"
     }
@@ -118,7 +118,7 @@ The node loads the latest version of `motor_pricing_optimiser` from the registry
 
     | Key | Type | Description |
     |---|---|---|
-    | `sourceType` | `""` or `"file"` or `"run"` or `"registered"` | Where the optimiser result comes from; empty or absent when none is chosen yet. |
+    | `source_type` | `""` or `"file"` or `"run"` or `"registered"` | Where the optimiser result comes from; empty or absent when none is chosen yet. |
     | `artifact_path` | text | For a file source, the saved optimiser result; for an MLflow source, its path in the run's artifacts. |
     | `version_column` | text | The column the applied result's version is written to. |
     | `optimised_value_column` | text | The column the chosen scenario value is written to. |
@@ -132,7 +132,7 @@ The node loads the latest version of `motor_pricing_optimiser` from the registry
     | `run_id` | text | For a run source, the MLflow run holding the result. |
     | `run_name` | text | For a run source, the run's name, shown when the panel reopens. |
     | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is the local folder. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

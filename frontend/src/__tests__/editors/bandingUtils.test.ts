@@ -15,7 +15,7 @@ import { isTemporalDtype } from "../../utils/polarsDtypes"
 
 describe("normaliseBandingFactors", () => {
   it("returns existing factors when present", () => {
-    const factors = [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }]
+    const factors = [{ banding: "breakpoints", column: "age", output_column: "age_band", rules: [] }]
     const result = normaliseBandingFactors({ factors })
     expect(result).toBe(factors)
   })
@@ -25,7 +25,7 @@ describe("normaliseBandingFactors", () => {
     expect(result).toHaveLength(1)
     expect(result[0].banding).toBe("breakpoints")
     expect(result[0].column).toBe("")
-    expect(result[0].outputColumn).toBe("")
+    expect(result[0].output_column).toBe("")
     expect(result[0].rules).toEqual([])
     expect(result[0].default).toBeNull()
   })

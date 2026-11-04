@@ -922,7 +922,7 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace a run is logged to; empty or absent is the local folder. |
     | `positive_class` | text or number or `true` or `false` | For a binary classifier, the label trained as positive; `true` or `1` when absent. |
     | `device` | `"cpu"` or `"gpu"` | For XGBoost, whether it trains on the CPU or a GPU; the CPU when absent. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

@@ -446,7 +446,7 @@ export function orderFrameColumns(
  * old merge): applied when the user confirms "Replace tables" after a re-infer.
  *
  * Per frame whose path exists on both sides, the user's curated
- * label/emit/displayPath/row-id survive, and columns reconcile:
+ * label/emit/display_path/row-id survive, and columns reconcile:
  *   - **confirmed columns survive** (any origin — confirming is the user's act);
  *   - **structurally-incomplete columns survive** (blank name/path: in-progress
  *     user work; removing it on re-infer would be silent loss — the render-gate
@@ -535,7 +535,7 @@ export function reconcileInferredTables(
       ...inf,
       label: prev.label,
       emit: prev.emit,
-      displayPath: prev.displayPath,
+      display_path: prev.display_path,
       row_id_column,
       columns,
     }

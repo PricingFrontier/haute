@@ -41,16 +41,16 @@
         "node_configs": {
           "quote_with_competitor": {
             "how": "left",
-            "maintainOrder": "left_right",
-            "leftOn": [
+            "maintain_order": "left_right",
+            "left_on": [
               "quote_id"
             ],
-            "rightOn": [
+            "right_on": [
               "quote_id"
             ]
           },
           "enriched_quotes": {
-            "outputMapping": [
+            "output_mapping": [
               {
                 "source_port": "quote_with_competitor",
                 "source_column": "quote_id",

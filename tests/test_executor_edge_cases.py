@@ -102,7 +102,7 @@ def _sink_graph(tmp_path, *, fmt="parquet", src_data=None, out_name=None):
                             "label": "sink",
                             "nodeType": "dataOutput",
                             "config": {
-                                "outputType": "file",
+                                "output_type": "file",
                                 "format": fmt,
                                 "mode": "sink" if fmt in {"csv", "parquet"} else "write",
                                 "path": str(out_path),
@@ -203,7 +203,7 @@ class TestExecuteSinkEdgeCases:
                                 "label": "sink",
                                 "nodeType": "dataOutput",
                                 "config": {
-                                    "outputType": "file",
+                                    "output_type": "file",
                                     "format": "parquet",
                                     "mode": "sink",
                                     "path": str(out_path),

@@ -1457,7 +1457,7 @@ describe("ApiInputEditor - blank entry is not lost when an unrelated field is ed
         {
           path: "$[:]",
           label: "policies",
-          displayPath: null,
+          display_path: null,
           emit: false,
           row_id_column: null,
           columns: [
@@ -1496,7 +1496,7 @@ describe("ApiInputEditor - blank entry is not lost when an unrelated field is ed
         {
           path: "$[:]",
           label: "policies",
-          displayPath: null,
+          display_path: null,
           emit: false,
           row_id_column: null,
           columns: [
@@ -1539,14 +1539,14 @@ describe("ApiInputEditor - blank entry is not lost when an unrelated field is ed
         {
           path: "$[:]",
           label: "policies",
-          displayPath: null,
+          display_path: null,
           emit: false,
           row_id_column: null,
           columns: [
             { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
           ],
         },
-        { path: "", label: "orphan", displayPath: null, emit: false, row_id_column: null, columns: [] },
+        { path: "", label: "orphan", display_path: null, emit: false, row_id_column: null, columns: [] },
       ],
     })
   })
@@ -1584,7 +1584,7 @@ describe("ApiInputEditor - blank entry is not lost when an unrelated field is ed
         {
           path: "$[:]",
           label: "",
-          displayPath: null,
+          display_path: null,
           emit: false,
           row_id_column: null,
           columns: [

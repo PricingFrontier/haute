@@ -18,7 +18,7 @@
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types (imported from here: the editors have no barrel, and the node panel reaches each editor through its lazy import), styles (`INPUT_STYLE` the form kit's), file browser (nullable directory size, numeric file-size rendering; one listing answer per open folder, its items and error together, so a folder returned to from the listing cache shows its files and never the error of a folder left; an icon-only Up button named "Up one folder"), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
 | `frontend/src/components/ColumnTable.tsx` | Reusable column-selection table. |
 | `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
-| `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/SteppedCodePane.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers (`CodeMirrorEditor` reports a local edit once typing pauses, 150 ms, and at once on blur and unmount; an edit clears the error-line mark, and the mark is set again with each run's result, `errorRevision` (the result itself, from App's preview data), so a repeat error on the same line is marked again; with `reportEachChange` it reports every change at once, for an owner that saves only when asked; a changed `defaultValue` replaces the open text in place, keeping the editor's undo history, unless the focused editor holds an edit not yet reported, which is reported on blur and kept), Polars-specific panel, the shared stepped-code pane (step builder while `config.steps` is a list, otherwise the code box with the discard notice; takes the start mode and the eligible step input names), and the shared selected-path picker. |
+| `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/SteppedCodePane.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers (`CodeMirrorEditor` reports a local edit once typing pauses, 150 ms, and at once on blur and unmount; an edit clears the error-line mark, and the mark is set again with each run's result, `errorRevision` (the result itself, from App's preview data), so a repeat error on the same line is marked again; with `reportEachChange` it reports every change at once, for an owner that saves only when asked; a changed `"default_value"` replaces the open text in place, keeping the editor's undo history, unless the focused editor holds an edit not yet reported, which is reported on blur and kept), Polars-specific panel, the shared stepped-code pane (step builder while `config.steps` is a list, otherwise the code box with the discard notice; takes the start mode and the eligible step input names), and the shared selected-path picker. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/constantNames.ts`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `ConstantEditor` edits each name through `ValidatedTextField`, refusing a name another row uses (`duplicateConstantNames`, in `constantNames.ts`, marks every row of a repeated name) and adding `nextConstantName`, the first free `constant_<n>`. `TransformEditor` is the `SteppedCodePane` in `input` mode with the transform's code hint and starter code. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. `ScenarioExpanderEditor`'s Steps is a `ValidatedTextField` holding the backend's `scenario_step_count` rule: anything but a whole number of at least 1 (`0`, `abc`, `2.7`, blank) keeps its draft and says "Steps must be a whole number of at least 1.", writing nothing, and a saved count the backend refuses shows the same message. |
 | `frontend/src/panels/editors/polarsSteps/types.ts`, `frontend/src/panels/editors/polarsSteps/catalogue.ts`, `frontend/src/panels/editors/polarsSteps/summary.ts`, `frontend/src/panels/editors/polarsSteps/derivedColumns.ts` | Browser mirror of the low-code step schema (`readSteps`); the step catalogue (kinds, closed vocabularies mirrored from `haute._polars_steps` and held equal by `tests/test_polars_steps_catalogue.py`, default steps, the persisted-step shape check, `stepDisplayLabel`, variables in scope); `summaryParts`/`summarizeStep`, the card summaries as parts (column chips, coloured values, muted operator words, placeholders and prompts) and as plain text, printing values and formulas through `formula.ts`; and `columnsAtEachStep`/`columnsBeforeStep`, the start input's columns carried through every earlier step with each column's type where known and whether the list is complete (every column that can exist) and exact (nothing else); after a `free_code` step the list is the columns the free-code columns endpoint resolved for that step (`ColumnSource.freeCode`, keyed by step id): complete and exact in `input` mode, suggestions only in `frame` mode, and empty and incomplete while unresolved; `joinColumns` (Polars' join output names, pinned by the shared `__tests__/fixtures/joinOutputs.json` that `tests/test_polars_steps_catalogue.py` checks against Polars), `columnsReadBy`/`unknownColumnsOf` for a collapsed card's unknown names, and `columnChange` for its column-change note. |
 | `frontend/src/panels/editors/polarsSteps/calculations.ts` | The calculations an Add column step is computed as, General and in the function sections Number, Text and Dates (`stepSection` names the section a function step keeps, and so its Function list): each with its name (a card's title), an optional qualifier shown in the list, and the new expression it starts; the type conversions and `fill_null` are left out, staying formula functions. `calculationOf` names the calculation an expression is (a typed formula, or a hidden function a formula can express, is the Formula), `calculationExpr` the expression a calculation starts from the previous one (carrying its computed value and same-kind arguments), and `stepTitle`/`stepIcon` a card's title and icon. |
@@ -89,7 +89,7 @@
   runtime-discovered. `InputSource`
   carries one identity: `name` is the input's single name — chip text, code argument, and the
   key persisted contracts use (the live-switch `input_scenario_map`, the instance
-  `inputMapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
+  `input_mapping`) — derived per edge by `edgeInputName` (an API-input edge's frame label
   verbatim; a submodel `out__` edge's input name is the output's name (the sanitised public output port name from an owner and, from an instance, the instance's name or, with several outputs, `<instance>_<port>`), resolved by the backend identity endpoint; else the sanitised source-node
   label). `sourceLabel` is provenance metadata used only to explain an unresolved source;
   resolved tooltips, removal titles, and selectors identify the edge by `name`, never by the
@@ -104,7 +104,7 @@
   Output mappings use the equivalent conversion boundary in
   `frontend/src/panels/editors/outputMappingSchema.ts`.
 - `RatingTable` and factor/entry structures are normalised by
-  `frontend/src/panels/editors/rating/ratingTableUtils.ts`. `RatingTable.factorDtypes` is an
+  `frontend/src/panels/editors/rating/ratingTableUtils.ts`. `RatingTable.factor_dtypes` is an
   optional factor-name → backend dtype-descriptor map that is preserved for selected factors.
   The editor does not invent a descriptor when the backend has not supplied one.
   Banding grids consume and update the node's banding-rule records through
@@ -161,7 +161,7 @@
    retired (committed, failed or superseded) the editor shows the committed config.
 4. Schema, mapping, banding and rating editors derive visible rows from persisted config, accept
    user changes, normalise only at their documented conversion/update boundary, then invoke the
-   panel callback. Rating factor changes filter `factorDtypes` atomically with `factors` and
+   panel callback. Rating factor changes filter `factor_dtypes` atomically with `factors` and
    `entries`; removing a factor removes its descriptor, while new descriptors are never invented.
    Clipboard/drag/dialog operations remain local until that callback. `BandingRulesGrid` renders
    categorical rules (value and label cells; numeric breakpoints are `BreakpointGrid`'s) and derives
@@ -215,7 +215,7 @@
    file**. **Model file** hides the destination selector (a file source never
    reads MLflow) and shows a `PathPickerField` whose browser lists only the
    registered model-file suffixes (`modelFileSuffixes` from the generated
-   `modelFamilies.json`); choosing a file commits `{sourceType: "file",
+   `modelFamilies.json`); choosing a file commits `{source_type: "file",
    model_path}`. While a path is set, the editor calls `GET /api/model-file`
    (`inspectModelFile`) and shows the family, features, offset (column and
    link, or "none") and the contract the file scores under, or the server's
@@ -239,8 +239,8 @@
    output identities, so internal source-node ids never replace the edge's executable name. The
    swap callback is owned by the graph canvas so both handles move in one graph transaction.
    Selecting `cross` clears
-   `on`/`leftOn`/`rightOn`; selecting another mode exposes either same-name rows (`on`) or paired
-   rows (`leftOn`/`rightOn`) and each key-mode switch clears the inactive representation. The
+   `on`/`left_on`/`right_on`; selecting another mode exposes either same-name rows (`on`) or paired
+   rows (`left_on`/`right_on`) and each key-mode switch clears the inactive representation. The
    join type list is exactly `inner`, `left`, `right`, `full`, `semi`, `anti`, `cross`.
    **Maintain Order** is required and offers no unset value; a new Edge Join takes the
    palette's `left_right` (`node_defaults.json`), and changing the join type moves a default
@@ -378,8 +378,8 @@ modes. Recognised non-blank outputs contribute ordered valid levels
 or a named zero-level issue; invalid containers and unknown modes invent
 nothing. `RatingStepEditor` uses the complete configured-output set so a broken
 configured factor cannot be repopulated from stale raw/saved levels. Rating
-reads/writes only `combinedOutputs` and canonical entry rows; Output builds
-only complete `outputMapping` rows; API Input builds only `tables`.
+reads/writes only `combined_outputs` and canonical entry rows; Output builds
+only complete `output_mapping` rows; API Input builds only `tables`.
 `NODE_TYPE_META` supplies those canonical defaults, and Optimiser Apply derives
 mode only from persisted `params.mode`.
 
@@ -657,9 +657,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
   contract; two-way grids keep their cartesian factor coordinates aligned with their entry values.
-  It preserves canonical row order, valid `factorDtypes` metadata and `onMissing` instead of
+  It preserves canonical row order, valid `factor_dtypes` metadata and `on_missing` instead of
   dropping any of them during a view-only open/save cycle, and leaves an absent or null
-  `defaultValue` as it is rather than filling one in.
+  `default_value` as it is rather than filling one in.
 - `frontend/src/panels/editors/shared/tableClipboard.ts` parses tab/newline data before applying
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and
@@ -669,8 +669,8 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   state as chips) and read/write `input_scenario_map` by that same `name` — two frames from one
   API input are two distinct map keys, individually routable for the first time. A frame
   rename's atomic commit updates every name-referencing config in the same pass that rebinds
-  the edges: `input_scenario_map` keys on downstream live-switches, `inputMapping` values
-  on downstream Transform and Load File nodes, and `outputMapping[].source_port` on a
+  the edges: `input_scenario_map` keys on downstream live-switches, `input_mapping` values
+  on downstream Transform and Load File nodes, and `output_mapping[].source_port` on a
   downstream Quote Response, whose enabled entries must stay distinct. Disabled entries
   follow the rename but do not participate in collision checks, matching save and flattening.
   An instance's input mapping is its edges'
@@ -683,11 +683,11 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
   Sanitisation-only no-ops do not rewrite mappings. Either rename leaves a coded ordinary polars
   transform's `config.code` and parameter names untouched: the transaction records the
-  logical-name binding `inputMapping[<old input name>] = <new input name>` on every such
+  logical-name binding `input_mapping[<old input name>] = <new input name>` on every such
   consumer (unless an existing entry already follows that edge), drops identity entries and an
   emptied mapping, and rejects — before any mutation — a rename whose logical input names would
   collide on a target, with the same inline error the edge-name preflight uses. Codegen then
-  emits the parameters under their logical names with `inputMapping=` on the decorator, and the
+  emits the parameters under their logical names with `input_mapping=` on the decorator, and the
   executor binds them, so preview rows before and after the rename, and after save and reload,
   are identical. Uncoded transforms and other node kinds keep their edge-derived names. The same transaction rewrites scalar
   exact-input selectors on downstream Optimiser (`data_input`, `banding_source`) and Optimiser
@@ -751,7 +751,7 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   swap action. Creating, connecting, swapping, splitting, or deleting role edges does not write
   a second role representation into node config. Two distinct frame edges from one API Input are
   valid when their exact input names differ. Cross joins persist no keys. Non-cross joins use either
-  a non-empty normalised `on` list or equal-length non-empty `leftOn`/`rightOn` lists; both forms
+  a non-empty normalised `on` list or equal-length non-empty `left_on`/`right_on` lists; both forms
   cannot coexist. The UI lists all and only the backend-supported modes: `inner`, `left`,
   `right`, `full`, `semi`, `anti`, and `cross`. Its diagnostic panel uses danger tokens because
   every listed issue blocks a valid save. Each visible blank or known-missing join-key selection is
@@ -883,7 +883,7 @@ The initial Banding-to-Rating configuration-shape matrix is:
 | Mixed three-factor Banding→Rating | `frontend-node-editors` | Generated `browser_mixed_banding.json` and `browser_rating.json` from `scripts/run_frontend_e2e_server.py` | Browser | Authoritative cross-editor Cartesian rebuild, edit, save, and reload journey. |
 | Zero-level configured factor | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` zero-level classifier plus `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` warning/no-stale-level case | Unit + component | None; a deterministic warning contract needs no browser duplication. |
 | Malformed or partial draft | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` malformed-default, blank-output, and partial-rule cases | Unit | None; invalid drafts are classification inputs, not a persistence journey. |
-| Mixed Rating outputs | `frontend-node-editors` | `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` multi-table `combinedOutputs` selection/duplicate/output cases | Component | None until a cross-node persisted failure is found. |
+| Mixed Rating outputs | `frontend-node-editors` | `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` multi-table `combined_outputs` selection/duplicate/output cases | Component | None until a cross-node persisted failure is found. |
 | Persisted Rating table | `frontend-node-editors` | Generated three-factor fixture and eight edited Cartesian entries | Browser | Save/reload assertion is the owning evidence. |
 
 `frontend/e2e/canvas-assurance.spec.ts` rebuilds eight Cartesian entries from
@@ -996,7 +996,7 @@ blocked nodes cannot reset or recover; a node refused for a removed node-level i
 form (`@pipeline.instance`, `of=`, `instanceOf`) offers removal only, with the parser's
 message naming the one-node submodel form. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
-definition's unavailable nodes (`submodels[config.definitionId]`) under
+definition's unavailable nodes (`submodels[config.definition_id]`) under
 "Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`
 and `Reset node` for a known ordinary node, and `Remove node` for any of them (an
 unknown decorator has nothing to rebuild), all submitted with that

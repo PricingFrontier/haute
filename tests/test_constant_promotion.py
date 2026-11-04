@@ -75,7 +75,7 @@ def _graph(
     nodes = [
         quotes,
         node("rates", "constant", values=[{"name": "load", "value": value}]),
-        node("joined", "edgeJoin", **(join or {"how": "cross", "maintainOrder": "left_right"})),
+        node("joined", "edgeJoin", **(join or {"how": "cross", "maintain_order": "left_right"})),
         node("priced", "polars", steps=[{"id": "s", "kind": "source", "input": "joined"}, *steps]),
         *extra,
     ]
@@ -133,7 +133,7 @@ def test_a_text_constant_is_promoted_as_text(conversion: ModuleType, tmp_path: P
 def test_a_constant_stays_naming_the_condition_that_failed(
     conversion: ModuleType, tmp_path: Path, case: str, reason: str
 ) -> None:
-    keyed = {"on": ["premium"], "maintainOrder": "left_right"}
+    keyed = {"on": ["premium"], "maintain_order": "left_right"}
     window = {
         "id": "w",
         "kind": "with_column",

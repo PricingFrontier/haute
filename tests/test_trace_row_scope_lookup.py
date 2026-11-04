@@ -82,7 +82,7 @@ def test_lookup_probes_by_join_key_then_matches_every_carried_value_in_memory(
     collected_plans: list[str],
 ) -> None:
     resolver = _resolver(
-        _ROWS, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+        _ROWS, join_config={"how": "left", "maintain_order": "left_right", "on": ["quote_id"]}
     )
 
     found = resolver.lookup("rows", None, {"quote_id": "q2", "premium": 5.0, "region": "b"})
@@ -111,9 +111,9 @@ def test_lookup_probe_uses_either_role_of_a_left_on_right_on_join(
         rows,
         join_config={
             "how": "left",
-            "maintainOrder": "left_right",
-            "leftOn": ["policy"],
-            "rightOn": ["quote_id"],
+            "maintain_order": "left_right",
+            "left_on": ["policy"],
+            "right_on": ["quote_id"],
         },
     )
 
@@ -149,7 +149,7 @@ def test_lookup_keeps_two_rows_sharing_every_carried_value(
 ) -> None:
     rows = pl.LazyFrame({"quote_id": ["q1", "q1", "q1"], "region": ["a", "a", "a"]})
     resolver = _resolver(
-        rows, join_config={"how": "inner", "maintainOrder": "left_right", "on": "quote_id"}
+        rows, join_config={"how": "inner", "maintain_order": "left_right", "on": "quote_id"}
     )
 
     found = resolver.lookup("rows", None, {"quote_id": "q1", "region": "a"})
@@ -162,7 +162,7 @@ def test_lookup_finds_no_row_when_a_carried_non_key_value_differs(
     collected_plans: list[str],
 ) -> None:
     resolver = _resolver(
-        _ROWS, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+        _ROWS, join_config={"how": "left", "maintain_order": "left_right", "on": ["quote_id"]}
     )
 
     found = resolver.lookup("rows", None, {"quote_id": "q2", "premium": 99.0})
@@ -177,7 +177,7 @@ def test_lookup_falls_back_to_the_full_filter_when_the_probe_reaches_its_limit(
 ) -> None:
     monkeypatch.setattr(trace_correlation, "_ROW_SCOPE_PROBE_LIMIT", 1)
     resolver = _resolver(
-        _ROWS, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+        _ROWS, join_config={"how": "left", "maintain_order": "left_right", "on": ["quote_id"]}
     )
 
     found = resolver.lookup("rows", None, {"quote_id": "q2", "premium": 2.0})
@@ -194,17 +194,17 @@ def test_lookup_falls_back_to_the_full_filter_when_the_probe_reaches_its_limit(
     [
         pytest.param(None, {"quote_id": "q2", "premium": 2.0}, id="no-edge-join"),
         pytest.param(
-            {"how": "left", "maintainOrder": "left_right", "on": ["policy"]},
+            {"how": "left", "maintain_order": "left_right", "on": ["policy"]},
             {"quote_id": "q2", "premium": 2.0},
             id="key-not-carried",
         ),
         pytest.param(
-            {"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
+            {"how": "left", "maintain_order": "left_right", "on": ["quote_id"]},
             {"quote_id": None, "premium": 2.0},
             id="null-key",
         ),
         pytest.param(
-            {"how": "cross", "maintainOrder": "left_right"},
+            {"how": "cross", "maintain_order": "left_right"},
             {"quote_id": "q2", "premium": 2.0},
             id="cross-join",
         ),
@@ -247,7 +247,7 @@ def test_lookup_returns_the_rows_the_full_filter_returns(
     for values in candidates:
         resolver = _resolver(
             rows.lazy(),
-            join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
+            join_config={"how": "left", "maintain_order": "left_right", "on": ["quote_id"]},
         )
         found = resolver.lookup("rows", None, values)
         expected = rows.filter(
@@ -275,7 +275,7 @@ def test_repeated_lookups_read_a_plan_schema_once(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(pl.LazyFrame, "collect_schema", counting_collect_schema)
     resolver = _resolver(
-        plan, join_config={"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]}
+        plan, join_config={"how": "left", "maintain_order": "left_right", "on": ["quote_id"]}
     )
 
     first = resolver.lookup("rows", None, {"quote_id": "q1"})

@@ -33,7 +33,7 @@
               {
                 "banding": "categorical",
                 "column": "region",
-                "outputColumn": "region_group",
+                "output_column": "region_group",
                 "rules": [
                   {
                     "value": "north",

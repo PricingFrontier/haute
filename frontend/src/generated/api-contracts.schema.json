@@ -23,11 +23,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "path": {
@@ -1173,11 +1173,11 @@
           "title": "Factors",
           "type": "array"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "selected_columns": {
@@ -1221,14 +1221,14 @@
           "description": "The band of a value no rule matches; `null` leaves it empty.",
           "title": "Default"
         },
-        "outputColumn": {
+        "output_column": {
           "description": "The column the band is written to.",
-          "title": "Outputcolumn",
+          "title": "Output Column",
           "type": "string"
         },
-        "rightClosed": {
+        "right_closed": {
           "description": "For breakpoints, whether each band includes its upper boundary (`true`, the default) or its\nlower one.",
-          "title": "Rightclosed",
+          "title": "Right Closed",
           "type": "boolean"
         },
         "rules": {
@@ -3164,11 +3164,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "selected_columns": {
@@ -3525,17 +3525,17 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "inputType": {
+        "input_type": {
           "const": "database",
           "description": "The provider: a database.",
-          "title": "Inputtype",
+          "title": "Input Type",
           "type": "string"
         },
         "query": {
@@ -3565,7 +3565,7 @@
         }
       },
       "required": [
-        "inputType"
+        "input_type"
       ],
       "title": "DataInputDatabaseConfig",
       "type": "object"
@@ -3607,17 +3607,17 @@
           "title": "Http Path",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "inputType": {
+        "input_type": {
           "const": "databricks",
           "description": "The provider: Databricks.",
-          "title": "Inputtype",
+          "title": "Input Type",
           "type": "string"
         },
         "query": {
@@ -3647,7 +3647,7 @@
         }
       },
       "required": [
-        "inputType"
+        "input_type"
       ],
       "title": "DataInputDatabricksConfig",
       "type": "object"
@@ -3689,17 +3689,17 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "inputType": {
+        "input_type": {
           "const": "file",
           "description": "The provider: a file.",
-          "title": "Inputtype",
+          "title": "Input Type",
           "type": "string"
         },
         "mode": {
@@ -3733,7 +3733,7 @@
         }
       },
       "required": [
-        "inputType"
+        "input_type"
       ],
       "title": "DataInputFileConfig",
       "type": "object"
@@ -3776,17 +3776,17 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "inputType": {
+        "input_type": {
           "const": "inline",
           "description": "The provider: rows held in the config.",
-          "title": "Inputtype",
+          "title": "Input Type",
           "type": "string"
         },
         "mode": {
@@ -3824,7 +3824,7 @@
         }
       },
       "required": [
-        "inputType"
+        "input_type"
       ],
       "title": "DataInputInlineConfig",
       "type": "object"
@@ -3870,17 +3870,17 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "inputType": {
+        "input_type": {
           "const": "lakehouse",
           "description": "The provider: a lakehouse table.",
-          "title": "Inputtype",
+          "title": "Input Type",
           "type": "string"
         },
         "mode": {
@@ -3914,7 +3914,7 @@
         }
       },
       "required": [
-        "inputType"
+        "input_type"
       ],
       "title": "DataInputLakehouseConfig",
       "type": "object"
@@ -4010,11 +4010,11 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "mode": {
@@ -4025,10 +4025,10 @@
           "title": "Mode",
           "type": "string"
         },
-        "outputType": {
+        "output_type": {
           "const": "database",
           "description": "The destination: a database.",
-          "title": "Outputtype",
+          "title": "Output Type",
           "type": "string"
         },
         "selected_columns": {
@@ -4050,7 +4050,7 @@
         }
       },
       "required": [
-        "outputType"
+        "output_type"
       ],
       "title": "DataOutputDatabaseConfig",
       "type": "object"
@@ -4088,17 +4088,17 @@
           "title": "Http Path",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "outputType": {
+        "output_type": {
           "const": "databricks",
           "description": "The destination: Databricks.",
-          "title": "Outputtype",
+          "title": "Output Type",
           "type": "string"
         },
         "selected_columns": {
@@ -4124,7 +4124,7 @@
         }
       },
       "required": [
-        "outputType"
+        "output_type"
       ],
       "title": "DataOutputDatabricksConfig",
       "type": "object"
@@ -4162,11 +4162,11 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "mode": {
@@ -4177,10 +4177,10 @@
           "title": "Mode",
           "type": "string"
         },
-        "outputType": {
+        "output_type": {
           "const": "file",
           "description": "The destination: a file.",
-          "title": "Outputtype",
+          "title": "Output Type",
           "type": "string"
         },
         "path": {
@@ -4197,7 +4197,7 @@
         }
       },
       "required": [
-        "outputType"
+        "output_type"
       ],
       "title": "DataOutputFileConfig",
       "type": "object"
@@ -4239,11 +4239,11 @@
           "title": "Format",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "mode": {
@@ -4254,10 +4254,10 @@
           "title": "Mode",
           "type": "string"
         },
-        "outputType": {
+        "output_type": {
           "const": "lakehouse",
           "description": "The destination: a lakehouse table.",
-          "title": "Outputtype",
+          "title": "Output Type",
           "type": "string"
         },
         "path": {
@@ -4274,7 +4274,7 @@
         }
       },
       "required": [
-        "outputType"
+        "output_type"
       ],
       "title": "DataOutputLakehouseConfig",
       "type": "object"
@@ -4565,14 +4565,14 @@
           "title": "How",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "leftOn": {
+        "left_on": {
           "anyOf": [
             {
               "type": "string"
@@ -4585,9 +4585,9 @@
             }
           ],
           "description": "The key column or columns on the base input.",
-          "title": "Lefton"
+          "title": "Left On"
         },
-        "maintainOrder": {
+        "maintain_order": {
           "description": "Which input's row order the result keeps; required, which the engine's join rules\ncheck with the values it takes.",
           "enum": [
             "none",
@@ -4596,7 +4596,7 @@
             "left_right",
             "right_left"
           ],
-          "title": "Maintainorder",
+          "title": "Maintain Order",
           "type": "string"
         },
         "on": {
@@ -4611,10 +4611,10 @@
               "type": "array"
             }
           ],
-          "description": "The key column or columns both inputs share; or use `leftOn` and `rightOn`.",
+          "description": "The key column or columns both inputs share; or use `left_on` and `right_on`.",
           "title": "On"
         },
-        "rightOn": {
+        "right_on": {
           "anyOf": [
             {
               "type": "string"
@@ -4626,8 +4626,8 @@
               "type": "array"
             }
           ],
-          "description": "The key column or columns on the join input, matched in order with `leftOn`.",
-          "title": "Righton"
+          "description": "The key column or columns on the join input, matched in order with `left_on`.",
+          "title": "Right On"
         },
         "selected_columns": {
           "items": {
@@ -8344,11 +8344,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "overview": {
@@ -10056,21 +10056,21 @@
           ],
           "title": "Contract"
         },
-        "fileType": {
+        "file_type": {
           "description": "How the file is loaded.",
           "enum": [
             "pickle",
             "json",
             "joblib"
           ],
-          "title": "Filetype",
+          "title": "File Type",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "path": {
@@ -13519,11 +13519,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "input_scenario_map": {
@@ -14415,11 +14415,11 @@
           "title": "Feature Contract Path",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "mlflow_destination": {
@@ -14464,7 +14464,7 @@
           "title": "Selected Columns",
           "type": "array"
         },
-        "sourceType": {
+        "source_type": {
           "description": "Where the model comes from; empty or absent when no source is chosen yet.",
           "enum": [
             "",
@@ -14472,7 +14472,7 @@
             "registered",
             "file"
           ],
-          "title": "Sourcetype",
+          "title": "Source Type",
           "type": "string"
         },
         "steps": {
@@ -14644,11 +14644,11 @@
           "title": "Id Columns",
           "type": "array"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "interactions": {
@@ -16008,11 +16008,11 @@
           "title": "Experiment Name",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "mlflow_destination": {
@@ -16067,7 +16067,7 @@
           "title": "Selected Columns",
           "type": "array"
         },
-        "sourceType": {
+        "source_type": {
           "description": "Where the optimiser result comes from; empty or absent when none is chosen yet.",
           "enum": [
             "",
@@ -16075,7 +16075,7 @@
             "run",
             "registered"
           ],
-          "title": "Sourcetype",
+          "title": "Source Type",
           "type": "string"
         },
         "version": {
@@ -16406,11 +16406,11 @@
           "title": "Frontier Steps",
           "type": "integer"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "max_cd_iterations": {
@@ -19048,19 +19048,19 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "outputMapping": {
+        "output_mapping": {
           "description": "The mapping rows, each a column of an incoming frame and the response path it fills.",
           "items": {
             "$ref": "#/$defs/OutputMappingEntry"
           },
-          "title": "Outputmapping",
+          "title": "Output Mapping",
           "type": "array"
         },
         "selected_columns": {
@@ -21172,7 +21172,7 @@
       "additionalProperties": false,
       "description": "A column a Rating Step combines from its tables' values.",
       "properties": {
-        "baseValue": {
+        "base_value": {
           "anyOf": [
             {
               "type": "string"
@@ -21185,7 +21185,7 @@
             }
           ],
           "description": "The value the combination starts from: a number, or the editor's text of one.",
-          "title": "Basevalue"
+          "title": "Base Value"
         },
         "operation": {
           "description": "How the tables' values are combined.",
@@ -21198,16 +21198,16 @@
           "title": "Operation",
           "type": "string"
         },
-        "outputColumn": {
+        "output_column": {
           "description": "The combined column.",
-          "title": "Outputcolumn",
+          "title": "Output Column",
           "type": "string"
         }
       },
       "required": [
-        "outputColumn",
+        "output_column",
         "operation",
-        "baseValue"
+        "base_value"
       ],
       "title": "RatingCombinedOutput",
       "type": "object"
@@ -21330,12 +21330,12 @@
           "title": "Column Renames",
           "type": "object"
         },
-        "combinedOutputs": {
+        "combined_outputs": {
           "description": "Columns combined from the tables' values.",
           "items": {
             "$ref": "#/$defs/RatingCombinedOutput"
           },
-          "title": "Combinedoutputs",
+          "title": "Combined Outputs",
           "type": "array"
         },
         "contract": {
@@ -21350,11 +21350,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "selected_columns": {
@@ -21423,7 +21423,7 @@
       "additionalProperties": false,
       "description": "One table of a Rating Step: a value looked up by up to three factor columns.",
       "properties": {
-        "defaultValue": {
+        "default_value": {
           "anyOf": [
             {
               "type": "string"
@@ -21439,7 +21439,7 @@
             }
           ],
           "description": "The value of a factor combination the table does not hold; `null` for none.",
-          "title": "Defaultvalue"
+          "title": "Default Value"
         },
         "entries": {
           "description": "The table's rows, each a level of every factor and its `value`; the config file\nwrites them as a grid of `columns` and `rows`.",
@@ -21450,13 +21450,13 @@
           "title": "Entries",
           "type": "array"
         },
-        "factorDtypes": {
+        "factor_dtypes": {
           "additionalProperties": {
             "additionalProperties": true,
             "type": "object"
           },
           "description": "For each factor, the type its levels are read as.",
-          "title": "Factordtypes",
+          "title": "Factor Dtypes",
           "type": "object"
         },
         "factors": {
@@ -21467,18 +21467,18 @@
           "title": "Factors",
           "type": "array"
         },
-        "onMissing": {
+        "on_missing": {
           "description": "With no default, whether a missing combination fails the run (`error`) or takes the neutral\nvalue (`neutral`).",
           "enum": [
             "error",
             "neutral"
           ],
-          "title": "Onmissing",
+          "title": "On Missing",
           "type": "string"
         },
-        "outputColumn": {
+        "output_column": {
           "description": "The column the looked-up value is written to.",
-          "title": "Outputcolumn",
+          "title": "Output Column",
           "type": "string"
         }
       },
@@ -22425,11 +22425,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "max_value": {
@@ -22454,15 +22454,15 @@
           "title": "Selected Columns",
           "type": "array"
         },
-        "stepCount": {
-          "description": "The number of grid values, at least 1.",
-          "title": "Stepcount",
-          "type": "integer"
-        },
         "step_column": {
           "description": "The column the grid position (from 0) is written to, such as `scenario_index`.",
           "title": "Step Column",
           "type": "string"
+        },
+        "step_count": {
+          "description": "The number of grid values, at least 1.",
+          "title": "Step Count",
+          "type": "integer"
         },
         "steps": {
           "items": {
@@ -23350,21 +23350,21 @@
           ],
           "title": "Contract"
         },
-        "definitionId": {
+        "definition_id": {
           "description": "The submodel definition this occurrence runs.",
-          "title": "Definitionid",
+          "title": "Definition Id",
           "type": "string"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
-        "instanceOf": {
+        "instance_of": {
           "description": "For an instance, the occurrence whose definition it shares.",
-          "title": "Instanceof",
+          "title": "Instance Of",
           "type": "string"
         },
         "selected_columns": {
@@ -23579,11 +23579,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "selected_columns": {
@@ -24034,7 +24034,7 @@
           "title": "Columns",
           "type": "array"
         },
-        "displayPath": {
+        "display_path": {
           "anyOf": [
             {
               "type": "string"
@@ -24044,7 +24044,7 @@
             }
           ],
           "description": "The path the editor shows for the table, or `null` to show `path`.",
-          "title": "Displaypath"
+          "title": "Display Path"
         },
         "emit": {
           "description": "Whether the table is one of the node's outputs.",
@@ -26223,11 +26223,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "keyword_parameters": {
@@ -28028,11 +28028,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "sample": {
@@ -28119,11 +28119,11 @@
           ],
           "title": "Contract"
         },
-        "inputMapping": {
+        "input_mapping": {
           "additionalProperties": {
             "type": "string"
           },
-          "title": "Inputmapping",
+          "title": "Input Mapping",
           "type": "object"
         },
         "selected_columns": {

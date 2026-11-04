@@ -179,9 +179,9 @@ def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> 
     else:
         config: dict[str, Any] = {} if alias is None else {"alias": alias}
         if candidate.definition_id is not None:
-            config["definitionId"] = candidate.definition_id
+            config["definition_id"] = candidate.definition_id
         if candidate.instance_of is not None:
-            config["instanceOf"] = candidate.instance_of
+            config["instance_of"] = candidate.instance_of
         added = GraphNode(
             id=candidate.node_id,
             data=NodeData(label=label, nodeType=candidate.node_type, config=config),

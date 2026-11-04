@@ -97,7 +97,7 @@ class TestInnerJoinRightParentCorrelation:
         ``premium`` equals the LEFT row's premium.  Correlating with the
         child's unsuffixed ``premium`` (a left value) locks onto the
         decoy; the child's ``premium_right`` (the right value) plus the
-        leftOn/rightOn key pair identify the genuinely joined row.
+        left_on/right_on key pair identify the genuinely joined row.
         """
         left = pl.DataFrame({"policy": ["P1"], "premium": [100]})
         right = pl.DataFrame(
@@ -111,7 +111,12 @@ class TestInnerJoinRightParentCorrelation:
             tmp_path,
             left,
             right,
-            {"how": "inner", "maintainOrder": "left_right", "leftOn": "policy", "rightOn": "ref"},
+            {
+                "how": "inner",
+                "maintain_order": "left_right",
+                "left_on": "policy",
+                "right_on": "ref",
+            },
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -144,7 +149,7 @@ class TestInnerJoinRightParentCorrelation:
             tmp_path,
             left,
             right,
-            {"how": "inner", "on": "key", "maintainOrder": "left_right"},
+            {"how": "inner", "on": "key", "maintain_order": "left_right"},
         )
 
         first = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -175,7 +180,7 @@ class TestInnerJoinRightParentCorrelation:
             tmp_path,
             left,
             right,
-            {"how": "inner", "on": "key", "suffix": "_lookup", "maintainOrder": "left_right"},
+            {"how": "inner", "on": "key", "suffix": "_lookup", "maintain_order": "left_right"},
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -188,10 +193,10 @@ class TestInnerJoinRightParentCorrelation:
         }
 
     def test_right_parent_resolved_by_coalesced_key_when_values_tie(self, tmp_path):
-        """leftOn/rightOn key lineage: the coalesced key must disambiguate.
+        """left_on/right_on key lineage: the coalesced key must disambiguate.
 
         The right parent's non-key values are identical across rows, so
-        only mapping the child's leftOn value onto the parent's rightOn
+        only mapping the child's left_on value onto the parent's right_on
         column can identify which right row actually joined.
         """
         left = pl.DataFrame({"policy": ["P2"], "amount": [1]})
@@ -200,7 +205,12 @@ class TestInnerJoinRightParentCorrelation:
             tmp_path,
             left,
             right,
-            {"how": "inner", "maintainOrder": "left_right", "leftOn": "policy", "rightOn": "ref"},
+            {
+                "how": "inner",
+                "maintain_order": "left_right",
+                "left_on": "policy",
+                "right_on": "ref",
+            },
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -218,7 +228,7 @@ def _single_row_inner_graph(tmp_path):
     left = pl.DataFrame({"key": ["k1"], "premium": [100], "left_only": ["L"]})
     right = pl.DataFrame({"key": ["k1"], "premium": [999], "tier": ["gold"]})
     return _edge_join_graph(
-        tmp_path, left, right, {"how": "inner", "maintainOrder": "left_right", "on": "key"}
+        tmp_path, left, right, {"how": "inner", "maintain_order": "left_right", "on": "key"}
     )
 
 
@@ -250,7 +260,7 @@ class TestColumnTraces:
             tmp_path,
             left,
             right,
-            {"how": "inner", "on": "key", "maintainOrder": "left_right"},
+            {"how": "inner", "on": "key", "maintain_order": "left_right"},
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID, column="premium_right")
@@ -291,7 +301,7 @@ class TestLeftJoin:
             tmp_path,
             left,
             right,
-            {"how": "left", "on": "key", "maintainOrder": "left"},
+            {"how": "left", "on": "key", "maintain_order": "left"},
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -327,7 +337,7 @@ class TestLeftJoin:
             }
         )
         graph = _edge_join_graph(
-            tmp_path, left, right, {"how": "left", "maintainOrder": "left_right", "on": "key"}
+            tmp_path, left, right, {"how": "left", "maintain_order": "left_right", "on": "key"}
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -355,7 +365,7 @@ class TestFullJoin:
             tmp_path,
             left,
             right,
-            {"how": "full", "on": "key", "maintainOrder": "left_right"},
+            {"how": "full", "on": "key", "maintain_order": "left_right"},
         )
 
         result = execute_trace(graph, row_index=1, target_node_id=JOIN_ID)
@@ -377,7 +387,7 @@ class TestFullJoin:
             tmp_path,
             left,
             right,
-            {"how": "full", "on": "key", "maintainOrder": "left_right"},
+            {"how": "full", "on": "key", "maintain_order": "left_right"},
         )
 
         result = execute_trace(graph, row_index=0, target_node_id=JOIN_ID)
@@ -406,7 +416,12 @@ class TestEdgeOrderIndependence:
             tmp_path,
             left,
             right,
-            {"how": "inner", "maintainOrder": "left_right", "leftOn": "policy", "rightOn": "ref"},
+            {
+                "how": "inner",
+                "maintain_order": "left_right",
+                "left_on": "policy",
+                "right_on": "ref",
+            },
             reverse_edges=True,
         )
 

@@ -136,7 +136,7 @@ class TestNodeConfigsDecodeStrictly:
         config = config_dir / "bands.json"
         config.write_bytes(
             b'{"factors": [{"banding": "categorical", "column": "age", '
-            b'"outputColumn": "age_band", "rules": [{"value": "young", '
+            b'"output_column": "age_band", "rules": [{"value": "young", '
             b'"assignment": "20\x9627"}], "default": "other"}]}'
         )
         (tmp_path / "main.py").write_text(
@@ -159,7 +159,7 @@ class TestNodeConfigsDecodeStrictly:
         message = str(raised.value)
         assert "bands.json" in message
         assert "not valid UTF-8" in message
-        assert "byte 0x96 at line 1, column 132" in message
+        assert "byte 0x96 at line 1, column 133" in message
         assert config.read_bytes() == before
 
     def test_the_node_fails_where_it_runs(self, tmp_path):

@@ -536,8 +536,8 @@ class TestRatingStepSingleTable:
             "tables": [
                 {
                     "factors": ["vehicle_age_band", "cover_type"],
-                    "outputColumn": "vehicle_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "vehicle_factor",
+                    "default_value": "1.0",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -548,19 +548,19 @@ class TestRatingStepSingleTable:
                 },
                 {
                     "factors": ["channel"],
-                    "outputColumn": "channel_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "channel_factor",
+                    "default_value": "1.0",
                     "entries": [
                         {"channel": "broker", "value": 1.5},
                         {"channel": "direct", "value": 1.2},
                     ],
                 },
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
                 {
-                    "outputColumn": "technical_premium_factor",
+                    "output_column": "technical_premium_factor",
                     "operation": "multiply",
-                    "baseValue": "100",
+                    "base_value": "100",
                 }
             ],
             "code": "df = df.with_columns(test=pl.col('technical_premium_factor') * 2)",
@@ -771,13 +771,13 @@ class TestBandingTraceLineage:
             "factors": [
                 {
                     "column": "risk_age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [
                         {"boundary": "25", "label": "young"},
                         {"boundary": "65", "label": "adult"},
                     ],
-                    "rightClosed": False,
+                    "right_closed": False,
                     "default": "senior",
                 }
             ]

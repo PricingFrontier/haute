@@ -250,7 +250,7 @@ test.describe("Transform step builder journey", () => {
           label: "stepped_in",
           nodeType: "dataInput",
           config: {
-            inputType: "file",
+            input_type: "file",
             format: "parquet",
             mode: "scan",
             path: "data/sample.parquet",
@@ -326,7 +326,7 @@ test.describe("Transform step builder journey", () => {
           label: "constant_filter",
           nodeType: "dataInput",
           config: {
-            inputType: "file",
+            input_type: "file",
             format: "parquet",
             mode: "scan",
             path: "data/sample.parquet",
@@ -530,7 +530,7 @@ test.describe("Transform step builder journey", () => {
             column_name: "scenario_value",
             min_value: 0.8,
             max_value: 1.2,
-            stepCount: 3,
+            step_count: 3,
             step_column: "scenario_index",
             steps: [],
           },
@@ -561,9 +561,9 @@ test.describe("Transform step builder journey", () => {
     await save(page)
     const gridSidecarPath = resolve(e2eProjectRoot, "rating", "config", "expander", "browser_grid.json")
     await expect.poll(() => existsSync(gridSidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(gridSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; stepCount: number }
+    const sidecar = JSON.parse(readFileSync(gridSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; step_count: number }
     expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 4 })])
-    expect(sidecar.stepCount).toBe(3)
+    expect(sidecar.step_count).toBe(3)
     expect(readFileSync(mainPath, "utf8")).toMatch(
       /def browser_grid\(df: pl\.LazyFrame[^)]*\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = df\.head\(4\)/,
     )
@@ -590,7 +590,7 @@ test.describe("Transform step builder journey", () => {
         data: {
           label: "browser_external",
           nodeType: "externalFile",
-          config: { path: "factors.json", fileType: "json", steps: [] },
+          config: { path: "factors.json", file_type: "json", steps: [] },
         },
       })
     })

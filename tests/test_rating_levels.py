@@ -73,7 +73,7 @@ def _source_node(project: Path) -> dict[str, Any]:
             "label": "source",
             "nodeType": "dataInput",
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": str(_source_path(project)),
@@ -237,8 +237,8 @@ def test_a_level_chosen_from_the_answer_matches_at_lookup_time(
             "tables": [
                 {
                     "factors": ["region"],
-                    "outputColumn": "region_factor",
-                    "defaultValue": 1.0,
+                    "output_column": "region_factor",
+                    "default_value": 1.0,
                     "entries": [{"region": chosen["value"], "value": 2.5}],
                 }
             ]

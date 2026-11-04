@@ -50,7 +50,7 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNod
 
 
 def _parquet(path: Path) -> dict[str, Any]:
-    return {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(path)}
+    return {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(path)}
 
 
 def _code(code: str) -> dict[str, Any]:
@@ -410,7 +410,7 @@ def _built_pass_through_returns(graph: PipelineGraph, node_id: str) -> str:
                     (
                         "O",
                         NodeType.DATA_OUTPUT,
-                        {"outputType": "file", "format": "parquet", "path": "out.parquet"},
+                        {"output_type": "file", "format": "parquet", "path": "out.parquet"},
                     ),
                 ],
                 [("src", "A"), ("A", "O")],
@@ -1297,7 +1297,7 @@ def test_preview_may_seed_its_target(project: Path, store: NodeSnapshotStore) ->
 
 
 def _csv(path: Path) -> dict[str, Any]:
-    return {"inputType": "file", "format": "csv", "path": str(path)}
+    return {"input_type": "file", "format": "csv", "path": str(path)}
 
 
 def _csv_joined(project: Path) -> PipelineGraph:
@@ -1712,7 +1712,11 @@ def test_slice_transparent_feeder_is_not_captured(
             ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
             ("G", NodeType.POLARS, _code("df = src1.sort('id')")),
             ("S", NodeType.POLARS, _code("df = G.select('id', 'a')")),
-            ("J", NodeType.EDGE_JOIN, {"how": "left", "maintainOrder": "left_right", "on": ["id"]}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {"how": "left", "maintain_order": "left_right", "on": ["id"]},
+            ),
         ],
         [
             ("src1", "G"),
@@ -1736,7 +1740,11 @@ def test_slice_transparent_feeder_is_not_captured(
             ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
             ("S", NodeType.POLARS, _code("df = src1.select('id', pl.first('a'))")),
-            ("J", NodeType.EDGE_JOIN, {"how": "left", "maintainOrder": "left_right", "on": ["id"]}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {"how": "left", "maintain_order": "left_right", "on": ["id"]},
+            ),
         ],
         [
             ("src1", "S"),
@@ -1765,7 +1773,11 @@ def test_filter_feeder_is_captured_but_filter_fan_out_is_not(
             ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
             ("F", NodeType.POLARS, _code("df = src1.filter(pl.col('a') > 0)")),
-            ("J", NodeType.EDGE_JOIN, {"how": "left", "maintainOrder": "left_right", "on": ["id"]}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {"how": "left", "maintain_order": "left_right", "on": ["id"]},
+            ),
         ],
         [
             ("src1", "F"),
@@ -1786,7 +1798,11 @@ def test_filter_feeder_is_captured_but_filter_fan_out_is_not(
             ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
             ("D", NodeType.POLARS, _code("df = src1.drop_nulls('a')")),
-            ("J", NodeType.EDGE_JOIN, {"how": "left", "maintainOrder": "left_right", "on": ["id"]}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {"how": "left", "maintain_order": "left_right", "on": ["id"]},
+            ),
         ],
         [
             ("src1", "D"),
@@ -1969,7 +1985,7 @@ def test_two_ports_of_one_api_input_joined_are_a_structural_capture(
                 data=NodeData(
                     label="join",
                     nodeType=NodeType.EDGE_JOIN,
-                    config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+                    config={"how": "left", "maintain_order": "left_right", "on": ["id"]},
                 ),
             ),
         ],
@@ -2050,7 +2066,11 @@ def test_costly_code_nodes_are_captured_and_cheap_boundaries_are_not(
         [
             ("src1", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("src2", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
-            ("J", NodeType.EDGE_JOIN, {"how": "left", "maintainOrder": "left_right", "on": ["id"]}),
+            (
+                "J",
+                NodeType.EDGE_JOIN,
+                {"how": "left", "maintain_order": "left_right", "on": ["id"]},
+            ),
         ],
         [
             GraphEdge(id="e1", source="src1", target="J", targetHandle="base"),

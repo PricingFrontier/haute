@@ -7,8 +7,8 @@ import useToastStore from "../../../../stores/useToastStore"
 function makeTable(overrides: Partial<RatingTable> = {}): RatingTable {
   return {
     factors: ["age_band", "region"],
-    outputColumn: "factor",
-    defaultValue: "1.0",
+    output_column: "factor",
+    default_value: "1.0",
     entries: [
       { age_band: "young", region: "north", value: 1.1 },
       { age_band: "young", region: "south", value: 0.9 },

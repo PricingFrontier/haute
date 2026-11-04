@@ -263,7 +263,7 @@ def test_empty_result_writes_one_schema_part(tmp_path: Path) -> None:
     # 2. Empty join result
     base = pl.DataFrame({"k": ["x"], "v": [1]}).clear().lazy()
     join = pl.DataFrame({"k": ["x"], "w": [2]}).clear().lazy()
-    recipe = JoinRecipe(base, join, {"how": "inner", "maintainOrder": "left_right", "on": "k"})
+    recipe = JoinRecipe(base, join, {"how": "inner", "maintain_order": "left_right", "on": "k"})
 
     target_b = tmp_path / "empty_join"
     target_b.mkdir()
@@ -366,13 +366,13 @@ def test_chunked_join_equals_native_join(tmp_path: Path) -> None:
                 cfg: dict[str, Any] = {
                     "how": how,
                     "suffix": "_r",
-                    "maintainOrder": DEFAULT_JOIN_ORDER[how],
+                    "maintain_order": DEFAULT_JOIN_ORDER[how],
                 }
                 if how != "cross":
                     if k_type == "on":
                         cfg["on"] = k_val
                     else:
-                        cfg["leftOn"], cfg["rightOn"] = k_val
+                        cfg["left_on"], cfg["right_on"] = k_val
                 if coalesce is not None:
                     cfg["coalesce"] = coalesce
 
@@ -419,9 +419,9 @@ def test_chunked_join_match_count_name_avoids_both_input_schemas(
         pl.DataFrame(lookup_data).lazy(),
         {
             "how": "inner",
-            "maintainOrder": "left_right",
-            "leftOn": "base_key",
-            "rightOn": "lookup_key",
+            "maintain_order": "left_right",
+            "left_on": "base_key",
+            "right_on": "lookup_key",
         },
     )
     target = tmp_path / "count_name"
@@ -451,9 +451,9 @@ def test_chunked_join_heavy_split_uses_collision_free_match_count_name(tmp_path:
         ).lazy(),
         {
             "how": "inner",
-            "maintainOrder": "left_right",
-            "leftOn": "base_key",
-            "rightOn": "lookup_key",
+            "maintain_order": "left_right",
+            "left_on": "base_key",
+            "right_on": "lookup_key",
         },
     )
     target = tmp_path / "heavy_count_name"
@@ -471,7 +471,7 @@ def test_chunked_validation_accepts_match_count_named_key_when_unique(tmp_path: 
         pl.DataFrame({"__haute_chunk_matches": ["a", "b"], "right": [3, 4]}).lazy(),
         {
             "how": "inner",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
             "on": "__haute_chunk_matches",
             "validate": "1:1",
         },
@@ -493,7 +493,7 @@ def test_chunked_validation_failure_matches_native_for_match_count_named_key(
         pl.DataFrame({"__haute_chunk_matches": ["a"], "right": [3]}).lazy(),
         {
             "how": "inner",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
             "on": "__haute_chunk_matches",
             "validate": "1:m",
         },
@@ -514,7 +514,7 @@ def test_budgeted_validated_join_uses_one_native_sink_when_it_fits(
     recipe = JoinRecipe(
         pl.DataFrame({"k": ["a", "a"], "left": [1, 2]}).lazy(),
         pl.DataFrame({"k": ["a"], "right": [3]}).lazy(),
-        {"how": "inner", "maintainOrder": "left_right", "on": "k", "validate": "m:1"},
+        {"how": "inner", "maintain_order": "left_right", "on": "k", "validate": "m:1"},
     )
     context = ExecutionContext(
         operation="budgeted-join",
@@ -552,7 +552,7 @@ def test_budgeted_join_stays_chunked_when_native_allowance_is_insufficient(tmp_p
     recipe = JoinRecipe(
         pl.scan_parquet(base_path),
         pl.scan_parquet(join_path),
-        {"how": "inner", "maintainOrder": "left_right", "on": "k", "validate": "m:1"},
+        {"how": "inner", "maintain_order": "left_right", "on": "k", "validate": "m:1"},
     )
     context = ExecutionContext(
         operation="small-budget-join",
@@ -624,12 +624,12 @@ def test_unvalidated_and_custom_joins_stay_on_the_chunked_path(tmp_path: Path) -
         JoinRecipe(
             pl.DataFrame({"k": ["a"], "left": [1]}).lazy(),
             pl.DataFrame({"k": ["a"], "right": [2]}).lazy(),
-            {"how": "inner", "maintainOrder": "left_right", "on": "k"},
+            {"how": "inner", "maintain_order": "left_right", "on": "k"},
         ),
         JoinRecipe(
             pl.DataFrame({"k": ["a"], "left": [1]}).lazy(),
             pl.DataFrame({"k": ["a"], "right": [2]}).lazy(),
-            {"how": "inner", "maintainOrder": "left_right", "on": "k", "validate": "1:1"},
+            {"how": "inner", "maintain_order": "left_right", "on": "k", "validate": "1:1"},
             finish=lambda frame: frame.select(pl.all()),
         ),
     ]
@@ -655,7 +655,7 @@ def test_an_ordered_validated_join_within_budget_is_written_whole_in_its_order(
     base = pl.DataFrame({"k": ["c", "a", "b", "a"], "left": [1, 2, 3, 4]}).lazy()
     lookup = pl.DataFrame({"k": ["b", "a", "c"], "right": [5, 6, 7]}).lazy()
     recipe = JoinRecipe(
-        base, lookup, {"how": "left", "on": "k", "validate": "m:1", "maintainOrder": "left_right"}
+        base, lookup, {"how": "left", "on": "k", "validate": "m:1", "maintain_order": "left_right"}
     )
 
     result = write_parts(
@@ -679,7 +679,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
         for v in ["1:m", "m:1", "1:1"]:
             for f in target.iterdir():
                 f.unlink()
-            cfg = {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": v}
+            cfg = {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": v}
             recipe = JoinRecipe(base.lazy(), join.lazy(), cfg)
             with pytest.raises(pl.exceptions.ComputeError) as exc_native:
                 recipe.native().collect_schema()
@@ -693,7 +693,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
     # 2. cross with validate "1:1" ignores it and equals native
     for f in target.iterdir():
         f.unlink()
-    cross_cfg = {"how": "cross", "maintainOrder": "left_right", "validate": "1:1"}
+    cross_cfg = {"how": "cross", "maintain_order": "left_right", "validate": "1:1"}
     cross_recipe = JoinRecipe(base.lazy(), join.lazy(), cross_cfg)
     write_parts(target, cross_recipe.native(), join=cross_recipe, chunk_rows=5)
     cross_got = scan_parts(part_paths(target)).collect()
@@ -712,7 +712,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
         rec_1m = JoinRecipe(
             base_dup.lazy(),
             join_uniq.lazy(),
-            {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "1:m"},
+            {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "1:m"},
         )
         with pytest.raises(
             pl.exceptions.ComputeError, match=r"join keys did not fulfill 1:m validation"
@@ -725,7 +725,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
         rec_m1 = JoinRecipe(
             base_uniq.lazy(),
             join_dup.lazy(),
-            {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "m:1"},
+            {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "m:1"},
         )
         with pytest.raises(
             pl.exceptions.ComputeError, match=r"join keys did not fulfill m:1 validation"
@@ -738,7 +738,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
         rec_11_base = JoinRecipe(
             base_dup.lazy(),
             join_uniq.lazy(),
-            {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "1:1"},
+            {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "1:1"},
         )
         with pytest.raises(
             pl.exceptions.ComputeError, match=r"join keys did not fulfill 1:1 validation"
@@ -750,7 +750,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
         rec_11_join = JoinRecipe(
             base_uniq.lazy(),
             join_dup.lazy(),
-            {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "1:1"},
+            {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "1:1"},
         )
         with pytest.raises(
             pl.exceptions.ComputeError, match=r"join keys did not fulfill 1:1 validation"
@@ -767,7 +767,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
             rec_ok = JoinRecipe(
                 base_uniq.lazy(),
                 join_uniq.lazy(),
-                {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": v},
+                {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": v},
             )
             write_parts(target, rec_ok.native(), join=rec_ok, chunk_rows=2)
             got_ok = scan_parts(part_paths(target)).collect()
@@ -782,7 +782,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
         rec_unref = JoinRecipe(
             base_no_ref.lazy(),
             join_unref_dup.lazy(),
-            {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "m:1"},
+            {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": "m:1"},
         )
         with pytest.raises(
             pl.exceptions.ComputeError, match=r"join keys did not fulfill m:1 validation"
@@ -801,7 +801,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
             rec_nulls = JoinRecipe(
                 base_nulls.lazy(),
                 join_nulls.lazy(),
-                {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": v},
+                {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": "k", "validate": v},
             )
             res_nulls = write_parts(target, rec_nulls.native(), join=rec_nulls, chunk_rows=2)
             assert res_nulls.strategy == "chunked_join"
@@ -834,7 +834,7 @@ def test_validate_rejections_match_polars(tmp_path: Path) -> None:
                 join_pnull.lazy(),
                 {
                     "how": how,
-                    "maintainOrder": DEFAULT_JOIN_ORDER[how],
+                    "maintain_order": DEFAULT_JOIN_ORDER[how],
                     "on": ["k1", "k2"],
                     "validate": v,
                 },
@@ -875,7 +875,7 @@ def test_chunked_join_keeps_driving_order_when_maintain_order_names_it(tmp_path:
     target.mkdir()
 
     for how, order in order_cases:
-        cfg = {"how": how, "on": "k", "maintainOrder": order, "suffix": "_r"}
+        cfg = {"how": how, "on": "k", "maintain_order": order, "suffix": "_r"}
         recipe = JoinRecipe(base.lazy(), join.lazy(), cfg)
         native = recipe.native().collect()
 
@@ -904,21 +904,21 @@ def test_a_join_ordered_by_its_lookup_side_is_written_natively_and_says_so(
 ) -> None:
     base, join = _make_join_frames()
 
-    # (full, maintainOrder "left_right") -> chunked, matched rows in base order and the
+    # (full, maintain_order "left_right") -> chunked, matched rows in base order and the
     # lookup rows nothing matched after them, in the lookup's order, as Polars places them.
     target1 = tmp_path / "t1"
     target1.mkdir()
-    cfg1 = {"how": "full", "on": "k", "maintainOrder": "left_right", "suffix": "_r"}
+    cfg1 = {"how": "full", "on": "k", "maintain_order": "left_right", "suffix": "_r"}
     recipe1 = JoinRecipe(base.lazy(), join.lazy(), cfg1)
     res1 = write_parts(target1, recipe1.native(), join=recipe1, chunk_rows=5)
     assert res1.strategy == "chunked_join"
     got1 = scan_parts(part_paths(target1)).collect()
     assert got1.equals(recipe1.native().collect(engine="in-memory"))
 
-    # (left, maintainOrder "right") -> "native", "ordered_by_lookup_side"
+    # (left, maintain_order "right") -> "native", "ordered_by_lookup_side"
     target2 = tmp_path / "t2"
     target2.mkdir()
-    cfg2 = {"how": "left", "on": "k", "maintainOrder": "right", "suffix": "_r"}
+    cfg2 = {"how": "left", "on": "k", "maintain_order": "right", "suffix": "_r"}
     recipe2 = JoinRecipe(base.lazy(), join.lazy(), cfg2)
     res2 = write_parts(target2, recipe2.native(), join=recipe2, chunk_rows=5)
     assert res2.strategy == "native"
@@ -985,9 +985,9 @@ def test_high_fan_out_key_is_split_by_expected_output(
             collected_frames.clear()
             part_heights.clear()
 
-            cfg: dict[str, Any] = {"how": "inner", "maintainOrder": "left_right", "on": "k"}
+            cfg: dict[str, Any] = {"how": "inner", "maintain_order": "left_right", "on": "k"}
             if order is not None:
-                cfg["maintainOrder"] = order
+                cfg["maintain_order"] = order
 
             recipe = JoinRecipe(b_df.lazy(), j_df.lazy(), cfg)
             native = recipe.native().collect()
@@ -1028,7 +1028,7 @@ def test_non_sliceable_sides_are_staged_and_never_published(tmp_path: Path) -> N
     )
     assert sliceable(join) is False
 
-    recipe = JoinRecipe(base, join, {"how": "inner", "maintainOrder": "left_right", "on": "k"})
+    recipe = JoinRecipe(base, join, {"how": "inner", "maintain_order": "left_right", "on": "k"})
     target = tmp_path / "staged_out"
     target.mkdir()
 
@@ -1050,7 +1050,7 @@ def test_cross_join_chunks_by_lookup_size(tmp_path: Path) -> None:
     base = pl.DataFrame({"x": list(range(10))}).lazy()
     lookup = pl.DataFrame({"y": list(range(4))}).lazy()
 
-    recipe = JoinRecipe(base, lookup, {"how": "cross", "maintainOrder": "left_right"})
+    recipe = JoinRecipe(base, lookup, {"how": "cross", "maintain_order": "left_right"})
     target = tmp_path / "cross_target"
     target.mkdir()
 
@@ -1076,7 +1076,7 @@ def test_cross_join_bounds_both_inputs_and_output(
     recipe = JoinRecipe(
         pl.DataFrame({"x": range(sizes[0])}).lazy(),
         pl.DataFrame({"x": range(sizes[1])}).lazy(),
-        {"how": "cross", "maintainOrder": order, "suffix": "_lookup"},
+        {"how": "cross", "maintain_order": order, "suffix": "_lookup"},
     )
     expected = recipe.native().collect(engine="in-memory")
     heights: list[int] = []
@@ -1156,7 +1156,7 @@ def test_writer_checkpoints_between_chunks_and_stops_on_cancel(tmp_path: Path) -
 def _source(node_id: str, path: Path) -> Any:
     from haute._types import GraphNode, NodeData, NodeType
 
-    config = {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(path)}
+    config = {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(path)}
     return GraphNode(
         id=node_id, data=NodeData(label=node_id, nodeType=NodeType.DATA_INPUT, config=config)
     )
@@ -1166,7 +1166,9 @@ def test_validation_is_exact_when_a_join_key_is_named_len(tmp_path: Path) -> Non
     base = pl.DataFrame({"len": [1, 2], "x": [1, 2]}).lazy()
     join = pl.DataFrame({"len": [1, 2], "y": [3, 4]}).lazy()
     recipe = JoinRecipe(
-        base, join, {"how": "left", "maintainOrder": "left_right", "on": ["len"], "validate": "1:1"}
+        base,
+        join,
+        {"how": "left", "maintain_order": "left_right", "on": ["len"], "validate": "1:1"},
     )
 
     written = write_parts(tmp_path, recipe.native(), join=recipe, chunk_rows=1)
@@ -1178,7 +1180,7 @@ def test_validation_is_exact_when_a_join_key_is_named_len(tmp_path: Path) -> Non
     duplicated = JoinRecipe(
         base,
         pl.concat([join, join]),
-        {"how": "left", "maintainOrder": "left_right", "on": ["len"], "validate": "1:1"},
+        {"how": "left", "maintain_order": "left_right", "on": ["len"], "validate": "1:1"},
     )
     other = tmp_path / "dup"
     other.mkdir()
@@ -1207,7 +1209,7 @@ def test_parts_carry_write_time_digests(
     target_join.mkdir()
     base = pl.DataFrame({"k": [1, 2], "v": ["a", "b"]}).lazy()
     join = pl.DataFrame({"k": [1, 2], "w": [10, 20]}).lazy()
-    recipe = JoinRecipe(base, join, {"how": "left", "on": ["k"], "maintainOrder": "left"})
+    recipe = JoinRecipe(base, join, {"how": "left", "on": ["k"], "maintain_order": "left"})
     calls: list[Any] = []
     real_sink = haute._chunked_writes._Parts.sink
 
@@ -1246,7 +1248,7 @@ def test_a_hot_key_spanning_parts_equals_the_native_join(
     lookup_df.write_parquet(lookup_file, row_group_size=10)
     lookup = pl.scan_parquet(lookup_file)
     base = pl.DataFrame({"k": ["hot", "cold1"], "d": [1, 2]}).lazy()
-    recipe = JoinRecipe(base, lookup, {"how": "inner", "maintainOrder": "left_right", "on": "k"})
+    recipe = JoinRecipe(base, lookup, {"how": "inner", "maintain_order": "left_right", "on": "k"})
     chunk_rows = 15
     target = tmp_path / "parts"
     target.mkdir()
@@ -1277,7 +1279,7 @@ def test_a_heavy_rows_windows_survive_a_reordered_read(
 ) -> None:
     lookup = pl.DataFrame({"k": ["hot"] * 45 + ["other"] * 5, "v": list(range(50))}).lazy()
     base = pl.DataFrame({"k": ["hot", "other"], "d": [1, 2]}).lazy()
-    recipe = JoinRecipe(base, lookup, {"how": "inner", "maintainOrder": "left_right", "on": "k"})
+    recipe = JoinRecipe(base, lookup, {"how": "inner", "maintain_order": "left_right", "on": "k"})
     chunk_rows = 10
     target = tmp_path / "parts"
     target.mkdir()
@@ -1317,7 +1319,7 @@ def test_a_heavy_row_keeps_the_lookups_order_when_the_join_asks_for_it(
     recipe = JoinRecipe(
         base,
         lookup,
-        {"how": "left", "on": "k", "maintainOrder": "left_right"},
+        {"how": "left", "on": "k", "maintain_order": "left_right"},
     )
     chunk_rows = 10
     target = tmp_path / "parts"
@@ -1360,7 +1362,7 @@ def test_a_heavy_row_that_loses_a_match_is_refused(
 ) -> None:
     lookup = pl.DataFrame({"k": ["hot"] * 25, "v": list(range(25))}).lazy()
     base = pl.DataFrame({"k": ["hot"], "d": [1]}).lazy()
-    recipe = JoinRecipe(base, lookup, {"how": "inner", "maintainOrder": "left_right", "on": "k"})
+    recipe = JoinRecipe(base, lookup, {"how": "inner", "maintain_order": "left_right", "on": "k"})
     chunk_rows = 10
     target = tmp_path / "parts"
     target.mkdir()
@@ -1417,7 +1419,7 @@ def test_a_write_reports_the_rows_per_part_it_chunked_at(
     base = pl.DataFrame({"k": ["a", "b"] * 10, "v": list(range(20))}).lazy()
     lookup = pl.DataFrame({"k": ["a", "b"], "v2": [1, 2]}).lazy()
     keyed_recipe = JoinRecipe(
-        base, lookup, {"how": "inner", "maintainOrder": "left_right", "on": "k"}
+        base, lookup, {"how": "inner", "maintain_order": "left_right", "on": "k"}
     )
     keyed_write = write_parts(keyed_target, keyed_recipe.native(), join=keyed_recipe, chunk_rows=5)
     assert keyed_write.strategy == "chunked_join"
@@ -1437,7 +1439,7 @@ def test_a_write_reports_the_rows_per_part_it_chunked_at(
     cross_base = pl.DataFrame({"k": ["a", "b"]}).lazy()
     cross_lookup = pl.DataFrame({"v": [1, 2]}).lazy()
     cross_recipe = JoinRecipe(
-        cross_base, cross_lookup, {"how": "cross", "maintainOrder": "left_right"}
+        cross_base, cross_lookup, {"how": "cross", "maintain_order": "left_right"}
     )
     cross_write = write_parts(cross_target, cross_recipe.native(), join=cross_recipe, chunk_rows=5)
     assert cross_write.strategy == "chunked_join"
@@ -1788,7 +1790,7 @@ def test_write_strategy_precedence_join_over_recipe_and_sliced_over_input_sliced
     base = pl.DataFrame({"k": [1, 2, 3], "x": [10, 20, 30]}).lazy()
     lookup = pl.DataFrame({"k": [1, 2], "y": [100, 200]}).lazy()
     join_recipe = JoinRecipe(
-        base, lookup, {"how": "inner", "maintainOrder": "left_right", "on": "k"}
+        base, lookup, {"how": "inner", "maintain_order": "left_right", "on": "k"}
     )
 
     # 1. Join recipe wins over write recipe

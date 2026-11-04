@@ -245,7 +245,7 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
         dry_runs: list[str] = []
 
         def dry_run(graph: Any, *_args: Any, **_kwargs: Any) -> dict[str, str]:
-            name = "second" if graph.node_map["out"].data.config["outputMapping"] else "first"
+            name = "second" if graph.node_map["out"].data.config["output_mapping"] else "first"
             dry_runs.append(name)
             return {f"{name}_premium": "Float64"}
 
@@ -365,10 +365,10 @@ class TestModelScorePassthroughRejectedAtDeploy:
     @pytest.mark.parametrize(
         "config",
         [
-            {"sourceType": "", "output_column": "pred"},
+            {"source_type": "", "output_column": "pred"},
             {"output_column": "pred"},
-            {"sourceType": "run", "run_id": "", "output_column": "pred"},
-            {"sourceType": "registered", "registered_model": "", "output_column": "pred"},
+            {"source_type": "run", "run_id": "", "output_column": "pred"},
+            {"source_type": "registered", "registered_model": "", "output_column": "pred"},
         ],
     )
     def test_unconfigured_model_score_raises(self, config):
@@ -395,7 +395,7 @@ class TestModelScorePassthroughRejectedAtDeploy:
 
         graph = _model_score_graph(
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "does-not-exist",
                 "artifact_path": "model.cbm",
                 "output_column": "pred",
@@ -453,7 +453,7 @@ class TestScoreTestQuotesThreadsArtifacts:
 
         graph = _model_score_graph(
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "r1",
                 "artifact_path": "model.cbm",
                 "output_column": "x",
@@ -499,7 +499,7 @@ class TestScoreTestQuotesThreadsArtifacts:
         quotes.mkdir()
         (quotes / "a.json").write_text(json.dumps([{"input": {"x": 1.0}}]))
 
-        graph = _model_score_graph({"sourceType": "", "output_column": "x"})
+        graph = _model_score_graph({"source_type": "", "output_column": "x"})
         resolved = _resolved_with(
             graph,
             quotes,
@@ -537,7 +537,7 @@ class TestScoreTestQuotesThreadsArtifacts:
         # Int64 x — drifts from the contract's Float64.
         (quotes / "a.json").write_text(json.dumps([{"input": {"x": 1}}]))
 
-        graph = _model_score_graph({"sourceType": "", "output_column": "x"})
+        graph = _model_score_graph({"source_type": "", "output_column": "x"})
         resolved = _resolved_with(
             graph,
             quotes,

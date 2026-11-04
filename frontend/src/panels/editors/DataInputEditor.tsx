@@ -10,7 +10,7 @@ import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 
 const INPUT_COMMON_KEYS = [
-  "inputMapping",
+  "input_mapping",
   "selected_columns",
   "column_renames",
   "contract",
@@ -21,7 +21,7 @@ const INPUT_COMMON_KEYS = [
 
 const DATABRICKS_KEYS = new Set([
   ...INPUT_COMMON_KEYS,
-  "inputType",
+  "input_type",
   "http_path",
   "table",
   "query",
@@ -103,7 +103,7 @@ export default function DataInputEditor({
 }) {
   const { capabilities, error } = useIoCapabilities()
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
-  const group = groups.find((candidate) => candidate.name === config.inputType)
+  const group = groups.find((candidate) => candidate.name === config.input_type)
   const format = group?.formats.find((candidate) => candidate.name === config.format)
   const databricksErrors =
     group?.name === "databricks" ? databricksConfigurationErrors(config) : []

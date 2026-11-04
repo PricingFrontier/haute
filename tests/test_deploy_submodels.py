@@ -138,7 +138,7 @@ def _project(
         for column in columns
     ]
     (project / "config" / "output.json").write_text(
-        json.dumps({"outputMapping": [{**m, "enabled": True} for m in mapping]}),
+        json.dumps({"output_mapping": [{**m, "enabled": True} for m in mapping]}),
         encoding="utf-8",
     )
     toml_path = project / "haute.toml"
@@ -231,7 +231,7 @@ pipeline.connect("second", "response", source_port="rated")
         files={
             "data/rates.json": json.dumps({"factor": 2}),
             "config/external_file/rates.json": json.dumps(
-                {"path": "data/rates.json", "fileType": "json"}
+                {"path": "data/rates.json", "file_type": "json"}
             ),
         },
     )
@@ -285,8 +285,8 @@ def test_load_file_deploy_preserves_logical_inputs(
                     nodeType=NodeType.EXTERNAL_FILE,
                     config={
                         "path": "data/rates.json",
-                        "fileType": "json",
-                        "inputMapping": {"policies": "quote", "adjustment": "policies_extra"},
+                        "file_type": "json",
+                        "input_mapping": {"policies": "quote", "adjustment": "policies_extra"},
                         "code": (
                             "df = policies.join(adjustment.select('quote_id', "
                             "fee=pl.col('fixture_value')), on='quote_id').with_columns("
@@ -327,7 +327,7 @@ def test_load_file_deploy_preserves_logical_inputs(
                     label="response",
                     nodeType=NodeType.OUTPUT,
                     config={
-                        "outputMapping": [
+                        "output_mapping": [
                             {
                                 "source_port": "after",
                                 "source_column": "premium",
@@ -361,7 +361,7 @@ def test_load_file_deploy_preserves_logical_inputs(
                 data=NodeData(
                     label=instance,
                     nodeType=NodeType.SUBMODEL,
-                    config={"definitionId": "pricing", "alias": instance, "instanceOf": owner},
+                    config={"definition_id": "pricing", "alias": instance, "instance_of": owner},
                 ),
             )
         )
@@ -382,7 +382,7 @@ def test_load_file_deploy_preserves_logical_inputs(
         id="response", source=selected, sourceHandle=f"out__{output}", target="response"
     )
     graph.edges.append(response_edge)
-    graph.node_map["response"].data.config["outputMapping"][0]["source_port"] = edge_input_name(
+    graph.node_map["response"].data.config["output_mapping"][0]["source_port"] = edge_input_name(
         response_edge, graph.node_map[selected], submodels=graph.submodels
     )
     quotes = [{"quote_id": "q1", "fixture_value": 10}]

@@ -278,19 +278,19 @@ class TestRecipePlanning:
             "tables": [
                 {
                     "factors": ["driver_age_band"],
-                    "outputColumn": "age_factor",
+                    "output_column": "age_factor",
                     "entries": [
                         {"driver_age_band": "young", "value": 1.2},
                         {"driver_age_band": "experienced", "value": 1.0},
                     ],
-                    "defaultValue": 1.0,
+                    "default_value": 1.0,
                 }
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
                 {
-                    "outputColumn": "technical_premium",
+                    "output_column": "technical_premium",
                     "operation": "multiply",
-                    "baseValue": 100.0,
+                    "base_value": 100.0,
                 }
             ],
         }
@@ -349,7 +349,7 @@ def test_categorical_banding_recipe_emits_canonical_rules() -> None:
             {
                 "banding": "categorical",
                 "column": "region",
-                "outputColumn": "region_group",
+                "output_column": "region_group",
                 "rules": [
                     {"value": "north", "assignment": "core"},
                     {"value": "south", "assignment": "core"},
@@ -393,7 +393,7 @@ def test_response_output_recipe_emits_canonical_mapping_and_edge() -> None:
             "name": "quote_response",
             "ref": "made",
             "config": {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "quotes",
                         "source_column": column,
@@ -450,7 +450,7 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
             "name": "response",
             "ref": "made_output",
             "config": {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": _sanitize_func_name(str(arguments["name"])),
                         "source_column": output_column,
@@ -476,7 +476,7 @@ def test_a_recipe_output_reads_the_created_node_by_its_id() -> None:
     recipe = expand_recipe("categorical_banding", arguments, ref="made")
 
     output = next(op for op in recipe if op["op"] == "add_node" and op["node_type"] == "output")
-    assert output["config"]["outputMapping"][0]["source_port"] == "Region_Band"
+    assert output["config"]["output_mapping"][0]["source_port"] == "Region_Band"
 
 
 @pytest.mark.parametrize(

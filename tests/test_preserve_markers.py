@@ -581,7 +581,7 @@ class TestUnkeptComments:
         quotes = tmp_path / "config" / "data_input" / "quotes.json"
         quotes.parent.mkdir(parents=True)
         quotes.write_text(
-            '{"inputType": "file", "format": "parquet", "mode": "scan", '
+            '{"input_type": "file", "format": "parquet", "mode": "scan", '
             '"path": "quotes.parquet", "arguments": {}}',
             encoding="utf-8",
         )

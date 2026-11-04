@@ -38,7 +38,7 @@ export function classifyBandingFactors(
     if (!isObjectLiteral(factor)) continue
     const banding = factor.banding
     if (banding !== "categorical" && banding !== "breakpoints") continue
-    const outputColumn = nonblankString(factor.outputColumn)
+    const outputColumn = nonblankString(factor.output_column)
     if (!outputColumn) continue
 
     if (!levelSets[outputColumn]) {

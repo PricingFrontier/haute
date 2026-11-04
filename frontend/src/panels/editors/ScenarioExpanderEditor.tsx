@@ -70,7 +70,7 @@ function StepsField({
       style={INPUT_STYLE}
       value={steps === null || steps === undefined ? "" : String(steps)}
       validate={stepCountError}
-      onCommit={(v) => onUpdate("stepCount", Number(v))}
+      onCommit={(v) => onUpdate("step_count", Number(v))}
     />
   )
 }
@@ -92,7 +92,7 @@ export default function ScenarioExpanderEditor({
   const columnName = configField(config, "column_name", "")
   const minValue = configField(config, "min_value", "")
   const maxValue = configField(config, "max_value", "")
-  const steps: unknown = config.stepCount
+  const steps: unknown = config.step_count
   const stepCount = typeof steps === "number" && Number.isInteger(steps) && steps >= 1 ? steps : null
   const stepColumn = configField(config, "step_column", "")
   const parsedMin = parseScenarioNumber(numberConfigText(minValue))

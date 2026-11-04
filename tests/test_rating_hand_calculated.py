@@ -28,12 +28,12 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
     factor = {
         "banding": "breakpoints",
         "column": "age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [
             {"boundary": "18", "label": "young"},
             {"boundary": "60", "label": "adult"},
         ],
-        "rightClosed": False,
+        "right_closed": False,
         "default": "senior",
     }
     banding = GraphNode(
@@ -43,7 +43,7 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
 
     table_a = {
         "factors": ["age_band"],
-        "outputColumn": "age_factor",
+        "output_column": "age_factor",
         "entries": [
             {"age_band": "young", "value": 1.5},
             {"age_band": "adult", "value": 1.0},
@@ -52,24 +52,24 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
     }
     table_b = {
         "factors": ["region"],
-        "outputColumn": "region_factor",
+        "output_column": "region_factor",
         "entries": [
             {"region": "north", "value": 0.9},
             {"region": "south", "value": 1.1},
         ],
-        "onMissing": "neutral",
+        "on_missing": "neutral",
     }
     combined = {
-        "outputColumn": "premium",
+        "output_column": "premium",
         "operation": "multiply",
-        "baseValue": 200.0,
+        "base_value": 200.0,
     }
     rating = GraphNode(
         id="rate",
         data=NodeData(
             label="rate",
             nodeType="ratingStep",
-            config={"tables": [table_a, table_b], "combinedOutputs": [combined]},
+            config={"tables": [table_a, table_b], "combined_outputs": [combined]},
         ),
     )
 

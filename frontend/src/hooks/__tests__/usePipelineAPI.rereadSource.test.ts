@@ -204,7 +204,7 @@ describe("usePipelineAPI - Refresh re-reads a structured Quote Input", () => {
   it.each([
     ["a re-preview that is not the frame's Refresh", quoteInput("quotes", quotesConfig), {}],
     ["a Data Input, whose forced re-read is Import", makeNode("quotes", "dataInput", {
-      data: { label: "quotes", nodeType: "dataInput", config: { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" } },
+      data: { label: "quotes", nodeType: "dataInput", config: { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv" } },
     }), { rereadSource: true }],
     ["a Quote Input with no emitting table", quoteInput("quotes", { path: "data/quotes.jsonl", tables: [{ ...emittingTable, emit: false }] }), { rereadSource: true }],
     ["a Quote Input reading a flat file", quoteInput("quotes", { path: "data/quotes.csv", tables: [emittingTable] }), { rereadSource: true }],

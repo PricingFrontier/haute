@@ -119,12 +119,12 @@ describe("buildNodeDataCacheIdentity for a consumer that reads its input", () =>
     id: "banding_1", type: "banding",
     data: { label: "Banding", description: "", nodeType: "banding", config: {} },
   }
-  const factor = { banding: "categorical", column: "cover", outputColumn: "cover_band", default: null }
+  const factor = { banding: "categorical", column: "cover", output_column: "cover_band", default: null }
 
   it("keeps a Banding node's identity through edits to its rules, but not its column", () => {
     const base = consumerIdentity(withConfig(banding, { factors: [{ ...factor, rules: [] }] }))
     const ruled = withConfig(banding, {
-      factors: [{ ...factor, outputColumn: "renamed", rules: [{ value: "comp", assignment: "C" }] }],
+      factors: [{ ...factor, output_column: "renamed", rules: [{ value: "comp", assignment: "C" }] }],
     })
     expect(consumerIdentity(ruled)).toEqual(base)
 
@@ -145,8 +145,8 @@ describe("buildNodeDataCacheIdentity for a consumer that reads its input", () =>
       id: "rating_1", type: "ratingStep",
       data: { label: "Rating", description: "", nodeType: "ratingStep", config: {} },
     }
-    expect(consumerIdentity(withConfig(rating, { tables: [{ outputColumn: "rate", entries: [] }] })))
-      .toEqual(consumerIdentity(withConfig(rating, { tables: [{ factors: [], outputColumn: "rate", entries: [] }] })))
+    expect(consumerIdentity(withConfig(rating, { tables: [{ output_column: "rate", entries: [] }] })))
+      .toEqual(consumerIdentity(withConfig(rating, { tables: [{ factors: [], output_column: "rate", entries: [] }] })))
   })
 
   it("hashes an upstream node not yet configured as one with an empty configuration", () => {
@@ -168,7 +168,7 @@ describe("buildNodeDataCacheIdentity for a consumer that reads its input", () =>
       data: { label: "Rating", description: "", nodeType: "ratingStep", config: {} },
     }
     const table = (factors: string[], value: string) => ({
-      factors, outputColumn: "rate", entries: [{ age: "young", value }],
+      factors, output_column: "rate", entries: [{ age: "young", value }],
     })
     const base = consumerIdentity(withConfig(rating, { tables: [table(["age"], "1.0")] }))
     expect(consumerIdentity(withConfig(rating, { tables: [table(["age"], "1.2")] }))).toEqual(base)
@@ -197,8 +197,8 @@ describe("buildNodeDataCacheIdentity execution dependencies", () => {
     data: { label: "Banding", description: "", nodeType: "banding", config: { factors: [] } },
   }
   it("changes when an upstream occurrence's shared definition changes", () => {
-    const owner: SimpleNode = { id: "owner", data: { label: "owner", description: "", nodeType: "submodel", config: { definitionId: "shared", alias: "owner" } } }
-    const copy: SimpleNode = { id: "copy", data: { label: "copy", description: "", nodeType: "submodel", config: { definitionId: "shared", alias: "copy", instanceOf: "owner" } } }
+    const owner: SimpleNode = { id: "owner", data: { label: "owner", description: "", nodeType: "submodel", config: { definition_id: "shared", alias: "owner" } } }
+    const copy: SimpleNode = { id: "copy", data: { label: "copy", description: "", nodeType: "submodel", config: { definition_id: "shared", alias: "copy", instance_of: "owner" } } }
     const identityFor = (code: string) => buildNodeDataCacheIdentity({
       node: consumer, allNodes: [owner, copy, consumer],
       edges: [{ id: "input", source: "copy", target: consumer.id, sourceHandle: "out__result" }],

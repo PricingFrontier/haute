@@ -64,7 +64,7 @@ export default function ModelScoreEditor({
   onDeleteInput?: (edgeId: string) => void
   accentColor: string
 }) {
-  const sourceType = configField(config, "sourceType", "registered")
+  const sourceType = configField(config, "source_type", "registered")
   const task = configField(config, "task", "regression")
   const outputColumn = configField(config, "output_column", "prediction")
   const mlflowDestination = configField(config, "mlflow_destination", "")
@@ -143,7 +143,7 @@ export default function ModelScoreEditor({
         <div className="mt-1">
           <ToggleButtonGroup
             value={sourceType}
-            onChange={(v) => onUpdate("sourceType", v)}
+            onChange={(v) => onUpdate("source_type", v)}
             options={[
               { key: "run", label: "Experiment Run" },
               { key: "registered", label: "Registered Model" },
@@ -180,7 +180,7 @@ export default function ModelScoreEditor({
           <PathPickerField
             label="Model File"
             value={modelPath}
-            onSelect={(path) => onUpdate({ sourceType: "file", model_path: path })}
+            onSelect={(path) => onUpdate({ source_type: "file", model_path: path })}
             extensions={MODEL_FILE_SUFFIXES.join(",")}
             testIdPrefix="model-score-file"
           />

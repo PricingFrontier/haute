@@ -124,7 +124,7 @@ def _build_scoring_graph(parquet_path: Path, code: str):
                         "label": "out",
                         "nodeType": "dataOutput",
                         "config": {
-                            "outputType": "file",
+                            "output_type": "file",
                             "format": "parquet",
                             "path": str(parquet_path.with_name("out.parquet")),
                         },

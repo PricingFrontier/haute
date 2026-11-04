@@ -371,7 +371,7 @@ def _download_json(
 
 def _model_score_config(run_id: str, destination: str | None) -> dict[str, Any]:
     config: dict[str, Any] = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": run_id,
         "artifact_path": MODEL_ARTIFACT,
         "task": "regression",
@@ -384,7 +384,7 @@ def _model_score_config(run_id: str, destination: str | None) -> dict[str, Any]:
 
 def _optimiser_apply_config(run_id: str, destination: str | None) -> dict[str, Any]:
     config: dict[str, Any] = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": run_id,
         "version": "latest",
         "version_column": "__optimiser_version__",

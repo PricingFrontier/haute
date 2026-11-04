@@ -56,9 +56,9 @@ function makeProps(
   const fullData = {
     description: "",
     nodeType: "submodel",
-    config: { definitionId: DEFINITION_ID, alias: "pricing" },
+    config: { definition_id: DEFINITION_ID, alias: "pricing" },
     _sourceHandleInputNames: Object.fromEntries(
-      (useGraphStore.getState().submodels[String(data.config?.definitionId ?? DEFINITION_ID)] as SubmodelDefinition | undefined)?.outputPorts.map((port) => [`out__${port.name}`, port.name]) ?? [],
+      (useGraphStore.getState().submodels[String(data.config?.definition_id ?? DEFINITION_ID)] as SubmodelDefinition | undefined)?.outputPorts.map((port) => [`out__${port.name}`, port.name]) ?? [],
     ),
     ...data,
   }
@@ -107,7 +107,7 @@ describe("SubmodelNode", () => {
     })
     const owner: Node = {
       id: "pricing", type: "submodel", position: { x: 0, y: 0 },
-      data: { label: "pricing", nodeType: "submodel", config: { definitionId: DEFINITION_ID, alias: "pricing" } },
+      data: { label: "pricing", nodeType: "submodel", config: { definition_id: DEFINITION_ID, alias: "pricing" } },
     }
     const graphRef = { current: { nodes: [owner], edges: [] as Edge[] } }
     let release!: (response: EditorIdentityBatchResponse) => void
@@ -151,7 +151,7 @@ describe("SubmodelNode", () => {
 
   it("labels an instance output with its authoritative executable name", () => {
     setDefinition({ outputPorts: [{ name: "premium", source: { nodeId: "score", handleId: null } }] })
-    renderNode({ label: "copy", config: { definitionId: DEFINITION_ID, alias: "copy", instanceOf: "pricing" }, _sourceHandleInputNames: { out__premium: "copy_premium" } })
+    renderNode({ label: "copy", config: { definition_id: DEFINITION_ID, alias: "copy", instance_of: "pricing" }, _sourceHandleInputNames: { out__premium: "copy_premium" } })
     expect(screen.getByText("copy_premium")).toBeVisible()
     expect(screen.queryByText("premium")).toBeNull()
   })
@@ -202,7 +202,7 @@ describe("SubmodelNode", () => {
     }] })
     const { container } = renderNode({
       label: "Legacy inputs",
-      config: { definitionId: "missing-definition", alias: "legacy" },
+      config: { definition_id: "missing-definition", alias: "legacy" },
       _loadAvailability: "unavailable",
       _sourceHandleInputNames: { out__output_1: "output_1" },
     })
@@ -228,9 +228,9 @@ describe("SubmodelNode", () => {
     const { unmount } = renderNode({
       label: "copy",
       config: {
-        definitionId: DEFINITION_ID,
+        definition_id: DEFINITION_ID,
         alias: "copy",
-        instanceOf: "owner",
+        instance_of: "owner",
       },
     })
     expect(screen.getByTestId("submodel-input-handle")).toBeTruthy()
@@ -353,7 +353,7 @@ describe("SubmodelNode", () => {
       const { container } = renderNode({
         label: "scoring",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring",
         },
       })
@@ -384,7 +384,7 @@ describe("SubmodelNode", () => {
       const { container } = renderNode({
         label: "scoring",
         config: {
-          definitionId: "definition_missing",
+          definition_id: "definition_missing",
           alias: "scoring",
         },
       })

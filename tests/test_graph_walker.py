@@ -45,7 +45,7 @@ def _source(root: Path, node_id: str, frame: pl.DataFrame, **config: object) -> 
     path = root / f"{node_id}.parquet"
     frame.write_parquet(path)
     return _node(
-        node_id, NodeType.DATA_INPUT, inputType="file", format="parquet", path=str(path), **config
+        node_id, NodeType.DATA_INPUT, input_type="file", format="parquet", path=str(path), **config
     )
 
 
@@ -113,7 +113,7 @@ def test_a_sink_walk_hands_back_the_recipes_a_full_write_is_chunked_by(
                 NodeType.EDGE_JOIN,
                 how="left",
                 on=["k"],
-                maintainOrder="left_right",
+                maintain_order="left_right",
             ),
             _node(
                 "shaped",
@@ -346,7 +346,7 @@ def _expander_graph(root: Path, *consumers: GraphNode, **shaping: object) -> Pip
                 column_name="price_adjustment",
                 min_value=0.9,
                 max_value=1.1,
-                stepCount=3,
+                step_count=3,
                 **shaping,
             ),
             *consumers,

@@ -1358,7 +1358,7 @@
             "descending": false
           }
         ],
-        "nullsLast": true
+        "nulls_last": true
       }
     ]
   },
@@ -1386,7 +1386,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       },
       {
         "id": "s55",
@@ -1405,7 +1405,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -1482,7 +1482,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -1537,7 +1537,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -1651,7 +1651,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -1731,7 +1731,7 @@
           "over": [
             "policy_id"
           ],
-          "orderBy": [
+          "order_by": [
             {
               "column": "claim_date",
               "descending": false
@@ -1757,7 +1757,7 @@
           "over": [
             "policy_id"
           ],
-          "orderBy": [
+          "order_by": [
             {
               "column": "claim_date",
               "descending": false
@@ -1786,7 +1786,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -1811,7 +1811,7 @@
           "over": [
             "policy_id"
           ],
-          "orderBy": [
+          "order_by": [
             {
               "column": "start_date",
               "descending": false
@@ -1857,7 +1857,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -1873,15 +1873,15 @@
         "kind": "join",
         "input": "rates",
         "how": "left",
-        "leftOn": [
+        "left_on": [
           "region"
         ],
-        "rightOn": [
+        "right_on": [
           "region"
         ],
         "suffix": "_right",
         "validate": "m:1",
-        "maintainOrder": "left"
+        "maintain_order": "left"
       },
       {
         "id": "s281",
@@ -1961,11 +1961,11 @@
         "kind": "join",
         "input": "accepted_policies",
         "how": "anti",
-        "maintainOrder": "left",
-        "leftOn": [
+        "maintain_order": "left",
+        "left_on": [
           "policy_id"
         ],
-        "rightOn": [
+        "right_on": [
           "policy_id"
         ],
         "suffix": "_right"
@@ -1979,7 +1979,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "the filtered claims frame is a separate upstream Transform node"
@@ -2030,11 +2030,11 @@
         "kind": "join",
         "input": "large_open_claims",
         "how": "semi",
-        "maintainOrder": "left",
-        "leftOn": [
+        "maintain_order": "left",
+        "left_on": [
           "policy_id"
         ],
-        "rightOn": [
+        "right_on": [
           "policy_id"
         ],
         "suffix": "_right"
@@ -2048,7 +2048,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "separate upstream node for the filtered claims"
@@ -2111,12 +2111,12 @@
         "kind": "join",
         "input": "benchmarks",
         "how": "inner",
-        "maintainOrder": "left_right",
-        "leftOn": [
+        "maintain_order": "left_right",
+        "left_on": [
           "region",
           "channel"
         ],
-        "rightOn": [
+        "right_on": [
           "region",
           "channel"
         ],
@@ -2148,7 +2148,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "separate upstream node for the benchmark aggregation"
@@ -2193,9 +2193,9 @@
         "kind": "join",
         "input": "scenarios",
         "how": "cross",
-        "maintainOrder": "left_right",
-        "leftOn": [],
-        "rightOn": [],
+        "maintain_order": "left_right",
+        "left_on": [],
+        "right_on": [],
         "suffix": "_right"
       },
       {
@@ -2255,7 +2255,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -2356,7 +2356,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "two upstream filter nodes feed a concat node"
@@ -2488,7 +2488,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -2598,7 +2598,7 @@
           "over": [
             "policy_id"
           ],
-          "orderBy": [
+          "order_by": [
             {
               "column": "start_date",
               "descending": false
@@ -2627,7 +2627,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -2813,7 +2813,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "fixed-column pivot step, lowered to a group-by"
@@ -2837,8 +2837,8 @@
           "quote_id",
           "policy_id"
         ],
-        "variableName": "measure",
-        "valueName": "value"
+        "variable_name": "measure",
+        "value_name": "value"
       },
       {
         "id": "s3",
@@ -2853,7 +2853,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "unpivot step"
@@ -2898,7 +2898,7 @@
             "descending": false
           }
         ],
-        "nullsLast": true
+        "nulls_last": true
       },
       {
         "id": "s332",
@@ -2941,12 +2941,12 @@
         "kind": "join",
         "input": "claims",
         "how": "inner",
-        "maintainOrder": "left_right",
-        "leftOn": [
+        "maintain_order": "left_right",
+        "left_on": [
           "policy_id",
           "claim_id"
         ],
-        "rightOn": [
+        "right_on": [
           "policy_id",
           "claim_id"
         ],
@@ -2969,7 +2969,7 @@
             "descending": false
           }
         ],
-        "nullsLast": true
+        "nulls_last": true
       }
     ],
     "note": "top-N per group as row numbers after a sort, then a join back to the rows"
@@ -3085,7 +3085,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -3117,11 +3117,11 @@
         "kind": "join",
         "input": "rates",
         "how": "inner",
-        "maintainOrder": "left_right",
-        "leftOn": [
+        "maintain_order": "left_right",
+        "left_on": [
           "region"
         ],
-        "rightOn": [
+        "right_on": [
           "region"
         ],
         "suffix": "_right",
@@ -3340,7 +3340,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -3396,11 +3396,11 @@
           "kind": "join",
           "input": "accepted_claims",
           "how": "inner",
-          "maintainOrder": "left_right",
-          "leftOn": [
+          "maintain_order": "left_right",
+          "left_on": [
             "policy_id"
           ],
-          "rightOn": [
+          "right_on": [
             "policy_id"
           ],
           "suffix": "_right"
@@ -3485,11 +3485,11 @@
         "kind": "join",
         "input": "history",
         "how": "left",
-        "maintainOrder": "left_right",
-        "leftOn": [
+        "maintain_order": "left_right",
+        "left_on": [
           "quote_id"
         ],
-        "rightOn": [
+        "right_on": [
           "quote_id"
         ],
         "suffix": "_right",
@@ -3612,7 +3612,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ]
   },
@@ -3640,7 +3640,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       },
       {
         "id": "s315",
@@ -3825,7 +3825,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       },
       {
         "id": "s325",
@@ -3882,7 +3882,7 @@
             "descending": false
           }
         ],
-        "nullsLast": false
+        "nulls_last": false
       }
     ],
     "note": "row numbers follow the preceding sort, as in the original"

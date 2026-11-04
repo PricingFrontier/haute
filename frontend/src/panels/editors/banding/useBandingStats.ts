@@ -66,7 +66,7 @@ export default function useBandingStats({
             column: factor.column,
             banding: factor.banding,
             rules: factor.rules ?? [],
-            rightClosed: factor.rightClosed ?? true,
+            rightClosed: factor.right_closed ?? true,
             bins: histogramBins ?? null,
           } satisfies AskedFactor)
         : null,
@@ -80,7 +80,7 @@ export default function useBandingStats({
         : null,
     [factor, histogramBins],
   )
-  const outputColumn = factor?.outputColumn ?? ""
+  const outputColumn = factor?.output_column ?? ""
   const { cache, answer, answerIsCurrent, cacheRequired, loading, basis, error } = useWholeDataAnswer<BandingStatsResponse>({
     node,
     allNodes,
@@ -98,9 +98,9 @@ export default function useBandingStats({
         factor: {
           banding: question.banding,
           column: question.column,
-          outputColumn,
+          output_column: outputColumn,
           rules: question.rules,
-          rightClosed: question.rightClosed,
+          right_closed: question.rightClosed,
         },
         ...(question.bins === null ? {} : { histogramBins: question.bins }),
         signal,

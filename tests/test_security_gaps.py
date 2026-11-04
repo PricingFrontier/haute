@@ -470,7 +470,7 @@ class TestResourceExhaustionConfig:
                     "tables": [
                         {
                             "factors": ["x"],
-                            "outputColumn": "f",
+                            "output_column": "f",
                             "entries": entries,
                         }
                     ]
@@ -493,7 +493,7 @@ class TestResourceExhaustionConfig:
                         {
                             "banding": "breakpoints",
                             "column": "x",
-                            "outputColumn": "x_f",
+                            "output_column": "x_f",
                             "rules": rules,
                         }
                     ]

@@ -41,7 +41,7 @@ def build_graph(base_path: Path, *, steps: int) -> Any:
                 "label": "source",
                 "nodeType": "dataInput",
                 "config": {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": str(base_path),
@@ -59,7 +59,7 @@ def build_graph(base_path: Path, *, steps: int) -> Any:
                     "column_name": "premium_multiplier",
                     "min_value": 0.8,
                     "max_value": 1.2,
-                    "stepCount": steps,
+                    "step_count": steps,
                     "step_column": "scenario_index",
                     "contract": {
                         "inputs": [],
@@ -93,7 +93,7 @@ def build_graph(base_path: Path, *, steps: int) -> Any:
                 "label": "conversion_scoring",
                 "nodeType": "modelScore",
                 "config": {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "auto-range-memory",
                     "artifact_path": "model.cbm",
                     "task": "regression",

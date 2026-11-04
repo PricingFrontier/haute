@@ -67,12 +67,12 @@ def _validate_factor_dtypes(
     table_index: int,
 ) -> None:
     """Validate optional backend-authored dtype metadata without inventing it."""
-    if "factorDtypes" not in table:
+    if "factor_dtypes" not in table:
         return
-    raw = table["factorDtypes"]
+    raw = table["factor_dtypes"]
     if not isinstance(raw, dict):
         raise ConfigSettingError(
-            f"{_table_context(table_index)}.factorDtypes must be an object", setting="tables"
+            f"{_table_context(table_index)}.factor_dtypes must be an object", setting="tables"
         )
 
     # Late import avoids the module cycle: _rating imports this codec.
@@ -81,13 +81,21 @@ def _validate_factor_dtypes(
     for factor, descriptor in raw.items():
         if not isinstance(factor, str) or factor not in factors:
             raise ConfigSettingError(
-                f"{_table_context(table_index)}.factorDtypes key {factor!r} "
+                f"{_table_context(table_index)}.factor_dtypes key {factor!r} "
                 "must name a selected factor",
                 setting="tables",
             )
         if not is_rating_dtype_descriptor(descriptor):
+            from haute._config_validation import camel_case_key_message
+
+            camel_case = camel_case_key_message(
+                f"{_table_context(table_index)}.factor_dtypes[{factor!r}]",
+                list(descriptor) if isinstance(descriptor, dict) else [],
+            )
+            if camel_case is not None:
+                raise ConfigSettingError(camel_case, setting="tables")
             raise ConfigSettingError(
-                f"{_table_context(table_index)}.factorDtypes[{factor!r}] "
+                f"{_table_context(table_index)}.factor_dtypes[{factor!r}] "
                 "is not a valid rating dtype descriptor",
                 setting="tables",
             )
@@ -162,7 +170,7 @@ def _normalise_entry_rows(
 def _normalise_entries_for_table(table: dict[str, Any], table_index: int) -> dict[str, Any]:
     result = deepcopy(table)
     if "entries" not in result:
-        if "factors" in result or "factorDtypes" in result:
+        if "factors" in result or "factor_dtypes" in result:
             factors = _validate_factors(result, table_index)
             _validate_factor_dtypes(result, factors, table_index)
         return result
@@ -204,12 +212,12 @@ def _refuse_levels_written_twice(table: dict[str, Any], factors: list[str]) -> N
 
 
 def refuse_levels_equal_under_factor_dtypes(config: dict[str, Any]) -> None:
-    """Refuse a table whose entries' levels match once converted to its ``factorDtypes``.
+    """Refuse a table whose entries' levels match once converted to its ``factor_dtypes``.
 
     The save's check (READ-06): a table that records a type for each factor is
     held to the run's own conversion, so ``"25.0"`` and ``"25.00"`` for a
     numeric factor are refused before a run meets them. A table without
-    ``factorDtypes`` for every factor is checked when it runs, against the
+    ``factor_dtypes`` for every factor is checked when it runs, against the
     frame's types. Any other failure of the conversion is the run's to report.
     """
     import polars as pl
@@ -222,7 +230,7 @@ def refuse_levels_equal_under_factor_dtypes(config: dict[str, Any]) -> None:
     from haute.errors import HauteError
 
     for table in config.get("tables") or []:
-        dtypes = table.get("factorDtypes") if isinstance(table, dict) else None
+        dtypes = table.get("factor_dtypes") if isinstance(table, dict) else None
         factors = table.get("factors") if isinstance(table, dict) else None
         if not isinstance(dtypes, dict) or not isinstance(factors, list):
             continue
@@ -258,7 +266,7 @@ def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
     combination of the other factors, in that order, then one rate per column, ``null``
     where no entry is. A rate of 0 is a rate. Levels keep their JSON type.
     """
-    # ``defaultValue`` is written as the editor holds it, text, which the engine reads.
+    # ``default_value`` is written as the editor holds it, text, which the engine reads.
     result = {key: value for key, value in table.items() if key != "entries"}
     entries = table.get("entries")
     factors = table.get("factors") or []
@@ -271,7 +279,7 @@ def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
         extra = sorted(str(key) for key in entry if key not in known)
         if extra:
             raise ConfigSettingError(
-                f"Rating table {table.get('name') or table.get('outputColumn')!r} has an entry "
+                f"Rating table {table.get('name') or table.get('output_column')!r} has an entry "
                 f"holding {extra[0]!r}, which a rating table's grid of levels and rates cannot "
                 "keep: remove it from the entry.",
                 setting="tables",
@@ -388,14 +396,14 @@ def validate_unique_rating_table_outputs(tables: list[dict[str, Any]]) -> None:
     """Reject table outputs that would overwrite and then be combined twice."""
     first_index_by_output: dict[str, int] = {}
     for table_index, table in enumerate(tables):
-        output_column = str(table.get("outputColumn", "") or "").strip()
+        output_column = str(table.get("output_column", "") or "").strip()
         if not output_column:
             continue
         first_index = first_index_by_output.get(output_column)
         if first_index is not None:
             raise ConfigSettingError(
-                f"ratingStep tables[{table_index}].outputColumn {output_column!r} "
-                f"duplicates ratingStep tables[{first_index}].outputColumn",
+                f"ratingStep tables[{table_index}].output_column {output_column!r} "
+                f"duplicates ratingStep tables[{first_index}].output_column",
                 setting="tables",
             )
         first_index_by_output[output_column] = table_index

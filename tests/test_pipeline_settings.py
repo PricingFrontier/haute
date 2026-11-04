@@ -568,7 +568,7 @@ def test_an_invalid_file_stops_a_preview_with_its_message(project: Path, client)
                     "label": "src",
                     "nodeType": "dataInput",
                     "config": {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(project / "a.parquet"),
                     },

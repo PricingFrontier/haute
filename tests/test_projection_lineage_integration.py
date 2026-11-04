@@ -634,7 +634,7 @@ def _lineage_fixture(
     right = _typed_node("right", NodeType.DATA_INPUT, label="right")
     config: dict = {"code": "df = left.select('a')"}
     if input_mapping is not None:
-        config["inputMapping"] = input_mapping
+        config["input_mapping"] = input_mapping
     target = _typed_node("target", NodeType.POLARS, config=config)
     edges = [
         GraphEdge(id="e_left", source="left", target="target"),

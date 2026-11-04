@@ -1,5 +1,5 @@
 {
-  "sourceType": "run",
+  "source_type": "run",
   "run_id": "replace-with-training-run-id",
   "artifact_path": "model",
   "task": "regression",

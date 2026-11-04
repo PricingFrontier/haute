@@ -1383,7 +1383,7 @@ def _nested() -> dict[str, SubmodelDefinition]:
 
 
 def _occurrence() -> GraphNode:
-    return _node("pricing", NodeType.SUBMODEL, {"definitionId": "pricing", "alias": "pricing"})
+    return _node("pricing", NodeType.SUBMODEL, {"definition_id": "pricing", "alias": "pricing"})
 
 
 def _two_request_inputs(case: str) -> PipelineGraph:

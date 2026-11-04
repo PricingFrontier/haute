@@ -2,7 +2,7 @@
   "node_type": "dataInput",
   "authorable": true,
   "fields": {
-    "inputType": "Where the data lives: \"file\", \"database\", \"lakehouse\", \"databricks\" or \"inline\". Each type has its own required keys.",
+    "input_type": "Where the data lives: \"file\", \"database\", \"lakehouse\", \"databricks\" or \"inline\". Each type has its own required keys.",
     "format": "For a file: \"parquet\", \"csv\", \"json\", \"ndjson\", \"ipc\", \"avro\", \"excel\", \"ods\" or \"lines\".",
     "mode": "\"scan\" reads lazily (Parquet, CSV, NDJSON, IPC); \"read\" loads eagerly for formats that cannot scan.",
     "path": "The file's path relative to the project root, with forward slashes.",
@@ -15,7 +15,7 @@
       "name": "minimal",
       "intent": "Read a Parquet file of policies.",
       "config": {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "data/policies.parquet",
@@ -27,7 +27,7 @@
       "name": "realistic",
       "intent": "Read a claims CSV with its dates parsed, keeping only claims with a positive incurred amount.",
       "config": {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": "data/claims.csv",

@@ -30,20 +30,20 @@ from tests._source_files import source_files
 
 # Sources the node's config model accepts in shape, so the parse is what refuses them.
 PARSE_REFUSED_SOURCES: dict[str, dict[str, Any]] = {
-    "run without run_id": {"sourceType": "run", "run_id": ""},
-    "registered without model": {"sourceType": "registered", "registered_model": ""},
-    "file without model_path": {"sourceType": "file", "model_path": ""},
+    "run without run_id": {"source_type": "run", "run_id": ""},
+    "registered without model": {"source_type": "registered", "registered_model": ""},
+    "file without model_path": {"source_type": "file", "model_path": ""},
     "version beside alias": {
-        "sourceType": "registered",
+        "source_type": "registered",
         "registered_model": "pricing",
         "version": "3",
         "alias": "champion",
     },
 }
-UNKNOWN_SOURCE: dict[str, Any] = {"sourceType": "mlflow", "run_id": "abc"}
+UNKNOWN_SOURCE: dict[str, Any] = {"source_type": "mlflow", "run_id": "abc"}
 INVALID_SOURCES: dict[str, dict[str, Any]] = {
     **PARSE_REFUSED_SOURCES,
-    "unknown sourceType": UNKNOWN_SOURCE,
+    "unknown source_type": UNKNOWN_SOURCE,
 }
 
 
@@ -130,14 +130,14 @@ def test_an_invalid_source_fails_identically_in_every_consumer(
 def test_an_unknown_source_type_is_refused_by_the_config_model_before_the_parse(
     mock_load: Any, consumer: Any, tmp_path: Path
 ) -> None:
-    """A run holds the config to its model, whose ``sourceType`` takes only known sources."""
+    """A run holds the config to its model, whose ``source_type`` takes only known sources."""
     with pytest.raises(
         NodeConfigError,
-        match=r"setting 'sourceType': Input should be '', 'run', 'registered' or 'file'",
+        match=r"setting 'source_type': Input should be '', 'run', 'registered' or 'file'",
     ) as caught:
         consumer(_config(UNKNOWN_SOURCE), tmp_path)
 
-    assert caught.value.setting == "sourceType"
+    assert caught.value.setting == "source_type"
     mock_load.assert_not_called()
 
 
@@ -158,9 +158,9 @@ def test_the_trace_explanation_refuses_an_unknown_source_type_with_the_parse(
 @pytest.mark.parametrize(
     ("source", "missing_field"),
     [
-        ({"sourceType": "run"}, "run_id"),
-        ({"sourceType": "registered", "registered_model": ""}, "registered_model"),
-        ({"sourceType": "file"}, "model_path"),
+        ({"source_type": "run"}, "run_id"),
+        ({"source_type": "registered", "registered_model": ""}, "registered_model"),
+        ({"source_type": "file"}, "model_path"),
     ],
 )
 def test_an_empty_identifier_is_an_incomplete_source(
@@ -175,11 +175,11 @@ def test_an_empty_identifier_is_an_incomplete_source(
 @pytest.mark.parametrize(
     "config",
     [
-        {"sourceType": 1, "run_id": "abc"},
-        {"sourceType": "run", "run_id": 7},
-        {"sourceType": "run", "run_id": "abc", "artifact_path": ["model.cbm"]},
-        {"sourceType": "registered", "registered_model": "m", "alias": " champion"},
-        {"sourceType": "file", "model_path": ["model.cbm"]},
+        {"source_type": 1, "run_id": "abc"},
+        {"source_type": "run", "run_id": 7},
+        {"source_type": "run", "run_id": "abc", "artifact_path": ["model.cbm"]},
+        {"source_type": "registered", "registered_model": "m", "alias": " champion"},
+        {"source_type": "file", "model_path": ["model.cbm"]},
     ],
     ids=[
         "non-string type",
@@ -199,8 +199,8 @@ def test_a_malformed_source_field_is_a_config_error_not_an_incomplete_source(
 
 def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
     assert parse_model_source({}) is None
-    assert parse_model_source({"sourceType": ""}) is None
-    with pytest.raises(ConfigError, match="sourceType"):
+    assert parse_model_source({"source_type": ""}) is None
+    with pytest.raises(ConfigError, match="source_type"):
         require_model_source({"output_column": "pred"})
 
 
@@ -208,12 +208,12 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
     ("config", "expected"),
     [
         (
-            {"sourceType": "run", "run_id": "abc"},
+            {"source_type": "run", "run_id": "abc"},
             RunModelSource(run_id="abc", artifact_path="", mlflow_destination=""),
         ),
         (
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "abc",
                 "artifact_path": "model.cbm",
                 "mlflow_destination": "databricks",
@@ -224,7 +224,7 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
             ),
         ),
         (
-            {"sourceType": "registered", "registered_model": "pricing"},
+            {"source_type": "registered", "registered_model": "pricing"},
             RegisteredModelSource(
                 registered_model="pricing",
                 version="latest",
@@ -234,7 +234,7 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
             ),
         ),
         (
-            {"sourceType": "registered", "registered_model": "pricing", "alias": "champion"},
+            {"source_type": "registered", "registered_model": "pricing", "alias": "champion"},
             RegisteredModelSource(
                 registered_model="pricing",
                 version="",
@@ -244,7 +244,7 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
             ),
         ),
         (
-            {"sourceType": "registered", "registered_model": "pricing", "version": "4"},
+            {"source_type": "registered", "registered_model": "pricing", "version": "4"},
             RegisteredModelSource(
                 registered_model="pricing",
                 version="4",
@@ -256,7 +256,7 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
         (
             # A file source never reads MLflow fields.
             {
-                "sourceType": "file",
+                "source_type": "file",
                 "model_path": "models/freq.cbm",
                 "run_id": "abc",
                 "mlflow_destination": "databricks",
@@ -291,7 +291,7 @@ def test_a_run_source_loads_without_registry_fields(mock_load: Any) -> None:
 def test_a_registered_source_loads_by_alias(mock_load: Any) -> None:
     load_scoring_model(
         require_model_source(
-            {"sourceType": "registered", "registered_model": "pricing", "alias": "champion"}
+            {"source_type": "registered", "registered_model": "pricing", "alias": "champion"}
         ),
         "regression",
     )

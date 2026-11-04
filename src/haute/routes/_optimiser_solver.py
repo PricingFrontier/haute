@@ -509,7 +509,7 @@ def _ratebook_factor_level_order(
 
     order: dict[str, list[str]] = {}
     for factor in normalise_banding_factors(banding_node.data.config):
-        output_column = factor.get("outputColumn")
+        output_column = factor.get("output_column")
         if not isinstance(output_column, str) or not output_column:
             continue
 

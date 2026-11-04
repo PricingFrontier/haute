@@ -57,7 +57,7 @@ def _submodel_occurrence(definition_id: str) -> GraphNode:
             label=definition_id,
             nodeType="submodel",
             config={
-                "definitionId": definition_id,
+                "definition_id": definition_id,
                 "alias": definition_id,
             },
         ),

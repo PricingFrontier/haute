@@ -163,7 +163,7 @@ describe("pipeline editor document contract", async () => {
       authored_id: "sub",
       label: "Different Label",
       node_type: "submodel",
-      config: { definitionId: "def_sub", alias: "sub_alias" },
+      config: { definition_id: "def_sub", alias: "sub_alias" },
     })
     await expect(parsePipelineEditorDocument(fixture).then(adaptPipelineEditorDocument)).rejects.toThrow(
       "parsePipelineEditorDocument: submodel node node:sub label must equal its alias",
@@ -178,7 +178,7 @@ describe("pipeline editor document contract", async () => {
       authored_id: "sub",
       label: "sub_alias",
       node_type: "submodel",
-      config: { definitionId: "def_sub", alias: "sub_alias" },
+      config: { definition_id: "def_sub", alias: "sub_alias" },
     })
     await expect(parsePipelineEditorDocument(fixture).then(adaptPipelineEditorDocument)).rejects.toThrow(
       "parsePipelineEditorDocument: submodel node node:sub id must equal its alias",

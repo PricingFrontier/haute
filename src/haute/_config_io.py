@@ -219,7 +219,7 @@ def _prepare_config_for_sidecar(
 #: Each node type's settings a sidecar leaves out at their default: the loader reads the
 #: key's absence as that value (READ-10).
 _SIDECAR_DEFAULTS: dict[NodeType, dict[str, Any]] = {
-    NodeType.RATING_STEP: {"combinedOutputs": []},
+    NodeType.RATING_STEP: {"combined_outputs": []},
     NodeType.DATA_INPUT: {"arguments": {}},
     NodeType.DATA_OUTPUT: {"arguments": {}},
 }
@@ -228,10 +228,10 @@ _SIDECAR_DEFAULTS: dict[NodeType, dict[str, Any]] = {
 _RATING_TABLE_KEYS = (
     "name",
     "factors",
-    "factorDtypes",
-    "outputColumn",
-    "onMissing",
-    "defaultValue",
+    "factor_dtypes",
+    "output_column",
+    "on_missing",
+    "default_value",
     "columns",
     "rows",
 )

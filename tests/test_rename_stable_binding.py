@@ -1,4 +1,4 @@
-"""Test stable inputMapping bindings preserved across renames at execution and codegen."""
+"""Test stable input_mapping bindings preserved across renames at execution and codegen."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def test_rename_stable_binding_execution_and_round_trip():
             nodeType=NodeType.POLARS,
             config={
                 "code": "df = src.with_columns(value_doubled=pl.col('value') * 2)",
-                "inputMapping": {"src": "Renamed_Src"},
+                "input_mapping": {"src": "Renamed_Src"},
             },
         ),
     )
@@ -82,15 +82,15 @@ def test_rename_stable_binding_execution_and_round_trip():
     assert unbound_results["consumer"].status == "error"
     assert "src" in (unbound_results["consumer"].error or "")
 
-    # 4. Codegen round-trip asserting inputMapping preserved and parameter list is 'src'
+    # 4. Codegen round-trip asserting input_mapping preserved and parameter list is 'src'
     code = graph_to_code(renamed_graph, pipeline_name="rename_stable_binding")
-    assert '@pipeline.polars(inputMapping={"src": "Renamed_Src"})\n' in code
+    assert '@pipeline.polars(input_mapping={"src": "Renamed_Src"})\n' in code
     assert "def consumer(src: pl.LazyFrame)" in code
     assert "df = src.with_columns" in code
 
     parsed = parse_pipeline_source(code)
     parsed_consumer = next(node for node in parsed.nodes if node.id == "consumer")
-    assert parsed_consumer.data.config.get("inputMapping") == {"src": "Renamed_Src"}
+    assert parsed_consumer.data.config.get("input_mapping") == {"src": "Renamed_Src"}
 
     tree = ast.parse(code)
     consumer_fn = next(

@@ -26,7 +26,7 @@ SCORER_SIDECAR = "config/model_scoring/scorer.json"
 def _model_score_graph(extra_config: dict[str, Any] | None = None):
     """Two-node graph: parquet data input feeding a run-based model score."""
     config: dict[str, Any] = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": "run123",
         "artifact_path": "model.cbm",
         "task": "regression",
@@ -114,7 +114,7 @@ class TestModelScoreCodegen:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "abc123",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -159,7 +159,7 @@ class TestModelScoreCodegen:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-model",
                                 "version": "3",
                                 "task": "regression",
@@ -197,7 +197,7 @@ class TestModelScoreCodegen:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "abc",
                                 "artifact_path": "model.cbm",
                                 "task": "classification",
@@ -237,7 +237,7 @@ class TestModelScoreCodegen:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "abc",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -274,7 +274,7 @@ class TestModelScoreCodegen:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "abc",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -396,7 +396,7 @@ class TestParserRoundTrip:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run123",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -423,7 +423,7 @@ class TestParserRoundTrip:
         assert "scorer" in node_map
         scorer = node_map["scorer"]
         assert scorer.data.nodeType == "modelScore"
-        assert scorer.data.config.get("sourceType") == "run"
+        assert scorer.data.config.get("source_type") == "run"
         assert scorer.data.config.get("run_id") == "run123"
         # Auto-generated scaffolding must NOT leak into config["code"]
         assert scorer.data.config.get("code", "") == ""
@@ -450,7 +450,7 @@ class TestParserRoundTrip:
                             "label": "scorer",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run123",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -534,7 +534,7 @@ class TestModelScoreDestinationPersistence:
         config_path.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run123",
                     "artifact_path": "model.cbm",
                     "task": "regression",
@@ -565,7 +565,7 @@ class TestModelScoreDestinationPersistence:
         config_path.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run123",
                     "artifact_path": "model.cbm",
                     "task": "regression",

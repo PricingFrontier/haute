@@ -36,11 +36,11 @@
         "node_configs": {
           "loaded_quotes": {
             "how": "left",
-            "maintainOrder": "left_right",
-            "leftOn": [
+            "maintain_order": "left_right",
+            "left_on": [
               "region_code"
             ],
-            "rightOn": [
+            "right_on": [
               "code"
             ]
           },

@@ -71,14 +71,14 @@ RATING_KEY_CASES = (
         pl.Datetime("ms"),
         datetime(2024, 1, 2, 3, 4, 5, 123000),
         "2024-01-02 03:04:05.123",
-        {"kind": "Datetime", "timeUnit": "ms", "timeZone": None},
+        {"kind": "Datetime", "time_unit": "ms", "time_zone": None},
     ),
     RatingKeyCase(
         "datetime_utc",
         pl.Datetime("us", "UTC"),
         datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=UTC),
         "2024-01-02 03:04:05.123456+00:00",
-        {"kind": "Datetime", "timeUnit": "us", "timeZone": "UTC"},
+        {"kind": "Datetime", "time_unit": "us", "time_zone": "UTC"},
     ),
     RatingKeyCase(
         "time",
@@ -92,7 +92,7 @@ RATING_KEY_CASES = (
         pl.Duration("ms"),
         timedelta(seconds=1, milliseconds=234),
         "PT1.234S",
-        {"kind": "Duration", "timeUnit": "ms"},
+        {"kind": "Duration", "time_unit": "ms"},
     ),
     RatingKeyCase("null", pl.Null, None, None, {"kind": "Null"}, matches=False),
 )

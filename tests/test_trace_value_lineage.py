@@ -39,7 +39,7 @@ def _left_join(node_id: str) -> GraphNode:
     return _node(
         node_id,
         NodeType.EDGE_JOIN,
-        {"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
+        {"how": "left", "maintain_order": "left_right", "on": ["quote_id"]},
     )
 
 
@@ -100,7 +100,7 @@ def _pricing_graph(tmp_path) -> object:
                         "step_column": "scenario_index",
                         "min_value": 0.9,
                         "max_value": 1.1,
-                        "stepCount": 3,
+                        "step_count": 3,
                         "code": SCENARIO_CODE,
                     },
                 ),
@@ -108,7 +108,7 @@ def _pricing_graph(tmp_path) -> object:
                     "apply",
                     NodeType.OPTIMISER_APPLY,
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": str(artifact_path),
                         "optimised_value_column": "optimal_premium",
                     },
@@ -631,7 +631,7 @@ def test_a_ratio_constraint_leads_to_its_numerator_and_denominator(tmp_path):
                     "apply",
                     NodeType.OPTIMISER_APPLY,
                     {
-                        "sourceType": "file",
+                        "source_type": "file",
                         "artifact_path": str(artifact_path),
                         "optimised_value_column": "optimal_premium",
                     },
@@ -691,7 +691,7 @@ def test_a_multi_frame_base_is_read_through_the_frame_its_edge_names(join_unreso
         ("rates", None): {"quote_id", "read"},
     }
     lineage = _join_lineage(
-        {"how": "left", "maintainOrder": "left_right", "on": ["quote_id"]},
+        {"how": "left", "maintain_order": "left_right", "on": ["quote_id"]},
         frames=frames,
         base=("api", "policies"),
         join=("rates", None),
@@ -712,9 +712,9 @@ def test_a_coalesced_full_join_key_leads_to_both_sides_under_their_own_names():
     lineage = _join_lineage(
         {
             "how": "full",
-            "maintainOrder": "left_right",
-            "leftOn": "read",
-            "rightOn": "right_key",
+            "maintain_order": "left_right",
+            "left_on": "read",
+            "right_on": "right_key",
             "coalesce": True,
         },
         frames=frames,

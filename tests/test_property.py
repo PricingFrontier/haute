@@ -671,7 +671,7 @@ class TestRatingTableRowCount:
         ]
         table = {
             "factors": ["factor1"],
-            "outputColumn": "rating",
+            "output_column": "rating",
             "entries": entries,
         }
         result = _apply_rating_table(lf, table).collect()

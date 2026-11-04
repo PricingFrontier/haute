@@ -25,7 +25,7 @@ _ConnectCall = tuple[str, str, str | None, str | None]
 
 def _declared_input_mapping(config: Mapping[str, Any]) -> Mapping[str, str] | None:
     """The node's logical-to-connected mapping, or None for unmapped nodes."""
-    mapping = config.get("inputMapping")
+    mapping = config.get("input_mapping")
     return mapping if isinstance(mapping, Mapping) else None
 
 

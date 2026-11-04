@@ -184,7 +184,7 @@ _BROWSER_GLM_CONFIG = """{
 }
 """
 _BROWSER_OUTPUT_CONFIG = """{
-  "outputMapping": [
+  "output_mapping": [
     {
       "source_port": "enriched",
       "source_column": "value",
@@ -205,18 +205,18 @@ _BROWSER_MIXED_BANDING_CONFIG = """{
     {
       "banding": "breakpoints",
       "column": "proposer_age",
-      "outputColumn": "proposer_age_band",
+      "output_column": "proposer_age_band",
       "rules": [
         {"upper": 40, "label": "Age 40 or below"},
         {"label": "Age over 40"}
       ],
-      "rightClosed": true,
+      "right_closed": true,
       "default": "Age other"
     },
     {
       "banding": "categorical",
       "column": "channel",
-      "outputColumn": "channel_band",
+      "output_column": "channel_band",
       "rules": {
         "direct": "Direct",
         "broker": "Broker"
@@ -226,12 +226,12 @@ _BROWSER_MIXED_BANDING_CONFIG = """{
     {
       "banding": "breakpoints",
       "column": "vehicle_age",
-      "outputColumn": "vehicle_age_band",
+      "output_column": "vehicle_age_band",
       "rules": [
         {"upper": 5, "label": "Vehicle 0-5"},
         {"label": "Vehicle 6+"}
       ],
-      "rightClosed": true,
+      "right_closed": true,
       "default": "Vehicle other"
     }
   ]
@@ -245,13 +245,13 @@ _BROWSER_RATING_CONFIG = """{
         "channel_band",
         "vehicle_age_band"
       ],
-      "outputColumn": "browser_relativity",
-      "defaultValue": 1.0,
+      "output_column": "browser_relativity",
+      "default_value": 1.0,
       "columns": [],
       "rows": []
     }
   ],
-  "combinedOutputs": [],
+  "combined_outputs": [],
   "code": ""
 }
 """
@@ -311,7 +311,7 @@ _BROWSER_RATEBOOK_BANDING_CONFIG = """{
     {
       "banding": "categorical",
       "column": "region",
-      "outputColumn": "region_band",
+      "output_column": "region_band",
       "rules": {
         "North": "North",
         "South": "South",
@@ -323,7 +323,7 @@ _BROWSER_RATEBOOK_BANDING_CONFIG = """{
 }
 """
 _BROWSER_OPTIMISER_APPLY_CONFIG = """{
-  "sourceType": "file",
+  "source_type": "file",
   "artifact_path": "rating/output/optimiser_browser_optimiser_browser_optimiser.json",
   "version_column": "__optimiser_version__"
 }
@@ -473,7 +473,7 @@ def _augment_starter_pipeline() -> None:
     raw_rows_config_path = data_input_config_dir / "raw_rows.json"
     raw_rows_config_path.write_text(
         "{\n"
-        '  "inputType": "file",\n'
+        '  "input_type": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "path": "data/sample.parquet",\n'
@@ -484,7 +484,7 @@ def _augment_starter_pipeline() -> None:
     optimiser_rows_config_path = data_input_config_dir / "browser_optimiser_rows.json"
     optimiser_rows_config_path.write_text(
         "{\n"
-        '  "inputType": "file",\n'
+        '  "input_type": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "path": "data/optimiser_sample.parquet",\n'
@@ -494,7 +494,7 @@ def _augment_starter_pipeline() -> None:
     )
     (data_input_config_dir / "browser_ratebook_quotes.json").write_text(
         "{\n"
-        '  "inputType": "file",\n'
+        '  "input_type": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
         '  "path": "data/optimiser_quotes.parquet",\n'

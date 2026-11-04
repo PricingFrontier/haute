@@ -29,7 +29,7 @@
               {
                 "banding": "breakpoints",
                 "column": "driver_age",
-                "outputColumn": "age_band",
+                "output_column": "age_band",
                 "rules": [
                   {
                     "boundary": "24",
@@ -49,7 +49,7 @@
               {
                 "banding": "breakpoints",
                 "column": "inception_date",
-                "outputColumn": "inception_year",
+                "output_column": "inception_year",
                 "rules": [
                   {
                     "boundary": "2024-12-31",
@@ -65,7 +65,7 @@
               {
                 "banding": "categorical",
                 "column": "region_code",
-                "outputColumn": "region",
+                "output_column": "region",
                 "rules": [
                   {
                     "value": "NE",
@@ -89,7 +89,7 @@
               {
                 "banding": "breakpoints",
                 "column": "licence_years",
-                "outputColumn": "licence_band",
+                "output_column": "licence_band",
                 "rules": [
                   {
                     "boundary": "2",
@@ -142,7 +142,7 @@
               {
                 "banding": "breakpoints",
                 "column": "driver_age",
-                "outputColumn": "age_band",
+                "output_column": "age_band",
                 "rules": [
                   {
                     "boundary": "24",
@@ -162,7 +162,7 @@
               {
                 "banding": "breakpoints",
                 "column": "inception_date",
-                "outputColumn": "inception_year",
+                "output_column": "inception_year",
                 "rules": [
                   {
                     "boundary": "2024-12-31",
@@ -178,7 +178,7 @@
               {
                 "banding": "categorical",
                 "column": "region_code",
-                "outputColumn": "region",
+                "output_column": "region",
                 "rules": [
                   {
                     "value": "NE",
@@ -202,7 +202,7 @@
               {
                 "banding": "breakpoints",
                 "column": "licence_years",
-                "outputColumn": "licence_band",
+                "output_column": "licence_band",
                 "rules": [
                   {
                     "boundary": "3",

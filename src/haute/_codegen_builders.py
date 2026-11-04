@@ -532,9 +532,9 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
 
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> NodeSource:
-    # Its free code reads the names ``inputMapping`` keeps (the sidecar holds the
+    # Its free code reads the names ``input_mapping`` keeps (the sidecar holds the
     # mapping), so the function takes them as a Transform's does.
-    input_mapping = node.data.config.get("inputMapping")
+    input_mapping = node.data.config.get("input_mapping")
     if input_mapping is not None:
         source_names = resolve_input_mapping_names(source_names, input_mapping)
     return _config_backed(node, source_names)
@@ -614,7 +614,7 @@ def _transform_body(code: str) -> str:
 def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
     config = node.data.config
     code = str(config.get("code") or "").strip()
-    input_mapping = config.get("inputMapping")
+    input_mapping = config.get("input_mapping")
     steps = config.get("steps")
     if isinstance(steps, list) and input_mapping is not None:
         raise ConfigError(
@@ -652,7 +652,7 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
     if input_mapping is not None:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.
-        keywords.append(("inputMapping", input_mapping))
+        keywords.append(("input_mapping", input_mapping))
     # Not written yet: a polars node's output is whatever its code assigns to
     # ``df``, so with no code there is nothing to return — there is no implicit
     # passthrough, whatever the input count. A half-built graph is a normal

@@ -176,7 +176,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | Setting in the editor | Stored as |
     |---|---|
     | MLflow destination | `mlflow_destination`: `"databricks"` or `"server"`; absent for the local folder |
-    | **MODEL SOURCE** | `sourceType`: `"registered"`, `"run"` or `"file"` |
+    | **MODEL SOURCE** | `source_type`: `"registered"`, `"run"` or `"file"` |
     | **MODEL FILE** | `model_path`: the model file, relative to the project folder |
     | **MODEL NAME** | `registered_model` |
     | **VERSION** | `version` (a version number or `"latest"`), or `alias` for an alias such as `"champion"`; never both |
@@ -198,7 +198,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
 
     ```json
     {
-      "sourceType": "registered",
+      "source_type": "registered",
       "registered_model": "frequency_model",
       "version": "latest",
       "task": "regression",
@@ -214,7 +214,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
     | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
-    | `sourceType` | `""` or `"run"` or `"registered"` or `"file"` | Where the model comes from; empty or absent when no source is chosen yet. |
+    | `source_type` | `""` or `"run"` or `"registered"` or `"file"` | Where the model comes from; empty or absent when no source is chosen yet. |
     | `model_path` | text | For a file source, the model file in the project, such as `models/freq.cbm`. |
     | `experiment_name` | text | For a run source, the experiment's name, shown when the panel reopens. |
     | `experiment_id` | text | For a run source, the MLflow experiment's id. |
@@ -228,7 +228,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | `output_column` | text | The column the prediction is written to; `prediction` when absent. |
     | `feature_contract_path` | text | The feature contract the model scores under, when it is not beside the model. |
     | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace an MLflow source is read from; empty or absent is the local folder. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

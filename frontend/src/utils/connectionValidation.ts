@@ -200,11 +200,11 @@ export function validatePipelineConnection(
       && isSubmodelInstanceConfig(targetNode.data.config)
     ) {
       if (candidate.targetHandle === SUBMODEL_INPUT_HANDLE) {
-        const definition = submodels?.[targetNode.data.config.definitionId]
-        if (!isSubmodelDefinition(definition, targetNode.data.config.definitionId)) {
+        const definition = submodels?.[targetNode.data.config.definition_id]
+        if (!isSubmodelDefinition(definition, targetNode.data.config.definition_id)) {
           throw new Error("Canonical submodel definition is unavailable")
         }
-        if (targetNode.data.config.instanceOf !== undefined) {
+        if (targetNode.data.config.instance_of !== undefined) {
           const selection = chooseInstanceInput(targetNode, definition.inputPorts, edges, candidateName)
           return "choices" in selection ? { ok: true, inputChoices: selection.choices } : { ok: true }
         }
@@ -224,8 +224,8 @@ export function validatePipelineConnection(
         return { ok: true }
       }
       const config = targetNode.data.config
-      const definition = submodels?.[config.definitionId]
-      if (!isSubmodelDefinition(definition, config.definitionId)) {
+      const definition = submodels?.[config.definition_id]
+      if (!isSubmodelDefinition(definition, config.definition_id)) {
         throw new Error("Canonical submodel definition is unavailable")
       }
       const port = definition.inputPorts.find((port) => candidate.targetHandle === `in__${port.name}`)

@@ -156,7 +156,7 @@ def _stub_scoring_model() -> ScoringModel:
 
 def test_model_score_registered_source_is_read_from_the_sidecar(tmp_path: Path) -> None:
     config = {
-        "sourceType": "registered",
+        "source_type": "registered",
         "registered_model": "catalog.schema.pricing_model",
         "version": "7",
         "task": "regression",

@@ -772,9 +772,8 @@ def _extract_column_refs(
             if isinstance(col, str) and col:
                 refs.add(col)
 
-    # Exclude output columns — they are created, not read
+    # Exclude the output column: it is created, not read
     refs.discard(config.get("output_column", ""))
-    refs.discard(config.get("outputColumn", ""))
 
     return refs
 
@@ -2313,7 +2312,7 @@ def prepare_data_output(
             message=f"Wrote {row_count:,} rows to {path}",
             row_count=row_count,
             path=path,
-            format=str(config.get("format") or config["outputType"]),
+            format=str(config.get("format") or config["output_type"]),
             execution_metrics=ExecutionMetricsPayload.model_validate(
                 execution_context.metrics_payload(status="completed")
             ),

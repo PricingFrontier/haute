@@ -129,7 +129,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
     elif kind == NodeType.EXTERNAL_FILE:
         (root / "rates.json").write_text('{"factor": 3}', encoding="utf-8")
         config = {
-            "fileType": "json",
+            "file_type": "json",
             "path": "rates.json",
             "code": "df = policies.with_columns(premium=pl.col('fixture_value') * obj['factor'])",
         }
@@ -138,7 +138,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
         pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [31, 42]}).write_parquet(
             root / "fixed.parquet"
         )
-        config = {"inputType": "file", "format": "parquet", "path": "fixed.parquet"}
+        config = {"input_type": "file", "format": "parquet", "path": "fixed.parquet"}
         expected = [{"quote_id": "q1", "premium": 31}, {"quote_id": "q2", "premium": 42}]
     elif kind == NodeType.CONSTANT:
         config = {
@@ -151,7 +151,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
                 {
                     "banding": "categorical",
                     "column": "region",
-                    "outputColumn": "premium",
+                    "output_column": "premium",
                     "rules": [
                         {"value": "London", "assignment": "high"},
                         {"value": "Manchester", "assignment": "low"},
@@ -165,7 +165,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             "tables": [
                 {
                     "factors": ["region"],
-                    "outputColumn": "premium",
+                    "output_column": "premium",
                     "entries": [
                         {"region": "London", "value": 1.5},
                         {"region": "Manchester", "value": 2.0},
@@ -189,7 +189,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
         model.set_feature_names(["fixture_value"])
         model.save_model(str(root / "model.cbm"))
         config = {
-            "sourceType": "file",
+            "source_type": "file",
             "model_path": "model.cbm",
             "task": "regression",
             "output_column": "premium",
@@ -198,7 +198,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
         predictions = model.predict([[10], [20]]).tolist()
         expected = [{**row, "premium": value} for row, value in zip(rows, predictions)]
     elif kind == NodeType.EDGE_JOIN:
-        config = {"how": "left", "on": ["region"], "maintainOrder": "left_right"}
+        config = {"how": "left", "on": ["region"], "maintain_order": "left_right"}
         expected = [{**rows[0], "premium": 7}, {**rows[1], "premium": 9}]
     elif kind == NodeType.SCENARIO_EXPANDER:
         config = {
@@ -206,7 +206,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             "column_name": "premium",
             "min_value": 1.0,
             "max_value": 2.0,
-            "stepCount": 2,
+            "step_count": 2,
             "step_column": "step",
         }
         expected = [
@@ -219,7 +219,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             json.dumps(_make_ratebook_artifact()), encoding="utf-8"
         )
         config = {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": "optimisation.json",
             "version_column": "version",
             "optimised_value_column": "premium",
@@ -301,7 +301,7 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         _node(
             "policies",
             NodeType.DATA_INPUT,
-            inputType="file",
+            input_type="file",
             format="parquet",
             path="policies.parquet",
         ),
@@ -361,7 +361,7 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         _node(
             "response",
             NodeType.OUTPUT,
-            outputMapping=[
+            output_mapping=[
                 {
                     "source_port": port,
                     "source_column": c,
@@ -541,9 +541,9 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
             _node(
                 "rate_calc_3",
                 NodeType.SUBMODEL,
-                definitionId="rate_calc",
+                definition_id="rate_calc",
                 alias="rate_calc_3",
-                instanceOf="rate_calc",
+                instance_of="rate_calc",
             ),
         ]
     )
@@ -617,7 +617,7 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
                     _node(
                         "score",
                         NodeType.MODEL_SCORE,
-                        sourceType="file",
+                        source_type="file",
                         model_path=exported.json()["path"],
                         task="regression",
                         output_column="prediction",
@@ -626,7 +626,7 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
                     _node(
                         "scored_response",
                         NodeType.OUTPUT,
-                        outputMapping=[
+                        output_mapping=[
                             {
                                 "source_port": "score",
                                 "source_column": column,
@@ -779,7 +779,7 @@ def test_node_instance_acceptance_tracks_shared_edits_and_output_rename(
             _node(
                 "response",
                 NodeType.OUTPUT,
-                outputMapping=[
+                output_mapping=[
                     {
                         "source_port": "consumer",
                         "source_column": column,

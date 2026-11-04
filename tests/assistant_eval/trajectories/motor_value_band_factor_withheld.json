@@ -22,7 +22,7 @@
                         {
                           "banding": "breakpoints",
                           "column": "vehicle_value_k",
-                          "outputColumn": "value_band",
+                          "output_column": "value_band",
                           "rules": [
                             {
                               "boundary": "5",

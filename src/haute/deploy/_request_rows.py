@@ -472,7 +472,7 @@ class _Walk:
     ) -> _FrameFacts:
         config = node.data.config
         request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
-        source_type = config.get("sourceType", "")
+        source_type = config.get("source_type", "")
         if source_type in {"run", "registered"}:
             # Its result is loaded from MLflow when a request is scored.
             if request_in:
@@ -527,7 +527,7 @@ class _Walk:
         from_request = any(facts.from_request for facts in inputs)
         try:
             prefixes: dict[str, tuple[_Seg, ...]] = {}
-            for entry in node.data.config.get("outputMapping") or []:
+            for entry in node.data.config.get("output_mapping") or []:
                 if not is_active_mapping_entry(entry):
                     continue
                 prefix = tuple(_array_prefix(_parse_output_path(entry["output_path"])))

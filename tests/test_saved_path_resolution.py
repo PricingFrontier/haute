@@ -89,7 +89,7 @@ def test_the_registry_and_the_walker_read_the_project_root_file_over_a_decoy(
     decoy.parent.mkdir()
     pl.DataFrame({"read": ["beside the pipeline"]}).write_parquet(decoy)
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "data/policies.parquet",
@@ -206,7 +206,7 @@ def test_serving_resolves_only_the_paths_it_reads(project: Path, tmp_path_factor
             label="policies",
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "../data/policies.parquet",
@@ -234,8 +234,8 @@ def test_the_bundled_artifact_each_node_kind_reads() -> None:
             id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config)
         )
 
-    direct = {"inputType": "file", "format": "parquet", "mode": "scan", "path": r"a\p.parquet"}
-    snapshot = {"inputType": "file", "format": "csv", "mode": "scan", "path": "s.csv"}
+    direct = {"input_type": "file", "format": "parquet", "mode": "scan", "path": r"a\p.parquet"}
+    snapshot = {"input_type": "file", "format": "csv", "mode": "scan", "path": "s.csv"}
     remap = {
         "direct__p.parquet": "/b/p.parquet",
         "load__model.pkl": "/b/model.pkl",

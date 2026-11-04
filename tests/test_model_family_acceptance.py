@@ -87,9 +87,9 @@ def _deploy_graph(artifact_path: str, task: str, *, file_source: bool = False) -
     from tests.conftest import make_graph, make_output_config
 
     source = (
-        {"sourceType": "file", "model_path": artifact_path}
+        {"source_type": "file", "model_path": artifact_path}
         if file_source
-        else {"sourceType": "run", "run_id": "run", "artifact_path": artifact_path}
+        else {"source_type": "run", "run_id": "run", "artifact_path": artifact_path}
     )
 
     # Output assembly merges identical elements, so each row carries its id.
@@ -212,7 +212,7 @@ def every_path(
     node_config.write_text(
         json.dumps(
             {
-                "sourceType": "file",
+                "source_type": "file",
                 "model_path": model_path.name,
                 "task": task,
                 "output_column": "pred",
@@ -737,7 +737,7 @@ def test_a_prediction_only_classifier_deploys_its_labels(tmp_path: Path) -> None
                         "label": "ms",
                         "nodeType": "modelScore",
                         "config": {
-                            "sourceType": "run",
+                            "source_type": "run",
                             "run_id": "run",
                             "artifact_path": "svc.cbm",
                             "task": "classification",

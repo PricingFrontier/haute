@@ -833,7 +833,7 @@ class TestScoreFromConfig:
         config_path.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "abc123",
                     "artifact_path": "model.cbm",
                     "task": "regression",
@@ -873,7 +873,7 @@ class TestScoreFromConfig:
         config_abs.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "r1",
                     "artifact_path": "model.cbm",
                     "task": "regression",
@@ -901,7 +901,7 @@ class TestScoreFromConfig:
         config_abs.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "r2",
                     "artifact_path": "model",
                     "task": "regression",
@@ -930,7 +930,7 @@ class TestScoreFromConfig:
         config_abs.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "r3",
                     "artifact_path": "model",
                     "task": "regression",

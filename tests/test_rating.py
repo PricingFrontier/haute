@@ -103,12 +103,12 @@ class TestApplyRatingTable:
         # PIN REVISION (3a.3): a lookup miss without a default is now a
         # RatingTableMissError by default (tests/test_rating_miss_fail_loud.py);
         # the miss -> null shape this test pins requires the explicit
-        # onMissing="neutral" opt-in.
+        # on_missing="neutral" opt-in.
         lf = pl.DataFrame({"region": ["North", "South", "East"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "region_factor",
-            "onMissing": "neutral",
+            "output_column": "region_factor",
+            "on_missing": "neutral",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "South", "value": 0.9},
@@ -126,7 +126,7 @@ class TestApplyRatingTable:
         ).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "tier"],
-            "outputColumn": "rate",
+            "output_column": "rate",
             "entries": [
                 {"region": "North", "tier": "gold", "value": 1.5},
                 {"region": "North", "tier": "silver", "value": 1.0},
@@ -145,12 +145,12 @@ class TestApplyRatingTable:
         ).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "South", "value": 0.95},
                 {"region": "North", "value": 1.10},
             ],
-            "defaultValue": "1.0",
+            "default_value": "1.0",
         }
 
         result = _apply_rating_table(lf, table).collect(engine="streaming")
@@ -162,9 +162,9 @@ class TestApplyRatingTable:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
-            "defaultValue": "1.0",
+            "default_value": "1.0",
         }
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, 1.0]
@@ -172,13 +172,13 @@ class TestApplyRatingTable:
     def test_no_default_with_neutral_opt_in_leaves_null(self) -> None:
         # PIN REVISION (3a.3): formerly `test_no_default_leaves_null`, which
         # pinned the silent miss -> null path. Null is now reachable only via
-        # the explicit onMissing="neutral" opt-in; the default is fail-loud
+        # the explicit on_missing="neutral" opt-in; the default is fail-loud
         # (tests/test_rating_miss_fail_loud.py).
         lf = pl.DataFrame({"region": ["North", "Missing"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
-            "onMissing": "neutral",
+            "output_column": "factor",
+            "on_missing": "neutral",
             "entries": [{"region": "North", "value": 1.5}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -186,13 +186,13 @@ class TestApplyRatingTable:
 
     def test_empty_factors_passthrough(self) -> None:
         lf = pl.DataFrame({"x": [1]}).lazy()
-        table: dict[str, Any] = {"factors": [], "outputColumn": "y", "entries": []}
+        table: dict[str, Any] = {"factors": [], "output_column": "y", "entries": []}
         result = _apply_rating_table(lf, table).collect()
         assert "y" not in result.columns
 
     def test_empty_entries_passthrough(self) -> None:
         lf = pl.DataFrame({"x": [1]}).lazy()
-        table: dict[str, Any] = {"factors": ["x"], "outputColumn": "y", "entries": []}
+        table: dict[str, Any] = {"factors": ["x"], "output_column": "y", "entries": []}
         result = _apply_rating_table(lf, table).collect()
         assert "y" not in result.columns
 
@@ -200,7 +200,7 @@ class TestApplyRatingTable:
         lf = pl.DataFrame({"x": [1]}).lazy()
         table: dict[str, Any] = {
             "factors": ["x"],
-            "outputColumn": "",
+            "output_column": "",
             "entries": [{"x": 1, "value": 2}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -209,12 +209,12 @@ class TestApplyRatingTable:
     def test_numeric_factor_cast_to_string(self) -> None:
         """Integer factor columns should be cast to Utf8 for the join."""
         # PIN REVISION (3a.3): the miss on code 3 needs the explicit
-        # onMissing="neutral" opt-in; without it the miss is loud.
+        # on_missing="neutral" opt-in; without it the miss is loud.
         lf = pl.DataFrame({"code": [1, 2, 3]}).lazy()
         table: dict[str, Any] = {
             "factors": ["code"],
-            "outputColumn": "val",
-            "onMissing": "neutral",
+            "output_column": "val",
+            "on_missing": "neutral",
             "entries": [
                 {"code": 1, "value": 10.0},
                 {"code": 2, "value": 20.0},
@@ -224,11 +224,11 @@ class TestApplyRatingTable:
         assert result["val"].to_list() == [10.0, 20.0, None]
 
     def test_output_column_named_value(self) -> None:
-        """When outputColumn is 'value', the temporary column should not be dropped."""
+        """When output_column is 'value', the temporary column should not be dropped."""
         lf = pl.DataFrame({"k": ["a"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "value",
+            "output_column": "value",
             "entries": [{"k": "a", "value": 5.0}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -360,7 +360,7 @@ class TestRatingFactorInputSchema:
 
         table = {
             "factors": factors,
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{**{factor: "x" for factor in factors}, "value": 1.0}],
         }
         input_columns = {factor: ["x"] for factor in factors if factor != missing}
@@ -381,7 +381,7 @@ class TestRatingFactorInputSchema:
     def test_missing_input_factor_is_not_hidden_by_incomplete_entries(self) -> None:
         table = {
             "factors": ["missing"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"value": 1.0}],
         }
 
@@ -393,12 +393,12 @@ class TestRatingFactorInputSchema:
 
 
 # ---------------------------------------------------------------------------
-# B13: Non-numeric defaultValue handled gracefully
+# B13: Non-numeric default_value handled gracefully
 # ---------------------------------------------------------------------------
 
 
 class TestApplyRatingTableNonNumericDefault:
-    """B13 + 3a.3: an unusable defaultValue must not crash and must not
+    """B13 + 3a.3: an unusable default_value must not crash and must not
     fill garbage — and a miss with an unusable default is now LOUD.
 
     PIN REVISION (3a.3): this class previously pinned "unmatched rows get
@@ -406,15 +406,15 @@ class TestApplyRatingTableNonNumericDefault:
     in combined outputs presented base-rate pricing as success).  The B13
     half (no crash, no garbage fill) is kept; the silent-null half is now
     RatingTableMissError naming the ignored default, and null is reachable
-    only via the explicit onMissing="neutral" opt-in.
+    only via the explicit on_missing="neutral" opt-in.
     """
 
     def _make_table(self, default_value: Any, **extra: Any) -> dict[str, Any]:
         return {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
-            "defaultValue": default_value,
+            "default_value": default_value,
             **extra,
         }
 
@@ -452,7 +452,7 @@ class TestApplyRatingTableNonNumericDefault:
     def test_unusable_default_with_neutral_opt_in_leaves_null(self) -> None:
         """B13's no-garbage-fill guarantee, under the explicit opt-in."""
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
-        result = _apply_rating_table(lf, self._make_table("N/A", onMissing="neutral")).collect()
+        result = _apply_rating_table(lf, self._make_table("N/A", on_missing="neutral")).collect()
         assert result["factor"].to_list() == [1.2, None]
 
     def test_valid_numeric_string_still_works(self) -> None:
@@ -480,7 +480,7 @@ class TestApplyRatingTableDuplicateEntries:
         lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "North", "value": 1.0},
                 {"region": "North", "value": 2.0},  # duplicate factor
@@ -500,7 +500,7 @@ class TestApplyRatingTableDuplicateEntries:
         ).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "tier"],
-            "outputColumn": "rate",
+            "output_column": "rate",
             "entries": [
                 {"region": "North", "tier": "gold", "value": 1.0},
                 {"region": "North", "tier": "gold", "value": 3.0},  # dup
@@ -512,12 +512,12 @@ class TestApplyRatingTableDuplicateEntries:
 
     def test_no_duplicates_unchanged(self) -> None:
         """When no duplicates exist, behaviour is unchanged."""
-        # PIN REVISION (3a.3): the miss on "c" needs onMissing="neutral".
+        # PIN REVISION (3a.3): the miss on "c" needs on_missing="neutral".
         lf = pl.DataFrame({"k": ["a", "b", "c"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "val",
-            "onMissing": "neutral",
+            "output_column": "val",
+            "on_missing": "neutral",
             "entries": [
                 {"k": "a", "value": 1.0},
                 {"k": "b", "value": 2.0},
@@ -540,21 +540,21 @@ class TestApplyRatingTableExtraColumns:
         lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "North", "value": 1.2, "note": "foo", "id": 99},
                 {"region": "South", "value": 0.9, "note": "bar", "id": 100},
             ],
         }
         result = _apply_rating_table(lf, table).collect()
-        # Only original columns + outputColumn should be present
+        # Only original columns + output_column should be present
         assert set(result.columns) == {"region", "factor"}
 
     def test_extra_keys_do_not_affect_values(self) -> None:
         lf = pl.DataFrame({"k": ["x"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "out",
+            "output_column": "out",
             "entries": [
                 {"k": "x", "value": 42.0, "extra1": "a", "extra2": 123},
             ],
@@ -569,7 +569,7 @@ class TestApplyRatingTableExtraColumns:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "nonexistent"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.0}],
         }
         with pytest.raises(RatingFactorMissingError) as exc_info:
@@ -581,7 +581,7 @@ class TestApplyRatingTableExtraColumns:
         lf = pl.DataFrame({"k": ["a"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "val",
+            "output_column": "val",
             "entries": [{"k": "a", "value": 5.0}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -614,7 +614,7 @@ class TestApplyRatingTableSchemaCallCount:
         ).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "tier", "segment"],
-            "outputColumn": "rate",
+            "output_column": "rate",
             "entries": [
                 {"region": "North", "tier": "gold", "segment": "retail", "value": 1.5},
                 {"region": "South", "tier": "silver", "segment": "commercial", "value": 0.8},
@@ -659,7 +659,7 @@ class TestApplyRatingTableSchemaCallCount:
         ).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "tier"],
-            "outputColumn": "rate",
+            "output_column": "rate",
             "entries": [
                 {"region": "North", "tier": "gold", "value": 1.5},
                 {"region": "South", "tier": "silver", "value": 0.8},
@@ -680,7 +680,7 @@ class TestApplyRatingTableSchemaCallCount:
         ).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "nonexistent"],
-            "outputColumn": "rate",
+            "output_column": "rate",
             "entries": [
                 {"region": "North", "nonexistent": "x", "value": 1.5},
             ],
@@ -807,7 +807,7 @@ class TestLargeRatingTable:
         lf = pl.DataFrame({"region": [f"R{i}" for i in range(n)]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": entries,
         }
         result = _apply_rating_table(lf, table).collect()
@@ -822,9 +822,9 @@ class TestLargeRatingTable:
         lf = pl.DataFrame({"region": input_regions}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": entries,
-            "defaultValue": "-1.0",
+            "default_value": "-1.0",
         }
         result = _apply_rating_table(lf, table).collect()
         assert result.height == 2 * n
@@ -856,7 +856,7 @@ class TestAllNullRatingTable:
         lf = pl.DataFrame({"k": ["a", "b"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "out",
+            "output_column": "out",
             "entries": [
                 {"k": "a", "value": None},
                 {"k": "b", "value": None},
@@ -871,12 +871,12 @@ class TestAllNullRatingTable:
         lf = pl.DataFrame({"k": ["a", "b", "c"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "out",
+            "output_column": "out",
             "entries": [
                 {"k": "a", "value": None},
                 {"k": "b", "value": 2.0},
             ],
-            "defaultValue": "99.0",
+            "default_value": "99.0",
         }
         with pytest.raises(ValueError, match="null"):
             _apply_rating_table(lf, table)
@@ -892,8 +892,8 @@ class TestAllNullRatingTable:
 
         entries: list[dict[str, Any]] = [{"k": f"level_{index}"} for index in range(100)]
         entries.append({"k": "a", "value": 2.0})
-        table: dict[str, Any] = {"factors": ["k"], "outputColumn": "out", "entries": entries}
-        premium = {"outputColumn": "premium", "operation": "multiply", "baseValue": 100.0}
+        table: dict[str, Any] = {"factors": ["k"], "output_column": "out", "entries": entries}
+        premium = {"output_column": "premium", "operation": "multiply", "base_value": 100.0}
 
         with pytest.raises(ConfigSettingError) as caught:
             _apply_rating_step_outputs(pl.DataFrame({"k": ["a"]}).lazy(), [table], [premium])
@@ -1051,7 +1051,7 @@ class TestBandingEmptyDataFrame:
         lf = pl.DataFrame({"region": pl.Series([], dtype=pl.Utf8)}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -1076,7 +1076,7 @@ class TestSequentialRatingTables:
         lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
         table1: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "region_factor",
+            "output_column": "region_factor",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "South", "value": 0.8},
@@ -1088,7 +1088,7 @@ class TestSequentialRatingTables:
         # First, band the region_factor
         table2: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "region_loading",
+            "output_column": "region_loading",
             "entries": [
                 {"region": "North", "value": 0.5},
                 {"region": "South", "value": 0.3},
@@ -1107,7 +1107,7 @@ class TestSequentialRatingTables:
         lf = pl.DataFrame({"band": ["A", "B"]}).lazy()
         table1: dict[str, Any] = {
             "factors": ["band"],
-            "outputColumn": "f1",
+            "output_column": "f1",
             "entries": [
                 {"band": "A", "value": 2.0},
                 {"band": "B", "value": 3.0},
@@ -1115,7 +1115,7 @@ class TestSequentialRatingTables:
         }
         table2: dict[str, Any] = {
             "factors": ["band"],
-            "outputColumn": "f2",
+            "output_column": "f2",
             "entries": [
                 {"band": "A", "value": 1.5},
                 {"band": "B", "value": 0.5},
@@ -1130,7 +1130,7 @@ class TestSequentialRatingTables:
     def test_three_tables_sequential_with_nulls(self) -> None:
         """Three tables in sequence, some with nulls — nulls propagate correctly."""
         # PIN REVISION (3a.3): each table has a deliberate miss, which now
-        # requires the explicit onMissing="neutral" opt-in.
+        # requires the explicit on_missing="neutral" opt-in.
         lf = pl.DataFrame({"k": ["a", "b", "c"]}).lazy()
         for i, entries in enumerate(
             [
@@ -1141,8 +1141,8 @@ class TestSequentialRatingTables:
         ):
             table: dict[str, Any] = {
                 "factors": ["k"],
-                "outputColumn": f"t{i}",
-                "onMissing": "neutral",
+                "output_column": f"t{i}",
+                "on_missing": "neutral",
                 "entries": entries,
             }
             lf = _apply_rating_table(lf, table)
@@ -1168,7 +1168,7 @@ class TestSpecialCharacterFactorNames:
         lf = pl.DataFrame({"Property Type": ["House", "Flat"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["Property Type"],
-            "outputColumn": "prop factor",
+            "output_column": "prop factor",
             "entries": [
                 {"Property Type": "House", "value": 1.0},
                 {"Property Type": "Flat", "value": 1.5},
@@ -1181,7 +1181,7 @@ class TestSpecialCharacterFactorNames:
         lf = pl.DataFrame({"claim.type": ["fire", "flood"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["claim.type"],
-            "outputColumn": "claim.factor",
+            "output_column": "claim.factor",
             "entries": [
                 {"claim.type": "fire", "value": 2.0},
                 {"claim.type": "flood", "value": 3.0},
@@ -1194,7 +1194,7 @@ class TestSpecialCharacterFactorNames:
         lf = pl.DataFrame({"risk[level]": ["high", "low"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["risk[level]"],
-            "outputColumn": "risk_factor",
+            "output_column": "risk_factor",
             "entries": [
                 {"risk[level]": "high", "value": 5.0},
                 {"risk[level]": "low", "value": 1.0},
@@ -1267,7 +1267,7 @@ class TestExtremeFloatValues:
         lf = pl.DataFrame({"k": ["a", "b"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["k"],
-            "outputColumn": "out",
+            "output_column": "out",
             "entries": [
                 {"k": "a", "value": float("inf")},
                 {"k": "b", "value": 1.0},
@@ -1281,7 +1281,7 @@ class TestExtremeFloatValues:
 
         PIN REVISION (3a.3): this test previously documented the silent
         miss -> neutral default.  In the rating-step path nulls now reach
-        combine only through the explicit ``onMissing: "neutral"`` opt-in
+        combine only through the explicit ``on_missing: "neutral"`` opt-in
         (misses are otherwise RatingTableMissError, and every opted-in
         miss is counted and logged — tests/test_rating_miss_fail_loud.py).
         This test pins the combine arithmetic itself: an allowed null
@@ -1314,7 +1314,7 @@ class TestBugB1FactorDtypePreservation:
         lf = pl.DataFrame({"age": [25, 30, 35], "value_col": [1.0, 2.0, 3.0]}).lazy()
         table = {
             "factors": ["age"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"age": "25", "value": 1.1},
                 {"age": "30", "value": 1.2},
@@ -1329,7 +1329,7 @@ class TestBugB1FactorDtypePreservation:
         lf = pl.DataFrame({"score": [1.5, 2.5], "x": [0, 0]}).lazy()
         table = {
             "factors": ["score"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"score": "1.5", "value": 10.0},
                 {"score": "2.5", "value": 20.0},
@@ -1501,7 +1501,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region", "missing_col"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.0}],
         }
         with pytest.raises(RatingFactorMissingError) as exc_info:
@@ -1512,7 +1512,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["nonexistent"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"nonexistent": "x", "value": 1.0}],
         }
         with pytest.raises(RatingFactorMissingError):
@@ -1522,7 +1522,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "score": 1.5}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -1530,12 +1530,12 @@ class TestApplyRatingTableEdgeCases:
 
     def test_null_factor_values_in_entries(self) -> None:
         # PIN REVISION (3a.3): "South" has no entry (the null-keyed entry
-        # never matches), so the miss needs onMissing="neutral".
+        # never matches), so the miss needs on_missing="neutral".
         lf = pl.DataFrame({"region": ["North", "South"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
-            "onMissing": "neutral",
+            "output_column": "factor",
+            "on_missing": "neutral",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": None, "value": 0.5},
@@ -1549,7 +1549,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North", ""]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "", "value": 0.8},
@@ -1562,7 +1562,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "North", "value": 1.0},
                 {"region": "North", "value": 9.9},
@@ -1575,9 +1575,9 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
-            "defaultValue": "0.0",
+            "default_value": "0.0",
         }
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, 0.0]
@@ -1586,9 +1586,9 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
-            "defaultValue": "-5.0",
+            "default_value": "-5.0",
         }
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, -5.0]
@@ -1597,7 +1597,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"], "factor": [999.0]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.5}],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -1607,7 +1607,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
         table: dict[str, Any] = {
             "factors": [],
-            "outputColumn": "out",
+            "output_column": "out",
             "entries": [],
         }
         result = _apply_rating_table(lf, table).collect()
@@ -1637,7 +1637,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": float("inf")}],
         }
         with pytest.raises(ValueError, match="NaN or Inf"):
@@ -1647,7 +1647,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": float("nan")}],
         }
         with pytest.raises(ValueError, match="NaN or Inf"):
@@ -1657,7 +1657,7 @@ class TestApplyRatingTableEdgeCases:
         lf = pl.DataFrame({"region": ["North"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": float("-inf")}],
         }
         with pytest.raises(ValueError, match="NaN or Inf"):
@@ -1762,7 +1762,7 @@ class TestRatingTableEmptyStringFactorValue:
         lf = pl.DataFrame({"region": ["", "North", ""]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "", "value": 0.5},
                 {"region": "North", "value": 1.2},
@@ -1774,12 +1774,12 @@ class TestRatingTableEmptyStringFactorValue:
 
 class TestRatingTableIntColumnStringEntries:
     def test_utf8_cast_handles_int_vs_string(self) -> None:
-        # PIN REVISION (3a.3): the miss on code 3 needs onMissing="neutral".
+        # PIN REVISION (3a.3): the miss on code 3 needs on_missing="neutral".
         lf = pl.DataFrame({"code": [1, 2, 3]}).lazy()
         table: dict[str, Any] = {
             "factors": ["code"],
-            "outputColumn": "val",
-            "onMissing": "neutral",
+            "output_column": "val",
+            "on_missing": "neutral",
             "entries": [
                 {"code": "1", "value": 10.0},
                 {"code": "2", "value": 20.0},
@@ -1813,9 +1813,9 @@ class TestDefaultValueNegativeNumber:
         lf = pl.DataFrame({"region": ["North", "Unknown"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "North", "value": 1.2}],
-            "defaultValue": -1.5,
+            "default_value": -1.5,
         }
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, -1.5]
@@ -1827,12 +1827,12 @@ class TestRatingTableNullInFactorColumn:
         lf = pl.DataFrame({"region": ["North", None, "South"]}).lazy()
         table: dict[str, Any] = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "South", "value": 0.9},
             ],
-            "defaultValue": 1.0,
+            "default_value": 1.0,
         }
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.2, 1.0, 0.9]
@@ -1850,8 +1850,8 @@ class TestApplyRatingStepCanonicalConfig:
             "tables": [
                 {
                     "factors": ["vehicle_age_band", "cover_type"],
-                    "outputColumn": "vehicle_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "vehicle_factor",
+                    "default_value": "1.0",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -1899,8 +1899,8 @@ class TestApplyRatingStepCanonicalConfig:
             "tables": [
                 {
                     "factors": ["vehicle_age_band", "cover_type", "channel"],
-                    "outputColumn": "vehicle_factor",
-                    "defaultValue": "1.0",
+                    "output_column": "vehicle_factor",
+                    "default_value": "1.0",
                     "entries": [
                         {
                             "vehicle_age_band": "1-3",
@@ -1953,7 +1953,7 @@ class TestWs11RatingHardening:
         lf = pl.DataFrame({"region": ["north"]}).lazy()
         table = {
             "factors": ["regoin"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [],
         }
 
@@ -1964,12 +1964,12 @@ class TestWs11RatingHardening:
         tables = [
             {
                 "factors": ["band"],
-                "outputColumn": "duplicate_factor",
+                "output_column": "duplicate_factor",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["region"],
-                "outputColumn": "duplicate_factor",
+                "output_column": "duplicate_factor",
                 "entries": [{"region": "north", "value": 5.0}],
             },
         ]
@@ -1983,9 +1983,9 @@ class TestWs11RatingHardening:
                 tables,
                 [
                     {
-                        "outputColumn": "premium",
+                        "output_column": "premium",
                         "operation": "multiply",
-                        "baseValue": 1.0,
+                        "base_value": 1.0,
                     }
                 ],
             )
@@ -2016,7 +2016,7 @@ class TestWs11RatingHardening:
         lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
         table = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "north", "value": 2.0}],
         }
 
@@ -2033,7 +2033,7 @@ class TestWs11RatingHardening:
         lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
         table = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "north", "value": 2.0}],
         }
 
@@ -2046,7 +2046,7 @@ class TestWs11RatingHardening:
         lf = pl.DataFrame({"region": ["north", "missing"]}).lazy()
         table = {
             "factors": ["region"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"region": "north", "value": 2.0}],
         }
 
@@ -2064,10 +2064,10 @@ class TestWs11RatingHardening:
         entry_key = normalise_rating_key(value, dtype)
         guarded = {
             "factors": ["factor_in"],
-            "outputColumn": "factor",
+            "output_column": "factor",
             "entries": [{"factor_in": entry_key, "value": 2.0}],
         }
-        defaulted = {**guarded, "defaultValue": 1.0}
+        defaulted = {**guarded, "default_value": 1.0}
 
         assert (
             _apply_rating_table(lf, guarded).collect_schema()

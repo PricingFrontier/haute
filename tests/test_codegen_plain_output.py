@@ -28,7 +28,7 @@ def _graph(suffix: str) -> PipelineGraph:
         data=NodeData(
             label="joined",
             nodeType=NodeType.EDGE_JOIN,
-            config={"how": "left", "on": ["key"], "maintainOrder": "left", "suffix": suffix},
+            config={"how": "left", "on": ["key"], "maintain_order": "left", "suffix": suffix},
         ),
     )
     return PipelineGraph(
@@ -48,7 +48,7 @@ def test_a_join_at_the_default_suffix_and_the_wiring_carry_no_noise() -> None:
     assert "# Wire nodes together" not in code
     assert 'pipeline.connect("policies", "joined", target_port="base")' in code
     # A join reads an absent suffix as the default.
-    kwargs = build_edge_join_kwargs({"how": "left", "on": ["key"], "maintainOrder": "left"})
+    kwargs = build_edge_join_kwargs({"how": "left", "on": ["key"], "maintain_order": "left"})
     assert kwargs["suffix"] == "_right"
 
 

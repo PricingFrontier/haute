@@ -2558,7 +2558,7 @@ class TestRenamePreservingSaveIntegration:
                         label=label,
                         nodeType="dataInput",
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": "data.parquet",
@@ -2656,7 +2656,7 @@ class TestRenamePreservingSaveIntegration:
                             label=label,
                             nodeType="dataInput",
                             config={
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "data.parquet",

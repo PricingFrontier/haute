@@ -348,7 +348,7 @@ export default function ApiInputEditor({
         {
           path: newPath,
           label: newLabel,
-          displayPath: null,
+          display_path: null,
           emit: v2.tables.length === 0,
           columns: [],
         },
@@ -1023,7 +1023,7 @@ function TableBlock({
           getSchema={() => ({
             path: table.path,
             label: table.label,
-            displayPath: table.displayPath ?? null,
+            display_path: table.display_path ?? null,
             emit: table.emit,
             row_id_column: table.row_id_column ?? null,
             columns: table.columns.map((c) => ({

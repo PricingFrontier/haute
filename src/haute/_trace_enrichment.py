@@ -79,9 +79,9 @@ def _enrich_single_table(
     """Enrich a single rate table lookup within a rating step."""
     factors: list[str] = table.get("factors", []) or []
     entries: list[dict[str, Any]] = table.get("entries", []) or []
-    output_col: str = table.get("outputColumn", "")
+    output_col: str = table.get("output_column", "")
     table_name = output_col
-    default_raw = table.get("defaultValue")
+    default_raw = table.get("default_value")
 
     # Lookup key values from the input row
     lookup_keys = {f: input_row.get(f) for f in factors}
@@ -204,12 +204,12 @@ def enrich_rating_step(
 
     combined_outputs = []
     for combined in normalise_combined_outputs(config):
-        column = combined["outputColumn"]
+        column = combined["output_column"]
         combined_outputs.append(
             {
                 "column": column,
                 "operation": combined["operation"],
-                "base_value": combined["baseValue"],
+                "base_value": combined["base_value"],
                 "input_values": {
                     output_column: output_row.get(output_column)
                     for output_column in table_output_columns
@@ -499,7 +499,7 @@ def enrich_banding(
     """Enrich a banding node trace.
 
     Banding config uses a ``factors`` list containing ``column``,
-    ``outputColumn``, ``rules``, ``banding``, and ``default``.
+    ``output_column``, ``rules``, ``banding``, and ``default``.
 
     *factor_input_dtypes* maps a factor's input column name to its
     original Polars dtype.  It makes interval re-matching
@@ -516,7 +516,7 @@ def enrich_banding(
             factor_details = []
             for factor_cfg in factors:
                 col = factor_cfg.get("column", "")
-                out_col = factor_cfg.get("outputColumn", "")
+                out_col = factor_cfg.get("output_column", "")
                 raw_rules = factor_cfg.get("rules", []) or []
                 rules = raw_rules
                 banding_type = factor_cfg.get("banding")
@@ -524,7 +524,7 @@ def enrich_banding(
                 if banding_type == "breakpoints":
                     rules = _breakpoints_to_rules(
                         raw_rules,
-                        right_closed=bool(factor_cfg.get("rightClosed", True)),
+                        right_closed=bool(factor_cfg.get("right_closed", True)),
                     )
 
                 input_value = input_row.get(col)
@@ -630,7 +630,7 @@ def enrich_model_score(
 
         # Model identity
         model_identity = {
-            "source_type": config.get("sourceType", ""),
+            "source_type": config.get("source_type", ""),
             "model_path": config.get("model_path", ""),
             "run_id": config.get("run_id", ""),
             "registered_model": config.get("registered_model", ""),
@@ -742,7 +742,7 @@ def enrich_scenario_expansion(
                 "min_value": config.get("min_value"),
                 "max_value": config.get("max_value"),
                 # The trace parameter keeps its name; the config key is the grid size.
-                "steps": config.get("stepCount"),
+                "steps": config.get("step_count"),
             },
         }
     except Exception as exc:

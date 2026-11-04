@@ -156,11 +156,11 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
             },
         ),
         (
-            NodeConfigError("stepCount is required", setting="stepCount"),
+            NodeConfigError("step_count is required", setting="step_count"),
             {
                 "error_code": "node_config_invalid",
-                "message": "stepCount is required",
-                "setting": "stepCount",
+                "message": "step_count is required",
+                "setting": "step_count",
             },
         ),
         (

@@ -249,7 +249,7 @@ describe("DataOutputEditor", () => {
     const { onReplaceConfig } = renderEditor({
       code: "must disappear",
       path: "old.csv",
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       arguments: {},
@@ -268,7 +268,7 @@ describe("DataOutputEditor", () => {
     expect(within(provider).getByRole("radio", { name: "File" })).toBeChecked()
     fireEvent.click(within(provider).getByRole("radio", { name: "Database" }))
     expect(onReplaceConfig).toHaveBeenCalledWith({
-      outputType: "database",
+      output_type: "database",
       format: "database",
       mode: "write",
       arguments: {},
@@ -277,7 +277,7 @@ describe("DataOutputEditor", () => {
   })
 
   it("leaves unknown providers unselected and shows the configuration error", async () => {
-    renderEditor({ outputType: "unknown" })
+    renderEditor({ output_type: "unknown" })
 
     const provider = await screen.findByRole("radiogroup", { name: "Provider" })
     for (const option of within(provider).getAllByRole("radio")) {
@@ -289,7 +289,7 @@ describe("DataOutputEditor", () => {
 
   it("preserves the destination while resetting format-specific arguments", async () => {
     const { onReplaceConfig } = renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -300,7 +300,7 @@ describe("DataOutputEditor", () => {
       target: { value: "excel" },
     })
     expect(onReplaceConfig).toHaveBeenCalledWith({
-      outputType: "file",
+      output_type: "file",
       format: "excel",
       mode: "write",
       arguments: {},
@@ -310,7 +310,7 @@ describe("DataOutputEditor", () => {
 
   it("explains filename resolution while accepting a new output filename", async () => {
     const { onUpdate } = renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       path: "",
       arguments: {},
@@ -327,7 +327,7 @@ describe("DataOutputEditor", () => {
 
   it("gates explicit writes and sends the current graph context", async () => {
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       path: "out.csv",
       arguments: {},
@@ -358,7 +358,7 @@ describe("DataOutputEditor", () => {
       suffix_mismatch: true,
     })
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.json",
@@ -374,7 +374,7 @@ describe("DataOutputEditor", () => {
   it("shows a failed write as an actionable alert and allows retry", async () => {
     vi.mocked(writeOutput).mockRejectedValueOnce(new Error("Output storage is unavailable"))
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -396,7 +396,7 @@ describe("DataOutputEditor", () => {
       suffix_mismatch: false,
     })
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: ".report",
@@ -415,7 +415,7 @@ describe("DataOutputEditor", () => {
       resolveWrite = resolve
     }) as ReturnType<typeof writeOutput>)
     const view = renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out",
@@ -426,7 +426,7 @@ describe("DataOutputEditor", () => {
     fireEvent.click(write)
     view.unmount()
     const remounted = renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out",
@@ -439,7 +439,7 @@ describe("DataOutputEditor", () => {
 
     remounted.unmount()
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "changed-output",
@@ -460,7 +460,7 @@ describe("DataOutputEditor", () => {
 
   it("invalidates overwrite confirmation when any upstream graph input changes", async () => {
     const config = {
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -512,7 +512,7 @@ describe("DataOutputEditor", () => {
 
   it("preserves overwrite confirmation across preview-only node metadata changes", async () => {
     const config = {
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -577,7 +577,7 @@ describe("DataOutputEditor", () => {
     useOutputWriteStore.getState().begin("output-node", "older-request")
 
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "new-output.csv",
@@ -592,7 +592,7 @@ describe("DataOutputEditor", () => {
 
   it("does not carry an overwrite grant across editor deletion and recreation", async () => {
     const config = {
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -619,7 +619,7 @@ describe("DataOutputEditor", () => {
 
   it("requires exactly one database locator and clears the other atomically", async () => {
     const { onUpdate } = renderEditor({
-      outputType: "database",
+      output_type: "database",
       format: "database",
       mode: "write",
       connection: "WAREHOUSE_URI",
@@ -641,7 +641,7 @@ describe("DataOutputEditor", () => {
 
   it("surfaces missing output engines and disables writes", async () => {
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "excel",
       mode: "write",
       path: "out.xlsx",
@@ -657,7 +657,7 @@ describe("DataOutputEditor", () => {
 
   it("has no Polars editor and blocks configs with inactive keys", async () => {
     renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -674,7 +674,7 @@ describe("DataOutputEditor", () => {
 
 describe("DataOutputEditor - Databricks", () => {
   const databricksConfig = {
-    outputType: "databricks",
+    output_type: "databricks",
     http_path: "/sql/1.0/warehouses/abc",
     table: "workspace.pricing-dev.scored",
     arguments: {},
@@ -682,7 +682,7 @@ describe("DataOutputEditor - Databricks", () => {
 
   it("starts a Databricks branch with only its own fields", async () => {
     const { onReplaceConfig } = renderEditor({
-      outputType: "file",
+      output_type: "file",
       format: "csv",
       mode: "sink",
       path: "out.csv",
@@ -694,7 +694,7 @@ describe("DataOutputEditor - Databricks", () => {
     fireEvent.click(within(provider).getByRole("radio", { name: "Databricks" }))
     expect(onReplaceConfig).toHaveBeenCalledWith({
       selected_columns: ["premium"],
-      outputType: "databricks",
+      output_type: "databricks",
       arguments: {},
       http_path: "",
       table: "",

@@ -442,11 +442,10 @@ class SubmodelInstanceConfig(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    definition_id: str = Field(alias="definitionId")
+    definition_id: str
     alias: str
     instance_of: str | None = Field(
         default=None,
-        alias="instanceOf",
         exclude_if=lambda value: value is None,
     )
 

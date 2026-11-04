@@ -35,7 +35,7 @@ function SubmodelNode({
 }: NodeProps<SubmodelFlowNode>) {
   const config = nodeData.config
   const canonicalIdentityValid = isSubmodelInstanceConfig(config)
-  const definitionId = canonicalIdentityValid ? config.definitionId : ""
+  const definitionId = canonicalIdentityValid ? config.definition_id : ""
   const definition = useGraphStore((state) => state.submodels[definitionId])
   const canonicalDefinition = canonicalIdentityValid && isSubmodelDefinition(definition, definitionId)
     ? definition

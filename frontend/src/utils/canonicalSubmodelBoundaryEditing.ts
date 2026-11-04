@@ -111,7 +111,7 @@ function parentEdgesForInputProjection(
     const config = node.data.config
     return node.data.nodeType === "submodel"
       && isSubmodelInstanceConfig(config)
-      && config.definitionId === state.definitionId
+      && config.definition_id === state.definitionId
       ? [node.id]
       : []
   })])
@@ -287,7 +287,7 @@ function assertCompatibleSharedEdit(
     if (
       node.data.nodeType !== "submodel"
       || !isSubmodelInstanceConfig(config)
-      || config.definitionId !== state.definitionId
+      || config.definition_id !== state.definitionId
     ) continue
     const used = new Set<string>()
     for (const edge of state.parentEdges) {
@@ -551,8 +551,8 @@ export function retargetSubmodelInput(
   if (!node || node.data.nodeType !== "submodel" || !isSubmodelInstanceConfig(node.data.config)) {
     throw new Error(`Submodel occurrence ${occurrenceId} is missing or malformed`)
   }
-  const definition = state.submodels[node.data.config.definitionId]
-  if (!isSubmodelDefinition(definition, node.data.config.definitionId)
+  const definition = state.submodels[node.data.config.definition_id]
+  if (!isSubmodelDefinition(definition, node.data.config.definition_id)
     || !definition.inputPorts.some((port) => port.name === portName)) {
     throw new Error(`Public input ${portName} is missing on ${occurrenceId}`)
   }
@@ -592,9 +592,9 @@ export function connectCanonicalSubmodelInputFromParentConnection(
   if (!isSubmodelInstanceConfig(config)) {
     throw new Error(`Submodel instance ${target.id} has malformed canonical identity`)
   }
-  const definitionValue = state.submodels[config.definitionId]
-  if (!isSubmodelDefinition(definitionValue, config.definitionId)) {
-    throw new Error(`Submodel definition ${config.definitionId} is missing or malformed`)
+  const definitionValue = state.submodels[config.definition_id]
+  if (!isSubmodelDefinition(definitionValue, config.definition_id)) {
+    throw new Error(`Submodel definition ${config.definition_id} is missing or malformed`)
   }
   const source = state.nodes.find((node) => node.id === connection.source)
   if (!source) throw new Error(`Input source ${connection.source} is missing`)
@@ -616,7 +616,7 @@ export function connectCanonicalSubmodelInputFromParentConnection(
   const existingPort = definition.inputPorts.find((port) => port.name === inputName)
   let name = existingPort?.name ?? null
   let nextSubmodels = state.submodels
-  if (config.instanceOf !== undefined) {
+  if (config.instance_of !== undefined) {
     const selection = chooseInstanceInput(target, definition.inputPorts, state.edges, inputName, chosenInput)
     if ("choices" in selection) throw new Error(`Choose an input of ${String(target.data.label)}: ${selection.choices.join(", ")}`)
     name = selection.name
@@ -635,7 +635,7 @@ export function connectCanonicalSubmodelInputFromParentConnection(
     }
     nextSubmodels = {
       ...state.submodels,
-      [config.definitionId]: nextDefinition,
+      [config.definition_id]: nextDefinition,
     }
   }
 
@@ -815,7 +815,7 @@ export function removeCanonicalSubmodelInputPort(
     const config = node.data.config
     return node.data.nodeType === "submodel"
       && isSubmodelInstanceConfig(config)
-      && config.definitionId === state.definitionId
+      && config.definition_id === state.definitionId
       ? [node.id]
       : []
   })])

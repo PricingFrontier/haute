@@ -676,14 +676,14 @@ def resolve_mlflow_source(
 
     if source_type == "registered":
         if not registered_model:
-            raise ValueError("registered_model is required when sourceType is 'registered'")
+            raise ValueError("registered_model is required when source_type is 'registered'")
         resolved_version = resolve_version(client, registered_model, version, alias)
         mv = client.get_model_version(registered_model, resolved_version)
         resolved_run_id = mv.run_id or ""
     elif source_type == "run":
         if not resolved_run_id:
-            raise ValueError("run_id is required when sourceType is 'run'")
+            raise ValueError("run_id is required when source_type is 'run'")
     else:
-        raise ValueError(f"Invalid sourceType: {source_type!r}. Expected 'run' or 'registered'.")
+        raise ValueError(f"Invalid source_type: {source_type!r}. Expected 'run' or 'registered'.")
 
     return resolved_run_id, resolved_version, mlflow, client, backend

@@ -42,7 +42,7 @@ def _data_input_config(path: str) -> dict[str, object]:
     suffix = Path(path).suffix.casefold()
     format_name = "csv" if suffix == ".csv" else "parquet"
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name,
         "mode": "scan",
         "path": path,
@@ -89,7 +89,7 @@ def _graph_with_submodel() -> dict:
                 "data": {
                     "label": ALIAS,
                     "nodeType": "submodel",
-                    "config": {"definitionId": DEFINITION_ID, "alias": ALIAS},
+                    "config": {"definition_id": DEFINITION_ID, "alias": ALIAS},
                 },
             },
         ],
@@ -279,11 +279,11 @@ def test_node_instance_wraps_in_place_without_writing(client: TestClient, tmp_pa
     assert graph.source_revision == _CURRENT_REVISION
     assert graph.node_map["calc"].position == {"x": 123, "y": 456}
     assert graph.node_map["calc_2"].position == {"x": 183, "y": 536}
-    assert graph.node_map["calc"].data.config == {"definitionId": "calc", "alias": "calc"}
+    assert graph.node_map["calc"].data.config == {"definition_id": "calc", "alias": "calc"}
     assert graph.node_map["calc_2"].data.config == {
-        "definitionId": "calc",
+        "definition_id": "calc",
         "alias": "calc_2",
-        "instanceOf": "calc",
+        "instance_of": "calc",
     }
     assert graph.node_map["consumer"].data.config == {"code": "df = calc"}
     assert [(e.source, e.target, e.sourceHandle, e.targetHandle) for e in graph.edges] == [
@@ -369,7 +369,7 @@ def test_node_instance_allocates_module_child_and_copy_names(
     body = _instance_body()
     body["graph"]["submodels"] = _graph_with_submodel()["submodels"]
     definition = body["graph"]["submodels"].pop(DEFINITION_ID)
-    definition["definitionId"] = "CALC_2"
+    definition["definition_id"] = "CALC_2"
     definition["file"] = "modules/other_module.py"
     body["graph"]["submodels"]["CALC_2"] = definition
     body["graph"]["nodes"].extend(
@@ -379,7 +379,7 @@ def test_node_instance_allocates_module_child_and_copy_names(
                 "data": {
                     "label": "existing",
                     "nodeType": "submodel",
-                    "config": {"definitionId": "CALC_2", "alias": "existing"},
+                    "config": {"definition_id": "CALC_2", "alias": "existing"},
                 },
             },
             {"id": "other", "data": {"label": "calc_node", "nodeType": "polars", "config": {}}},
@@ -781,7 +781,7 @@ class TestGetSubmodel:
         config_dir = rating_root / "config" / "data_input"
         config_dir.mkdir(parents=True)
         (config_dir / "source.json").write_text(
-            '{"inputType":"file","format":"parquet","mode":"scan",'
+            '{"input_type":"file","format":"parquet","mode":"scan",'
             '"path":"rating-data.parquet","arguments":{}}'
         )
         modules_dir = rating_root / "modules"

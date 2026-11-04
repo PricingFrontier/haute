@@ -330,12 +330,12 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
 
     This is the shared source I/O boundary for runtime callers that need to
     turn a data-source config into a LazyFrame reader without duplicating
-    ``sourceType`` branching. It validates source-specific required fields
+    ``source_type`` branching. It validates source-specific required fields
     up front and rejects unknown source types.
     """
-    raw_source_type = config.get("sourceType", "flat_file")
+    raw_source_type = config.get("source_type", "flat_file")
     if not isinstance(raw_source_type, str) or not raw_source_type.strip():
-        raise ValueError("data source config requires non-empty 'sourceType'")
+        raise ValueError("data source config requires non-empty 'source_type'")
     source_type = raw_source_type
 
     if source_type == "flat_file":

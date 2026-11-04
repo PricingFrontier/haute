@@ -31,13 +31,13 @@ def test_recover_reports_a_retired_config_field_and_keeps_it_out_of_the_candidat
 
     result = reconcile_config(
         NodeType.EDGE_JOIN,
-        {"how": "left", "maintainOrder": "left_right", "on": ["id"], "baseInput": "a", "stale": 1},
+        {"how": "left", "maintain_order": "left_right", "on": ["id"], "baseInput": "a", "stale": 1},
     )
 
     # ``suffix`` is absent from the saved config, so it takes the palette default.
     assert result.config == {
         "how": "left",
-        "maintainOrder": "left_right",
+        "maintain_order": "left_right",
         "on": ["id"],
         "suffix": "_right",
     }
@@ -171,7 +171,7 @@ def test_an_unknown_explore_overview_card_is_rejected_by_name() -> None:
         (OSError("artifact missing"), True),
         (ImportError("optional dependency missing"), True),
         (MlflowException("tracking server unreachable"), True),
-        (ConfigError("sourceType is required"), False),
+        (ConfigError("source_type is required"), False),
         (RuntimeError("builder bug"), False),
     ],
 )
@@ -197,7 +197,7 @@ def test_a_declared_contract_on_an_unbuildable_config_fails_to_load() -> None:
     """A configuration error is not an infrastructure failure: it surfaces at parse."""
     from haute._config_builder import _validate_user_contract
 
-    with pytest.raises(ConfigError, match="requires sourceType='file'"):
+    with pytest.raises(ConfigError, match="requires source_type='file'"):
         _validate_user_contract(
             NodeType.OPTIMISER_APPLY,
             {"artifact_path": "optimiser.json"},

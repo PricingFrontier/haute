@@ -99,7 +99,7 @@ function seedPipeline(): void {
   writeFileSync(
     resolve(dataInputDir, "raw_rows.json"),
     `${JSON.stringify({
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       path: "data/sample.parquet",
@@ -110,7 +110,7 @@ function seedPipeline(): void {
   writeFileSync(
     resolve(dataInputDir, "lookup_rows.json"),
     `${JSON.stringify({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "data/lookup.csv",
@@ -137,7 +137,7 @@ function seedPipeline(): void {
       tables: [{
         path: "$[:]",
         label: "api_lookup",
-        displayPath: null,
+        display_path: null,
         emit: true,
         row_id_column: null,
         columns: [
@@ -300,7 +300,7 @@ function seedColumnSettingsPipeline(nodeType: "polars" | "edgeJoin" | "dataInput
   writeFileSync(resolve(ratingDir, "data", "columns.csv"), "_id,premium,segment,discard\n1,12.5,North,99\n2,25.0,South,88\n", "utf8")
   writeFileSync(resolve(ratingDir, "data", "keys.csv"), "_id\n1\n2\n", "utf8")
   const inputConfig = {
-    inputType: "file", format: "csv", mode: "read", path: "data/columns.csv",
+    input_type: "file", format: "csv", mode: "read", path: "data/columns.csv",
     arguments: { schema: { _id: "Int64", premium: "Float64", segment: "String", discard: "Int64" } },
     contract: "opaque",
   }

@@ -36,7 +36,7 @@
                     "node_type": "dataInput",
                     "name": "claims_history",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/claims_history.parquet",

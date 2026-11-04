@@ -62,8 +62,8 @@ class TestCreateSubmodelGraph:
         sm_node = next(n for n in new_nodes if n.data.nodeType == NodeType.SUBMODEL)
         assert sm_node.id in node_ids
         assert sm_node.data.nodeType == NodeType.SUBMODEL
-        assert sm_node.data.config == {"definitionId": "my_sub", "alias": "my_sub"}
-        definition = result.graph.submodels[sm_node.data.config["definitionId"]]
+        assert sm_node.data.config == {"definition_id": "my_sub", "alias": "my_sub"}
+        definition = result.graph.submodels[sm_node.data.config["definition_id"]]
         assert definition.file == "modules/my_sub.py"
 
     def test_edges_rewired(self):
@@ -295,7 +295,7 @@ class TestCreateSubmodelGraph:
         assert result.graph.nodes[0].id == "all_in"
         # No external edges remain
         assert len(result.graph.edges) == 0
-        assert result.graph.nodes[0].data.config == {"definitionId": "all_in", "alias": "all_in"}
+        assert result.graph.nodes[0].data.config == {"definition_id": "all_in", "alias": "all_in"}
 
     def test_two_disconnected_data_inputs_generate_a_valid_submodel(self):
         """Two source-only nodes can be the complete reusable definition."""
@@ -309,7 +309,7 @@ class TestCreateSubmodelGraph:
                             "label": "competitor_premium",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "competitor.parquet",
@@ -323,7 +323,7 @@ class TestCreateSubmodelGraph:
                             "label": "nb_batch",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "nb_batch.parquet",
@@ -521,7 +521,7 @@ class TestCreateSubmodelGraph:
                         "data": {
                             "label": "a",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_a", "alias": "a"},
+                            "config": {"definition_id": "definition_a", "alias": "a"},
                         },
                     },
                     {
@@ -529,7 +529,7 @@ class TestCreateSubmodelGraph:
                         "data": {
                             "label": "b",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_b", "alias": "b"},
+                            "config": {"definition_id": "definition_b", "alias": "b"},
                         },
                     },
                 ],
@@ -551,7 +551,7 @@ class TestCreateSubmodelGraph:
                         "data": {
                             "label": "only",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_only", "alias": "only"},
+                            "config": {"definition_id": "definition_only", "alias": "only"},
                         },
                     },
                 ],
@@ -575,7 +575,7 @@ class TestCreateSubmodelGraph:
                             "label": "existing",
                             "nodeType": "submodel",
                             "config": {
-                                "definitionId": "definition_existing",
+                                "definition_id": "definition_existing",
                                 "alias": "existing",
                             },
                         },
@@ -656,7 +656,7 @@ class TestCreateSubmodelGraph:
                 "data": {
                     "label": "Pricing_2",
                     "nodeType": "submodel",
-                    "config": {"definitionId": "pricing", "alias": "Pricing_2"},
+                    "config": {"definition_id": "pricing", "alias": "Pricing_2"},
                 },
             }
         )
@@ -686,7 +686,7 @@ class TestCreateSubmodelGraph:
                 "data": {
                     "label": "broken",
                     "nodeType": "submodel",
-                    "config": {"definitionId": "pricing"},
+                    "config": {"definition_id": "pricing"},
                 },
             }
         )
@@ -848,7 +848,7 @@ class TestGroupingPreservesConsumerBindings:
         consumer = result.graph.node_map["consumer"]
         # The new public output port keeps the old frame name.
         assert consumer.data.config["code"] == "df = live_switch"
-        assert not consumer.data.config.get("inputMapping")
+        assert not consumer.data.config.get("input_mapping")
 
         files = graph_to_code_multi(result.graph, pipeline_name="test", source_file="main.py")
         assert "def consumer(live_switch: pl.LazyFrame)" in files["main.py"]
@@ -860,4 +860,4 @@ class TestGroupingPreservesConsumerBindings:
         flat = flatten_graph(result.graph)
         flat_consumer = flat.node_map["consumer"]
         assert flat_consumer.data.config["code"] == "df = live_switch"
-        assert not flat_consumer.data.config.get("inputMapping")
+        assert not flat_consumer.data.config.get("input_mapping")

@@ -76,7 +76,7 @@ ContractDeclaration = Literal["opaque"] | ContractColumns
 class NodeConfigBase(TypedDict, total=False):
     """The keys any node type's config may carry."""
 
-    inputMapping: dict[str, str]
+    input_mapping: dict[str, str]
     """The input names the node's code uses, each mapped to the connected input it reads."""
     contract: ContractDeclaration
     """The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads
@@ -151,7 +151,7 @@ class OutputMappingEntry(TypedDict):
 class OutputConfig(NodeConfigBase, total=False):
     """A Quote Response: the JSON response document assembled from mapped columns."""
 
-    outputMapping: list[OutputMappingEntry]
+    output_mapping: list[OutputMappingEntry]
     """The mapping rows, each a column of an incoming frame and the response path it fills."""
 
 
@@ -177,7 +177,7 @@ class _DataInputPolarsCommon(_DataInputCommon, total=False):
 class DataInputFileConfig(_DataInputPolarsCommon, total=False):
     """A Data Input reading a file."""
 
-    inputType: Required[Literal["file"]]
+    input_type: Required[Literal["file"]]
     """The provider: a file."""
     format: str
     """The file format, such as `parquet`, `csv` or `ndjson`."""
@@ -189,7 +189,7 @@ class DataInputFileConfig(_DataInputPolarsCommon, total=False):
 class DataInputDatabaseConfig(_DataInputCommon, total=False):
     """A Data Input reading a database query."""
 
-    inputType: Required[Literal["database"]]
+    input_type: Required[Literal["database"]]
     """The provider: a database."""
     format: Literal["database"]
     """The format of a database read: `database`."""
@@ -205,7 +205,7 @@ class DataInputDatabaseConfig(_DataInputCommon, total=False):
 class DataInputLakehouseConfig(_DataInputPolarsCommon, total=False):
     """A Data Input reading a lakehouse table."""
 
-    inputType: Required[Literal["lakehouse"]]
+    input_type: Required[Literal["lakehouse"]]
     """The provider: a lakehouse table."""
     format: Literal["delta", "iceberg"]
     """The table format: `delta` or `iceberg`."""
@@ -217,7 +217,7 @@ class DataInputLakehouseConfig(_DataInputPolarsCommon, total=False):
 class DataInputDatabricksConfig(_DataInputCommon, total=False):
     """A Data Input reading a Databricks table."""
 
-    inputType: Required[Literal["databricks"]]
+    input_type: Required[Literal["databricks"]]
     """The provider: Databricks."""
     http_path: str
     """The SQL warehouse's HTTP path."""
@@ -231,7 +231,7 @@ class DataInputDatabricksConfig(_DataInputCommon, total=False):
 class DataInputInlineConfig(_DataInputPolarsCommon, total=False):
     """A Data Input holding its rows inline."""
 
-    inputType: Required[Literal["inline"]]
+    input_type: Required[Literal["inline"]]
     """The provider: rows held in the config."""
     format: Literal["records"]
     """The format of inline rows: `records`."""
@@ -252,7 +252,7 @@ DataInputConfig = Annotated[
     | DataInputLakehouseConfig
     | DataInputDatabricksConfig
     | DataInputInlineConfig,
-    Field(discriminator="inputType"),
+    Field(discriminator="input_type"),
 ]
 
 
@@ -273,7 +273,7 @@ class _DataOutputPolarsCommon(_DataOutputCommon, total=False):
 class DataOutputFileConfig(_DataOutputPolarsCommon, total=False):
     """A Data Output writing a file."""
 
-    outputType: Required[Literal["file"]]
+    output_type: Required[Literal["file"]]
     """The destination: a file."""
     format: str
     """The file format, such as `parquet` or `csv`."""
@@ -285,7 +285,7 @@ class DataOutputFileConfig(_DataOutputPolarsCommon, total=False):
 class DataOutputDatabaseConfig(_DataOutputPolarsCommon, total=False):
     """A Data Output writing a database table."""
 
-    outputType: Required[Literal["database"]]
+    output_type: Required[Literal["database"]]
     """The destination: a database."""
     format: Literal["database"]
     """The format of a database write: `database`."""
@@ -301,7 +301,7 @@ class DataOutputDatabaseConfig(_DataOutputPolarsCommon, total=False):
 class DataOutputLakehouseConfig(_DataOutputPolarsCommon, total=False):
     """A Data Output writing a lakehouse table."""
 
-    outputType: Required[Literal["lakehouse"]]
+    output_type: Required[Literal["lakehouse"]]
     """The destination: a lakehouse table."""
     format: Literal["delta", "iceberg"]
     """The table format: `delta` or `iceberg`."""
@@ -313,7 +313,7 @@ class DataOutputLakehouseConfig(_DataOutputPolarsCommon, total=False):
 class DataOutputDatabricksConfig(_DataOutputCommon, total=False):
     """A Data Output loading a Databricks table."""
 
-    outputType: Required[Literal["databricks"]]
+    output_type: Required[Literal["databricks"]]
     """The destination: Databricks."""
     http_path: str
     """The SQL warehouse's HTTP path."""
@@ -334,7 +334,7 @@ DataOutputConfig = Annotated[
     | DataOutputDatabaseConfig
     | DataOutputLakehouseConfig
     | DataOutputDatabricksConfig,
-    Field(discriminator="outputType"),
+    Field(discriminator="output_type"),
 ]
 
 
@@ -368,11 +368,11 @@ class EdgeJoinConfig(NodeConfigBase, total=False):
     how: Literal["inner", "left", "right", "full", "semi", "anti", "cross"]
     """The join type."""
     on: str | list[str]
-    """The key column or columns both inputs share; or use `leftOn` and `rightOn`."""
-    leftOn: str | list[str]
+    """The key column or columns both inputs share; or use `left_on` and `right_on`."""
+    left_on: str | list[str]
     """The key column or columns on the base input."""
-    rightOn: str | list[str]
-    """The key column or columns on the join input, matched in order with `leftOn`."""
+    right_on: str | list[str]
+    """The key column or columns on the join input, matched in order with `left_on`."""
     suffix: str
     """The suffix added to a join-input column whose name the base input already has."""
     coalesce: bool | None
@@ -380,7 +380,7 @@ class EdgeJoinConfig(NodeConfigBase, total=False):
     type, as Polars does."""
     validate: Literal["1:1", "1:m", "m:1", "m:m"] | None
     """The cardinality the keys must have, checked when the join runs; `null` checks none."""
-    maintainOrder: Literal["none", "left", "right", "left_right", "right_left"]
+    maintain_order: Literal["none", "left", "right", "left_right", "right_left"]
     """Which input's row order the result keeps; required, which the engine's join rules
     check with the values it takes."""
 
@@ -388,12 +388,12 @@ class EdgeJoinConfig(NodeConfigBase, total=False):
 EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
     "how",
     "on",
-    "leftOn",
-    "rightOn",
+    "left_on",
+    "right_on",
     "suffix",
     "coalesce",
     "validate",
-    "maintainOrder",
+    "maintain_order",
 )
 
 COLUMN_CONFIG_KEYS: tuple[str, ...] = (
@@ -423,7 +423,7 @@ class LiveSwitchConfig(NodeConfigBase, total=False):
 class ModelScoreConfig(CodeSurfaceConfig, total=False):
     """A Model Score: scores a model from a file, an MLflow run or a registered model."""
 
-    sourceType: Literal["", "run", "registered", "file"]
+    source_type: Literal["", "run", "registered", "file"]
     """Where the model comes from; empty or absent when no source is chosen yet."""
     model_path: str
     """For a file source, the model file in the project, such as `models/freq.cbm`."""
@@ -463,14 +463,14 @@ class BandingFactor(TypedDict, total=False):
     """Whether the column is banded by numeric or date boundaries or by category."""
     column: str
     """The input column banded."""
-    outputColumn: str
+    output_column: str
     """The column the band is written to."""
     rules: list[dict[str, Any]] | dict[str, Any]
     """The bands, as rule rows; the config file writes breakpoints as a list of `upper` and
     `label`, and categories as a map from each value to its group."""
     default: str | None
     """The band of a value no rule matches; `null` leaves it empty."""
-    rightClosed: bool
+    right_closed: bool
     """For breakpoints, whether each band includes its upper boundary (`true`, the default) or its
     lower one."""
 
@@ -489,13 +489,13 @@ class RatingTable(TypedDict, total=False):
 
     factors: list[str]
     """The factor columns the table is keyed by, at most three."""
-    factorDtypes: dict[str, dict[str, Any]]
+    factor_dtypes: dict[str, dict[str, Any]]
     """For each factor, the type its levels are read as."""
-    outputColumn: str
+    output_column: str
     """The column the looked-up value is written to."""
-    defaultValue: str | int | float | None
+    default_value: str | int | float | None
     """The value of a factor combination the table does not hold; `null` for none."""
-    onMissing: Literal["error", "neutral"]
+    on_missing: Literal["error", "neutral"]
     """With no default, whether a missing combination fails the run (`error`) or takes the neutral
     value (`neutral`)."""
     entries: list[dict[str, Any]]
@@ -507,11 +507,11 @@ class RatingTable(TypedDict, total=False):
 class RatingCombinedOutput(TypedDict):
     """A column a Rating Step combines from its tables' values."""
 
-    outputColumn: str
+    output_column: str
     """The combined column."""
     operation: Literal["multiply", "add", "min", "max"]
     """How the tables' values are combined."""
-    baseValue: str | int | float
+    base_value: str | int | float
     """The value the combination starts from: a number, or the editor's text of one."""
 
 
@@ -521,7 +521,7 @@ class RatingStepConfig(CodeSurfaceConfig, total=False):
 
     tables: list[RatingTable]
     """The rating tables."""
-    combinedOutputs: list[RatingCombinedOutput]
+    combined_outputs: list[RatingCombinedOutput]
     """Columns combined from the tables' values."""
 
 
@@ -537,7 +537,7 @@ class ScenarioExpanderConfig(CodeSurfaceConfig, total=False):
     """The grid's first value."""
     max_value: float
     """The grid's last value."""
-    stepCount: int
+    step_count: int
     """The number of grid values, at least 1."""
     step_column: str
     """The column the grid position (from 0) is written to, such as `scenario_index`."""
@@ -548,7 +548,7 @@ SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (
     "column_name",
     "min_value",
     "max_value",
-    "stepCount",
+    "step_count",
     "step_column",
 )
 
@@ -578,7 +578,7 @@ class ExternalFileConfig(CodeSurfaceConfig, total=False):
 
     path: str
     """The file, relative to the project root."""
-    fileType: Literal["pickle", "json", "joblib"]
+    file_type: Literal["pickle", "json", "joblib"]
     """How the file is loaded."""
 
 
@@ -984,7 +984,7 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
 class OptimiserApplyConfig(NodeConfigBase, total=False):
     """An Optimiser Apply node: applies a saved optimiser result to quotes."""
 
-    sourceType: Literal["", "file", "run", "registered"]
+    source_type: Literal["", "file", "run", "registered"]
     """Where the optimiser result comes from; empty or absent when none is chosen yet."""
     artifact_path: str
     """For a file source, the saved optimiser result; for an MLflow source, its path in the run's
@@ -1022,7 +1022,7 @@ OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
     "optimised_value_column",
     "optimiser_mode",
     "ratebook_input",
-    "sourceType",
+    "source_type",
     "registered_model",
     "version",
     "alias",
@@ -1034,7 +1034,7 @@ OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (
 )
 
 MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
-    "sourceType",
+    "source_type",
     "run_id",
     "artifact_path",
     "run_name",
@@ -1058,11 +1058,11 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
 class SubmodelConfig(NodeConfigBase, total=False):
     """A submodel occurrence: which definition it is, and its name in the pipeline."""
 
-    definitionId: str
+    definition_id: str
     """The submodel definition this occurrence runs."""
     alias: str
     """The occurrence's name in the pipeline."""
-    instanceOf: str
+    instance_of: str
     """For an instance, the occurrence whose definition it shares."""
 
 
@@ -1101,8 +1101,8 @@ class NodeConfigModel:
     check: CheckHook | None = None
     check_inputs: InputsHook | None = None
     completeness: CompletenessHook | None = None
-    #: The key that selects the config's branch (a Data Input's ``inputType``, a Model
-    #: Score's ``sourceType``), whose values are its ``Literal``'s, ``""`` aside.
+    #: The key that selects the config's branch (a Data Input's ``input_type``, a Model
+    #: Score's ``source_type``), whose values are its ``Literal``'s, ``""`` aside.
     discriminant: str | None = None
     #: The discriminant's values when the engine, not a ``Literal``, holds them.
     discriminant_values: Callable[[], frozenset[str]] | None = None
@@ -1305,7 +1305,7 @@ def _model_score_gaps(
         parse_model_source(config)
     except IncompleteModelSourceError as exc:
         return [
-            ConfigGap(str(exc.context.get("missing_field") or "sourceType"), "required", str(exc))
+            ConfigGap(str(exc.context.get("missing_field") or "source_type"), "required", str(exc))
         ]
     return []
 
@@ -1327,15 +1327,15 @@ def _check_rating_step(config: Mapping[str, Any]) -> None:
 def _check_output(config: Mapping[str, Any]) -> None:
     from haute._output_assembler import validate_v2_output_mapping
 
-    mapping = config.get("outputMapping")
+    mapping = config.get("output_mapping")
     if mapping is not None:
         validate_v2_output_mapping(list(mapping))
 
 
 def _output_gaps(config: Mapping[str, Any], input_names: Sequence[str] | None) -> list[ConfigGap]:
-    if "outputMapping" in config:
+    if "output_mapping" in config:
         return []
-    return [ConfigGap("outputMapping", "required", "Quote Response has no outputMapping.")]
+    return [ConfigGap("output_mapping", "required", "Quote Response has no output_mapping.")]
 
 
 def _check_explore(config: Mapping[str, Any]) -> None:
@@ -1357,9 +1357,11 @@ def _external_file_gaps(
     path = config.get("path")
     if not isinstance(path, str) or not path.strip():
         gaps.append(ConfigGap("path", "required", "external file config requires non-empty 'path'"))
-    if not config.get("fileType"):
+    if not config.get("file_type"):
         gaps.append(
-            ConfigGap("fileType", "required", "external file config requires non-empty 'fileType'")
+            ConfigGap(
+                "file_type", "required", "external file config requires non-empty 'file_type'"
+            )
         )
     return gaps
 
@@ -1555,7 +1557,7 @@ _OPTIMISER_APPLY_SOURCE_FIELD = {
 def _optimiser_apply_gaps(
     config: Mapping[str, Any], input_names: Sequence[str] | None
 ) -> list[ConfigGap]:
-    source = config.get("sourceType")
+    source = config.get("source_type")
     source_field = _OPTIMISER_APPLY_SOURCE_FIELD.get(str(source or ""))
     if source_field is None or config.get(source_field):
         return []
@@ -1586,14 +1588,14 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         NodeType.DATA_INPUT,
         DataInputConfig,
         check=_check_data_input,
-        discriminant="inputType",
+        discriminant="input_type",
         completeness=_stepped(NodeType.DATA_INPUT, _data_input_gaps),
     ),
     NodeConfigModel(
         NodeType.DATA_OUTPUT,
         DataOutputConfig,
         check=_check_data_output,
-        discriminant="outputType",
+        discriminant="output_type",
         completeness=_data_output_gaps,
     ),
     NodeConfigModel(
@@ -1607,7 +1609,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         NodeType.MODEL_SCORE,
         ModelScoreConfig,
         check=_check_model_score,
-        discriminant="sourceType",
+        discriminant="source_type",
         completeness=_stepped(NodeType.MODEL_SCORE, _model_score_gaps),
     ),
     NodeConfigModel(NodeType.BANDING, BandingConfig, check=_check_banding),
@@ -1662,7 +1664,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         NodeType.OPTIMISER_APPLY,
         OptimiserApplyConfig,
         check=_check_optimiser_apply,
-        discriminant="sourceType",
+        discriminant="source_type",
         check_inputs=_optimiser_apply_inputs,
         completeness=_optimiser_apply_gaps,
     ),

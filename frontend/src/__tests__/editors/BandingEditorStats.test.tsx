@@ -138,12 +138,12 @@ const CONFIG = {
     {
       banding: "breakpoints",
       column: "premium",
-      outputColumn: "premium_band",
+      output_column: "premium_band",
       rules: [
         { boundary: "50", label: "low" },
         { boundary: "", label: "high" },
       ],
-      rightClosed: true,
+      right_closed: true,
     },
   ],
 }
@@ -244,12 +244,12 @@ describe("BandingEditor statistics", () => {
         {
           banding: "breakpoints",
           column: "start_date",
-          outputColumn: "start_band",
+          output_column: "start_band",
           rules: [
             { boundary: "2024-01-31", label: "January" },
             { boundary: "", label: "Later" },
           ],
-          rightClosed: true,
+          right_closed: true,
         },
       ],
     }
@@ -288,7 +288,7 @@ describe("BandingEditor statistics", () => {
         {
           banding: "categorical",
           column: "premium",
-          outputColumn: "premium_band",
+          output_column: "premium_band",
           rules: [],
         },
       ],
@@ -449,13 +449,13 @@ describe("BandingEditor statistics", () => {
         {
           banding: "breakpoints",
           column: "start_date",
-          outputColumn: "start_band",
+          output_column: "start_band",
           rules: [
             { boundary: "2024-01-31", label: "January" },
             { boundary: "2024-02-29", label: "February" },
             { boundary: "", label: "Later" },
           ],
-          rightClosed: true,
+          right_closed: true,
         },
       ],
     }
@@ -545,7 +545,7 @@ describe("BandingEditor statistics", () => {
     })
     mockGetBandingStats.mockResolvedValue(categoricalStats)
     const categorical = (rules: { value: string; assignment: string }[]) => ({
-      factors: [{ banding: "categorical", column: "premium", outputColumn: "premium_band", rules }],
+      factors: [{ banding: "categorical", column: "premium", output_column: "premium_band", rules }],
     })
     const { rerender } = renderEditor(editor({ config: categorical([{ value: "north", assignment: "N" }]) }))
     await act(async () => {

@@ -23,7 +23,7 @@
                         {
                           "banding": "breakpoints",
                           "column": "driver_age",
-                          "outputColumn": "driver_age_band",
+                          "output_column": "driver_age_band",
                           "rules": [
                             {
                               "boundary": "25",

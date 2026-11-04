@@ -61,7 +61,7 @@ def test_a_rating_descriptor_is_the_shared_spec_under_ratings_key_names(dtype) -
     if isinstance(spec, str):
         assert descriptor == {"kind": spec}
     else:
-        renamed = {"type": "kind", "time_unit": "timeUnit", "time_zone": "timeZone"}
+        renamed = {"type": "kind", "time_unit": "time_unit", "time_zone": "time_zone"}
         assert descriptor == {renamed.get(key, key): value for key, value in spec.items()}
     assert rating_dtype_from_descriptor(descriptor) == dtype
     assert rating_dtype_from_descriptor(descriptor) == parse_dtype(spec)

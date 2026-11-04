@@ -37,7 +37,7 @@
                     "node_type": "dataInput",
                     "name": "renewal_quotes",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/renewal_quotes.parquet",

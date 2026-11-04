@@ -118,11 +118,11 @@ _USAGE_NOTES: dict[NodeType, str] = {
     NodeType.BANDING: (
         "Band a number or date column at breakpoints, or map categorical values to "
         "named bands. Breakpoint rules are {boundary, label} rows: each boundary is "
-        "its band's upper bound (inclusive unless rightClosed is false), every "
+        "its band's upper bound (inclusive unless right_closed is false), every "
         "boundary is a number, a date, or a date and time of one kind, and one "
         "final row may leave the boundary empty for the open-ended band. "
         "Categorical rules are {value, assignment} rows. Give each factor an "
-        "outputColumn and an explicit default for values outside the rules."
+        "output_column and an explicit default for values outside the rules."
     ),
     NodeType.RATING_STEP: (
         "Rate its first input: look up rating factors from one or more tables and "
@@ -131,7 +131,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
     ),
     NodeType.OUTPUT: (
         "Assemble the top-level JSON response from selected upstream columns "
-        "with an explicit outputMapping whose source_port names the incoming "
+        "with an explicit output_mapping whose source_port names the incoming "
         "frame; it has no output edge."
     ),
     NodeType.WORKBENCH_OUTPUT: (
@@ -148,7 +148,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "Load a pickle, JSON or joblib file and expose the loaded object as `obj`; "
         "the first input is `df` and further inputs are named by their edges. "
         "Without steps or code the node returns its first input unchanged. Set "
-        "fileType. A model Haute trains is scored with Model Scoring, not loaded here."
+        "file_type. A model Haute trains is scored with Model Scoring, not loaded here."
     ),
     NodeType.LIVE_SWITCH: (
         "Route one of several connected frames by scenario; use at most one "
@@ -168,7 +168,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "Apply Optimisation reads; the node has no output."
     ),
     NodeType.SCENARIO_EXPANDER: (
-        "Repeat each row once per scenario step: stepCount (required, at least 1) "
+        "Repeat each row once per scenario step: step_count (required, at least 1) "
         "sets how many; step_column names the 0-based index column (default "
         "scenario_index); column_name, when set, adds a value column spaced evenly "
         "from min_value to max_value; quote_id names the column identifying each quote."
@@ -676,7 +676,7 @@ def _schema_effect(node_type: NodeType) -> str:
             "reads its inputs to solve; the optimisation result is saved for Apply Optimisation"
         ),
         NodeType.SCENARIO_EXPANDER: (
-            "repeats rows stepCount times, adding the step index and optional value columns"
+            "repeats rows step_count times, adding the step index and optional value columns"
         ),
         NodeType.OPTIMISER_APPLY: "adds the configured version and optimised-value columns",
         NodeType.CONSTANT: "emits one row with the configured literal columns",
@@ -720,7 +720,7 @@ _WIRING_EXTRAS: dict[NodeType, str] = {
         "A ratebook result applies to the input named by ratebook_input; any other "
         "result applies to the first input."
     ),
-    NodeType.OUTPUT: "Each outputMapping row's source_port names one incoming frame.",
+    NodeType.OUTPUT: "Each output_mapping row's source_port names one incoming frame.",
     NodeType.WORKBENCH_OUTPUT: (
         "Connect each table's frame with target_handle set to the table's name; a table "
         "takes one edge and a node fills one table."

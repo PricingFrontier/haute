@@ -42,7 +42,7 @@ export function addScoreNode(
   mkdirSync(scoringConfigDir, { recursive: true })
   writeFileSync(
     resolve(scoringConfigDir, name + ".json"),
-    JSON.stringify({ sourceType: "file", model_path: modelPath, task, output_column: "prediction" }, null, 2),
+    JSON.stringify({ source_type: "file", model_path: modelPath, task, output_column: "prediction" }, null, 2),
     "utf8",
   )
   appendToPipeline(`@pipeline.model_score(config="config/model_scoring/${name}.json")\ndef ${name}(${source}): ...`)

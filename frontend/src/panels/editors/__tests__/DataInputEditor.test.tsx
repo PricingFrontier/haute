@@ -317,7 +317,7 @@ afterEach(cleanup)
 describe("DataInputEditor", () => {
   it("scans Parquet directly without a one-option mode", async () => {
     renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       path: "quotes.parquet",
@@ -336,7 +336,7 @@ describe("DataInputEditor", () => {
 
   it("accepts read mode for a Parquet input", async () => {
     renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "read",
       path: "quotes.parquet",
@@ -350,7 +350,7 @@ describe("DataInputEditor", () => {
 
   it("uses the capability schema requirement and preserves other arguments when adopting it", async () => {
     const { onUpdate } = renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -370,7 +370,7 @@ describe("DataInputEditor", () => {
 
   it("detects the schema with the node's reader settings, its schema argument aside", async () => {
     renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "claims.csv",
@@ -394,7 +394,7 @@ describe("DataInputEditor", () => {
           : { items: [{ name: "_delta_log", path: "tables/claims/_delta_log", type: "directory" }] },
       ) as ReturnType<typeof listFiles>,
     )
-    const { onUpdate } = renderEditor({ inputType: "lakehouse", format: "delta", mode: "scan", code: "" })
+    const { onUpdate } = renderEditor({ input_type: "lakehouse", format: "delta", mode: "scan", code: "" })
 
     fireEvent.click(await screen.findByText("claims"))
     await screen.findByText("_delta_log")
@@ -406,7 +406,7 @@ describe("DataInputEditor", () => {
   it("tolerates a leftover cacheMode key and never migrates it", async () => {
     const onUpdate = vi.fn(() => ({ ok: true as const }))
     renderEditor({
-      inputType: "file",
+      input_type: "file",
       cacheMode: "direct",
       format: "csv",
       mode: "scan",
@@ -423,7 +423,7 @@ describe("DataInputEditor", () => {
   it("recovers a failed bounded-schema fetch without changing the path", async () => {
     vi.mocked(fetchSchema).mockRejectedValueOnce(new Error("broken CSV"))
     renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -443,7 +443,7 @@ describe("DataInputEditor", () => {
 
   describe("a detected schema belongs to the file and reader settings it was read with", () => {
     const csv = (path: string, args: Record<string, unknown> = {}) => ({
-      inputType: "file", format: "csv", mode: "scan", path, arguments: args, code: "",
+      input_type: "file", format: "csv", mode: "scan", path, arguments: args, code: "",
     })
     const schemaOf = (path: string, column: string) => ({
       path, columns: [{ name: column, dtype: "Int64" }], row_count: 1, row_count_estimated: false, column_count: 1, preview: [],
@@ -522,7 +522,7 @@ describe("DataInputEditor", () => {
     fireEvent.click(within(provider).getByRole("radio", { name: "Database" }))
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df",
-      inputType: "database",
+      input_type: "database",
       format: "database",
       arguments: {},
       query: "",
@@ -531,7 +531,7 @@ describe("DataInputEditor", () => {
 
   it("preserves provider fields when the format changes", async () => {
     const { onReplaceConfig } = renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -545,7 +545,7 @@ describe("DataInputEditor", () => {
 
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df.filter(pl.col('x') > 0)",
-      inputType: "file",
+      input_type: "file",
       format: "json",
       mode: "read",
       arguments: {},
@@ -558,7 +558,7 @@ describe("DataInputEditor", () => {
     ["a populated list", [{ id: "l", kind: "limit", n: 2 }]],
   ])("keeps %s of post-load steps when the format or the provider changes", async (_label, steps) => {
     const { onReplaceConfig } = renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -571,7 +571,7 @@ describe("DataInputEditor", () => {
     })
     expect(onReplaceConfig).toHaveBeenLastCalledWith({
       steps,
-      inputType: "file",
+      input_type: "file",
       format: "json",
       mode: "read",
       arguments: {},
@@ -581,14 +581,14 @@ describe("DataInputEditor", () => {
     const provider = await screen.findByRole("radiogroup", { name: "Provider" })
     fireEvent.click(within(provider).getByRole("radio", { name: "Databricks" }))
     expect(onReplaceConfig).toHaveBeenLastCalledWith(
-      expect.objectContaining({ steps, inputType: "databricks" }),
+      expect.objectContaining({ steps, input_type: "databricks" }),
     )
   })
 
   it.each([
-    ["a new node's empty step list", { inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
-    ["an incomplete step list", { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }] }],
-    ["code on Databricks", { inputType: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "" }],
+    ["a new node's empty step list", { input_type: "file", format: "parquet", mode: "scan", path: "", arguments: {}, steps: [] }],
+    ["an incomplete step list", { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, steps: [{ id: "f", kind: "filter", match: "all", conditions: [] }] }],
+    ["code on Databricks", { input_type: "databricks", http_path: "/sql/1", table: "cat.schema.t", arguments: {}, code: "" }],
   ])("reports no configuration error for %s", async (_label, config) => {
     renderEditor(config)
     await screen.findByRole("radiogroup", { name: "Provider" })
@@ -596,14 +596,14 @@ describe("DataInputEditor", () => {
   })
 
   it("still reports a genuinely unknown configuration key", async () => {
-    renderEditor({ inputType: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, stepz: [] })
+    renderEditor({ input_type: "file", format: "csv", mode: "scan", path: "quotes.csv", arguments: {}, stepz: [] })
     await screen.findByLabelText("Format")
     expect(screen.getByText(/Unexpected configuration keys: stepz\./)).toBeInTheDocument()
   })
 
   it("switches to Parquet without authoring a cache-mode field", async () => {
     const { onReplaceConfig } = renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -617,7 +617,7 @@ describe("DataInputEditor", () => {
 
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df",
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       arguments: {},
@@ -627,7 +627,7 @@ describe("DataInputEditor", () => {
 
   it("clears the other database locator atomically", async () => {
     const { onUpdate } = renderEditor({
-      inputType: "database",
+      input_type: "database",
       format: "database",
       connection: "WAREHOUSE_URI",
       query: "select * from quotes",
@@ -648,7 +648,7 @@ describe("DataInputEditor", () => {
 
   it("keeps the Databricks picker separate from Polars formats", async () => {
     renderEditor({
-      inputType: "databricks",
+      input_type: "databricks",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -662,7 +662,7 @@ describe("DataInputEditor", () => {
 
   it("removes the optional Databricks SELECT clause when it is cleared", async () => {
     const config = {
-      inputType: "databricks",
+      input_type: "databricks",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       query: "SELECT id FROM quotes",
@@ -676,7 +676,7 @@ describe("DataInputEditor", () => {
     fireEvent.blur(query)
 
     expect(onReplaceConfig).toHaveBeenCalledWith({
-      inputType: "databricks",
+      input_type: "databricks",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -686,7 +686,7 @@ describe("DataInputEditor", () => {
 
   it("describes the Databricks query as a SELECT clause Haute completes with FROM", async () => {
     renderEditor({
-      inputType: "databricks",
+      input_type: "databricks",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -703,7 +703,7 @@ describe("DataInputEditor", () => {
 
   it("validates inline records and commits one parsed update on blur", async () => {
     const { onUpdate } = renderEditor({
-      inputType: "inline",
+      input_type: "inline",
       format: "records",
       mode: "read",
       records: [],
@@ -725,7 +725,7 @@ describe("DataInputEditor", () => {
 
   it("keeps unavailable formats visible with the missing engine named", async () => {
     renderEditor({
-      inputType: "file",
+      input_type: "file",
       format: "excel",
       mode: "read",
       path: "quotes.xlsx",

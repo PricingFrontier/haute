@@ -27,7 +27,7 @@ def _canonical_graph() -> PipelineGraph:
                         "label": "pricing",
                         "nodeType": "submodel",
                         "config": {
-                            "definitionId": "pricing-definition",
+                            "definition_id": "pricing-definition",
                             "alias": "pricing",
                         },
                     },

@@ -376,9 +376,9 @@ class TestBugB7DissolveTargetOnly:
         graph = PipelineGraph(
             nodes=[
                 node("src", NodeType.DATA_INPUT),
-                node("rating_instance", NodeType.SUBMODEL, definitionId="rating", alias="rating"),
+                node("rating_instance", NodeType.SUBMODEL, definition_id="rating", alias="rating"),
                 node(
-                    "pricing_instance", NodeType.SUBMODEL, definitionId="pricing", alias="pricing"
+                    "pricing_instance", NodeType.SUBMODEL, definition_id="pricing", alias="pricing"
                 ),
                 node("out", NodeType.OUTPUT),
             ],

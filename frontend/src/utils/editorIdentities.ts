@@ -40,10 +40,10 @@ function submodelDefinition(
   if (!isSubmodelInstanceConfig(node.data.config)) {
     throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
   }
-  const definition = submodels[node.data.config.definitionId]
-  if (!isSubmodelDefinition(definition, node.data.config.definitionId)) {
+  const definition = submodels[node.data.config.definition_id]
+  if (!isSubmodelDefinition(definition, node.data.config.definition_id)) {
     throw new Error(
-      `Cannot resolve editor identity for submodel ${node.id}: definition ${node.data.config.definitionId} is unavailable`,
+      `Cannot resolve editor identity for submodel ${node.id}: definition ${node.data.config.definition_id} is unavailable`,
     )
   }
   return definition
@@ -91,7 +91,7 @@ function requestNode(
       throw new Error(`Cannot resolve editor identity for submodel ${node.id}: malformed occurrence`)
     }
     alias = node.data.config.alias
-    instanceOf = node.data.config.instanceOf
+    instanceOf = node.data.config.instance_of
     const definition = submodelDefinition(node, submodels)
     sourceHandles = definition.outputPorts.map((port) => `out__${port.name}`)
   } else if (nodeType === NODE_TYPES.SUBMODEL_PORT) {

@@ -411,11 +411,13 @@ class NodeRegistry:
         """
 
         from haute._config_validation import (
+            reject_camel_case_decorator_kwargs,
             reject_removed_node_reuse_kwargs,
             validate_node_config,
         )
 
         reject_removed_node_reuse_kwargs(config)
+        reject_camel_case_decorator_kwargs(config)
         declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
         if declared_type in (NodeType.EDGE_JOIN, NodeType.EXPLORE):
             # Their settings are the decorator's keywords, held to the config model's
@@ -1367,7 +1369,7 @@ class _WiredEdge:
 
 
 def _raw_node(node: Node) -> dict[str, Any]:
-    """A live node as the static graph builders read a parsed one: its ``inputMapping``
+    """A live node as the static graph builders read a parsed one: its ``input_mapping``
     resolved, an External File's from its sidecar, as a parse reads it, so inferring its
     edges maps its parameters as the parser maps them."""
     from haute._standalone_nodes import _parameters
@@ -1376,7 +1378,7 @@ def _raw_node(node: Node) -> dict[str, Any]:
     config = {key: value for key, value in node.config.items() if not key.startswith("_")}
     mapping = _input_mapping(node)
     if mapping is not None:
-        config["inputMapping"] = dict(mapping)
+        config["input_mapping"] = dict(mapping)
     return {
         "func_name": node.name,
         "node_type": node.node_type,
@@ -1399,16 +1401,16 @@ def _input_name(source: Node | None, edge: RegisteredEdge) -> str:
 
 
 def _input_mapping(node: Node) -> Mapping[str, str] | None:
-    """*node*'s declared ``inputMapping``: on its decorator, or, for an External File, in
+    """*node*'s declared ``input_mapping``: on its decorator, or, for an External File, in
     its ``config=`` sidecar, read as its run reads it."""
-    mapping = node.config.get("inputMapping")
+    mapping = node.config.get("input_mapping")
     path = node.config.get("config")
     if mapping is None and node.node_type == NodeType.EXTERNAL_FILE and isinstance(path, str):
         from haute._config_io import load_node_config
         from haute._standalone_nodes import pipeline_directory
 
         base_dir = pipeline_directory(node.fn, node.name, node.pipeline_dir)
-        mapping = load_node_config(path, base_dir=base_dir).get("inputMapping")
+        mapping = load_node_config(path, base_dir=base_dir).get("input_mapping")
     return mapping if isinstance(mapping, Mapping) else None
 
 
