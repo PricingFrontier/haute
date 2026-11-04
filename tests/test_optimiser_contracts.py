@@ -255,7 +255,7 @@ def test_optimiser_codegen_returns_the_exact_selected_api_frame(tmp_path: Path) 
                 {
                     "id": "api_request",
                     "data": {
-                        "label": "Request",
+                        "label": "quote_input",
                         "nodeType": "apiInput",
                         "config": {},
                     },
@@ -310,7 +310,7 @@ def test_optimiser_codegen_rejects_node_id_selector_for_multi_frame_api_input() 
                 {
                     "id": "api_request",
                     "data": {
-                        "label": "Request",
+                        "label": "quote_input",
                         "nodeType": "apiInput",
                         "config": {},
                     },

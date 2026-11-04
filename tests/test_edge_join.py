@@ -462,8 +462,8 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
     graph = PipelineGraph(
         nodes=[
             GraphNode(
-                id="request",
-                data=NodeData(label="request", nodeType=NodeType.API_INPUT, config={}),
+                id="quote_input",
+                data=NodeData(label="quote_input", nodeType=NodeType.API_INPUT, config={}),
             ),
             _edge_join_node(
                 {
@@ -476,14 +476,14 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
         edges=[
             GraphEdge(
                 id="e_quotes_join",
-                source="request",
+                source="quote_input",
                 sourceHandle="quotes",
                 target="join",
                 targetHandle="base",
             ),
             GraphEdge(
                 id="e_lookup_join",
-                source="request",
+                source="quote_input",
                 sourceHandle="lookup",
                 target="join",
                 targetHandle="join",
@@ -494,11 +494,11 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
     code = graph_to_code(graph, pipeline_name="joins")
 
     assert (
-        'pipeline.connect("request", "Join_Rates", source_port="quotes", target_port="base")'
+        'pipeline.connect("quote_input", "Join_Rates", source_port="quotes", target_port="base")'
         in code
     )
     assert (
-        'pipeline.connect("request", "Join_Rates", source_port="lookup", target_port="join")'
+        'pipeline.connect("quote_input", "Join_Rates", source_port="lookup", target_port="join")'
         in code
     )
 

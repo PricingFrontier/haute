@@ -658,18 +658,23 @@ class TestSubmodelLifecycle:
                     "code": "df = step_one.with_columns(b=pl.col('a') + 10)",
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, make_output_config(["x", "y", "a", "b"])),
+            _make_node(
+                "quote_response",
+                "quote_response",
+                NodeType.OUTPUT,
+                make_output_config(["x", "y", "a", "b"]),
+            ),
         ]
         edges = [
             _make_edge("src", "t1"),
             _make_edge("t1", "t2"),
-            _make_edge("t2", "out"),
+            _make_edge("t2", "quote_response"),
         ]
         graph = PipelineGraph(nodes=nodes, edges=edges, pipeline_name="submodel_test")
         # Step 1: Execute original
         results = execute_graph(graph)
-        assert results["out"].status == "ok"
-        orig_row_count = results["out"].row_count
+        assert results["quote_response"].status == "ok"
+        orig_row_count = results["quote_response"].row_count
 
         # Step 2: Extract submodel (t1 + t2)
         result = create_submodel_graph(graph, ["t1", "t2"], "inner_group")
@@ -704,19 +709,19 @@ class TestSubmodelLifecycle:
         runtime_t1 = qualified_runtime_node_id(sm_node.id, "t1")
         runtime_t2 = qualified_runtime_node_id(sm_node.id, "t2")
         flat_node_ids = {n.id for n in flat.nodes}
-        assert flat_node_ids == {"src", "out", runtime_t1, runtime_t2}
+        assert flat_node_ids == {"src", "quote_response", runtime_t1, runtime_t2}
 
         flat_edge_pairs = {(e.source, e.target) for e in flat.edges}
         assert flat_edge_pairs == {
             ("src", runtime_t1),
             (runtime_t1, runtime_t2),
-            (runtime_t2, "out"),
+            (runtime_t2, "quote_response"),
         }
 
         # Step 5: Execute the dissolved graph — should produce same results
         results2 = execute_graph(flat)
-        assert results2["out"].status == "ok"
-        assert results2["out"].row_count == orig_row_count
+        assert results2["quote_response"].status == "ok"
+        assert results2["quote_response"].row_count == orig_row_count
 
 
 # ═══════════════════════════════════════════════════════════════════════════

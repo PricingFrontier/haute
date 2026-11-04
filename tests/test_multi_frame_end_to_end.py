@@ -57,7 +57,7 @@ token, ``$D`` the data path under the project root):
     #    emitting table's input snapshot before assembling the document.
     curl -sX POST localhost:8000/api/pipeline/preview -H "X-Haute-Session: $T" \
       -H 'content-type: application/json' \
-      -d '{"graph":<GRAPH>,"node_id":"out"}'
+      -d '{"graph":<GRAPH>,"node_id":"quote_response"}'
 """
 
 from __future__ import annotations
@@ -99,24 +99,25 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
     return {
         "nodes": [
             {
-                "id": "api",
+                "id": "quote_input",
                 "data": {
-                    "label": "api",
+                    "label": "quote_input",
                     "nodeType": NodeType.API_INPUT.value,
                     "config": api_config,
                 },
             },
             {
-                "id": "out",
+                "id": "quote_response",
                 "data": {
-                    "label": "out",
+                    "label": "quote_response",
                     "nodeType": NodeType.OUTPUT.value,
                     "config": {"output_mapping": _output_mapping()},
                 },
             },
         ],
         "edges": [
-            {"id": f"e_{p}", "source": "api", "target": "out", "sourceHandle": p} for p in _PORTS
+            {"id": f"e_{p}", "source": "quote_input", "target": "quote_response", "sourceHandle": p}
+            for p in _PORTS
         ],
     }
 
@@ -196,7 +197,7 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
     # document (proven by test_output_nested_roundtrip.py).
     preview = client.post(
         "/api/pipeline/preview",
-        json={"graph": graph, "node_id": "out"},
+        json={"graph": graph, "node_id": "quote_response"},
     )
     assert preview.status_code == 200, (
         f"STAGE 3 PREVIEW failed (commit 7 OUTPUT wiring): {preview.text}"

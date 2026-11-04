@@ -234,7 +234,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // against its type's model, compiled once in the shared pipeline-graph validator module
 // rather than in each of the git and pipeline modules; the complete bundle is 1,775.8 KiB
 // (the initial bundle unchanged at 289.5 KiB); 1,778 KiB (approved).
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1778
+// Readable output round 2 (READ-46, 4 November 2026): the fixed names of the request input
+// and response node in a new or pasted node, and the refusal of a rename or Edge Join that a
+// code step reads by name, bring it to 1,778.2 KiB (the initial bundle 290.4 KiB); 1,779 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1779
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
