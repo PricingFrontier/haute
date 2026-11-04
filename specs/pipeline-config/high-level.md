@@ -466,6 +466,7 @@ renamed:
 | `nullsLast` | `nulls_last` | the sort step |
 | `numberType` | `number_type` | a condition's list of numbers |
 | `variableName`, `valueName` | `variable_name`, `value_name` | the unpivot step |
+| `nodeId`, `handleId` | `node_id`, `handle_id` | a port endpoint in a submodel module's `haute.Submodel(...)` (READ-45) |
 
 A key the analyst names never changes, whatever its casing: a column, a categorical level, an
 input name in `input_mapping`, a factor in `factor_dtypes`, a source in `by_source`, a constant,

@@ -27,6 +27,7 @@ from haute._ast_helpers import (
     _reject_reserved_global_constants_bindings,
     is_submodel_import,
 )
+from haute._config_validation import camel_case_endpoint_message
 from haute._flatten import flatten_graph
 from haute._graph_builders import (
     _build_edges,
@@ -553,8 +554,13 @@ def _extract_definition_contract(
                                 "{'name': ..., 'targets': [...]} or {'name': ..., 'source': {...}}."
                             ),
                         )
+                camel_case = camel_case_endpoint_message(field, raw_port)
+                if camel_case is not None:
+                    raise ParseError(camel_case, field=field)
         try:
-            return [model.model_validate(port) for port in raw_ports]
+            # A module names an endpoint's keys in snake_case; the aliases are the
+            # graph API's (READ-45).
+            return [model.model_validate(port, by_alias=False, by_name=True) for port in raw_ports]
         except ValueError as exc:
             raise ParseError(
                 f"Submodel {field} contains an invalid public port.",

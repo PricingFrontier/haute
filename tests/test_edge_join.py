@@ -596,7 +596,7 @@ def test_submodel_edge_join_codegen_uses_public_input_role_edge() -> None:
     module = files["modules/rating.py"]
     assert "base_input=" not in module
     assert "join_input=" not in module
-    assert '"targets": [{"nodeId": "join", "handleId": "base"}]' in module
+    assert '"targets": [{"node_id": "join", "handle_id": "base"}]' in module
     assert 'submodel.connect("Lookup", "Join", target_port="join")' in module
 
 

@@ -70,8 +70,8 @@ import polars as pl
 submodel = haute.Submodel(
     "factors",
     definition_id="definition_factors",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "scaled", "handleId": None}]}],
-    output_ports=[{"name": "factored", "source": {"nodeId": "factor", "handleId": None}}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "scaled"}]}],
+    output_ports=[{"name": "factored", "source": {"node_id": "factor"}}],
     pipeline_dir="..",
 )
 
@@ -99,8 +99,8 @@ import polars as pl
 submodel = haute.Submodel(
     "rated",
     definition_id="definition_rated",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "rates", "handleId": None}]}],
-    output_ports=[{"name": "rated", "source": {"nodeId": "rates", "handleId": None}}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "rates"}]}],
+    output_ports=[{"name": "rated", "source": {"node_id": "rates"}}],
     pipeline_dir="..",
 )
 
@@ -415,7 +415,7 @@ import polars as pl
 submodel = haute.Submodel(
     "priced",
     definition_id="definition_priced",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "scaled", "handleId": None}]}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "scaled"}]}],
     output_ports=[],
     pipeline_dir="..",
 )

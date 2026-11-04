@@ -3041,9 +3041,7 @@ class TestDeclaredSubmodelOutputs:
             '    "sm1",\n'
             '    definition_id="sm1",\n'
             "    input_ports=[],\n"
-            "    output_ports=[\n"
-            '        {"name": "export", "source": {"nodeId": "child_export", "handleId": None}}\n'
-            "    ],\n"
+            '    output_ports=[{"name": "export", "source": {"node_id": "child_export"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n"
         ) in files["modules/sm1.py"]

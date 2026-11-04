@@ -1269,6 +1269,8 @@ class Submodel(NodeRegistry):
                 f"the pipeline that registers it (got {pipeline_dir!r})."
             )
 
+        from haute._config_validation import camel_case_endpoint_message
+
         super().__init__(name, description)
         self._pipeline_dir = pipeline_dir
         self._definition_id = definition_id
@@ -1284,8 +1286,19 @@ class Submodel(NodeRegistry):
                                 "a public port has one name: "
                                 "replace 'portId' and 'label' with 'name'."
                             )
-        self._input_ports = [SubmodelInputPort.model_validate(port) for port in input_ports]
-        self._output_ports = [SubmodelOutputPort.model_validate(port) for port in output_ports]
+                    camel_case = camel_case_endpoint_message(port_field, port)
+                    if camel_case is not None:
+                        raise ValueError(camel_case)
+        # A module names an endpoint's keys in snake_case; the aliases are the graph
+        # API's (READ-45).
+        self._input_ports = [
+            SubmodelInputPort.model_validate(port, by_alias=False, by_name=True)
+            for port in input_ports
+        ]
+        self._output_ports = [
+            SubmodelOutputPort.model_validate(port, by_alias=False, by_name=True)
+            for port in output_ports
+        ]
 
     @property
     def definition_id(self) -> str:

@@ -1435,11 +1435,11 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
             definition_id="child-definition",
             input_ports=[{
                 "name": "input_1",
-                "targets": [{"nodeId": "transform", "handleId": None}],
+                "targets": [{"node_id": "transform"}],
             }],
             output_ports=[{
                 "name": "output_1",
-                "source": {"nodeId": "transform", "handleId": None},
+                "source": {"node_id": "transform"},
             }],
             pipeline_dir="..",
         )
@@ -2290,13 +2290,13 @@ def test_a_refusal_shown_element_by_element_is_not_listed_again(tmp_path: Path) 
     ("output_ports", "message"),
     [
         pytest.param(
-            '[{"name": "out", "source": {"nodeId": "ghost", "handleId": None}}]',
+            '[{"name": "out", "source": {"node_id": "ghost"}}]',
             "missing child nodes: ['ghost']",
             id="missing-node",
         ),
         pytest.param(
-            '[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}, '
-            '{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}]',
+            '[{"name": "out", "source": {"node_id": "quotes"}}, '
+            '{"name": "out", "source": {"node_id": "quotes"}}]',
             "duplicate public port names: ['out']",
             id="duplicate-name",
         ),
@@ -3470,7 +3470,7 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
         tmp_path / "modules" / "inputs.py",
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
-        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "quotes"}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef quotes():\n    return None\n\n"
         'submodel.connect("ghost", "quotes")\n',
@@ -3558,7 +3558,7 @@ def test_remove_connection_mends_a_submodel_with_no_nodes(
 _PRICING = (
     "import haute\nimport polars as pl\n\n"
     'submodel = haute.Submodel("pricing", definition_id="pricing", input_ports=[], '
-    'output_ports=[{"name": "out", "source": {"nodeId": "rates", "handleId": None}}], '
+    'output_ports=[{"name": "out", "source": {"node_id": "rates"}}], '
     'pipeline_dir="..")\n\n'
     "@submodel.polars\ndef rates():\n    return None\n"
 )
@@ -3676,7 +3676,7 @@ def _submodel_project(root: Path, *, input_ports: str, body: str, parent_extra: 
         root / "modules" / "inputs.py",
         "import haute\nimport polars as pl\n\n"
         f'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports={input_ports}, '
-        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "quotes"}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef quotes():\n    return None\n\n" + body,
     )
@@ -3720,7 +3720,7 @@ def test_an_explore_a_port_feeds_is_not_flagged_in_an_unavailable_submodel(
 
     pipeline_file = _submodel_project(
         tmp_path,
-        input_ports='[{"name": "records", "targets": [{"nodeId": "look", "handleId": None}]}]',
+        input_ports='[{"name": "records", "targets": [{"node_id": "look"}]}]',
         body="@submodel.explore\ndef look(records): ...\n\n"
         "@submodel.polars\ndef rates():\n    return None\n\n"
         '@submodel.edge_join(how="left", on=["id"])\ndef joined(quotes, rates): ...\n\n'

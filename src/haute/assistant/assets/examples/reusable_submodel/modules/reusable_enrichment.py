@@ -11,13 +11,13 @@ submodel = haute.Submodel(
     input_ports=[
         {
             "name": "quotes",
-            "targets": [{"nodeId": "enriched", "handleId": None}],
+            "targets": [{"node_id": "enriched"}],
         }
     ],
     output_ports=[
         {
             "name": "enriched",
-            "source": {"nodeId": "enriched", "handleId": None},
+            "source": {"node_id": "enriched"},
         }
     ],
     pipeline_dir="..",

@@ -60,7 +60,25 @@ SNAKE_CASE_KEYS: dict[str, str] = {
     "numberType": "number_type",
     "variableName": "variable_name",
     "valueName": "value_name",
+    "nodeId": "node_id",
+    "handleId": "handle_id",
 }
+
+
+def camel_case_endpoint_message(field: str, port: Mapping[Any, Any]) -> str | None:
+    """The refusal for a submodel port whose endpoints a module writes in camelCase
+    (READ-45), or ``None``: the graph API keeps ``nodeId`` and ``handleId``, a module
+    does not."""
+    endpoints = port.get("targets") if "targets" in port else [port.get("source")]
+    for endpoint in endpoints if isinstance(endpoints, list) else []:
+        if isinstance(endpoint, Mapping):
+            message = camel_case_key_message(
+                f"Submodel {field} port {port.get('name')!r}",
+                [key for key in endpoint if isinstance(key, str)],
+            )
+            if message is not None:
+                return message
+    return None
 
 
 def camel_case_key_message(where: str, keys: Sequence[str]) -> str | None:

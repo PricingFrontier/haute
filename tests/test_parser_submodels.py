@@ -46,13 +46,13 @@ submodel = haute.Submodel(
     input_ports=[
         {
             "name": "records",
-            "targets": [{"nodeId": "base_rate", "handleId": None}],
+            "targets": [{"node_id": "base_rate"}],
         }
     ],
     output_ports=[
         {
             "name": "priced",
-            "source": {"nodeId": "adjust", "handleId": None},
+            "source": {"node_id": "adjust"},
         }
     ],
 )
@@ -503,7 +503,7 @@ class TestParseSubmodelSource:
         ("old", "new", "message"),
         [
             pytest.param(
-                '"nodeId": "adjust"', '"nodeId": "ghost"', "missing child nodes", id="missing-node"
+                '"node_id": "adjust"', '"node_id": "ghost"', "missing child nodes", id="missing-node"
             ),
             pytest.param(
                 '"name": "priced"',

@@ -1,8 +1,8 @@
 """Every key Haute's schemas own is snake_case (READ-29).
 
 Spec: specs/pipeline-config/high-level.md, "Keys are snake_case". A sidecar, a decorator
-keyword or a rating dtype descriptor still in the camelCase form Haute wrote before is
-refused, naming each key's snake_case name.
+keyword, a rating dtype descriptor or a submodel module's port endpoint (READ-45) still in
+the camelCase form Haute wrote before is refused, naming each key's snake_case name.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from haute._node_config_models import NODE_CONFIG_MODELS
 from haute._project_context import standalone_project_scope
 from haute._rating_step_config import normalise_rating_step_config
 from haute._types import NodeType
-from haute.errors import ConfigError, ConfigSettingError
+from haute.errors import ConfigError, ConfigSettingError, ParseError
 from haute.parser import parse_pipeline_file
 
 CAMEL_CASE_REFUSAL = "uses the camelCase keys Haute wrote before its keys were snake_case"
@@ -60,7 +60,7 @@ def test_every_key_a_config_model_declares_is_snake_case() -> None:
     # Every renamed key is declared somewhere, or lives in a shape the walk cannot see
     # (a rating dtype descriptor, a Polars step).
     unseen = {"time_unit", "time_zone", "order_by", "nulls_last", "number_type"}
-    unseen |= {"variable_name", "value_name"}
+    unseen |= {"variable_name", "value_name", "node_id", "handle_id"}
     assert set(SNAKE_CASE_KEYS.values()) - keys <= unseen
 
 
@@ -142,3 +142,59 @@ def test_a_rating_dtype_descriptor_in_the_camel_case_form_is_refused(
 def test_a_table_with_no_factors_or_entries_yet_passes_through() -> None:
     config = {"tables": [{"output_column": "r"}]}
     assert normalise_rating_step_config(config) == config
+
+
+_CAMEL_CASE_MODULE = """\
+import haute
+import polars as pl
+
+submodel = haute.Submodel(
+    "rating",
+    definition_id="rating",
+    input_ports=[{"name": "quotes", "targets": [{"nodeId": "priced", "handleId": None}]}],
+    output_ports=[{"name": "priced", "source": {"node_id": "priced"}}],
+    pipeline_dir="..",
+)
+
+
+@submodel.polars
+def priced(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    df = quotes
+    return df
+"""
+
+
+def test_a_module_writing_its_port_endpoints_in_camel_case_is_refused_naming_each_key() -> None:
+    """READ-45: the module form is snake_case; the graph API keeps its own names."""
+    from haute._parser_submodels import parse_submodel_source
+
+    with pytest.raises(ParseError) as parsed:
+        parse_submodel_source(_CAMEL_CASE_MODULE, "modules/rating.py")
+    assert "'nodeId' is now 'node_id', 'handleId' is now 'handle_id'" in str(parsed.value)
+
+    with pytest.raises(ValueError, match=re.escape("'nodeId' is now 'node_id'")):
+        haute.Submodel(
+            "rating",
+            definition_id="rating",
+            input_ports=[],
+            output_ports=[{"name": "priced", "source": {"nodeId": "priced"}}],
+        )
+
+
+def test_a_module_writes_its_endpoints_in_snake_case_and_a_handle_only_when_set() -> None:
+    from haute._types import SubmodelEndpoint, SubmodelInputPort, SubmodelOutputPort
+
+    module = haute.Submodel(
+        "rating",
+        definition_id="rating",
+        input_ports=[{"name": "quotes", "targets": [{"node_id": "join", "handle_id": "base"}]}],
+        output_ports=[{"name": "priced", "source": {"node_id": "join"}}],
+    )
+    assert module.input_ports == [
+        SubmodelInputPort(
+            name="quotes", targets=[SubmodelEndpoint(node_id="join", handle_id="base")]
+        )
+    ]
+    assert module.output_ports == [
+        SubmodelOutputPort(name="priced", source=SubmodelEndpoint(node_id="join"))
+    ]

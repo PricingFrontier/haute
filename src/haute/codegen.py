@@ -1160,19 +1160,21 @@ def _graph_to_code_multi_instances(
             )
             for edge in child_edges
         ]
+        # A module writes its port endpoints in snake_case, a handle only when it has one
+        # (READ-45); the graph the browser exchanges keeps its own names.
         constructor_keywords: list[tuple[str, object]] = [
             ("definition_id", definition_id),
             (
                 "input_ports",
                 [
-                    port.model_dump(mode="json", by_alias=True, exclude_none=False)
+                    port.model_dump(mode="json", by_alias=False, exclude_none=True)
                     for port in definition.input_ports
                 ],
             ),
             (
                 "output_ports",
                 [
-                    port.model_dump(mode="json", by_alias=True, exclude_none=False)
+                    port.model_dump(mode="json", by_alias=False, exclude_none=True)
                     for port in definition.output_ports
                 ],
             ),

@@ -605,8 +605,8 @@ def test_a_submodel_node_reads_its_port_and_inner_inputs_by_name(project: Path) 
             submodel = haute.Submodel(
                 "scaling",
                 definition_id="definition_scaling",
-                input_ports=[{"name": "rows", "targets": [{"nodeId": "scaled", "handleId": None}]}],
-                output_ports=[{"name": "scaled", "source": {"nodeId": "scaled", "handleId": None}}],
+                input_ports=[{"name": "rows", "targets": [{"node_id": "scaled"}]}],
+                output_ports=[{"name": "scaled", "source": {"node_id": "scaled"}}],
                 pipeline_dir="..",
             )
 

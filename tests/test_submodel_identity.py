@@ -33,10 +33,10 @@ submodel = haute.Submodel(
     "pricing_def",
     definition_id="def_pricing_declared",
     input_ports=[
-        {"name": "in_data", "targets": [{"nodeId": "child_node"}]},
+        {"name": "in_data", "targets": [{"node_id": "child_node"}]},
     ],
     output_ports=[
-        {"name": "out_data", "source": {"nodeId": "child_node"}},
+        {"name": "out_data", "source": {"node_id": "child_node"}},
     ],
     pipeline_dir="..",
 )

@@ -1988,7 +1988,7 @@ def test_submodel_node_reads_its_sidecar_from_the_owning_pipeline_directory(
         '    "loader",\n'
         '    definition_id="loader",\n'
         "    input_ports=[],\n"
-        '    output_ports=[{"name": "quotes", "source": {"nodeId": "quotes"}}],\n'
+        '    output_ports=[{"name": "quotes", "source": {"node_id": "quotes"}}],\n'
         '    pipeline_dir="..",\n'
         ")\n\n\n"
         '@submodel.data_input(config="config/data_input/quotes.json")\n'

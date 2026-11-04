@@ -54,27 +54,12 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-45 | Planned | P2 | A submodel module writes its port endpoints in snake_case. |
 | READ-44 | Planned | P1 | Every stepped node's code is its only copy of its steps. |
 | READ-43 | Planned | P1 | An Explore node's settings live in its sidecar, and its steps in its code. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
-
-### READ-45 — A submodel module writes its port endpoints in snake_case
-**Why:** A module's `haute.Submodel(...)` header writes each port endpoint as `{"nodeId": ..., "handleId": None}`, in camelCase and with a handle that is None.
-
-**Plan:**
-- The header writes `{"node_id": ...}`, with a handle only when the endpoint has one.
-- A module that writes the camelCase keys is refused, naming each key's snake_case name.
-- The graph API keeps its own names.
-
-**Acceptance:** A golden module header; a header in camelCase refused.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_types.py::SubmodelEndpoint`; `src/haute/_parser_submodels.py`.
 
 ### READ-44 — Every stepped node's code is its only copy of its steps
 **Why:** A Polars node's steps are rebuilt from its body (READ-22). Data Input, External File, Rating Step, Model Score and Scenario Expander still write their steps into their sidecar beside the code, so an edit to a step changes the JSON tree and the code.

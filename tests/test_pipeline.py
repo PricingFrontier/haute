@@ -1093,7 +1093,7 @@ class TestSubmodel:
             input_ports=[
                 {
                     "name": "quotes",
-                    "targets": [{"nodeId": "transform"}],
+                    "targets": [{"node_id": "transform"}],
                 }
             ],
             output_ports=[],
@@ -1114,7 +1114,7 @@ class TestSubmodel:
             output_ports=[
                 {
                     "name": "score",
-                    "source": {"nodeId": "score_node"},
+                    "source": {"node_id": "score_node"},
                 }
             ],
         )
@@ -1593,8 +1593,8 @@ import polars as pl
 submodel = haute.Submodel(
     "factors",
     definition_id="definition_factors",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "aged", "handleId": None}]}],
-    output_ports=[{"name": "factored", "source": {"nodeId": "factor", "handleId": None}}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "aged"}]}],
+    output_ports=[{"name": "factored", "source": {"node_id": "factor"}}],
     pipeline_dir="..",
 )
 
@@ -1749,8 +1749,8 @@ class TestStandaloneSubmodels:
             "submodel = haute.Submodel(\n"
             '    "rates",\n'
             '    definition_id="definition_rates",\n'
-            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "joined"}]}],\n'
-            '    output_ports=[{"name": "out", "source": {"nodeId": "joined"}}],\n'
+            '    input_ports=[{"name": "rows", "targets": [{"node_id": "joined"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "joined"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             "@submodel.polars\n"
@@ -1812,7 +1812,7 @@ class TestStandaloneSubmodels:
             '    "whole",\n'
             '    definition_id="definition_whole",\n'
             "    input_ports=[],\n"
-            '    output_ports=[{"name": "out", "source": {"nodeId": "doubled"}}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "doubled"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             "@submodel.polars\n"
@@ -1859,8 +1859,8 @@ class TestStandaloneSubmodels:
             "submodel = haute.Submodel(\n"
             '    "rating",\n'
             '    definition_id="definition_rating",\n'
-            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
-            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    input_ports=[{"name": "rows", "targets": [{"node_id": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "rated"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             "@submodel.polars\n"
@@ -1915,8 +1915,8 @@ class TestStandaloneSubmodels:
             "submodel = haute.Submodel(\n"
             '    "rating",\n'
             '    definition_id="definition_rating",\n'
-            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
-            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    input_ports=[{"name": "rows", "targets": [{"node_id": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "rated"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             '@submodel.api_input(config="config/api_input/payload.json")\n'

@@ -279,7 +279,7 @@ class TestParserSubmodel:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "Transform"}],
+                        "targets": [{"node_id": "Transform"}],
                     }
                 ],
                 output_ports=[],

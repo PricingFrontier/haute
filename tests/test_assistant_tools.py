@@ -1215,7 +1215,7 @@ class TestSubmodelOccurrenceSchema:
                 definition.replace(
                     "output_ports=[",
                     'output_ports=[\n        {"name": "audit", '
-                    '"source": {"nodeId": "vehicle_factor", "handleId": None}},',
+                    '"source": {"node_id": "vehicle_factor"}},',
                 ),
                 encoding="utf-8",
                 newline="\n",

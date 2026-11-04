@@ -148,7 +148,7 @@ def test_parser_rejects_legacy_keys():
         '    "test_sub",\n'
         '    definition_id="def_1",\n'
         "    input_ports=[],\n"
-        '    output_ports=[{"label": "out", "source": {"nodeId": "n1"}}],\n'
+        '    output_ports=[{"label": "out", "source": {"node_id": "n1"}}],\n'
         ")\n"
     )
     with pytest.raises(ParseError) as exc_info:
@@ -162,7 +162,7 @@ def test_parser_rejects_legacy_keys():
         '    "test_sub",\n'
         '    definition_id="def_1",\n'
         "    input_ports=[],\n"
-        '    output_ports=[{"portId": "out", "source": {"nodeId": "n1"}}],\n'
+        '    output_ports=[{"portId": "out", "source": {"node_id": "n1"}}],\n'
         ")\n"
     )
     with pytest.raises(ParseError) as exc_info:

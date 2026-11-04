@@ -674,7 +674,7 @@ def test_a_submodel_definition_reads_its_sidecars_from_the_owning_pipeline(
         '    "rates",\n'
         '    definition_id="rates",\n'
         "    input_ports=[],\n"
-        '    output_ports=[{"name": "rates", "source": {"nodeId": "rates"}}],\n'
+        '    output_ports=[{"name": "rates", "source": {"node_id": "rates"}}],\n'
         '    pipeline_dir="..",\n'
         ")\n\n\n"
         f'@submodel.constant(config="{config}")\n'
