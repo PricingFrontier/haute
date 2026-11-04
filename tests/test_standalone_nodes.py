@@ -144,8 +144,10 @@ def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refu
         data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config={"values": values}),
     )
     message = "Constant name 'rate' is used by more than one value"
-    with pytest.raises(ValueError, match="duplicate JSON key 'rate'"):
+    with pytest.raises(ValueError, match="duplicate JSON key 'rate'") as raised:
         namespace["pipeline"].run(source="batch")
+    # The run names the sidecar it read, as the parser does.
+    assert str(raised.value).startswith(f"{tmp_path / config}: ")
     # Building the node checks its whole model, so the executor refuses it at build.
     with pytest.raises(NodeConfigError, match=message):
         _build_node_fn(node)

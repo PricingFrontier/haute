@@ -853,7 +853,8 @@ repaired.
 Missing, unreadable, or invalid-JSON sidecar files raise a config error naming the path.
 Using a folder-backed node type without a `config=` sidecar raises, naming the concrete
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at
-read time rather than silently keeping the last value. Two node functions sharing a name are
+read time rather than silently keeping the last value. Every failure to read a sidecar names
+its file, also in a run outside the editor, where no parser wraps the error. Two node functions sharing a name are
 rejected, both at live decorator-registration time and again at static parse time (the
 function name becomes the graph node id, so a silent collision would drop a node).
 Registration also applies the codegen specification's executable-name rule, naming the node:

@@ -134,9 +134,17 @@ def _load_json_object(path: Path) -> dict[str, Any]:
         raise ConfigError(
             f"{path} is not valid UTF-8: {utf8_decode_failure(raw, exc)}. Save the file as UTF-8."
         ) from exc
-    loaded = json.loads(text, object_pairs_hook=reject_duplicate_keys_hook)
+    # Each failure names the file: a run outside the editor reports it as raised,
+    # with no parser around it to say which sidecar it read. The types are kept,
+    # because the parser words a file that is not JSON apart from bad content.
+    try:
+        loaded = json.loads(text, object_pairs_hook=reject_duplicate_keys_hook)
+    except json.JSONDecodeError as exc:
+        raise json.JSONDecodeError(f"{path}: {exc.msg}", exc.doc, exc.pos) from exc
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
     if not isinstance(loaded, dict):
-        raise ValueError("Node config JSON must contain an object")
+        raise ValueError(f"{path}: Node config JSON must contain an object")
     return loaded
 
 
