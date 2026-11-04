@@ -239,6 +239,66 @@ def test_a_submodel_definition_s_sidecars_resolve_against_its_pipeline(
     assert json.loads(sidecar.read_text(encoding="utf-8"))["factors"][0]["output_column"] == "b"
 
 
+def _files(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize(
+    ("relative", "text", "message"),
+    [
+        (
+            "config/banding/bands.json",
+            '{"factors": [{"banding": "categorical", "column": "fuel",'
+            ' "outputColumn": "a", "output_column": "b"}]}',
+            "'output_column' is written twice",
+        ),
+        (
+            "config/banding/bands.json",
+            '{"factors": [{"banding": "categorical", "column": "fuel", "outputColumn": "a",'
+            ' "column": "other"}]}',
+            "duplicate JSON key 'column'",
+        ),
+        (
+            "main.haute.json",
+            '{"unfinished_steps": {"priced": [{"id": "s1", "kind": "sort", "keys": [],'
+            ' "nullsLast": true, "nulls_last": false}]}}',
+            "'nulls_last' is written twice",
+        ),
+    ],
+    ids=["renamed-key-collides", "repeated-key", "step-key-collides"],
+)
+def test_a_file_whose_conversion_would_lose_a_value_refuses_the_whole_run(
+    tmp_path: Path, conversion: ModuleType, relative: str, text: str, message: str
+) -> None:
+    """Keeping either of two values for one key would silently discard the other."""
+    _project(tmp_path)
+    (tmp_path / relative).write_text(text, encoding="utf-8")
+    before = _files(tmp_path)
+
+    with pytest.raises(SystemExit, match=re.escape(message)):
+        conversion.convert([tmp_path])
+    assert _files(tmp_path) == before
+
+
+def test_a_decorator_with_both_spellings_of_a_keyword_refuses_the_whole_run(
+    tmp_path: Path, conversion: ModuleType
+) -> None:
+    pipeline = _project(tmp_path)
+    source = pipeline.read_text(encoding="utf-8")
+    pipeline.write_text(
+        source.replace(
+            '@pipeline.polars(inputMapping={"sourceType": "bands"})',
+            '@pipeline.polars(inputMapping={"sourceType": "bands"}, input_mapping={})',
+        ),
+        encoding="utf-8",
+    )
+    before = _files(tmp_path)
+
+    with pytest.raises(SystemExit, match="inputMapping= and input_mapping="):
+        conversion.convert([tmp_path])
+    assert _files(tmp_path) == before
+
+
 def test_a_sidecar_a_decorator_names_but_is_missing_refuses_the_whole_run(
     tmp_path: Path, conversion: ModuleType
 ) -> None:

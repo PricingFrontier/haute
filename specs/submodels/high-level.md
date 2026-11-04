@@ -390,7 +390,7 @@ another set of inputs: an instance of a submodel is another occurrence of its
 definition, and an instance of a single node is another occurrence of a
 one-node definition. Nothing below depends on how many nodes a definition
 holds. There is no other reuse mechanism: `@pipeline.instance`,
-an `of=` keyword on a node decorator and an `instance_of` on an ordinary node are
+an `of=` keyword on a node decorator and an `instanceOf` on an ordinary node are
 refused (see Failure model), and nothing migrates them. `input_mapping` on a
 plain Transform or Load File is not reuse: it keeps the names its code reads
 across a rewire.

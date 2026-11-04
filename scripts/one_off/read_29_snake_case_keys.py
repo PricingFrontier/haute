@@ -36,7 +36,11 @@ from typing import Any, NotRequired, Required, Union
 
 from typing_extensions import is_typeddict
 
-from haute._config_io import config_from_sidecar, node_config_json
+from haute._config_io import (
+    config_from_sidecar,
+    node_config_json,
+    reject_duplicate_keys_hook,
+)
 from haute._config_validation import SNAKE_CASE_KEYS
 from haute._json_files import render_json
 from haute._node_config_models import NODE_CONFIG_MODELS
@@ -94,27 +98,43 @@ def _container_item(hint: Any, container: type) -> Any | None:
     return None
 
 
+class KeyCollisionError(ValueError):
+    """A renamed key the record already holds under its new name: keeping either value
+    would discard the other, so the conversion refuses instead."""
+
+
+def _put(record: dict[str, Any], key: str, item: Any) -> None:
+    if key in record:
+        raise KeyCollisionError(f"the key {key!r} is written twice, once in its camelCase form")
+    record[key] = item
+
+
 def _steps(value: Any) -> Any:
     """A step tree with every step key renamed: steps hold no map keyed by the analyst."""
     if isinstance(value, list):
         return [_steps(item) for item in value]
     if isinstance(value, dict):
-        return {STEP_KEYS.get(key, key): _steps(item) for key, item in value.items()}
+        renamed: dict[str, Any] = {}
+        for key, item in value.items():
+            _put(renamed, STEP_KEYS[key] if key in STEP_KEYS else key, _steps(item))
+        return renamed
     return value
+
+
+def _descriptor(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    renamed: dict[str, Any] = {}
+    for key, item in value.items():
+        _put(renamed, DESCRIPTOR_KEYS[key] if key in DESCRIPTOR_KEYS else key, item)
+    return renamed
 
 
 def _descriptors(value: Any) -> Any:
     """A rating table's ``factor_dtypes``: each factor (the analyst's) to its descriptor."""
     if not isinstance(value, dict):
         return value
-    return {
-        factor: (
-            {DESCRIPTOR_KEYS.get(key, key): item for key, item in descriptor.items()}
-            if isinstance(descriptor, dict)
-            else descriptor
-        )
-        for factor, descriptor in value.items()
-    }
+    return {factor: _descriptor(descriptor) for factor, descriptor in value.items()}
 
 
 def rename(value: Any, hint: Any) -> Any:
@@ -133,7 +153,7 @@ def rename(value: Any, hint: Any) -> Any:
                     item = _descriptors(item)
                 elif key in declared:
                     item = rename(item, declared[key])
-                renamed[key] = item
+                _put(renamed, key, item)
             return renamed
         mapped = _container_item(hint, dict)
         if mapped is not None:
@@ -186,7 +206,13 @@ def _decorator_configs(
                 continue
             node_type = DECORATOR_TO_NODE_TYPE.get(decorator.func.attr)
             declared = NODE_CONFIG_MODELS[node_type].keys if node_type else frozenset()
+            written = {keyword.arg for keyword in decorator.keywords}
             for keyword in decorator.keywords:
+                if keyword.arg is not None and SNAKE_CASE_KEYS.get(keyword.arg) in written:
+                    raise SystemExit(
+                        f"{path}:{keyword.lineno}: {keyword.arg}= and "
+                        f"{SNAKE_CASE_KEYS[keyword.arg]}= on one decorator; nothing converted."
+                    )
                 if keyword.arg is not None and SNAKE_CASE_KEYS.get(keyword.arg) in declared:
                     keywords.append((keyword.lineno, keyword.col_offset, keyword.arg))
                 if (
@@ -217,12 +243,25 @@ def _renamed_keywords(source: str, starts: list[tuple[int, int, str]], path: Pat
     return "\n".join(lines)
 
 
+def _read_json(path: Path) -> Any:
+    """*path*'s JSON, refused when a key repeats: the last value would hide the first."""
+    try:
+        return json.loads(
+            path.read_bytes().decode("utf-8"), object_pairs_hook=reject_duplicate_keys_hook
+        )
+    except ValueError as exc:
+        raise SystemExit(f"{path}: {exc}; nothing converted.") from exc
+
+
 def _sidecar_text(path: Path, node_type: NodeType) -> bytes | None:
     """The sidecar converted, or ``None`` when it holds no camelCase key."""
-    config = json.loads(path.read_bytes().decode("utf-8"))
+    config = _read_json(path)
     if not isinstance(config, dict):
         raise SystemExit(f"{path}: not a JSON object; nothing converted.")
-    converted = rename(config, NODE_CONFIG_MODELS[node_type].shape)
+    try:
+        converted = rename(config, NODE_CONFIG_MODELS[node_type].shape)
+    except KeyCollisionError as exc:
+        raise SystemExit(f"{path}: {exc}; nothing converted.") from exc
     if converted == config and list(converted) == list(config):
         return None
     try:
@@ -236,11 +275,14 @@ def _sidecar_text(path: Path, node_type: NodeType) -> bytes | None:
 
 def _pipeline_sidecar_text(path: Path) -> bytes | None:
     """The pipeline's ``.haute.json`` with its unfinished steps' keys renamed, or ``None``."""
-    data = json.loads(path.read_bytes().decode("utf-8"))
+    data = _read_json(path)
     unfinished = data.get("unfinished_steps") if isinstance(data, dict) else None
     if not isinstance(unfinished, dict):
         return None
-    converted = {node: _steps(steps) for node, steps in unfinished.items()}
+    try:
+        converted = {node: _steps(steps) for node, steps in unfinished.items()}
+    except KeyCollisionError as exc:
+        raise SystemExit(f"{path}: {exc}; nothing converted.") from exc
     if converted == unfinished:
         return None
     model = SidecarModel.model_validate({**data, "unfinished_steps": converted})

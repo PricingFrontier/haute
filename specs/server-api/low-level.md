@@ -504,7 +504,7 @@ milestone, restore or switch never meets a half-written save
    submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
    as another executable singleton. A node other than a submodel occurrence carrying
-   `instance_of` is refused.
+   `instanceOf` is refused.
 2. Resolve and validate `source_file` against the active pipeline root, and load
    the file's editor document and its strict graph, once each: they serve every
    later step, and only the reparse of what was written (step 10) loads them again.

@@ -533,7 +533,7 @@ Acquires `save_lock` and runs the body in a threadpool, as create does:
 2. Refuse with `400` and the reason a `node_id` absent from the submitted
    graph, a submodel occurrence (its instance is the browser's own transform),
    a document-wide singleton, a Source Switch or a Data Output. A removed
-   node-level `instance_of` form is refused by the shared `ParseError` handler,
+   node-level `instanceOf` form is refused by the shared `ParseError` handler,
    with the one-node submodel replacement and no file changes.
 3. Name the definition after the node's executable name, suffixed `_2`, `_3`
    until no definition in the graph and no module in the pipeline's `modules/`
@@ -710,7 +710,7 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 | Sanitised node-name collision | `HTTPException(400, <specific collision detail>)` | `SavePipelineService` validation, before writes. |
 | Create Instance on a missing node, a submodel occurrence, a document-wide singleton or a Source Switch | `HTTPException(400, <reason>)` | `POST /api/submodel/instance`, before the transform. |
 | A connection dropped on an instance whose every public input is bound | Refused in the editor, naming the instance; no edge is added | The browser's binding rule. |
-| `@pipeline.instance(...)`, an `of=` keyword on a node decorator, or `instance_of` on a node that is not an occurrence | `ParseError` naming the removed form, whose `remediation` is the one-node submodel form | The parser and config validation; the editor shows the node unavailable with the message, and nothing migrates it. |
+| `@pipeline.instance(...)`, an `of=` keyword on a node decorator, or `instanceOf` on a node that is not an occurrence | `ParseError` naming the removed form, whose `remediation` is the one-node submodel form | The parser and config validation; the editor shows the node unavailable with the message, and nothing migrates it. |
 | Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's unexpected-exception handler produces `500 {"detail": _INTERNAL_ERROR_DETAIL}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
 | Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
