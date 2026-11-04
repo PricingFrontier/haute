@@ -1163,7 +1163,8 @@ describe("NodePanel", () => {
     expect(paneProps.inputNames).toEqual([])
     expect(paneProps.inputSources).toEqual([])
     expect(paneProps.runError).toBe("boom")
-    expect(typeof paneProps.onReplaceConfig).toBe("function")
+    // There is no switch to code: a Free code step holds hand-written code.
+    expect(paneProps.onReplaceConfig).toBeUndefined()
     expect(paneProps.config).toEqual({ steps: [] })
   })
 
@@ -3393,7 +3394,7 @@ describe("scoped editing in degraded documents", () => {
           source_span: null,
           diagnostic_ids: ["diag_unknown_decorator"],
           blocking_path: [],
-          editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
+          editor: { steps_error: null, steps_discarded: null },
           scoped_editable: false,
         },
         {
@@ -3414,7 +3415,7 @@ describe("scoped editing in degraded documents", () => {
           source_span: null,
           diagnostic_ids: ["diag_unknown_decorator"],
           blocking_path: ["source_a", "downstream"],
-          editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
+          editor: { steps_error: null, steps_discarded: null },
           scoped_editable: true,
         },
       ],

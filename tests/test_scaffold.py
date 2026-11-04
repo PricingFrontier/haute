@@ -153,14 +153,15 @@ class TestHauteToml:
         assert doc["project"] == {"name": "motor", "pipeline": "rating/main.py"}
         from haute._project_python import container_base_image
 
+        # No setting at its default is written: no port (8080) and no [test_quotes] dir
+        # (tests/quotes) (READ-41).
         assert doc["deploy"] == {
             "container": {
                 "registry": "",
-                "port": 8080,
                 "base_image": container_base_image("3.12"),
             }
         }
-        assert doc["test_quotes"] == {"dir": "tests/quotes"}
+        assert "test_quotes" not in doc
         assert doc["ci"] == {"provider": "gitlab"}
         unnamed = {"resource_group": "", "container_app": ""}
         assert doc["workbench"] == {
@@ -1072,7 +1073,7 @@ class TestStarterFiles:
     def test_starter_form_is_the_blank_form_s_folder(self, tmp_path: Path) -> None:
         from haute._workbench_config import WorkbenchConfig
         from haute._workbench_folder import form_from_files
-        from haute._workbench_form import blank_form, quote_details_table
+        from haute._workbench_form import blank_form, quote_details_table, render_form
 
         folder = tmp_path / "rating" / "workbench"
         files = starter_form("motor", folder)
@@ -1086,7 +1087,11 @@ class TestStarterFiles:
         spec, repairs = form_from_files(
             config, {path: text.encode("utf-8") for path, text in files.items()}
         )
-        assert (spec, repairs) == (blank_form("motor"), ())
+        # The files hold no id: read, the sheet takes its file's name and the section its
+        # title on it (READ-24); the rest is the blank form.
+        assert repairs == ()
+        assert render_form(spec) == render_form(blank_form("motor"))
+        assert (spec.pages[0].id, spec.pages[0].sections[0].id) == ("sheet_1", "sheet_1/Section 1")
         # Haute's quote_details table alone, which every form holds.
         assert spec.data_schema.tables == [quote_details_table()]
         assert all(text.endswith("\n") for text in files.values())

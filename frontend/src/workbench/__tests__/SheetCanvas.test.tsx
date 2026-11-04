@@ -62,7 +62,7 @@ const turn = () =>
   })
 /** The sample's cover ticked or not, as a value a press commits, or one typed elsewhere, sets it. */
 const sampleCover = (ticked: boolean) =>
-  act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", ticked)))
+  act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "cover", ticked)))
 
 describe("SheetCanvas", () => {
   beforeEach(() => {
@@ -126,7 +126,7 @@ describe("SheetCanvas", () => {
 
   it("while building draws a bar naming each section just above it, the selected one's handle under its bottom, and in Preview no bars, the sections stacked tight", () => {
     // Cover ticked in the sample, so Preview shows Flood too.
-    loadForm(withSampleCell(sectionedForm(), "policy", 0, "policy.cover", true))
+    loadForm(withSampleCell(sectionedForm(), "policy", 0, "cover", true))
     render(<SheetCanvas />)
     const bar = (id: string) => screen.getByTestId(`section-header-${id}`)
 
@@ -226,7 +226,7 @@ describe("SheetCanvas", () => {
   })
 
   it("marks a component that shows nothing or a column that is gone, naming the problem", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, ...COLLECTION_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "collection", x: 0, y: 0, w: 200, h: 100, title: "", columns: 3, ...COLLECTION_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
 
     expect(screen.getByTitle("A Collection shows no fields")).toBeInTheDocument()
@@ -1191,7 +1191,7 @@ describe("SheetCanvas", () => {
   it("in Preview reads the components that show as they sit, stacked in the order they were added", () => {
     const form = sheetForm()
     // Added last but sitting first, over the grid, and hidden while the policy is not in California.
-    const californian = { match: "all" as const, conditions: [{ table: "policy", column: "policy.state", op: "equals" as const, values: ["CA"], field: null, days: 0 }] }
+    const californian = { match: "all" as const, conditions: [{ table: "policy", column: "state", op: "equals" as const, values: ["CA"], field: null, days: 0 }] }
     addTo(form, headingWidget("w_title", "Motor quote", { y: 0 }))
     addTo(form, headingWidget("w_note", "Over the grid", { y: 160 }))
     addTo(form, headingWidget("w_ca", "California", { y: 136, show_when: californian }))
@@ -1218,7 +1218,7 @@ describe("SheetCanvas", () => {
   })
 
   it("puts the eye of a right-aligned Heading with conditions on its left, clear of its text", () => {
-    const ny = { match: "all" as const, conditions: [{ table: "policy", column: "policy.state", op: "equals" as const, values: ["NY"], field: null, days: 0 }] }
+    const ny = { match: "all" as const, conditions: [{ table: "policy", column: "state", op: "equals" as const, values: ["NY"], field: null, days: 0 }] }
     const form = sheetForm()
     addTo(form, headingWidget("w_left", "New York", { y: 384, show_when: ny }))
     addTo(form, headingWidget("w_right", "New York", { y: 448, align: "right", show_when: ny }))
@@ -1232,7 +1232,7 @@ describe("SheetCanvas", () => {
   })
 
   it("fits the sheet's width to the viewport when it first shows, and draws the sheet at its width whatever the zoom from the viewport's top-left corner, the viewport scrolling across one wider than it", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
     const sheetElement = screen.getByTestId("sheet")
 
@@ -1252,7 +1252,7 @@ describe("SheetCanvas", () => {
   })
 
   it("fits a very wide sheet at the zoom's minimum, never at nothing", () => {
-    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
+    loadForm({ ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 100_000, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] })
     render(<SheetCanvas />)
 
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.25)
@@ -1260,7 +1260,7 @@ describe("SheetCanvas", () => {
   })
 
   it("keeps a zoom chosen since the sheets were fitted when they show again, until the form is read anew", () => {
-    const wide = { ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] }
+    const wide = { ...sheetForm(), pages: [sheet("p1", "Sheet 1", [{ number: null, id: "w", type: "tableInput", x: 0, y: 0, w: 1968, h: 100, title: "", rows: 3, ...TABLE_OPTIONS, fields: [], show_when: { match: "all" as const, conditions: [] } }])] }
     loadForm(wide)
     const first = render(<SheetCanvas />)
     expect(useWorkbenchViewStore.getState().zoom).toBe(0.45)
@@ -1313,14 +1313,14 @@ describe("SheetCanvas", () => {
     expect(band("s_p1")).toHaveStyle({ top: "0px" })
 
     fireEvent.change(within(frame("w_boxes")).getByRole("combobox", { name: "State" }), { target: { value: "NY" } })
-    expect(currentForm().sample).toEqual({ policy: [{ "policy.state": "NY" }] })
+    expect(currentForm().sample).toEqual({ policy: [{ state: "NY" }] })
     expect(useWorkbenchPreviewStore.getState().quote).toEqual({})
   })
 
   it("while building draws a component a new quote hides faded with its eye struck through, whatever the sample holds, one that shows with its eye, and one on a sheet a new quote hides faded for its own conditions alone", () => {
     const form = coverForm()
-    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] }
-    loadForm(withSampleCell(form, "policy", 0, "policy.state", "NY"))
+    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] }
+    loadForm(withSampleCell(form, "policy", 0, "state", "NY"))
     render(<SheetCanvas />)
 
     const body = (id: string) => frame(id).querySelector("[data-hidden]")
@@ -1331,7 +1331,7 @@ describe("SheetCanvas", () => {
     // Shown while Cover is not ticked, as on a new quote.
     act(() =>
       useWorkbenchFormStore.getState().change((spec) =>
-        updateWidget(spec, "w_grid", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }] } }),
+        updateWidget(spec, "w_grid", { show_when: { match: "all", conditions: [{ table: "policy", column: "cover", op: "not_ticked", values: [], field: null, days: 0 }] } }),
       ),
     )
     expect(body("w_grid")).toBeNull()
@@ -1343,7 +1343,7 @@ describe("SheetCanvas", () => {
     // What is on it still fades for its own conditions.
     act(() =>
       useWorkbenchFormStore.getState().change((spec) =>
-        updateWidget(spec, "w_year", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] } }),
+        updateWidget(spec, "w_year", { show_when: { match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] } }),
       ),
     )
     expect(body("w_year")).not.toBeNull()
@@ -1367,7 +1367,7 @@ describe("SheetCanvas", () => {
     // Shown while Cover is not ticked, as on a new quote, and nothing moves.
     act(() =>
       useWorkbenchFormStore.getState().change((spec) =>
-        setSectionShowWhen(spec, "s_flood", { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }] }),
+        setSectionShowWhen(spec, "s_flood", { match: "all", conditions: [{ table: "policy", column: "cover", op: "not_ticked", values: [], field: null, days: 0 }] }),
       ),
     )
     expect(body("w_grid")).toBeNull()
@@ -1377,7 +1377,7 @@ describe("SheetCanvas", () => {
 
   it("in Preview draws only what the sample shows, on the first sheet that shows in place of a hidden one chosen", () => {
     const form = coverForm()
-    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] }
+    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] }
     loadForm(form)
     useWorkbenchViewStore.setState({ mode: "preview", pageId: "p2" })
     render(<SheetCanvas />)
@@ -1396,7 +1396,7 @@ describe("SheetCanvas", () => {
 
   it("draws a Heading on the price only while the price shown says so, in Preview and in the app, none before the first", () => {
     const form = sheetForm()
-    const large = { table: "premiums", rows: "any" as const, where: [{ column: "premiums.premium", op: "above" as const, values: ["1000"], field: null, days: 0 }] }
+    const large = { table: "premiums", rows: "any" as const, where: [{ column: "premium", op: "above" as const, values: ["1000"], field: null, days: 0 }] }
     addTo(form, headingWidget("w_refer", "Refer to underwriting", { show_when: { match: "all", conditions: [large] } }))
     loadForm(form)
     const priced = (premium: number) => ({ basis: "", sample: {}, tables: { premiums: [{ item: "Crane", premium }] } })
@@ -1473,12 +1473,12 @@ describe("SheetCanvas", () => {
 
   it("in Preview holds a component's fields drawn while a pointer is pressed on the sheet, though a value the press commits shows one, until a turn after the release", () => {
     vi.useFakeTimers()
-    const year = { table: "policy", column: "policy.year" }
+    const year = { table: "policy", column: "year" }
     const form = coverForm()
-    const fields = [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.cover" }, year]
+    const fields = [{ table: "policy", column: "state" }, { table: "policy", column: "cover" }, year]
     loadForm(
       setColumnLook(updateWidget(form, "w_boxes", { fields }), "w_boxes", year, {
-        show_when: { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] },
+        show_when: { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] },
       }),
     )
     useWorkbenchViewStore.setState({ mode: "preview" })
@@ -1498,7 +1498,7 @@ describe("SheetCanvas", () => {
   it("in Preview keeps the section holding the focus in place on the screen as a section opens above it", () => {
     const form = sectionedForm()
     // The policy's year in Notes, under its Heading.
-    addTo(form, { id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
+    addTo(form, { number: null, id: "w_year", type: "collection", x: 16, y: 72, w: 400, h: 120, title: "Year", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "year" }], show_when: { match: "all", conditions: [] } }, 0, 2)
     loadForm(form)
     useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
@@ -1519,7 +1519,7 @@ describe("SheetCanvas", () => {
 
   it("in Preview leaves a hidden component's place in its section empty, the one under it staying where it sits", () => {
     const form = coverForm()
-    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] }
+    widgetsOf(form)[1].show_when = { match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] }
     addTo(form, headingWidget("w_after", "Under the equipment", { y: 384 }))
     loadForm(form)
     useWorkbenchViewStore.setState({ mode: "preview" })
@@ -1536,7 +1536,7 @@ describe("SheetCanvas", () => {
 
   it("in Preview says so while no sheet shows", () => {
     const form = coverForm()
-    form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.year", op: "filled", values: [], field: null, days: 0 }] }
+    form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "year", op: "filled", values: [], field: null, days: 0 }] }
     loadForm(form)
     useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
@@ -1549,8 +1549,8 @@ describe("SheetCanvas", () => {
     vi.useFakeTimers()
     const form = coverForm()
     // Each sheet shows only while cover is ticked, its tick box on the first.
-    form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
-    loadForm(withSampleCell(form, "policy", 0, "policy.cover", true))
+    form.pages[0].show_when = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
+    loadForm(withSampleCell(form, "policy", 0, "cover", true))
     useWorkbenchViewStore.setState({ mode: "preview" })
     render(<SheetCanvas />)
     const cover = () => within(frame("w_boxes")).getByRole("checkbox", { name: "Cover" })

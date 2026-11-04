@@ -23,9 +23,17 @@ In scope:
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs with a required fixed finite numeric
   base value using `multiply` / `add` / `min` / `max`.
-- Config normalisation: rating-table entries persist only in one canonical
-  ordered row-array shape. Categorical and breakpoints banding rules retain
-  their compact key/value-map sidecar shape.
+- Config normalisation: in memory a rating table's entries are one canonical
+  ordered row array; its sidecar writes them as a grid (below). A breakpoint
+  banding factor's sidecar writes its bands as a list, one `{"upper", "label"}`
+  a band in order, the open-ended band with no `upper` last (READ-27): an edge is a
+  number where the number reads back to the text it was typed as (`4`, `6.5`),
+  otherwise its text, a date or a date with a time among them; whether a band
+  includes its upper edge stays the factor's `rightClosed`, and a `default` of
+  null is left out. A sidecar still writing breakpoints as a map from edge to
+  label is refused, naming its one-off conversion. Categorical banding keeps its
+  value-to-group map, identity entries included, since an unlisted value falls to
+  the default.
 - The dtype-faithful canonical string form of a rating-table factor key
   (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
   with trace enrichment and the optimiser's ratebook save/apply path so every
@@ -139,8 +147,7 @@ Out of scope (owned by neighbouring components):
 - Lookup keys are materialised into collision-free temporary columns for the
   join. The source factor columns are never overwritten and therefore never
   need a lossy string-to-original-dtype revert.
-- Multiple entries sharing the same factor key keep the *last* one (matches
-  the intent of "later edits win" in the entry list).
+- Multiple entries sharing the same factor key are refused (below).
 - After the table stage, `combinedOutputs` combine every materialised table
   output column of the step with a required fixed finite numeric `baseValue`
   using `multiply`, `add`, `min`, or `max`. A table that never materialised its
@@ -195,17 +202,35 @@ Out of scope (owned by neighbouring components):
   a save/apply dtype mismatch before constructing a lookup. This prevents a
   dtype boundary from becoming an accepted neutral miss. Agreement is pinned by
   one real-Polars fixture matrix shared by runtime, trace, and optimiser tests.
-- **Lossless canonical rating sidecars.** Rating-table entries persist as
-  ordered row arrays rather than JSON object-key maps. JSON object keys erase
-  the distinction between values such as numeric `25.0` and the string label
-  `"25.0"`, so nested maps are not a lossless canonical format. Table order,
-  factor order, entry order,
-  scalar identity, outputs, defaults, miss policy, and optional
-  `factorDtypes` metadata survive a canonical save/load round trip.
-- **Deduplicate before joining, not after.** A rating table's factor keys are
-  deduplicated (`keep="last"`) before the join, so a left join can never fan
-  out rows even if the config accidentally has two entries for the same
-  factor combination.
+- **A rating sidecar writes each table as a grid (READ-26).** `factors` lists
+  the table's factors in order (up to three); with one factor there is no
+  `columns` and each line of `rows` is a level and its rate; with more,
+  `columns` lists the last factor's levels and each line of `rows` holds one
+  combination of the other factors, its levels first, then one rate per
+  column. A cell with no entry is `null`, and a lookup there misses and follows
+  the table's miss policy; a rate of 0 is a rate. Levels keep their JSON type,
+  so `25` and `"25"` stay distinct (JSON object keys would erase that, so the
+  grid uses arrays). `defaultValue` is written as the editor holds it, text,
+  next to `onMissing`, which the engine reads as the number it is; an entry
+  holding a key other than its levels and its rate is refused at save, naming
+  it, since the grid has no place for it,
+  and `factorDtypes`, the outputs and the other settings stay beside the grid,
+  each line of which is one line of the file, so changing one rate changes one
+  line. `_rating_step_config.compact_rating_config_for_sidecar` writes the grid
+  and `expand_rating_config_from_sidecar` reads it back into the entries the
+  editor and the engine work with; a sidecar still in the row-array form is
+  refused, naming its one-off conversion. Table order, factor order, scalar
+  identity, outputs, defaults, miss policy and `factorDtypes` survive a save and
+  load; entries come back in the grid's row-major order.
+- **Two entries for the same levels are refused, never resolved.** A rating
+  table holding two entries whose levels are equal once converted to the factor
+  columns' types is refused by the shared lookup every run path uses, naming the
+  table and the levels (`RatingDuplicateEntriesError`): no path keeps one of
+  them, a config built in code included, and a duplicate that appears only after
+  an upstream type change is refused at that run. Without duplicates the left
+  join cannot fan out rows. The save refuses entries whose levels are identical
+  as written and, where the table records `factorDtypes` for every factor,
+  entries equal under those types; the editor shows the save's refusal.
 - **One banding node holds many factors, rather than one node per factor or
   separate numeric/categorical node types.** A single pipeline step often
   bands several columns at once (age, vehicle age, property type, ...);

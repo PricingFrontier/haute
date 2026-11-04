@@ -141,8 +141,9 @@ and a null claim is exactly a defaulted row:
       Edge cases), before any expression runs.
    g. Coerce lookup-entry columns to originating input dtypes, then evaluate `_rating_key_expr`
       into a collision-free temporary key column on both lookup and input sides.
-   h. Deduplicate the lookup on the temporary canonical keys with
-      `keep="last"` and rename `value` to a collision-free internal value name.
+   h. Refuse the table when two entries share the temporary canonical keys
+      (`RatingDuplicateEntriesError`, naming the table and the entries' levels as
+      written), and rename `value` to a collision-free internal value name.
    i. Left join on the temporary keys (`how="left", maintain_order="left"`).
       Source factor columns are untouched throughout.
    j. If no usable default, wire in `_apply_rating_miss_guard` over the temporary
@@ -174,10 +175,12 @@ and a null claim is exactly a defaulted row:
 
 - **Typed-key dedup ordering (F084):** lookup entry scalars are first coerced
   through the originating factor dtype, then canonical keys are generated, and
-  only then does `lookup.unique(..., keep="last")` run. Representational aliases
-  in that dtype (for example Float64 entry strings `"25.0"` and `"25.00"`)
-  therefore form one duplicate group; the last authored row wins without
-  fanning out the input.
+  only then are duplicate keys looked for. Representational aliases in that
+  dtype (for example Float64 entry strings `"25.0"` and `"25.00"`) are
+  therefore one level, and the table is refused (READ-06). On save,
+  `_rating_step_config` refuses levels identical as written wherever a config is
+  read, and `refuse_levels_equal_under_factor_dtypes` (the sidecar write
+  boundary) runs the same lookup against a table's `factorDtypes`.
 - **Float width is part of the key contract:** `_rating_key_expr` formats a
   Float32 in Float32 and a Float64 in Float64. The Python mirror reconstructs
   the scalar through the required originating dtype and applies the same
@@ -247,7 +250,7 @@ and a null claim is exactly a defaulted row:
   combined outputs, and `_combine_rating_columns` rejects duplicate
   participants or an output name that would overwrite a participant.
 - **B15 entry-column pollution guard:** `_apply_rating_table` selects only `[*factors, "value"]` from the entries `DataFrame` before joining, so stray extra keys left in an entry dict (e.g. leftover UI state) never leak into the main frame as spurious columns.
-- **B14 fan-out guard:** the lookup side is deduplicated on its final typed temporary keys with `keep="last"` before the join, so aliases in the originating factor dtype can never fan out (multiply) rows in the output — the last-authored entry wins, matching trace enrichment's own reverse-walk resolution of "the winning row" for the same duplicate-key case.
+- **B14 fan-out guard:** a lookup whose final typed temporary keys repeat is refused before the join (READ-06), so aliases in the originating factor dtype can never fan out (multiply) rows in the output, and no entry silently wins over another.
 - **Bug #1/#2 (naming collision):** lookup keys and values use internal names reserved against every input, entry, and output column (starting from `__haute_rating_key_{n}__` and `__haute_lookup_val__`, then prefixing `_` until free), so user columns named `"value"` or like an internal stem remain untouched.
 - **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`outputColumn`/`rules`, or a completely empty rating-table draft / rating table with an empty entry list or no `outputColumn`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
 - **Malformed collection shapes never become empty configs.**
@@ -361,4 +364,4 @@ operators and invalid thresholds are fail-loud and share runtime/trace contract
 coverage in `tests/test_trace_fidelity_contract.py`. F084 ordering is observable
 and pinned:
 the lookup first coerces `"25.0"` and `"25.00"` through a Float64 factor dtype,
-then deduplicates their identical final key with `keep="last"`.
+then refuses their identical final key.

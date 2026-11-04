@@ -179,14 +179,14 @@ describe("useWorkbenchViewStore", () => {
   it("in Preview keeps a sheet's sections that show, in order, each with only its components that show", () => {
     const form = sectionedForm()
     // The note shows only while the policy's state is NY.
-    widgetsOf(form, 0, 2)[0].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }] }
+    widgetsOf(form, 0, 2)[0].show_when = { match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }] }
     const [policy, flood, notes] = form.pages[0].sections
 
     // Nothing typed: Flood hidden with cover unticked, and Notes shown without its note,
     // its place in the section left empty.
     expect(previewSections(form.pages[0], sheetVisibility(form, {}))).toEqual([policy, { ...notes, widgets: [] }])
     // Cover ticked and the state NY: every section in the sheet's order, each whole.
-    const quote = { policy: [{ "policy.cover": true, "policy.state": "NY" }] }
+    const quote = { policy: [{ cover: true, state: "NY" }] }
     expect(previewSections(form.pages[0], sheetVisibility(form, quote))).toEqual([policy, flood, notes])
     // A hidden sheet's sections, none: the Cover sheet's while cover is unticked.
     expect(previewSections(form.pages[1], sheetVisibility(form, {}))).toEqual([])
@@ -212,7 +212,7 @@ describe("useWorkbenchViewStore", () => {
     store().showMode("preview")
     store().fitZoom()
     expect(store().zoom).toBe(0.5)
-    useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true))
+    useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "cover", true))
     store().fitZoom()
     expect(store().zoom).toBe(1)
 
@@ -223,7 +223,7 @@ describe("useWorkbenchViewStore", () => {
     useWorkbenchPreviewStore.setState({ quote: {} })
     store().fitZoom()
     expect(store().zoom).toBe(0.5)
-    useWorkbenchPreviewStore.setState({ quote: { policy: [{ "policy.cover": true }] } })
+    useWorkbenchPreviewStore.setState({ quote: { policy: [{ cover: true }] } })
     store().fitZoom()
     expect(store().zoom).toBe(1)
   })

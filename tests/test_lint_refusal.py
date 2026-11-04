@@ -21,7 +21,7 @@ def priced(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.polars(config="config/polars/rated.json")
+@pipeline.polars(selected_columns=["excess"])
 def rated(priced: pl.LazyFrame) -> pl.LazyFrame:
     return priced.filter(pl.col("excess") == None)
 

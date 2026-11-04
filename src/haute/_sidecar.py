@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from haute._logging import get_logger
+from haute._types import GraphNode, NodeType
 
 logger = get_logger(component="sidecar")
 
@@ -33,6 +34,9 @@ class SidecarModel(BaseModel):
     * ``sources`` — ordered list of available data sources for this
       pipeline (``"live"`` is always first).
     * ``active_source`` — which source is currently selected in the UI.
+    * ``unfinished_steps`` — a transform's whole step list, by node, while one of
+      its steps is unfinished (READ-22): its body is then the raising
+      placeholder, and the steps live nowhere else until they are complete.
 
     Every optional field has a sensible default so sparse sidecars still
     parse.  That current-shape defaulting contract is pinned by
@@ -48,10 +52,12 @@ class SidecarModel(BaseModel):
     :meth:`model_validate_json` for typed access.
     """
 
-    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+    #: Whole pixels as written (READ-11); an older sidecar's fractional ones still read.
+    positions: dict[str, dict[str, int | float]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     managed_parent: str | None = None
+    unfinished_steps: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _active_source_must_be_in_sources(self) -> SidecarModel:
@@ -73,6 +79,29 @@ class SidecarReadResult:
     state: SidecarReadState
     data: SidecarModel | None = None
     error_type: str | None = None
+
+
+def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
+    """*nodes* with each transform saved with an unfinished step list given its steps
+    from the sidecar (READ-22): one whose body is the placeholder, which loads with no
+    code and no steps. An entry for any other node is ignored; the next save drops it.
+    Every loader of a pipeline file applies it, the editor's document included."""
+    if not isinstance(unfinished, dict) or not unfinished:
+        return nodes
+    given: list[GraphNode] = []
+    for node in nodes:
+        steps = unfinished.get(node.id)
+        config = node.data.config
+        if (
+            node.data.nodeType == NodeType.POLARS
+            and isinstance(steps, list)
+            and not config.get("code")
+            and "steps" not in config
+        ):
+            given.append(node.with_config({**config, "steps": steps}))
+        else:
+            given.append(node)
+    return given
 
 
 def _read_sidecar_json(

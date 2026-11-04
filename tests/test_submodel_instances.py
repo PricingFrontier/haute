@@ -2713,7 +2713,12 @@ def test_one_node_owner_preserves_rows_names_and_config_through_save_and_dissolv
         inner = next(n for n in expanded.nodes if n.data.label == "calc_node")
         assert inner.data.nodeType == NodeType.POLARS
         assert inner.position == {"x": 120, "y": 230}
-        assert expanded.node_map["consumer"].data.config["inputMapping"] == {"calc": "calc_node"}
+        # The reloaded consumer's ``df = calc`` rebuilds as a source step (READ-22), and a
+        # stepped transform has its step references rewritten, never an inputMapping.
+        assert expanded.node_map["consumer"].data.config == {
+            "code": "df = calc_node",
+            "steps": [{"id": "source-1", "kind": "source", "input": "calc_node"}],
+        }
         assert execute_graph(flatten_graph(expanded))["consumer"].preview == [{"x": 4}, {"x": 10}]
         assert (
             load_pipeline_editor_document(

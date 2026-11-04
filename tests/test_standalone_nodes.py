@@ -45,13 +45,8 @@ def _collect(frame: pl.LazyFrame | pl.DataFrame) -> pl.DataFrame:
 
 
 def _constant(directory: Path, name: str, **values: object) -> str:
-    """Write a Constant sidecar holding *values*; return its ``config=`` path."""
-    return write_node_config(
-        directory,
-        NodeType.CONSTANT,
-        name,
-        {"values": [{"name": key, "value": value} for key, value in values.items()]},
-    )
+    """Write a Constant sidecar holding *values*, as a map; return its ``config=`` path."""
+    return write_node_config(directory, NodeType.CONSTANT, name, {"values": values})
 
 
 @pytest.fixture()
@@ -131,9 +126,12 @@ def test_a_constant_declaration_reads_its_sidecar_on_every_run(tmp_path: Path) -
 def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refuses_it(
     tmp_path: Path,
 ) -> None:
-    """Two ``rate`` entries would otherwise yield one column holding the second value."""
+    """Two ``rate`` entries would otherwise yield one column holding the second value. The
+    sidecar's map can hold them only by repeating its key, which the run refuses as it
+    reads the file; the executor's rows refuse the second name."""
     values = [{"name": "rate", "value": "1"}, {"name": "rate", "value": "2"}]
-    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": values})
+    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": {}})
+    (tmp_path / config).write_bytes(b'{"values": {"rate": "1", "rate": "2"}}\n')
     namespace = _run_file(
         tmp_path,
         "import haute\n\n"
@@ -146,8 +144,7 @@ def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refu
         data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config={"values": values}),
     )
     message = "Constant name 'rate' is used by more than one value"
-
-    with pytest.raises(NodeConfigError, match=message):
+    with pytest.raises(ValueError, match="duplicate JSON key 'rate'"):
         namespace["pipeline"].run(source="batch")
     # Building the node checks its whole model, so the executor refuses it at build.
     with pytest.raises(NodeConfigError, match=message):
@@ -446,6 +443,59 @@ def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project
     )
 
     assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
+
+
+@pytest.mark.parametrize("connected", [True, False], ids=["connected", "inferred"])
+def test_an_external_file_binds_through_the_input_mapping_its_sidecar_holds(
+    project: Path, connected: bool
+) -> None:
+    """The run binds the hook's parameter through its sidecar's ``inputMapping``, and infers
+    its edge through it when no ``connect()`` states one, as the parser does."""
+    (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
+    config = write_node_config(
+        project,
+        NodeType.EXTERNAL_FILE,
+        "lookup",
+        {"path": "factor.json", "fileType": "json", "inputMapping": {"original": "rows"}},
+    )
+    namespace = _run_file(
+        project,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def rows() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"value": [2]})\n\n\n'
+        f'@pipeline.external_file(config="{config}")\n'
+        "def lookup(original: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+        "    df = original\n"
+        '    df = df.with_columns(scaled=pl.col("value") * obj["factor"])\n'
+        "    return df\n" + ('\n\npipeline.connect("rows", "lookup")\n' if connected else ""),
+    )
+
+    assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
+
+
+def test_a_run_names_a_non_ascii_source_by_its_executable_name_as_the_parser_does(
+    project: Path,
+) -> None:
+    """A Polars node reads its input under the source's executable name, which spells
+    ``é`` as ``_xe9_``: the run binds that parameter as a parse of the file does."""
+    namespace = _run_file(
+        project,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def données() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"value": [2]})\n\n\n'
+        "@pipeline.polars\n"
+        "def doubled(donn_xe9_es: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    return donn_xe9_es.with_columns(pl.col("value") * 2)\n\n\n'
+        'pipeline.connect("données", "doubled")\n',
+    )
+
+    assert _collect(namespace["pipeline"].run(source="batch"))["value"].to_list() == [4]
 
 
 def test_a_hook_that_returns_nothing_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:

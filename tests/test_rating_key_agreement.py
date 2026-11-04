@@ -39,6 +39,7 @@ import pytest
 
 from haute._polars_utils import streaming_collect
 from haute._rating import (
+    RatingDuplicateEntriesError,
     RatingTableMissError,
     _apply_rating_table,
     _rating_key_expr,
@@ -369,26 +370,25 @@ class TestFloat32AndCrossDtypeAgreement:
         assert out["f"].to_list() == [2.0]
 
 
-class TestDedupOnCanonicalKeys:
-    """B14/F084: deduplicate final typed keys and keep the last authored row."""
+class TestDuplicateCanonicalKeysRefused:
+    """READ-06/F084: entries whose final typed keys repeat are refused, never resolved."""
 
-    def test_mixed_float_string_entries_coerce_to_one_key_keep_last(self) -> None:
-        """Mixed source scalars still deduplicate on the final Float64 key."""
+    def test_mixed_float_string_entries_coerce_to_one_key_and_are_refused(self) -> None:
+        """Mixed source scalars meet on the final Float64 key, so the table is refused."""
         entries = [
             {"age": 25.0, "value": 1.0},
             {"age": "25", "value": 2.0},
         ]
-        # Polars first constructs one lookup column; target-dtype coercion and
-        # canonical-key deduplication then preserve the same last-wins result.
+        # Polars first constructs one lookup column; target-dtype coercion then
+        # gives both entries the same canonical key.
         coerced = pl.DataFrame(entries)
         assert coerced.schema["age"] == pl.String
         assert coerced["age"].to_list() == ["25", "25"]
         table = {"factors": ["age"], "outputColumn": "f", "entries": entries}
-        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
-        assert out.height == 1  # no fan-out
-        assert out["f"].to_list() == [2.0]  # last-authored entry wins
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
-    def test_target_dtype_aliases_dedup_after_coercion_keep_last(self) -> None:
+    def test_target_dtype_aliases_meet_after_coercion_and_are_refused(self) -> None:
         table = {
             "factors": ["age"],
             "outputColumn": "f",
@@ -398,18 +398,30 @@ class TestDedupOnCanonicalKeys:
             ],
         }
 
-        out = _apply_rating_table(
-            pl.DataFrame({"age": pl.Series("age", [25.0], dtype=pl.Float64)}).lazy(),
-            table,
-        ).collect()
+        with pytest.raises(RatingDuplicateEntriesError, match="age='25.0'; age='25.00'"):
+            _apply_rating_table(
+                pl.DataFrame({"age": pl.Series("age", [25.0], dtype=pl.Float64)}).lazy(),
+                table,
+            )
 
-        assert out.height == 1
-        assert out["f"].to_list() == [2.0]
+    def test_a_duplicate_only_a_new_upstream_type_creates_is_refused_at_that_run(self) -> None:
+        table = {
+            "factors": ["age"],
+            "outputColumn": "f",
+            "entries": [
+                {"age": "25.0", "value": 1.0},
+                {"age": "25.00", "value": 2.0},
+            ],
+        }
+        # As text the two levels differ, so the table prices.
+        out = _apply_rating_table(pl.DataFrame({"age": ["25.0"]}).lazy(), table).collect()
+        assert out["f"].to_list() == [1.0]
+        # The upstream column becomes a number: the same table is refused.
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
-    def test_exact_duplicate_keys_dedup_keep_last(self) -> None:
-        """The reachable dedup case: two entries with the identical key "25"
-        form a duplicate group.  unique(keep="last") keeps the last-authored
-        entry — this pins keep="last"; keep="first" would return 1.0."""
+    def test_exact_duplicate_keys_are_refused(self) -> None:
+        """Two entries with the identical key "25": no entry wins over the other."""
         table = {
             "factors": ["age"],
             "outputColumn": "f",
@@ -418,11 +430,10 @@ class TestDedupOnCanonicalKeys:
                 {"age": "25", "value": 2.0},
             ],
         }
-        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
-        assert out.height == 1
-        assert out["f"].to_list() == [2.0]
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
-    def test_canonical_collision_agrees_with_trace_enrichment(self) -> None:
+    def test_canonical_collision_is_refused_before_trace_enrichment(self) -> None:
         table = {
             "factors": ["age"],
             "outputColumn": "f",
@@ -432,9 +443,8 @@ class TestDedupOnCanonicalKeys:
                 {"age": "25", "value": 2.0},
             ],
         }
-        frame = pl.DataFrame({"age": [25.0]})
-        details = assert_engine_and_enrichment_agree(frame, table)
-        assert details[0]["status"] == "matched"
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
 
 class TestDecimalFactorScale:

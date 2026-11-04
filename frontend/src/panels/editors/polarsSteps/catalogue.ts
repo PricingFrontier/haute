@@ -214,11 +214,28 @@ export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "date", label: "date" },
   { value: "null", label: "missing (null)" },
 ]
-/** How deep expressions may nest as operands; a step's expression is depth 1 (mirrors the renderer). */
 /** What an operand may be (the renderer's `OPERAND_KINDS`). */
 export const OPERAND_KINDS = ["column", "literal", "expr", "variable", "constant"] as const
 
+/** How deep expressions may nest as operands; a step's expression is depth 1 (mirrors the renderer). */
 export const MAX_EXPR_DEPTH = 12
+/**
+ * Operators whose left-nested chain Python writes without brackets (`a + b + c`):
+ * a formula whose left side is a formula with the same one of these operators
+ * continues its chain at the same depth, so a sum of any length is one level
+ * (mirrors the renderer's `_CHAIN_OPERATORS`). `**` groups to the right, so each
+ * of its levels counts.
+ */
+export const CHAIN_OPERATORS: ReadonlySet<BinaryOperator> = new Set(["+", "-", "*", "/", "//", "%"])
+
+/** Whether a formula's left side continues its chain of one operator, at the formula's own depth. */
+export function continuesChain(expr: { op?: unknown; left?: unknown }): boolean {
+  if (!CHAIN_OPERATORS.has(expr.op as BinaryOperator) || !isShape(expr.left, "object")) return false
+  const left = expr.left as Record<string, unknown>
+  if (left.kind !== "expr" || !isShape(left.expr, "object")) return false
+  const inner = left.expr as Record<string, unknown>
+  return inner.type === "binary" && inner.op === expr.op
+}
 /** Literal types a membership list accepts: the renderer refuses null members. */
 export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null")
 
@@ -627,7 +644,13 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
     case "binary":
       if (typeof expr.op !== "string") return `${where} is missing its operator.`
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
-      return operandProblem(expr.left, `${where} left side`, depth) ?? operandProblem(expr.right, `${where} right side`, depth)
+      {
+        // `a + b + c`: a left side continuing the chain stays at this depth.
+        const left = continuesChain(expr)
+          ? exprProblem((expr.left as Record<string, unknown>).expr, `${where} left side expression`, depth)
+          : operandProblem(expr.left, `${where} left side`, depth)
+        return left ?? operandProblem(expr.right, `${where} right side`, depth)
+      }
     case "function":
       if (typeof expr.fn !== "string") return `${where} is missing its function.`
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
@@ -741,6 +764,10 @@ export function stepProblem(step: unknown): string | null {
   if (typeof kind !== "string" || !Object.hasOwn(REQUIRED_FIELDS, kind)) return `Unknown step kind ${JSON.stringify(kind)}.`
   if (typeof record.id !== "string" || record.id.length === 0) return "This step is missing its id."
   const where = `The ${kindLabel(kind as StepKind).toLowerCase()} step`
+  // The comment above a statement: kept as it is, with no control of its own.
+  if (record.comment !== undefined && (kind === "free_code" || typeof record.comment !== "string")) {
+    return `${where} has a malformed comment.`
+  }
   for (const [field, shape] of REQUIRED_FIELDS[kind as StepKind]) {
     const problem = fieldProblem(record, field, shape, where)
     if (problem) return problem

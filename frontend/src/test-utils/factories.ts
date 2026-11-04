@@ -877,7 +877,7 @@ export function makeCanonicalNode(
       description: "",
       nodeType,
       config,
-      editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
+      editor: { steps_error: null, steps_discarded: null },
     } as unknown as CanonicalGraphNode["data"],
   }
 }

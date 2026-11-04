@@ -311,28 +311,25 @@ class TestValidateDeployGlobalConstants:
 
 _FORM_TABLES: list[dict[str, Any]] = [
     {
-        "id": "t_policy",
         "name": "policy",
         "role": "input",
         "rows": "one",
         "columns": [
-            {"id": "c_limit", "name": "limit", "type": "float"},
-            {"id": "c_region", "name": "region", "type": "str"},
+            {"name": "limit", "type": "float"},
+            {"name": "region", "type": "str"},
         ],
     },
     {
-        "id": "t_items",
         "name": "items",
         "role": "input",
         "rows": "many",
-        "columns": [{"id": "c_value", "name": "value", "type": "float"}],
+        "columns": [{"name": "value", "type": "float"}],
     },
     {
-        "id": "t_pricing",
         "name": "pricing",
         "role": "output",
         "rows": "one",
-        "columns": [{"id": "c_premium", "name": "premium", "type": "float"}],
+        "columns": [{"name": "premium", "type": "float"}],
     },
 ]
 
@@ -463,7 +460,7 @@ class TestValidateDeployWorkbenchForm:
     def test_a_table_whose_own_column_takes_an_identity_name_is_refused(
         self, tmp_path: Path
     ) -> None:
-        _FORM_TABLES[1]["columns"].append({"id": "c_option", "name": "quote_option", "type": "str"})
+        _FORM_TABLES[1]["columns"].append({"name": "quote_option", "type": "str"})
         try:
             _workbench_project(tmp_path)
         finally:
@@ -487,7 +484,7 @@ class TestValidateDeployWorkbenchForm:
         held = json.loads(sheet.read_bytes())
         held["sections"][0]["components"] = [
             {
-                "id": "collection_kept",
+                "number": 1,
                 "type": "collection",
                 "title": "Cover",
                 "fields": ["policy.gone"],
@@ -495,9 +492,7 @@ class TestValidateDeployWorkbenchForm:
         ]
         sheet.write_bytes((json.dumps(held) + "\n").encode())
         placed = json.loads(layout.read_bytes())
-        placed["sections"]["s"]["components"] = {
-            "collection_kept": {"x": 0, "y": 0, "w": 200, "h": 100}
-        }
+        placed["sections"]["s"]["components"] = {"1": {"x": 0, "y": 0, "w": 200, "h": 100}}
         layout.write_bytes((json.dumps(placed) + "\n").encode())
 
         assert _form_check_errors(tmp_path) == [

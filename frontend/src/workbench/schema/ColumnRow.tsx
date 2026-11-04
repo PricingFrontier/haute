@@ -9,9 +9,11 @@ import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from
 import type { RowDrag } from "../../hooks/useListReorder"
 import { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
+import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
-import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, QUOTE_DETAILS_MANAGED, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
+import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, nameTaken, QUOTE_DETAILS_MANAGED, sampleHolds, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { DatabaseMark } from "../StoreCompare"
 import { ColumnDetails } from "./ColumnDetails"
@@ -52,26 +54,28 @@ interface ColumnRowProps {
 
 export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const addToast = useToastStore((s) => s.addToast)
+  const schemaColumnRenamed = useWorkbenchViewStore((s) => s.schemaColumnRenamed)
   const row = useRef<HTMLDivElement>(null)
-  const shown = fieldUses(form, table.id, column.id).length
-  const tested = conditionUses(form, table.id, column.id).length
-  const used = buttonUses(form, table.id, column.id).length
+  const shown = fieldUses(form, table.name, column.name).length
+  const tested = conditionUses(form, table.name, column.name).length
+  const used = buttonUses(form, table.name, column.name).length
   const uses = shown + tested + used
   // A column a sheet shows, a condition tests or an Import or an Export uses is removed once the question is answered yes.
   const remove = async () => {
     const text = `${usedBy(shown, tested, used).replace(/^./, (first) => first.toUpperCase())}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
     if (uses > 0 && !(await confirmed({ title: `Remove column ${column.name}?`, text, confirm: "Remove", danger: true }))) return
-    change((f) => removeSchemaColumn(f, table.id, column.id))
+    change((f) => removeSchemaColumn(f, table.name, column.name))
   }
   const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
   // A column the underwriter app sets takes no rules.
-  const managed = locked && QUOTE_DETAILS_MANAGED.has(column.id)
+  const managed = locked && QUOTE_DETAILS_MANAGED.has(column.name)
   // The quote's reference and option are Haute's: nothing of them changes.
-  const identity = isIdentityColumn(column)
+  const identity = isIdentityColumn(table, column)
   // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
   const fixed = locked || readOnly || identity
   const summary = columnSummary(table, column)
-  const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.id, column.id, patch))
+  const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.name, column.name, patch))
 
   // Enter in the last column's name adds the next column, and in any other only commits it;
   // Alt+Up and Alt+Down move this one.
@@ -85,15 +89,15 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
     const to = altArrowMove(e, "vertical", index, table.columns.length)
     if (to === null) return
     // Its name field takes the focus again in its new place.
-    refocus.moved(column.id)
-    change((f) => moveSchemaColumn(f, table.id, column.id, to))
+    refocus.moved(column.name)
+    change((f) => moveSchemaColumn(f, table.name, column.name, to))
   }
 
   return (
     <div
       ref={row}
       className="flex flex-col gap-1 rounded"
-      data-testid={`schema-column-${column.id}`}
+      data-testid={`schema-column-${column.name}`}
       onDragOver={drag?.onOver}
       onDrop={drag?.onDrop}
       data-drop-target={drag?.target ? "true" : undefined}
@@ -115,7 +119,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
             icon={Icon}
             value={column.type}
             options={COLUMN_TYPE_OPTIONS}
-            onChange={(type) => change((f) => changeSchemaColumnType(f, table.id, column.id, type))}
+            onChange={(type) => change((f) => changeSchemaColumnType(f, table.name, column.name, type))}
             ariaLabel={`Type of ${column.name}`}
             title={`${label} (change the type)`}
             className={`w-6 rounded-md ${color}`}
@@ -123,18 +127,30 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           />
         )}
         <CommittedTextField
-          ref={refocus.register(column.id)}
+          ref={refocus.register(column.name)}
           aria-label="Column name"
           aria-keyshortcuts={fixed || filtering ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={column.name}
-          onCommit={(name) => set({ name })}
+          onCommit={(name) => {
+            if (name === column.name) return
+            if (nameTaken(table.columns.map((other) => other.name), name, column.name)) {
+              addToast("error", `${table.name} already has a column named ${name}`)
+              return
+            }
+            if (sampleHolds(form, table.name, name)) {
+              addToast("error", `The sample already holds values under ${name} in ${table.name}`)
+              return
+            }
+            set({ name })
+            schemaColumnRenamed(table.name, column.name, name)
+          }}
           {...fresh}
           readOnly={fixed}
           onKeyDown={onKeyDown}
           className={`${COMPACT_FIELD_CLASS} flex-1 font-mono`}
           style={INPUT_STYLE}
         />
-        <DatabaseMark table={table.id} column={column.id} />
+        <DatabaseMark table={table.name} column={column.name} />
         {table.rows === "many" && !identity && (
           <IconButton
             icon={KeyRound}
@@ -174,7 +190,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
       </div>
       {summary && (
         // Under the name, from its text's left edge: past the grip, the type marker and the field's edge.
-        <p className="ml-11 pl-[7px] text-[11px]" style={{ color: "var(--text-muted)" }} data-testid={`schema-column-${column.id}-summary`}>
+        <p className="ml-11 pl-[7px] text-[11px]" style={{ color: "var(--text-muted)" }} data-testid={`schema-column-${column.name}-summary`}>
           {summary}
         </p>
       )}

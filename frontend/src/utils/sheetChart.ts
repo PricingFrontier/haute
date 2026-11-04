@@ -89,7 +89,7 @@ function sharedFormat(columns: readonly SchemaColumn[]): SchemaColumn | null {
 
 /** The distinct tables of `found`, in order, that `keep` keeps. */
 const tablesOf = (found: readonly Found[], keep: (table: SchemaTable) => boolean): SchemaTable[] => [
-  ...new Map(found.filter(({ table }) => keep(table)).map(({ table }) => [table.id, table])).values(),
+  ...new Map(found.filter(({ table }) => keep(table)).map(({ table }) => [table.name, table])).values(),
 ]
 
 /** What a Chart's fields hold on the sheet (specs/workbench, Charts). */
@@ -99,13 +99,13 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   const lined = (found: Found | null): found is Found => found !== null && tableGrain(found.table) === grain
   // A field it cannot plot, or whose rows do not line up, plots nothing; the view names it.
   const plotted = shownFields(schema, widget).flatMap(({ key, found }) =>
-    lined(found) && plottable(found.column) ? [{ key, ...found }] : [],
+    lined(found) && plottable(found.table, found.column) ? [{ key, ...found }] : [],
   )
   const category = widget.category === null ? null : fieldColumn({ schema }, widget.category)
   const label = lined(category) ? category : null
   // A column the quote leaves out: the sheets hide it, so it was never typed.
-  const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => columnKey(table.id, column.id))))
-  const inQuote = ({ table, column }: Found): boolean => quotedColumns.has(columnKey(table.id, column.id))
+  const quotedColumns = new Set(quoted.tables.flatMap((table) => table.columns.map((column) => columnKey(table.name, column.name))))
+  const inQuote = ({ table, column }: Found): boolean => quotedColumns.has(columnKey(table.name, column.name))
   // Priced values plotted, or rows named by priced values, are for other values once the basis moves on.
   const priced = plotted.some(({ table }) => table.role === "output") || label?.table.role === "output"
   const stale = price !== null && price.basis !== basis && priced
@@ -115,7 +115,7 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
     const points = plotted.map((found) =>
       found.table.role === "input"
         ? inQuote(found)
-          ? typedNumber(held[found.table.id]?.[0]?.[found.column.id])
+          ? typedNumber(held[found.table.name]?.[0]?.[found.column.name])
           : null
         : pricedNumber(price?.tables[found.table.name]?.[0]?.[found.column.name]),
     )
@@ -143,26 +143,26 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
   let kept: number[]
   if (inputs.length > 0) {
     // The rows typed into the input tables it shows, by position, as a Table's grid has them.
-    const count = Math.max(0, ...inputs.map((table) => held[table.id]?.length ?? 0))
-    const read = new Map(quoted.tables.map((table) => [table.id, table]))
+    const count = Math.max(0, ...inputs.map((table) => held[table.name]?.length ?? 0))
+    const read = new Map(quoted.tables.map((table) => [table.name, table]))
     kept = Array.from({ length: count }, (_, row) => row).filter((row) =>
       inputs.some((table) => {
-        const quotedTable = read.get(table.id)
-        return quotedTable !== undefined && rowFilled(quotedTable, held[table.id]?.[row])
+        const quotedTable = read.get(table.name)
+        return quotedTable !== undefined && rowFilled(quotedTable, held[table.name]?.[row])
       }),
     )
     const matched = linedUpOutputs(inputs, outputs, held, count, price, quoted)
     valueAt = (found, row) =>
       found.table.role === "input"
         ? inQuote(found)
-          ? held[found.table.id]?.[row]?.[found.column.id]
+          ? held[found.table.name]?.[row]?.[found.column.name]
           : undefined
-        : matched.get(found.table.id)?.[row]?.[found.column.name]
+        : matched.get(found.table.name)?.[row]?.[found.column.name]
   } else {
     // Output tables alone: the first one's answer, the others' rows matched by key.
     const answered = answeredOutputs(outputs, price)
-    kept = (answered.get(outputs[0]?.id ?? "") ?? []).map((_, row) => row)
-    valueAt = (found, row) => answered.get(found.table.id)?.[row]?.[found.column.name]
+    kept = (answered.get(outputs[0]?.name ?? "") ?? []).map((_, row) => row)
+    valueAt = (found, row) => answered.get(found.table.name)?.[row]?.[found.column.name]
   }
 
   const nameOf = (row: number): string => {

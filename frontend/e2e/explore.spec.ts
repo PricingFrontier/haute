@@ -26,6 +26,16 @@ async function refreshNode(page: Page): Promise<void> {
   await page.getByTestId("explore-preview-frame-header").getByRole("button", { name: "Refresh", exact: true }).click()
 }
 
+/**
+ * Dismiss the notifications on screen. Selecting the new Explore node before it has its
+ * input raises the data check's error toasts, which stay until dismissed and can cover the
+ * step menu.
+ */
+async function dismissToasts(page: Page): Promise<void> {
+  const dismiss = page.getByTestId("toast-notification").getByRole("button", { name: "Dismiss notification" })
+  while ((await dismiss.count()) > 0) await dismiss.first().click()
+}
+
 async function connect(page: Page, source: Locator, target: Locator): Promise<void> {
   await page.getByRole("button", { name: "Layout", exact: true }).click()
   await page.getByTestId("toolbar-centre").click()
@@ -80,13 +90,14 @@ test.describe("Explore cached field pivot journey", () => {
       page.getByTestId("rf__node-raw_rows").getByTestId("output-connector[0]:raw_rows"),
       namedExploreNode.getByTestId("input-connector[0]:browser_explore"),
     )
+    await dismissToasts(page)
 
     await namedExploreNode.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
     await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
-    // on every Polars surface, and the switch to code is one way.
+    // on every Polars surface; there is no switch to code.
     const stepsEditor = page.getByTestId("polars-steps-editor")
     await expect(stepsEditor).toBeVisible()
     await stepsEditor.getByRole("button", { name: "Add step" }).click()
@@ -230,13 +241,14 @@ test.describe("Explore cached field pivot journey", () => {
       page.getByTestId("rf__node-raw_rows").getByTestId("output-connector[0]:raw_rows"),
       namedExploreNode.getByTestId("input-connector[0]:browser_explore"),
     )
+    await dismissToasts(page)
 
     await namedExploreNode.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
     await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
-    // on every Polars surface, and the switch to code is one way.
+    // on every Polars surface; there is no switch to code.
     const stepsEditor = page.getByTestId("polars-steps-editor")
     await expect(stepsEditor).toBeVisible()
     await stepsEditor.getByRole("button", { name: "Add step" }).click()
@@ -346,13 +358,14 @@ test.describe("Explore cached field pivot journey", () => {
       page.getByTestId("rf__node-raw_rows").getByTestId("output-connector[0]:raw_rows"),
       namedExploreNode.getByTestId("input-connector[0]:browser_explore"),
     )
+    await dismissToasts(page)
 
     await namedExploreNode.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
     await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
-    // on every Polars surface, and the switch to code is one way.
+    // on every Polars surface; there is no switch to code.
     const stepsEditor = page.getByTestId("polars-steps-editor")
     await expect(stepsEditor).toBeVisible()
     await stepsEditor.getByRole("button", { name: "Add step" }).click()

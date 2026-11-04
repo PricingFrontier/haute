@@ -106,10 +106,9 @@ _RESPONSE = [
 #: `_priced`'s tables as its project's form defines them, and its sample as typed there: what
 #: the pipeline file runs on, on its own, and what deploy reads.
 FORM_TABLES = [
-    form_table("t_policy", "policy", "input", ("state", "str"), ("limit", "int")),
-    form_table("t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True),
+    form_table("policy", "input", ("state", "str"), ("limit", "int")),
+    form_table("items", "input", ("item_id", "str"), ("value", "float"), many=True),
     form_table(
-        "t_pricing",
         "pricing",
         "output",
         ("premium", "float"),
@@ -117,7 +116,6 @@ FORM_TABLES = [
         ("referral", "str"),
     ),
     form_table(
-        "t_item_prices",
         "item_prices",
         "output",
         ("item_id", "str"),
@@ -126,8 +124,8 @@ FORM_TABLES = [
     ),
 ]
 FORM_SAMPLE = {
-    "t_policy": [{"c_state": "NY", "c_limit": "1,000"}],
-    "t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}],
+    "policy": [{"state": "NY", "limit": "1,000"}],
+    "items": [{"item_id": "A", "value": "10"}, {"item_id": "B", "value": "30"}],
 }
 #: The quote's identity as the sample is priced under it, which every row of a table the
 #: form makes takes in the response.
@@ -497,7 +495,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     # The graph as the editor holds it, which the route gives the tables the project's form
     # defines: each table leads with the quote's identity, null in the node's own tables.
     saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
-    summary = form_table("t_summary", "summary", "output", ("state", "str"), ("premium", "float"))
+    summary = form_table("summary", "output", ("state", "str"), ("premium", "float"))
     workbench_project(project, [*FORM_TABLES, summary], FORM_SAMPLE)
     client = TestClient(app)
     body = {"graph": saved.model_dump(), "node_id": "response", "row_limit": 100}
@@ -689,8 +687,8 @@ def test_deploy_answers_with_a_workbench_output(project: Path) -> None:
     workbench_project(
         project,
         [
-            form_table("t_quote", "quote", "input", ("state", "str"), ("limit", "int")),
-            form_table("t_pricing", "pricing", "output", ("premium", "float"), ("state", "str")),
+            form_table("quote", "input", ("state", "str"), ("limit", "int")),
+            form_table("pricing", "output", ("premium", "float"), ("state", "str")),
         ],
     )
     resolved = resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
@@ -824,13 +822,11 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
     workbench_project(
         project,
         [
-            form_table(
-                "t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True
-            ),
-            form_table("t_pricing", "pricing", "output", ("premium", "float")),
-            form_table("t_item_prices", "item_prices", "output", ("item_id", "str"), many=True),
+            form_table("items", "input", ("item_id", "str"), ("value", "float"), many=True),
+            form_table("pricing", "output", ("premium", "float")),
+            form_table("item_prices", "output", ("item_id", "str"), many=True),
         ],
-        {"t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}]},
+        {"items": [{"item_id": "A", "value": "10"}, {"item_id": "B", "value": "30"}]},
     )
     pipeline = _import(main).pipeline
 

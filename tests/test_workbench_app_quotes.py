@@ -42,7 +42,7 @@ from haute._workbench_app import (
     write_release,
 )
 from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, with_quote_details
+from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec, with_quote_details
 from haute._workbench_tables import input_tables
 from haute.deploy._utils import shipped_graph
 from tests._project import use_project
@@ -56,8 +56,8 @@ TEST = "test"
 DEV = "dev"
 ANA = {EASY_AUTH_NAME: "ana@example.com"}
 JO = {EASY_AUTH_NAME: "jo@example.com"}
-DETAILS = {"qd_quote_name": "Fleet", "qd_insured": "Acme", "qd_inception_date": "2026-11-01"}
-VALUES = {"t1": [{"c_state": "NY", "c_exposure": "1000"}], "quote_details": [DETAILS]}
+DETAILS = {"quote_name": "Fleet", "insured": "Acme", "inception_date": "2026-11-01"}
+VALUES = {"policy_details": [{"state": "NY", "exposure": "1000"}], "quote_details": [DETAILS]}
 #: The pipeline's answer for VALUES, as the page shows it.
 PRICED = {"pricing_output": [{"premium": 500.0}]}
 FORM = with_quote_details(FormSpec.model_validate(form(POLICY, PRICING))).model_dump(
@@ -80,7 +80,7 @@ def _priced_graph(spec: dict[str, Any]) -> PipelineGraph:
     details = next(
         table
         for table in input_tables(FormSpec.model_validate(spec))
-        if table.name == QUOTE_DETAILS_ID
+        if table.name == QUOTE_DETAILS_NAME
     )
     request = graph.nodes[0].data.config
     request["tables"] = [details.model_dump(mode="json"), *request["tables"]]
@@ -261,11 +261,11 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept_in_the_forms_table
 ) -> None:
     # What the page sends of the details the app sets is overruled, its administration too.
     claimed = {
-        "qd_assignee": "jo",
-        "qd_stage": "final",
-        "qd_created_by": "mallory",
-        "qd_modified_date": "2020-01-01",
-        "qd_haute_version": "0.0.1",
+        "assignee": "jo",
+        "stage": "final",
+        "created_by": "mallory",
+        "modified_date": "2020-01-01",
+        "haute_version": "0.0.1",
     }
     sent = {**VALUES, "quote_details": [{**DETAILS, **claimed}]}
     made = page.create(values=sent).json()["quote"]
@@ -305,8 +305,8 @@ def test_a_priced_save_is_priced_again_on_the_server_and_kept_in_the_forms_table
         "haute_version": "9.9.9",
     }
     # The values read back as cells, the app's details among them.
-    assert answered["values"]["t1"] == [{"c_state": "NY", "c_exposure": "1000"}]
-    assert answered["values"]["quote_details"][0]["qd_stage"] == "draft"
+    assert answered["values"]["policy_details"] == [{"state": "NY", "exposure": "1000"}]
+    assert answered["values"]["quote_details"][0]["stage"] == "draft"
     assert answered["tables"] == _kept()
     assert (answered["moved"], answered["dropped"]) == (False, [])
     # Priced under the quote's own identity, which the request names with its creation; the
@@ -358,7 +358,7 @@ def test_one_instant_stamps_a_save_its_request_and_its_rows(
 
     assert saved["quote"]["saved_at"] == instant.isoformat()
     assert saved["quote"]["details"]["modified_date"] == "2026-10-12"
-    assert saved["values"]["quote_details"][0]["qd_modified_by"] == "jo@example.com"
+    assert saved["values"]["quote_details"][0]["modified_by"] == "jo@example.com"
     assert page.activity(made)["entries"][-1]["at"] == instant.isoformat()
 
 
@@ -366,33 +366,38 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
     release_dir: Path, tmp_path: Path
 ) -> None:
     # The policy shows on quotes Ana made, by a condition on the detail the app sets, which
-    # its own Collection shows.
+    # its own Collection shows. Each component is numbered in its section, as the editor
+    # numbers it there, which identifies it in the release (READ-24).
     spec = json.loads(json.dumps(FORM))
     spec["pages"][0]["sections"][0]["height"] = 240
     spec["pages"][0]["sections"][0]["widgets"] = [
         {
             "id": "w_made",
+            "number": 1,
             "type": "collection",
             "x": 0,
             "y": 120,
             "w": 400,
             "h": 100,
-            "fields": [{"table": "quote_details", "column": "qd_created_by"}],
+            "fields": [{"table": "quote_details", "column": "created_by"}],
         },
         {
             "id": "w_policy",
+            "number": 2,
             "type": "collection",
             "x": 0,
             "y": 0,
             "w": 400,
             "h": 100,
-            "fields": [{"table": "t1", "column": column} for column in ("c_state", "c_exposure")],
+            "fields": [
+                {"table": "policy_details", "column": column} for column in ("state", "exposure")
+            ],
             "show_when": {
                 "match": "all",
                 "conditions": [
                     {
                         "table": "quote_details",
-                        "column": "qd_created_by",
+                        "column": "created_by",
                         "op": "equals",
                         "values": ["ana@example.com"],
                     }
@@ -401,7 +406,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
         },
     ]
     shown = _write_release(tmp_path / "shown", spec)
-    policy = {"t1": VALUES["t1"]}
+    policy = {"policy_details": VALUES["policy_details"]}
 
     with TestClient(
         create_app(shown, store=StoreLocation(TEST, _prepared(tmp_path / "shown.sqlite", shown)))
@@ -414,7 +419,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
         saved = page.save(anas, values=policy)
         assert saved.status_code == 200, saved.text
         # Jo's does not, whatever his page says of who made it: there is nothing to save.
-        claimed = {**policy, "quote_details": [{"qd_created_by": "ana@example.com"}]}
+        claimed = {**policy, "quote_details": [{"created_by": "ana@example.com"}]}
         refused = page.save(jos, headers=JO, values=claimed)
         assert refused.status_code == 422
         assert refused.json()["detail"] == "Type the quote first"
@@ -422,7 +427,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
 
 def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page) -> None:
     # An option no number, sent by a page, is the app's to set, never read.
-    sent = {**VALUES, "quote_details": [{**DETAILS, "qd_option": "invalid"}]}
+    sent = {**VALUES, "quote_details": [{**DETAILS, "quote_option": "invalid"}]}
 
     made = page.create(values=sent)
     assert made.status_code == 200, made.text
@@ -436,7 +441,7 @@ def test_a_value_not_of_its_columns_type_refuses_the_whole_save_naming_each_cell
     page: Page, path: Path
 ) -> None:
     quote = page.priced()
-    misfit = {**VALUES, "t1": [{"c_state": "NY", "c_exposure": "lots"}]}
+    misfit = {**VALUES, "policy_details": [{"state": "NY", "exposure": "lots"}]}
 
     for shown in (None, PRICED):
         refused = page.save(quote, values=misfit, shown=shown)
@@ -519,7 +524,7 @@ def test_a_new_quote_leaving_a_required_detail_empty_is_made_and_saved(
         )
     ) as client:
         page = Page(client)
-        blank = {**VALUES, "quote_details": [{**DETAILS, "qd_insured": "   "}]}
+        blank = {**VALUES, "quote_details": [{**DETAILS, "insured": "   "}]}
         made = page.create(values=blank)
         assert made.status_code == 200, made.text
         quote = made.json()["quote"]
@@ -539,14 +544,14 @@ def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: P
     made = untyped.json()["quote"]
     assert (made["label"], made["stage"]) == ("Q-000002/1", "draft")
     # The details the app sets are not typing, whatever the page sends of them.
-    for values in ({}, {"quote_details": [{"qd_reference": "Q-9", "qd_stage": "final"}]}):
+    for values in ({}, {"quote_details": [{"quote_reference": "Q-9", "stage": "final"}]}):
         refused = page.save(made, shown=None, values=values)
         assert refused.status_code == 422
         assert refused.json()["detail"] == "Type the quote first"
 
 
 def test_a_quote_name_past_its_length_is_refused_naming_the_limit(page: Page) -> None:
-    named = {**VALUES, "quote_details": [{**DETAILS, "qd_quote_name": "x" * 240}]}
+    named = {**VALUES, "quote_details": [{**DETAILS, "quote_name": "x" * 240}]}
 
     refused = page.create(values=named)
     quote = page.create().json()["quote"]
@@ -572,7 +577,7 @@ def test_a_quote_opens_with_what_it_holds(page: Page) -> None:
     opened = page.client.get(address(quote), headers=ANA).json()
 
     assert opened["quote"] == quote
-    assert opened["values"]["t1"] == [{"c_state": "NY", "c_exposure": "1000"}]
+    assert opened["values"]["policy_details"] == [{"state": "NY", "exposure": "1000"}]
     assert (opened["tables"], opened["dropped"], opened["moved"]) == (_kept(), [], False)
     assert opened["request"]["policy_details"] == {"state": "NY", "exposure": 1000.0}
     missing = page.client.get("/api/app/quotes/nope/1", headers=ANA)
@@ -690,8 +695,8 @@ def test_the_lists_page_search_and_count_through_the_route(page: Page) -> None:
     page.create(
         headers=JO,
         values={
-            "t1": [{"c_state": "CA", "c_exposure": "5"}],
-            "quote_details": [{"qd_insured": "Cal"}],
+            "policy_details": [{"state": "CA", "exposure": "5"}],
+            "quote_details": [{"insured": "Cal"}],
         },
     )
 

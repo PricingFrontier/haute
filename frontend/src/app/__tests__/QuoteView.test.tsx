@@ -59,7 +59,7 @@ const opened = async (route: QuoteRoute = QUOTE) => {
   return view
 }
 
-const type = (value: string) => act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.state", value))
+const type = (value: string) => act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "state", value))
 /** Key `value` into the New quote window's field labelled `label`, committed as leaving it commits it. */
 const key = (label: string, value: string) => {
   const field = within(screen.getByTestId("new-quote-window")).getByRole("textbox", { name: label })
@@ -111,7 +111,7 @@ describe("QuoteView", () => {
 
   it("makes an alternative as it is asked for, from its source's values under its reference, and takes it to its own address", async () => {
     await navigate("/quotes/new?from=Q-000001&option=1&as=alternative", { force: true })
-    const values = { policy: [{ "policy.state": "NY" }] }
+    const values = { policy: [{ state: "NY" }] }
     vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values }))
     vi.mocked(createAppQuote).mockResolvedValue(
       answer({ option: 2, relation: "alternative", source_reference: "Q-000001", source_option: 1, source_label: "Q-000001/1", priced_release: null }, { values }),
@@ -209,7 +209,7 @@ describe("QuoteView", () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     await opened()
     const kept = draftKey("motor", "ana@example.com", "Q-000001/1")
-    const saved = useWorkbenchPreviewStore.getState().quote.policy?.[0]["policy.state"] ?? ""
+    const saved = useWorkbenchPreviewStore.getState().quote.policy?.[0].state ?? ""
     type("CA")
     await vi.waitFor(() => expect(window.localStorage.getItem(kept)).toContain("CA"))
 
@@ -248,7 +248,7 @@ describe("QuoteView", () => {
 
   it("marks final with a required field empty, for the server to name each field that keeps it from being final", async () => {
     // The sheets' required State is empty: only the server checks Required, as it is marked final.
-    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ "policy.year": "2026" }] } }))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ year: "2026" }] } }))
     vi.mocked(changeAppQuote).mockRejectedValue(
       new ApiError("HTTP 409", 409, "not ready", {}, {
         message: "Q-000001/1 needs a value in policy.State, equipment row 2.Value before it is marked final.",
@@ -285,7 +285,7 @@ describe("QuoteView", () => {
       }),
     )
     await opened()
-    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "policy.year", "abc"))
+    act(() => useWorkbenchPreviewStore.getState().setCell("policy", 0, "year", "abc"))
     fireEvent.click(screen.getByTestId("save-quote"))
 
     const notice = await screen.findByTestId("notice-invalid")
@@ -349,7 +349,7 @@ describe("QuoteView", () => {
     const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
     expect([source, reference]).toEqual([{ reference: "Q-000001", option: 1, relation: "duplicate" }, "DEF-2"])
     // The values on the sheets, unsaved ones and all, made unpriced.
-    expect(body.values.policy).toEqual([{ "policy.state": "CA" }])
+    expect(body.values.policy).toEqual([{ state: "CA" }])
     expect(body).not.toHaveProperty("shown")
   })
 
@@ -406,7 +406,7 @@ describe("QuoteView", () => {
   })
 
   it("says a duplicate was made when leaving the quote's unsaved values for it is cancelled", async () => {
-    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({}, { values: { ...VALUES, quote_details: [{ qd_insured: "Acme" }] } }))
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer({}, { values: { ...VALUES, quote_details: [{ insured: "Acme" }] } }))
     vi.mocked(createAppQuote).mockResolvedValue(answer({ reference: "DEF-2", relation: "duplicate", priced_release: null }))
     await opened()
     type("CA")
@@ -510,7 +510,7 @@ describe("QuoteView", () => {
   })
 
   it("starts a renewal from the menu in the window over the quote, filled from the quote, and Cancel leaves the quote as it was", async () => {
-    vi.mocked(openAppQuote).mockResolvedValueOnce(answer({ version: 2 })).mockResolvedValueOnce(answer({ version: 2 }, { values: { ...VALUES, quote_details: [{ qd_insured: "Acme" }] } }))
+    vi.mocked(openAppQuote).mockResolvedValueOnce(answer({ version: 2 })).mockResolvedValueOnce(answer({ version: 2 }, { values: { ...VALUES, quote_details: [{ insured: "Acme" }] } }))
     await opened()
     type("CA")
 
@@ -524,12 +524,12 @@ describe("QuoteView", () => {
     expect(within(window_).getByRole("textbox", { name: "Quote reference" })).toHaveValue("")
     // Nothing is installed on the sheets while it is open, and the address stays the quote's.
     expect(window.location.pathname).toBe("/quotes/Q-000001/1")
-    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ "policy.state": "CA" }])
+    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ state: "CA" }])
 
     fireEvent.click(within(window_).getByRole("button", { name: "Cancel" }))
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
     expect(createAppQuote).not.toHaveBeenCalled()
-    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ "policy.state": "CA" }])
+    expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ state: "CA" }])
     expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
   })
 
@@ -548,12 +548,12 @@ describe("QuoteView", () => {
 
   it("offers back values this browser kept", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    writeDraft(draftKey("motor", "ana@example.com", "Q-000001/1"), { values: { policy: [{ "policy.state": "CA" }] }, version: 0, places: {}, keptAt: new Date().toISOString(), pending: null })
+    writeDraft(draftKey("motor", "ana@example.com", "Q-000001/1"), { values: { policy: [{ state: "CA" }] }, version: 0, places: {}, keptAt: new Date().toISOString(), pending: null })
     await opened()
 
     expect(screen.getByTestId("notice-recovered")).toHaveTextContent("not saved to the server. The quote has changed since then.")
     fireEvent.click(screen.getByRole("button", { name: "Restore them" }))
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "CA" }] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ state: "CA" }] })
   })
 
   it("assigns the quote to someone from the people, or to a name typed", async () => {
@@ -573,7 +573,7 @@ describe("QuoteView", () => {
   })
 
   it("takes the details an assignment set onto the sheets from the quote, nothing unsaved by it, and what was typed kept", async () => {
-    const saved = { qd_reference: "Q-000001", qd_option: "1", qd_stage: "draft", qd_assignee: "ana@example.com" }
+    const saved = { quote_reference: "Q-000001", quote_option: "1", stage: "draft", assignee: "ana@example.com" }
     const details = (assignee: string) => ({ quote_reference: "Q-000001", quote_option: 1, stage: "draft", assignee, archived: false })
     vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { ...VALUES, quote_details: [saved] } }))
     vi.mocked(changeAppQuote)
@@ -584,16 +584,16 @@ describe("QuoteView", () => {
 
     fireEvent.change(screen.getByLabelText("Assigned to"), { target: { value: "jo@example.com" } })
     await vi.waitFor(() => expect(useOpenQuoteStore.getState().base).toBe(2))
-    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ ...saved, qd_assignee: "jo@example.com" }])
+    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ ...saved, assignee: "jo@example.com" }])
     expect(screen.queryByTestId("quote-unsaved")).toBeNull()
 
     type("CA")
     // A cell the app sets takes no typing.
-    act(() => useWorkbenchPreviewStore.getState().setCell("quote_details", 0, "qd_stage", "final"))
+    act(() => useWorkbenchPreviewStore.getState().setCell("quote_details", 0, "stage", "final"))
     fireEvent.change(screen.getByLabelText("Assigned to"), { target: { value: "ana@example.com" } })
 
     await vi.waitFor(() => expect(useOpenQuoteStore.getState().base).toBe(3))
-    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ "policy.state": "CA" }], quote_details: [saved] })
+    expect(useWorkbenchPreviewStore.getState().quote).toEqual({ policy: [{ state: "CA" }], quote_details: [saved] })
     expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
   })
 
@@ -607,11 +607,11 @@ describe("QuoteView", () => {
     fireEvent.change(name, { target: { value: " Fleet renewal " } })
     fireEvent.blur(name)
 
-    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ qd_quote_name: "Fleet renewal" }])
+    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ quote_name: "Fleet renewal" }])
     expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
     fireEvent.click(screen.getByTestId("save-quote"))
     await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
-    expect(vi.mocked(saveAppQuote).mock.calls[0][2].values.quote_details).toEqual([{ qd_quote_name: "Fleet renewal" }])
+    expect(vi.mocked(saveAppQuote).mock.calls[0][2].values.quote_details).toEqual([{ quote_name: "Fleet renewal" }])
     expect(changeAppQuote).not.toHaveBeenCalled()
   })
 

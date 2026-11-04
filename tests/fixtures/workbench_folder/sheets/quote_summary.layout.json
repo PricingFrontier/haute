@@ -1,10 +1,10 @@
 {
   "width": 960,
   "sections": {
-    "section_sm01": {
+    "Summary": {
       "height": 160,
       "components": {
-        "collection_s5m6": {"x": 16, "y": 16, "w": 400, "h": 96}
+        "1": {"x": 16, "y": 16, "w": 400, "h": 96}
       }
     }
   }

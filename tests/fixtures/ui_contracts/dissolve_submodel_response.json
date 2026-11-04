@@ -16,8 +16,7 @@
           "config": {},
           "editor": {
             "steps_error": null,
-            "steps_discarded": null,
-            "discarded_sidecar": null
+            "steps_discarded": null
           }
         }
       },
@@ -35,8 +34,7 @@
           "config": {},
           "editor": {
             "steps_error": null,
-            "steps_discarded": null,
-            "discarded_sidecar": null
+            "steps_discarded": null
           }
         }
       }

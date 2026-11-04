@@ -3,7 +3,7 @@ import { isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputRe
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { withEdgeIdentity } from "./edgeIds"
-import { appEdge, appNode, selectOnlyNode } from "./flowElements"
+import { appEdge, appNode, freshNodeLabel, nodeLabels, selectOnlyNode } from "./flowElements"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
 import { isPlainObject } from "../types/guards"
@@ -133,6 +133,7 @@ export function validateEdgeJoinInsertionCandidate(
   const candidateNode = buildEdgeJoinNode({
     id: candidateNodeId,
     position: { x: 0, y: 0 },
+    taken: nodes,
   })
   const nextEdges = [
     ...edges.filter((edge) => edge.id !== targetEdgeId),
@@ -180,6 +181,7 @@ export function insertEdgeJoinNode({
   const newNode = buildEdgeJoinNode({
     id: newNodeId,
     position,
+    taken: nodes,
   })
 
   const replacementEdges = edgeJoinReplacementEdges(targetEdge, newNodeId, { ...connection, source })
@@ -251,6 +253,7 @@ export function insertEdgeJoinNodeFromSources({
   const newNode = buildEdgeJoinNode({
     id: newNodeId,
     position,
+    taken: nodes,
   })
 
   const nextEdges = [
@@ -389,15 +392,17 @@ export function swapEdgeJoinInputs({
   }
 }
 
-function buildEdgeJoinNode({ id, position }: {
+function buildEdgeJoinNode({ id, position, taken }: {
   id: string
   position: XYPosition
+  taken: readonly Node[]
 }): Node {
   return appNode({
     id,
     type: NODE_TYPES.EDGE_JOIN,
     position,
     config: {},
+    label: freshNodeLabel(NODE_TYPES.EDGE_JOIN, nodeLabels(taken)),
   })
 }
 

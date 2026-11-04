@@ -9,9 +9,12 @@ import { CommittedTextField, INPUT_STYLE, QuietAction } from "../../components/f
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
 import useRefocusAfterMove, { altArrowMove, type RefocusAfterMove } from "../../hooks/useRefocusAfterMove"
 import { confirmed } from "../../stores/useQuestionStore"
+import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { isIdentityColumn } from "../../utils/quoteIdentity"
-import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
+import { columnKey } from "../../utils/sheetVisibility"
+import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
 import { ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
@@ -20,7 +23,7 @@ import { IndexControl } from "./IndexControl"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
 
 /** The quote_details columns the app sets, by name, in order: "a, b and c". */
-const appSetNames = QUOTE_DETAILS_COLUMNS.filter(([id]) => QUOTE_DETAILS_MANAGED.has(id)).map(([, name]) => name)
+const appSetNames = QUOTE_DETAILS_COLUMNS.map(([name]) => name).filter((name) => QUOTE_DETAILS_MANAGED.has(name))
 const APP_SET = `${appSetNames.slice(0, -1).join(", ")} and ${appSetNames[appSetNames.length - 1]}`
 
 const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
@@ -62,19 +65,21 @@ interface TableBlockProps {
 
 export function TableBlock({ form, table, index, refocus: refocusTable, drag, readOnly, matched, kept, added, setAdded, details, setDetails, collapsed, onToggleCollapsed, problems }: TableBlockProps) {
   const change = useWorkbenchFormStore((s) => s.change)
+  const addToast = useToastStore((s) => s.addToast)
+  const schemaTableRenamed = useWorkbenchViewStore((s) => s.schemaTableRenamed)
   const block = useRef<HTMLElement>(null)
-  const shown = fieldUses(form, table.id).length
-  const tested = conditionUses(form, table.id).length
-  const used = buttonUses(form, table.id).length
+  const shown = fieldUses(form, table.name).length
+  const tested = conditionUses(form, table.name).length
+  const used = buttonUses(form, table.name).length
   const uses = shown + tested + used
   // A table a sheet shows, a condition tests or an Import or an Export uses is deleted once the question is answered yes.
   const remove = async () => {
     const text = `Its columns are ${usedBy(shown, tested, used)}; deleting it takes them out of ${uses === 1 ? "it" : "them"} too.`
     if (uses > 0 && !(await confirmed({ title: `Delete table ${table.name}?`, text, confirm: "Delete", danger: true }))) return
-    change((f) => removeSchemaTable(f, table.id))
+    change((f) => removeSchemaTable(f, table.name))
   }
   const refocus = useRefocusAfterMove<HTMLInputElement>()
-  const dragColumn = useListReorder((from, to) => change((f) => moveSchemaColumn(f, table.id, table.columns[from].id, to)))
+  const dragColumn = useListReorder((from, to) => change((f) => moveSchemaColumn(f, table.name, table.columns[from].name, to)))
   const fresh = (id: string): Fresh => ({
     autoFocus: added === id,
     onFocus: added === id ? selectAll : undefined,
@@ -87,9 +92,9 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
   const filtering = matched !== null
 
   const insertAt = (at: number) => {
-    const column = createSchemaColumn(currentForm(), table.id, at)
-    change((f) => addSchemaColumn(f, table.id, column, at))
-    setAdded(column.id)
+    const column = createSchemaColumn(currentForm(), table.name, at)
+    change((f) => addSchemaColumn(f, table.name, column, at))
+    setAdded(columnKey(table.name, column.name))
   }
 
   // Alt+Up and Alt+Down in its name move the table; its name field takes the focus again in its new place.
@@ -97,7 +102,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
     if (fixed || filtering) return
     const to = altArrowMove(e, "vertical", index, form.schema.tables.length)
     if (to === null) return
-    refocusTable.moved(table.id)
+    refocusTable.moved(table.name)
     change((f) => moveSchemaTable(f, index, to))
   }
 
@@ -105,7 +110,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
     <section
       ref={block}
       aria-label={`Table ${table.name}`}
-      data-testid={`schema-table-${table.id}`}
+      data-testid={`schema-table-${table.name}`}
       onDragOver={drag?.onOver}
       onDrop={drag?.onDrop}
       data-drop-target={drag?.target ? "true" : undefined}
@@ -130,12 +135,20 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           style={{ color: "var(--text-muted)" }}
         />
         <CommittedTextField
-          ref={refocusTable.register(table.id)}
+          ref={refocusTable.register(table.name)}
           aria-label="Table name"
           aria-keyshortcuts={fixed || filtering ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
           value={table.name}
-          onCommit={(name) => change((f) => updateSchemaTable(f, table.id, { name }))}
-          {...fresh(table.id)}
+          onCommit={(name) => {
+            if (name === table.name) return
+            if (nameTaken(form.schema.tables.map((other) => other.name), name, table.name)) {
+              addToast("error", `A table is already named ${name}`)
+              return
+            }
+            change((f) => updateSchemaTable(f, table.name, { name }))
+            schemaTableRenamed(table.name, name)
+          }}
+          {...fresh(table.name)}
           onKeyDown={onNameKeyDown}
           readOnly={fixed}
           title={locked ? DETAILS_TITLE : undefined}
@@ -147,7 +160,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           aria-label={`Role of ${table.name}`}
           disabled={fixed}
           value={table.role}
-          onChange={(e) => change((f) => updateSchemaTable(f, table.id, { role: e.target.value as SchemaTable["role"] }))}
+          onChange={(e) => change((f) => updateSchemaTable(f, table.name, { role: e.target.value as SchemaTable["role"] }))}
           title={ROLES.find((role) => role.value === table.role)?.title}
           className={CHIP_CLASS}
           style={{ ...INPUT_STYLE, color: table.role === "input" ? "var(--accent)" : "var(--success)" }}
@@ -162,7 +175,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           aria-label={`Rows of ${table.name}`}
           disabled={fixed}
           value={table.rows}
-          onChange={(e) => change((f) => setSchemaTableRows(f, table.id, e.target.value as SchemaTable["rows"]))}
+          onChange={(e) => change((f) => setSchemaTableRows(f, table.name, e.target.value as SchemaTable["rows"]))}
           title={ROWS.find((rows) => rows.value === table.rows)?.title}
           className={CHIP_CLASS}
           style={{ ...INPUT_STYLE, color: "var(--text-secondary)" }}
@@ -181,7 +194,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           {count} {count === 1 ? "col" : "cols"}
           {problems.length > 0 && `, ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`}
         </span>
-        <DatabaseMark table={table.id} />
+        <DatabaseMark table={table.name} />
         {!fixed && (
           <IconButton
             icon={Trash2}
@@ -194,22 +207,22 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
       </div>
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          {table.columns.map((column, at) => matched !== null && !matched.has(column.id) ? null : (
+          {table.columns.map((column, at) => matched !== null && !matched.has(column.name) ? null : (
             <ColumnRow
-              key={column.id}
+              key={column.name}
               form={form}
               table={table}
               column={column}
               index={at}
               refocus={refocus}
-              fresh={fresh(column.id)}
-              open={details === column.id}
-              onToggleDetails={() => setDetails(details === column.id ? null : column.id)}
+              fresh={fresh(columnKey(table.name, column.name))}
+              open={details === columnKey(table.name, column.name)}
+              onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
               onInsertAfter={() => insertAt(at + 1)}
               locked={locked}
               readOnly={readOnly}
               filtering={filtering}
-              drag={fixed || filtering || column.index || isIdentityColumn(column) ? undefined : dragColumn(at)}
+              drag={fixed || filtering || column.index || isIdentityColumn(table, column) ? undefined : dragColumn(at)}
             />
           ))}
           {!filtering && kept.map((column) => <StoreColumnRow key={column.name} column={column} />)}
@@ -220,7 +233,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
           ) : readOnly || filtering ? null : (
             <div className="flex items-center gap-3">
               <QuietAction onClick={() => insertAt(count)} className="justify-self-start">Add column</QuietAction>
-              {table.rows === "many" && <IndexControl form={form} table={table} onAdded={setAdded} />}
+              {table.rows === "many" && <IndexControl form={form} table={table} onAdded={(name) => setAdded(columnKey(table.name, name))} />}
             </div>
           )}
           {problems.map((message) => (

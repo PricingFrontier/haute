@@ -65,7 +65,7 @@ test.describe("workbench", () => {
     await page.getByRole("checkbox", { name: "Show pricing premium" }).check()
 
     // Building, the sheet is a new quote's: nothing typed, nothing priced, its cells inert.
-    const premium = page.getByTestId("priced-t_pricing:c_premium")
+    const premium = page.getByTestId("priced-pricing:premium")
     const builtLimit = collection.getByRole("textbox", { name: "Limit", includeHidden: true })
     await expect(premium).toHaveText("—")
     await expect(builtLimit).toHaveValue("")
@@ -112,7 +112,7 @@ test.describe("workbench", () => {
       fields: ["policy.limit", "policy.region", "pricing.premium"],
     })
     const savedLayout = readFormFile("sheets/sheet_1.layout.json")
-    expect(Object.keys(savedLayout.sections.section_1.components)).toEqual([savedSheet.sections[0].components[0].id])
+    expect(Object.keys(savedLayout.sections["Section 1"].components)).toEqual([String(savedSheet.sections[0].components[0].number)])
     expect(readFormFile("sample/policy.json")).toEqual([{ limit: "1000", region: "north" }])
   })
 })

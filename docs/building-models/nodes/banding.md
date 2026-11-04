@@ -118,7 +118,7 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     | **INPUT COLUMN** | `factors[].column` |
     | **OUTPUT COLUMN** | `factors[].outputColumn` |
     | **DEFAULT** | `factors[].default` (`null` when empty) |
-    | **BREAKPOINTS** | `factors[].rules`: a map from each **Up to** boundary to its **Band name**, in order, with `""` as the key of an open-ended final band |
+    | **BREAKPOINTS** | `factors[].rules`: one `{"upper": ..., "label": ...}` a band, its **Up to** boundary and its **Band name**, in order, an open-ended final band with no `upper` |
     | **RULES** | `factors[].rules`: a map from each **Value** to its **Maps To** group |
     | **COLUMNS** tab | `selected_columns` |
 
@@ -130,7 +130,11 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
         "banding": "breakpoints",
         "column": "driver_age",
         "outputColumn": "age_band",
-        "rules": { "25": "18-25", "65": "26-65", "": "65+" },
+        "rules": [
+          {"upper": 25, "label": "18-25"},
+          {"upper": 65, "label": "26-65"},
+          {"label": "65+"}
+        ],
         "default": "Unknown"
       }, {
         "banding": "categorical",
@@ -152,7 +156,7 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
     | `factors[].banding` | `"breakpoints"` or `"categorical"` | Whether the column is banded by numeric or date boundaries or by category. |
     | `factors[].column` | text | The input column banded. |
     | `factors[].outputColumn` | text | The column the band is written to. |
-    | `factors[].rules` | list of map of text to any JSON value or map of text to any JSON value | The bands: rule rows in the editor, or a map from each boundary or value to its band in the config file. |
+    | `factors[].rules` | list of map of text to any JSON value or map of text to any JSON value | The bands, as rule rows; the config file writes breakpoints as a list of `upper` and `label`, and categories as a map from each value to its group. |
     | `factors[].default` | text or `null` | The band of a value no rule matches; `null` leaves it empty. |
     | `factors[].rightClosed` | `true` or `false` | For breakpoints, whether each band includes its upper boundary (`true`, the default) or its lower one. |
     | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |

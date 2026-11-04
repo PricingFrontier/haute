@@ -466,8 +466,8 @@ class BandingFactor(TypedDict, total=False):
     outputColumn: str
     """The column the band is written to."""
     rules: list[dict[str, Any]] | dict[str, Any]
-    """The bands: rule rows in the editor, or a map from each boundary or value to its band in the
-    config file."""
+    """The bands, as rule rows; the config file writes breakpoints as a list of `upper` and
+    `label`, and categories as a map from each value to its group."""
     default: str | None
     """The band of a value no rule matches; `null` leaves it empty."""
     rightClosed: bool
@@ -499,7 +499,8 @@ class RatingTable(TypedDict, total=False):
     """With no default, whether a missing combination fails the run (`error`) or takes the neutral
     value (`neutral`)."""
     entries: list[dict[str, Any]]
-    """The table's rows, each a level of every factor and its `value`."""
+    """The table's rows, each a level of every factor and its `value`; the config file
+    writes them as a grid of `columns` and `rows`."""
 
 
 @closed
@@ -567,7 +568,8 @@ class ConstantConfig(NodeConfigBase, total=False):
     """A Constant node: a one-row frame of named values."""
 
     values: list[ConstantValue]
-    """The values, one column each."""
+    """The values, one column each; the config file writes them as a map from each name to
+    its value."""
 
 
 @closed

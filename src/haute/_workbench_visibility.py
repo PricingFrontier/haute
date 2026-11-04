@@ -61,8 +61,8 @@ from haute._workbench_form import (
 )
 from haute._workbench_tables import _filled, _typed, preset_rows
 
-#: The values typed into the sheets: rows by table id, each a cell (text, or a tick) by
-#: column id, as the sample holds them.
+#: The values typed into the sheets: rows by table name, each a cell (text, or a tick) by
+#: column name, as the sample holds them.
 Rows = Mapping[str, Sequence[Mapping[str, str | bool]]]
 
 #: The tests any column but a True/false one takes, a Text column's of text within text, a
@@ -121,9 +121,9 @@ class Visibility:
     #: The ids of the components that show, each in a section that shows.
     widgets: frozenset[str]
     #: The fields that show of the Tables and Collections that show, each a component id, a
-    #: table id and a column id.
+    #: table name and a column name.
     fields: frozenset[tuple[str, str, str]]
-    #: The input columns left out of the quote, each a table id and a column id: columns
+    #: The input columns left out of the quote, each a table name and a column name: columns
     #: other than the index on at least one Table or Collection, none of which shows them
     #: as a field that shows.
     hidden: frozenset[tuple[str, str]]
@@ -186,7 +186,7 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
         (field.table, field.column) for _, _, widget in placed for field, _ in _entered(widget)
     }
     inputs = {
-        (table.id, column.id)
+        (table.name, column.name)
         for table in spec.data_schema.tables
         if table.role == "input"
         for column in table.columns
@@ -240,7 +240,8 @@ def _on_price(spec: FormSpec, condition: SingleCondition) -> bool:
     """Whether *condition* tests an output table's column or rows: the price, which the view
     tests once what shows is decided, so here it holds while it fits."""
     return any(
-        table.id == condition.table and table.role == "output" for table in spec.data_schema.tables
+        table.name == condition.table and table.role == "output"
+        for table in spec.data_schema.tables
     )
 
 
@@ -297,10 +298,10 @@ def _holds(
     )
 
 
-def _first_cell(rows: Rows, table_id: str, column_id: str) -> str | bool | None:
+def _first_cell(rows: Rows, table_name: str, column_name: str) -> str | bool | None:
     """The value typed into a one-row table's column: its first row's."""
-    first = next(iter(rows.get(table_id, ())), None)
-    return None if first is None else first.get(column_id)
+    first = next(iter(rows.get(table_name, ())), None)
+    return None if first is None else first.get(column_name)
 
 
 def _list_holds(
@@ -311,11 +312,13 @@ def _list_holds(
         return False
     tested = _list_columns(condition)
     if tested:
-        if not all((table.id, column_id) in shown for column_id in tested):
+        if not all((table.name, column_name) in shown for column_name in tested):
             return False
-    elif not any((table.id, column.id) in shown for column in table.columns if not column.index):
+    elif not any(
+        (table.name, column.name) in shown for column in table.columns if not column.index
+    ):
         return False
-    typed = _typed_rows(table, rows.get(table.id, ()))
+    typed = _typed_rows(table, rows.get(table.name, ()))
     passing = _passing_rows(table, condition.where, typed)
     if isinstance(condition, RowsCondition):
         if condition.rows == "any":
@@ -344,7 +347,7 @@ def _passing_rows(
     table: SchemaTable, where: Sequence[RowTest], rows: Sequence[Mapping[str, str | bool]]
 ) -> list[Mapping[str, str | bool]]:
     """The *rows* passing every test of *where* in the same row, whose columns fit."""
-    types = {column.id: column.type for column in table.columns}
+    types = {column.name: column.type for column in table.columns}
     return [
         row
         for row in rows
@@ -367,7 +370,7 @@ def _total(
     a cell blank, not a number of the column's type or too large for a float left out, to
     15 significant digits so that 0.1, 0.2 and 0.3 sum to 0.6: the sum of none is 0, and the
     others of none are None, which no test passes."""
-    column_type = next(column.type for column in table.columns if column.id == total.column)
+    column_type = next(column.type for column in table.columns if column.name == total.column)
     # Each read as a float, as the view reads it, a whole number past 2**53 too: read
     # exactly, its least or greatest would round apart from the view's.
     numbers: list[float] = [
@@ -407,36 +410,36 @@ def _typed_rows(
     return [
         row
         for row in preset_rows(table, rows)
-        if any(_filled(row.get(column.id)) for column in table.columns if not column.index)
+        if any(_filled(row.get(column.name)) for column in table.columns if not column.index)
     ]
 
 
-def _tested_column(spec: FormSpec, table_id: str, column_id: str) -> SchemaColumn | None:
+def _tested_column(spec: FormSpec, table_name: str, column_name: str) -> SchemaColumn | None:
     """A one-row table's column, while it is in a one-row input table: a condition's, or the
     field one tests against."""
     return next(
         (
             column
             for table in spec.data_schema.tables
-            if table.id == table_id and table.role == "input" and table.rows == "one"
+            if table.name == table_name and table.role == "input" and table.rows == "one"
             for column in table.columns
-            if column.id == column_id
+            if column.name == column_name
         ),
         None,
     )
 
 
 def _one_row_column(
-    spec: FormSpec, table_id: str, column_id: str
+    spec: FormSpec, table_name: str, column_name: str
 ) -> tuple[SchemaTable, SchemaColumn] | None:
     """A one-row table's column with its table, input or output: a condition's own."""
     return next(
         (
             (table, column)
             for table in spec.data_schema.tables
-            if table.id == table_id and table.rows == "one"
+            if table.name == table_name and table.rows == "one"
             for column in table.columns
-            if column.id == column_id
+            if column.name == column_name
         ),
         None,
     )
@@ -455,7 +458,7 @@ def _list_table(spec: FormSpec, condition: ListCondition) -> SchemaTable | None:
         (
             table
             for table in spec.data_schema.tables
-            if table.id == condition.table and table.rows == "many"
+            if table.name == condition.table and table.rows == "many"
         ),
         None,
     )
@@ -483,10 +486,10 @@ def _list_fits(table: SchemaTable, condition: ListCondition) -> bool:
     )
 
 
-def _row_column(table: SchemaTable, column_id: str) -> SchemaColumn | None:
-    """*table*'s column by id, other than its index, which nothing is typed into."""
+def _row_column(table: SchemaTable, column_name: str) -> SchemaColumn | None:
+    """*table*'s column by name, other than its index, which nothing is typed into."""
     return next(
-        (column for column in table.columns if column.id == column_id and not column.index),
+        (column for column in table.columns if column.name == column_name and not column.index),
         None,
     )
 

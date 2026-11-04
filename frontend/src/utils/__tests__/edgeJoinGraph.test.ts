@@ -156,7 +156,7 @@ describe("insertEdgeJoinNode", () => {
     expect(joinNode?.position).toEqual({ x: 100, y: 50 })
     expect(joinNode?.origin).toEqual([0.5, 0.5])
     expect(joinNode?.data).toMatchObject({
-      label: "Edge Join 1",
+      label: "edge_join",
       nodeType: NODE_TYPES.EDGE_JOIN,
       config: {
         how: "left",
@@ -253,7 +253,7 @@ describe("insertEdgeJoinNode", () => {
     const finalizedSecond = finalizeInsertion(second, "server_second_join")
     expect(finalizedSecond.nodes.some((n) => n.id === "edgeJoin_2")).toBe(true)
     expect(finalizedSecond.nodes.map((n) => n.data.label)).toEqual(
-      expect.arrayContaining(["Edge Join 1", "Edge Join 2"]),
+      expect.arrayContaining(["edge_join", "edge_join_2"]),
     )
     expect(finalizedSecond.edges).toEqual(
       expect.arrayContaining([
@@ -654,7 +654,7 @@ describe("insertEdgeJoinNodeFromSources", () => {
       position: { x: 120, y: 80 },
       origin: [0.5, 0.5],
       data: {
-        label: "Edge Join 1",
+        label: "edge_join",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
           how: "left",

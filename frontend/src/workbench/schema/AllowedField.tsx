@@ -47,8 +47,8 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
   const columnNow = () =>
     useWorkbenchFormStore
       .getState()
-      .form?.schema.tables.find((other) => other.id === tableId)
-      ?.columns.find((other) => other.id === column.id)
+      .form?.schema.tables.find((other) => other.name === tableId)
+      ?.columns.find((other) => other.name === column.name)
   const sourceNow = () => JSON.stringify(columnNow()?.options_source ?? null)
   const readValues = (from: string, name: string, then: (values: string[]) => void) => {
     const ticket = reads.take()

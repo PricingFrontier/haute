@@ -40,7 +40,7 @@ from sqlalchemy.exc import CompileError
 from sqlalchemy.sql.elements import ColumnClause
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
-from haute._workbench_form import QUOTE_DETAILS_ID
+from haute._workbench_form import QUOTE_DETAILS_NAME
 
 #: The columns every table of the store leads with: the quote's identity.
 IDENTITY = ("quote_reference", "quote_option")
@@ -147,7 +147,7 @@ def read_catalogue(
         held = {column["name"] for column in reflected}
         keyed = keys[(sql_schema, name)]
         refers = any(
-            foreign.get("referred_table") == QUOTE_DETAILS_ID
+            foreign.get("referred_table") == QUOTE_DETAILS_NAME
             and list(foreign.get("constrained_columns") or []) == list(IDENTITY)
             for foreign in references[(sql_schema, name)]
         )
@@ -310,5 +310,5 @@ def table_problems(expected: Table, found: CatalogueTable, refers: bool) -> list
             )
         )
     if refers and not found.refers:
-        problems.append(("refers", f"does not refer to its quote's {QUOTE_DETAILS_ID} row"))
+        problems.append(("refers", f"does not refer to its quote's {QUOTE_DETAILS_NAME} row"))
     return problems

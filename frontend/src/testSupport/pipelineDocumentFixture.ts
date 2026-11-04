@@ -99,7 +99,6 @@ function recoveryNode(node: Node, index: number): RecoveryNode {
     editor: {
       steps_error: null,
       steps_discarded: null,
-      discarded_sidecar: null,
       ...(record(data.editor) as Partial<RecoveryNode["editor"]>),
     },
     config_reference: nullableString(data._configReference),

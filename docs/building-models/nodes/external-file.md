@@ -1,6 +1,6 @@
 # Load File
 
-You have an object on disk  - a pickled or joblib model from a colleague, or a JSON lookup  - and you want to apply it to your data. The Load File node loads the file as `obj`, and you apply it in the node's **TRANSFORM** tab: add a **Free code** step, or click **Switch to code** to write the node as code.
+You have an object on disk  - a pickled or joblib model from a colleague, or a JSON lookup  - and you want to apply it to your data. The Load File node loads the file as `obj`, and you apply it in the node's **TRANSFORM** tab: add a **Free code** step.
 
 !!! info "When to use"
     - Your model is a standalone file not tracked in MLflow (e.g. a `.pkl` from a colleague), and its class is one Haute can load (see the warning below).
@@ -65,7 +65,7 @@ df = df.with_columns(pl.Series("prediction", predictions))
 The preview then shows your data with a new `prediction` column.
 
 !!! warning "Assign the result to `df`"
-    Your code must assign its result to `df`, which Haute passes to the next node. Do not add `return df`: a **Free code** step refuses it ("Assign the result to df instead of using return."), and after **Switch to code** Haute adds that line itself and shows it, dimmed, under the code box.
+    Your code must assign its result to `df`, which Haute passes to the next node. Do not add `return df`: a **Free code** step refuses it ("Assign the result to df instead of using return.").
 
 ### JSON lookup example
 
@@ -79,13 +79,13 @@ df = df.with_columns(
 ```
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/load_file/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.external_file(config="config/load_file/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the node's inputs and the loaded object as `obj`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/load_file/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.external_file(config="config/load_file/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the node's inputs and the loaded object as `obj`; a body edited by hand so that it no longer matches the steps is the node's code, shown in a code box.
 
     | Setting in the editor | Stored as |
     |---|---|
     | **FILE TYPE** | `fileType`: `"pickle"`, `"json"` or `"joblib"` |
     | **FILE PATH** | `path`: the file, relative to your project folder |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
     <!-- config-keys:start -->

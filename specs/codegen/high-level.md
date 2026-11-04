@@ -15,8 +15,14 @@ valid-Python mutation and classification boundary is fixed by the accepted
   per node (`@pipeline.<type>` / `@submodel.<type>`). The decorator says what
   the node does and where its settings live; the function body holds only code
   the user wrote. A node without user code is a one-line declaration.
-- Wires nodes together with `pipeline.connect(...)` calls that mirror the
-  graph's edges, including multi-frame port names.
+- Wires nodes together with `pipeline.connect(...)` calls for the graph's edges that the
+  signatures cannot say (READ-30): an edge with a port (a frame's table, an Edge Join's
+  `base` and `join`, a Workbench Output's table), an edge to or from a submodel
+  occurrence, and the first input of a frame hook, which its decorator takes as `df` and
+  no parameter names. An edge without ports whose target names its source among its
+  parameters is said by the signature, which the parser and a standalone run infer
+  alike ([pipeline-config](../pipeline-config/high-level.md), Binding parameters to
+  inputs), so no call is written for it (`codegen._signature_states`).
 - Embeds enough metadata (docstrings, decorator kwargs, JSON config sidecars,
   column contracts where they add information, preserved free-form blocks)
   that the file can later be parsed back into an equivalent graph — see
@@ -88,11 +94,18 @@ Out of scope (owned by neighbouring components):
 
 ## Behaviour
 
-- **Deterministic given the same graph.** Node order follows a topological
-  sort (`haute._topo.topo_sort_ids`) in which every node without inputs that feeds another
-  node is placed immediately before its first consumer, so a data source is read where it
-  is used rather than at the top of the file; a node without inputs or consumers keeps
-  its topological position. Contract dicts and column sets are sorted, while connect
+- **A file keeps its function order.** Saving over a file keeps the order its functions
+  have (READ-12): each node the file defines stays where it is (a node's id is the function
+  name it was loaded under, so a renamed node keeps its place, and a function whose
+  signature changes because an input was added or renamed stays where it is), a removed
+  node's function goes and nothing else moves, and each new node, in the order the graph
+  lists them (their creation), goes just above the first function that uses its output,
+  or at the end when nothing does yet. Submodel files follow the same rule, each by its
+  own file. A file not yet written follows a topological sort that takes, of the
+  nodes ready at once, the one the graph lists first, never the order of its edges, so
+  generating a parsed graph again gives the same file, and in which every node without inputs that feeds another
+  node is placed immediately before its first consumer; a node without inputs or
+  consumers keeps its topological position. No existing file is regrouped. Contract dicts and column sets are sorted, while connect
   calls preserve the graph's edge order (apart from edge-join role ordering and root-boundary
   deduplication). The same ordered graph therefore produces byte-identical output; codegen does
   not canonicalise arbitrary input edge ordering.
@@ -213,7 +226,8 @@ Out of scope (owned by neighbouring components):
 - **Declarations and code.** Every node type except `polars` is a *configured
   node*: its behaviour comes from its settings, which live in a JSON sidecar
   named by the decorator's `config=` keyword (inline decorator keywords for
-  Edge Join and Explore), and the decorator itself performs that behaviour when
+  Edge Join and Explore, an Edge Join's `suffix` left out at its default `_right` while
+  `how` and `maintain_order` are always written), and the decorator itself performs that behaviour when
   the file runs on its own (see [pipeline-config](../pipeline-config/high-level.md)).
   Codegen therefore emits no loader, scoring, join, switch or assembly call:
   - A configured node without user code is a **declaration**,
@@ -341,6 +355,12 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 
+  A module docstring the file holds is kept byte for byte: the save writes it in place of
+  codegen's `"""Pipeline: <name>"""` (`"""Submodel: <name>"""` for a submodel file), which it
+  writes only for a file with none (`codegen.keep_module_docstring`, applied to each file the
+  save overwrites). `haute init` scaffolds `main.py` with codegen's docstring, so a new
+  project's first save leaves it as it is.
+
   Regeneration keeps only the docstring, the `haute`/`polars` imports (and `from haute import
   <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
   and from the constructor on the constructor, the `global_constants` binding, node functions,
@@ -357,8 +377,8 @@ Out of scope (owned by neighbouring components):
 
   Comments follow the same rule. Regeneration keeps a comment in the preamble, in a preserved
   block, or in a node's code (the body lines its extraction keeps, from the comment lines
-  above its first statement to its last statement before the closing `return df`), and the
-  wire comment it writes above the connect calls. Every other comment is dropped: one above
+  above its first statement to its last statement before the closing `return df`). Every
+  other comment is dropped: one above
   the imports, on the constructor, between node functions, on a decorator or a signature,
   on a docstring or `return df` line, after a body's last statement, inside a declaration
   (whose body is regenerated), on a registration or a connect call, at the end of the file.
@@ -390,15 +410,14 @@ Out of scope (owned by neighbouring components):
 
 **Stepped transforms.** When a transform config carries `steps`, `_gen_transform` renders
 the body with the shared step renderer against the generated parameter names instead of
-`config["code"]`, references the node's `config/polars/<name>.json` sidecar through the
-decorator `config=` keyword, and on a render failure emits the same incomplete placeholder
-body that a code-less transform emits; the save warning for incomplete transforms then
-names the failing step. A stepped node that also carries `inputMapping` is rejected
+`config["code"]`, writes its column settings as decorator keywords as for any transform
+(its steps live in that body alone, READ-22), and on a render failure emits the same
+incomplete placeholder body that a code-less transform emits; the save then keeps the
+step list in `.haute.json` (`unfinished_steps`) and its warning for incomplete
+transforms names the failing step. A stepped node that also carries `inputMapping` is rejected
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
-the rendered code exactly, which is what lets the parser tell a hand-edited body from a
-rendered one; the parser compares the two as programs (the same syntax tree and
-comments), so a body in an earlier layout or quoting of the same steps is not an
-edit, while a body in a call spelling only an earlier renderer wrote is.
+the rendered code exactly, which is what lets the parser rebuild each step from the
+statement it rendered (`lift_steps`), any other statement loading as code.
 
 **Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score,
 Scenario Expander or Explore config carries `steps`, the node is a hook and its generator

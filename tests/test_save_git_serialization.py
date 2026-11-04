@@ -49,6 +49,9 @@ BANDING = {
             "column": "age",
             "outputColumn": "age_band",
             "rules": [{"boundary": "30", "label": "young"}],
+            # As the editor holds it: a null default, left unwritten and read back as null
+            # (READ-27).
+            "default": None,
         }
     ]
 }

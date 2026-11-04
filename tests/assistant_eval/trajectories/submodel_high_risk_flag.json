@@ -19,7 +19,7 @@
                     "node": "premium",
                     "edits": [
                       {
-                        "insert_after": "logic",
+                        "insert_after": "free_code-2",
                         "step": {
                           "kind": "free_code",
                           "code": "# Flag high-risk vehicles\ndf = df.with_columns(high_risk_vehicle=pl.col('vehicle_factor') > 1)"

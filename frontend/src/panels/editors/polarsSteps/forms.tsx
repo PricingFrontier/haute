@@ -40,6 +40,7 @@ import {
   aggregationTakes,
   canonicalStep,
   castTargetsFor,
+  continuesChain,
   defaultArgFor,
   defaultCondition,
   defaultLiteral,
@@ -613,10 +614,12 @@ function FormulaField({
 
 function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const operandProps = anyOperand(ctx, depth + 1)
+  // A left side continuing a chain of one operator opens at this depth, as the renderer counts it.
+  const leftProps = continuesChain(expr) ? anyOperand(ctx, depth) : operandProps
   return (
     <>
       <Field label="Left">
-        <OperandField value={expr.left} onChange={(left) => onChange({ ...expr, left })} ariaLabel="Left operand" {...operandProps} />
+        <OperandField value={expr.left} onChange={(left) => onChange({ ...expr, left })} ariaLabel="Left operand" {...leftProps} />
       </Field>
       <Field label="Operator">
         <SelectField value={expr.op} options={BINARY_OPERATORS} onChange={(op) => onChange({ ...expr, op })} ariaLabel="Operator" />

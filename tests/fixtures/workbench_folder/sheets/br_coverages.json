@@ -1,83 +1,53 @@
 {
-  "id": "sheet_cv01",
   "title": "BR Coverages",
   "sections": [
     {
-      "id": "section_cv01",
       "title": "Cover",
       "components": [
         {
-          "id": "collection_k3f9",
+          "number": 1,
           "type": "collection",
           "title": "Policy",
           "fields": [
-            "policy.state",
-            "policy.exposure",
-            "pricing.premium"
-          ],
-          "columns": 2,
-          "labels": "beside",
-          "column_looks": [
             {
-              "column": "policy.state",
+              "field": "policy.state",
               "header_color": "#2563EB",
               "bold": true,
               "show_when": {
                 "conditions": [
-                  {
-                    "table": "layers",
-                    "where": [
-                      {
-                        "column": "limit",
-                        "op": "filled"
-                      }
-                    ],
-                    "op": "at_least",
-                    "count": 1
-                  }
+                  {"table": "layers", "where": [{"column": "limit", "op": "filled"}], "op": "at_least", "count": 1}
                 ]
               }
-            }
+            },
+            null,
+            "policy.exposure",
+            "pricing.premium"
           ],
-          "spacers": [1]
+          "columns": 2,
+          "labels": "beside"
         },
         {
-          "id": "table_l4y5",
+          "number": 2,
           "type": "table",
           "title": "Layers",
           "fields": [
             "layers.layer",
-            "layers.limit",
+            {
+              "field": "layers.limit",
+              "width": 120
+            },
             "layers.layer_name"
           ],
           "show_when": {
             "match": "any",
             "conditions": [
-              {
-                "table": "layers",
-                "rows": "any",
-                "where": [
-                  {
-                    "column": "limit",
-                    "op": "above",
-                    "values": [
-                      "0"
-                    ]
-                  }
-                ]
-              }
+              {"table": "layers", "rows": "any", "where": [{"column": "limit", "op": "above", "values": ["0"]}]}
             ]
           },
-          "rows": 5,
-          "column_looks": [
-            {
-              "column": "layers.limit",
-              "width": 120
-            }
-          ]
+          "rows": 5
         },
         {
-          "id": "chart_c6h7",
+          "number": 3,
           "type": "chart",
           "title": "Limits",
           "fields": [
@@ -89,44 +59,23 @@
       ]
     },
     {
-      "id": "section_pr01",
       "title": "Perils",
       "show_when": {
-        "match": 1,
+        "at_least": 1,
         "conditions": [
-          {
-            "match": "any",
-            "conditions": [
-              {
-                "column": "policy.state",
-                "op": "one_of",
-                "values": [
-                  "CA",
-                  "NY"
-                ]
-              },
-              {
-                "table": "BR_Perils",
-                "total": "sum",
-                "column": "rate",
-                "where": [],
-                "op": "below",
-                "value": "10"
-              }
-            ]
-          }
+          {"match": "any", "conditions": [{"column": "policy.state", "op": "one_of", "values": ["CA", "NY"]}, {"table": "BR_Perils", "total": "sum", "column": "rate", "where": [], "op": "below", "value": "10"}]}
         ]
       },
       "components": [
         {
-          "id": "heading_h8d9",
+          "number": 1,
           "type": "heading",
           "text": "Équipement",
           "description": "By peril",
           "size": "large"
         },
         {
-          "id": "table_p2r3",
+          "number": 2,
           "type": "table",
           "title": "Perils",
           "fields": [
@@ -135,7 +84,7 @@
           ]
         },
         {
-          "id": "import_i1m2",
+          "number": 3,
           "type": "import",
           "label": "Import perils",
           "source": {
@@ -159,7 +108,7 @@
           ]
         },
         {
-          "id": "export_e3x4",
+          "number": 4,
           "type": "export",
           "label": "Export",
           "target": {

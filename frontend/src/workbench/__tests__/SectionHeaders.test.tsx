@@ -457,7 +457,7 @@ describe("SectionHeaders", () => {
     render(<SheetCanvas />)
 
     // Cover is not ticked on a new quote: Flood hides, whatever the sample holds.
-    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "policy.cover", true)))
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "cover", true)))
     expect(bar("s_flood")).toHaveAttribute("data-hidden", "true")
     expect(bar("s_flood")).toHaveStyle({ opacity: "0.5" })
     const hiddenEye = within(bar("s_flood")).getByRole("img", { name: "Hidden for a new quote. Shows when Cover is ticked" })
@@ -473,7 +473,7 @@ describe("SectionHeaders", () => {
     act(() =>
       useWorkbenchFormStore.getState().change((spec) => {
         const next = structuredClone(spec)
-        next.pages[0].sections[1].show_when.conditions = [{ table: "policy", column: "policy.cover", op: "not_ticked", values: [], field: null, days: 0 }]
+        next.pages[0].sections[1].show_when.conditions = [{ table: "policy", column: "cover", op: "not_ticked", values: [], field: null, days: 0 }]
         return next
       }),
     )
@@ -486,7 +486,7 @@ describe("SectionHeaders", () => {
 
   it("marks a section whose conditions have a problem, naming it, its conditions and its problem told as the bar's description", () => {
     const form = sectionedForm()
-    form.pages[0].sections[2].show_when = { match: "all", conditions: [{ table: "policy", column: "policy.state", op: "equals", values: ["TX"], field: null, days: 0 }] }
+    form.pages[0].sections[2].show_when = { match: "all", conditions: [{ table: "policy", column: "state", op: "equals", values: ["TX"], field: null, days: 0 }] }
     loadForm(form)
     render(<SheetCanvas />)
 

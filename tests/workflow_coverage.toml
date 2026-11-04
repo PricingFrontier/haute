@@ -771,7 +771,7 @@ tests = [
   "tests/test_rating_key_agreement.py::TestDecimalFactorScale::test_decimal_matches_entry_authored_at_declared_scale",
   "tests/test_rating_miss_fail_loud.py::TestOptInNeutral::test_neutral_fills_multiply_and_warns_with_count",
   "tests/test_rating_miss_fail_loud.py::TestMissFailsLoudByDefault::test_renamed_band_label_raises_through_config_path",
-  "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_keep_last",
+  "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_duplicate_entries_are_refused",
   "tests/test_rating_step.py::TestRatingStepExecutor::test_combine_operations",
   "tests/test_rating_step_config_coverage.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
   "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_nan_in_entries_rejected",
@@ -959,7 +959,7 @@ tests = [
   "tests/test_optimiser_contracts.py::test_solve_rejects_null_quote_id_instead_of_dropping_rows",
   "tests/test_rating_dtype_contract.py::test_ratebook_apply_reuses_the_same_dtype_contract",
   "tests/test_rating_dtype_contract.py::test_ratebook_rejects_exact_dtype_drift_before_neutral_miss",
-  "tests/test_optimiser_ratebook_apply_agreement.py::TestMirrorAgreesWithEngine::test_duplicate_level_resolves_to_last_in_both",
+  "tests/test_optimiser_ratebook_apply_agreement.py::TestMirrorAgreesWithEngine::test_a_duplicate_level_is_refused_by_the_engine",
   "tests/test_optimiser_routes.py::TestFrontierSelect::test_select_last_frontier_point",
   "tests/test_optimiser_frontier_materialisation.py::test_save_without_point_saves_the_anchor_not_the_selected_point",
   "tests/test_optimiser_apply.py::TestExecutorRatebook::test_ratebook_apply_rejects_stale_configured_input",
@@ -972,12 +972,12 @@ tests = [
   "tests/test_optimiser_frontier_materialisation.py::test_frontier_point_artifact_handles_are_capped_oldest_first",
   "tests/test_optimiser_apply_trace_enrichment.py::test_online_enrichment_surfaces_reconciliation_error",
 ]
-invariant = "Estimate, solve, frontier, select, save, apply and trace agree in both online and ratebook modes: non-converged, empty-constraint and non-finite cases have their typed outcomes, factor dtypes and last-duplicate tie resolution are honoured identically by engine and mirror, a stale solve result or stale configured input is never applied, capped previews state their true totals, and heavy solver entrypoints refuse to run outside the worker context."
+invariant = "Estimate, solve, frontier, select, save, apply and trace agree in both online and ratebook modes: non-converged, empty-constraint and non-finite cases have their typed outcomes, factor dtypes are honoured identically by engine and mirror and a duplicate level is refused at apply, a stale solve result or stale configured input is never applied, capped previews state their true totals, and heavy solver entrypoints refuse to run outside the worker context."
 
 [scenarios.evidence]
-commit = "f8af18c67"
+commit = "d886cc203"
 command = 'uv run pytest tests/test_optimiser_contracts.py tests/test_optimiser_apply.py tests/test_optimiser_apply_trace_enrichment.py tests/test_optimiser_frontier_materialisation.py tests/test_optimiser_ratebook_apply_agreement.py tests/test_rating_dtype_contract.py "tests/test_optimiser_routes.py::TestSolveOnlineUnit" "tests/test_optimiser_routes.py::TestRatebookSolve" "tests/test_optimiser_routes_real_library.py::TestEffectiveBoundsContract" "tests/test_optimiser_routes.py::TestFrontierSelect" "tests/test_optimiser_routes.py::TestSaveResultUnit" "tests/test_optimiser_routes.py::TestSaveArtifactGate" "tests/test_optimiser_routes.py::TestMlflowLogExtended" "tests/test_optimiser_routes.py::TestFinalizeSolveResult" "tests/test_optimiser_routes.py::TestFrontierInSolve" "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard" "tests/test_optimiser_routes.py::TestApplyLambdasUnit" "tests/test_optimiser_routes.py::TestExecutePipelineArgs" "tests/test_optimiser_auto_range_stage.py::test_auto_range_seeds_only_the_configured_data_input_with_the_solves_demand" -q -n 4'
-result = "538 passed in 16.54s; auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
+result = "531 passed in 31.24s; a duplicate ratebook level is refused at apply (READ-06); auto-range's data-input demand is the solve's (tests/test_optimiser_auto_range_stage.py), replacing the removed auto-range-specific seeding"
 
 [[scenarios]]
 id = "W09-S03"
@@ -994,18 +994,17 @@ tests = [
   "tests/test_optimiser_level_tie_properties.py::test_distinct_typed_values_never_share_a_key",
   "tests/test_optimiser_level_tie_properties.py::test_two_spellings_of_one_value_in_one_table_fail_loudly",
   "tests/test_optimiser_level_tie_properties.py::test_saved_artifact_rates_every_typed_row_with_its_own_level",
-  "tests/test_optimiser_level_tie_properties.py::test_duplicate_saved_key_resolves_to_the_last_entry_in_engine_and_mirror",
-  "tests/test_optimiser_level_tie_properties.py::test_verbatim_labels_would_silently_drop_a_solved_rate",
-  "tests/test_optimiser_level_tie_properties.py::test_first_entry_wins_mirror_would_disagree_with_engine",
+  "tests/test_optimiser_level_tie_properties.py::test_a_duplicate_saved_key_is_refused_at_apply",
+  "tests/test_optimiser_level_tie_properties.py::test_verbatim_labels_are_refused_at_save_and_at_apply",
   "tests/test_optimiser_ratebook_apply_agreement.py::TestFloatEmittedLevelsCanonicalisedAtSave::test_float64_levels_round_trip_solve_save_apply_with_zero_misses",
   "tests/test_optimiser_ratebook_apply_agreement.py::TestRealSolverEndToEnd::test_solver_emits_colon_named_unit_separator_levels",
 ]
-invariant = "Solver level tie-breaking is stable under floating-point perturbation of tied levels: for generated Int64, Float64, Float32 and String levels (single and composite) every emitted spelling of one typed value saves to one canonical key that an independent oracle predicts, distinct typed values never share a key, two spellings of one value in one emitted table are refused loudly at save rather than silently keeping the last rate, the saved artifact rates every typed row with its own level with the engine and the explainability mirror agreeing, and a duplicate saved key resolves to the last entry in both; the real solver's verbatim emission format stays pinned by the curated fixtures."
+invariant = "Solver level tie-breaking is stable under floating-point perturbation of tied levels: for generated Int64, Float64, Float32 and String levels (single and composite) every emitted spelling of one typed value saves to one canonical key that an independent oracle predicts, distinct typed values never share a key, two spellings of one value in one emitted table are refused loudly at save rather than silently keeping the last rate, the saved artifact rates every typed row with its own level with the engine and the explainability mirror agreeing, and a duplicate saved key is refused at apply rather than resolved to either entry; the real solver's verbatim emission format stays pinned by the curated fixtures."
 
 [scenarios.evidence]
-commit = "f8af18c67"
+commit = "d886cc203"
 command = 'uv run pytest tests/test_optimiser_level_tie_properties.py tests/test_optimiser_ratebook_apply_agreement.py -q'
-result = "20 passed in 17.46s"
+result = "19 passed in 8.52s; a duplicate saved key is refused at apply (READ-06), so the first-wins mirror control is gone"
 
 [[scenarios]]
 id = "W10-S01"

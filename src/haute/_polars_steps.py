@@ -63,6 +63,7 @@ __all__ = [
     "WINDOW_ONLY_AGGREGATIONS",
     "BINARY_OPERATORS",
     "CAST_DTYPES",
+    "COMMENT_FIELD",
     "CAST_FAMILIES",
     "CAST_REFUSALS",
     "DATE_PARSE_TARGETS",
@@ -230,7 +231,11 @@ class ConstantReference:
 
 @dataclass(frozen=True)
 class RenderedSteps:
-    """The rendered function body and the 1-based inclusive line range per step."""
+    """The rendered function body and the 1-based inclusive line range per step.
+
+    A structured step's range covers its statement: the lines of its ``comment``
+    sit just above the range, so a failing step is reported at its statement.
+    """
 
     code: str
     step_lines: tuple[tuple[int, int], ...]
@@ -427,8 +432,14 @@ _OPERAND_ARGUMENT_LITERALS: dict[str, tuple[str, ...]] = {
     "scalar_operand": ("number", "text", "boolean"),
 }
 #: How deep expressions may nest as operands; a with_column expression is depth 1.
-#: A formula chain nests one level per operator, so a dozen terms fit.
+#: A chain of one operator counts as one level (see :data:`_CHAIN_OPERATORS`), so a
+#: sum of any number of terms fits.
 MAX_EXPR_DEPTH = 12
+#: Operators whose left-nested chain Python writes without brackets (``a + b + c``):
+#: a formula whose left operand is a formula with the same one of these operators
+#: continues its chain at the same depth. ``**`` groups to the right, so its
+#: left-nested chain is bracketed and counts a level each time.
+_CHAIN_OPERATORS: frozenset[str] = frozenset({"+", "-", "*", "/", "//", "%"})
 _PRECEDENCE: dict[str, int] = {"+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3}
 
 #: ``fn -> (argument types, render template)``. ``{r}`` is the receiver
@@ -503,6 +514,10 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CONSTANT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _RESERVED_NAMES = frozenset({"df", "pl", GLOBAL_CONSTANTS_NAME})
+#: The optional field any structured step may carry: the comment and blank lines
+#: above its statement, each line ending in a newline. ``free_code`` keeps its
+#: comments in its code.
+COMMENT_FIELD = "comment"
 
 
 # ---------------------------------------------------------------------------
@@ -911,6 +926,104 @@ def _without_line_end_whitespace(code: str) -> str:
     )
 
 
+def _holds_comment(code: str) -> bool:
+    """Whether code with no statement holds a comment, rather than only blank lines."""
+    return any(line.lstrip().startswith("#") for line in python_lines(code))
+
+
+class _ScopeBindings(ast.NodeVisitor):
+    """The names a block of statements binds in the scope it runs in.
+
+    A definition, class or lambda binds its own name but runs its body in a scope
+    of its own, and a comprehension's loop variables are its own; only what binds
+    in the enclosing scope is collected (an assignment, a ``for`` or ``with``
+    target, an import, an ``except ... as`` name, a ``match`` capture, a walrus).
+    """
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+    def _definition(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+        self.names.add(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._definition(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._definition(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._definition(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return None
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self.names.add(alias.asname or alias.name.split(".")[0])
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            if alias.name != "*":
+                self.names.add(alias.asname or alias.name)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.name:
+            self.names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name:
+            self.names.add(node.name)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        if node.rest:
+            self.names.add(node.rest)
+        self.generic_visit(node)
+
+    def _comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp
+    ) -> None:
+        # Loop variables stay in the comprehension; a walrus inside binds outside.
+        for generator in node.generators:
+            self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+        parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+        for part in parts:
+            self.visit(part)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._comprehension(node)
+
+
+def _code_bound_names(code: str) -> frozenset[str]:
+    """The names valid Python *code* binds in the node function's scope."""
+    bindings = _ScopeBindings()
+    bindings.visit(ast.parse(code))
+    return frozenset(bindings.names)
+
+
 class _Renderer:
     def __init__(
         self,
@@ -923,6 +1036,8 @@ class _Renderer:
         self.input_names = None if input_names is None else frozenset(input_names)
         self.start = start
         self.variables: set[str] = set()
+        # Names the free-code steps rendered so far bind, which a variable may not take.
+        self.code_names: set[str] = set()
         self.constant_references: list[ConstantReference] = []
         self.index = 0
         self.depth = 0
@@ -947,6 +1062,8 @@ class _Renderer:
         if not isinstance(step_id, str) or not step_id:
             raise self.fail("Each step needs a non-empty string id.")
         allowed = _STEP_KEYS[kind] | {"id", "kind"}
+        if kind != "free_code":
+            allowed |= {COMMENT_FIELD}
         unknown = sorted(set(step) - allowed)
         if unknown:
             raise self.fail(f"Unknown field(s) {unknown!r} for a {kind} step.")
@@ -980,12 +1097,18 @@ class _Renderer:
                 raise self.fail("The first step must choose the input to start from.")
             elif index > 0 and kind == "source":
                 raise self.fail("Only the first step can choose the input to start from.")
+            if COMMENT_FIELD in step:
+                # Above the statement and outside its line range, so a failing
+                # step is still reported at its statement.
+                lines.extend(self._comment_lines(step[COMMENT_FIELD]))
             start = len(lines) + 1
             statement = getattr(self, f"_render_{kind}")(step)
             if kind != "free_code":
                 # Authored code keeps its own layout; a long structured
                 # statement breaks over several lines, as ``ruff format`` keeps it.
                 statement = layout_statement(statement)
+            else:
+                self.code_names |= _code_bound_names(statement)
             lines.extend(statement.split("\n"))
             step_lines.append((start, len(lines)))
         code = "\n".join(lines)
@@ -1008,11 +1131,14 @@ class _Renderer:
                 )
             except SyntaxError as exc:
                 line = (exc.lineno or (wrapper_line_offset + 1)) - wrapper_line_offset
+                # A comment line belongs to no range: it is the next step's.
                 self.index = next(
-                    i for i, (start, end) in enumerate(step_lines) if start <= line <= end
+                    (i for i, (_, end) in enumerate(step_lines) if line <= end),
+                    len(step_lines) - 1,
                 )
                 start = step_lines[self.index][0]
-                raise self.fail(f"Invalid Python on line {line - start + 1}: {exc.msg}.") from None
+                at = max(line - start + 1, 1)
+                raise self.fail(f"Invalid Python on line {at}: {exc.msg}.") from None
         return RenderedSteps(
             code=code,
             step_lines=tuple(step_lines),
@@ -1023,8 +1149,9 @@ class _Renderer:
         code = self._str(step["code"], "Code").replace("\r\n", "\n").replace("\r", "\n").rstrip()
         try:
             tree = ast.parse(code)
-            if not tree.body:
-                raise self.fail("Write at least one Python statement.")
+            # Comments alone are kept, as a comment at the end of a body is.
+            if not tree.body and not _holds_comment(code):
+                raise self.fail("Write at least one Python statement or comment.")
             # Compile without running anything. Module scope rejects return,
             # yield, await and stray loop control, while allowing local helpers.
             compile(tree, "<polars-step>", "exec", dont_inherit=True)
@@ -1033,6 +1160,22 @@ class _Renderer:
                 raise self.fail("Assign the result to df instead of using return.") from None
             raise self.fail(f"Invalid Python on line {exc.lineno or 1}: {exc.msg}.") from None
         return _without_line_end_whitespace(code)
+
+    def _comment_lines(self, value: object) -> list[str]:
+        """A step's ``comment``: one or more comment or blank lines, each ending in a newline."""
+        if not isinstance(value, str) or not value:
+            raise self.fail("A comment must be non-empty text.")
+        if not value.endswith("\n"):
+            raise self.fail("Each line of a comment must end in a newline.")
+        if "\r" in value or "\x00" in value:
+            raise self.fail("A comment cannot hold a carriage return or a null character.")
+        lines = value[:-1].split("\n")
+        for number, line in enumerate(lines, start=1):
+            if line != line.rstrip():
+                raise self.fail(f"Comment line {number} ends in whitespace.")
+            if line and not line.lstrip().startswith("#"):
+                raise self.fail(f"Comment line {number} is neither a comment nor blank.")
+        return lines
 
     # -- field helpers ---------------------------------------------------
 
@@ -1177,7 +1320,16 @@ class _Renderer:
                 raise self.fail(f"{label} must be a plain value, column or variable here.")
             self._keys(operand, ("kind", "expr"), label)
             inner = self._object(operand.get("expr"), f"{label} expression")
-            rendered_expr = self._expr(inner, f"{label} expression")
+            # ``a + b + c``: a left operand continuing its parent's chain of one
+            # operator stays at the parent's depth, so a long sum is one level.
+            continues_chain = (
+                parent is not None
+                and parent[1] == "left"
+                and parent[0] in _CHAIN_OPERATORS
+                and inner.get("type") == "binary"
+                and inner.get("op") == parent[0]
+            )
+            rendered_expr = self._expr(inner, f"{label} expression", chained=continues_chain)
             if inner.get("type") != "binary" or _needs_parentheses(inner.get("op"), parent):
                 return f"({rendered_expr})" if inner.get("type") == "binary" else rendered_expr
             return rendered_expr
@@ -1337,8 +1489,10 @@ class _Renderer:
         if "text" in expr and not isinstance(expr["text"], str):
             raise self.fail(f"{label} formula text must be a string.")
 
-    def _expr(self, value: object, label: str) -> str:
-        self.depth += 1
+    def _expr(self, value: object, label: str, *, chained: bool = False) -> str:
+        """Render one expression a level deeper, or at the same level when it *chained*."""
+        level = 0 if chained else 1
+        self.depth += level
         try:
             if self.depth > MAX_EXPR_DEPTH:
                 raise self.fail(
@@ -1347,7 +1501,7 @@ class _Renderer:
                 )
             return self._expr_body(value, label)
         finally:
-            self.depth -= 1
+            self.depth -= level
 
     def _expr_body(self, value: object, label: str) -> str:
         expr = self._object(value, label)
@@ -1860,6 +2014,11 @@ class _Renderer:
             raise self.fail(f"Variable name {name!r} is not a valid name.")
         if name in self.variables:
             raise self.fail(f"Variable {name!r} is already defined.")
+        if name in self.code_names:
+            raise self.fail(
+                f"Variable {name!r} is already assigned by a code step above it; "
+                "give the variable another name."
+            )
         if self.input_names is not None and name in self.input_names:
             raise self.fail(f"Variable name {name!r} is already an input name.")
         operand = self._object(step["value"], "Variable value")

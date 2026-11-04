@@ -32,11 +32,11 @@ PROD = "motor-prod.example.azurecontainerapps.io"
 STAGING = "motor-staging.example.azurecontainerapps.io"
 #: Who the host signs the CI service principal's requests in as.
 SIGNED_IN = {EASY_AUTH_NAME: "ci@example.com"}
-DETAILS = {"qd_quote_name": "Fleet", "qd_insured": "Acme", "qd_inception_date": "2026-11-01"}
+DETAILS = {"quote_name": "Fleet", "insured": "Acme", "inception_date": "2026-11-01"}
 
 
 def _column(name: str, type_: str = "str") -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_}
+    return {"name": name, "type": type_}
 
 
 def _form(policy: list[dict[str, Any]], pricing: list[dict[str, Any]]) -> dict[str, Any]:
@@ -45,8 +45,8 @@ def _form(policy: list[dict[str, Any]], pricing: list[dict[str, Any]]) -> dict[s
         "name": "motor",
         "schema": {
             "tables": [
-                {"id": "t1", "name": "policy_details", "role": "input", "columns": policy},
-                {"id": "t2", "name": "pricing_output", "role": "output", "columns": pricing},
+                {"name": "policy_details", "role": "input", "columns": policy},
+                {"name": "pricing_output", "role": "output", "columns": pricing},
             ]
         },
         "pages": [
@@ -195,7 +195,9 @@ class TwoApps:
         """A quote saved priced on production and marked final, as an underwriter makes one."""
         release = self.prod.get("/api/app/release", headers=SIGNED_IN).json()
         values = {
-            "t1": [{"c_state": "NY", "c_exposure": "1000", "c_vehicles": vehicles, "c_note": note}],
+            "policy_details": [
+                {"state": "NY", "exposure": "1000", "vehicles": vehicles, "note": note}
+            ],
             "quote_details": [DETAILS],
         }
         drawn = {"form_revision": release["form_revision"], "release": release["id"]}

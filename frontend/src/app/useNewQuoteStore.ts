@@ -19,7 +19,7 @@ import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { cellKey, cellProblem, newQuoteValues } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
 import { latest } from "../utils/latest"
 import {
   asRenewal,
@@ -61,7 +61,7 @@ export interface NewQuoteWindow {
   status: WindowStatus
   /** The reference keyed, as typed. */
   reference: string
-  /** The window's quote_details cells, by column id: the columns the underwriter types. */
+  /** The window's quote_details cells, by column name: the columns the underwriter types. */
   details: SampleRow
   /** The values the creation is made over: a new quote's defaults, its source's values or the sheets'. */
   base: Values
@@ -113,12 +113,12 @@ interface NewQuoteState {
 
 /** The window's fields: the reference, required, then the columns of quote_details the underwriter types, in the table's order. */
 export function windowFields(form: FormSpec): ShownField[] {
-  const table = form.schema.tables.find((candidate) => candidate.id === QUOTE_DETAILS_ID)
+  const table = form.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
   if (table === undefined) return []
-  const reference = table.columns.find((column) => column.id === REFERENCE_COLUMN)
-  const typed = table.columns.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.id))
+  const reference = table.columns.find((column) => column.name === REFERENCE_COLUMN)
+  const typed = table.columns.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.name))
   const columns = [...(reference === undefined ? [] : [{ ...reference, required: true }]), ...typed]
-  return columns.map((column) => ({ key: columnKey(table.id, column.id), found: { table, column } }))
+  return columns.map((column) => ({ key: columnKey(table.name, column.name), found: { table, column } }))
 }
 
 /**
@@ -131,21 +131,21 @@ export function windowProblems(fields: readonly ShownField[], reference: string,
   for (const { found } of fields) {
     if (found === null) continue
     const { table, column } = found
-    const problem = column.id === REFERENCE_COLUMN ? referenceProblem(reference) : cellProblem({ ...column, required: false }, details[column.id])
-    if (problem !== null) problems[cellKey(table.id, 0, column.id)] = problem
+    const problem = column.name === REFERENCE_COLUMN ? referenceProblem(reference) : cellProblem({ ...column, required: false }, details[column.name])
+    if (problem !== null) problems[cellKey(table.name, 0, column.name)] = problem
   }
   return problems
 }
 
 /** The quote_details cells of `values` the underwriter types: the app's own left out. */
 function typedDetails(values: Values): SampleRow {
-  const row = values[QUOTE_DETAILS_ID]?.[0] ?? {}
+  const row = values[QUOTE_DETAILS_NAME]?.[0] ?? {}
   return Object.fromEntries(Object.entries(row).filter(([id]) => !QUOTE_DETAILS_MANAGED.has(id)))
 }
 
 /** `base` with the window's details over its quote_details, the app's own left out: what the quote is made of. */
 function creationValues(base: Values, details: SampleRow): Values {
-  return { ...base, [QUOTE_DETAILS_ID]: [{ ...typedDetails(base), ...details }] }
+  return { ...base, [QUOTE_DETAILS_NAME]: [{ ...typedDetails(base), ...details }] }
 }
 
 /** The quote holding a reference, as a `reference_taken` refusal names it. */

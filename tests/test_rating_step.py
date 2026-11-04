@@ -706,7 +706,8 @@ class TestRatingStepParser:
                         "factors": ["age"],
                         "outputColumn": "af",
                         "defaultValue": 1.0,
-                        "entries": [{"age": "young", "value": 1.5}],
+                        # A sidecar writes the table as a grid (READ-26).
+                        "rows": [["young", 1.5]],
                     }
                 ]
             },
@@ -731,7 +732,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         assert tables[0]["factors"] == ["age"]
         assert tables[0]["outputColumn"] == "af"
         assert tables[0]["defaultValue"] == 1.0
-        assert len(tables[0]["entries"]) == 1
+        # The node holds entries, read back from the grid.
+        assert tables[0]["entries"] == [{"age": "young", "value": 1.5}]
 
     def test_parse_empty_tables(self, tmp_path):
         rating_config = write_node_config(
@@ -1168,9 +1170,10 @@ class TestRatingStepCanonicalSidecarIntegration:
         code = graph_to_code(graph)
         configs = collect_node_configs(graph)
         rating_config = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_config["tables"][0]["entries"] == [
-            {"vehicle_age_band": "1-3", "cover_type": "comprehensive", "value": 0.9}
-        ]
+        # The sidecar holds the table as a grid (READ-26); the node holds its entries.
+        table = rating_config["tables"][0]
+        assert "entries" not in table
+        assert (table["columns"], table["rows"]) == (["comprehensive"], [["1-3", 0.9]])
         for rel_path, content in configs.items():
             config_file = tmp_path / rel_path
             config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1186,7 +1189,7 @@ class TestRatingStepCanonicalSidecarIntegration:
             "value": 0.9,
         }
 
-    def test_collect_then_parse_three_factor_keeps_editor_axis_sidecar_order(self, tmp_path):
+    def test_collect_then_parse_three_factor_grid_keeps_the_entries(self, tmp_path):
         import json
 
         from haute._config_io import collect_node_configs
@@ -1223,7 +1226,15 @@ class TestRatingStepCanonicalSidecarIntegration:
         code = graph_to_code(graph)
         configs = collect_node_configs(graph)
         rating_config = json.loads(configs["config/rating_step/rating.json"])
-        assert rating_config["tables"][0]["entries"] == expected_entries
+        # The last factor's levels are the columns, a row per combination of the others,
+        # null where no entry is (READ-26).
+        table = rating_config["tables"][0]
+        assert "entries" not in table
+        assert table["columns"] == ["confused", "compare_the_market"]
+        assert table["rows"] == [
+            ["1-3", "comprehensive", 0.91, None],
+            ["1-3", "third_party_only", None, 1.08],
+        ]
         for rel_path, content in configs.items():
             config_file = tmp_path / rel_path
             config_file.parent.mkdir(parents=True, exist_ok=True)

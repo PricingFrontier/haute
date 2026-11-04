@@ -863,7 +863,7 @@ def write_node_config(
     func_name: str,
     config: dict,
 ) -> str:
-    """Write a canonical node JSON sidecar and return its relative path."""
+    """Write *config*, already in its sidecar form, as the node's JSON sidecar; its path."""
     rel_path = config_path_for_node(node_type, func_name)
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)

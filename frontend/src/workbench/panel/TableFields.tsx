@@ -27,19 +27,19 @@ export function TableFields({
   onToggle: () => void
 }) {
   const change = useWorkbenchFormStore((s) => s.change)
-  const isShown = (columnId: string) => widget.fields.some((field) => field.table === table.id && field.column === columnId)
+  const isShown = (columnId: string) => widget.fields.some((field) => field.table === table.name && field.column === columnId)
   // The quote's reference and option are never on the sheets: they are not offered.
   const offered = sheetColumns(table)
-  const shown = offered.filter((column) => isShown(column.id)).length
+  const shown = offered.filter((column) => isShown(column.name)).length
   const Chevron = collapsed ? ChevronRight : ChevronDown
-  const columns = matched === null ? offered : offered.filter((column) => matched.has(column.id))
+  const columns = matched === null ? offered : offered.filter((column) => matched.has(column.name))
 
   return (
     <div
       className="rounded-md"
       style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)", opacity: usable ? 1 : 0.5 }}
       title={usable ? undefined : "Its rows don't line up with the fields already chosen"}
-      data-testid={`fields-table-${table.id}`}
+      data-testid={`fields-table-${table.name}`}
     >
       <button
         type="button"
@@ -67,12 +67,12 @@ export function TableFields({
           )}
           {columns.map((column) => {
             const { label, icon: Icon, color } = COLUMN_TYPES[column.type]
-            const checked = isShown(column.id)
-            const tickable = checked || (usable && (!plots || plottable(column)))
+            const checked = isShown(column.name)
+            const tickable = checked || (usable && (!plots || plottable(table, column)))
             return (
               <label
-                key={column.id}
-                title={plots && !plottable(column) ? "A Chart plots number columns other than an index" : undefined}
+                key={column.name}
+                title={plots && !plottable(table, column) ? "A Chart plots number columns other than an index" : undefined}
                 className={`flex items-center gap-1.5 rounded px-1.5 py-0.5 ${tickable ? "cursor-pointer hover-bg" : "cursor-not-allowed"}`}
               >
                 <input
@@ -80,7 +80,7 @@ export function TableFields({
                   aria-label={`Show ${table.name} ${column.name}`}
                   checked={checked}
                   disabled={!tickable}
-                  onChange={() => change((spec) => toggleField(spec, widget.id, { table: table.id, column: column.id }))}
+                  onChange={() => change((spec) => toggleField(spec, widget.id, { table: table.name, column: column.name }))}
                   style={{ accentColor: "var(--accent)" }}
                 />
                 <span title={label} className={`flex size-4 shrink-0 items-center justify-center ${color}`}>

@@ -1,5 +1,4 @@
 {
-  "arguments": {},
   "format": "parquet",
   "mode": "sink",
   "outputType": "file",

@@ -77,7 +77,9 @@ def test_removed_node_recovery_is_unavailable_and_cannot_rebuild(tmp_path: Path,
         "instance": "instance(of='original')",
         "of": "polars(of='original')",
         "unknown_of": "unknown(of='original')",
-        "config": "polars(config='copy.json')",
+        # A transform takes no config= since READ-22; a sidecar of any node that reads one
+        # still names the removed instance.
+        "config": "data_input(config='copy.json')",
     }[form]
     if form == "config":
         (tmp_path / "copy.json").write_text(

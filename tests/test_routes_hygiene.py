@@ -379,9 +379,10 @@ class TestSidecarRoundTrip:
 
         # Every position is preserved (keys are sanitized labels).
         # The node labels in the fixture already sanitize to themselves.
+        # Whole pixels (READ-11), a half rounded up as the canvas rounds it.
         assert parsed.positions == {
-            "alpha": {"x": 1.0, "y": 2.0},
-            "beta": {"x": 3.5, "y": 4.5},
+            "alpha": {"x": 1, "y": 2},
+            "beta": {"x": 4, "y": 5},
         }
         assert parsed.sources == ["live", "batch"]
         assert parsed.active_source == "batch"

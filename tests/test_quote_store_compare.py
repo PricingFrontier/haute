@@ -1,8 +1,8 @@
 """The schema pane's Compare (specs/workbench): a database's own catalogue read with the quotes
-holding values in each table and column, the form compared with it by the form's ids, renames
-from the default branch's ids or the analyst's pairing, what the database holds beyond the form
-listed, what no statement changes noted, and the SQL written from the tables as they are, which,
-run on that database, leaves the app's check finding nothing, on every engine the store runs on.
+holding values in each table and column, the form compared with it by the form's names, renames
+from the analyst's pairing alone, what the database holds beyond the form listed, what no
+statement changes noted, and the SQL written from the tables as they are, which, run on that
+database, leaves the app's check finding nothing, on every engine the store runs on.
 """
 
 from __future__ import annotations
@@ -48,14 +48,12 @@ def form(*tables: dict[str, Any]) -> FormSpec:
     )
 
 
-def column(name: str, type_: str = "str", id_: str | None = None) -> dict[str, Any]:
-    return {"id": id_ or f"c_{name}", "name": name, "type": type_}
+def column(name: str, type_: str = "str") -> dict[str, Any]:
+    return {"name": name, "type": type_}
 
 
-def table(
-    name: str, *columns: dict[str, Any], rows: str = "one", id_: str | None = None
-) -> dict[str, Any]:
-    return {"id": id_ or f"t_{name}", "name": name, "rows": rows, "columns": list(columns)}
+def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
+    return {"name": name, "rows": rows, "columns": list(columns)}
 
 
 RELEASED = form(table("policy", column("region"), column("drivers"), column("value", "float")))
@@ -88,7 +86,7 @@ def quote(target: Target, release: FormSpec, reference: str, **policy: str) -> N
         book.create(
             operation=f"operation-{reference}",
             actor="ana",
-            values={"t_policy": [{f"c_{name}": value for name, value in policy.items()}]},
+            values={"policy": [dict(policy)]},
             at=book.now(),
             reference=reference,
         )
@@ -259,58 +257,55 @@ def test_the_sql_from_the_tables_as_they_are_brings_them_to_the_form_keeping_val
 ) -> None:
     made_from_sql(target, RELEASED)
     quote(target, RELEASED, "A-1", region="north", drivers="2", value="1.5")
-    # The form renames region (by its id, as the default branch's form names it), makes drivers
-    # an Integer, adds seats and drops value; the database also holds a table the form never had.
+    # The form renames region area, makes drivers an Integer, adds seats and drops value; the
+    # database also holds a table the form never had. Unpaired, the renamed column is one the
+    # database lacks beside one it keeps with its values (READ-23).
     changed = form(
-        table(
-            "policy",
-            column("area", id_="c_region"),
-            column("drivers", "int"),
-            column("seats", "int"),
-        )
+        table("policy", column("area"), column("drivers", "int"), column("seats", "int"))
     )
     target.run(
         "CREATE TABLE old_policy (quote_reference VARCHAR(40), quote_option INTEGER, x INTEGER)"
     )
 
-    comparison = compared(target, changed, base=RELEASED)
+    comparison = compared(target, changed)
 
     assert {
-        ("t_policy", "c_region", "renamed"),
-        ("t_policy", "c_drivers", "type"),
-        ("t_policy", "c_seats", "missing"),
+        ("policy", "area", "missing"),
+        ("policy", "drivers", "type"),
+        ("policy", "seats", "missing"),
     } <= kinds(comparison)
+    assert not any(each.kind == "renamed" for each in comparison.differences)
     typed = next(each for each in comparison.differences if each.kind == "type")
     assert "1 quote holds values in it" in typed.message
     extras = {(each.table, each.column, each.quotes) for each in comparison.extras}
+    assert ("policy", "region", 1) in extras
     assert ("policy", "value", 1) in extras
     assert ("old_policy", None, 0) in extras
     written = sql(target, changed, comparison)
+    assert "The form does not have policy.region (1 quote holds values in it)" in written
     assert "The form does not have policy.value (1 quote holds values in it)" in written
     if target.backend == "sqlite":
         # SQLite changes no column's type: its note says how, and the check still finds it.
         return
     target.script(written)
     opens(target, changed)
-    assert target.read("SELECT area, drivers FROM policy") == [("north", 2)]
+    assert target.read("SELECT region, area, drivers FROM policy") == [("north", None, 2)]
 
 
 def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target) -> None:
     made_from_sql(target, RELEASED)
     quote(target, RELEASED, "A-1", region="north")
-    paired = form(
-        table("policy", column("zone", id_="c_zone"), column("drivers"), column("value", "float"))
-    )
+    paired = form(table("policy", column("zone"), column("drivers"), column("value", "float")))
 
     unpaired = compared(target, paired)
-    assert ("t_policy", "c_zone", "missing") in kinds(unpaired)
-    assert ("policy", "region", "t_policy", 1) in {
-        (each.table, each.column, each.table_id, each.quotes) for each in unpaired.extras
+    assert ("policy", "zone", "missing") in kinds(unpaired)
+    assert ("policy", "region", "policy", 1) in {
+        (each.table, each.column, each.form_table, each.quotes) for each in unpaired.extras
     }
 
-    comparison = compared(target, paired, renames=[Rename("t_policy", "c_zone", "region")])
-    assert comparison.renames == (Rename("t_policy", "c_zone", "region"),)
-    assert ("t_policy", "c_zone", "renamed") in kinds(comparison)
+    comparison = compared(target, paired, renames=[Rename("policy", "zone", "region")])
+    assert comparison.renames == (Rename("policy", "zone", "region"),)
+    assert ("policy", "zone", "renamed") in kinds(comparison)
     target.script(sql(target, paired, comparison))
     opens(target, paired)
     assert target.read("SELECT zone FROM policy") == [("north",)]
@@ -318,19 +313,19 @@ def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target
 
 def test_a_pairing_the_database_no_longer_allows_is_not_taken(target: Target) -> None:
     made_from_sql(target, RELEASED)
-    paired = form(table("policy", column("zone", id_="c_zone"), column("drivers")))
+    paired = form(table("policy", column("zone"), column("drivers")))
 
-    comparison = compared(target, paired, renames=[Rename("t_policy", "c_zone", "no_such")])
+    comparison = compared(target, paired, renames=[Rename("policy", "zone", "no_such")])
 
     assert comparison.renames == ()
-    assert ("t_policy", "c_zone", "missing") in kinds(comparison)
+    assert ("policy", "zone", "missing") in kinds(comparison)
 
 
 def test_a_database_holding_no_store_takes_every_table_and_the_activity(target: Target) -> None:
     comparison = compared(target, RELEASED)
 
     assert (None, None, "missing") in kinds(comparison)
-    assert ("t_policy", None, "missing") in kinds(comparison)
+    assert ("policy", None, "missing") in kinds(comparison)
     target.script(sql(target, RELEASED, comparison))
     opens(target, RELEASED)
 
@@ -345,7 +340,7 @@ def test_what_no_statement_changes_is_marked_and_noted(tmp_path: Path) -> None:
     comparison = compared(target, RELEASED)
 
     assert not comparison.matches
-    assert ("t_policy", None, "null") in kinds(comparison)
+    assert ("policy", None, "null") in kinds(comparison)
     written = sql(target, RELEASED, comparison)
     assert (
         "-- Not changed here: policy.audit is no column of the form's and takes no null" in written
@@ -460,9 +455,9 @@ def test_a_store_table_lacking_an_identity_column_is_compared_not_made_again(
     assert read is not None and read.quotes is None
     comparison = compared(target, RELEASED)
 
-    assert ("t_policy", None, "missing") not in kinds(comparison)
-    assert ("t_policy", "quote_option", "missing") in kinds(comparison)
-    assert comparison.extras == (Extra("policy", "legacy", "t_policy", None),)
+    assert ("policy", None, "missing") not in kinds(comparison)
+    assert ("policy", "quote_option", "missing") in kinds(comparison)
+    assert comparison.extras == (Extra("policy", "legacy", "policy", None),)
     typed = next(each for each in comparison.differences if each.kind == "type")
     assert "quotes holding values not counted: table lacks quote identity" in typed.message
     written = sql(target, RELEASED, comparison)

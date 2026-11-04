@@ -202,8 +202,8 @@ def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api:
     workbench_project(
         project,
         [
-            form_table("t_a", "a_table", "output", ("id", "int"), ("a", "int"), many=True),
-            form_table("t_d", "d_table", "output", ("id", "int"), ("d", "float"), many=True),
+            form_table("a_table", "output", ("id", "int"), ("a", "int"), many=True),
+            form_table("d_table", "output", ("id", "int"), ("d", "float"), many=True),
         ],
         pipeline="rating/main.py",
     )

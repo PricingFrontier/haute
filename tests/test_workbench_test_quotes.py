@@ -186,7 +186,7 @@ def test_a_save_is_refused_once_the_form_was_saved_again_from_another_tab(
 ) -> None:
     http = client()
     branch, revision = _state(http)
-    _sheets(project, sample={"t_policy": [{"c_state": "CA", "c_limit": "5"}]})
+    _sheets(project, sample={"policy": [{"state": "CA", "limit": "5"}]})
 
     refused = http.post(
         "/api/workbench/test-quotes",
@@ -279,10 +279,10 @@ def test_opening_puts_values_back_by_name_onto_the_form_the_view_holds(
 
     opened = http.post("/api/workbench/test-quotes/Fleet.json/open", json={"form": held}).json()
 
-    assert opened["values"]["t_policy"] == [{"c_state": "NY", "c_limit": "1000"}]
-    assert opened["values"]["t_items"] == [
-        {"c_item_id": "A", "c_value": "10"},
-        {"c_item_id": "B", "c_value": "30"},
+    assert opened["values"]["policy"] == [{"state": "NY", "limit": "1000"}]
+    assert opened["values"]["items"] == [
+        {"item_id": "A", "value": "10"},
+        {"item_id": "B", "value": "30"},
     ]
     assert opened["not_opened"] == []
 
@@ -295,7 +295,7 @@ def test_opening_puts_values_back_by_name_onto_the_form_the_view_holds(
     reopened = http.post("/api/workbench/test-quotes/Fleet.json/open", json={"form": edited}).json()
 
     assert sorted(reopened["not_opened"]) == ["policy.limit", "policy.state"]
-    assert reopened["values"]["t_policy"] == [{}]
+    assert reopened["values"]["policy"] == [{}]
 
 
 @pytest.mark.parametrize(
@@ -666,8 +666,8 @@ def test_a_project_with_no_test_quotes_builds(project: Path) -> None:
 def test_a_schedule_past_the_preview_routes_rows_is_kept_and_accepted_whole(
     project: Path,
 ) -> None:
-    items = [{"c_item_id": f"I{n}", "c_value": str(n)} for n in range(10_050)]
-    _sheets(project, sample={**FORM_SAMPLE, "t_items": items})
+    items = [{"item_id": f"I{n}", "value": str(n)} for n in range(10_050)]
+    _sheets(project, sample={**FORM_SAMPLE, "items": items})
     http = client()
     assert _save(http).status_code == 200
     assert len(_rows(project)[0]["expected"]["item_prices"]) == 10_050

@@ -899,14 +899,12 @@ export interface RecoveryPipelineNode {
  *
  * None of it is a setting: it is never persisted, hashed or validated as config.
  * ``steps_error`` is derived from the node's ``steps`` whenever its data is
- * built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
- * ``discarded_sidecar`` (the transform sidecar those steps came from, which the
- * next save retires) are the parse's findings. A request may carry the field
- * back, as a transform of the graph echoes it, but a save reads neither
- * finding from it: it reparses the file on disk.
+ * built; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is
+ * the parse's finding. A request may carry the field back, as a transform of the
+ * graph echoes it, but a save never reads the finding from it: it reparses the
+ * file on disk.
  */
 export interface NodeEditorState {
-  discarded_sidecar: string | null;
   steps_discarded: string | null;
   steps_error: string | null;
 }
@@ -3644,8 +3642,8 @@ export interface BandingFactor {
    */
   rightClosed?: boolean;
   /**
-   * The bands: rule rows in the editor, or a map from each boundary or value to its band in the
-   * config file.
+   * The bands, as rule rows; the config file writes breakpoints as a list of `upper` and
+   * `label`, and categories as a map from each value to its group.
    */
   rules?:
     | {
@@ -3716,7 +3714,8 @@ export interface RatingTable {
    */
   defaultValue?: string | number | null;
   /**
-   * The table's rows, each a level of every factor and its `value`.
+   * The table's rows, each a level of every factor and its `value`; the config file
+   * writes them as a grid of `columns` and `rows`.
    */
   entries?: {
     [k: string]: unknown;
@@ -4610,7 +4609,8 @@ export interface ConstantConfig {
   };
   selected_columns?: string[];
   /**
-   * The values, one column each.
+   * The values, one column each; the config file writes them as a map from each name to
+   * its value.
    */
   values?: ConstantValue[];
 }
@@ -5540,7 +5540,7 @@ export interface ShowWhen {
   match: ('all' | 'any') | number;
 }
 /**
- * A test of the value in a one-row table's column, the column by table and column id.
+ * A test of the value in a one-row table's column, the column by table and column name.
  *
  * The shape is all the file holds a condition to. Whether its column, test and values
  * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
@@ -5571,14 +5571,14 @@ export interface Condition {
   values: string[];
 }
 /**
- * A schema column a widget shows, by table and column id, so a rename keeps it.
+ * A schema column a widget shows, by its table's name and its own (READ-23).
  */
 export interface FieldRef {
   column: string;
   table: string;
 }
 /**
- * A many-row table's rows, by table id, passing all of its tests in the same row: any
+ * A many-row table's rows, by table name, passing all of its tests in the same row: any
  * of them, or every one, as ``rows`` says.
  */
 export interface RowsCondition {
@@ -5591,8 +5591,8 @@ export interface RowsCondition {
 }
 /**
  * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
- * its table the condition's that holds it, and another column of the same row, by id, to
- * test against.
+ * its table the condition's that holds it, and another column of the same row, by name,
+ * to test against.
  */
 export interface RowTest {
   column: string;
@@ -5618,7 +5618,7 @@ export interface RowTest {
   values: string[];
 }
 /**
- * How many of a many-row table's rows, by table id, pass all of its tests in the same
+ * How many of a many-row table's rows, by table name, pass all of its tests in the same
  * row: every row while it has none.
  */
 export interface RowCount {
@@ -5628,7 +5628,7 @@ export interface RowCount {
   where: RowTest[];
 }
 /**
- * A total of a number column's values in the rows of a many-row table, by table id,
+ * A total of a number column's values in the rows of a many-row table, by table name,
  * passing all of its tests in the same row, every row while it has none, tested against
  * a number typed as text.
  */
@@ -5679,6 +5679,7 @@ export interface TableInputWidget {
   header_orientation: 'horizontal' | 'up' | 'down' | 'stacked';
   header_wrap: boolean;
   id: string;
+  number: number | null;
   row_numbers: boolean;
   rows: number;
   show_when: ShowWhen;
@@ -5692,7 +5693,7 @@ export interface TableInputWidget {
 }
 /**
  * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
- * its field by table and column id: each colour the component's own while None, its values
+ * its field by table and column name: each colour the component's own while None, its values
  * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
  * ``auto``, its label as its component places its labels while ``header_align`` is, and
  * over a Table's column as its values sit while the Table's is too, while ``width`` is
@@ -5743,6 +5744,7 @@ export interface CollectionWidget {
   id: string;
   label_width: number | null;
   labels: 'above' | 'beside';
+  number: number | null;
   show_when: ShowWhen;
   spacers: number[];
   title: string;
@@ -5763,6 +5765,7 @@ export interface ChartWidget {
   h: number;
   id: string;
   legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
+  number: number | null;
   orientation: 'vertical' | 'horizontal';
   show_when: ShowWhen;
   stacked: boolean;
@@ -5781,6 +5784,7 @@ export interface HeadingWidget {
   description: string;
   h: number;
   id: string;
+  number: number | null;
   show_when: ShowWhen;
   size: 'large' | 'medium' | 'small';
   text: string;
@@ -5800,6 +5804,7 @@ export interface ImportWidget {
   id: string;
   label: string;
   mode: 'replace' | 'append' | 'update';
+  number: number | null;
   show_when: ShowWhen;
   source: CsvImport | ExcelImport | SqlImport;
   table: string | null;
@@ -5809,7 +5814,7 @@ export interface ImportWidget {
   y: number;
 }
 /**
- * A column of the table an Import fills, by id, and the name of the column it is read
+ * A column of the table an Import fills, by name, and the name of the column it is read
  * from in the file or the query's answer.
  */
 export interface ColumnName {
@@ -5844,7 +5849,7 @@ export interface SqlImport {
   query: string;
 }
 /**
- * A ``:name`` in an Import's query, given the value of a column by table and column id.
+ * A ``:name`` in an Import's query, given the value of a column by table and column name.
  */
 export interface QueryParameter {
   column: string;
@@ -5860,6 +5865,7 @@ export interface ExportWidget {
   h: number;
   id: string;
   label: string;
+  number: number | null;
   show_when: ShowWhen;
   tables: string[];
   target: CsvExport | ExcelExport | SqlExport;
@@ -5897,7 +5903,7 @@ export interface SqlExport {
   table_names: TableName[];
 }
 /**
- * A table an Export writes to a database, by id, and the name of the table it is
+ * A table an Export writes to a database, by name, and the name of the table it is
  * written to there.
  */
 export interface TableName {
@@ -5912,7 +5918,6 @@ export interface FormSchema {
 }
 export interface SchemaTable {
   columns: SchemaColumn[];
-  id: string;
   name: string;
   role: 'input' | 'output';
   rows: 'one' | 'many';
@@ -5922,7 +5927,6 @@ export interface SchemaColumn {
   default_value: string | boolean;
   group: string;
   help: string;
-  id: string;
   index: boolean;
   key: boolean;
   label: string;
@@ -6035,12 +6039,10 @@ export interface WorkbenchCatalogueColumn {
 }
 /**
  * The form compared with an environment's tables: each difference, each extra, the
- * pairings taken, whether the database matches the form, the SQL that brings its tables to
- * the form, from what they hold, and the default branch whose form named renames, null
- * when none did.
+ * pairings taken, whether the database matches the form, and the SQL that brings its tables
+ * to the form, from what they hold.
  */
 export interface WorkbenchStoreCompareResponse {
-  branch: string | null;
   differences: WorkbenchStoreDifference[];
   extras: WorkbenchStoreExtra[];
   matches: boolean;
@@ -6048,7 +6050,7 @@ export interface WorkbenchStoreCompareResponse {
   sql: string;
 }
 /**
- * A way the database differs from the form: the form's table and column by id (no table
+ * A way the database differs from the form: the form's table and column by name (no table
  * for Haute's own haute_activity), its kind and what it is.
  */
 export interface WorkbenchStoreDifference {
@@ -6059,18 +6061,18 @@ export interface WorkbenchStoreDifference {
 }
 /**
  * A table of the store's, or a column of one of the form's tables, that the database
- * holds and the form does not: its table's and its name there, the form's table's id when
+ * holds and the form does not: its table's and its name there, the form's table's name when
  * the table is the form's, and the quotes holding values in it, None when the table lacks a
  * quote identity column.
  */
 export interface WorkbenchStoreExtra {
   column: string | null;
+  form_table: string | null;
   quotes: number | null;
   table: string;
-  table_id: string | null;
 }
 /**
- * A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+ * A column of the form's table ``table``, ``column``, both by name, that the database
  * holds as ``was``: the analyst's pairing of the two as a rename.
  */
 export interface WorkbenchStoreRename {

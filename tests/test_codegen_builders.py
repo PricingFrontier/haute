@@ -22,10 +22,12 @@ import pytest
 import haute
 from haute._api_input_schema import ApiInputSchemaError
 from haute._codegen_builders import _build_extra_kwargs
-from haute._config_io import collect_node_configs
+from haute._config_io import collect_node_configs, node_config_json
 from haute._mlflow_io import ScoringModel
+from haute._types import NodeType
 from haute.codegen import _node_to_code, graph_to_code
 from haute.errors import ConfigError, ParseError
+from haute.parser import parse_pipeline_source
 from tests._project import use_project
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
@@ -905,7 +907,8 @@ class TestGraphToCodeWithBuilders:
         code = graph_to_code(graph)
         assert "def Source(): ...\n" in code
         assert "def Banding(Source): ...\n" in code
-        assert 'pipeline.connect("Source", "Banding")' in code
+        # The signature names the source, so no connect() repeats it (READ-30).
+        assert "pipeline.connect" not in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_scenario_expander_compiles(self) -> None:
@@ -939,7 +942,8 @@ class TestGraphToCodeWithBuilders:
         )
         code = graph_to_code(graph)
         assert "def Expand(Data): ...\n" in code
-        assert 'pipeline.connect("Data", "Expand")' in code
+        # The signature names the source, so no connect() repeats it (READ-30).
+        assert "pipeline.connect" not in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_optimiser_compiles(self) -> None:
@@ -971,7 +975,8 @@ class TestGraphToCodeWithBuilders:
         )
         code = graph_to_code(graph)
         assert "def Optimise(Data): ...\n" in code
-        assert 'pipeline.connect("Data", "Optimise")' in code
+        # The signature names the source, so no connect() repeats it (READ-30).
+        assert "pipeline.connect" not in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_explore_compiles(self) -> None:
@@ -1000,7 +1005,8 @@ class TestGraphToCodeWithBuilders:
         )
         code = graph_to_code(graph)
         assert "@pipeline.explore\ndef Explore_Claims(Claims): ...\n" in code
-        assert 'pipeline.connect("Claims", "Explore_Claims")' in code
+        # The signature names the source, so no connect() repeats it (READ-30).
+        assert "pipeline.connect" not in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_api_input_compiles(self) -> None:
@@ -1089,14 +1095,12 @@ class TestGraphToCodeWithBuilders:
         )
         assert '"rate"' not in code
         assert '"cap"' not in code
-        sidecar = json.loads(collect_node_configs(graph)["config/constant/Params.json"])
-        assert sidecar["values"] == [
-            {"name": "rate", "value": "0.05"},
-            {"name": "cap", "value": "1000"},
-        ]
+        sidecar = collect_node_configs(graph)["config/constant/Params.json"]
+        # A map from each name to its value, numbers as numbers, in the order typed.
+        assert sidecar == '{\n  "values": {\n    "rate": 0.05,\n    "cap": 1000\n  }\n}\n'
         compile(code, "<test>", "exec")
 
-    def test_full_pricing_pipeline_compiles(self) -> None:
+    def test_full_pricing_pipeline_compiles(self, tmp_path: Path) -> None:
         """A realistic multi-node pipeline: source -> banding -> expander -> optimiser -> output."""
         graph = _g(
             {
@@ -1106,7 +1110,13 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "Source",
                             "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "path": "d.parquet",
+                                "arguments": {},
+                            },
                         },
                     },
                     {
@@ -1161,11 +1171,21 @@ class TestGraphToCodeWithBuilders:
         )
         code = graph_to_code(graph, pipeline_name="pricing")
         compile(code, "<test>", "exec")
-        # Verify correct edges
-        assert 'pipeline.connect("Source", "Band")' in code
-        assert 'pipeline.connect("Band", "Expand")' in code
-        assert 'pipeline.connect("Expand", "Opt")' in code
-        assert 'pipeline.connect("Opt", "Result")' in code
+        # Each signature names its source, so no connect() repeats an edge (READ-30) ...
+        for signature in ("Band(Source)", "Expand(Band)", "Opt(Expand)", "Result(Opt)"):
+            assert f"def {signature}: ...\n" in code
+        assert "pipeline.connect" not in code
+        # ... and the parser infers every edge from them.
+        for rel_path, content in collect_node_configs(graph).items():
+            (tmp_path / rel_path).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel_path).write_text(content, encoding="utf-8")
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        assert [(edge.source, edge.target) for edge in parsed.edges] == [
+            ("Source", "Band"),
+            ("Band", "Expand"),
+            ("Expand", "Opt"),
+            ("Opt", "Result"),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1475,7 +1495,7 @@ class TestCodegenExecValidation:
         config_dir = tmp_path / "config" / "banding"
         config_dir.mkdir(parents=True)
         (config_dir / "band_age.json").write_text(
-            json.dumps({"factors": factors}),
+            node_config_json(NodeType.BANDING, {"factors": factors}, node_label="band_age"),
             encoding="utf-8",
         )
 

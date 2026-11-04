@@ -879,8 +879,12 @@ def _parse_configured_node(
     be wrong.
     """
     func_name = function.split("def ", 1)[1].split("(", 1)[0]
+    from haute._config_io import node_config_json
+
     settings = {k: v for k, v in _PALETTE_DEFAULTS[node_type.value].items() if k != "steps"}
-    reference = write_node_config(tmp_path, node_type, func_name, settings)
+    # In the form a save writes it: a rating step's tables as grids, say.
+    sidecar = json.loads(node_config_json(node_type, settings, node_label=func_name))
+    reference = write_node_config(tmp_path, node_type, func_name, sidecar)
     source = (
         "import polars as pl\n"
         "import haute\n\n"

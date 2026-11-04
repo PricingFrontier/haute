@@ -1,6 +1,6 @@
 import type { NodeEditorState } from "../../types/node"
 import SteppedCodePane from "./shared/SteppedCodePane"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
+import type { InputSource, OnUpdateConfig } from "./_shared"
 
 /**
  * Transform node editor: the shared stepped-code pane in `input` mode (the
@@ -10,7 +10,6 @@ import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
 export default function TransformEditor({
   config,
   onUpdate,
-  onReplaceConfig,
   inputSources,
   onDeleteInput,
   errorLine,
@@ -23,7 +22,6 @@ export default function TransformEditor({
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-  onReplaceConfig?: OnReplaceConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
@@ -49,7 +47,6 @@ export default function TransformEditor({
     <SteppedCodePane
       config={config}
       onUpdate={onUpdate}
-      onReplaceConfig={onReplaceConfig}
       inputSources={inputSources}
       inputNames={inputSources.map((source) => source.name)}
       onDeleteInput={onDeleteInput}

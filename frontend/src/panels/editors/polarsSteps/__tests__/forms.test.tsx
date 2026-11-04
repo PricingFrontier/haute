@@ -60,20 +60,49 @@ describe("step forms only build schema-valid payloads", () => {
     }
     render(<Stateful initial={{ id: "w", kind: "with_column", name: "total", expr }} spy={spy} />)
     const field = screen.getByRole("combobox", { name: "Formula" })
-    const tooDeep = Array(MAX_EXPR_DEPTH + 2 - enclosing).fill("premium").join(" + ")
+    // Alternating operators: a chain of one operator would be one level however long.
+    const nested = (terms: number) => Array.from({ length: terms }, (_, i) => (i === 0 ? "premium" : `${i % 2 ? "-" : "+"} premium`)).join(" ")
+    const tooDeep = nested(MAX_EXPR_DEPTH + 2 - enclosing)
     fireEvent.change(field, { target: { value: tooDeep } })
     fireEvent.blur(field)
     expect(spy).not.toHaveBeenCalled()
     expect(field).toHaveValue(tooDeep)
     expect(screen.getByRole("alert")).toHaveTextContent(/12 levels/)
 
-    const atLimit = Array(MAX_EXPR_DEPTH + 1 - enclosing).fill("premium").join(" + ")
+    const atLimit = nested(MAX_EXPR_DEPTH + 1 - enclosing)
     fireEvent.change(field, { target: { value: atLimit } })
     fireEvent.keyDown(field, { key: "Enter" })
     expect(spy).toHaveBeenCalledTimes(1)
     expect(stepProblem(spy.mock.calls[0][0])).toBeNull()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(field).toHaveValue(atLimit)
+  })
+
+  it.each([0, MAX_EXPR_DEPTH - 1])("commits a twenty-term sum as one level under %i enclosing expressions", (enclosing) => {
+    const spy = vi.fn()
+    let expr: Expr = parseFormula("premium + 1")
+    for (let i = 0; i < enclosing; i += 1) {
+      expr = { type: "function", fn: "abs", operand: { kind: "expr", expr }, args: [] }
+    }
+    render(<Stateful initial={{ id: "w", kind: "with_column", name: "total", expr }} spy={spy} />)
+    const field = screen.getByRole("combobox", { name: "Formula" })
+    const sum = Array(20).fill("premium").join(" + ")
+    fireEvent.change(field, { target: { value: sum } })
+    fireEvent.keyDown(field, { key: "Enter" })
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(stepProblem(spy.mock.calls[0][0])).toBeNull()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("keeps a step's comment through an edit, with no control for it", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "l", kind: "limit", n: 5, comment: "# keep five\n" }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByDisplayValue("# keep five\n")).not.toBeInTheDocument()
+    const rows = screen.getByLabelText("Row limit")
+    fireEvent.change(rows, { target: { value: "7" } })
+    fireEvent.blur(rows)
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ n: 7, comment: "# keep five\n" }))
   })
 
   it("variable definitions offer plain values of number, text or true/false only", () => {

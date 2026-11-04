@@ -1060,7 +1060,7 @@ describe("useEdgeHandlers", () => {
       position: { x: 200, y: 150 },
       origin: [0.5, 0.5],
       data: {
-        label: "Edge Join 1",
+        label: "edge_join",
         nodeType: NODE_TYPES.EDGE_JOIN,
         _defaultInputName: "server_edgeJoin_1",
         config: {
@@ -1265,7 +1265,7 @@ describe("useEdgeHandlers", () => {
       type: NODE_TYPES.EDGE_JOIN,
       position: { x: 220, y: 120 },
       data: {
-        label: "Edge Join 1",
+        label: "edge_join",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
           how: "left",
@@ -1891,7 +1891,7 @@ describe("useEdgeHandlers", () => {
         selected: true,
         position: { x: 300, y: 400 },
         data: expect.objectContaining({
-          label: "Data Output 1",
+          label: "data_output",
           description: "",
           nodeType: NODE_TYPES.DATA_OUTPUT,
           _defaultInputName: "server_dataOutput_1",

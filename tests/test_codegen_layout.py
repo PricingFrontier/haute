@@ -24,7 +24,6 @@ import pytest
 from haute._graph_utils import _sanitize_func_name
 from haute._mlflow_io import ScoringModel
 from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._topo import topo_sort_ids
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
     GraphEdge,
@@ -771,7 +770,7 @@ BROKEN_CALLS = {
     "connect, flat": 'pipeline.connect("Quote_Request", "Live_Or_Batch", source_port="quotes")\n',
     "connect, arguments on an indented line": (
         "pipeline.connect(\n"
-        '    "Price_Scenarios_Tagged_For_Review", "Lookup_Enriched_With_Territories"\n'
+        '    "Apply_Optimised_Street_Price", "Workbench_Response", target_port="pricing_output"\n'
         ")\n"
     ),
     "connect, one argument per line": (
@@ -1251,6 +1250,27 @@ def _function_order(text: str) -> list[str]:
     return [function.name for function in _functions(text)]
 
 
+def _topological(node_ids: list[str], edges: list[GraphEdge]) -> list[str]:
+    """*node_ids* in topological order, taking of the nodes ready at once the one the graph
+    lists first (READ-12), whatever order the edges come in."""
+    parents = {node_id: {e.source for e in edges if e.target == node_id} for node_id in node_ids}
+    order: list[str] = []
+    while len(order) < len(node_ids):
+        order.append(next(n for n in node_ids if n not in order and parents[n].issubset(order)))
+    return order
+
+
+def _connect_pairs(text: str) -> list[tuple[str, str]]:
+    """The source and target of each ``pipeline.connect()`` call in *text*, in order."""
+    return [
+        (statement.value.args[0].value, statement.value.args[1].value)
+        for statement in ast.parse(text).body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and _dotted(statement.value.func) == "pipeline.connect"
+    ]
+
+
 def test_each_input_less_source_is_emitted_directly_before_its_first_consumer() -> None:
     def source(node_id: str, label: str) -> GraphNode:
         return _node(node_id, label, NodeType.DATA_INPUT, _data_input(f"data/{node_id}.parquet"))
@@ -1301,20 +1321,35 @@ def test_each_input_less_source_is_emitted_directly_before_its_first_consumer() 
         "Source_D_One",
         "Step_Four",
     ]
-    # The connections keep the graph's edge order.
-    wiring = code[code.index("# Wire nodes together") :].splitlines()[1:]
-    assert wiring[:3] == [
-        'pipeline.connect("Source_B", "Step_One")',
-        'pipeline.connect("Step_One", "Step_Two")',
-        'pipeline.connect("Source_A", "Step_Two")',
-    ]
+    # Each consumer's signature names its inputs in the graph's edge order, which says
+    # every edge, so no connect() is written (READ-30).
+    assert "def Step_Two(Step_One: pl.LazyFrame, Source_A: pl.LazyFrame)" in code
+    assert "def Step_Three(Source_C: pl.LazyFrame, Step_Two: pl.LazyFrame)" in code
+    assert "pipeline.connect" not in code
+
+
+def test_the_connect_calls_left_keep_the_graphs_edge_order(corpus: Corpus) -> None:
+    """The edges no signature can say (a port, a submodel occurrence, a hook's ``df``)
+    keep their connect() calls, in the order the graph lists the edges."""
+    graph = _corpus_graph()
+    names = {
+        node.id: node.data.config["alias"]
+        if node.data.nodeType == NodeType.SUBMODEL
+        else _sanitize_func_name(node.data.label)
+        for node in graph.nodes
+    }
+    calls = _connect_pairs(corpus.files["main.py"])
+    edges = [(names[edge.source], names[edge.target]) for edge in graph.edges]
+
+    assert len(calls) == len(set(calls)) < len(edges)
+    assert calls == [pair for pair in edges if pair in calls]
 
 
 def test_corpus_modules_follow_the_emission_order(corpus: Corpus) -> None:
     """Sources move down to their first consumer; everything else keeps topological order."""
     for path, module in corpus.modules.items():
         names = {node.id: _sanitize_func_name(node.data.label) for node in module.nodes}
-        topological = topo_sort_ids([node.id for node in module.nodes], module.edges)
+        topological = _topological([node.id for node in module.nodes], module.edges)
         parents: dict[str, list[str]] = {}
         for edge in module.edges:
             parents.setdefault(edge.target, []).append(edge.source)

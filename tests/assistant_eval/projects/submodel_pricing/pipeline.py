@@ -15,7 +15,7 @@ pipeline = haute.Pipeline(
 def policies(): ...
 
 
-@pipeline.polars(config="config/polars/premium.json")
+@pipeline.polars
 def premium(factored: pl.LazyFrame) -> pl.LazyFrame:
     df = factored
     # Apply the vehicle factor to the base rate
@@ -25,6 +25,5 @@ def premium(factored: pl.LazyFrame) -> pl.LazyFrame:
 
 pipeline.submodel(vehicle_factors.submodel, "vehicle_factors")
 
-# Wire nodes together - edges define data flow
 pipeline.connect("policies", "vehicle_factors", target_port="vehicles")
 pipeline.connect("vehicle_factors", "premium", source_port="factored")

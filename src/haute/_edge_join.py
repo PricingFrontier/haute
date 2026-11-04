@@ -63,6 +63,9 @@ def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[s
         value = config[key]
         if value is None or value == "" or value == []:
             continue
+        if key == "suffix" and value == EDGE_JOIN_DEFAULT_SUFFIX:
+            # The default a join reads for an absent suffix (READ-13).
+            continue
         decorator_key = EDGE_JOIN_CONFIG_TO_DECORATOR.get(key, key)
         items.append((decorator_key, value))
     return items

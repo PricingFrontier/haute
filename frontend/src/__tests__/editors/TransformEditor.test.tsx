@@ -224,7 +224,7 @@ describe("TransformEditor mode selection", () => {
       <TransformEditor
         nodeId="node-1"
         config={{ code: "df = quotes" }}
-        editor={{ steps_error: null, steps_discarded: "Steps were discarded because the body changed.", discarded_sidecar: null }}
+        editor={{ steps_error: null, steps_discarded: "Steps were discarded because the body changed." }}
         onUpdate={vi.fn()}
         inputSources={[]}
       />,

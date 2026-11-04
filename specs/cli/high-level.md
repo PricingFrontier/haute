@@ -61,7 +61,13 @@ Out of scope, owned elsewhere:
   pinned to a commit), a git pre-commit hook that fixes and formats only what is staged and
   stops a commit (a milestone, or a person's own `git commit`; never a save) on a problem
   ruff cannot fix safely,
-  and `.gitignore` guard entries; a starter file of `rating/` or `tests/` is written only
+  `.gitignore` guard entries, and `.gitattributes` entries that pin LF line endings for the
+  `*.py`, `*.json`, `*.toml`, `*.yml` and `*.md` files and the extensionless
+  `.githooks/pre-commit` in every checkout, whatever `core.autocrlf` says, and mark `uv.lock`
+  generated (CSV files are left out: analysts save parameter files from other tools; a
+  team's own `.gitattributes` keeps its lines, the missing entries appended under
+  `# Haute`). Every file `haute init` writes is UTF-8 with LF line endings on every
+  platform (`haute._scaffold_files.write_lf`); a starter file of `rating/` or `tests/` is written only
   where the folder has none, so a `rating/main.py` already there is kept and the summary
   names what was kept, and no workflow already in the folder is pruned. The hook is installed in `.git/hooks/` too inside a git repository,
   unless a `pre-commit` there is not Haute's, which is left as it is and named. An automated project's `haute.toml` holds its deploy
@@ -111,7 +117,15 @@ Out of scope, owned elsewhere:
   exactly the placeholder `uv init` writes, its project name aside, is deleted: a Haute
   project's entry point is `rating/main.py`, and removing the placeholder keeps it
   unambiguous. Any other root `main.py` is the team's, in a repository Haute is set up in,
-  so it is kept and the summary says so. No `prompts/` directory or
+  so it is kept and the summary says so. A first `haute init` also removes `uv init`'s other
+  leftovers that are still exactly as uv wrote them and that nothing references, keeping a
+  working build configuration (`remove_uv_init_leftovers`): an empty README with the
+  pyproject's `readme` naming it, the placeholder `description`, and a `--package` or `--lib`
+  project's `src/<module>/` with the `[project.scripts]` entry and the `[build-system]` that
+  name it, each named in the summary. A re-run removes no file, the root `main.py` included
+  (READ-41). `.env.example` says in a comment what each credential is for, and the
+  `.gitignore` guard writes its `# Haute` heading once, adding a newer Haute's entries under
+  it. No `prompts/` directory or
   starter nodes/sidecars are generated.
 - `haute run [pipeline_file] [--node NODE] [--source SOURCE] [--rows N]` runs a pipeline
   to its output node (a Quote Response, a Workbench Output or a node marked as the output),
@@ -332,7 +346,8 @@ Invariants that hold across every command:
 - Depends on [sandbox-security](../sandbox-security/high-level.md) for `serve`'s local session
   token (`ensure_local_session_token_env`, `TRUSTED_HOSTS_ENV`).
 - `haute init` depends on `haute._scaffold` (template generation for `haute.toml`, CI workflows,
-  starter pipeline) and `haute._gitignore_guard` — both outside this component's scope but owned by
+  starter pipeline), `haute._scaffold_files` (LF writes and `.gitattributes`) and
+  `haute._gitignore_guard` — all outside this component's scope but owned by
   the same project-bootstrap concern as [pipeline-config](../pipeline-config/high-level.md).
 - The editor's `POST /api/git/push` and `POST /api/git/ci-secrets`
   ([git integration](../git-integration/high-level.md)) reach the deploy's secrets through

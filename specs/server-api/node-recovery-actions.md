@@ -63,8 +63,12 @@ carries as its remediation (for the file path, `from modules import rates`, then
   document's completeness list; reset is never blocked by completeness, only by unknown
   types, ambiguous spans, or shared artifacts.
 - **Recover settings** supports known ordinary node types with an unambiguous function
-  span and resolvable incoming connections. It rebuilds the target's configuration with
-  the pure recovery engine: authored fields that are valid under the current contract
+  span and resolvable incoming connections. It reads the node's sidecar as a load reads
+  its file format (`haute._config_io.config_from_sidecar`: rating grids, band lists and
+  constant maps decoded, defaults left unwritten given again), a file in a form before
+  one of those answered as unreadable, naming its conversion, and rebuilds the target's
+  configuration with the pure recovery engine: authored fields that are valid under the
+  current contract
   are retained exactly; an invalid present value is replaced with the matching branch's
   audited default only where that default is structurally valid; a top-level field the
   saved configuration lacks (one added or renamed since it was written) takes its palette

@@ -50,8 +50,8 @@ describe("ChartBody's runtime", () => {
 
   it("shows a runtime that fails to load as an alert, and imports it again on the next draw", async () => {
     const form = sheetForm()
-    addTo(form, chartWidget("w_chart", [{ table: "equipment", column: "equipment.value" }]))
-    form.sample = { equipment: [{ "equipment.item": "Crane", "equipment.value": "100" }] }
+    addTo(form, chartWidget("w_chart", [{ table: "equipment", column: "value" }]))
+    form.sample = { equipment: [{ item: "Crane", value: "100" }] }
     loadForm(form)
     const plotted: unknown[] = []
     runtime.setOption = (option) => plotted.push((option as { series: { data: unknown[] }[] }).series.map((series) => series.data))
@@ -66,7 +66,7 @@ describe("ChartBody's runtime", () => {
     expect(await screen.findByRole("alert")).not.toBeEmptyDOMElement()
     expect(plotted).toEqual([])
 
-    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "equipment", 0, "equipment.value", "250")))
+    act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "equipment", 0, "value", "250")))
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
     expect(plotted.at(-1)).toEqual([[250]])
     expect(runtime.imports).toBe(2)

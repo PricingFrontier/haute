@@ -95,7 +95,7 @@ describe("UnderwriterApp", () => {
   })
 
   it("opens a duplicate's address, reloaded, as the window filled from that quote", async () => {
-    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ qd_insured: "Acme" }] } }))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "ABC 1", option: 2 }, { values: { quote_details: [{ insured: "Acme" }] } }))
 
     await keeping("/quotes/new?from=ABC+1&option=2&as=duplicate")
 
@@ -111,7 +111,7 @@ describe("UnderwriterApp", () => {
       form_revision: "rev-9",
       release: release.id,
       reference: "ABC-1",
-      values: { quote_details: [{ qd_insured: "Acme" }] },
+      values: { quote_details: [{ insured: "Acme" }] },
       source: null,
       title: "New quote",
     })
@@ -146,9 +146,9 @@ describe("UnderwriterApp", () => {
     const pricer = useWorkbenchPricingStore.getState().quotePricer
     expect(pricer).not.toBeNull()
 
-    const priced = await pricer?.(sheetForm(), { policy: [{ "policy.state": "NY" }] })
+    const priced = await pricer?.(sheetForm(), { policy: [{ state: "NY" }] })
 
-    expect(priceAppQuote).toHaveBeenCalledWith("rev-9", "0a1b2c3d4e5f", { policy: [{ "policy.state": "NY" }] })
+    expect(priceAppQuote).toHaveBeenCalledWith("rev-9", "0a1b2c3d4e5f", { policy: [{ state: "NY" }] })
     expect(priced).toMatchObject({ tables: { premiums: [{ item: "Crane", premium: 120 }] }, sample: { policy: { state: "NY" } } })
   })
 

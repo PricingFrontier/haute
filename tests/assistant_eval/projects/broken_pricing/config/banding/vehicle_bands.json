@@ -4,11 +4,11 @@
       "banding": "breakpoints",
       "column": "vehicle_age",
       "outputColumn": "vehicle_age_band",
-      "rules": {
-        "3": "new",
-        "10": "mid",
-        "": "old"
-      },
+      "rules": [
+        {"upper": 3, "label": "new"},
+        {"upper": 10, "label": "mid"},
+        {"label": "old"}
+      ],
       "default": "unknown"
     }
   ]

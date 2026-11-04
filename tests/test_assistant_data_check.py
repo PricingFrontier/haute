@@ -2309,7 +2309,11 @@ async def test_a_failing_schema_part_leaves_the_data_part_to_answer(
     assert "error" not in result, result
     assert "schema" not in result
     failed = _record(result["data"], "rating_features")
-    assert (failed["status"], failed["error"]["step"]) == ("failed", {"id": "logic", "number": 2})
+    # The transform's steps come from its code, each id its kind and place (READ-22).
+    assert (failed["status"], failed["error"]["step"]) == (
+        "failed",
+        {"id": "free_code-2", "number": 2},
+    )
     assert [(finding["kind"], finding["node"]) for finding in result["data"]["findings"]] == [
         ("execution_failed", "rating_features")
     ]
@@ -2317,7 +2321,7 @@ async def test_a_failing_schema_part_leaves_the_data_part_to_answer(
     assert part == "schema"
     assert (error["code"], error["step"], error["retryable"]) == (
         "schema_unresolvable",
-        "logic",
+        "free_code-2",
         True,
     )
     assert [column["name"] for column in error["inputs"]["quotes"]][:2] == [

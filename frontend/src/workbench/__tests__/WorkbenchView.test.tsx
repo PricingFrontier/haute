@@ -278,7 +278,7 @@ describe("WorkbenchView", () => {
     // The pricing store's own timer, not a stand-in for it.
     useWorkbenchPricingStore.setState({ setPricer: realPricing.setPricer, schedule: realPricing.schedule, cancel: realPricing.cancel })
     vi.mocked(fetchWorkbenchFormTables).mockRejectedValue(new Error("offline"))
-    useWorkbenchFormStore.setState({ form: { ...sheetForm(), sample: { policy: [{ "policy.state": "CA" }] } } })
+    useWorkbenchFormStore.setState({ form: { ...sheetForm(), sample: { policy: [{ state: "CA" }] } } })
     renderView()
 
     act(() => useWorkbenchViewStore.getState().showMode("preview"))

@@ -1,7 +1,6 @@
 {
-  "inputType": "file",
   "format": "csv",
+  "inputType": "file",
   "mode": "scan",
-  "path": "examples/reference/data/quotes.csv",
-  "arguments": {}
+  "path": "examples/reference/data/quotes.csv"
 }

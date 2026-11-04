@@ -14,9 +14,10 @@ its tables' shape. ``quote_details`` holds the store's own columns besides the f
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -43,8 +44,8 @@ from sqlalchemy.dialects import mssql
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._workbench_form import (
-    IDENTITY_IDS,
-    QUOTE_DETAILS_ID,
+    IDENTITY_NAMES,
+    QUOTE_DETAILS_NAME,
     ColumnType,
     FormSpec,
     SchemaTable,
@@ -176,10 +177,11 @@ StoreColumnKind = Literal["int", "str", "datetime"]
 _IDENTITY = ("quote_reference", "quote_option")
 
 
-def _named(kind: str, table_id: str) -> str:
-    """A constraint's or index's name made from its table's stable id, so a rename of the
-    table leaves it findable."""
-    return f"haute_{kind}_{hashlib.sha1(table_id.encode('utf-8')).hexdigest()[:12]}"
+def _named(kind: str, table_name: str) -> str:
+    """A constraint's or index's name made from its table's name when Haute creates the
+    table. Nothing looks one up by its name afterwards, so a store whose names were made
+    otherwise, from the ids an earlier Haute gave its tables, opens and saves as it did."""
+    return f"haute_{kind}_{hashlib.sha1(table_name.encode('utf-8')).hexdigest()[:12]}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,41 +198,45 @@ class StoredTable:
 
 @dataclass(frozen=True, slots=True)
 class StoreSchema:
-    """The store's tables for one form: the form's tables in the schema's order, each keyed
-    by its stable id, and Haute's activity."""
+    """The store's tables for one form: the form's tables in the schema's order, each known
+    by its name, and Haute's activity."""
 
     metadata: MetaData
     tables: tuple[StoredTable, ...]
     activity: Table
+    #: Each input table's columns the store holds that the form does not, by table name, each
+    #: by its name and kind: what a quote's rows carry back to the save (READ-05).
+    kept: Mapping[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
 
     @property
     def details(self) -> StoredTable:
-        return self.by_id(QUOTE_DETAILS_ID)
+        return self.by_name(QUOTE_DETAILS_NAME)
 
-    def by_id(self, table_id: str) -> StoredTable:
+    def by_name(self, name: str) -> StoredTable:
         for stored in self.tables:
-            if stored.form.id == table_id:
+            if stored.form.name == name:
                 return stored
-        raise KeyError(table_id)
+        raise KeyError(name)
 
     def of_role(self, role: str) -> tuple[StoredTable, ...]:
         return tuple(stored for stored in self.tables if stored.form.role == role)
 
 
 def structure(form: FormSpec) -> dict[str, Any]:
-    """What of *form* decides the store's tables, by stable id: each table's name, role and
-    rows, and each column's name, type and whether it is the index, as the SQL Haute writes
-    plans from it. Labels, rules and the sheets decide nothing there."""
+    """What of *form* decides the store's tables: each table's name, role and rows, and each
+    column's name, type and whether it is the index, as the SQL Haute writes plans from it,
+    each table and column under the ``key`` it is planned by, its name in the form (READ-23).
+    Labels, rules and the sheets decide nothing there."""
     return {
         "tables": [
             {
-                "id": table.id,
+                "key": table.name,
                 "name": table.name,
                 "role": table.role,
                 "rows": table.rows,
                 "columns": [
                     {
-                        "id": column.id,
+                        "key": column.name,
                         "name": column.name,
                         "type": "int" if column.index else column.type,
                         "index": column.index,
@@ -251,14 +257,14 @@ def _kind(sql_type: TypeEngine[Any]) -> StoreColumnKind:
 
 def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]]:
     """The columns the store keeps in each of *form*'s tables that the form does not, by
-    table id, each by its name and what it holds: ``quote_details``' own
+    table name, each by its name and what it holds: ``quote_details``' own
     (:data:`STORE_COLUMNS`), and a many-row table's ``quote_row``."""
     kept: dict[str, list[tuple[str, StoreColumnKind]]] = {}
     for table in form.data_schema.tables:
-        if table.id == QUOTE_DETAILS_ID:
-            kept[table.id] = [(name, _kind(made())) for name, made, _ in STORE_COLUMNS]
+        if table.name == QUOTE_DETAILS_NAME:
+            kept[table.name] = [(name, _kind(made())) for name, made, _ in STORE_COLUMNS]
         elif table.rows == "many":
-            kept[table.id] = [(QUOTE_ROW, "int")]
+            kept[table.name] = [(QUOTE_ROW, "int")]
     return kept
 
 
@@ -270,11 +276,50 @@ def store_schema(form: FormSpec, *, sql_schema: str | None = None) -> StoreSchem
     return StoreSchema(metadata=metadata, tables=tables, activity=_activity_table(metadata))
 
 
+#: The SQL type each kind a kept column can be of is written as (``_catalogue.kind_of``): the
+#: kinds of the types Haute gives a form's columns.
+_KEPT_TYPES: dict[str, Callable[[], TypeEngine[Any]]] = {
+    "boolean": Boolean,
+    "integer": BigInteger,
+    "float": _double,
+    "date": _date,
+    "datetime": UtcDateTime,
+    "string": _text,
+}
+
+
+def with_kept_columns(
+    schema: StoreSchema, extras: Mapping[str, list[tuple[str, str]]]
+) -> StoreSchema:
+    """*schema* with each input table's store-only columns, *extras* by table name as the
+    database's catalogue holds them (name and kind), read and written with its rows (READ-05).
+
+    A column leaves the form but the SQL Haute writes keeps it, so a saved quote's values stay
+    in it. A save deletes a quote's rows and writes them again, so its rows carry those values
+    back. ``quote_details`` is updated in place, and the output tables are written afresh by
+    each pricing, so neither carries any; nor does a column of a kind Haute never writes.
+    """
+    kept: dict[str, tuple[tuple[str, str], ...]] = {}
+    for stored in schema.tables:
+        if stored.form.role != "input" or stored.form.name == QUOTE_DETAILS_NAME:
+            continue
+        carried = tuple(
+            (name, kind)
+            for name, kind in extras.get(stored.table.name, [])
+            if kind in _KEPT_TYPES and name not in stored.table.columns
+        )
+        for name, kind in carried:
+            stored.table.append_column(Column(name, _KEPT_TYPES[kind](), nullable=True))
+        if carried:
+            kept[stored.form.name] = carried
+    return dataclasses.replace(schema, kept=kept)
+
+
 def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
-    details = table.id == QUOTE_DETAILS_ID
+    details = table.name == QUOTE_DETAILS_NAME
     columns: list[Column[Any]] = []
     for column in table.columns:
-        identity = column.id in IDENTITY_IDS or (details and column.name in _IDENTITY)
+        identity = column.name in IDENTITY_NAMES or (details and column.name in _IDENTITY)
         if column.name == "quote_reference" and identity:
             sql_type: TypeEngine[Any] = _reference()
         elif details and column.name in _BOUNDED_DETAILS:
@@ -291,20 +336,20 @@ def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
     elif table.rows == "many":
         columns.append(Column(QUOTE_ROW, BigInteger, nullable=False))
         keys.append(QUOTE_ROW)
-    constraints: list[Any] = [PrimaryKeyConstraint(*keys, name=_named("pk", table.id))]
+    constraints: list[Any] = [PrimaryKeyConstraint(*keys, name=_named("pk", table.name))]
     if details:
         constraints.extend(
             [
-                Index(_named("ix_list", table.id), "archived", "assignee", "saved_at"),
-                Index(_named("ix_source", table.id), "source_reference", "source_option"),
+                Index(_named("ix_list", table.name), "archived", "assignee", "saved_at"),
+                Index(_named("ix_source", table.name), "source_reference", "source_option"),
             ]
         )
     else:
         constraints.append(
             ForeignKeyConstraint(
                 list(_IDENTITY),
-                [f"{QUOTE_DETAILS_ID}.{name}" for name in _IDENTITY],
-                name=_named("fk", table.id),
+                [f"{QUOTE_DETAILS_NAME}.{name}" for name in _IDENTITY],
+                name=_named("fk", table.name),
             )
         )
     return StoredTable(form=table, table=Table(table.name, metadata, *columns, *constraints))
@@ -332,7 +377,7 @@ def _activity_table(metadata: MetaData) -> Table:
         UniqueConstraint("operation_key", name="haute_uq_activity_operation"),
         ForeignKeyConstraint(
             list(_IDENTITY),
-            [f"{QUOTE_DETAILS_ID}.{name}" for name in _IDENTITY],
+            [f"{QUOTE_DETAILS_NAME}.{name}" for name in _IDENTITY],
             name="haute_fk_activity_quote",
         ),
         Index("haute_ix_activity_quote", "quote_reference", "quote_option", "activity_id"),

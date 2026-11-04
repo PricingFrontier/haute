@@ -23,7 +23,7 @@ From top to bottom, the tab shows the node's inputs, the **STEPS** (a **Start fr
 
 The first card, **Start from**, chooses the input the node starts from. With one input connected, Haute chooses it for you. With several, pick one from the list, which reads **Choose an input** until you do; an input that has since been disconnected shows as "*name* (not connected)". Once the start is chosen the node can be previewed: with no further steps it passes that input through unchanged.
 
-With no input connected, the tab shows "Connect an input to start building steps, or switch to code." and a **Switch to code** button instead.
+With no input connected, the tab shows "Connect an input to start building steps." instead.
 
 ### Add step
 
@@ -127,12 +127,6 @@ Under **Add step**, the **Generated code** panel shows the Polars code your step
 - While a step is unfinished, the panel keeps the last code that worked, dimmed and marked **out of date**, with a note such as "Step 2 isn't finished: it needs a formula."
 - After a run that failed on this node, the panel names the failing step in red with **Go to error**, which opens that step's card, and highlights the line that failed.
 
-### Switch to code
-
-**Switch to code**, at the foot of the **Generated code** panel, replaces the steps with their generated code, which you can then edit freely (see [Writing the node as code](#writing-the-node-as-code)). It asks you to confirm - "Switch this node to code? The steps are removed and the generated code becomes editable. This cannot be undone." - and it is one-way: the node stays as code and there is no way back to steps.
-
-The button is disabled while the steps are being turned into code, and while a step cannot be; its tooltip then says which, for example "Fix Step 2 first".
-
 ### Steps on other nodes
 
 On the **TRANSFORM** tab of a Data Input, Load File, Rating Step, Expander or Model Scoring node (and in Explore's **TRANSFORM** pane), the steps start from a table the node already holds in `df` - the loaded data, the rated data, and so on:
@@ -147,7 +141,7 @@ What `df` holds on each node, and the hint its tab shows:
 | Node | `df` holds | Hint |
 |---|---|---|
 | [Data Input](data-input.md) | The loaded data | "df = the opened input snapshot" |
-| [Load File](external-file.md) | The first input; the loaded file is `obj`, which only a **Free code** step or the code after **Switch to code** can use, for example to score with `obj.predict(...)` | "obj = loaded file, assign to df" |
+| [Load File](external-file.md) | The first input; the loaded file is `obj`, which only a **Free code** step, or the node's code when it is not steps, can use, for example to score with `obj.predict(...)` | "obj = loaded file, assign to df" |
 | [Rating Step](rating-step.md) | The rated data | "use df for rated data" |
 | [Expander](scenario-expander.md) | The expanded data | "use df for expanded data" |
 | [Model Scoring](model-score.md) | The scored data, with the prediction in the node's output column | "Post-processing Code (optional)" |
@@ -157,7 +151,7 @@ Steps on these nodes do what a Transform node straight after them would do. Use 
 
 ## Writing the node as code
 
-After **Switch to code**, the **TRANSFORM** tab holds a code box, **POLARS CODE**, instead of the steps. The hint beside the label reads "use input names, assign to df" ("assign to df" when nothing is connected):
+A node whose code Haute cannot read as steps, such as a Transform with keyword-only parameters or code that is not a list of Python statements, shows a code box, **POLARS CODE**, on the **TRANSFORM** tab instead of the steps. Anything else you want to write as code goes in a **Free code** step. The hint beside the label reads "use input names, assign to df" ("assign to df" when nothing is connected):
 
 - Each input is available by the name of the node it came from. For example, if you connect a node called `policies`, you reference it as `policies` in your code.
 - `df` is not an input - it's the variable your code must assign its result to (reading `df` before assigning it is an error). Haute passes whatever `df` holds to the next node, so do not end your code with `return df`: Haute adds that line itself, and shows it dimmed under the code box.
@@ -258,17 +252,17 @@ df = df.with_columns(
     You can save a node whose steps are not finished; saving warns which step is incomplete. Running the pipeline then stops at that node with "This node's steps are incomplete. Complete or remove them before running." A node with no starting input and no code stops with "This transform has no code yet. Add code that defines what it returns."
 
 !!! note "Hand edits to the pipeline file"
-    The steps and the code in the `.py` file must agree. If the node's function body is edited by hand so that it no longer matches its steps, Haute keeps the code and drops the steps when it loads the pipeline, and the **TRANSFORM** tab says "Steps were discarded because the function body no longer matches the rendered steps."
+    The steps are read from the code in the `.py` file each time Haute loads the pipeline. A statement you edit by hand, or one Haute doesn't recognise, becomes a **Free code** step, and the steps around it stay as they are.
 
 ??? note "In the pipeline file"
-    A Transform node is a function in the pipeline's `.py` file, decorated with `@pipeline.polars`. Its parameters are the node's inputs, and its body is the node's code followed by the `return df` Haute adds. While the node is built from steps, the steps are stored in a JSON sidecar, `config/polars/<node name>.json`, which the decorator names with `config=`, and the body is the code they generate. After **Switch to code** the node has no sidecar and the body is your code.
+    A Transform node is a function in the pipeline's `.py` file, decorated with `@pipeline.polars`. Its parameters are the node's inputs, and its body is the node's code followed by the `return df` Haute adds. The steps are stored only as the code they generate, in the body, and Haute reads them back from it. While a step is unfinished, the body raises an error instead and the steps are kept in the pipeline's `.haute.json` until they are complete.
 
     A node written as code can also take keyword-only parameters after its inputs, each with a literal default, such as `def priced(policies, *, loading=1.05)`. The code reads `loading` as it reads an input, and it takes precedence over a value of the same name defined above the pipeline. A default must be `None`, `True` or `False`, a number or a string; a list or dictionary default is refused, because a function shares one copy of it between runs. Haute will not open a node whose keyword-only parameter has no default, or has one it cannot write back (a name or a calculation, for example), and names the line; a node built from steps, and every other node type, takes none.
 
     | Setting in the editor | Stored as |
     |---|---|
     | The steps on the **TRANSFORM** tab | `steps` in the sidecar: a list with one object per card, each with an `id` and a `kind` (`"source"` for **Start from**, then `"filter"`, `"with_column"`, `"join"`, `"free_code"` and so on) and the card's fields |
-    | The code, after **Switch to code** | the function body (`code` in the node's configuration) |
+    | The code of a node whose code is not steps | the function body (`code` in the node's configuration) |
     | Keyword-only parameters, written in the file | the signature, after `*` (`keyword_parameters` in the node's configuration: each one's name and default) |
     | **COLUMNS** tab | `selected_columns`, a decorator argument: the columns passed on (absent passes every column) |
 

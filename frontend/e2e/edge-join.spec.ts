@@ -456,9 +456,9 @@ test.describe("Edge Join insertion workflow", () => {
     const rawToEnriched = findEdge(initialGraph, "raw_rows", "enriched")
 
     await dragSourceToEdge(page, await sourceHandle(page, "lookup_rows"), rawToEnriched.id)
-    const firstJoinNode = page.getByLabel(/Edge Join node: Edge Join 1/i)
+    const firstJoinNode = page.getByLabel(/Edge Join node: edge_join\b/i)
     await expect(firstJoinNode).toBeVisible()
-    await expect(firstJoinNode).toHaveAttribute("aria-label", /Edge Join node: Edge Join 1/i)
+    await expect(firstJoinNode).toHaveAttribute("aria-label", /Edge Join node: edge_join\b/i)
     await expect(firstJoinNode.getByTestId("edge-join-base-handle")).toBeVisible()
     await expect(firstJoinNode.getByTestId("edge-join-join-handle")).toBeVisible()
     await setSameNameKey(page, "id")

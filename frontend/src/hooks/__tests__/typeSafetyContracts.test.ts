@@ -103,7 +103,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
       id: "n1",
       type: "dataInput",
       position: { x: 0, y: 0 },
-      data: { label: "n1", description: "", nodeType: "dataInput", config: { inputType: "file", format: "parquet", path: "" }, editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null } },
+      data: { label: "n1", description: "", nodeType: "dataInput", config: { inputType: "file", format: "parquet", path: "" }, editor: { steps_error: null, steps_discarded: null } },
     }],
     edges: [],
     pipeline_name: "x",

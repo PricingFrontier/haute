@@ -126,6 +126,45 @@ def _edit(
     )
 
 
+def _unfinished_steps_edit(path: Path, root: Path, node: GraphNode) -> RepairArtifactEdit | None:
+    """The edit to *path*'s canvas sidecar that keeps the transform *node*'s step list while
+    one of its steps is unfinished, or drops it once none is (READ-22): its body is then the
+    raising placeholder, so the sidecar holds the steps' only copy. None when it holds them
+    as they should be. The sidecar is read as the editor reads it and written as a save
+    writes it, so a sidecar the editor would refuse refuses the save, nothing written."""
+    from haute._json_files import render_json
+    from haute._sidecar import SidecarModel, read_sidecar_state
+
+    sidecar = path.with_suffix(".haute.json")
+    read = read_sidecar_state(path)
+    if read.state in ("corrupt", "unreadable"):
+        raise _unsupported(
+            f"{sidecar.name} cannot be read, so this node's unfinished steps could not be kept; "
+            "repair it first."
+        )
+    held = read.data if read.data is not None else SidecarModel()
+    unfinished = dict(held.unfinished_steps)
+    steps = node.data.config.get("steps")
+    if isinstance(steps, list) and node.data.editor.steps_error is not None:
+        if unfinished.get(node.id) == steps:
+            return None
+        unfinished[node.id] = steps
+    elif node.id in unfinished:
+        del unfinished[node.id]
+    else:
+        return None
+    updated = held.model_copy(update={"unfinished_steps": dict(sorted(unfinished.items()))})
+    return _edit(
+        sidecar,
+        root,
+        sidecar.read_bytes() if read.state == "valid" else None,
+        render_json(updated.model_dump(mode="json", exclude_defaults=True)).encode("utf-8"),
+        f"Keep {node.id!r}'s steps while one is unfinished."
+        if node.id in unfinished
+        else f"Drop {node.id!r}'s unfinished steps, now in its code.",
+    )
+
+
 def _target_graph(
     document: PipelineEditorDocument, target: RecoveryPipelineNode
 ) -> PipelineEditorDocument | RecoveryGraphSnapshot:
@@ -352,7 +391,7 @@ def _reset_node(
             _config_sharers(document, target, config_path, root_path=root_path, project_root=root)
         )
 
-    # A stepped transform owns an optional sidecar; a code-only one owns none.
+    # A node of a type with a config folder owns its sidecar; a transform owns none.
     if node_emits_sidecar(node):
         reference = (
             authored_reference or config_path_for_node(node_type, target.authored_id).as_posix()
@@ -386,8 +425,9 @@ def _reset_node(
             )
         )
     elif authored_reference is not None:
-        # A transform that leaves step mode no longer names its sidecar: the file
-        # it named goes with the rewrite unless another node still reads it.
+        # A transform written in the form before READ-22 names a sidecar it no
+        # longer needs: the file goes with the rewrite unless another node still
+        # reads it.
         config_path = config_file(authored_reference)
         if config_path.is_file() and not shared(config_path):
             edits.append(
@@ -400,6 +440,10 @@ def _reset_node(
                     f"{target.authored_id!r} no longer names.",
                 )
             )
+    if node_type == NodeType.POLARS:
+        sidecar_edit = _unfinished_steps_edit(path, root, node)
+        if sidecar_edit is not None:
+            edits.append(sidecar_edit)
     # LibCST matches the function's definition span and replaces its decorators too.
     updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(

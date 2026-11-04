@@ -994,7 +994,6 @@ type NodeEditorBodyProps = {
   availableColumns: { name: string; dtype: string }[]
   currentColumns: { name: string; dtype: string }[]
   onUpdateConfig: OnUpdateConfig
-  onReplaceConfig: OnReplaceConfig
   configEditor: React.ReactNode
 }
 
@@ -1018,7 +1017,6 @@ function NodeEditorBody({
   availableColumns,
   currentColumns,
   onUpdateConfig,
-  onReplaceConfig,
   configEditor,
 }: NodeEditorBodyProps) {
   let editor = configEditor
@@ -1034,7 +1032,6 @@ function NodeEditorBody({
       <SteppedCodePane
         config={config}
         onUpdate={onUpdateConfig}
-        onReplaceConfig={onReplaceConfig}
         inputSources={chips}
         inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
@@ -1542,7 +1539,6 @@ function NodePanelContent({
         availableColumns={availableColumns}
         currentColumns={currentColumns}
         onUpdateConfig={handleConfigUpdate}
-        onReplaceConfig={handleConfigReplace}
         configEditor={configEditor}
       />
     </PanelShell>

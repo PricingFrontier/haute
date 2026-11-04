@@ -14,9 +14,16 @@ import { formatValue } from "../utils/formatValue"
 import { operationKey } from "../utils/operationKey"
 import { formattedNumber } from "../utils/sheetValues"
 import { basisOf, columnKey } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
+
+/**
+ * The field of a row holding its values in store columns the form no longer holds, as the
+ * quote store opened them (specs/workbench). No sheet shows it: it stays on its row, through
+ * inserts, deletes and edits, and the save writes it back.
+ */
+export const KEPT_KEY = "$kept"
 
 /** `values` without what is not a value: blank cells, rows left empty at the end, tables with none. */
 export function normalisedValues(values: Readonly<Record<string, readonly SampleRow[]>>): Values {
@@ -33,28 +40,28 @@ export function normalisedValues(values: Readonly<Record<string, readonly Sample
 export const valuesKey = (values: Readonly<Record<string, readonly SampleRow[]>>): string => canonicalJson(normalisedValues(values))
 
 /**
- * `values` on `form`'s sheets: the cells of its input tables' columns alone, by id, as
- * values typed into other sheets, a draft kept before a release, are put back.
+ * `values` on `form`'s sheets: the cells of its input tables' columns alone, by name, and each
+ * row's kept field, as values typed into other sheets, a draft kept before a release, are put back.
  */
 export function onSheets(form: FormSpec, values: Values): Values {
   const kept: Values = {}
   for (const table of form.schema.tables) {
-    const rows = values[table.id]
+    const rows = values[table.name]
     if (table.role !== "input" || rows === undefined) continue
-    const columns = new Set(table.columns.map((column) => column.id))
-    kept[table.id] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => columns.has(id))))
+    const columns = new Set(table.columns.map((column) => column.name))
+    kept[table.name] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => id === KEPT_KEY || columns.has(id))))
   }
   return kept
 }
 
-/** Where each value of `values` sits on `form`'s sheets, by `tableId:columnId`, named `table.column`. */
+/** Where each value of `values` sits on `form`'s sheets, by `table:column`, named `table.column`. */
 export function cellPlaces(form: FormSpec, values: Values): Record<string, string> {
   const places: Record<string, string> = {}
   for (const table of form.schema.tables) {
-    for (const row of values[table.id] ?? []) {
+    for (const row of values[table.name] ?? []) {
       for (const columnId of Object.keys(row)) {
-        const column = table.columns.find((candidate) => candidate.id === columnId)
-        if (column !== undefined) places[columnKey(table.id, columnId)] = `${table.name}.${column.name}`
+        const column = table.columns.find((candidate) => candidate.name === columnId)
+        if (column !== undefined) places[columnKey(table.name, columnId)] = `${table.name}.${column.name}`
       }
     }
   }
@@ -84,9 +91,9 @@ export const sameQuote = (a: Pick<WorkbenchAppQuote, "reference" | "option">, b:
 export function withAppDetails(values: Values, saved: Values): Values {
   const pick = (row: SampleRow | undefined, set: boolean): SampleRow =>
     Object.fromEntries(Object.entries(row ?? {}).filter(([id]) => QUOTE_DETAILS_MANAGED.has(id) === set))
-  const row = { ...pick(values[QUOTE_DETAILS_ID]?.[0], false), ...pick(saved[QUOTE_DETAILS_ID]?.[0], true) }
-  const others = Object.fromEntries(Object.entries(values).filter(([table]) => table !== QUOTE_DETAILS_ID))
-  return Object.keys(row).length === 0 ? others : { ...others, [QUOTE_DETAILS_ID]: [row] }
+  const row = { ...pick(values[QUOTE_DETAILS_NAME]?.[0], false), ...pick(saved[QUOTE_DETAILS_NAME]?.[0], true) }
+  const others = Object.fromEntries(Object.entries(values).filter(([table]) => table !== QUOTE_DETAILS_NAME))
+  return Object.keys(row).length === 0 ? others : { ...others, [QUOTE_DETAILS_NAME]: [row] }
 }
 
 /** `values` without the quote_details cells the app sets: a quote's, which a quote made from it does not take. */
@@ -99,14 +106,14 @@ export const withoutAppDetails = (values: Values): Values => withAppDetails(valu
  * without quote_details.
  */
 export function appDetails(form: FormSpec, details: WorkbenchAppQuote["details"]): Values {
-  if (!form.schema.tables.some((table) => table.id === QUOTE_DETAILS_ID)) return {}
+  if (!form.schema.tables.some((table) => table.name === QUOTE_DETAILS_NAME)) return {}
   const row: SampleRow = {}
-  for (const [id, name] of QUOTE_DETAILS_COLUMNS) {
+  for (const [name] of QUOTE_DETAILS_COLUMNS) {
     const value = details[name]
-    if (!QUOTE_DETAILS_MANAGED.has(id) || value === undefined || value === null || value === false || value === "") continue
-    row[id] = value === true ? true : String(value)
+    if (!QUOTE_DETAILS_MANAGED.has(name) || value === undefined || value === null || value === false || value === "") continue
+    row[name] = value === true ? true : String(value)
   }
-  return { [QUOTE_DETAILS_ID]: [row] }
+  return { [QUOTE_DETAILS_NAME]: [row] }
 }
 
 /** The price a saved quote shows on `form`: its tables, for its values as they are. */
@@ -204,7 +211,7 @@ const LISTED = ["insured", "broker", "inception_date"] as const satisfies readon
 
 /** The listed columns, as the release's sheets label and format them. */
 export function listColumns(form: FormSpec | null): ListColumn[] {
-  const table = form?.schema.tables.find((candidate) => candidate.id === QUOTE_DETAILS_ID)
+  const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
   return LISTED.map((key) => {
     const column = table?.columns.find((candidate) => candidate.name === key) ?? null
     return { key, label: column?.label || readableName(key), column }
@@ -254,7 +261,7 @@ export interface Draft {
   /** The quote's version they were typed over; null for a new quote. */
   version: number | null
   /**
-   * Where each value sat on the sheets it was typed into, by `tableId:columnId`, named
+   * Where each value sat on the sheets it was typed into, by `table:column`, named
    * `table.column`, so a restore onto other sheets names what has no place on them.
    */
   places: Record<string, string>
@@ -437,8 +444,8 @@ export function forgetCreation(key: string): void {
 
 /** A renewal's values: those of its source, with `is_renewal` ticked in its details. */
 export function asRenewal(values: Values): Values {
-  const [details = {}] = values[QUOTE_DETAILS_ID] ?? []
-  return { ...values, [QUOTE_DETAILS_ID]: [{ ...details, [QUOTE_DETAILS.is_renewal]: true }] }
+  const [details = {}] = values[QUOTE_DETAILS_NAME] ?? []
+  return { ...values, [QUOTE_DETAILS_NAME]: [{ ...details, [QUOTE_DETAILS.is_renewal]: true }] }
 }
 
 // ── Activity ─────────────────────────────────────────────────────────────

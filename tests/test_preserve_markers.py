@@ -13,6 +13,7 @@ import pytest
 
 from haute._ast_helpers import _extract_preamble, unkept_module_statements
 from haute._config_io import collect_node_configs
+from haute._source_layout import WIRE_COMMENT
 from haute.codegen import graph_to_code
 from haute.parser import parse_pipeline_source
 
@@ -604,7 +605,7 @@ class TestUnkeptComments:
         for line, text in _comments(_COMMENTED_PIPELINE):
             if text in kept_texts:
                 kept_texts.remove(text)
-            else:
+            elif text != WIRE_COMMENT:  # Haute's own comment, dropped unreported (READ-13)
                 dropped.append(line)
 
         reported = [

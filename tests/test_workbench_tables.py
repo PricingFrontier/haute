@@ -57,11 +57,11 @@ def section(id_: str, *widgets: dict[str, Any]) -> dict[str, Any]:
 
 
 def column(name: str, type_: str = "str", **rules: object) -> dict[str, Any]:
-    return {"id": f"c_{name}", "name": name, "type": type_, **rules}
+    return {"name": name, "type": type_, **rules}
 
 
 def widget(id_: str, type_: str, *fields: str) -> dict[str, Any]:
-    """A component showing *fields*, each ``table.column`` by id."""
+    """A component showing *fields*, each ``table.column`` by name."""
     refs = [dict(zip(("table", "column"), field.split("."), strict=True)) for field in fields]
     return {"id": id_, "type": type_, "x": 0, "y": 0, "w": 720, "h": 120, "fields": refs}
 
@@ -73,21 +73,18 @@ def dumped(tables: tuple[WorkbenchTable, ...]) -> list[dict[str, Any]]:
 def test_input_tables_become_the_pipelines_tables_in_schema_order() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "equipment",
             "role": "input",
             "rows": "many",
             "columns": [column("item_id", key=True), column("value", "float")],
         },
         {
-            "id": "t2",
             "name": "premiums",
             "role": "output",
             "rows": "many",
             "columns": [column("premium", "float")],
         },
         {
-            "id": "t3",
             "name": "policy_details",
             "role": "input",
             "rows": "one",
@@ -265,14 +262,9 @@ def test_tables_the_pipeline_cannot_take_are_refused_naming_the_problem(
 
 def test_a_forms_table_the_pipeline_cannot_take_is_refused_by_the_nodes_name() -> None:
     spec = form(
-        {"id": "t1", "name": "class", "role": "input", "columns": [column("x")]},
-        # Two columns of one name, each with an id of its own, as the form's checks ask.
-        {
-            "id": "t2",
-            "name": "priced",
-            "role": "output",
-            "columns": [column("x"), {**column("x"), "id": "c_x_again"}],
-        },
+        {"name": "class", "role": "input", "columns": [column("x")]},
+        # Two columns of one name, which a form holds until its folder refuses them on save.
+        {"name": "priced", "role": "output", "columns": [column("x"), column("x")]},
     )
 
     with pytest.raises(WorkbenchTablesError, match="The Workbench Input's table 'class'"):
@@ -284,7 +276,6 @@ def test_a_forms_table_the_pipeline_cannot_take_is_refused_by_the_nodes_name() -
 def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "policy_details",
             "role": "input",
             "rows": "one",
@@ -296,7 +287,6 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
             ],
         },
         {
-            "id": "t2",
             "name": "equipment",
             "role": "input",
             "rows": "many",
@@ -307,24 +297,23 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
             ],
         },
         {
-            "id": "t3",
             "name": "premiums",
             "role": "output",
             "rows": "many",
             "columns": [column("premium", "float")],
         },
-        {"id": "t4", "name": "untouched", "role": "input", "rows": "one", "columns": [column("x")]},
+        {"name": "untouched", "role": "input", "rows": "one", "columns": [column("x")]},
     )
     spec.sample = {
-        "t1": [{"c_state": " NY ", "c_limit": "1,000", "c_start": "2026-01-15"}],
-        "t2": [
-            {"c_item_id": "A", "c_value": "$2,500.50", "c_leased": True},
-            {"c_item_id": "", "c_value": " "},
-            {"c_item_id": "B", "c_value": "lots"},
-            {"c_item_id": "C", "c_value": "inf"},
+        "policy_details": [{"state": " NY ", "limit": "1,000", "start": "2026-01-15"}],
+        "equipment": [
+            {"item_id": "A", "value": "$2,500.50", "leased": True},
+            {"item_id": "", "value": " "},
+            {"item_id": "B", "value": "lots"},
+            {"item_id": "C", "value": "inf"},
         ],
-        "t3": [{"c_premium": "9"}],
-        "t4": [{}],
+        "premiums": [{"premium": "9"}],
+        "untouched": [{}],
     }
 
     assert sample_quote(spec) == {
@@ -343,7 +332,6 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
 def test_a_form_with_nothing_typed_has_an_empty_sample() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "policy_details",
             "role": "input",
             "rows": "one",
@@ -357,14 +345,13 @@ def test_a_value_that_no_longer_fits_its_column_is_sent_as_it_is() -> None:
     # A text column holding "Y" became True/false; a ticked box's column became Integer.
     spec = form(
         {
-            "id": "t1",
             "name": "policy_details",
             "role": "input",
             "rows": "one",
             "columns": [column("smoker", "bool"), column("count", "int"), column("note")],
         }
     )
-    spec.sample = {"t1": [{"c_smoker": "Y", "c_count": True, "c_note": False}]}
+    spec.sample = {"policy_details": [{"smoker": "Y", "count": True, "note": False}]}
 
     # Both reach the Workbench Input as values that are not of their column's type; an
     # unticked box in a column that is no longer True/false is nothing typed.
@@ -374,7 +361,6 @@ def test_a_value_that_no_longer_fits_its_column_is_sent_as_it_is() -> None:
 def test_a_number_is_typed_by_the_rule_the_view_applies() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "policy",
             "role": "input",
             "rows": "one",
@@ -383,7 +369,7 @@ def test_a_number_is_typed_by_the_rule_the_view_applies() -> None:
     )
 
     def typed(limit: str, value: str) -> dict[str, Any]:
-        spec.sample = {"t1": [{"c_limit": limit, "c_value": value}]}
+        spec.sample = {"policy": [{"limit": limit, "value": value}]}
         return sample_quote(spec)["policy"]
 
     assert typed("£1,000", " 2.5e2 ") == {"limit": 1000, "value": 250.0}
@@ -400,14 +386,12 @@ def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_de
     spec = with_quote_details(
         form(
             {
-                "id": "t1",
                 "name": "policy_details",
                 "role": "input",
                 "rows": "one",
                 "columns": [column("state")],
             },
             {
-                "id": "t2",
                 "name": "equipment",
                 "role": "input",
                 "rows": "many",
@@ -415,7 +399,10 @@ def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_de
             },
         )
     )
-    spec.sample = {"t1": [{"c_state": "TX"}], "t2": [{"c_item_id": "", "c_value": " "}]}
+    spec.sample = {
+        "policy_details": [{"state": "TX"}],
+        "equipment": [{"item_id": "", "value": " "}],
+    }
     tables = dumped(input_tables(spec))
 
     # A table with nothing typed in it is left out of the sample, as a quote may leave it
@@ -438,7 +425,6 @@ def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_de
 def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "equipment",
             "role": "input",
             "rows": "many",
@@ -449,7 +435,7 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
             ],
         }
     )
-    spec.sample = {"t1": [{"c_item_id": "A"}, {}, {"c_item_id": "B", "c_value": "5"}]}
+    spec.sample = {"equipment": [{"item_id": "A"}, {}, {"item_id": "B", "value": "5"}]}
 
     (table,) = input_tables(spec)
 
@@ -532,7 +518,7 @@ PRESET_CASES: list[dict[str, Any]] = json.loads(
 def test_the_rows_a_column_gives_a_table_are_read_by_the_rule_the_view_applies(
     case: dict[str, Any],
 ) -> None:
-    table = SchemaTable.model_validate({"id": "t_cover", "name": "coverage", **case["table"]})
+    table = SchemaTable.model_validate({"name": "coverage", **case["table"]})
 
     assert preset_rows(table, case["rows"]) == case["read"]
 
@@ -540,7 +526,6 @@ def test_the_rows_a_column_gives_a_table_are_read_by_the_rule_the_view_applies(
 def test_the_sample_sends_every_row_a_column_gives_once_anything_else_is_typed() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "coverage",
             "role": "input",
             "rows": "many",
@@ -552,7 +537,7 @@ def test_the_sample_sends_every_row_a_column_gives_once_anything_else_is_typed()
         }
     )
     # A value typed for NW alone, its row held first, and a row for a peril no longer allowed.
-    spec.sample = {"t1": [{"c_peril": "NW", "c_limit": "3"}, {"c_peril": "WD", "c_limit": "9"}]}
+    spec.sample = {"coverage": [{"peril": "NW", "limit": "3"}, {"peril": "WD", "limit": "9"}]}
 
     # Every peril's row is sent, a row holding its peril alone included, numbered as they stand.
     assert sample_quote(spec) == {
@@ -567,27 +552,24 @@ def test_the_sample_sends_every_row_a_column_gives_once_anything_else_is_typed()
     spec.sample = {}
     assert sample_quote(spec) == {}
     assert quote_request(spec, {}) == {}
-    assert quote_request(spec, {"t1": [{"c_peril": "WD", "c_limit": "9"}]}) == {}
+    assert quote_request(spec, {"coverage": [{"peril": "WD", "limit": "9"}]}) == {}
 
 
 def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "policy",
             "role": "input",
             "rows": "one",
             "columns": [column("bi_cover", "bool"), column("assured")],
         },
         {
-            "id": "t2",
             "name": "interruption",
             "role": "input",
             "rows": "one",
             "columns": [column("bi_limit", "float"), column("extended", "bool")],
         },
         {
-            "id": "t3",
             "name": "equipment",
             "role": "input",
             "rows": "many",
@@ -606,8 +588,8 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
                 "sections": [
                     section(
                         "s_main",
-                        widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
-                        widget("w_items", "tableInput", "t3.c_line", "t3.c_item_id"),
+                        widget("w_policy", "collection", "policy.bi_cover", "policy.assured"),
+                        widget("w_items", "tableInput", "equipment.line", "equipment.item_id"),
                     )
                 ],
             },
@@ -615,23 +597,25 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
                 "id": "p_bi",
                 "title": "Business interruption",
                 "show_when": {
-                    "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                    "conditions": [{"table": "policy", "column": "bi_cover", "op": "ticked"}]
                 },
                 "width": 1280,
                 "sections": [
                     section(
                         "s_bi",
-                        widget("w_bi", "collection", "t2.c_bi_limit", "t2.c_extended"),
-                        widget("w_values", "tableInput", "t3.c_value", "t3.c_leased"),
+                        widget(
+                            "w_bi", "collection", "interruption.bi_limit", "interruption.extended"
+                        ),
+                        widget("w_values", "tableInput", "equipment.value", "equipment.leased"),
                     )
                 ],
             },
         ],
     )
     spec.sample = {
-        "t1": [{"c_bi_cover": False, "c_assured": "Acme"}],
-        "t2": [{"c_bi_limit": "500,000", "c_extended": True}],
-        "t3": [{"c_value": "10", "c_leased": True}, {"c_item_id": "B", "c_value": "5"}],
+        "policy": [{"bi_cover": False, "assured": "Acme"}],
+        "interruption": [{"bi_limit": "500,000", "extended": True}],
+        "equipment": [{"value": "10", "leased": True}, {"item_id": "B", "value": "5"}],
     }
     typed = copy.deepcopy(spec.sample)
 
@@ -644,7 +628,7 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
     }
     # The values are kept as typed, and are in the quote again once their sheet shows.
     assert spec.sample == typed
-    spec.sample["t1"][0]["c_bi_cover"] = True
+    spec.sample["policy"][0]["bi_cover"] = True
     assert sample_quote(spec) == {
         "policy": {"bi_cover": True, "assured": "Acme"},
         "interruption": {"bi_limit": 500000.0, "extended": True},
@@ -686,7 +670,6 @@ def test_quote_details_is_priced_whatever_the_sheets_hide_but_never_its_store_co
     spec = with_quote_details(
         form(
             {
-                "id": "t1",
                 "name": "policy",
                 "role": "input",
                 "rows": "one",
@@ -700,7 +683,7 @@ def test_quote_details_is_priced_whatever_the_sheets_hide_but_never_its_store_co
                     "sections": [
                         section(
                             "s_main",
-                            widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
+                            widget("w_policy", "collection", "policy.bi_cover", "policy.assured"),
                         )
                     ],
                 },
@@ -708,7 +691,7 @@ def test_quote_details_is_priced_whatever_the_sheets_hide_but_never_its_store_co
                     "id": "p_quote",
                     "title": "Quote",
                     "show_when": {
-                        "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                        "conditions": [{"table": "policy", "column": "bi_cover", "op": "ticked"}]
                     },
                     "width": 1280,
                     "sections": [
@@ -717,12 +700,12 @@ def test_quote_details_is_priced_whatever_the_sheets_hide_but_never_its_store_co
                             widget(
                                 "w_quote",
                                 "collection",
-                                "quote_details.qd_reference",
-                                "quote_details.qd_option",
-                                "quote_details.qd_quote_name",
-                                "quote_details.qd_stage",
-                                "quote_details.qd_modified_date",
-                                "quote_details.qd_created_by",
+                                "quote_details.quote_reference",
+                                "quote_details.quote_option",
+                                "quote_details.quote_name",
+                                "quote_details.stage",
+                                "quote_details.modified_date",
+                                "quote_details.created_by",
                             ),
                         )
                     ],
@@ -733,15 +716,15 @@ def test_quote_details_is_priced_whatever_the_sheets_hide_but_never_its_store_co
     values = {
         "quote_details": [
             {
-                "qd_reference": "Q-000007",
-                "qd_option": "2",
-                "qd_quote_name": "Fleet",
-                "qd_stage": "priced",
-                "qd_modified_date": "2026-10-12",
-                "qd_created_by": "ana@example.com",
+                "quote_reference": "Q-000007",
+                "quote_option": "2",
+                "quote_name": "Fleet",
+                "stage": "priced",
+                "modified_date": "2026-10-12",
+                "created_by": "ana@example.com",
             }
         ],
-        "t1": [{"c_bi_cover": False, "c_assured": "Acme"}],
+        "policy": [{"bi_cover": False, "assured": "Acme"}],
     }
 
     # The second sheet hides, and quote_details is priced whole all the same: the quote's
@@ -765,14 +748,12 @@ def _identity_tables() -> list[dict[str, Any]]:
             with_quote_details(
                 form(
                     {
-                        "id": "t1",
                         "name": "policy",
                         "role": "input",
                         "rows": "one",
                         "columns": [column("state")],
                     },
                     {
-                        "id": "t2",
                         "name": "equipment",
                         "role": "input",
                         "rows": "many",
@@ -868,7 +849,6 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
 ):
     spec = form(
         {
-            "id": "t1",
             "name": "policy",
             "role": "input",
             "rows": "one",
@@ -882,8 +862,8 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
                 "sections": [
                     section(
                         "s_main",
-                        widget("w_policy", "collection", "t1.c_bi_cover", "t1.c_assured"),
-                        widget("w_chart", "chart", "t1.c_bi_limit"),
+                        widget("w_policy", "collection", "policy.bi_cover", "policy.assured"),
+                        widget("w_chart", "chart", "policy.bi_limit"),
                     )
                 ],
             },
@@ -891,30 +871,29 @@ def test_a_value_a_chart_that_shows_plots_is_left_out_while_the_collection_takin
                 "id": "p_bi",
                 "title": "Business interruption",
                 "show_when": {
-                    "conditions": [{"table": "t1", "column": "c_bi_cover", "op": "ticked"}]
+                    "conditions": [{"table": "policy", "column": "bi_cover", "op": "ticked"}]
                 },
                 "width": 1280,
-                "sections": [section("s_bi", widget("w_bi", "collection", "t1.c_bi_limit"))],
+                "sections": [section("s_bi", widget("w_bi", "collection", "policy.bi_limit"))],
             },
         ],
     )
-    spec.sample = {"t1": [{"c_bi_cover": False, "c_assured": "Acme", "c_bi_limit": "500,000"}]}
+    spec.sample = {"policy": [{"bi_cover": False, "assured": "Acme", "bi_limit": "500,000"}]}
     typed = copy.deepcopy(spec.sample)
 
     # A Chart takes nothing typed, so the limit it plots goes with the Collection's sheet.
     assert sample_quote(spec) == {"policy": {"bi_cover": False, "assured": "Acme"}}
     assert spec.sample == typed
-    spec.sample["t1"][0]["c_bi_cover"] = True
+    spec.sample["policy"][0]["bi_cover"] = True
     assert sample_quote(spec) == {
         "policy": {"bi_cover": True, "assured": "Acme", "bi_limit": 500000.0}
     }
 
 
 def test_a_value_in_a_hidden_section_is_left_out_and_back_once_the_section_shows() -> None:
-    flood = {"conditions": [{"table": "t1", "column": "c_flood", "op": "ticked"}]}
+    flood = {"conditions": [{"table": "policy", "column": "flood", "op": "ticked"}]}
     spec = form(
         {
-            "id": "t1",
             "name": "policy",
             "role": "input",
             "rows": "one",
@@ -927,44 +906,41 @@ def test_a_value_in_a_hidden_section_is_left_out_and_back_once_the_section_shows
                 "width": 1280,
                 "sections": [
                     section(
-                        "s_main", widget("w_policy", "collection", "t1.c_flood", "t1.c_assured")
+                        "s_main", widget("w_policy", "collection", "policy.flood", "policy.assured")
                     ),
                     {
-                        **section("s_flood", widget("w_flood", "collection", "t1.c_depth")),
+                        **section("s_flood", widget("w_flood", "collection", "policy.depth")),
                         "show_when": flood,
                     },
                 ],
             }
         ],
     )
-    spec.sample = {"t1": [{"c_flood": False, "c_assured": "Acme", "c_depth": "2.5"}]}
+    spec.sample = {"policy": [{"flood": False, "assured": "Acme", "depth": "2.5"}]}
     typed = copy.deepcopy(spec.sample)
 
     # The section hides on a sheet that shows, and takes the depth typed into it with it.
     assert sample_quote(spec) == {"policy": {"flood": False, "assured": "Acme"}}
     assert spec.sample == typed
-    spec.sample["t1"][0]["c_flood"] = True
+    spec.sample["policy"][0]["flood"] = True
     assert sample_quote(spec) == {"policy": {"flood": True, "assured": "Acme", "depth": 2.5}}
 
 
 def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> None:
     spec = form(
         {
-            "id": "t1",
             "name": "policy_details",
             "role": "input",
             "rows": "one",
             "columns": [column("state")],
         },
         {
-            "id": "t2",
             "name": "layer_premiums",
             "role": "output",
             "rows": "many",
             "columns": [column("layer", "int", key=True), column("premium", "float")],
         },
         {
-            "id": "t3",
             "name": "pricing_output",
             "role": "output",
             "rows": "one",
@@ -995,15 +971,14 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
 
 def test_workbench_tables_gathers_the_three_as_the_route_serves_them() -> None:
     spec = form(
-        {"id": "t1", "name": "policy_details", "role": "input", "columns": [column("state")]},
+        {"name": "policy_details", "role": "input", "columns": [column("state")]},
         {
-            "id": "t2",
             "name": "pricing_output",
             "role": "output",
             "columns": [column("premium", "float")],
         },
     )
-    spec.sample = {"t1": [{"c_state": "NY"}]}
+    spec.sample = {"policy_details": [{"state": "NY"}]}
 
     gathered = workbench_tables(spec)
 

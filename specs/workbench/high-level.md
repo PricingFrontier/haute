@@ -252,7 +252,7 @@ Out of scope:
   The sample is production's final quotes, archived ones left out, newest saved first: 100
   by default, `--sample N` from 1 to 1,000. Drafts are left out, as a half-typed quote says
   nothing of a release. Each quote is opened on production for its values, by table and
-  column id as production's form reads them, and those values are sent unchanged to
+  column name as production's form reads them, and those values are sent unchanged to
   production's price route and then staging's, one request at a time, each with that app's
   own release and form revision. Each app reads them through its own form as it reads any
   quote's values: a value in a column it does not know is left out, and a column it adds
@@ -326,9 +326,11 @@ Out of scope:
   quote store hold it: `version` (1), `name`, `schema` (its tables), `pages` (its sheets,
   at least one) and `sample` (the quote typed while building, `{}` for none). The form
   folder spells it as files (below). Every field has one canonical spelling and an unknown
-  field is refused. A schema table has an id, a name, a `role` (`input`, sent to the pricing engine,
+  field is refused. A schema table has a name, which identifies it, no two in a form
+  differing only in case, a `role` (`input`, sent to the pricing engine,
   or `output`, returned by it), `rows` (`one` per quote, such as policy details, or `many`,
-  such as an equipment schedule) and its columns, each with an id, a name, a `type` of the
+  such as an equipment schedule) and its columns, each with a name, which identifies it in
+  its table, no two there differing only in case, a `type` of the
   Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, its
   `group` (a name it shares with the columns grouped with it, `""` for none, which a
   Table showing groups draws over its labels), whether it
@@ -351,35 +353,35 @@ Out of scope:
   `stage`, `assignee`, `archived`, `created_date`, `created_by`, `modified_date`,
   `modified_by` and `haute_version`, in that order, `inception_date`, `expiry_date`,
   `created_date` and `modified_date` Dates, `is_renewal` and `archived` True/false,
-  `quote_option` an Integer and the rest Text, each with the id `qd_` and its name. A form
+  `quote_option` an Integer and the rest Text. A form
   read or saved without it takes it on, and one holding it as an earlier Haute made it is
-  brought to today's by id: a column under the name an earlier Haute gave it takes today's
+  brought to today's: a column under the name an earlier Haute gave it takes today's
   (`reference`, `quote_reference`), one Haute makes no more is dropped (`valid_until` and
   `currency`), those it holds keep what the project gave them, the missing ones are added,
   and all take today's order, the data it was read from left as it was. That holds wherever
   a form is read: the project's folder, the editor's save and a release's form. A field, a column
   look or a chart category on a column dropped shows Missing column in the editor and is
   not drawn in Preview or the app, a condition on it is false, and sample values under its
-  id are ignored. One whose
-  `quote_details` is not Haute's (the name on another table, or its role, rows, keys or
-  index changed, or a column of another id, or one of its own renamed or retyped) is
+  name are ignored. One whose
+  `quote_details` is not Haute's (its role, rows, keys or index changed, or a column of
+  another name, or one of its own retyped) is
   refused, as is a rule or a default on `quote_reference`, `quote_option`, `stage`,
   `assignee`, `archived`, `created_date`, `created_by`, `modified_date`, `modified_by` or
   `haute_version`, which the underwriter app sets. Its labels, groups,
   help and placeholders are the project's, as are the rules and defaults of the columns the
   underwriter types; the sheets show its columns, and the pipeline receives it, as any other
   input table's. Every other table leads with the quote's identity: `quote_reference`
-  (Text) and `quote_option` (Integer), named as `quote_details` names them, the ids the
-  names in every table, with nothing else of theirs set. A form read or saved without them gives them to
+  (Text) and `quote_option` (Integer), named as `quote_details` names them, with nothing
+  else of theirs set. A form read or saved without them gives them to
   each table at its head, unless the table holds a column of its own under either name,
   which keeps its place and values, the table going without them: that clash is named
   among the schema's problems and refused by building the app and by deploying
   (`identity_clashes`), and renaming the column gives the table the identity at the next
   read or save. A form whose identity columns are not its tables' first two, as Haute
-  makes them, is refused. A sheet has an id, a title, its `width` in pixels, when it
+  makes them, is refused. A sheet has a title, its `width` in pixels, when it
   shows (`show_when`) and its sections (`sections`, at least one): strips across the sheet's
   whole width, stacked in
-  their order, each with an id, a `title`, its `height` in pixels, when it shows
+  their order, each with a `title`, its `height` in pixels, when it shows
   (`show_when`) and its components (`widgets` in the document): a Table (`tableInput`, a grid of at
   least `rows` rows showing columns of many-row tables, with its look, whether its rows
   are fixed and whether it is transposed: `row_numbers`, `density` (`compact` or
@@ -424,12 +426,12 @@ Out of scope:
   its `connection`, a named connection whose credentials the environment holds, `""` for
   none chosen, its `query`, and its `parameters`, each a `:name` in the query, by `name`,
   an identifier, given the value of a column by `table` and `column`, no name twice); the
-  input table it fills, `table` by id, or null for none; how it fills a many-row table,
+  input table it fills, `table` by name, or null for none; how it fills a many-row table,
   `mode`, `replace`, `append` or `update` (its rows matched by the table's keys); and
   `column_names`, the columns of that table read from a column named otherwise, each by
-  `column` id with that `name`, never blank, one each at most and none while it fills no
+  `column` with that `name`, never blank, one each at most and none while it fills no
   table) or an Export (`export`, a button an underwriter presses to take the quote's tables
-  out: its `label`; the `tables` it exports, by id, in the order chosen, none twice; and its
+  out: its `label`; the `tables` it exports, by name, in the order chosen, none twice; and its
   `target`, by `format`, a CSV (`csv`) or an Excel workbook (`excel`), each with its
   `file_name`, its extension left out, `{name}` in it standing for the value of that column
   of `quote_details`, whether a column is headed by its name or its label (`headers`,
@@ -442,27 +444,27 @@ Out of scope:
   corner and inside it, its `y` plus its `h` at most the section's `height` and its `x` plus
   its `w` at most the sheet's `width`, and with a
   `show_when` of its own, and each Table, Collection and Chart with a `title` and showing
-  its `fields`, schema columns named by table id and
-  column id so a rename keeps them. A `show_when` holds `conditions` and whether `all`
+  its `fields`, schema columns each named by its table's name and its own. A `show_when`
+  holds `conditions` and whether `all`
   of them must hold, `any`, or at least a whole number of them, 1 or more (`match`); with
   none, the sheet, section, component or field always shows.
   Each is a condition or a group, which holds `conditions` of its own, at least one and no
   group among them, and whether all of those must hold, any, or at least a number of them
   (`match`). A
-  condition names a column of a one-row table by table id and column id, a test (`op`) and the test's `values`,
+  condition names a column of a one-row table by its table's name and its own, a test (`op`) and the test's `values`,
   as text: `ticked` or `not_ticked`, with no value, for a True/false column; `filled` or
   `empty`, with no value, and `equals` or `not_equals`, with one, for any other; `one_of` or
   `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
   `below` or `at_most`, with one, for a number or a Date column. A condition on a many-row
-  table's rows names the table by id and the tests a row must pass, all in the same row
-  (`where`), each a column of the table other than its index by id, a test and its values,
+  table's rows names the table and the tests a row must pass, all in the same row
+  (`where`), each a column of the table other than its index by name, a test and its values,
   as a one-row table's condition has them; and which rows: `any` of them or `every` one
   (`rows`), with one test or more; how many, by a test (`op`, `equals`, `not_equals`,
   `above`, `at_least`, `below` or `at_most`) and a whole number of rows, 0 or more
   (`count`); or the `sum`, `min`, `max` or `average` (`total`) of a number column's values
   in them (`column`, not the index), by such a test and a number typed as text (`value`).
   The sample holds, by table
-  id, rows keyed by column id, each value as typed: text or a tick. The blank form, which
+  name, rows keyed by column name, each value as typed: text or a tick. The blank form, which
   `haute init --workbench` writes, is one sheet 1280 wide holding one section 560 tall,
   Haute's `quote_details` table alone and no sample.
 - **The form folder.** The form is kept in the pipeline folder's `workbench/`, as files a
@@ -473,23 +475,24 @@ Out of scope:
     `sheets`, the sheets' names in their tabs' order.
   - `schema/<table>.json` for each table the index names, named by the table's name in
     lower case (no two tables' names differ only in case; the index keeps the name as
-    spelled): its `id`, `role`, `rows` and `columns`, each column its `id`, `name` and
-    `type` and what else is set on it. `schema/quote_details.json` holds only what the
+    spelled): its `role`, `rows` and `columns`, each column its `name` and `type` and what
+    else is set on it. `schema/quote_details.json` holds only what the
     project sets on Haute's table: each column given something, by `name`, with what it is
     given (a label, group, help, placeholder or number format on any of them; a rule or a
-    default on those the underwriter types); the table's id, role and rows and its
-    columns' ids, types and order are Haute's and never written. The identity columns are written in no table. An output
+    default on those the underwriter types); the table's role and rows and its columns'
+    types and order are Haute's and never written. The identity columns are written in no table. An output
     column holds no rule (`required`, `min`, `max`, `options`, `options_source`), no
     `row_per_value` and no `default_value`.
   - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
-    (below): its `id`, `title`, `show_when` and `sections`, each section its `id`, `title`,
-    `show_when` and `components`, each component its `id`, its `type` (`table`, which the
-    document calls `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and
-    its settings, but not where it sits.
-  - `sheets/<sheet>.layout.json` beside it: the sheet's `width` and, by id, each section's
-    `height` and each component's place, `{"x": 8, "y": 312, "w": 832, "h": 192}` on one
-    line; an entry for every section and component of the sheet and for nothing else. A
-    pull request that only moves or resizes things changes only layout files.
+    (below): its `title`, `show_when` and `sections`, each section its `title`, `show_when`
+    and `components`, each component its `number`, its `type` (`table`, which the document
+    calls `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and its
+    settings, but not where it sits.
+  - `sheets/<sheet>.layout.json` beside it: the sheet's `width` and, by title, each
+    section's `height` and, by number, each of its components' place,
+    `{"x": 8, "y": 312, "w": 832, "h": 192}` on one line; an entry for every section and
+    component of the sheet and for nothing else. A pull request that only moves or resizes
+    things changes only layout files.
   - `sample/<table>.json` for each input table the sample has rows in, named as its schema
     file is: the rows as they stand, an empty row kept, since a row's place numbers it and
     lines it up with the values a column gives its table; each row's values by their
@@ -500,10 +503,10 @@ Out of scope:
     value as well is refused at save, naming the row, since a file holds a name once.
 
   Only what is set is written. The keys that say what a thing is are always written: the
-  index's `version`, `name`, `schema` and `sheets`; a table's `id`, `role`, `rows` and
-  `columns`; a column's `id`, `name` and `type`; a sheet's and a section's `id` and
-  `title`, with their `sections` and `components`; a component's `id` and `type`; every
-  layout number. A setting with no default, such as an Import's source or an Export's
+  index's `version`, `name`, `schema` and `sheets`; a table's `role`, `rows` and
+  `columns`; a column's `name` and `type`; a sheet's and a section's `title`, with
+  their `sections` and `components`; a component's `number` and `type`; every layout
+  number. A setting with no default, such as an Import's source or an Export's
   target, is always written. Any other setting is written only when it is not its default,
   and a default written out by hand reads as that setting and is left out at the next
   save. The defaults are the folder format's: a different default is a new `version`.
@@ -512,17 +515,24 @@ Out of scope:
   field, a Chart's `category`, a condition on a one-row table, a column look and a query
   parameter, and its bare name where its table is said: in the tests and the total's
   column of a condition on a many-row table's rows, and in an Import's `column_names`. An
-  Import names the table it fills, and an Export the tables it writes, by name. A table or
-  column keeps the id written beside its name for life: a rename changes the name and
-  every reference to it and leaves the id, so saved quotes, which keep values by id, keep
-  the column's; a table or column made anew takes an id of its own, though it takes an old
-  name. A reference to a name the schema does not hold is kept as written: the editor shows
+  Import names the table it fills, and an Export the tables it writes, by name. A table is
+  known by its name and a column by its name in its table: no file, release or quote holds
+  an id for either. A rename is a table or column removed and another added: the editor
+  changes the name and every reference to it in the form, the quote store keeps the
+  removed column, in which saved quotes keep their values through later saves (`$kept`),
+  and the renamed column starts empty. Two tables, or two columns of one table, whose
+  names differ only in case are refused at save and at read. A reference to a name the schema does not hold is kept as written: the editor shows
   it where it is, as it shows a field on a column dropped, `haute app build` and `haute
   deploy` refuse the form naming it, and nothing reads it as another column. A sheet, a
-  section and a component keep the id their file gives them, unique in the form; the
-  editor makes one from what it is (`sheet_`, `section_`, `table_`, `collection_`,
-  `chart_`, `heading_`, `import_`, `export_`) and four random letters or digits
-  (`collection_k3f9`), so a layout line says what it places.
+  section and a component hold no id in a file or a release: a sheet is known by its
+  file's name, a section by its title, unique on its sheet, and a component by its
+  `number` in its section, one more than the highest there when it was made, so the first
+  is 1. A component moved to another section or duplicated takes the next number there; a
+  number can come back once the highest component is deleted, its box gone with it. The
+  editor gives each part an id in memory as it reads the form, for selecting and moving
+  it, and none reaches a file. A read refuses two sections of one title on a sheet or two
+  components of one number in a section, which two branches adding to one section can
+  make, naming the sheet, the section and the number.
 
   A sheet's name is its title in lower case, each run of characters other than ASCII
   letters and digits one `_`, none at either end, at most 64 characters: "BR Coverages" is
@@ -531,7 +541,8 @@ Out of scope:
   column name that is not an identifier (letters, digits and underscores, not starting
   with a digit), a table or sheet name Windows keeps (`con`, `prn`, `aux`, `nul`, `com1` to
   `com9`, `lpt1` to `lpt9`, whatever their case), a sheet title that gives no name or
-  another sheet's, and a file whose full path would pass 240 characters. Every path a save
+  another sheet's, two sections of one title on a sheet, and a file whose full path would
+  pass 240 characters. Every path a save
   writes or deletes is held to the project's write rules first, as every file Haute writes
   is: none through a link, a junction or a reserved name. Files are named in lower case, so
   a rename that changes only a name's case changes no file's name.
@@ -599,7 +610,7 @@ Out of scope:
   that the folder cannot hold (The form folder), or whose files would not read back as a
   form, is refused 422 with the place and reason
   of each refusal, never the form sent back, and a form giving one id to two sheets,
-  sections, components, tables or columns of a table is refused naming the id. Both routes
+  sections or components is refused naming the id. Both routes
   answer 404 while the workbench is not enabled.
 - **The view.** While the workbench is enabled, a view switcher at the bottom of the left
   palette offers "Pricing", the pipeline editor, and "Workbench".
@@ -658,9 +669,7 @@ Out of scope:
     that the database holds and the form does not is listed with the quotes holding values
     in it, and such a column is paired with a column of its table that the form has and the
     database lacks, chosen beside it, as a rename; the database matching the form is said.
-    A table or column the form has that the database lacks is taken for a rename where the
-    project's default branch's form names it by one id with a table or column the database
-    holds and the form does not. An environment with no connection, one that cannot be read
+    An environment with no connection, one that cannot be read
     or a database that cannot be reached or refuses the sign-in is said, naming the file and
     the variables to set, never a server, a database, a user, a credential or a value read.
     The comparison is the view's own, neither saved nor undone, and closes with the pane.
@@ -1028,8 +1037,8 @@ Out of scope:
   it was collapsed and its collapse toggle off; with none, "No fields match". Emptying
   it, by its clear button or Escape, shows them all again; it is the component's own,
   kept as its panes change and empty for the next component selected. A ticked column
-  the search hides stays ticked, the component still showing it. Fields are held by table and column id, in the order
-  ticked, so a rename keeps them. A Collection's spacers keep their places among its
+  the search hides stays ticked, the component still showing it. Fields are held by table and column name, in the order
+  ticked, and a rename changes them with it. A Collection's spacers keep their places among its
   fields: a field it stops showing, unticked, crossed out or gone from the schema, takes
   its place in the count with it, a field ticked goes after any spacer at the end, and
   one left showing no fields keeps no spacers.
@@ -1258,7 +1267,7 @@ Out of scope:
   digit by digit is one edit, a dropdown and a tick box on change, each commit one undo
   step. A dropdown holding a value its options no longer give shows that value, marked,
   since it is priced as held. Values are held as typed, text or a tick, by
-  table id and column id; the server types them by their columns when the tables are made.
+  table name and column name, a rename taking them with it; the server types them by their columns when the tables are made.
   Pressing a cell types there. The sample is part of the form: saved with it, undone like
   any edit, in Preview as while building, and dropped with a column or table removed from
   the schema. The toolbar's Reset, in Preview, starts it again as a new quote, as one
@@ -2272,14 +2281,25 @@ Out of scope:
   database holds, from the form as the project's default branch holds it, or from none for
   a database that holds no store yet: a table the form gains made with the store's own
   columns, its keys and its reference to its quote, and, where the database lacks it,
-  `haute_activity` with them; a column it gains added taking a null; a table or column it
-  renamed, known by its stable id in the default branch's form or, from the database, a
-  column paired in the pane, renamed through the engine's own rename, in two steps through
+  `haute_activity` with them; a column it gains added taking a null; a table or column
+  the form renamed is one removed, which the SQL keeps, and one added, but a column paired
+  in the pane with the database's is renamed through the engine's own rename, in two steps through
   temporary names so a change of case or a swap of two names works; a type change as the
   engine's ALTER in place, with a note that a value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows or
   role as a note of what the table needs; a table or column the form does not have as a DROP
-  left commented out, since the check passes a column that takes a null; from the database,
+  left commented out, since the check passes a column that takes a null. Such a column of an
+  input table keeps its values through saves: opening a quote gives each of its rows a `$kept`
+  field, the row's values in the store's columns of the kinds Haute writes that the form does
+  not hold, as JSON text no sheet shows and no pricing reads; the row keeps it through
+  inserts, deletes, edits made while a save is pending and the answer to a save replayed, and
+  a save writes it back, refusing it, by name, for a column the form holds, one the store
+  does not hold, or a value its column's kind does not hold. A new row has none; a deleted row
+  takes its values with it, and only deleting it does: a row whose cells are all emptied
+  keeps its `$kept` values and is saved as a row with empty cells. A column giving its table a
+  row for each of its values moves each row, with its `$kept` field, to its value's place. `quote_details` is updated in place, and an output table is
+  written afresh by each pricing, so an output column the form no longer holds is cleared by
+  the quote's next save, priced or not; from the database,
   each other way its tables differ (a column taking a null otherwise, a table keyed or
   referring otherwise, a collation, the store's own columns missing or of another kind) as a
   note that the SQL does not change it, and each note on a table or column that holds
@@ -2341,13 +2361,15 @@ Out of scope:
   file per node, named by the node; the form is an index and a file per table and per
   sheet, named by the table or the sheet, so a pull request's list of files says what
   changed and a commit message can name it. Finer files, a section's or a component's,
-  would be named by ids, since sections carry the builder's titles ("Section 1") and many
-  components none; one file puts every analyst's edits in one place.
-- **Names in the files, ids beneath them.** A reviewer reads `br_rating.aop_deductible`
-  where the form holds `c_2237483f`, and a search finds every use of a column by its name.
-  Saved quotes keep values by id, so a table or column keeps a fixed id beside its name: a
-  rename, in the editor or by hand, leaves it, and a column made again under an old name
-  takes none of the old one's values. A reference to a name the schema does not hold is
+  would be named by the builder's titles ("Section 1") and components' numbers, which say
+  little; one file puts every analyst's edits in one place.
+- **Names, no ids.** A reviewer reads `br_rating.aop_deductible`, and a search finds every
+  use of a column by its name. A fixed id beside each name would let a rename keep a
+  column's saved values, but every file, release and quote would carry ids nobody reads,
+  and a name typed by hand would need an id made up to match. So a table or column is its
+  name: a rename is a removal and an addition, the store keeping the removed column with
+  the values saved in it and the renamed one starting empty, and a database rename the
+  analyst asks for is paired in the schema pane's Compare. A reference to a name the schema does not hold is
   kept, shown and refused before anything is priced, never matched to another column:
   after a merge, the analyst says what it meant.
 - **Only what is set.** A column at its defaults is a name and a type; written out in full
@@ -2357,9 +2379,13 @@ Out of scope:
   reads least, so it has a file of its own beside each sheet's: a pull request that only
   moves things lists only layout files, and a sheet file's history is a history of what
   the sheet shows. How components look stays with them, read in context and changed on
-  purpose. Ids that start with their kind say what a layout line places, and their random
-  ends keep two branches that each add a component to one sheet from giving two
-  components one id.
+  purpose. A layout line names its section by title and its component by number, the
+  number kept on the component in the sheet file, so a hand edit to either file lines up
+  with the other and a moved box says where it is. A component's place in its section's
+  list would serve as its number too, but a hand edit that reorders one file and not the
+  other would swap two boxes without a word; a stored number cannot. Two branches that each
+  add a component to one section can give two components one number, which a read
+  refuses, naming it.
 - **A missing folder is a loss, not a new form.** A form does not go missing in the
   ordinary course of work; when it does, version history holds it, and a blank form in its
   place would invite a save that commits the loss. A new workbench comes from
@@ -2473,7 +2499,7 @@ Out of scope:
   given, the sample in Preview or the app's quote, with their price, rather than
   values of its own, so it shows what was typed and what it priced at together, its rows
   lined up as a Table's are and dimmed as its output cells are. Its fields are held and
-  lined up as a Table's are, by table and column id, so a column renamed, retyped or
+  lined up as a Table's are, by table and column name, so a column renamed, retyped or
   removed reaches it as it reaches them, and its numbers take their columns' formats,
   since how a column shows is the column's; a value axis shared by columns of different
   formats can take none of them, so it shows compact numbers.
@@ -2734,7 +2760,7 @@ Out of scope:
   name. The price is that a node fills one table.
 - **Buttons laid out before they run.** Where an Import or an Export sits, what it says
   and which tables and columns it touches are the sheets' design, decided with them and
-  kept in the form beside the schema whose ids they name, so a rename keeps them and a
+  kept in the form beside the schema whose names they hold, so a rename changes them and a
   removal takes them away as it takes a field; how they run (the route, the drivers and
   the credentials) is WB-09's and WB-11's to decide, building on that shape. They are two
   kinds rather than one Button with an action, or one per format: an Import names one

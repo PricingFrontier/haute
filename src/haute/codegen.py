@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import ast
 import functools
-from collections.abc import Mapping, Sequence
+import heapq
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -42,7 +43,6 @@ from haute._registry import NODE_REGISTRY
 from haute._source_layout import (
     INDENT,
     LINE_WIDTH,
-    WIRE_COMMENT,
     Doc,
     arguments,
     literal,
@@ -369,10 +369,33 @@ def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) 
 
 
 def _topo_sort(nodes: list[GraphNode], edges: list[GraphEdge]) -> list[GraphNode]:
-    """Sort nodes in topological order based on edges."""
+    """Sort nodes in topological order based on edges, the nodes ready at once taken in the
+    order the graph lists them, never the order of its edges: a parsed graph lists its nodes
+    as the file has them but builds the edges a signature implies (READ-30) in another
+    order, and generating it again must give the same file."""
     node_map = {n.id: n for n in nodes}
-    order = topo_sort_ids(list(node_map.keys()), edges)
-    return [node_map[nid] for nid in order if nid in node_map]
+    # Refuses an unknown endpoint or a cycle as the shared sort does.
+    topo_sort_ids(list(node_map), edges)
+    place = {node_id: index for index, node_id in enumerate(node_map)}
+    parents: dict[str, set[str]] = {node_id: set() for node_id in node_map}
+    children: dict[str, list[str]] = {node_id: [] for node_id in node_map}
+    for edge in edges:
+        if edge.source in node_map and edge.target in node_map:
+            if edge.source not in parents[edge.target]:
+                parents[edge.target].add(edge.source)
+                children[edge.source].append(edge.target)
+    waiting = {node_id: len(sources) for node_id, sources in parents.items()}
+    ready = [(place[node_id], node_id) for node_id, count in waiting.items() if count == 0]
+    heapq.heapify(ready)
+    order: list[GraphNode] = []
+    while ready:
+        _, node_id = heapq.heappop(ready)
+        order.append(node_map[node_id])
+        for child in children[node_id]:
+            waiting[child] -= 1
+            if waiting[child] == 0:
+                heapq.heappush(ready, (place[child], child))
+    return order
 
 
 def _emit_preserved_block(block: str) -> str:
@@ -528,6 +551,88 @@ def _emission_order(nodes: list[GraphNode], edges: list[GraphEdge]) -> list[Grap
     return order
 
 
+#: Reads the text a generated file's path holds now, or None for a file not yet written.
+ReadExisting = Callable[[str], str | None]
+
+
+def function_order(source: str) -> list[str]:
+    """The decorated functions *source* defines, by name, in the file's order; none when it
+    does not parse."""
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        return []
+    return [
+        statement.name
+        for statement in body
+        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+        and statement.decorator_list
+    ]
+
+
+def _existing_order(read_existing: ReadExisting | None, rel_path: str) -> list[str] | None:
+    """The function order the file at *rel_path* holds, None when there is no such file."""
+    if read_existing is None:
+        return None
+    source = read_existing(rel_path)
+    return None if source is None else function_order(source)
+
+
+def _kept_order(
+    nodes: list[GraphNode], edges: list[GraphEdge], existing: Sequence[str]
+) -> list[GraphNode]:
+    """*nodes* in the order their file has them (READ-12): each node the file defines (a node's
+    id is the function name it was loaded under, so a rename keeps its place) where it stands, a
+    removed one gone and nothing else moved; each new node, in the order the graph lists them
+    (their creation), just above the first function that uses its output, or at the end when
+    nothing does yet."""
+    by_id = {node.id: node for node in nodes}
+    order = [node_id for node_id in dict.fromkeys(existing) if node_id in by_id]
+    kept = set(order)
+    consumers: dict[str, set[str]] = {}
+    for edge in edges:
+        consumers.setdefault(edge.source, set()).add(edge.target)
+    for node in nodes:
+        if node.id in kept:
+            continue
+        uses = consumers.get(node.id, set())
+        place = next((index for index, node_id in enumerate(order) if node_id in uses), len(order))
+        order.insert(place, node.id)
+        kept.add(node.id)
+    return [by_id[node_id] for node_id in order]
+
+
+def _positional_parameters(functions: Sequence[str]) -> dict[str, list[str]]:
+    """Each node function of *functions* by name, with its positional parameters."""
+    parameters: dict[str, list[str]] = {}
+    for code in functions:
+        try:
+            body = ast.parse(code).body
+        except SyntaxError:
+            continue
+        for statement in body:
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                arguments = statement.args
+                parameters[statement.name] = [
+                    argument.arg for argument in (*arguments.posonlyargs, *arguments.args)
+                ]
+    return parameters
+
+
+def _signature_states(pair: _ConnectPair, parameters: Mapping[str, Sequence[str]]) -> bool:
+    """Whether the signatures already say *pair*'s edge (READ-30): it carries no port, and its
+    target, a function of this file, names its source, another function of this file, in its
+    parameters, so the parser and a standalone run infer it alike. A frame hook's first input,
+    which its decorator takes as ``df``, is named by no parameter, so its ``connect()`` stays."""
+    source, target, source_port, target_port = pair
+    return (
+        source_port is None
+        and target_port is None
+        and source in parameters
+        and source in parameters.get(target, ())
+    )
+
+
 def _call(head: str, entries: Sequence[Doc]) -> str:
     """One call statement, laid out as ruff lays it out."""
     return print_doc([head, arguments("(", list(entries), ")")])
@@ -595,8 +700,10 @@ def _node_functions(
     node_sources: dict[str, list[str]],
     node_source_ids: dict[str, list[str]] | None,
     receiver: str,
+    existing: Sequence[str] | None = None,
 ) -> list[str]:
-    """Every node's function in emission order."""
+    """Every node's function: in the order its file has them (:func:`_kept_order`), or, for a
+    file not yet written, in emission order."""
     source_ids = node_source_ids or {}
     functions = [
         _node_to_code(
@@ -605,7 +712,11 @@ def _node_functions(
             source_ids.get(node.id, []),
             receiver=receiver,
         )
-        for node in _emission_order(nodes, edges)
+        for node in (
+            _emission_order(nodes, edges)
+            if existing is None
+            else _kept_order(nodes, edges, existing)
+        )
     ]
     return functions
 
@@ -741,9 +852,12 @@ def _render_module(
     if registrations:
         body.append(_Block("\n".join(registrations)))
     pairs = list(dict.fromkeys(connect_pairs)) if dedup_connects else connect_pairs
+    pairs = [
+        pair for pair in pairs if not _signature_states(pair, _positional_parameters(functions))
+    ]
     if pairs:
         calls = [_connect_call(obj_name, pair) for pair in pairs]
-        body.append(_Block("\n".join([WIRE_COMMENT, *calls])))
+        body.append(_Block("\n".join(calls)))
 
     uses_pl = _refers_to_pl("\n\n".join(block.text for block in body))
     imports = "import haute\nimport polars as pl" if uses_pl else "import haute"
@@ -751,6 +865,40 @@ def _render_module(
     if submodel_import:
         head.append(_Block(submodel_import))
     return _join_blocks([*head, *body])
+
+
+def _module_docstring_text(source: str) -> tuple[str, int] | None:
+    """The module docstring as written in *source*, and the line it ends on, or None."""
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        return None
+    first = body[0] if body else None
+    if not (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return None
+    text = ast.get_source_segment(source, first.value)
+    if text is None or first.col_offset != 0:
+        return None
+    return text, first.end_lineno or first.lineno
+
+
+def keep_module_docstring(generated: str, existing: str) -> str:
+    """*generated* with the module docstring *existing* holds in place of its own.
+
+    Codegen writes its own docstring only for a file that has none: a docstring
+    the analyst wrote is kept byte for byte (READ-02). *generated* always opens
+    with codegen's docstring, which ends the first statement.
+    """
+    kept = _module_docstring_text(existing.replace("\r\n", "\n"))
+    own = _module_docstring_text(generated)
+    if kept is None or own is None:
+        return generated
+    rest = generated.split("\n")[own[1] :]
+    return "\n".join([kept[0], *rest])
 
 
 # ---------------------------------------------------------------------------
@@ -791,11 +939,13 @@ def graph_to_code(
     description: str = "",
     preamble: str = "",
     preserved_blocks: list[str] | None = None,
+    existing_source: str | None = None,
 ) -> str:
     """Convert a React Flow graph to a valid haute pipeline .py file.
 
     Delegates to :func:`graph_to_code_multi` and returns the single generated
-    file's code.
+    file's code. Given the file's *existing_source*, its functions keep the
+    order that file has (READ-12).
     """
     files = graph_to_code_multi(
         graph,
@@ -803,6 +953,7 @@ def graph_to_code(
         description=description,
         preamble=preamble,
         preserved_blocks=preserved_blocks,
+        read_existing=None if existing_source is None else (lambda _path: existing_source),
     )
     # graph_to_code_multi returns {filename: code}; this single-file API is
     # only valid when there are no submodels.  A submodel graph produces
@@ -918,6 +1069,7 @@ def _graph_to_code_multi_instances(
     preamble: str,
     source_file: str,
     preserved_blocks: list[str] | None,
+    read_existing: ReadExisting | None = None,
 ) -> dict[str, str]:
     """Emit one canonical definition file and one registration per occurrence."""
     definitions = graph.submodels or {}
@@ -1041,6 +1193,7 @@ def _graph_to_code_multi_instances(
                 node_sources=child_node_sources,
                 node_source_ids=child_node_source_ids,
                 receiver="submodel",
+                existing=_existing_order(read_existing, definition.file.replace("\\", "/")),
             ),
             connect_pairs=child_connect_pairs,
             preserved_blocks=child_graph.preserved_blocks or None,
@@ -1189,6 +1342,7 @@ def _graph_to_code_multi_instances(
             node_sources=root_node_sources,
             node_source_ids=root_node_source_ids,
             receiver="pipeline",
+            existing=_existing_order(read_existing, source_file),
         ),
         connect_pairs=connect_pairs,
         preserved_blocks=(
@@ -1216,8 +1370,13 @@ def graph_to_code_multi(
     preamble: str = "",
     source_file: str = "",
     preserved_blocks: list[str] | None = None,
+    read_existing: ReadExisting | None = None,
 ) -> dict[str, str]:
-    """Generate canonical Python source for a pipeline and its definitions."""
+    """Generate canonical Python source for a pipeline and its definitions.
+
+    *read_existing* gives the text each generated path holds now: a file that exists keeps
+    its functions in the order it has them (READ-12); a new one is written in emission
+    order."""
     if not description and graph.pipeline_description:
         description = graph.pipeline_description
     if not preamble and graph.preamble:
@@ -1232,6 +1391,7 @@ def graph_to_code_multi(
             preamble=preamble,
             source_file=source_file,
             preserved_blocks=preserved_blocks,
+            read_existing=read_existing,
         )
 
     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
@@ -1265,6 +1425,7 @@ def graph_to_code_multi(
             node_sources=node_sources,
             node_source_ids=node_source_ids,
             receiver="pipeline",
+            existing=_existing_order(read_existing, main_key),
         ),
         connect_pairs=connect_pairs,
         preserved_blocks=all_preserved or None,

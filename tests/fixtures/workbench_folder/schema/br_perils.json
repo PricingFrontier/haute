@@ -1,23 +1,8 @@
 {
-  "id": "t_perils",
   "role": "input",
   "rows": "many",
   "columns": [
-    {
-      "id": "c_peril",
-      "name": "peril",
-      "type": "str",
-      "key": true,
-      "options": [
-        "Fire",
-        "Flood"
-      ],
-      "row_per_value": true
-    },
-    {
-      "id": "c_rate",
-      "name": "rate",
-      "type": "float"
-    }
+    {"name": "peril", "type": "str", "key": true, "options": ["Fire", "Flood"], "row_per_value": true},
+    {"name": "rate", "type": "float"}
   ]
 }

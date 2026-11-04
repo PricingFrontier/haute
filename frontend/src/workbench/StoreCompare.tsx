@@ -94,31 +94,31 @@ export function DatabaseMark({ table, column = null }: { table: string; column?:
 }
 
 /** An extra column's pairing with a column of its table that the form has and the database lacks. */
-function PairSelect({ extra }: { extra: WorkbenchStoreExtra & { table_id: string; column: string } }) {
+function PairSelect({ extra }: { extra: WorkbenchStoreExtra & { form_table: string; column: string } }) {
   const form = useWorkbenchFormStore((s) => s.form)
   const differences = useDifferences()
   const pair = useStoreCompareStore((s) => s.pair)
-  const table = form?.schema.tables.find((each) => each.id === extra.table_id)
+  const table = form?.schema.tables.find((each) => each.name === extra.form_table)
   const missing = new Set(
     differences
-      .filter((each) => each.table === extra.table_id && each.kind === "missing" && each.column !== null)
+      .filter((each) => each.table === extra.form_table && each.kind === "missing" && each.column !== null)
       .map((each) => each.column),
   )
-  const candidates = table?.columns.filter((column) => missing.has(column.id)) ?? []
+  const candidates = table?.columns.filter((column) => missing.has(column.name)) ?? []
   if (candidates.length === 0) return null
   return (
     <select
       aria-label={`Rename of ${extra.table}.${extra.column}`}
       value=""
       onChange={(event) => {
-        if (event.target.value) pair({ table: extra.table_id, column: event.target.value, was: extra.column })
+        if (event.target.value) pair({ table: extra.form_table, column: event.target.value, was: extra.column })
       }}
       className={CHIP_CLASS}
       style={{ ...INPUT_STYLE, color: "var(--text-secondary)" }}
     >
       <option value="">Rename to…</option>
       {candidates.map((column) => (
-        <option key={column.id} value={column.id}>
+        <option key={column.name} value={column.name}>
           {column.name}
         </option>
       ))}
@@ -147,7 +147,7 @@ export function ComparePanel() {
   if (environment === null) return null
   const own = answer?.differences.filter((each) => each.table === null) ?? []
   const columnName = (table: string, column: string) =>
-    form?.schema.tables.find((each) => each.id === table)?.columns.find((each) => each.id === column)?.name ?? column
+    form?.schema.tables.find((each) => each.name === table)?.columns.find((each) => each.name === column)?.name ?? column
   return (
     <div data-testid="store-compare" className="flex flex-col gap-1.5 px-2 pt-2 text-[11px]">
       {read.status === "reading" ? (
@@ -185,8 +185,8 @@ export function ComparePanel() {
                     {extra.column === null ? extra.table : `${extra.table}.${extra.column}`}
                   </span>
                   <span style={QUIET_STYLE}>{quotes(extra.quotes)}</span>
-                  {extra.table_id !== null && extra.column !== null && (
-                    <PairSelect extra={{ ...extra, table_id: extra.table_id, column: extra.column }} />
+                  {extra.form_table !== null && extra.column !== null && (
+                    <PairSelect extra={{ ...extra, form_table: extra.form_table, column: extra.column }} />
                   )}
                 </div>
               ))}

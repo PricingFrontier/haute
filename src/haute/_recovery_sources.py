@@ -16,7 +16,7 @@ from haute._config_builder import (
     validate_step_container,
 )
 from haute._config_io import (
-    _normalise_loaded_config,
+    config_from_sidecar,
     reject_duplicate_keys_hook,
 )
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
@@ -98,9 +98,9 @@ def read_raw_node_settings(
                 )
                 if not isinstance(value, dict):
                     raise ValueError("The configuration is not an object.")
-                raw = {**value, **raw}
-                if node_type == NodeType.BANDING:
-                    raw = _normalise_loaded_config(raw, node_type)
+                # The file's format decoded, as a load decodes it: the settings as the
+                # editor holds them, which recovery checks against the contract.
+                raw = {**config_from_sidecar(node_type, value), **raw}
             except (ValueError, UnicodeError) as exc:
                 # There is no archive to fall back to: replacing an unreadable
                 # sidecar from decorator evidence alone would silently discard

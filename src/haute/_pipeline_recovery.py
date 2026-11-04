@@ -10,7 +10,7 @@ import os
 import re
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -67,6 +67,7 @@ from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
     read_sidecar_state,
+    with_unfinished_steps,
 )
 from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
@@ -77,6 +78,7 @@ from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
+    NodeData,
     NodeEditorState,
     NodeType,
     PipelineGraph,
@@ -1187,22 +1189,20 @@ def _sidecar_values(
     return result.data.positions, sources, active, True
 
 
-def _editor_sidecar_positions(
+def _editor_sidecar(
     source_path: Path,
     *,
     source_file: str,
     captures: _SourceCaptures,
     diagnostics: list[PipelineRecoveryDiagnostic],
-) -> dict[str, dict[str, float]]:
-    """The canvas positions in one file's editor sidecar, read through *captures*.
-
-    A corrupt or unreadable sidecar is diagnosed and gives no positions.
-    """
+) -> SidecarReadResult:
+    """One file's editor sidecar, read through *captures*; a corrupt or unreadable one
+    is diagnosed and gives no positions and no unfinished steps."""
     sidecar = read_sidecar_state(source_path, read_bytes=captures.read_bytes)
     issue = _sidecar_diagnostic(sidecar, source_file=source_file)
     if issue is not None:
         diagnostics.append(issue)
-    return _sidecar_values(sidecar)[0]
+    return sidecar
 
 
 def _canonical_snapshot(
@@ -1214,8 +1214,13 @@ def _canonical_snapshot(
     captures: _SourceCaptures,
 ) -> RecoveryGraphSnapshot:
     source_file = _wire_path(source_path, project_root)
-    positions = _editor_sidecar_positions(
+    sidecar = _editor_sidecar(
         source_path, source_file=source_file, captures=captures, diagnostics=diagnostics
+    )
+    positions = _sidecar_values(sidecar)[0]
+    # A transform saved with an unfinished step list keeps the list in the sidecar.
+    graph_nodes = with_unfinished_steps(
+        graph.nodes, None if sidecar.data is None else sidecar.data.unfinished_steps
     )
 
     connected_handles_by_source: dict[str, list[str]] = {}
@@ -1245,7 +1250,7 @@ def _canonical_snapshot(
         return []
 
     nodes: list[RecoveryPipelineNode] = []
-    for node in graph.nodes:
+    for node in graph_nodes:
         source_handles = source_handles_for(node)
         identity = resolve_editor_identity(
             node_type=node.data.nodeType,
@@ -1464,6 +1469,32 @@ class _FileGraph:
     occurrences: _SubmodelOccurrences
 
 
+def _with_unfinished_candidate_steps(
+    candidate: _RecoveredCandidate, unfinished: Mapping[str, Any]
+) -> _RecoveredCandidate:
+    """*candidate*, a transform saved with an unfinished step list, given its steps from
+    the sidecar by the rule a parsed graph's nodes are (:func:`with_unfinished_steps`)."""
+    if (
+        candidate.node_type != NodeType.POLARS
+        or candidate.config is None
+        or candidate.authored_id not in unfinished
+    ):
+        return candidate
+    node = GraphNode(
+        id=candidate.authored_id,
+        data=NodeData(
+            label=candidate.authored_id,
+            nodeType=NodeType.POLARS,
+            config=candidate.config,
+            editor=candidate.editor,
+        ),
+    )
+    [given] = with_unfinished_steps([node], dict(unfinished))
+    if given is node:
+        return candidate
+    return replace(candidate, config=dict(given.data.config), editor=given.data.editor)
+
+
 def _recover_file_graph(
     tree: ast.Module,
     source: str,
@@ -1472,6 +1503,7 @@ def _recover_file_graph(
     source_file: str,
     base_dir: Path,
     positions: dict[str, dict[str, float]],
+    unfinished_steps: Mapping[str, Any],
     diagnostics: list[PipelineRecoveryDiagnostic],
     failure: BaseException | None,
     occurrence_identities: Sequence[tuple[str, int]] = (),
@@ -1504,12 +1536,15 @@ def _recover_file_graph(
         + list(occurrence_identities)
     )
     candidates = [
-        _candidate_from_ast(
-            skeleton,
-            recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
-            source_file=source_file,
-            base_dir=base_dir,
-            diagnostics=diagnostics,
+        _with_unfinished_candidate_steps(
+            _candidate_from_ast(
+                skeleton,
+                recovery_id=recovery_id(skeleton.authored_id, skeleton.start_line),
+                source_file=source_file,
+                base_dir=base_dir,
+                diagnostics=diagnostics,
+            ),
+            unfinished_steps,
         )
         for skeleton in skeletons
     ]
@@ -1567,9 +1602,10 @@ def _recover_submodel_snapshot(
     except (OSError, ParseError, SyntaxError):
         return RecoveryGraphSnapshot(), [], []
 
-    positions = _editor_sidecar_positions(
+    child_sidecar = _editor_sidecar(
         child_path, source_file=child_source_file, captures=captures, diagnostics=diagnostics
     )
+    positions = _sidecar_values(child_sidecar)[0]
 
     try:
         _definition_id, input_ports, output_ports = _extract_definition_contract(tree)
@@ -1591,6 +1627,7 @@ def _recover_submodel_snapshot(
         source_file=child_source_file,
         base_dir=config_base,
         positions=positions,
+        unfinished_steps={} if child_sidecar.data is None else child_sidecar.data.unfinished_steps,
         diagnostics=diagnostics,
         failure=failure,
         boundary_incoming=boundary_incoming,
@@ -2496,6 +2533,7 @@ def _load_readable_pipeline_editor_document(
                 source_file=source_file,
                 base_dir=path.parent,
                 positions=positions,
+                unfinished_steps={} if sidecar.data is None else sidecar.data.unfinished_steps,
                 diagnostics=diagnostics,
                 failure=strict_failure,
                 occurrence_identities=[

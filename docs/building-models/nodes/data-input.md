@@ -121,7 +121,7 @@ A Databricks table:
     A **CREDENTIAL-FREE URI** must not contain a user name, password or secret query parameter. Put a URI with credentials in an environment variable and give that variable's name as the **CONNECTION ENVIRONMENT REFERENCE**.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; code the other steps cannot hold goes in a **Free code** step.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -136,7 +136,7 @@ A Databricks table:
     | **SELECT CLAUSE** | `query` (absent when empty) |
     | **RECORDS** | `records`: a list of row objects |
     | **ARGUMENTS** | `arguments`: an object of argument names and values |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
     The formats each provider accepts:

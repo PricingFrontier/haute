@@ -39,6 +39,7 @@ from haute._polars_steps import (
     CAST_DTYPES,
     CAST_FAMILIES,
     CAST_REFUSALS,
+    MAX_EXPR_DEPTH,
     PolarsStepError,
     RenderedSteps,
     SteppedSurface,
@@ -51,6 +52,7 @@ from haute._polars_steps import (
     validate_polars_steps,
 )
 from haute._polars_steps_layout import layout_statement, restyle_statement
+from haute._polars_steps_lift import canonical_steps
 from haute._types import (
     GlobalConstant,
     GraphEdge,
@@ -70,6 +72,7 @@ from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, RequestRefusedError
 from haute.executor import execute_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
+from haute.routes._helpers import parse_pipeline_to_graph, save_sidecar
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests._project import use_project
@@ -434,8 +437,8 @@ def test_free_code_renders_multiline_statements_and_tracks_following_steps() -> 
     [
         (None, "non-empty string"),
         ("", "non-empty string"),
-        (" \n\t", "Python statement"),
-        ("# Write code here\n", "Python statement"),
+        (" \n\t", "Python statement or comment"),
+        ("\n\n", "Python statement or comment"),
         ("df = (", "Invalid Python"),
         ("return df", "Assign the result to df"),
         ("if True:\n    return df", "Assign the result to df"),
@@ -463,6 +466,117 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
         [source(), step("c", "free_code", code=code)], start="input"
     ).code.endswith(code)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("code", ["# Write code here\n", "\n# the end", "# one\n\n    # two"])
+def test_a_code_step_of_only_comments_renders_as_written(code: str) -> None:
+    rendered = render_polars_steps(
+        [source(), step("l", "limit", n=2), step("c", "free_code", code=code)], start="input"
+    )
+    assert rendered.code == f"df = quotes\ndf = df.head(2)\n{code.rstrip()}"
+    assert rendered.step_lines[2] == (3, 2 + len(code.rstrip().split("\n")))
+
+
+def test_a_comment_renders_above_its_statement_outside_its_line_range() -> None:
+    steps = [
+        step("s", "source", input="quotes", comment="# Quotes, as priced\n"),
+        step("l", "limit", n=5, comment="\n# keep five\n    # rows\n"),
+        step("d", "drop", columns=["a"]),
+    ]
+    rendered = render_polars_steps(steps, ["quotes"], start="input")
+    assert rendered.code == "\n".join(
+        [
+            "# Quotes, as priced",
+            "df = quotes",
+            "",
+            "# keep five",
+            "    # rows",
+            "df = df.head(5)",
+            'df = df.drop("a")',
+        ]
+    )
+    # A failing step is reported at its statement, below its comment.
+    assert rendered.step_lines == ((2, 2), (6, 6), (7, 7))
+    # The comment is the step's own: validation keeps it and nothing else reads it.
+    assert validate_polars_steps(steps)[1]["comment"] == "\n# keep five\n    # rows\n"
+
+
+@pytest.mark.parametrize(
+    ("comment", "fragment"),
+    [
+        (7, "non-empty text"),
+        ("", "non-empty text"),
+        ("# no newline", "end in a newline"),
+        ("# a\n# b", "end in a newline"),
+        ("# trailing  \n", "line 1 ends in whitespace"),
+        ("# ok\n   \n", "line 2 ends in whitespace"),
+        ("df = df.head(1)\n", "line 1 is neither a comment nor blank"),
+        ("# a\nx = 1  # b\n", "line 2 is neither a comment nor blank"),
+        ("# a\rdf = 1\n", "carriage return"),
+        ("# a\x00\n", "null character"),
+    ],
+)
+def test_a_comment_holds_only_comment_and_blank_lines(comment: object, fragment: str) -> None:
+    with pytest.raises(PolarsStepError, match=fragment) as exc:
+        render_polars_steps(
+            [source(), step("l", "limit", n=1, comment=comment)], ["quotes"], start="input"
+        )
+    assert exc.value.step_index == 1
+
+
+def test_a_code_step_keeps_its_comments_in_its_code_not_a_comment_field() -> None:
+    with pytest.raises(PolarsStepError, match="Unknown field") as exc:
+        validate_polars_steps(
+            [source(), step("c", "free_code", code="x = 1", comment="# about x\n")]
+        )
+    assert exc.value.step_index == 1
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "rate = 2",
+        "for rate in range(3):\n    pass",
+        "import rate",
+        "from math import pi as rate",
+        "def rate():\n    return 1",
+        "class rate:\n    pass",
+        "with open('f') as rate:\n    pass",
+        "try:\n    pass\nexcept Exception as rate:\n    pass",
+        "values = [(rate := v) for v in range(3)]",
+        "match df:\n    case [rate]:\n        pass",
+    ],
+)
+def test_a_variable_is_refused_when_code_above_it_assigns_its_name(code: str) -> None:
+    steps = [
+        source(),
+        step("c", "free_code", code=code),
+        step("v", "variable", name="rate", value=num(3)),
+    ]
+    with pytest.raises(PolarsStepError, match="Variable 'rate' is already assigned") as exc:
+        render_polars_steps(steps, ["quotes"], start="input")
+    assert exc.value.step_index == 2
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def helper():\n    rate = 2\n    return rate",
+        "values = [rate for rate in range(3)]",
+        "scale = lambda rate: rate * 2",
+        "print(rate_table)",
+    ],
+)
+def test_a_variable_may_take_a_name_the_code_binds_only_in_its_own_scope(code: str) -> None:
+    steps = [
+        source(),
+        step("c", "free_code", code=code),
+        step("v", "variable", name="rate", value=num(3)),
+    ]
+    assert render_polars_steps(steps, ["quotes"], start="input").code.endswith("rate = 3")
+    # Code after the variable may reassign it, as before.
+    later = [source(), steps[2], step("c", "free_code", code="rate = rate * 2")]
+    render_polars_steps(later, ["quotes"], start="input")
 
 
 @pytest.mark.parametrize(
@@ -1900,10 +2014,59 @@ def test_nested_expressions_render(kind_step: dict[str, Any], expected: str) -> 
 
 
 def _nested(depth: int) -> dict[str, Any]:
+    """*depth* formulas nested on the left, alternating ``+`` and ``-``.
+
+    A chain of one operator would count as one level, so the operators alternate
+    and each formula is a level of its own.
+    """
     operand: dict[str, Any] = num(1)
-    for _ in range(depth):
-        operand = ex(binary(operand, "+", num(1)))
+    for level in range(depth):
+        operand = ex(binary(operand, "+-"[level % 2], num(1)))
     return {"type": "operand", "operand": operand}
+
+
+def _chain(terms: int, op: str = "+", *, side: str = "left") -> dict[str, Any]:
+    """A formula of *terms* columns joined by *op*, nested on the left or the right."""
+    expr = binary(col("c0"), op, col("c1"))
+    for index in range(2, terms):
+        nested = ex(expr)
+        expr = (
+            binary(nested, op, col(f"c{index}"))
+            if side == "left"
+            else binary(col(f"c{index}"), op, nested)
+        )
+    return expr
+
+
+@pytest.mark.parametrize("op", ["+", "-", "*", "/", "//", "%"])
+def test_a_chain_of_one_operator_is_one_level_however_long(op: str) -> None:
+    steps = [source(), step("x", "with_column", name="total", expr=_chain(20, op))]
+    rendered = render_polars_steps(steps, ["quotes"], start="input")
+    # Twenty terms, written flat: the chain needs no brackets, and stays one tree.
+    assert rendered.code.count(f" {op} ") == 19
+    assert "(pl.col" not in rendered.code
+    # One level, so the chain still fits under eleven more levels of nesting.
+    deep: dict[str, Any] = _chain(20, op)
+    for _ in range(MAX_EXPR_DEPTH - 1):
+        deep = {"type": "function", "fn": "abs", "operand": ex(deep), "args": []}
+    render_polars_steps([source(), step("x", "with_column", name="t", expr=deep)], start="input")
+
+
+@pytest.mark.parametrize(
+    ("expr", "why"),
+    [
+        (_nested(20)["operand"]["expr"], "a 20-deep mix of + and -"),
+        (_chain(14, "+", side="right"), "a + (b + (c + ...)) keeps every group"),
+        (_chain(14, "**"), "** chains are bracketed, so each counts a level"),
+    ],
+)
+def test_nesting_that_is_not_one_chain_still_counts_each_level(
+    expr: dict[str, Any], why: str
+) -> None:
+    with pytest.raises(PolarsStepError, match=f"nest more than {MAX_EXPR_DEPTH} levels"):
+        render_polars_steps(
+            [source(), step("x", "with_column", name="t", expr=expr)], start="input"
+        )
 
 
 @pytest.mark.parametrize(
@@ -3736,28 +3899,47 @@ def _write_sidecars(root: Path, graph: PipelineGraph) -> None:
         target.write_text(content, encoding="utf-8")
 
 
+def _lifted(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The steps a transform's code loads back as (READ-22): their canonical form."""
+    return canonical_steps(NodeType.POLARS, steps)
+
+
 def test_codegen_parse_round_trip_reproduces_rendered_code(tmp_path: Path) -> None:
+    """A transform's steps live in its code alone: no ``config=``, no sidecar, and the
+    load rebuilds them from the body with ids from their kind and place (READ-22)."""
     quotes, rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, rates, _stepped("t", GOLDEN_STEPS)],
         edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
     )
     code = graph_to_code(graph, pipeline_name="main")
-    assert '@pipeline.polars(config="config/polars/t.json"' in code
+    assert "@pipeline.polars\ndef t(" in code
+    assert "polars(config" not in code
     assert "\n    df = quotes\n" in code
     _write_sidecars(tmp_path, graph)
-    assert (tmp_path / "config" / "polars" / "t.json").is_file()
+    assert not (tmp_path / "config" / "polars").exists()
 
     parsed = parse_pipeline_source(code, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert node.data.config["steps"] == GOLDEN_STEPS
+    assert node.data.config["steps"] == _lifted(GOLDEN_STEPS)
+    assert [s["id"] for s in node.data.config["steps"]] == [
+        "source-1",
+        "variable-2",
+        "filter-3",
+        "with_column-4",
+        "with_column-5",
+        "join-6",
+        "group_by-7",
+    ]
     assert node.data.config["code"] == GOLDEN_CODE
     assert node.data.editor.steps_discarded is None
+    assert graph_to_code(parsed, pipeline_name="main") == code
 
 
-def test_a_stepped_transform_keeps_its_column_settings_in_its_sidecar(tmp_path: Path) -> None:
-    """The sidecar is where the parser reads a stepped transform's settings, so the
-    decorator names only it: a column keyword beside config= would fail the parse."""
+def test_a_stepped_transform_keeps_its_column_settings_as_decorator_keywords(
+    tmp_path: Path,
+) -> None:
+    """A stepped transform's column settings are decorator keywords, as for any transform."""
     quotes, rates = _frames(tmp_path)
     stepped = _stepped("t", GOLDEN_STEPS, selected_columns=["premium"], column_renames={"a": "b"})
     graph = PipelineGraph(
@@ -3765,17 +3947,18 @@ def test_a_stepped_transform_keeps_its_column_settings_in_its_sidecar(tmp_path: 
         edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
     )
     code = graph_to_code(graph, pipeline_name="main")
-    assert '@pipeline.polars(config="config/polars/t.json")\n' in code
+    decorator = next(line for line in code.splitlines() if line.startswith("@pipeline.polars"))
+    assert "config=" not in decorator
+    assert 'selected_columns=["premium"]' in decorator
+    assert 'column_renames={"a": "b"}' in decorator
     _write_sidecars(tmp_path, graph)
-    sidecar = json.loads((tmp_path / "config" / "polars" / "t.json").read_text(encoding="utf-8"))
-    assert sidecar["selected_columns"] == ["premium"]
-    assert sidecar["column_renames"] == {"a": "b"}
+    assert not (tmp_path / "config" / "polars").exists()
 
     parsed = parse_pipeline_source(code, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
     assert node.data.config["selected_columns"] == ["premium"]
     assert node.data.config["column_renames"] == {"a": "b"}
-    assert node.data.config["steps"] == GOLDEN_STEPS
+    assert node.data.config["steps"] == _lifted(GOLDEN_STEPS)
 
 
 def test_free_code_executes_between_low_code_steps_and_round_trips(tmp_path: Path) -> None:
@@ -3794,7 +3977,8 @@ def test_free_code_executes_between_low_code_steps_and_round_trips(tmp_path: Pat
     _write_sidecars(tmp_path, graph)
     parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps)
+    assert [s["kind"] for s in node.data.config["steps"]] == [s["kind"] for s in steps]
     assert node.data.config["code"] == expected_code
     assert node.data.editor.steps_discarded is None
     result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
@@ -3814,7 +3998,9 @@ def test_free_code_round_trip_keeps_helper_returns_and_trailing_comments(tmp_pat
     _write_sidecars(tmp_path, graph)
     parsed = parse_pipeline_source(graph_to_code(graph, pipeline_name="main"), _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps)
+    # The trailing comment stays at the end of the code step.
+    assert node.data.config["steps"][-1]["code"].endswith("df = unchanged(df)\n# End")
     assert node.data.config["code"] == render_polars_steps(steps, start="input").code
 
 
@@ -3833,7 +4019,9 @@ def test_free_code_runtime_errors_use_rendered_lines(
     assert result.error_line == line
 
 
-def test_parse_discards_steps_when_body_was_hand_edited(tmp_path: Path) -> None:
+def test_parse_keeps_the_steps_of_a_hand_edited_body(tmp_path: Path) -> None:
+    """A hand edit keeps the other steps: an edited statement a step still renders is that
+    step with its new value, and one no step renders is code (READ-22)."""
     quotes, rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, rates, _stepped("t", GOLDEN_STEPS)],
@@ -3841,18 +4029,24 @@ def test_parse_discards_steps_when_body_was_hand_edited(tmp_path: Path) -> None:
     )
     code = graph_to_code(graph, pipeline_name="main")
     _write_sidecars(tmp_path, graph)
-    edited = code.replace("df = df.head", "df = df.head").replace(
-        "    ipt_rate = 0.12\n", "    ipt_rate = 0.2\n"
+    edited = code.replace("    ipt_rate = 0.12\n", "    ipt_rate = 0.2\n").replace(
+        "    df = df.join(\n        rates,",
+        "    df = df.unique()\n    df = df.join(\n        rates,",
     )
     assert edited != code
 
     parsed = parse_pipeline_source(edited, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert "steps" not in node.data.config
-    assert node.data.config["code"] == GOLDEN_CODE.replace("0.12", "0.2")
-    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
-    assert node.data.editor.discarded_sidecar == "config/polars/t.json"
-    # PCFG-R08: the finding travels beside the config, which holds no editor key.
+    expected = _lifted(GOLDEN_STEPS)
+    expected[1] = {**expected[1], "value": num(0.2)}
+    expected.insert(5, {"id": "free_code-6", "kind": "free_code", "code": "df = df.unique()"})
+    expected[6:] = [{**s, "id": f"{s['kind']}-{i + 7}"} for i, s in enumerate(expected[6:])]
+    assert node.data.config["steps"] == expected
+    assert node.data.config["code"] == GOLDEN_CODE.replace("0.12", "0.2").replace(
+        "df = df.join(", "df = df.unique()\ndf = df.join("
+    )
+    assert node.data.editor.steps_discarded is None
+    # PCFG-R08: the editor state travels beside the config, which holds no editor key.
     assert not any(key.startswith("_") for key in node.data.config)
 
     from haute._pipeline_recovery import load_pipeline_editor_document
@@ -3868,7 +4062,7 @@ def test_parse_discards_steps_when_body_was_hand_edited(tmp_path: Path) -> None:
 def test_editor_state_is_derived_and_kept_beside_the_config() -> None:
     """A stale steps error a request carries back is recomputed from the steps; the
     parse's findings survive a config replacement, as they did inside the config."""
-    findings = {"steps_discarded": "Steps were discarded because x.", "discarded_sidecar": "a.json"}
+    findings = {"steps_discarded": "Steps were discarded because x."}
     echoed = NodeData(
         nodeType="polars",
         config={"steps": [source()]},
@@ -3880,31 +4074,36 @@ def test_editor_state_is_derived_and_kept_beside_the_config() -> None:
     node = GraphNode(id="t", data=echoed)
     broken = node.with_config({"steps": [step("f", "filter", match="all", conditions=[])]})
     assert broken.data.editor.steps_error is not None
-    assert broken.data.editor.discarded_sidecar == "a.json"
+    assert broken.data.editor.steps_discarded == findings["steps_discarded"]
     assert broken.with_config({"code": "df = quotes"}).data.editor.steps_error is None
 
 
-def test_parse_keeps_steps_whose_body_is_the_same_program_in_an_older_style(
-    tmp_path: Path,
-) -> None:
-    """A body saved with other quotes, brackets or line breaks still describes its steps."""
+def test_a_statement_in_an_older_style_loads_as_code(tmp_path: Path) -> None:
+    """A statement with other quotes or brackets than the renderer writes is code: a step
+    is rebuilt only from exactly its rendering, so the code keeps its text (READ-22)."""
     quotes, _rates = _frames(tmp_path)
     steps = [
         source(),
         step("f", "filter", match="all", conditions=[cond("premium", "gt", value=num(100))]),
+        step("l", "limit", n=2),
     ]
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
     code = graph_to_code(graph, pipeline_name="main")
     _write_sidecars(tmp_path, graph)
     styled = 'df = df.filter(pl.col("premium") > 100)'
     assert styled in code
-    older = code.replace(styled, "df = df.filter((pl.col('premium') > 100))")
+    older_statement = "df = df.filter((pl.col('premium') > 100))"
+    older = code.replace(styled, older_statement)
 
     parsed = parse_pipeline_source(older, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == [
+        {"id": "source-1", "kind": "source", "input": "quotes"},
+        {"id": "free_code-2", "kind": "free_code", "code": older_statement},
+        {"id": "limit-3", "kind": "limit", "n": 2},
+    ]
     assert node.data.editor.steps_discarded is None
-    assert node.data.config["code"] == render_polars_steps(steps, start="input").code
+    assert node.data.config["code"] == f"df = quotes\n{older_statement}\ndf = df.head(2)"
 
 
 #: The golden steps as Haute 0.5 wrote them: lists for keys and aggregations,
@@ -3925,8 +4124,11 @@ EARLIER_GOLDEN_CODE = "\n".join(
 )
 
 
-def test_parse_reads_a_body_in_an_earlier_renderer_s_spelling_as_code(tmp_path: Path) -> None:
-    """Canonical only: a body only an earlier renderer wrote is not the steps' body."""
+def test_a_body_saved_by_an_earlier_renderer_loads_its_respelled_statements_as_code(
+    tmp_path: Path,
+) -> None:
+    """The renderer's earlier spelling is no longer a step's: the statements it spells
+    differently load as one code step, the ones it spells alike stay steps (READ-22)."""
     quotes, rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, rates, _stepped("t", GOLDEN_STEPS)],
@@ -3940,10 +4142,12 @@ def test_parse_reads_a_body_in_an_earlier_renderer_s_spelling_as_code(tmp_path: 
 
     parsed = parse_pipeline_source(earlier, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert "steps" not in node.data.config
-    assert node.data.editor.steps_discarded == (
-        "Steps were discarded because the function body no longer matches the rendered steps."
-    )
+    respelled = "\n".join(EARLIER_GOLDEN_CODE.split("\n")[2:])
+    assert node.data.config["steps"] == [
+        *_lifted(GOLDEN_STEPS)[:2],
+        {"id": "free_code-3", "kind": "free_code", "code": respelled},
+    ]
+    assert node.data.editor.steps_discarded is None
     assert node.data.config["code"] == EARLIER_GOLDEN_CODE
 
 
@@ -3968,10 +4172,15 @@ def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_cod
 
     parsed = parse_pipeline_source(unordered, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert "steps" not in node.data.config
-    assert node.data.editor.steps_discarded == (
-        "Steps were discarded because the function body no longer matches the rendered steps."
-    )
+    assert node.data.config["steps"] == [
+        {"id": "source-1", "kind": "source", "input": "quotes"},
+        {
+            "id": "free_code-2",
+            "kind": "free_code",
+            "code": 'df = df.sort("premium", descending=True)',
+        },
+    ]
+    assert node.data.editor.steps_discarded is None
     assert 'df = df.sort("premium", descending=True)' in node.data.config["code"]
     assert stable not in node.data.config["code"]
 
@@ -3991,9 +4200,10 @@ def test_parse_reads_a_sort_saved_before_sorts_kept_their_ties_order_as_free_cod
         ),
     ],
 )
-def test_parse_discards_steps_for_a_body_the_steps_do_not_render(
+def test_a_statement_no_step_renders_loads_as_code_beside_the_start(
     tmp_path: Path, steps: list[dict[str, Any]], edit: tuple[str, str]
 ) -> None:
+    """An edited statement no step renders is code, as written; the start stays a step."""
     quotes, _rates = _frames(tmp_path)
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
     code = graph_to_code(graph, pipeline_name="main")
@@ -4002,11 +4212,15 @@ def test_parse_discards_steps_for_a_body_the_steps_do_not_render(
     assert old in code
     parsed = parse_pipeline_source(code.replace(old, new), _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert "steps" not in node.data.config
-    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
+    assert node.data.config["steps"] == [
+        {"id": "source-1", "kind": "source", "input": "quotes"},
+        {"id": "free_code-2", "kind": "free_code", "code": new},
+    ]
+    assert node.data.editor.steps_discarded is None
 
 
-def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path: Path) -> None:
+def test_an_edited_comment_keeps_the_steps(tmp_path: Path) -> None:
+    """A comment belongs to the step below it, so editing it keeps that step (READ-22)."""
     quotes, _rates = _frames(tmp_path)
     steps = [source(), step("c", "free_code", code="# keep two rows\ndf = df.head(2)")]
     graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
@@ -4017,8 +4231,11 @@ def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path:
 
     parsed = parse_pipeline_source(edited, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "t")
-    assert "steps" not in node.data.config
-    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
+    assert node.data.config["steps"] == [
+        {"id": "source-1", "kind": "source", "input": "quotes"},
+        {"id": "limit-2", "kind": "limit", "n": 2, "comment": "# keep the first two rows\n"},
+    ]
+    assert node.data.editor.steps_discarded is None
 
 
 def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
@@ -4057,12 +4274,12 @@ def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
     assert reformatted == generated
     _write_sidecars(tmp_path, graph)
 
-    # A file saved before trailing whitespace was taken off, then reformatted.
-    padded = generated.replace("# keep two rows", "# keep two rows   ")
-    for body in (generated, padded, reformatted):
+    # The file as saved, then reformatted (a file whose lines end in whitespace:
+    # test_a_line_ending_in_whitespace_keeps_the_transform_s_steps).
+    for body in (generated, reformatted):
         parsed = parse_pipeline_source(body, _base_dir=tmp_path)
         node = next(n for n in parsed.nodes if n.id == "t")
-        assert node.data.config["steps"] == steps
+        assert node.data.config["steps"] == _lifted(steps)
         assert node.data.editor.steps_discarded is None
     result = execute_graph(parsed, target_node_id="t", execution_context=_capped_context())["t"]
     assert result.status == "ok", result.error
@@ -4073,6 +4290,36 @@ def test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps(
     module = _write_and_import(graph, tmp_path)
     frame = _collect(module.pipeline.run(source="live"))
     assert frame["note"].to_list() == ["first  \n   \nsecond"] * 2
+
+
+@pytest.mark.parametrize(
+    ("line", "padded"),
+    [
+        ("    # keep two rows\n", "    # keep two rows   \n"),
+        ("    ipt_rate = 0.12\n", "    ipt_rate = 0.12   \n"),
+    ],
+)
+def test_a_line_ending_in_whitespace_keeps_the_transform_s_steps(
+    tmp_path: Path, line: str, padded: str
+) -> None:
+    """A hand edit that leaves whitespace at the end of a comment or statement keeps the
+    rest of the steps: only a body whose lines cannot be split into statements loads as
+    code alone (specs/pipeline-config/high-level.md, Stepped transforms)."""
+    quotes, rates = _frames(tmp_path)
+    steps = [*GOLDEN_STEPS[:2], {**GOLDEN_STEPS[2], "comment": "# keep two rows\n"}]
+    graph = PipelineGraph(
+        nodes=[quotes, rates, _stepped("t", [*steps, *GOLDEN_STEPS[3:]])],
+        edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    assert line in code
+
+    parsed = parse_pipeline_source(code.replace(line, padded), _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    kinds = [s["kind"] for s in node.data.config.get("steps", [])]
+    assert kinds[:1] == ["source"]
+    assert {"filter", "join", "group_by"} <= set(kinds)
 
 
 def test_a_hand_written_string_continuing_at_column_zero_extracts_as_written() -> None:
@@ -4143,45 +4390,58 @@ def test_a_leading_bare_string_step_is_a_fixed_point_with_its_value(tmp_path: Pa
 
 
 def test_parse_keeps_incomplete_steps_saved_through_the_placeholder(tmp_path: Path) -> None:
+    """An unfinished list is saved as the raising placeholder, its steps in ``.haute.json``;
+    the editor's load gives them back behind empty code (READ-22)."""
     quotes, _rates = _frames(tmp_path)
     incomplete = [source(), step("f", "filter", match="all", conditions=[])]
     graph = PipelineGraph(
         nodes=[quotes, _stepped("t", incomplete)], edges=[make_edge("quotes", "t")]
     )
     code = graph_to_code(graph, pipeline_name="main")
-    assert INCOMPLETE_TRANSFORM_MESSAGE in code
+    assert INCOMPLETE_STEPS_MESSAGE in code
     _write_sidecars(tmp_path, graph)
+    pipeline = tmp_path / "main.py"
+    pipeline.write_text(code, encoding="utf-8")
+    save_sidecar(pipeline, graph)
 
-    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-    node = next(n for n in parsed.nodes if n.id == "t")
+    # The module alone holds no steps: the placeholder loads as a transform with no code.
+    bare = next(n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "t")
+    assert "steps" not in bare.data.config
+    assert bare.data.config["code"] == ""
+
+    node = next(n for n in parse_pipeline_to_graph(pipeline).nodes if n.id == "t")
     assert node.data.config["steps"] == incomplete
     assert node.data.config["code"] == ""
     assert node.data.editor.steps_error == "Step 2: Add at least one condition."
 
 
-def test_parse_rejects_malformed_steps_sidecar(tmp_path: Path) -> None:
+def test_parse_refuses_a_transform_that_names_a_steps_sidecar(tmp_path: Path) -> None:
+    """``config=`` on a transform is the form before READ-22, however its file reads: the
+    parse refuses it, naming the conversion, before it reads the file."""
     quotes, _rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, _stepped("t", [source()])], edges=[make_edge("quotes", "t")]
     )
-    code = graph_to_code(graph, pipeline_name="main")
+    code = graph_to_code(graph, pipeline_name="main").replace(
+        "@pipeline.polars\n", '@pipeline.polars(config="config/polars/t.json")\n'
+    )
     _write_sidecars(tmp_path, graph)
     sidecar = tmp_path / "config" / "polars" / "t.json"
+    sidecar.parent.mkdir(parents=True)
     sidecar.write_text(json.dumps({"steps": {"kind": "source"}}), encoding="utf-8")
-    with pytest.raises(ConfigError, match="must be a list"):
+    with pytest.raises(ConfigError, match="read_22_polars_code.py"):
         parse_pipeline_source(code, _base_dir=tmp_path)
 
 
-def test_collect_node_configs_writes_polars_sidecar_only_with_steps() -> None:
+def test_collect_node_configs_writes_no_polars_file() -> None:
+    """A transform has no sidecar, stepped or not: its steps live in its code (READ-22)."""
     stepped = _stepped("stepped", [source()])
     coded = GraphNode(
         id="coded", data=NodeData(label="coded", nodeType="polars", config={"code": "df = quotes"})
     )
     graph = PipelineGraph(nodes=[stepped, coded], edges=[])
-    configs = collect_node_configs(graph)
-    assert set(configs) == {"config/polars/stepped.json"}
-    assert json.loads(configs["config/polars/stepped.json"]) == {"steps": [source()]}
-    assert node_emits_sidecar(stepped) and not node_emits_sidecar(coded)
+    assert collect_node_configs(graph) == {}
+    assert not node_emits_sidecar(stepped) and not node_emits_sidecar(coded)
 
 
 # ---------------------------------------------------------------------------
@@ -4222,34 +4482,37 @@ def _project_graph(
     )
 
 
-def test_save_writes_then_retires_polars_sidecar_on_switch_to_code(project_root: Path) -> None:
-    sidecar = project_root / "config" / "polars" / "t.json"
+def test_save_writes_the_same_code_for_steps_and_for_code_and_no_polars_file(
+    project_root: Path,
+) -> None:
+    """Steps and their code save to the same module, and neither leaves a file to retire."""
+    main = project_root / "main.py"
     assert _save(project_root, _project_graph(project_root, GOLDEN_STEPS)) == []
-    assert json.loads(sidecar.read_text(encoding="utf-8"))["steps"] == GOLDEN_STEPS
+    stepped = main.read_text(encoding="utf-8")
+    assert "polars(config" not in stepped
+    assert not (project_root / "config" / "polars").exists()
 
     _save(project_root, _project_graph(project_root, None, code=GOLDEN_CODE))
-    assert not sidecar.exists()
-    assert 'config="config/polars' not in (project_root / "main.py").read_text(encoding="utf-8")
+    assert main.read_text(encoding="utf-8") == stepped
+    assert not (project_root / "config" / "polars").exists()
 
 
-def test_hand_edit_then_load_then_save_retires_discarded_sidecar(project_root: Path) -> None:
-    sidecar = project_root / "config" / "polars" / "t.json"
+def test_hand_edit_then_load_then_save_keeps_the_edit_and_the_steps(project_root: Path) -> None:
+    """A hand-edited file loads with its steps, the edit included, and saves back as it is."""
     _save(project_root, _project_graph(project_root, GOLDEN_STEPS))
     main = project_root / "main.py"
-    main.write_text(
-        main.read_text(encoding="utf-8").replace("ipt_rate = 0.12", "ipt_rate = 0.5"),
-        encoding="utf-8",
-    )
+    edited = main.read_text(encoding="utf-8").replace("ipt_rate = 0.12", "ipt_rate = 0.5")
+    main.write_bytes(edited.encode("utf-8"))
 
     loaded = parse_pipeline_file(main)
     node = next(n for n in loaded.nodes if n.id == "t")
-    assert "steps" not in node.data.config
-    assert node.data.editor.discarded_sidecar == "config/polars/t.json"
-    assert sidecar.exists()
+    expected = _lifted(GOLDEN_STEPS)
+    expected[1] = {**expected[1], "value": num(0.5)}
+    assert node.data.config["steps"] == expected
 
     _save(project_root, loaded)
-    assert not sidecar.exists()
-    assert "ipt_rate = 0.5" in main.read_text(encoding="utf-8")
+    assert main.read_text(encoding="utf-8") == edited
+    assert not (project_root / "config" / "polars").exists()
 
 
 def test_save_rejects_case_colliding_stepped_transforms(project_root: Path) -> None:
@@ -4271,7 +4534,7 @@ def test_save_warns_about_incomplete_step_list(project_root: Path) -> None:
     assert any("Unknown input 'policies'" in w for w in unknown)
 
 
-def test_node_scoped_save_updates_the_polars_sidecar(tmp_path: Path) -> None:
+def test_node_scoped_save_updates_the_transform_s_code(tmp_path: Path) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
     from haute._pipeline_repair_actions import apply_scoped_node_save
     from haute.schemas import PipelineNodeSaveRequest
@@ -4294,15 +4557,12 @@ def test_node_scoped_save_updates_the_polars_sidecar(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     steps = [source("source_a"), step("l", "limit", n=5)]
-    sidecar = tmp_path / "config" / "polars" / "transform.json"
-    sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(json.dumps({"steps": steps}), encoding="utf-8")
     main = tmp_path / "main.py"
     main.write_text(
         "import haute\nimport polars as pl\n"
         'pipeline = haute.Pipeline("demo")\n'
         '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
-        '@pipeline.polars(config="config/polars/transform.json")\n'
+        "@pipeline.polars\n"
         "def transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
         "    df: pl.LazyFrame\n    df = source_a\n    df = df.head(5)\n    return df\n",
         encoding="utf-8",
@@ -4311,7 +4571,7 @@ def test_node_scoped_save_updates_the_polars_sidecar(tmp_path: Path) -> None:
     target = next(node for node in document.nodes if node.authored_id == "transform")
     assert target.availability == "blocked"
     assert target.scoped_editable is True
-    assert target.config["steps"] == steps
+    assert target.config["steps"] == _lifted(steps)
 
     new_steps = [source("source_a"), step("l", "limit", n=3)]
     request = PipelineNodeSaveRequest(
@@ -4323,11 +4583,13 @@ def test_node_scoped_save_updates_the_polars_sidecar(tmp_path: Path) -> None:
     )
     apply_scoped_node_save(project_root=tmp_path, request=request)
 
-    assert json.loads(sidecar.read_text(encoding="utf-8"))["steps"] == new_steps
-    assert "df = df.head(3)" in main.read_text(encoding="utf-8")
+    saved = main.read_text(encoding="utf-8")
+    assert "df = df.head(3)" in saved
+    assert "polars(config" not in saved
+    assert not (tmp_path / "config" / "polars").exists()
     reloaded = load_pipeline_editor_document(main, project_root=tmp_path)
     node = next(item for item in reloaded.nodes if item.authored_id == "transform")
-    assert node.config["steps"] == new_steps
+    assert node.config["steps"] == _lifted(new_steps)
     assert node.editor.steps_discarded is None
 
 
@@ -5142,7 +5404,6 @@ def test_data_input_hand_edit_discards_steps_without_sidecar_marker(tmp_path: Pa
     assert "steps" not in node.data.config
     assert node.data.config["code"] == "df = df.head(3)"
     assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
-    assert node.data.editor.discarded_sidecar is None
 
 
 def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
@@ -5941,8 +6202,6 @@ def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
     assert "steps" not in node.data.config
     assert node.data.config["code"] == "df = df.head(3)"
     assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
-    # Explore has no sidecar to retire.
-    assert node.data.editor.discarded_sidecar is None
 
 
 # ---------------------------------------------------------------------------

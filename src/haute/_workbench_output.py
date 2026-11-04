@@ -22,7 +22,7 @@ from typing import Any
 import polars as pl
 
 from haute._polars_utils import execution_collect, limited_python_scan
-from haute._workbench_form import QUOTE_DETAILS_ID
+from haute._workbench_form import QUOTE_DETAILS_NAME
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
     WorkbenchColumn,
@@ -166,7 +166,7 @@ def quote_identity(frames: object) -> pl.LazyFrame | None:
     None when *frames* hold no such frame."""
     if not isinstance(frames, Mapping):
         return None
-    details = frames.get(QUOTE_DETAILS_ID)
+    details = frames.get(QUOTE_DETAILS_NAME)
     if not isinstance(details, (pl.DataFrame, pl.LazyFrame)):
         return None
     frame = details.lazy()
@@ -194,7 +194,7 @@ def workbench_response(
             held = execution_collect(identity, engine="streaming")
             if held.height != 1:
                 raise WorkbenchOutputError(
-                    f"The quote's {QUOTE_DETAILS_ID} has {held.height} rows; its reference and "
+                    f"The quote's {QUOTE_DETAILS_NAME} has {held.height} rows; its reference and "
                     "option are read from its one row."
                 )
             named = held.row(0, named=True)

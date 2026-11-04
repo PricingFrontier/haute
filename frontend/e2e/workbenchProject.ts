@@ -20,17 +20,16 @@ export const FORM_FILES: Record<string, unknown> = {
   "form.json": { version: 1, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
   "schema/quote_details.json": { columns: [] },
   "schema/policy.json": {
-    id: "t_policy",
     role: "input",
     rows: "one",
     columns: [
-      { id: "c_limit", name: "limit", type: "int", required: true },
-      { id: "c_region", name: "region", type: "str", options: ["north", "south"] },
+      { name: "limit", type: "int", required: true },
+      { name: "region", type: "str", options: ["north", "south"] },
     ],
   },
-  "schema/pricing.json": { id: "t_pricing", role: "output", rows: "one", columns: [{ id: "c_premium", name: "premium", type: "float" }] },
-  "sheets/sheet_1.json": { id: "page_1", title: "Sheet 1", sections: [{ id: "section_1", title: "Section 1", components: [] }] },
-  "sheets/sheet_1.layout.json": { width: 1280, sections: { section_1: { height: 560, components: {} } } },
+  "schema/pricing.json": { role: "output", rows: "one", columns: [{ name: "premium", type: "float" }] },
+  "sheets/sheet_1.json": { title: "Sheet 1", sections: [{ title: "Section 1", components: [] }] },
+  "sheets/sheet_1.layout.json": { width: 1280, sections: { "Section 1": { height: 560, components: {} } } },
 }
 
 export const readFormFile = (path: string) => JSON.parse(readFileSync(resolve(FORM_FOLDER, path), "utf8"))

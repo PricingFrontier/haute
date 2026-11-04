@@ -24,7 +24,7 @@ const LEGENDS: ReadonlyArray<{ value: ChartOptions["legend"]; label: string }> =
 /** The Rows select's value while no column labels the rows: they are numbered. */
 const ROW_NUMBER = ""
 
-/** A column's value in the Rows select: its table and column ids. */
+/** A column's value in the Rows select: its table's and column's names. */
 const columnValue = (table: string, column: string): string => JSON.stringify([table, column])
 
 export default function ChartSettings({ form, widget }: { form: FormSpec; widget: ChartWidget }) {
@@ -36,7 +36,7 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
   const category = widget.category === null ? ROW_NUMBER : columnValue(widget.category.table, widget.category.column)
   // A column labelling the rows that is no longer one they can be labelled by stays chosen until
   // another is, as the problem on the Chart says.
-  const offered = labels.some(({ table, columns }) => columns.some((column) => columnValue(table.id, column.id) === category))
+  const offered = labels.some(({ table, columns }) => columns.some((column) => columnValue(table.name, column.name) === category))
   const kept = widget.category === null || offered ? null : fieldColumn(form, widget.category)
 
   return (
@@ -75,9 +75,9 @@ export default function ChartSettings({ form, widget }: { form: FormSpec; widget
           >
             <option value={ROW_NUMBER}>Row number</option>
             {labels.map(({ table, columns }) => (
-              <optgroup key={table.id} label={table.name}>
+              <optgroup key={table.name} label={table.name}>
                 {columns.map((column) => (
-                  <option key={column.id} value={columnValue(table.id, column.id)}>
+                  <option key={column.name} value={columnValue(table.name, column.name)}>
                     {column.label || readableName(column.name)}
                   </option>
                 ))}

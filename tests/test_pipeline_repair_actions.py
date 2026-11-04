@@ -325,7 +325,8 @@ def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_pat
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
         '@pipeline.constant(config="custom.json")\ndef source(): ...\n'
     )
-    assert json.loads(config.read_text()) == {"values": [{"name": "constant_1", "value": "1.0"}]}
+    # The palette's default constant, written as a map from name to value (READ-28).
+    assert config.read_text() == '{\n  "values": {\n    "constant_1": 1.0\n  }\n}\n'
 
 
 def test_reset_rolls_back_all_artifacts_when_verification_fails(tmp_path, monkeypatch):
@@ -574,7 +575,7 @@ def test_recover_reports_a_sidecar_backed_nodes_decorator_keywords_as_removed(tm
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sidecar = tmp_path / "config" / "constant" / "rates.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text('{"values": [{"name": "base", "value": "1"}]}\n', encoding="utf-8")
+    sidecar.write_text('{"values": {"base": 1}}\n', encoding="utf-8")
     (tmp_path / "main.py").write_text(
         'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
         '@pipeline.constant(config="config/constant/rates.json", '
@@ -597,9 +598,9 @@ def test_recover_reports_a_sidecar_backed_nodes_decorator_keywords_as_removed(tm
     assert ("/colour", "removed") in outcomes
     result = _apply(tmp_path, request)
     assert result.document.load_status == "ready"
-    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
-        "values": [{"name": "base", "value": "1"}]
-    }
+    assert sidecar.read_text(encoding="utf-8") == '{\n  "values": {\n    "base": 1\n  }\n}\n'
+    rates = next(node for node in result.document.nodes if node.authored_id == "rates")
+    assert (rates.config or {})["values"] == [{"name": "base", "value": "1"}]
     source = (tmp_path / "main.py").read_text(encoding="utf-8")
     assert '@pipeline.constant(config="config/constant/rates.json")' in source
     assert "colour" not in source
@@ -657,7 +658,10 @@ def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sidecar = tmp_path / "config" / "constant" / "rates.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(json.dumps({**reordered, "retired": True}), encoding="utf-8")
+    # The file as written (values as a map, READ-28), its keys in another order, with a
+    # retired key that makes the node unavailable until Recover.
+    written = {"contract": "opaque", **json.loads(whole_document(config)), "retired": True}
+    sidecar.write_text(json.dumps(written, ensure_ascii=False), encoding="utf-8")
     (tmp_path / "main.py").write_text(
         'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
         '@pipeline.constant(config="config/constant/rates.json")\n'
@@ -678,6 +682,7 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     so the regenerated decorator carries none, and no stale copy is left in the
     sidecar."""
     from haute._config_builder import resolve_parse_time_contract
+    from haute._config_io import node_config_json
     from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import NodeType
 
@@ -725,7 +730,13 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     assert "contract" not in (node.config or {})
     derived = resolve_parse_time_contract(NodeType.BANDING, node.config or {})
     assert (derived.inputs, derived.outputs) == (frozenset(), frozenset())
-    assert json.loads(sidecar.read_text()) == {"factors": [draft]}
+    # The draft's own bytes, its null default left unwritten (READ-27), and no contract.
+    assert sidecar.read_text(encoding="utf-8") == node_config_json(
+        NodeType.BANDING, {"factors": [draft]}, node_label="band"
+    )
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "factors": [{key: value for key, value in draft.items() if key != "default"}]
+    }
 
 
 def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):

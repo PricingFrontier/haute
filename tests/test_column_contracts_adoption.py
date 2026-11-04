@@ -330,7 +330,7 @@ class TestCodegenEmitsContractMetadata:
                         "column": "age",
                         "outputColumn": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -443,7 +443,7 @@ class TestParserValidatesUserDeclaredContracts:
                         "column": "age",
                         "outputColumn": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -498,7 +498,7 @@ pipeline.connect("src", "band")
                         "column": "age",
                         "outputColumn": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -551,7 +551,7 @@ pipeline.connect("src", "band")
                         "column": "age",
                         "outputColumn": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },

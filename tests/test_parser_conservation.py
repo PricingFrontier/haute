@@ -331,30 +331,41 @@ class TestKeywordOnlyParameterConservation:
         assert document.capabilities.can_save is False
         assert main.read_bytes() == before
 
-    def test_a_stepped_transform_refuses_a_keyword_only_parameter(self, tmp_path: Path) -> None:
-        sidecar = tmp_path / "config" / "polars" / "scaled.json"
-        sidecar.parent.mkdir(parents=True)
-        sidecar.write_text(
-            '{"steps": [{"id": "s", "kind": "source", "input": "source"}]}', encoding="utf-8"
+    def test_a_body_that_rebuilds_as_steps_keeps_its_keyword_only_parameters(
+        self, tmp_path: Path
+    ) -> None:
+        """A transform's steps are rebuilt from its code (READ-22), so a body that starts from
+        its input rebuilds as steps; its keyword-only parameters still survive parse, save
+        and every run, as for any transform written as code."""
+        from haute.codegen import graph_to_code
+
+        source = _SCALED.replace(
+            '    df = source.with_columns(y=pl.col("x") * factor, label=pl.lit(label))\n',
+            "    df = source\n"
+            '    df = df.with_columns(y=pl.col("x") * factor, label=pl.lit(label))\n',
         )
-        main = _write(
-            tmp_path,
-            "main.py",
-            _SCALED.replace(
-                "@pipeline.polars\ndef scaled(",
-                '@pipeline.polars(config="config/polars/scaled.json")\ndef scaled(',
-            ),
+        original = parse_pipeline_source(source, source_file="main.py")
+        scaled = next(node for node in original.nodes if node.id == "scaled")
+        assert scaled.data.config["keyword_parameters"] == [
+            {"name": "factor", "default": 1.2},
+            {"name": "label", "default": "rated"},
+        ]
+        regenerated = graph_to_code(original, pipeline_name="m", preamble=original.preamble)
+        assert '*, factor=1.2, label="rated") -> pl.LazyFrame:' in regenerated
+        reparsed = parse_pipeline_source(regenerated, source_file="main.py")
+        assert graph_to_code(reparsed, pipeline_name="m", preamble=reparsed.preamble) == (
+            regenerated
         )
-        with pytest.raises(ParseError, match="Transform built from steps") as refused:
-            parse_pipeline_file(main)
-        assert refused.value.context["line"] == 16
+        expected = {"x": 100.0, "y": 120.0, "label": "rated"}
+        assert _canvas_row(reparsed) == expected
+        assert _live_row(regenerated, tmp_path) == expected
 
     @pytest.mark.parametrize(
         ("signature", "refused"),
         [
-            pytest.param("df: pl.LazyFrame, *, obj", None, id="obj-hook"),
-            pytest.param("df: pl.LazyFrame, *, obj=None", "'obj'", id="obj-default"),
-            pytest.param("df: pl.LazyFrame, *, obj, extra=1", "'extra'", id="extra"),
+            pytest.param("source: pl.LazyFrame, *, obj", None, id="obj-hook"),
+            pytest.param("source: pl.LazyFrame, *, obj=None", "'obj'", id="obj-default"),
+            pytest.param("source: pl.LazyFrame, *, obj, extra=1", "'extra'", id="extra"),
         ],
     )
     def test_a_load_file_hook_takes_only_obj(
@@ -374,7 +385,7 @@ class TestKeywordOnlyParameterConservation:
             .replace('pipeline.connect("source", "scaled")', 'pipeline.connect("source", "loaded")')
             .replace(
                 'df = source.with_columns(y=pl.col("x") * factor, label=pl.lit(label))',
-                "df = df.head(1)",
+                "df = source.head(1)",
             ),
         )
         if refused is None:
@@ -1318,7 +1329,7 @@ class TestConservationGateRaisesOnEveryMismatch:
 
     def test_missing_positional_parameter_metadata_is_rejected(self) -> None:
         from haute._graph_builders import _build_edges
-        from haute._parser_bindings import assert_polars_parameters_bound
+        from haute._parser_bindings import bind_parameters
         from haute._types import NodeType
 
         graph = self._graph(["a"], [])
@@ -1326,7 +1337,7 @@ class TestConservationGateRaisesOnEveryMismatch:
         with pytest.raises(KeyError, match="edge_param_names"):
             _build_edges([raw], [])
         with pytest.raises(KeyError, match="edge_param_names"):
-            assert_polars_parameters_bound(graph, [raw])
+            bind_parameters(graph, [raw], [])
 
     def test_consistent_structure_is_accepted(self) -> None:
         from haute._parser_conservation import assert_parser_structure_conserved
@@ -1448,7 +1459,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_source(source, source_file="main.py")
 
@@ -1458,8 +1469,8 @@ class TestPolarsParameterBinding:
         assert exc_info.value.context["connected_inputs"] == ["a"]
         assert (
             exc_info.value.context["remediation"]
-            == "Name each parameter after the node or frame connected to it, "
-            "or declare inputMapping={logical: connected} on the decorator."
+            == "Name each parameter after the node or table connected to it, in the order of the "
+            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
         )
 
     def test_incoming_edge_not_matching_any_parameter_rejected(self) -> None:
@@ -1483,7 +1494,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_source(source, source_file="main.py")
 
@@ -1493,8 +1504,8 @@ class TestPolarsParameterBinding:
         assert exc_info.value.context["connected_inputs"] == ["a"]
         assert (
             exc_info.value.context["remediation"]
-            == "Name each parameter after the node or frame connected to it, "
-            "or declare inputMapping={logical: connected} on the decorator."
+            == "Name each parameter after the node or table connected to it, in the order of the "
+            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
         )
 
     def test_input_mapping_succeeds_executes_and_roundtrips(self) -> None:
@@ -1637,7 +1648,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_file(parent_invalid)
 
@@ -1690,7 +1701,7 @@ class TestPolarsParameterBinding:
             diagnostic.code == "node_parse_invalid"
             and diagnostic.scope == "node"
             and diagnostic.element_id == node_b.recovery_id
-            and "Pipeline function parameters do not match" in diagnostic.message
+            and "do not match its inputs" in diagnostic.message
             for diagnostic in b_diagnostics
         )
 
@@ -1829,7 +1840,7 @@ class TestPolarsParameterBinding:
         )
         with pytest.raises(
             ParseError,
-            match="Pipeline function parameters do not match the node's connected inputs.",
+            match="The parameters of node '.*' do not match its inputs",
         ) as exc_info:
             parse_pipeline_file(parent_invalid)
 
@@ -1839,8 +1850,8 @@ class TestPolarsParameterBinding:
         assert exc_info.value.context["connected_inputs"] == ["source"]
         assert (
             exc_info.value.context["remediation"]
-            == "Name each parameter after the node or frame connected to it, "
-            "or declare inputMapping={logical: connected} on the decorator."
+            == "Name each parameter after the node or table connected to it, in the order of the "
+            "node's connect() calls, or declare inputMapping={logical: connected} on the decorator."
         )
 
 

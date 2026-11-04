@@ -23,7 +23,7 @@ from haute._validation_error import ConfigSettingError
 from haute.errors import NodeConfigError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
-from tests.conftest import write_node_config
+from tests.conftest import write_data_input_config, write_node_config
 
 # ---------------------------------------------------------------------------
 # Helper builders
@@ -486,13 +486,36 @@ class TestBuildNodeFn:
 # ---------------------------------------------------------------------------
 
 
+def _parse_banding(tmp_path: Path, func_name: str, sidecar: dict) -> GraphNode:
+    """The banding node *func_name*, its sidecar holding *sidecar* as written, parsed from a
+    pipeline in which it reads a Data Input ``policies``: its parameter names that input,
+    which implies the edge (READ-01, READ-30)."""
+    from haute.parser import parse_pipeline_source
+
+    source_config = write_data_input_config(tmp_path, "policies", "data/policies.parquet")
+    band_config = write_node_config(tmp_path, NodeType.BANDING, func_name, sidecar)
+    code = f'''\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("test")
+
+@pipeline.data_input(config="{source_config}")
+def policies(): ...
+
+@pipeline.banding(config="{band_config}")
+def {func_name}(policies):
+    """Band a column"""
+'''
+    graph = parse_pipeline_source(code, _base_dir=tmp_path)
+    assert [(edge.source, edge.target) for edge in graph.edges] == [("policies", func_name)]
+    return graph.node_map[func_name]
+
+
 class TestBandingParser:
     def test_parse_banding_node(self, tmp_path):
-        from haute.parser import parse_pipeline_source
-
-        band_config = write_node_config(
+        node = _parse_banding(
             tmp_path,
-            NodeType.BANDING,
             "band_age",
             {
                 "factors": [
@@ -500,24 +523,12 @@ class TestBandingParser:
                         "banding": "breakpoints",
                         "column": "age",
                         "outputColumn": "age_band",
-                        "rules": [{"boundary": "25", "label": "young"}],
+                        # A sidecar writes each band's upper edge and label (READ-27).
+                        "rules": [{"upper": 25, "label": "young"}],
                     }
                 ]
             },
         )
-        code = f'''\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("test")
-
-@pipeline.banding(config="{band_config}")
-def band_age(df):
-    """Band age into age_band"""
-'''
-        graph = parse_pipeline_source(code, _base_dir=tmp_path)
-        assert len(graph.nodes) == 1
-        node = graph.nodes[0]
         assert node.data.nodeType == "banding"
         factors = node.data.config["factors"]
         assert len(factors) == 1
@@ -526,13 +537,12 @@ def band_age(df):
         assert f["column"] == "age"
         assert f["outputColumn"] == "age_band"
         assert f["rules"] == [{"boundary": "25", "label": "young"}]
+        # A null default is left unwritten and reads back as null (READ-27).
+        assert f["default"] is None
 
     def test_parse_categorical_banding(self, tmp_path):
-        from haute.parser import parse_pipeline_source
-
-        band_config = write_node_config(
+        node = _parse_banding(
             tmp_path,
-            NodeType.BANDING,
             "band_prop",
             {
                 "factors": [
@@ -540,32 +550,17 @@ def band_age(df):
                         "banding": "categorical",
                         "column": "prop",
                         "outputColumn": "prop_band",
-                        "rules": [{"value": "House", "assignment": "Residential"}],
+                        "rules": {"House": "Residential"},
                     }
                 ]
             },
         )
-        code = f'''\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("test")
-
-@pipeline.banding(config="{band_config}")
-def band_prop(df):
-    """Band property type"""
-'''
-        graph = parse_pipeline_source(code, _base_dir=tmp_path)
-        node = graph.nodes[0]
         assert node.data.nodeType == "banding"
         assert node.data.config["factors"][0]["banding"] == "categorical"
 
     def test_parse_compact_categorical_banding_sidecar(self, tmp_path):
-        from haute.parser import parse_pipeline_source
-
-        band_config = write_node_config(
+        node = _parse_banding(
             tmp_path,
-            NodeType.BANDING,
             "band_fuel",
             {
                 "factors": [
@@ -578,30 +573,16 @@ def band_prop(df):
                 ]
             },
         )
-        code = f'''\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("test")
-
-@pipeline.banding(config="{band_config}")
-def band_fuel(df):
-    """Band fuel type"""
-'''
-        graph = parse_pipeline_source(code, _base_dir=tmp_path)
-        factor = graph.nodes[0].data.config["factors"][0]
+        factor = node.data.config["factors"][0]
 
         assert factor["rules"] == [
             {"value": "Petrol", "assignment": "Standard"},
             {"value": "Electric", "assignment": "Green"},
         ]
 
-    def test_parse_compact_breakpoint_banding_sidecar(self, tmp_path):
-        from haute.parser import parse_pipeline_source
-
-        band_config = write_node_config(
+    def test_parse_breakpoint_banding_sidecar_bands(self, tmp_path):
+        node = _parse_banding(
             tmp_path,
-            NodeType.BANDING,
             "band_age",
             {
                 "factors": [
@@ -609,23 +590,17 @@ def band_fuel(df):
                         "banding": "breakpoints",
                         "column": "age",
                         "outputColumn": "age_band",
-                        "rules": {"25": "young", "65": "adult", "": "senior"},
+                        # The open-ended band comes last, with no upper edge (READ-27).
+                        "rules": [
+                            {"upper": 25, "label": "young"},
+                            {"upper": 65, "label": "adult"},
+                            {"label": "senior"},
+                        ],
                     }
                 ]
             },
         )
-        code = f'''\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("test")
-
-@pipeline.banding(config="{band_config}")
-def band_age(df):
-    """Band age"""
-'''
-        graph = parse_pipeline_source(code, _base_dir=tmp_path)
-        factor = graph.nodes[0].data.config["factors"][0]
+        factor = node.data.config["factors"][0]
 
         assert factor["rules"] == [
             {"boundary": "25", "label": "young"},
@@ -1586,8 +1561,9 @@ class TestBandingEditorMetadata:
         }
         result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
         assert result["factors"][0]["banding"] == "breakpoints"
-        # The rule row loses its _id and compacts to the sidecar's boundary map.
-        assert result["factors"][0]["rules"] == {"10": "a"}
+        # The rule row loses its _id and is written as a band, its upper edge and label
+        # (READ-27).
+        assert result["factors"][0]["rules"] == [{"upper": 10, "label": "a"}]
 
     def test_preserves_non_underscore_keys(self):
         from haute._config_io import _prepare_config_for_sidecar
@@ -1605,7 +1581,11 @@ class TestBandingEditorMetadata:
             ]
         }
         result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
-        assert result == config
+        # rightClosed is kept; the sidecar writes the bands as a list and leaves the null
+        # default out (READ-27).
+        (factor,) = config["factors"]
+        written = {key: value for key, value in factor.items() if key != "default"}
+        assert result == {"factors": [{**written, "rules": [{"upper": 10, "label": "low"}]}]}
 
 
 @pytest.mark.parametrize(

@@ -872,7 +872,9 @@ class TestChangeCard:
                     "node": "features",
                     "edits": [
                         {
-                            "insert_after": "logic",
+                            # The apply's reload named the code step by kind and place
+                            # (READ-22).
+                            "insert_after": "free_code-2",
                             "step": {
                                 "kind": "free_code",
                                 "code": "# Flag young\ndf = df.with_columns(young=pl.col('x') < 2)",
@@ -907,7 +909,9 @@ class TestChangeCard:
 
         chips = {node.id: node for node in result.change.changes.nodes}
         assert chips["features"].change == "changed"
-        assert chips["features"].steps == ["source", "free_code", "free_code"]
+        # The chip shows the steps the save holds: rebuilt from the code, the inserted code
+        # step and the code step above it are one run of code, so one code step (READ-22).
+        assert chips["features"].steps == ["source", "free_code"]
         assert chips["features"].steps_changed == 1
         assert chips["premium"].change == "renamed"
         assert chips["premium"].renamed_from == "priced"
@@ -1285,6 +1289,17 @@ def _reparsed_config(root: Path, node_id: str) -> dict:
     return _reparsed_data(root, node_id).config
 
 
+def _as_reloaded(node: str, steps: list[dict]) -> list[dict]:
+    """*steps* as a reload holds them: a transform's (``t``) steps live only in its code
+    and come back with ids from kind and place (READ-22); every other stepped surface
+    keeps its steps, ids included, in its config. It holds for steps that each rebuild as
+    themselves: a free-code statement a structured step renders exactly comes back as that
+    step, and two adjacent code steps as one."""
+    if node != "t":
+        return steps
+    return [{**step, "id": f"{step['kind']}-{place}"} for place, step in enumerate(steps, 1)]
+
+
 @pytest.mark.usefixtures("scorable_model")
 class TestSteppedWrites:
     @pytest.mark.parametrize("node", list(_STEPPED_BASES))
@@ -1356,7 +1371,7 @@ class TestSteppedWrites:
         saved_source = (stepped_project / "main.py").read_text(encoding="utf-8")
         assert "df = df.with_columns(flag=pl.lit(1))" in saved_source
         saved = _reparsed_data(stepped_project, node)
-        assert saved.config["steps"] == steps
+        assert saved.config["steps"] == _as_reloaded(node, steps)
         assert saved.editor.steps_discarded is None and saved.editor.steps_error is None
 
     @pytest.mark.parametrize("node", list(_STEPPED_BASES))
@@ -1364,7 +1379,8 @@ class TestSteppedWrites:
         self, stepped_project: Path, node: str
     ):
         """The step list a stepped descriptor advertises, spelled the same way
-        in the system prompt, applies unchanged but for its edge placeholder."""
+        in the system prompt, applies unchanged but for its edge placeholder and, on a
+        transform, the ids its reload gives the steps (READ-22)."""
 
         import json
 
@@ -1387,7 +1403,7 @@ class TestSteppedWrites:
         await service.apply("main.py", plan.plan_hash)
 
         saved = _reparsed_data(stepped_project, node)
-        assert saved.config["steps"] == steps
+        assert saved.config["steps"] == _as_reloaded(node, steps)
         assert saved.editor.steps_discarded is None and saved.editor.steps_error is None
 
     async def test_a_data_input_added_with_a_path_saves_the_palette_input_type(

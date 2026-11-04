@@ -154,15 +154,15 @@ export function FieldBoxes({
                 <div className="pointer-events-auto" style={boxPlace} onPointerDown={typeHere}>
                   <Cell
                     found={found}
-                    value={rows[found.table.id]?.[0]?.[found.column.id]}
-                    onChange={(value) => setCell(found.table.id, 0, found.column.id, value)}
+                    value={rows[found.table.name]?.[0]?.[found.column.name]}
+                    onChange={(value) => setCell(found.table.name, 0, found.column.name, value)}
                     label={fieldLabel(found)}
                     height={height}
                     box={boxStyle(look.cell_color ?? colours.input)}
                     font={look.font_color ?? colours.font}
                     textStyle={valueText}
-                    problem={problems[cellKey(found.table.id, 0, found.column.id)] ?? null}
-                    disabled={readOnly || locked.has(columnKey(found.table.id, found.column.id))}
+                    problem={problems[cellKey(found.table.name, 0, found.column.name)] ?? null}
+                    disabled={readOnly || locked.has(columnKey(found.table.name, found.column.name))}
                   />
                 </div>
               ) : (

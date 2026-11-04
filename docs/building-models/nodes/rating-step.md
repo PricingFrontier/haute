@@ -100,27 +100,29 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     same key and all match `25.0`. An entry that cannot be converted to the
     column's type fails the run rather than silently never matching, for
     example `"25.0"` on an integer column or a malformed date on a date column.
+    Two entries that become the same key are refused, naming the table and the
+    levels, rather than one of them silently winning.
 
     On a text column, entries are matched exactly as written, and matching is
     case-sensitive: if your data has `"London"` but your table has `"london"`,
     it won't match. Use a [Transform](transform.md) node upstream to normalise casing if needed.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/rating_step/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.rating_step(config="config/rating_step/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the rated data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/rating_step/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.rating_step(config="config/rating_step/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the rated data as `df`; code the other steps cannot hold goes in a **Free code** step.
 
     | Setting in the editor | Stored as |
     |---|---|
     | The tables | `tables`: a list with one object per table |
     | **FACTORS** | `tables[].factors`: the input columns to match on, at most 3 |
     | **OUTPUT COLUMN** | `tables[].outputColumn` |
-    | **DEFAULT** | `tables[].defaultValue`, as text such as `"1.0"` (absent when empty) |
+    | **DEFAULT** | `tables[].defaultValue`, a number such as `1.0` (absent when empty) |
     | **ON MISS** | `tables[].onMissing`: `"error"` (**Stop the run**, also what an absent key means) or `"neutral"` (**Leave empty**) |
-    | The relativities | `tables[].entries`: one object per combination of levels, holding a value for each factor and the looked-up `value` |
+    | The relativities | a grid: with one factor, `tables[].rows` holds a line per level, the level and its relativity; with two or three, `tables[].columns` lists the last factor's levels and each line of `tables[].rows` holds the other factors' levels, then a relativity per column, `null` where there is no entry |
     | The combined outputs | `combinedOutputs`: a list with one object per combined output |
     | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
     | **OPERATION** | `combinedOutputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
     | **BASE VALUE** | `combinedOutputs[].baseValue`, as text such as `"1.0"` |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
     | **COLUMNS** tab | `selected_columns` |
 
     With no editor control:
@@ -136,10 +138,10 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
       "factors": ["area"],
       "outputColumn": "area_factor",
       "defaultValue": "1.0",
-      "entries": [
-        { "area": "London", "value": 1.25 },
-        { "area": "Manchester", "value": 1.10 },
-        { "area": "Rural", "value": 0.85 }
+      "rows": [
+        ["London", 1.25],
+        ["Manchester", 1.1],
+        ["Rural", 0.85]
       ]
     }
     ```
@@ -158,7 +160,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | `tables[].outputColumn` | text | The column the looked-up value is written to. |
     | `tables[].defaultValue` | text or number or `null` | The value of a factor combination the table does not hold; `null` for none. |
     | `tables[].onMissing` | `"error"` or `"neutral"` | With no default, whether a missing combination fails the run (`error`) or takes the neutral value (`neutral`). |
-    | `tables[].entries` | list of map of text to any JSON value | The table's rows, each a level of every factor and its `value`. |
+    | `tables[].entries` | list of map of text to any JSON value | The table's rows, each a level of every factor and its `value`; the config file writes them as a grid of `columns` and `rows`. |
     | `combinedOutputs` | list of object | Columns combined from the tables' values. |
     | `combinedOutputs[].outputColumn` | text | The combined column. |
     | `combinedOutputs[].operation` | `"multiply"` or `"add"` or `"min"` or `"max"` | How the tables' values are combined. |

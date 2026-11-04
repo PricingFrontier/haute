@@ -92,8 +92,9 @@
    same check at dry-run, before anything is generated.
 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
-   nodes (`_topo_sort` via strict `haute._topo.topo_sort_ids`, which raises
-   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint) and
+   nodes (`_topo_sort`: strict `haute._topo.topo_sort_ids` first, which raises
+   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint and
+   refuses a cycle, then a sort that takes the ready node the graph lists first) and
    place each input-less node that feeds another immediately before its first consumer
    (`_emission_order`), build
    id→func-name maps and each node's per-edge input-name list
@@ -134,7 +135,9 @@ omitted), any preserved blocks (`_emit_preserved_block`, wrapped in
 `# haute:preserve-start/-end` markers), then each node function preceded by two
 blank lines (in emission order), the
 submodel registration calls, and the `pipeline.connect(...)`/
-`submodel.connect(...)` calls under the `# Wire nodes together` comment (`_source_layout.WIRE_COMMENT`)
+`submodel.connect(...)` calls each edge the signatures cannot say needs (`_signature_states`
+leaves out an edge without ports whose target function names its source function), with no comment over them (READ-13: the parser still passes an older
+file's `_source_layout.WIRE_COMMENT` over them without a diagnostic, and the next save drops it)
 (deduped when `dedup_connects=True`). The module ends with exactly one newline.
 The imports are `import haute` followed by `import polars as pl`; the second is
 emitted only when the rest of the module refers to the name `pl` (checked on
@@ -162,6 +165,12 @@ when emitted (`_source_layout.indent_code`) and dedented when extracted
 string (`_source_layout.lines_inside_literals`) keeps its text, blank or not, so the generated
 function and the code extracted from it hold the same strings, and a string continued at
 column 0 in a hand-written file keeps its value.
+
+A save passes `read_existing` (each generated path's current text) to
+`graph_to_code_multi`, or `existing_source` to `graph_to_code`; `function_order` reads a
+file's decorated functions in order, and `_kept_order` keeps each node the file defines
+(by node id) where it stands and inserts each new node just above its first consumer, or
+at the end (READ-12). Only a path with no file yet takes `_emission_order`.
 
 `_emission_order(sorted_nodes, edges)` keeps the topological order of every node
 that has inputs and moves each input-less node that feeds another to just before
@@ -328,10 +337,9 @@ named like one of the logical input names it emits, and a stepped transform carr
 A stepped transform (`config["steps"]` is a list) has its body rendered by
 `_polars_steps.render_polars_steps` against the logical parameter names, one
 statement per step (over several lines when it does not fit in 88 columns at the body's indentation) with a
-leading `df = <input>`, and its decorator carries
-`config="config/polars/<func>.json"` so the parser reloads the steps, and no other
-setting: its shared column settings are written to that sidecar, which the parser reads
-them from, never as decorator keywords beside it. A render
+leading `df = <input>`, and its decorator carries its column settings as keywords, as a
+code-only transform's does, and no `config=`: the parser rebuilds the steps from the
+body (READ-22). A render
 failure emits the incomplete placeholder body (the save warns which step is
 incomplete); `steps` together with `inputMapping` on a node is a `ConfigError`.
 A stepped frame surface (`config["steps"]` is a list on a Data Input, External File,

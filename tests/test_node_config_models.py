@@ -463,10 +463,12 @@ def test_building_a_rating_step_checks_its_tables_before_its_steps() -> None:
 
 def test_a_standalone_sidecar_load_holds_it_to_its_model(tmp_path: Path) -> None:
     sidecar = tmp_path / "rates.json"
-    sidecar.write_text(json.dumps({"values": [{"name": 3, "value": "1"}]}), encoding="utf-8")
+    # The sidecar's map is read back into the model's rows, which hold a value as text or a
+    # number, not a list (READ-28).
+    sidecar.write_text(json.dumps({"values": {"rate": [1]}}), encoding="utf-8")
     with pytest.raises(NodeConfigError) as refused:
         load_node_config("rates.json", base_dir=tmp_path, node_type=NodeType.CONSTANT)
-    assert refused.value.setting == "values[0].name"
+    assert refused.value.setting == "values[0].value"
 
 
 @pytest.mark.parametrize(

@@ -128,12 +128,13 @@ describe("useWorkbenchShortcuts on the sheets", () => {
     key({ key: "v", metaKey: true })
     expect(widgets()).toHaveLength(3)
     const pasted = widgets()[2]
-    expect(pasted).toEqual({ ...original, id: pasted.id, x: 32, y: 32 })
+    // Numbered as it enters the section, one past the highest there (READ-24).
+    expect(pasted).toEqual({ ...original, id: pasted.id, number: 1, x: 32, y: 32 })
     expect(pasted.id).not.toBe("w_boxes")
     expect(useWorkbenchViewStore.getState().selectedId).toBe(pasted.id)
 
     key({ key: "v", ctrlKey: true })
-    expect(widgets()[3]).toMatchObject({ title: "Policy", x: 48, y: 48 })
+    expect(widgets()[3]).toMatchObject({ title: "Policy", number: 2, x: 48, y: 48 })
     expect(useWorkbenchViewStore.getState().selectedId).toBe(widgets()[3].id)
     // The change, then each paste, one undo step.
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(3)

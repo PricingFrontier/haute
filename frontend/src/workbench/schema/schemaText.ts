@@ -70,7 +70,7 @@ function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
     const values = `${column.options.length} ${column.options.length === 1 ? "value" : "values"}`
     parts.push(column.options_source === null ? values : `${values} from ${column.options_source.file}`)
   }
-  if (presetColumn(table)?.id === column.id) parts.push("a row each")
+  if (presetColumn(table)?.name === column.name) parts.push("a row each")
   return parts
 }
 

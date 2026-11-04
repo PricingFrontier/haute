@@ -1,7 +1,7 @@
 /**
  * Static Python highlighting for the generated-code panel, with the same
- * parser and colour tokens code mode uses, so the one-way switch to code does
- * not change how the code looks.
+ * parser and colour tokens the code box and Free code steps use, so code looks
+ * the same wherever it shows.
  */
 import { pythonLanguage } from "@codemirror/lang-python"
 import { highlightCode, tagHighlighter, tags } from "@lezer/highlight"

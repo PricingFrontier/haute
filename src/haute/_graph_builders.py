@@ -22,9 +22,9 @@ from haute._ast_helpers import (
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
+from haute._node_bindings import input_parameters
 from haute._polars_steps import stepped_surface_allows_input_references
 from haute._source_layout import python_lines
-from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
 
@@ -164,14 +164,20 @@ def _resolve_node_skeleton(
         # Code extraction reports lines within the node's code; name the node.
         exc.context.setdefault("node_id", skeleton.authored_id)
         raise
+    # A transform names no steps file (READ-22): its steps are rebuilt from its code.
     keyword_parameters = keyword_parameters_from_signature(
         skeleton.arguments,
         node_type=node_type,
-        stepped="config" in decorator_kwargs,
+        stepped=False,
         node_id=skeleton.authored_id,
     )
     if keyword_parameters:
-        config = {**config, KEYWORD_PARAMETERS_KEY: keyword_parameters}
+        # A transform with keyword-only parameters is written as code and stays code: its
+        # steps would leave them nowhere to live.
+        config = {
+            **{key: value for key, value in config.items() if key != "steps"},
+            KEYWORD_PARAMETERS_KEY: keyword_parameters,
+        }
     return {
         "func_name": skeleton.authored_id,
         "node_type": node_type,
@@ -253,13 +259,10 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     """
     logical_params = list(node_info["edge_param_names"])
     node_type = node_info.get("node_type")
-    if (
-        node_type in CODE_NODE_TYPES
-        and node_type != NodeType.EXTERNAL_FILE
-        and logical_params[:1] == ["df"]
-    ):
+    naming, _takes_first = input_parameters(node_type or NodeType.POLARS, logical_params)
+    if naming != logical_params:
         # A hook's df is the frame its decorator produced, not an input named df.
-        return logical_params[1:]
+        return naming
     config = node_info.get("config", {})
     input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
     if (

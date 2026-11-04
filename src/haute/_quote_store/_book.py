@@ -71,8 +71,8 @@ from haute._quote_store._store import (
 )
 from haute._workbench_form import (
     QUOTE_DETAILS_COLUMNS,
-    QUOTE_DETAILS_ID,
     QUOTE_DETAILS_MANAGED,
+    QUOTE_DETAILS_NAME,
     FormSpec,
 )
 from haute._workbench_tables import QUOTE_ROW
@@ -97,10 +97,9 @@ MAX_PAGE_SIZE = 200
 MAX_PEOPLE = 500
 #: How often a load reads a quote again when it moved on while it was read.
 READS = 3
-#: The details' column ids by name.
-DETAIL_IDS: dict[str, str] = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
-_DATES = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "date")
-_WHOLE = frozenset(name for _, name, kind in QUOTE_DETAILS_COLUMNS if kind == "int")
+_DETAILS = frozenset(name for name, _ in QUOTE_DETAILS_COLUMNS)
+_DATES = frozenset(name for name, kind in QUOTE_DETAILS_COLUMNS if kind == "date")
+_WHOLE = frozenset(name for name, kind in QUOTE_DETAILS_COLUMNS if kind == "int")
 _SEARCHED = ("quote_name", "insured", "broker")
 #: A word of a search naming a reference and an option, as a quote is shown: ``ABC-1/2``.
 _REFERENCE_OPTION = re.compile(r"(.+)/(\d+)")
@@ -270,13 +269,12 @@ def check_reference(reference: str | None) -> str:
 def details_of(values: Values) -> dict[str, Any]:
     """The ``quote_details`` row of *values*, by column name, blanks left out: the option,
     held as text as a cell is, read back as the whole number it is."""
-    rows = values.get(QUOTE_DETAILS_ID) or []
+    rows = values.get(QUOTE_DETAILS_NAME) or []
     row = rows[0] if rows else {}
-    names = {column_id: name for name, column_id in DETAIL_IDS.items()}
     return {
-        names[key]: int(value) if names[key] in _WHOLE and isinstance(value, str) else value
-        for key, value in row.items()
-        if key in names and value is not None and value != ""
+        name: int(value) if name in _WHOLE and isinstance(value, str) else value
+        for name, value in row.items()
+        if name in _DETAILS and value is not None and value != ""
     }
 
 
@@ -284,13 +282,13 @@ def with_details(values: Values, details: Mapping[str, Any]) -> Values:
     """*values* with their ``quote_details`` row set to *details* (by column name), the blanks
     left out and the row with them when none is left; every other table as it was."""
     row = {
-        DETAIL_IDS[name]: _detail_cell(value)
+        name: _detail_cell(value)
         for name, value in details.items()
-        if name in DETAIL_IDS and value is not None and value != ""
+        if name in _DETAILS and value is not None and value != ""
     }
-    merged = {table: rows for table, rows in values.items() if table != QUOTE_DETAILS_ID}
+    merged = {table: rows for table, rows in values.items() if table != QUOTE_DETAILS_NAME}
     if row:
-        merged[QUOTE_DETAILS_ID] = [row]
+        merged[QUOTE_DETAILS_NAME] = [row]
     return merged
 
 
@@ -298,14 +296,14 @@ def without_app_details(values: Values) -> Values:
     """*values* without the ``quote_details`` cells the app sets (``QUOTE_DETAILS_MANAGED``):
     a reference, stage, assignee and the rest belong to the quote that has them, and are
     never read from what a page sends."""
-    rows = values.get(QUOTE_DETAILS_ID)
+    rows = values.get(QUOTE_DETAILS_NAME)
     if rows is None:
         return values
     typed = [
         {column: value for column, value in row.items() if column not in QUOTE_DETAILS_MANAGED}
         for row in rows
     ]
-    return {**values, QUOTE_DETAILS_ID: typed}
+    return {**values, QUOTE_DETAILS_NAME: typed}
 
 
 def as_written(values: Values, managed: Mapping[str, Any]) -> Values:
@@ -451,7 +449,7 @@ class QuoteBook:
         """The quote with what it holds, as *connection* reads it."""
         quote = self._get(connection, reference, option)
         rows = self._rows(connection, reference, option)
-        values, dropped = cells(self._form, rows)
+        values, dropped = cells(self._form, rows, self._schema.kept)
         outputs = rendered_outputs(self._form, rows) if quote.priced else None
         return OpenQuote(quote=quote, values=values, outputs=outputs, dropped=dropped)
 
@@ -497,7 +495,7 @@ class QuoteBook:
     def _quote(self, row: Row[Any]) -> AppQuote:
         mapping = row._mapping
         details: dict[str, Any] = {}
-        for _, name, _ in QUOTE_DETAILS_COLUMNS:
+        for name, _ in QUOTE_DETAILS_COLUMNS:
             value = mapping[name]
             if value is None:
                 continue
@@ -527,7 +525,7 @@ class QuoteBook:
         )
 
     def _rows(self, connection: Connection, reference: str, option: int) -> dict[str, Rows]:
-        """Every form table's rows of the quote, by table id."""
+        """Every form table's rows of the quote, by table name."""
         rows: dict[str, Rows] = {}
         for stored in self._schema.tables:
             table = stored.table
@@ -536,7 +534,7 @@ class QuoteBook:
             )
             if stored.many:
                 query = query.order_by(table.c[QUOTE_ROW])
-            rows[stored.form.id] = [dict(row._mapping) for row in connection.execute(query)]
+            rows[stored.form.name] = [dict(row._mapping) for row in connection.execute(query)]
         return rows
 
     def page(
@@ -895,8 +893,8 @@ class QuoteBook:
             "quote_option": option,
         }
         written = as_written(values, managed)
-        rows = input_rows(self._form, written, (reference, option))
-        details = rows.pop(QUOTE_DETAILS_ID)[0]
+        rows = input_rows(self._form, written, (reference, option), self._schema.kept)
+        details = rows.pop(QUOTE_DETAILS_NAME)[0]
         connection.execute(
             insert(self._details).values(
                 **details,
@@ -938,12 +936,12 @@ class QuoteBook:
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)
         rows = {
-            **input_rows(self._form, written, (reference, option)),
+            **input_rows(self._form, written, (reference, option), self._schema.kept),
             **output_rows(
                 self._form, None if priced is None else priced.document, (reference, option)
             ),
         }
-        details = rows.pop(QUOTE_DETAILS_ID)[0]
+        details = rows.pop(QUOTE_DETAILS_NAME)[0]
         try:
             with writing(self._engine) as connection:
                 moved = connection.execute(
@@ -1048,7 +1046,7 @@ class QuoteBook:
 
     def _write_rows(self, connection: Connection, rows: Mapping[str, Rows]) -> None:
         for stored in self._schema.tables:
-            held = rows.get(stored.form.id)
+            held = rows.get(stored.form.name)
             if held:
                 connection.execute(insert(stored.table), list(held))
 
@@ -1056,7 +1054,7 @@ class QuoteBook:
         self, connection: Connection, reference: str, option: int, rows: Mapping[str, Rows]
     ) -> None:
         for stored in self._schema.tables:
-            if stored.form.id == QUOTE_DETAILS_ID:
+            if stored.form.name == QUOTE_DETAILS_NAME:
                 continue
             table = stored.table
             connection.execute(
@@ -1222,7 +1220,7 @@ class QuoteBook:
             required = [column for column in table.columns if column.required]
             if not required:
                 continue
-            for row in rows.get(table.id, []):
+            for row in rows.get(table.name, []):
                 for column in required:
                     if _blank(row.get(column.name)):
                         where = (

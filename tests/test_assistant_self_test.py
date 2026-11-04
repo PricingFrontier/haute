@@ -1493,7 +1493,9 @@ def _crashing_replay(config: AssistantConfig) -> TrajectoryProvider:
 
     if config.egress.max_sensitivity == "internal":
         raise _KeywordOnlyError(switch="policies", scenario="renewal_batch")
-    if Path("config/polars/risk_features.json").is_file():
+    # The stepped project is the one whose pipeline builds risk_features from steps.
+    pipeline = Path("pipeline.py")
+    if pipeline.is_file() and "def risk_features(" in pipeline.read_text(encoding="utf-8"):
         os._exit(3)
     return _banding_replay(config)
 

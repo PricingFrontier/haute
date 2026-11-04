@@ -7,8 +7,8 @@ Pairs with frontend component tests under
 What this file covers (backend):
   - codegen emits `pipeline.connect("a", "b", source_port="p")` when an
     edge carries a non-empty `sourceHandle`.
-  - codegen emits the bare `pipeline.connect("a", "b")` form when the
-    edge has no `sourceHandle` (single-port shorthand preserved).
+  - codegen leaves an edge with no `sourceHandle` to the parameter naming
+    its source, writing no `connect()` (READ-30).
   - parser round-trips both forms back into edges with the correct
     `sourceHandle` value (str or None).
 """
@@ -74,15 +74,15 @@ def test_codegen_emits_source_port_kwarg_when_sourcehandle_is_set() -> None:
     )
 
 
-def test_codegen_emits_bare_connect_when_sourcehandle_is_none() -> None:
-    """Single-port edges (no `sourceHandle`) use the bare two-arg form."""
+def test_codegen_leaves_a_single_port_edge_to_its_parameter() -> None:
+    """A single-port edge (no `sourceHandle`) is implied by the parameter naming its source,
+    so no `connect()` restates it (READ-30)."""
     from haute.codegen import graph_to_code
 
     graph = _minimal_graph_with_sourcehandle(None)
     code = graph_to_code(graph, pipeline_name="t")
-    assert 'pipeline.connect("quotes", "processing")' in code, (
-        f"expected bare connect form; got:\n{code}"
-    )
+    assert "def processing(quotes: pl.LazyFrame)" in code, code
+    assert "pipeline.connect(" not in code, f"an implied edge must not be connected; got:\n{code}"
     assert "source_port" not in code, (
         f"single-port edge must not emit source_port kwarg; got:\n{code}"
     )

@@ -239,8 +239,7 @@ import haute
 pipeline = haute.Pipeline("test")
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source(config):
-    pass
+def source(): ...
 """
     py = tmp_path / "test_pipeline.py"
     py.write_text(code)
