@@ -9,7 +9,12 @@ import {
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
-import { freeCodeNamesInput, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
+import {
+  codeStepReadsInputMessage,
+  freeCodeInputRead,
+  renameStepInputs,
+  steppedSurfaceAllowsInputReferences,
+} from "./polarsStepInputs"
 import { isPlainObject } from "../types/guards"
 
 type RenamePair = { from: string; to: string }
@@ -287,34 +292,23 @@ function isCodedOrdinaryTransform(node: Node, config: Record<string, unknown>): 
 }
 
 /**
- * A stepped transform whose free-code step names a renamed input keeps reading
- * that name: the rename cannot rewrite the step's code. The node runs its code
- * as code without steps runs, binding the name through `input_mapping`, as a
- * submodel boundary does. Unfinished steps have no code to run, so the rename is
- * refused rather than leaving the step unbound.
+ * A stepped transform whose free-code step reads a renamed input by name would
+ * keep reading the old name, which the rename cannot rewrite in its code; the
+ * browser's copy of the code may not be the current steps' rendering, so the
+ * node cannot safely become code either. The rename is refused, saying how to
+ * read the input instead.
  */
-function codeStepsKeepTheirNames(
+function refuseCodeStepReadingRenamedInput(
   changes: MappingChanges,
   affected: AffectedRenameTarget,
 ): NodeUpdatePlanFailure | null {
-  const { scope, target, pairs } = affected
+  const { target, pairs } = affected
   const config = plannedConfig(changes, affected)
   if (!isSteppedOrdinaryTransform(target, config)) return null
   const renamed = pairs.filter(({ from, to }) => from !== to).map(({ from }) => from)
-  if (!freeCodeNamesInput(config.steps as unknown[], renamed)) return null
-  const label = String(target.data.label ?? target.id)
-  if (typeof config.code !== "string" || config.code.trim().length === 0) {
-    return {
-      ok: false,
-      error: `Target "${label}" has a code step that names an input this rename changes; finish its steps first.`,
-    }
-  }
-  const coded = { ...config }
-  delete coded.steps
-  const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
-  scopeChanges.set(target.id, coded)
-  changes.set(scope, scopeChanges)
-  return null
+  const read = freeCodeInputRead(config.steps as unknown[], renamed)
+  if (read === null) return null
+  return { ok: false, error: codeStepReadsInputMessage(String(target.data.label ?? target.id), read) }
 }
 
 /**
@@ -472,7 +466,7 @@ function collectMappingChanges(
         false,
       )
       if (failure) return failure
-      const codeStepFailure = codeStepsKeepTheirNames(changes, affected)
+      const codeStepFailure = refuseCodeStepReadingRenamedInput(changes, affected)
       if (codeStepFailure) return codeStepFailure
       const bindingFailure = preserveCodedTransformBindings(changes, affected)
       if (bindingFailure) return bindingFailure

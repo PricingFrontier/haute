@@ -377,39 +377,31 @@ describe("insertEdgeJoinNode", () => {
     })
   })
 
-  it("keeps a Load File code step reading its input's name, running its code through input_mapping", () => {
-    const loader = (code: string): Node => ({
-      ...node("loader"),
-      type: NODE_TYPES.EXTERNAL_FILE,
-      data: {
-        label: "Loader",
-        nodeType: NODE_TYPES.EXTERNAL_FILE,
-        config: { steps: [{ id: "f", kind: "free_code", code: "df = df.join(a, on='k')" }], code },
-      },
-    })
-    const insert = (target: Node) => insertEdgeJoinNode({
-      nodes: [node("a"), target, node("lookup")],
-      edges: [edge("e-a-loader", "a", "loader")],
-      targetEdgeId: "e-a-loader",
-      connection: { source: "lookup" },
-      position: { x: 0, y: 0 },
-      idFactory: () => "edgeJoin_1",
-    })
-
-    const result = insert(loader("df = df.join(a, on='k')"))
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(finalizeInsertion(result, "Edge_Join_1").nodes.find((n) => n.id === "loader")?.data.config).toEqual({
-      code: "df = df.join(a, on='k')",
-      input_mapping: { a: "Edge_Join_1" },
-    })
-
-    // Unfinished steps have no code to run that way, so the join is refused.
-    const unfinished = insert(loader(""))
-    expect(unfinished.ok).toBe(true)
-    if (!unfinished.ok) return
-    expect(() => finalizeInsertion(unfinished, "Edge_Join_1"))
-      .toThrow(/a code step names "a" and the node's steps are unfinished/)
+  it("refuses a join on an input a Load File code step reads by name, whatever its copy of the code", () => {
+    const join = { id: "f", kind: "free_code", code: "df = df.join(a, on='k')" }
+    const unfinished = { id: "u", kind: "filter", match: "all", conditions: [] }
+    for (const [steps, code] of [
+      [[join], "df = df.join(a, on='k')"],
+      [[join, unfinished], "df = df.join(a, on='k')"],
+      [[join], ""],
+    ] as const) {
+      const loader: Node = {
+        ...node("loader"),
+        type: NODE_TYPES.EXTERNAL_FILE,
+        data: { label: "Loader", nodeType: NODE_TYPES.EXTERNAL_FILE, config: { steps: [...steps], code } },
+      }
+      expect(() => {
+        const result = insertEdgeJoinNode({
+          nodes: [node("a"), loader, node("lookup")],
+          edges: [edge("e-a-loader", "a", "loader")],
+          targetEdgeId: "e-a-loader",
+          connection: { source: "lookup" },
+          position: { x: 0, y: 0 },
+          idFactory: () => "edgeJoin_1",
+        })
+        if (result.ok) finalizeInsertion(result, "Edge_Join_1")
+      }).toThrow(/"Loader" has a code step that reads "a" by name/)
+    }
   })
 
   it("does not add input_mapping to a downstream node that does not name its inputs", () => {

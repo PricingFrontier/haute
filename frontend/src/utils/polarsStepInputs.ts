@@ -47,21 +47,27 @@ export function steppedSurfaceAllowsInputReferences(nodeType: string): boolean {
 }
 
 /**
- * Whether a free-code step among *steps* names one of *names* in its code: a
- * rename cannot rewrite that code, so only `input_mapping` keeps it bound. The
- * code is scanned, not parsed, so a name inside a string or a comment counts too.
+ * The first of *names* a free-code step among *steps* reads in its code, or null:
+ * a rename cannot rewrite that code. The code is scanned, not parsed, so a name
+ * inside a string or a comment counts too.
  */
-export function freeCodeNamesInput(steps: unknown[], names: Iterable<string>): boolean {
+export function freeCodeInputRead(steps: unknown[], names: Iterable<string>): string | null {
   const codes = steps.flatMap((step) =>
     isPlainObject(step) && step.kind === "free_code" && typeof step.code === "string" ? [step.code] : [],
   )
-  if (codes.length === 0) return false
+  if (codes.length === 0) return null
   for (const name of names) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     const read = new RegExp(`(?<![\\w.])${escaped}(?!\\w)`, "u")
-    if (codes.some((code) => read.test(code))) return true
+    if (codes.some((code) => read.test(code))) return name
   }
-  return false
+  return null
+}
+
+/** Why an input a stepped node's code step reads by *name* cannot be renamed or joined. */
+export function codeStepReadsInputMessage(label: string, name: string): string {
+  return `"${label}" has a code step that reads "${name}" by name, which cannot be changed in its code: `
+    + "read it with a Join step instead, or remove that code step, then try again."
 }
 
 /**

@@ -672,11 +672,14 @@ builder, codegen, the deploy interceptors and the render endpoint) obtains the
 eligible names from it. Only an `edges` surface has its step references rewritten when
 an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
 stepped `edges` original never carries `input_mapping`. A free-code step's code is not
-rewritten: where a rename, an insertion or a submodel boundary changes an input such a
-step names (the editor scans the code's text for the name), the node runs its code as code without steps runs, reading the name it was written with through
-`input_mapping`. Steps that do not render yet have no code to run that way: a submodel
-boundary leaves them, so the node still fails as unfinished, and the editor refuses the
-rename or insertion. A node
+rewritten. Where a submodel boundary renames an input such a step names, the expanded
+node runs its code (the server's rendering of its current steps) as code without steps
+runs, reading the name it was written with through `input_mapping`; steps that do not
+render yet stay, so the node still fails as unfinished. The editor refuses a node rename
+or an Edge Join insertion that would change an input such a step reads, scanning the
+code's text for the name, since its copy of the code may not be the current steps'
+rendering: the message says to read the input with a Join step, or remove the code step.
+A node
 type outside that table that carries a `steps` key is left alone. A Scenario
 Expander's grid size is its required `step_count` (a whole number of at least 1, read
 by the executor builder, the standalone runtime's helper, the chunk planner, the RAM

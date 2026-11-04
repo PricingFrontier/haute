@@ -1,5 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
-import { freeCodeNamesInput, isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
+import { codeStepReadsInputMessage, freeCodeInputRead, isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { withEdgeIdentity } from "./edgeIds"
@@ -460,17 +460,13 @@ function rewriteDownstreamInputMapping(
 ): Node {
   if (node.id !== targetEdge.target) return node
 
-  const config: Record<string, unknown> = { ...(node.data.config as Record<string, unknown> | undefined) }
-  if (Array.isArray(config.steps) && freeCodeNamesInput(config.steps, [oldCurrentInputName])) {
-    // A code step names the input, which the join's name cannot rewrite inside its code:
-    // the node runs its code as code without steps runs, binding the name through
-    // input_mapping (below). Unfinished steps have no code to run.
-    if (typeof config.code !== "string" || config.code.trim().length === 0) {
-      throw new Error(`Cannot insert a join: a code step names "${oldCurrentInputName}" and the node's steps are unfinished`)
-    }
-    delete config.steps
-  }
+  const config = { ...(node.data.config as Record<string, unknown> | undefined) }
   if (isSteppedTransformConfig(config)) {
+    // A code step reading the input by name would keep the old name, which the join's
+    // name cannot replace inside its code, so the insertion is refused.
+    if (freeCodeInputRead(config.steps, [oldCurrentInputName]) !== null) {
+      throw new Error(codeStepReadsInputMessage(String(node.data.label ?? node.id), oldCurrentInputName))
+    }
     // A stepped transform addresses inputs by edge name inside its steps and
     // never carries input_mapping, so the join name replaces the old input
     // reference directly.

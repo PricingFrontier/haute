@@ -100,14 +100,11 @@ describe("prepareNodeUpdate on stepped transforms", () => {
     expect((result as NodeUpdatePlanFailure).error).toMatch(/already has an input named "quotes"/)
   })
 
-  it("keeps a code step reading a renamed input bound through input_mapping, its code run as code", () => {
+  it("refuses a rename a code step reads by name, whatever the browser's copy of the code", () => {
     const quotes = makeNode("quotes", "quotes")
     const rates = makeNode("rates", "rates")
-    const steps = [
-      { id: "s", kind: "source", input: "quotes" },
-      { id: "f", kind: "free_code", code: "df = df.join(rates, on='k')" },
-    ]
-    const update = (code: string) => prepareNodeUpdate({
+    const join = { id: "f", kind: "free_code", code: "df = df.join(rates, on='k')" }
+    const update = (steps: unknown[], code: string) => prepareNodeUpdate({
       nodeId: "rates",
       data: renamed(rates, "Rate Book"),
       refreshSourceIdentity: true,
@@ -119,16 +116,19 @@ describe("prepareNodeUpdate on stepped transforms", () => {
       submodels: {},
       reservedApiInputFrameLabels: RESERVED,
     })
+    const source = { id: "s", kind: "source", input: "quotes" }
 
-    const result = update("df = quotes\ndf = df.join(rates, on='k')")
-    expect(result.ok).toBe(true)
-    const config = (result as PreparedNodeUpdate).nodes.find((n) => n.id === "consumer")?.data.config
-    expect(config).toEqual({ code: "df = quotes\ndf = df.join(rates, on='k')", input_mapping: { rates: "Rate_Book" } })
-
-    // Unfinished steps have no code to run that way, so the rename is refused.
-    const unfinished = update("")
-    expect(unfinished.ok).toBe(false)
-    expect((unfinished as NodeUpdatePlanFailure).error).toMatch(/code step that names an input this rename changes/)
+    // The code rendered from the steps, an unfinished filter added since, and none at all:
+    // each is refused, so no step is lost to a copy of the code that is out of date.
+    for (const [steps, code] of [
+      [[source, join], "df = quotes\ndf = df.join(rates, on='k')"],
+      [[source, join, { id: "u", kind: "filter", match: "all", conditions: [] }], "df = quotes\ndf = df.join(rates, on='k')"],
+      [[source, join], ""],
+    ] as const) {
+      const result = update([...steps], code)
+      expect(result.ok).toBe(false)
+      expect((result as NodeUpdatePlanFailure).error).toMatch(/"Consumer" has a code step that reads "rates" by name/)
+    }
   })
 
   it("rewrites the steps as usual when no code step names the renamed input", () => {
