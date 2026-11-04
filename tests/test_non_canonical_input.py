@@ -13,7 +13,7 @@ import inspect
 import pytest
 from mlflow.exceptions import MlflowException
 
-from haute._config_builder import _build_node_config
+from haute._config_io import explore_settings
 from haute._contracts import Contract
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import ConfigError, RequestRefusedError
@@ -136,11 +136,12 @@ def test_the_planners_take_the_prepared_graph_edges() -> None:
 
 
 def test_an_unknown_explore_overview_card_is_rejected_by_name() -> None:
-    from haute.codegen import graph_to_code
+    from haute._config_io import collect_node_configs
 
     overview = {"dataset_snapshot": True, "custom_card": {"label": "Loss ratio"}}
+    # An Explore node's settings are read from its sidecar (READ-43).
     with pytest.raises(ConfigError, match="has no card 'custom_card'; the cards are"):
-        _build_node_config(NodeType.EXPLORE, {"overview": overview}, "", ["df"])
+        explore_settings({"overview": overview}, context="explore sidecar")
 
     graph = PipelineGraph(
         nodes=[
@@ -161,8 +162,9 @@ def test_an_unknown_explore_overview_card_is_rejected_by_name() -> None:
         ],
         edges=[GraphEdge(id="e_quotes_inspect", source="quotes", target="inspect")],
     )
-    with pytest.raises(ConfigError, match="has no card 'custom_card'"):
-        graph_to_code(graph, pipeline_name="overview")
+    # Saving writes the sidecar, which holds the overview to the closed model.
+    with pytest.raises(ConfigError, match=r"overview\.custom_card"):
+        collect_node_configs(graph)
 
 
 @pytest.mark.parametrize(

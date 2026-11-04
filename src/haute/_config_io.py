@@ -214,7 +214,7 @@ def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str
     if node_type == NodeType.RATING_STEP:
         # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
         return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
-    if node_type == NodeType.API_INPUT:
+    if node_type == NodeType.API_INPUT:  # the Quote Input alone
         # A column leaves out the settings inference gives it (READ-42).
         return columns_from_sidecar(config)
     return config
@@ -248,7 +248,7 @@ def _prepare_config_for_sidecar(
         normalised = normalise_rating_step_config(filtered)
         refuse_levels_equal_under_factor_dtypes(normalised)
         return compact_rating_config_for_sidecar(normalised)
-    if node_type == NodeType.API_INPUT:
+    if node_type == NodeType.API_INPUT:  # the Quote Input alone
         return columns_for_sidecar(filtered)
     if node_type == NodeType.EXPLORE:
         return explore_settings(filtered, context="explore node config")
@@ -291,7 +291,7 @@ _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
         ("tables", ANY, "rows", ANY),
     ),
     NodeType.BANDING: at(("factors", ANY, "rules", ANY)),
-    NodeType.API_INPUT: at(("tables", ANY, "columns", ANY)),
+    NodeType.API_INPUT: at(("tables", ANY, "columns", ANY)),  # the Quote Input alone
     NodeType.OUTPUT: at(("output_mapping", ANY)),
     # An Explore pivot's placements and the shared formulas, and a chart's value encodings
     # and series overrides (READ-43).
