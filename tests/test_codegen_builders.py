@@ -1001,7 +1001,7 @@ class TestGraphToCodeWithBuilders:
                     {
                         "id": "api",
                         "data": {
-                            "label": "API",
+                            "label": "quote_input",
                             "nodeType": "apiInput",
                             "config": {
                                 "path": "data/input.json",
@@ -1046,9 +1046,9 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "def API(): ...\n" in code
+        assert "def quote_input(): ...\n" in code
         assert "def Process(quotes: pl.LazyFrame) -> pl.LazyFrame:" in code
-        assert 'pipeline.connect("API", "Process", source_port="quotes")' in code
+        assert 'pipeline.connect("quote_input", "Process", source_port="quotes")' in code
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_constant_compiles(self) -> None:

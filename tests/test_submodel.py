@@ -65,7 +65,7 @@ def flat_graph() -> PipelineGraph:
                     "type": "output",
                     "position": {"x": 400, "y": 0},
                     "data": {
-                        "label": "Output",
+                        "label": "quote_response",
                         "nodeType": "output",
                         "config": make_output_config(["x"]),
                     },
@@ -137,7 +137,7 @@ def submodel_graph() -> PipelineGraph:
                                 "type": "output",
                                 "position": {"x": 200, "y": 0},
                                 "data": {
-                                    "label": "Output",
+                                    "label": "quote_response",
                                     "nodeType": "output",
                                     "config": make_output_config(["x"]),
                                 },

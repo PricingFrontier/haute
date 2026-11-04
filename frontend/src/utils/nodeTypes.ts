@@ -126,6 +126,11 @@ export const SINGLETON_NODE_NAMES: Readonly<Partial<Record<NodeTypeValue, string
   [NODE_TYPES.WORKBENCH_OUTPUT]: "workbench_output",
 }
 
+/** A request input's or response node's fixed name, or undefined for any other type. */
+export function singletonName(nodeType: unknown): string | undefined {
+  return typeof nodeType === "string" ? SINGLETON_NODE_NAMES[nodeType as NodeTypeValue] : undefined
+}
+
 /** Whether a node type allows only one instance per pipeline. */
 export function isSingletonType(nodeType: string | undefined): boolean {
   return Boolean(nodeType && SINGLETON_TYPES.has(nodeType as NodeTypeValue))

@@ -1441,12 +1441,12 @@ def test_a_pipeline_has_one_request_input(project: Path, case: str) -> None:
     assert refused.value.status_code == 400
     assert refused.value.detail == ONE_REQUEST_INPUT
 
-    main = _write(graph, project, "main")
     if case == "two_workbench":
-        # Each is named by its type (READ-46), so a file cannot hold two: the second's
-        # name is refused before a deploy counts them.
+        # Each is named by its type (READ-46), so a file cannot hold two: generating
+        # one refuses a Workbench Input named otherwise before a deploy counts them.
         with pytest.raises(ConfigError, match="always named 'workbench_input'"):
-            resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
+            _write(graph, project, "main")
         return
+    main = _write(graph, project, "main")
     with pytest.raises(ValueError, match=re.escape(ONE_REQUEST_INPUT)):
         resolve_config(DeployConfig(pipeline_file=main, model_name="m"))

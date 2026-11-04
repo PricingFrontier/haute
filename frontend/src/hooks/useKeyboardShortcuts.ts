@@ -5,7 +5,7 @@ import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { withEdgeIdentity } from "../utils/edgeIds"
-import { NODE_TYPES, isSingletonType, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
+import { NODE_TYPES, isSingletonType, singletonName, singletonTypesOccupiedBy, type NodeTypeValue } from "../utils/nodeTypes"
 import { requestSubmodelCreation } from "../utils/submodelCreation"
 import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from "./keyboardTargets"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
@@ -280,7 +280,8 @@ export default function useKeyboardShortcuts({
             position: { x: n.position.x + 60, y: n.position.y + 60 },
             selected: true,
             // Another node's recovery identity, column stash or editor identities are not the copy's.
-            data: { ...authoredNodeData(n.data), label: `${n.data.label} copy` },
+            // A request input or response node keeps its fixed name (READ-46); pasted, it is the only one.
+            data: { ...authoredNodeData(n.data), label: singletonName(nodeData(n).nodeType) ?? `${n.data.label} copy` },
           }
         })
         const newEdges: Edge[] = copiedEdges.flatMap((ed) => {

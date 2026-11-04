@@ -90,3 +90,47 @@ def test_a_save_or_deploy_refuses_a_graph_that_names_one_otherwise(node_type: No
         validate_singleton_groups(PipelineGraph(nodes=[named], edges=[]))
     right = GraphNode(id="n", data=NodeData(label=fixed, nodeType=node_type, config={}))
     validate_singleton_groups(PipelineGraph(nodes=[right], edges=[]))
+
+
+@pytest.mark.parametrize("node_type", list(SINGLETON_NODE_NAMES), ids=lambda t: t.value)
+def test_codegen_refuses_one_named_otherwise(node_type: NodeType) -> None:
+    """Nothing writes a file its next load refuses: the generation boundary checks the name."""
+    from haute.codegen import graph_to_code
+
+    fixed = SINGLETON_NODE_NAMES[node_type]
+    named = GraphNode(id="n", data=NodeData(label="response", nodeType=node_type, config={}))
+    with pytest.raises(ConfigError, match=f"always named {fixed!r}"):
+        graph_to_code(PipelineGraph(nodes=[named], edges=[]))
+
+
+def test_the_name_allocator_gives_one_its_name_and_refuses_a_taken_one() -> None:
+    """A new or pasted Quote Response is allocated ``quote_response``, never a numbered name,
+    and is refused, naming the holder, when an ordinary node holds that name."""
+    from haute._editor_identities import NamingCandidate, name_candidates
+
+    def no_utility(_name: str) -> str | None:
+        return None
+
+    candidate = NamingCandidate(
+        node_id="new", label="quote_response copy", node_type=NodeType.OUTPUT, alias=None
+    )
+    [named], _graph = name_candidates(
+        PipelineGraph(nodes=[], edges=[]), [candidate], no_utility, allocate=True
+    )
+    assert named.label == "quote_response"
+    assert named.collision is None
+
+    holder = GraphNode(
+        id="holder", data=NodeData(label="quote_response", nodeType=NodeType.POLARS, config={})
+    )
+    with pytest.raises(ValueError, match="always named 'quote_response'.*Rename the node"):
+        name_candidates(
+            PipelineGraph(nodes=[holder], edges=[]), [candidate], no_utility, allocate=True
+        )
+
+    # Checking a proposed name, a singleton named otherwise comes back as its collision.
+    [checked], _graph = name_candidates(
+        PipelineGraph(nodes=[], edges=[]), [candidate], no_utility, allocate=False
+    )
+    assert checked.collision is not None
+    assert "always named 'quote_response'" in checked.collision

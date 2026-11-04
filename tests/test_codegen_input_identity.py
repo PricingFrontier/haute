@@ -92,7 +92,7 @@ def test_generated_params_follow_edge_order_across_all_source_kinds(
 ) -> None:
     api_input = _node(
         "api",
-        "API Input",
+        "quote_input",
         NodeType.API_INPUT,
         _api_config("quotes"),
     )
@@ -243,7 +243,7 @@ def test_independent_submodel_outputs_use_public_port_names(
 def test_sole_frame_api_input_uses_frame_param_and_explicit_source_port() -> None:
     graph = PipelineGraph(
         nodes=[
-            _node("api", "API Input", NodeType.API_INPUT, _api_config("quotes")),
+            _node("api", "quote_input", NodeType.API_INPUT, _api_config("quotes")),
             _node("target", "use quote", NodeType.POLARS, {"code": "df = quotes"}),
         ],
         edges=[_edge("quote-edge", "api", "target", source_port="quotes")],
@@ -252,8 +252,8 @@ def test_sole_frame_api_input_uses_frame_param_and_explicit_source_port() -> Non
     code = graph_to_code(graph, pipeline_name="main")
 
     assert _function_args(code, "use_quote") == ["quotes"]
-    assert 'pipeline.connect("API_Input", "use_quote", source_port="quotes")' in code
-    assert 'pipeline.connect("API_Input", "use_quote")' not in code
+    assert 'pipeline.connect("quote_input", "use_quote", source_port="quotes")' in code
+    assert 'pipeline.connect("quote_input", "use_quote")' not in code
 
 
 def test_multi_frame_api_input_uses_each_frame_name_and_source_port_in_edge_order() -> None:
@@ -261,7 +261,7 @@ def test_multi_frame_api_input_uses_each_frame_name_and_source_port_in_edge_orde
         nodes=[
             _node(
                 "api",
-                "API Input",
+                "quote_input",
                 NodeType.API_INPUT,
                 _api_config("quotes", "drivers"),
             ),
@@ -284,11 +284,11 @@ def test_multi_frame_api_input_uses_each_frame_name_and_source_port_in_edge_orde
     connect_lines = [
         line
         for line in code.splitlines()
-        if line.startswith('pipeline.connect("API_Input", "combine_frames"')
+        if line.startswith('pipeline.connect("quote_input", "combine_frames"')
     ]
     assert connect_lines == [
-        'pipeline.connect("API_Input", "combine_frames", source_port="quotes")',
-        'pipeline.connect("API_Input", "combine_frames", source_port="drivers")',
+        'pipeline.connect("quote_input", "combine_frames", source_port="quotes")',
+        'pipeline.connect("quote_input", "combine_frames", source_port="drivers")',
     ]
 
 
@@ -297,7 +297,7 @@ def test_duplicate_derived_input_name_raises_instead_of_suffixing() -> None:
         nodes=[
             _node(
                 "api-source",
-                "API Input",
+                "quote_input",
                 NodeType.API_INPUT,
                 _api_config("clean_data"),
             ),
@@ -331,7 +331,7 @@ def test_duplicate_derived_input_name_raises_instead_of_suffixing() -> None:
 def test_portless_api_edge_raises_and_names_edge_and_source() -> None:
     graph = PipelineGraph(
         nodes=[
-            _node("api-source", "API Source", NodeType.API_INPUT, _api_config("quotes")),
+            _node("api-source", "quote_input", NodeType.API_INPUT, _api_config("quotes")),
             _node("target", "Target", NodeType.POLARS, {"code": "df = df"}),
         ],
         edges=[_edge("edge-without-port", "api-source", "target")],

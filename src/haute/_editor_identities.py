@@ -11,7 +11,15 @@ from haute._config_io import config_path_for_node, has_config_folder
 from haute._executable_names import ROOT_MODULE
 from haute._graph_utils import _sanitize_func_name, executable_input_name, is_frame_label
 from haute._support_code_names import UtilityReader, name_violations
-from haute._types import REQUEST_INPUT_NODE_TYPES, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import (
+    REQUEST_INPUT_NODE_TYPES,
+    SINGLETON_NODE_NAMES,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    singleton_name_problem,
+)
 
 
 @dataclass(frozen=True)
@@ -227,22 +235,37 @@ def name_candidates(
     With *allocate*, a candidate takes the first free name the naming rule
     allows (``label``, ``label 2``, ... or ``alias``, ``alias_2``, ...),
     counting the names earlier candidates took. Without it, a candidate keeps
-    its name, and a name the rule refuses comes back as its collision.
+    its name, and a name the rule refuses comes back as its collision. A
+    request input or response node has its type's one name (READ-46): it is
+    allocated that name, never a numbered one, and is refused when another
+    node holds it.
     """
     read_utility = functools.cache(read_utility)
     named: list[NamedCandidate] = []
     for candidate in candidates:
+        fixed = SINGLETON_NODE_NAMES.get(candidate.node_type)
         base = candidate.alias if candidate.node_type == NodeType.SUBMODEL else candidate.label
+        if allocate and fixed is not None:
+            base = fixed
         if base is None:
             raise ValueError(f"Submodel node {candidate.label!r} requires an alias.")
-        attempts = range(1, _MAX_ALLOCATION_ATTEMPTS + 1) if allocate else range(1, 2)
+        attempts = (
+            range(1, _MAX_ALLOCATION_ATTEMPTS + 1) if allocate and fixed is None else range(1, 2)
+        )
         for attempt in attempts:
             label = _suffixed(candidate, base, attempt)
             trial = _with_name(graph, candidate, label)
-            problem = _name_problem(trial, candidate, read_utility)
+            problem = _name_problem(trial, candidate, read_utility) or singleton_name_problem(
+                candidate.node_type, _sanitize_func_name(label)
+            )
             if problem is None or not allocate:
                 break
         else:
+            if fixed is not None:
+                raise ValueError(
+                    f"A node is always named {fixed!r}, since a pipeline holds one, and that "
+                    f"name is taken: {problem} Rename the node that holds it first."
+                )
             raise ValueError(f"No free name for node {candidate.label!r}.")
         graph = trial
         alias = label if candidate.node_type == NodeType.SUBMODEL else None

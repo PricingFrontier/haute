@@ -26,6 +26,7 @@ from haute._mlflow_io import ScoringModel
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     DECORATOR_TO_NODE_TYPE,
+    SINGLETON_NODE_NAMES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -294,7 +295,7 @@ def _corpus_graph() -> PipelineGraph:
         _node("unused", "Archived Quotes", NodeType.DATA_INPUT, _data_input("data/old.parquet")),
         _node(
             "api",
-            "Quote Request",
+            "quote_input",
             NodeType.API_INPUT,
             _API_INPUT,
             description='The live "quote" request',
@@ -371,10 +372,10 @@ def _corpus_graph() -> PipelineGraph:
             {"overview": {"dataset_snapshot": True, "schema": True}},
         ),
         _node("explore-h", "Explore Enriched Lookup", NodeType.EXPLORE, {"code": _EXPLORE_CODE}),
-        _node("out", "Quote Response", NodeType.OUTPUT, _OUTPUT),
+        _node("out", "quote_response", NodeType.OUTPUT, _OUTPUT),
         # A source consumed never, and a response node filling its table from one frame.
-        _node("keyed", "Keyed Quote", NodeType.WORKBENCH_INPUT, _WORKBENCH_INPUT),
-        _node("filled", "Workbench Response", NodeType.WORKBENCH_OUTPUT, _WORKBENCH_OUTPUT),
+        _node("keyed", "workbench_input", NodeType.WORKBENCH_INPUT, _WORKBENCH_INPUT),
+        _node("filled", "workbench_output", NodeType.WORKBENCH_OUTPUT, _WORKBENCH_OUTPUT),
         _node("sink", "Results File", NodeType.DATA_OUTPUT, _DATA_OUTPUT),
         _occurrence("occ", "territory_rating", "territory_rating"),
         _occurrence(
@@ -767,10 +768,10 @@ BROKEN_CALLS = {
         '    instance_of="territory_rating",\n'
         ")\n"
     ),
-    "connect, flat": 'pipeline.connect("Quote_Request", "Live_Or_Batch", source_port="quotes")\n',
+    "connect, flat": 'pipeline.connect("quote_input", "Live_Or_Batch", source_port="quotes")\n',
     "connect, arguments on an indented line": (
         "pipeline.connect(\n"
-        '    "Apply_Optimised_Street_Price", "Workbench_Response", target_port="pricing_output"\n'
+        '    "Apply_Optimised_Street_Price", "workbench_output", target_port="pricing_output"\n'
         ")\n"
     ),
     "connect, one argument per line": (
@@ -1460,11 +1461,11 @@ _CODE_TYPE_CONFIGS = {
 }
 
 
-def _fed_by_df(node_type: NodeType, config: dict) -> PipelineGraph:
+def _fed_by_df(node_type: NodeType, config: dict, label: str = "Target Node") -> PipelineGraph:
     return PipelineGraph(
         nodes=[
             _node("upstream", "df", NodeType.DATA_INPUT, _data_input("data/df.parquet")),
-            _node("target", "Target Node", node_type, config),
+            _node("target", label, node_type, config),
         ],
         edges=[_edge("upstream", "target")],
     )
@@ -1506,7 +1507,7 @@ def test_an_api_frame_named_df_on_a_hook_is_a_config_error() -> None:
     }
     graph = PipelineGraph(
         nodes=[
-            _node("api", "Request", NodeType.API_INPUT, api),
+            _node("api", "quote_input", NodeType.API_INPUT, api),
             _node("rate", "Rate", NodeType.RATING_STEP, {**_RATING_STEP, "code": "df = df"}),
         ],
         edges=[_edge("api", "rate", source_handle="df")],
@@ -1528,9 +1529,11 @@ def test_an_api_frame_named_df_on_a_hook_is_a_config_error() -> None:
 def test_a_node_type_without_code_takes_an_input_named_df_as_any_other(
     node_type: NodeType, config: dict
 ) -> None:
-    code = graph_to_code(_fed_by_df(node_type, config), pipeline_name="plain")
+    # A Quote Response takes its fixed name (READ-46).
+    label = SINGLETON_NODE_NAMES.get(node_type, "Target Node")
+    code = graph_to_code(_fed_by_df(node_type, config, label), pipeline_name="plain")
 
-    assert "\ndef Target_Node(df): ...\n" in code
+    assert f"\ndef {_sanitize_func_name(label)}(df): ...\n" in code
 
 
 @pytest.mark.parametrize(

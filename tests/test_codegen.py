@@ -757,7 +757,7 @@ class TestGraphToCode:
                     {
                         "id": "c",
                         "data": {
-                            "label": "Out",
+                            "label": "quote_response",
                             "nodeType": "output",
                             "config": make_output_config(["x"]),
                         },
@@ -773,7 +773,7 @@ class TestGraphToCode:
         compile(code, "<test>", "exec")
         # Each edge is said by its target's signature, so no connect() repeats it (READ-30).
         assert "def Clean(Read: pl.LazyFrame) -> pl.LazyFrame:\n" in code
-        assert "def Out(Clean): ...\n" in code
+        assert "def quote_response(Clean): ...\n" in code
         assert "pipeline.connect" not in code
 
     def test_optimiser_apply_ratebook_input_returns_selected_source(self):
