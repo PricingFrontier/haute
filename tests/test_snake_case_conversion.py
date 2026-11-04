@@ -26,8 +26,9 @@ from haute._config_io import load_node_config, node_config_json
 from haute._config_validation import SNAKE_CASE_CONVERSION, SNAKE_CASE_KEYS
 from haute._node_config_models import NODE_CONFIG_MODELS
 from haute._project_context import standalone_project_scope
+from haute._rating_step_config import normalise_rating_step_config
 from haute._types import NodeType
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ConfigSettingError
 from haute.parser import parse_pipeline_file
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "one_off" / "read_29_snake_case_keys.py"
@@ -264,3 +265,30 @@ def test_a_decorator_keyword_in_its_camel_case_form_is_refused_naming_the_conver
         @live.polars(inputMapping={"src": "quotes"})
         def priced(src: object) -> object:
             return src
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "message"),
+    [
+        (
+            {"kind": "Datetime", "timeUnit": "us", "timeZone": None},
+            "'timeUnit' is now 'time_unit', 'timeZone' is now 'time_zone'",
+        ),
+        ({"kind": "Nope"}, "is not a valid rating dtype descriptor"),
+    ],
+    ids=["camel-case", "unknown"],
+)
+def test_a_rating_dtype_descriptor_in_the_camel_case_form_names_the_conversion(
+    descriptor: dict[str, Any], message: str
+) -> None:
+    """A table still being set up (no entries yet) has its descriptors checked too."""
+    config = {
+        "tables": [{"factors": ["a"], "output_column": "r", "factor_dtypes": {"a": descriptor}}]
+    }
+    with pytest.raises(ConfigSettingError, match=re.escape(message)):
+        normalise_rating_step_config(config)
+
+
+def test_a_table_with_no_factors_or_entries_yet_passes_through() -> None:
+    config = {"tables": [{"output_column": "r"}]}
+    assert normalise_rating_step_config(config) == config

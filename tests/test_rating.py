@@ -16,6 +16,7 @@ from haute._rating import (
     _banding_condition,
     _combine_rating_columns,
     _normalise_banding_factors,
+    _rating_table_skip_reason,
     apply_rating_step_from_config,
     normalise_rating_key,
 )
@@ -2074,3 +2075,18 @@ class TestWs11RatingHardening:
             == _apply_rating_table(lf, defaulted).collect_schema()
         )
         assert streaming_collect(_apply_rating_table(lf, guarded))["factor"].to_list() == [2.0]
+
+
+def test_a_table_without_its_output_column_is_skipped_saying_so() -> None:
+    table = {"factors": ["region"], "entries": [{"region": "north", "value": 1.0}]}
+    assert _rating_table_skip_reason(table) == "no output_column"
+
+
+def test_a_combined_output_with_no_base_and_no_table_adds_no_column() -> None:
+    """With no table output to combine and no base value there is nothing to write."""
+    lf = _apply_rating_step_outputs(
+        pl.LazyFrame({"k": ["a"]}),
+        [],
+        [{"operation": "multiply", "output_column": "premium", "base_value": None}],
+    )
+    assert lf.collect_schema().names() == ["k"]
