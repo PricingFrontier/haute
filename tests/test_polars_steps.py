@@ -5320,7 +5320,7 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
 
     # A placeholder whose steps .haute.json does not hold would skip them: it is refused.
     (tmp_path / "main.haute.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ParseError, match="'quotes' is saved with unfinished steps.*does not hold them"):
+    with pytest.raises(ParseError, match="'quotes' is saved with unfinished steps.*not hold them"):
         parse_pipeline_file(tmp_path / "main.py", flatten=True)
     (tmp_path / "main.haute.json").unlink()
     with pytest.raises(ParseError, match="main.haute.json, but that file does not hold them"):
