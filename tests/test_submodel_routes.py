@@ -369,7 +369,7 @@ def test_node_instance_allocates_module_child_and_copy_names(
     body = _instance_body()
     body["graph"]["submodels"] = _graph_with_submodel()["submodels"]
     definition = body["graph"]["submodels"].pop(DEFINITION_ID)
-    definition["definition_id"] = "CALC_2"
+    definition["definitionId"] = "CALC_2"
     definition["file"] = "modules/other_module.py"
     body["graph"]["submodels"]["CALC_2"] = definition
     body["graph"]["nodes"].extend(

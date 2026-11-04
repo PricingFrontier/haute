@@ -304,9 +304,8 @@ def test_a_decorator_with_unrelated_and_unpacked_keywords_is_left_as_written(
 def test_a_decorator_with_both_spellings_of_a_keyword_refuses_the_whole_run(
     tmp_path: Path, conversion: ModuleType
 ) -> None:
-    pipeline = _project(tmp_path)
-    source = pipeline.read_text(encoding="utf-8")
-    pipeline.write_text(
+    source = _project(tmp_path).read_text(encoding="utf-8")
+    (tmp_path / "main.py").write_text(
         source.replace(
             '@pipeline.polars(inputMapping={"sourceType": "bands"})',
             '@pipeline.polars(inputMapping={"sourceType": "bands"}, input_mapping={})',
@@ -323,9 +322,8 @@ def test_a_decorator_with_both_spellings_of_a_keyword_refuses_the_whole_run(
 def test_a_sidecar_a_decorator_names_but_is_missing_refuses_the_whole_run(
     tmp_path: Path, conversion: ModuleType
 ) -> None:
-    pipeline = _project(tmp_path)
-    source = pipeline.read_text(encoding="utf-8")
-    pipeline.write_text(
+    source = _project(tmp_path).read_text(encoding="utf-8")
+    (tmp_path / "main.py").write_text(
         source
         + '\n\n@pipeline.banding(config="config/banding/gone.json")\ndef gone(quotes): ...\n',
         encoding="utf-8",
