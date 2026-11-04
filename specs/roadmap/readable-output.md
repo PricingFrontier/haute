@@ -54,28 +54,10 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-43 | Planned | P1 | An Explore node's settings live in its sidecar, and its steps in its code. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
-
-### READ-43 — An Explore node's settings live in its sidecar
-**Why:** An Explore node writes its overview, pivots, pivot formulas, charts and steps as arguments of its decorator in `main.py`, one setting a line, so one pivot can take 50 lines. Its steps are written there as well as in its body.
-
-**Plan:**
-- The node is `@pipeline.explore(config="config/explore/<node>.json")`, and the sidecar holds its overview, pivots, pivot formulas and charts. Its column settings go where the other node types with a sidecar keep theirs.
-- Its steps are rebuilt from its body, as every other stepped node's are (READ-44).
-- The printer writes each pivot placement, pivot formula and chart series on one line.
-- A decorator that still carries settings or steps is refused, naming the sidecar.
-
-**Acceptance:**
-- An Explore node with pivots and charts saves its settings to its sidecar, and its decorator carries only `config=`.
-- It reloads to the same settings and steps, and the Explore view opens on the same results.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_codegen_builders.py::_gen_explore`; `src/haute/_config_builder.py::_resolve_node_config`.
 
 ### READ-33 — A column or table renamed against the default branch keeps its values
 **Why:** Workbench tables and columns are known by their names, so a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.

@@ -419,9 +419,10 @@ class NodeRegistry:
         reject_removed_node_reuse_kwargs(config)
         reject_camel_case_decorator_kwargs(config)
         declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
-        if declared_type in (NodeType.EDGE_JOIN, NodeType.EXPLORE):
-            # Their settings are the decorator's keywords, held to the config model's
-            # keys and shape as the parse holds the same keywords in a file.
+        if declared_type == NodeType.EDGE_JOIN:
+            # Its settings are the decorator's keywords, held to the config model's keys
+            # and shape as the parse holds the same keywords in a file. An Explore node's
+            # are in its sidecar (READ-43).
             from haute._contracts import declared_contract_json
 
             declared = {key: value for key, value in config.items() if key != "_node_type"}

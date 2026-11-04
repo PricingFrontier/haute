@@ -57,16 +57,7 @@ def base_premium(df: pl.LazyFrame) -> pl.LazyFrame:
 def quote_response(base_premium): ...
 
 
-@pipeline.explore(
-    overview={
-        "dataset_snapshot": True,
-        "data_quality": True,
-        "numeric_summary": True,
-        "categorical_summary": True,
-        "schema": True,
-    },
-    steps=[],
-)
+@pipeline.explore(config="config/explore/premium_explore.json")
 def premium_explore(base_premium): ...
 
 

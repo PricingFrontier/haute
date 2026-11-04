@@ -77,6 +77,7 @@ NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.OPTIMISER_APPLY: "apply_optimisation",
     NodeType.SCENARIO_EXPANDER: "expander",
     NodeType.CONSTANT: "constant",
+    NodeType.EXPLORE: "explore",
 }
 
 FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
@@ -154,6 +155,32 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
     return FOLDER_TO_NODE_TYPE.get(path.parent.name)
 
 
+def explore_settings(config: dict[str, Any], *, context: str) -> dict[str, Any]:
+    """An Explore node's *config* with its overview, pivot formulas, pivots and charts
+    checked and normalised, each left out when empty (READ-43); anything else as given.
+    *context* names where they were read in a refusal."""
+    from haute._explore_charts import validate_explore_charts
+    from haute._explore_overview import validate_explore_overview
+    from haute._explore_pivots import validate_explore_pivot_state
+
+    settings = {"overview", "pivot_formulas", "pivots", "charts"}
+    result = {key: value for key, value in config.items() if key not in settings}
+    overview = validate_explore_overview(config.get("overview", {}), context=context)
+    formulas, pivots = validate_explore_pivot_state(
+        config.get("pivot_formulas"), config.get("pivots", []), context=context
+    )
+    charts = validate_explore_charts(config.get("charts", []), context=context)
+    for key, value in (
+        ("overview", dict(overview) if overview else None),
+        ("pivot_formulas", formulas),
+        ("pivots", pivots),
+        ("charts", charts),
+    ):
+        if value:
+            result[key] = value
+    return result
+
+
 def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
     if node_type is None:
         return config
@@ -161,6 +188,9 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
 
     reject_removed_config_keys(node_type, config)
     reject_form_given_keys(node_type, config)
+    if node_type == NodeType.EXPLORE:
+        # Its overview, pivots and charts are checked as the editor's are (READ-43).
+        config = explore_settings(config, context="explore sidecar")
     return config_from_sidecar(node_type, config)
 
 
@@ -220,6 +250,8 @@ def _prepare_config_for_sidecar(
         return compact_rating_config_for_sidecar(normalised)
     if node_type == NodeType.API_INPUT:
         return columns_for_sidecar(filtered)
+    if node_type == NodeType.EXPLORE:
+        return explore_settings(filtered, context="explore node config")
     return filtered
 
 
@@ -249,7 +281,8 @@ _NO_PLACE: OneLine = at()
 
 #: Each node type's records written on one line each: a rating table's factors, its columns
 #: and each row of its grid (READ-26), a banding factor's bands (READ-27), an API Input
-#: column and a Quote Response mapping row (READ-42). Keyed by the node type, so another
+#: column and a Quote Response mapping row (READ-42), and an Explore node's placements,
+#: formulas and chart series (READ-43). Keyed by the node type, so another
 #: type's ``tables`` or ``factors`` keeps one item a line.
 _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
     NodeType.RATING_STEP: at(
@@ -260,6 +293,17 @@ _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
     NodeType.BANDING: at(("factors", ANY, "rules", ANY)),
     NodeType.API_INPUT: at(("tables", ANY, "columns", ANY)),
     NodeType.OUTPUT: at(("output_mapping", ANY)),
+    # An Explore pivot's placements and the shared formulas, and a chart's value encodings
+    # and series overrides (READ-43).
+    NodeType.EXPLORE: at(
+        ("pivots", ANY, "filters", ANY),
+        ("pivots", ANY, "columns", ANY),
+        ("pivots", ANY, "rows", ANY),
+        ("pivots", ANY, "values", ANY),
+        ("pivot_formulas", ANY),
+        ("charts", ANY, "value_encodings", ANY),
+        ("charts", ANY, "series_overrides", ANY),
+    ),
 }
 
 

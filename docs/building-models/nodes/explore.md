@@ -104,21 +104,20 @@ Checking claim frequency by area:
 4. Click **Refresh** on the preview. The preview's **OVERVIEW** shows the two cards, and its **PIVOTS** shows the table with a frequency for each area.
 
 ??? note "In the pipeline file"
-    The node's settings are stored as arguments of its decorator in the pipeline's `.py` file, `@pipeline.explore(...)`; it has no JSON sidecar. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the input as `df`.
+    The node's settings are stored in a JSON sidecar, `config/explore/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.explore(config="config/explore/<node name>.json")`. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the input as `df`, and Haute reads the steps back from it.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **TRANSFORM** steps | `steps`, a decorator argument; their generated code in the function body |
+    | **TRANSFORM** steps | the function body, which Haute reads the steps back from |
     | **OVERVIEW** cards | `overview`: `dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary` and `schema`, each `true` when switched on (an off card is left out) |
     | **PIVOTS** | `pivots`: each pivot with its filter, column, row and value placements, sorting, formatting and totals |
     | **FORMULAS** | `pivot_formulas`: the node's shared library of calculated fields |
     | **CHARTS** | `charts`: each chart with its source pivot and formatting |
 
-    Empty settings are left out, so a new node's decorator is bare.
+    Empty settings are left out, so a new node's sidecar is nearly empty. Each pivot placement, formula and chart series sits on one line.
 
     The column metadata any node may carry, `selected_columns` and `column_renames`, has
-    no editor control on an Explore node; when present it is stored as decorator
-    arguments too.
+    no editor control on an Explore node; when present it is stored in the sidecar too.
 
     <!-- config-keys:start -->
 

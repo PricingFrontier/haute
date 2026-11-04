@@ -26,7 +26,7 @@ from haute.schemas import (
     RecoveryUnresolvedConnection,
 )
 from tests._project import use_project
-from tests.conftest import write_data_input_config
+from tests.conftest import write_data_input_config, write_node_config
 
 
 def _write(path: Path, source: str) -> Path:
@@ -56,7 +56,8 @@ def _healthy_source(name: str = "healthy") -> str:
 
 
 def _legacy_explore_source(name: str = "legacy") -> str:
-    """Return a valid pipeline whose old Explore pivot lacks value_order."""
+    """Return a pipeline whose Explore node keeps its settings, an old pivot that lacks
+    value_order, in decorator keywords: the form before READ-43, which the parse refuses."""
     return f'''\
         import haute
 
@@ -739,8 +740,9 @@ def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
     pipeline_file = _write(tmp_path / "main.py", _legacy_explore_source())
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    with pytest.raises(ConfigError, match="value_order"):
+    with pytest.raises(ConfigError, match="stores its config in a JSON sidecar") as refused:
         parse_pipeline_file(pipeline_file)
+    assert refused.value.context["config_folder"] == "config/explore"
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
@@ -763,7 +765,7 @@ def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
         item for item in document.diagnostics if item.diagnostic_id in explore.diagnostic_ids
     )
     assert diagnostic.code == "node_config_invalid"
-    assert "value_order" in diagnostic.message
+    assert "stores its config in a JSON sidecar" in diagnostic.message
     assert diagnostic.source_span is not None
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
@@ -1912,6 +1914,7 @@ def test_explore_shape_failure_is_local_and_blocks_only_downstream(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
+    write_node_config(tmp_path, NodeType.EXPLORE, "inspect", {})
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1922,7 +1925,7 @@ def test_explore_shape_failure_is_local_and_blocks_only_downstream(
         def source():
             return None
 
-        @pipeline.explore(pivots=[])
+        @pipeline.explore(config="config/explore/inspect.json")
         def inspect(source): ...
 
         @pipeline.polars
@@ -3693,8 +3696,11 @@ def test_an_explore_with_no_input_inside_a_submodel_is_listed_in_it(tmp_path: Pa
     """Checked by the submodel's own parse, the failure is attributed to its node."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
+    write_node_config(tmp_path, NodeType.EXPLORE, "look", {})
     pipeline_file = _submodel_project(
-        tmp_path, input_ports="[]", body="@submodel.explore\ndef look(): ...\n"
+        tmp_path,
+        input_ports="[]",
+        body='@submodel.explore(config="config/explore/look.json")\ndef look(): ...\n',
     )
     with pytest.raises(ParseError, match="exactly one incoming edge") as refused:
         parse_pipeline_file(pipeline_file)
@@ -3718,10 +3724,11 @@ def test_an_explore_a_port_feeds_is_not_flagged_in_an_unavailable_submodel(
     """The port is its input: recovery counts it, as the parse does."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
+    write_node_config(tmp_path, NodeType.EXPLORE, "look", {})
     pipeline_file = _submodel_project(
         tmp_path,
         input_ports='[{"name": "records", "targets": [{"node_id": "look"}]}]',
-        body="@submodel.explore\ndef look(records): ...\n\n"
+        body='@submodel.explore(config="config/explore/look.json")\ndef look(records): ...\n\n'
         "@submodel.polars\ndef rates():\n    return None\n\n"
         '@submodel.edge_join(how="left", on=["id"])\ndef joined(quotes, rates): ...\n\n'
         'submodel.connect("quotes", "joined", target_port="base")\n'

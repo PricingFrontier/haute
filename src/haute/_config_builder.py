@@ -18,7 +18,6 @@ from typing import Any
 from haute._code_extraction import (
     extract_user_code,
     is_declaration_body,
-    normalise_user_code,
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
@@ -27,18 +26,12 @@ from haute._config_validation import (
 )
 from haute._contracts import Contract, declared_contract_json, get_node_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs, require_edge_join_order
-from haute._explore_charts import validate_explore_charts
-from haute._explore_overview import validate_explore_overview
-from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._node_config_models import COLUMN_CONFIG_KEYS
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
     STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-    PolarsStepError,
-    render_polars_steps,
-    step_input_names,
     stepped_surface_for,
 )
 from haute._polars_steps_lift import StepLiftError, lift_steps
@@ -83,7 +76,7 @@ def _build_node_config(
 ) -> dict[str, Any]:
     """Build the config of a node that keeps its settings on its decorator.
 
-    Only an Edge Join, an Explore and a transform do: every other node type
+    Only an Edge Join and a transform do: every other node type
     keeps them in a JSON sidecar, which ``_resolve_node_config`` loads, or
     refuses the node for lacking, before this runs.
     """
@@ -91,38 +84,6 @@ def _build_node_config(
     config: dict[str, Any] = {}
     if node_type == NodeType.EDGE_JOIN:
         config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
-    elif node_type == NodeType.EXPLORE:
-        code = extract_user_code(body, kind="hook") if body else ""
-        if code:
-            config["code"] = code
-        # Explore has no sidecar: its steps travel as a decorator argument
-        # beside its pivots and charts, and are reconciled with the body below.
-        if "steps" in decorator_kwargs:
-            config["steps"] = decorator_kwargs["steps"]
-        if "overview" in decorator_kwargs:
-            overview = validate_explore_overview(
-                decorator_kwargs["overview"],
-                context="explore decorator",
-            )
-            if overview:
-                config["overview"] = dict(overview)
-        if "pivots" in decorator_kwargs or "pivot_formulas" in decorator_kwargs:
-            shared_formulas, pivots = validate_explore_pivot_state(
-                decorator_kwargs.get("pivot_formulas"),
-                decorator_kwargs.get("pivots", []),
-                context="explore decorator",
-            )
-            if shared_formulas:
-                config["pivot_formulas"] = shared_formulas
-            if pivots:
-                config["pivots"] = pivots
-        if "charts" in decorator_kwargs:
-            charts = validate_explore_charts(
-                decorator_kwargs["charts"],
-                context="explore decorator",
-            )
-            if charts:
-                config["charts"] = charts
     elif node_type == NodeType.POLARS:
         config["code"] = (
             extract_user_code(body, kind="polars", param_names=param_names) if body else ""
@@ -494,60 +455,6 @@ def _without_line_end_spaces(code: str) -> str:
     )
 
 
-def _reconcile_steps(
-    config: dict[str, Any],
-    node_type: NodeType,
-    param_names: list[str],
-    config_ref: str | None,
-    func_name: str,
-) -> tuple[dict[str, Any], NodeEditorState]:
-    """Keep a stepped surface's ``steps`` only while they still render the body.
-
-    For every surface but the transform, whose steps are rebuilt from its code
-    (``_with_lifted_steps``). The ``.py`` body is the runtime truth. A body
-    that differs from the rendering of the persisted steps was edited by hand,
-    so the steps are discarded and the node becomes code-only: the returned
-    editor state says why (``steps_discarded``). An empty body with
-    unrenderable steps is how an incomplete step list is saved, so it keeps
-    its steps.
-
-    The comparison is made on equal terms: the rendering is passed through
-    the same extraction the body received (``normalise_user_code``), because
-    a finaliser may normalise a rendering (a lone ``df = (df.head(2))``
-    free-code step loses its brackets) without anyone having edited it; and
-    it compares programs, not text (``_same_program``), so a body saved in an
-    earlier layout or quoting of the same steps keeps them.
-    """
-    if "steps" not in config:
-        return config, NodeEditorState()
-    validate_step_container(config, node_type, config_ref, func_name)
-    surface = stepped_surface_for(node_type)
-    steps = config["steps"]
-    body_code = str(config.get("code") or "")
-    try:
-        rendered = render_polars_steps(
-            steps, step_input_names(node_type, param_names), start=surface.start
-        ).code
-    except PolarsStepError as exc:
-        if not body_code:
-            return config, NodeEditorState()
-        reason = f"the steps cannot be rendered ({exc})"
-    else:
-        kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
-        if _same_program(normalise_user_code(rendered, kind=kind), body_code):
-            return config, NodeEditorState()
-        reason = "the function body no longer matches the rendered steps"
-    logger.warning(
-        "polars_steps_discarded",
-        func_name=func_name,
-        config_path=config_ref,
-        reason=reason,
-    )
-    return {k: v for k, v in config.items() if k != "steps"}, NodeEditorState(
-        steps_discarded=f"Steps were discarded because {reason}.",
-    )
-
-
 def _resolve_node_config(
     decorator_kwargs: dict[str, Any],
     body: str,
@@ -683,9 +590,6 @@ def _resolve_node_config(
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
         if node_type == NodeType.POLARS:
             config = _with_lifted_steps(config, func_name)
-        elif node_type in STEPPED_NODE_TYPES:
-            # Decorator-carried steps (Explore) reconcile with the body the same way.
-            config, editor = _reconcile_steps(config, node_type, param_names, None, func_name)
 
     if node_type == NodeType.LIVE_SWITCH:
         config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)

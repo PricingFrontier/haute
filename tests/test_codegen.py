@@ -3251,8 +3251,9 @@ class TestWrapUserCodeEdgeCases:
     def test_empty_code_returns_first_input_name(self, tmp_path: Path):
         """No code is a declaration; a passthrough node hands on its first input."""
         node = _n({"id": "n", "data": {"label": "Step", "nodeType": "explore", "config": {}}})
+        # Its settings, none here, are in its sidecar (READ-43).
         assert _node_to_code(node, source_names=["my_source"]) == (
-            "@pipeline.explore\ndef Step(my_source): ...\n"
+            '@pipeline.explore(config="config/explore/Step.json")\ndef Step(my_source): ...\n'
         )
         my_source = pl.LazyFrame({"x": [1]})
         assert _run_saved_node(node, tmp_path, my_source, source_names=["my_source"]) is my_source

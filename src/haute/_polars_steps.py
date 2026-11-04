@@ -139,10 +139,10 @@ STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
     }
 )
 
-#: The stepped node types whose code is the only copy of their steps: the load rebuilds
-#: them from the function body (READ-22, READ-44), and an unfinished list waits in the
-#: pipeline's ``.haute.json``. An Explore node's travel in its decorator.
-STEPS_FROM_CODE: frozenset[NodeType] = frozenset(STEPPED_NODE_TYPES) - {NodeType.EXPLORE}
+#: The stepped node types whose code is the only copy of their steps: every one (READ-22,
+#: READ-43, READ-44). The load rebuilds them from the function body, and an unfinished
+#: list waits in the pipeline's ``.haute.json``.
+STEPS_FROM_CODE: frozenset[NodeType] = frozenset(STEPPED_NODE_TYPES)
 
 #: The name an analyst knows each stepped surface by, for messages about its steps.
 STEPPED_SURFACE_LABELS: Mapping[NodeType, str] = MappingProxyType(

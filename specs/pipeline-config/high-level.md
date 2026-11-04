@@ -57,9 +57,9 @@ several types, from Python code extracted out of the function body. The live `Pi
 API records `config=` and the other keywords as node metadata at import time and reads a sidecar
 only when a standalone run executes the node (see Standalone execution).
 
-**Declarations and hooks.** A node with settings is a configured node: an Edge Join or
-Explore node (its settings are its decorator keywords), or a node of any other type except
-`polars` that names a `config=` sidecar. Its decorator performs the node's configured work —
+**Declarations and hooks.** A node with settings is a configured node: an Edge Join (its
+settings are its decorator keywords), an Explore node, whose analysis settings do nothing
+in a run, or a node of any other type except `polars` that names a `config=` sidecar. Its decorator performs the node's configured work —
 loading, scoring, rating, expanding, joining, switching, assembling — when the file runs on its
 own, and the function says only what the user added. On a type that accepts code (Data
 Input, External File, Rating Step, Model Score, Scenario Expander, Explore), a function whose
@@ -112,8 +112,10 @@ node that binds receives its frames in the order its parameters read them, in ev
 UTF-8 with nothing escaped, LF line endings, a two-space indent and a final newline, and
 shapes a record by its kind, never by a width limit, so a one-character edit changes one
 line: a rating entry, a node position, a Workbench layout box, a schema column, a
-show-when condition, an API Input column and a Quote Response mapping row each sit on one
-line (READ-42), as does any list or mapping of numbers alone
+show-when condition, an API Input column, a Quote Response mapping row (READ-42), and an
+Explore pivot's filter, column, row and value placements, a pivot formula and a chart's
+value encoding and series override (READ-43) each sit on one line, as does any list or
+mapping of numbers alone
 (a node position is whole pixels: the canvas places and drags nodes on them, and the save
 rounds an older fractional one half up, as the canvas does, so loading and saving an
 unchanged pipeline leaves its `.haute.json` byte for byte the same);
@@ -644,15 +646,11 @@ and loading one that does is refused, naming the file and saying the steps are
 rebuilt from the body. An incomplete step list is saved as a transform's is: the body
 is the raising placeholder and the list waits in the pipeline's `.haute.json`
 (`unfinished_steps`), for any stepped node.
-Explore is the one stepped type with no config folder: its steps travel as a `steps=`
-decorator argument beside its overview, pivot and chart cards, and are kept only while
-they render its body: parsing renders them against the function's parameter names and
-compares the result with the code extracted from the body, as programs (the same
-syntax tree and comments, a comment's trailing whitespace aside); a different body
-discards them (the body was edited by hand), recording a `steps_discarded` reason in
-the node's editor state and logging a warning, and an empty body with unrenderable
-steps keeps them. A config whose `steps` value is not a list fails the parse with a
-`ConfigError`.
+An Explore node keeps its overview, pivot formulas, pivots and charts in its sidecar,
+`config/explore/<node>.json`, checked and normalised on the way out and in by the
+Explore display-config validators, each left out when empty; its decorator carries only
+`config=`, and one that still carries settings or steps is refused like any node whose
+settings belong in a sidecar (READ-43).
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as

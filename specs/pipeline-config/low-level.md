@@ -189,9 +189,9 @@
 - **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, each node
   type's `NodeConfigModel.keys`, including the universal keys.
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
-  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 16 of the 21
-  node types store external config (all except `edgeJoin`, `explore`, `polars`,
-  `submodel`, and `submodelPort`: a transform's steps live in its code, READ-22), and
+  map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
+  node types store external config (all except `edgeJoin`, `polars`, `submodel`, and
+  `submodelPort`: a transform's steps live in its code, READ-22), and
   `node_emits_sidecar(node)` is `has_config_folder` of its type:
 
   | Node type | Sidecar folder |
@@ -212,6 +212,7 @@
   | `optimiserApply` | `config/apply_optimisation/` |
   | `scenarioExpander` | `config/expander/` |
   | `constant` | `config/constant/` |
+  | `explore` | `config/explore/` |
 - **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 5-entry registry (one per
   offered `--target`) that every scaffold template dispatches through: `label` (for the
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
@@ -299,23 +300,10 @@ the function's body: its steps are rebuilt from its extracted body
 by `_with_lifted_steps` (`lift_steps`), except for one with no code, the placeholder an
 unfinished step list is saved with included, or one with an `input_mapping`, which stay
 code-only (READ-22); a frame surface whose function is a declaration has an empty step
-list instead. An
-Explore node's decorator-carried list is reconciled (`_reconcile_steps`,
-rendering in the type's start mode against `step_input_names(node_type, param_names)`
-and comparing the extracted body with the rendering passed through the same
-extraction, `_code_extraction.normalise_user_code`, as programs rather than text
-(`_same_program`: the same syntax tree and the same comments, each compared without its
-trailing whitespace, which `ruff format` removes; so a body saved in an earlier
-layout or quoting of the same steps, or reformatted by `ruff format`, keeps them, while
-any other edit, a comment or a respelling in free code included, is a hand edit, as is a
-body only an earlier renderer wrote, such as Haute 0.5's lists for keys, aggregations
-and columns): keep, discard (returning
-the editor state's `steps_discarded` reason, which `_resolve_node_config` returns
-beside the config), or keep an
-unrenderable list behind an empty body; `steps` plus `input_mapping` on an original
-transform is a `ConfigError`); raises
-`_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or,
-for the three types that keep their settings on the decorator (Edge Join, Explore and
+list instead (READ-43, READ-44); raises
+`_sidecar_required_error` if the node type is folder-backed but no `config=` was given,
+an Explore node with its settings or steps on its decorator included; or,
+for the two types that keep their settings on the decorator (Edge Join and
 transform), builds the config from the decorator kwargs and body in `_build_node_config`. Before any of this, `_validate_node_function` enforces the
 declaration/hook shapes the standalone runtime relies on: for a configured node a body that
 is only `...` or `pass` (after an optional docstring, `is_declaration_body`) is a declaration

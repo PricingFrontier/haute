@@ -596,7 +596,19 @@ class TestGenOptimiser:
 
 
 class TestGenExplore:
-    """Tests for explore code generation."""
+    """Tests for explore code generation.
+
+    The decorator names the node's sidecar and nothing else; its overview,
+    pivots and charts are the sidecar's (READ-43).
+    """
+
+    _DECORATOR = '@pipeline.explore(config="config/explore/InspectClaims.json")\n'
+
+    @staticmethod
+    def _sidecar(node) -> dict:
+        """The settings a save writes to *node*'s sidecar."""
+        configs = collect_node_configs(_g({"nodes": [node.model_dump()]}))
+        return json.loads(configs[f"config/explore/{node.data.label}.json"])
 
     def test_basic_explore_is_passthrough_analysis_sink(self) -> None:
         node = _make_codegen_node("explore", {}, label="InspectClaims")
@@ -604,8 +616,8 @@ class TestGenExplore:
         code = _node_to_code(node, source_names=["claims"])
 
         # The decorator passes the input through; the function declares it.
-        assert code == "@pipeline.explore\ndef InspectClaims(claims): ...\n"
-        assert "config/" not in code
+        assert code == f"{self._DECORATOR}def InspectClaims(claims): ...\n"
+        assert self._sidecar(node) == {}
         _compile_node_code(code)
 
     def test_explore_with_polars_code_generates_transform_body(self) -> None:
@@ -625,14 +637,15 @@ class TestGenExplore:
         # A hook: the decorator hands the explored input in as ``df``, so the
         # body is the user's code verbatim and ``return df`` — no binding line.
         assert code == (
-            "@pipeline.explore\n"
+            f"{self._DECORATOR}"
             "def InspectClaims(df: pl.LazyFrame) -> pl.LazyFrame:\n"
             "    df = df.filter(pl.col('premium') > 0)"
             ".with_columns((pl.col('premium') * 2).alias('double_premium'))\n"
             "    return df\n"
         )
         assert "claims" not in code
-        assert "config/" not in code
+        # The code is the body's alone; the sidecar holds no copy of it.
+        assert self._sidecar(node) == {}
         _compile_node_code(code)
 
     def test_no_sources_raise(self) -> None:
@@ -647,7 +660,7 @@ class TestGenExplore:
         with pytest.raises(ParseError, match="exactly one incoming edge"):
             _node_to_code(node, source_names=["left", "right"])
 
-    def test_explore_with_overview_emits_decorator_kwarg(self) -> None:
+    def test_explore_with_overview_writes_it_to_the_sidecar(self) -> None:
         node = _make_codegen_node(
             "explore",
             {"overview": {"dataset_snapshot": True}},
@@ -656,22 +669,20 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        # The decorator carries the overview keyword as a literal dict, and
-        # nothing else: an Explore contract adds no information.
-        assert code == (
-            '@pipeline.explore(overview={"dataset_snapshot": True})\n'
-            "def InspectClaims(claims): ...\n"
-        )
+        # The decorator names the sidecar and nothing else: the overview is the
+        # sidecar's, and an Explore contract adds no information.
+        assert code == f"{self._DECORATOR}def InspectClaims(claims): ...\n"
+        assert self._sidecar(node) == {"overview": {"dataset_snapshot": True}}
         _compile_node_code(code)
 
-    def test_explore_without_overview_emits_bare_decorator(self) -> None:
+    def test_explore_without_overview_writes_none(self) -> None:
         node = _make_codegen_node("explore", {}, label="InspectClaims")
 
         code = _node_to_code(node, source_names=["claims"])
 
-        # No overview = no keywords at all: the decorator is bare.
-        assert code.startswith("@pipeline.explore\n")
+        assert code.startswith(self._DECORATOR)
         assert "overview=" not in code
+        assert "overview" not in self._sidecar(node)
         _compile_node_code(code)
 
     def test_explore_with_code_and_overview_emits_both(self) -> None:
@@ -690,14 +701,14 @@ class TestGenExplore:
         code = _node_to_code(node, source_names=["claims"])
 
         assert code.startswith(
-            '@pipeline.explore(overview={"dataset_snapshot": True})\n'
-            "def InspectClaims(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            f"{self._DECORATOR}def InspectClaims(df: pl.LazyFrame) -> pl.LazyFrame:\n"
         )
         assert "    df = df.filter(pl.col('premium') > 0)" in code
         assert code.endswith("    return df\n")
+        assert self._sidecar(node) == {"overview": {"dataset_snapshot": True}}
         _compile_node_code(code)
 
-    def test_explore_with_empty_overview_omits_decorator_kwarg(self) -> None:
+    def test_explore_with_empty_overview_leaves_it_out_of_the_sidecar(self) -> None:
         node = _make_codegen_node(
             "explore",
             {"overview": {}},
@@ -706,12 +717,13 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        # Empty overview must NOT pollute the decorator.
-        assert code.startswith("@pipeline.explore\n")
+        # An empty overview must NOT pollute the decorator or the sidecar.
+        assert code.startswith(self._DECORATOR)
         assert "overview=" not in code
+        assert self._sidecar(node) == {}
         _compile_node_code(code)
 
-    def test_explore_with_schema_emits_decorator_kwarg(self) -> None:
+    def test_explore_with_schema_writes_it_to_the_sidecar(self) -> None:
         node = _make_codegen_node(
             "explore",
             {"overview": {"schema": True}},
@@ -720,14 +732,11 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        assert code == (
-            '@pipeline.explore(overview={"schema": True})\ndef InspectClaims(claims): ...\n'
-        )
+        assert code == f"{self._DECORATOR}def InspectClaims(claims): ...\n"
+        assert self._sidecar(node) == {"overview": {"schema": True}}
         _compile_node_code(code)
 
-    def test_explore_with_both_overview_toggles_emits_decorator_kwarg(self) -> None:
-        import ast
-
+    def test_explore_with_both_overview_toggles_writes_them_to_the_sidecar(self) -> None:
         node = _make_codegen_node(
             "explore",
             {"overview": {"dataset_snapshot": True, "schema": True}},
@@ -736,61 +745,24 @@ class TestGenExplore:
 
         code = _node_to_code(node, source_names=["claims"])
 
-        # Decorator must carry both keys.  Parse the emitted module rather
-        # than substring-asserting because dict-literal ordering inside the
-        # decorator is an implementation detail.
-        module = ast.parse(code)
-        function_defs = [n for n in module.body if isinstance(n, ast.FunctionDef)]
-        assert function_defs, "expected an explore function in emitted code"
-        explore_decorator = next(
-            d
-            for d in function_defs[0].decorator_list
-            if isinstance(d, ast.Call)
-            and isinstance(d.func, ast.Attribute)
-            and d.func.attr == "explore"
-        )
-        overview_kwarg = next(kw for kw in explore_decorator.keywords if kw.arg == "overview")
-        overview_value = ast.literal_eval(overview_kwarg.value)
-        assert overview_value == {"dataset_snapshot": True, "schema": True}
+        assert code == f"{self._DECORATOR}def InspectClaims(claims): ...\n"
+        assert self._sidecar(node)["overview"] == {"dataset_snapshot": True, "schema": True}
         _compile_node_code(code)
 
-    def test_explore_with_concise_overview_cards_emits_decorator_kwarg(self) -> None:
-        import ast
-
-        node = _make_codegen_node(
-            "explore",
-            {
-                "overview": {
-                    "dataset_snapshot": True,
-                    "schema": True,
-                    "numeric_summary": True,
-                    "categorical_summary": True,
-                    "data_quality": True,
-                }
-            },
-            label="InspectClaims",
-        )
-
-        code = _node_to_code(node, source_names=["claims"])
-
-        module = ast.parse(code)
-        function_defs = [n for n in module.body if isinstance(n, ast.FunctionDef)]
-        explore_decorator = next(
-            d
-            for d in function_defs[0].decorator_list
-            if isinstance(d, ast.Call)
-            and isinstance(d.func, ast.Attribute)
-            and d.func.attr == "explore"
-        )
-        overview_kwarg = next(kw for kw in explore_decorator.keywords if kw.arg == "overview")
-        overview_value = ast.literal_eval(overview_kwarg.value)
-        assert overview_value == {
+    def test_explore_with_concise_overview_cards_writes_them_to_the_sidecar(self) -> None:
+        overview = {
             "dataset_snapshot": True,
             "schema": True,
             "numeric_summary": True,
             "categorical_summary": True,
             "data_quality": True,
         }
+        node = _make_codegen_node("explore", {"overview": overview}, label="InspectClaims")
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert code == f"{self._DECORATOR}def InspectClaims(claims): ...\n"
+        assert self._sidecar(node)["overview"] == overview
         _compile_node_code(code)
 
     def test_explore_with_invalid_overview_fails_loudly(self) -> None:
@@ -800,8 +772,11 @@ class TestGenExplore:
             label="InspectClaims",
         )
 
-        with pytest.raises(ConfigError, match="toggle values must be booleans"):
-            _node_to_code(node, source_names=["claims"])
+        # Writing the sidecar, which a save does, refuses it.
+        with pytest.raises(ConfigError, match="valid boolean"):
+            node_config_json(NodeType.EXPLORE, node.data.config, node_label="InspectClaims")
+        with pytest.raises(ConfigError, match="valid boolean"):
+            self._sidecar(node)
 
     @pytest.mark.parametrize("overview", ["", [], False, None])
     def test_explore_with_falsey_invalid_overview_fails_loudly(self, overview) -> None:
@@ -811,8 +786,10 @@ class TestGenExplore:
             label="InspectClaims",
         )
 
-        with pytest.raises(ConfigError, match="must be a dict"):
-            _node_to_code(node, source_names=["claims"])
+        with pytest.raises(ConfigError, match="valid dictionary"):
+            node_config_json(NodeType.EXPLORE, node.data.config, node_label="InspectClaims")
+        with pytest.raises(ConfigError, match="valid dictionary"):
+            self._sidecar(node)
 
 
 # ---------------------------------------------------------------------------
@@ -1004,9 +981,17 @@ class TestGraphToCodeWithBuilders:
             }
         )
         code = graph_to_code(graph)
-        assert "@pipeline.explore\ndef Explore_Claims(Claims): ...\n" in code
+        assert (
+            '@pipeline.explore(config="config/explore/Explore_Claims.json")\n'
+            "def Explore_Claims(Claims): ...\n"
+        ) in code
         # The signature names the source, so no connect() repeats it (READ-30).
         assert "pipeline.connect" not in code
+        # A node with no settings saves an empty sidecar (READ-43).
+        explore = next(node for node in graph.nodes if node.id == "explore")
+        assert collect_node_configs(_g({"nodes": [explore.model_dump()]})) == {
+            "config/explore/Explore_Claims.json": "{}\n"
+        }
         compile(code, "<test>", "exec")
 
     def test_pipeline_with_api_input_compiles(self) -> None:

@@ -6069,9 +6069,8 @@ def _scoring_model_stub() -> Iterator[None]:
 def _assert_comment_first_steps_kept(main: Path, node_id: str, surface: str) -> None:
     node = next(n for n in parse_pipeline_file(main).nodes if n.id == node_id)
     saved = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
-    # An Explore node's decorator carries its steps; another's come from its code.
-    expected = saved if surface == "explore" else _lifted(saved, node.data.nodeType)
-    assert node.data.config["steps"] == expected, surface
+    # Every surface's steps come from its code (READ-43, READ-44).
+    assert node.data.config["steps"] == _lifted(saved, node.data.nodeType), surface
     assert node.data.config["code"] == _COMMENT_FIRST_CODE, surface
     assert node.data.editor.steps_discarded is None, surface
 
@@ -6134,8 +6133,9 @@ def _explore(steps: list[dict[str, Any]], **extra: Any) -> GraphNode:
     )
 
 
-def test_explore_steps_execute_and_round_trip_through_the_decorator(tmp_path: Path) -> None:
-    """Explore has no sidecar: its steps travel in the decorator beside its cards."""
+def test_explore_steps_execute_and_round_trip_through_its_code(tmp_path: Path) -> None:
+    """An Explore node's steps live in its code alone, and its settings in its sidecar
+    (READ-43): the load rebuilds the steps from the body."""
     quotes, _rates = _frames(tmp_path)
     steps = [step("l", "limit", n=2)]
     graph = PipelineGraph(nodes=[quotes, _explore(steps)], edges=[make_edge("quotes", "report")])
@@ -6146,17 +6146,17 @@ def test_explore_steps_execute_and_round_trip_through_the_decorator(tmp_path: Pa
     assert len(result.preview) == 2
 
     code = graph_to_code(graph, pipeline_name="main")
-    assert "@pipeline.explore(steps=[" in code
+    assert '@pipeline.explore(config="config/explore/report.json")\n' in code
+    assert "steps=" not in code
     assert "(df: pl.LazyFrame) -> pl.LazyFrame:\n    df = df.head(2)\n    return df\n" in code
-    # No sidecar is written for an Explore node.
-    assert "config/explore" not in code
-    assert not [rel for rel in collect_node_configs(graph) if "report" in rel]
+    # The sidecar holds no copy of the steps.
+    assert collect_node_configs(graph)["config/explore/report.json"] == "{}\n"
 
     _write_sidecars(tmp_path, graph)
     node = next(
         n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "report"
     )
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, "explore")
     assert node.data.config["code"] == "df = df.head(2)"
     assert node.data.editor.steps_discarded is None
 
@@ -6175,7 +6175,7 @@ def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path
     node = next(
         n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "report"
     )
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, "explore")
     assert [pivot["id"] for pivot in node.data.config["pivots"]] == [pivots[0]["id"]]
 
     broken = _explore([step("f", "filter", match="all", conditions=[])])
@@ -6187,30 +6187,30 @@ def test_explore_steps_keep_their_cards_and_fail_loudly_when_incomplete(tmp_path
     assert result.status == "error"
     assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
 
-    broken_code = graph_to_code(broken_graph, pipeline_name="main")
+    # The placeholder is the body, and the unfinished list waits in .haute.json (READ-43).
+    broken_code, reloaded = _reparsed(tmp_path, broken_graph, "report")
     assert INCOMPLETE_STEPS_MESSAGE in broken_code
-    _write_sidecars(tmp_path, broken_graph)
-    reloaded = next(
-        n for n in parse_pipeline_source(broken_code, _base_dir=tmp_path).nodes if n.id == "report"
-    )
     assert reloaded.data.config["steps"] == broken.data.config["steps"]
     assert reloaded.data.config["code"] == ""
     assert reloaded.data.editor.steps_error == "Step 1: Add at least one condition."
 
 
-def test_explore_hand_edited_body_discards_its_steps(tmp_path: Path) -> None:
+def test_explore_hand_edit_is_read_back_as_steps(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     graph = PipelineGraph(
         nodes=[quotes, _explore([step("l", "limit", n=2)])], edges=[make_edge("quotes", "report")]
     )
     _write_sidecars(tmp_path, graph)
-    edited = graph_to_code(graph, pipeline_name="main").replace("df.head(2)", "df.head(3)")
+    code = graph_to_code(graph, pipeline_name="main")
+    edited = code.replace("df = df.head(2)", "df = df.head(3)")
+    assert edited != code
     node = next(
         n for n in parse_pipeline_source(edited, _base_dir=tmp_path).nodes if n.id == "report"
     )
-    assert "steps" not in node.data.config
+    # Its code is the only copy of its steps (READ-43): the edit is the step it renders.
+    assert node.data.config["steps"] == _lifted([step("l", "limit", n=3)], "explore")
     assert node.data.config["code"] == "df = df.head(3)"
-    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
+    assert node.data.editor.steps_discarded is None
 
 
 # ---------------------------------------------------------------------------
@@ -6253,15 +6253,10 @@ def test_recovery_keeps_a_hand_edited_body_over_stale_steps(
     raw, changes = _recovered_settings(project_root, node_id)
     assert raw["code"] == "df = df.head(3)", surface
     assert not any(key.startswith("_") for key in raw), surface
-    if surface == "dataInput":
-        # Its code is the only copy of its steps (READ-44): the edit is the step it renders.
-        assert raw["steps"] == _lifted([step("l", "limit", n=3)], "dataInput")
-        assert not [change for change in changes if change.path == "/steps"]
-    else:
-        assert "steps" not in raw, surface
-        (discard,) = [change for change in changes if change.path == "/steps"]
-        assert discard.reason.startswith("Steps were discarded because"), surface
-        assert discard.outcome == "removed", surface
+    # Its code is the only copy of its steps (READ-43, READ-44): the edit is the step it
+    # renders.
+    assert raw["steps"] == _lifted([step("l", "limit", n=3)], surface), surface
+    assert not [change for change in changes if change.path == "/steps"], surface
 
     # The recovered candidate materialises to the edited body, not the steps.
     recovered = GraphNode(
@@ -6287,19 +6282,18 @@ def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, su
     (project_root / "main.py").write_text(code, encoding="utf-8")
 
     raw, _changes = _recovered_settings(project_root, node_id)
-    assert raw["steps"] == (steps if surface == "explore" else _lifted(steps, surface)), surface
+    assert raw["steps"] == _lifted(steps, surface), surface
     assert not any(key.startswith("_") for key in raw), surface
 
 
-@pytest.mark.parametrize("surface", ("explore",))
-def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
-    project_root: Path, surface: str
+def test_recovery_declares_an_explore_whose_decorator_held_its_steps_over_an_uncalled_body(
+    project_root: Path,
 ) -> None:
-    """A function that is not a hook loses its body, never the steps its decorator carries.
+    """An Explore node in the form before READ-43, its steps on its decorator above a body
+    the decorator never calls, is recovered as a declaration with no steps.
 
-    Every generated body before node declarations took this form. An Explore node's steps
-    are its settings, so the regenerated hook still performs them. Any other stepped node's
-    steps are its code's alone (READ-44), so its dropped body takes them with it:
+    Its code is now the only copy of its steps, so the decorator's are dropped; the body
+    has no place in a hook, so it is dropped too, as any node's is:
     ``test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook``.
     """
     from haute._pipeline_recovery import load_pipeline_editor_document
@@ -6307,32 +6301,29 @@ def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
     from haute.schemas import PipelineRepairRecoverRequest
 
     quotes, _rates = _frames(project_root)
-    steps = [step("l", "limit", n=2)]
-    if surface == "explore":
-        node, node_id, old_signature = _explore(steps), "report", "def report(quotes)"
-        graph = PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", "report")])
-    else:
-        node, node_id, old_signature = _stepped_input(quotes, steps), "quotes", "def quotes()"
-        graph = PipelineGraph(nodes=[node], edges=[])
+    graph = PipelineGraph(
+        nodes=[quotes, _explore([step("l", "limit", n=2)])], edges=[make_edge("quotes", "report")]
+    )
     code = graph_to_code(graph, pipeline_name="main")
-    old_form, replaced = re.subn(rf"def {node_id}\(df[^)]*\)", old_signature, code)
-    assert replaced == 1, code
-    _write_sidecars(project_root, graph)
+    old_form = code.replace(
+        '@pipeline.explore(config="config/explore/report.json")\n'
+        "def report(df: pl.LazyFrame) -> pl.LazyFrame:\n",
+        '@pipeline.explore(steps=[{"id": "l", "kind": "limit", "n": 2}])\ndef report(quotes):\n',
+    )
+    assert old_form != code
+    # The old form had no Explore sidecar: only the source's is written.
+    _write_sidecars(project_root, PipelineGraph(nodes=[quotes], edges=[]))
     (project_root / "main.py").write_text(old_form, encoding="utf-8", newline="\n")
 
-    raw, changes = _recovered_settings(project_root, node_id)
-    assert raw["steps"] == steps, surface
-    assert not any(key.startswith("_") for key in raw), surface
+    raw, changes = _recovered_settings(project_root, "report")
+    assert raw["steps"] == []
+    assert not raw.get("code")
+    assert not any(key.startswith("_") for key in raw)
     reported = [(c.path, c.outcome) for c in changes if c.path in {"/code", "/steps"}]
-    assert reported == [("/code", "removed")], surface
-    recovered = GraphNode(
-        id=node_id,
-        data=NodeData(label=node_id, nodeType=node.data.nodeType, config=raw),
-    )
-    assert recovered.data.config["code"] == "df = df.head(2)", surface
+    assert reported == [("/code", "removed"), ("/steps", "removed")]
 
     document = load_pipeline_editor_document(project_root / "main.py", project_root=project_root)
-    target = next(item for item in document.nodes if item.authored_id == node_id)
+    target = next(item for item in document.nodes if item.authored_id == "report")
     plan = build_recover_unavailable_node_plan(
         project_root=project_root,
         request=PipelineRepairRecoverRequest(
@@ -6346,8 +6337,16 @@ def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
     source = next(edit for edit in plan.edits if edit.path.name == "main.py")
     assert source.after is not None
     regenerated = source.after.decode("utf-8")
-    assert f"def {node_id}(df" in regenerated, surface
-    assert "    df = df.head(2)\n    return df\n" in regenerated, surface
+    assert (
+        '@pipeline.explore(config="config/explore/report.json")\ndef report(quotes): ...\n'
+    ) in regenerated
+    assert "steps=" not in regenerated
+    assert "df.head(2)" not in regenerated
+    # The settings it names are written beside it, with no copy of the steps.
+    (sidecar,) = [edit for edit in plan.edits if edit.path.parent.name == "explore"]
+    assert sidecar.path.name == "report.json"
+    assert sidecar.after is not None
+    assert "steps" not in json.loads(sidecar.after.decode("utf-8"))
 
 
 def test_recovery_plans_a_malformed_step_container_without_raising(project_root: Path) -> None:

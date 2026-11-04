@@ -47,9 +47,6 @@ from haute._code_extraction import (
 from haute._config_io import config_path_for_node
 from haute._config_validation import validate_optimiser_input_selectors
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
-from haute._explore_charts import validate_explore_charts
-from haute._explore_overview import validate_explore_overview
-from haute._explore_pivots import validate_explore_pivot_state
 from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
@@ -471,40 +468,6 @@ def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> NodeSource
     return _config_backed(node, source_names)
 
 
-# Explore uses nested decorator kwargs for presentation configuration, rather
-# than flat snake_case kwargs. These opaque values let the UI evolve without
-# coupling code generation to every presentation-specific field.
-def _explore_keywords(
-    overview: Any,
-    pivot_formulas: Any,
-    pivots: Any,
-    charts: Any,
-    column_config: dict[str, Any],
-) -> list[tuple[str, object]]:
-    """The keywords for ``@pipeline.explore(...)``, in a stable order.
-
-    Empty values are skipped (so the decorator stays bare when nothing is
-    set). Non-empty values are emitted overview, pivot_formulas, pivots, charts,
-    then shared column metadata.
-    """
-    overview = validate_explore_overview(overview, context="explore node config")
-    pivot_formulas, pivots = validate_explore_pivot_state(
-        pivot_formulas, pivots, context="explore node config"
-    )
-    charts = validate_explore_charts(charts, context="explore node config")
-    keywords: list[tuple[str, object]] = []
-    if overview:
-        keywords.append(("overview", overview))
-    if pivot_formulas:
-        keywords.append(("pivot_formulas", pivot_formulas))
-    if pivots:
-        keywords.append(("pivots", pivots))
-    if charts:
-        keywords.append(("charts", charts))
-    keywords.extend(_build_extra_kwargs(column_config, COLUMN_CONFIG_KEYS))
-    return keywords
-
-
 @_register_codegen(NodeType.EXPLORE)
 def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
     if len(source_names) != 1:
@@ -515,19 +478,8 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
             incoming_count=len(source_names),
             incoming_sources=source_names,
         )
-    config = node.data.config
-    keywords = _explore_keywords(
-        config["overview"] if "overview" in config else {},
-        config.get("pivot_formulas"),
-        config["pivots"] if "pivots" in config else [],
-        config["charts"] if "charts" in config else [],
-        config,
-    )
-    steps = config.get("steps")
-    if isinstance(steps, list):
-        # No sidecar: the steps travel in the decorator beside pivots and charts.
-        keywords.append(("steps", steps))
-    return _configured_node(node, source_names, decorator="explore", keywords=tuple(keywords))
+    # Its settings live in its sidecar and its steps in its body (READ-43).
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.EXTERNAL_FILE)

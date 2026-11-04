@@ -4,12 +4,14 @@ Builds minimal ``dataInput`` -> ``explore`` graphs, runs them through
 ``graph_to_code`` and back through the real ``parse_pipeline_source``, and
 asserts their display config survives end-to-end.
 
-This is the contract the UI relies on: codegen must emit the kwarg, and the
-parser must read it back into the Explore node config.
+This is the contract the UI relies on: a save must write the block to the
+node's sidecar, ``config/explore/<name>.json`` (READ-43), and the parser must
+read it back into the Explore node config.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from haute._config_io import collect_node_configs
@@ -55,6 +57,11 @@ def _explore_graph_with_config(config: dict) -> PipelineGraph:
         ],
         edges=[GraphEdge(id="e1", source="source", target="inspect_claims")],
     )
+
+
+def _sidecar_text(base_dir: Path) -> str:
+    """The sidecar a save wrote for ``inspect_claims``."""
+    return (base_dir / "config" / "explore" / "inspect_claims.json").read_text(encoding="utf-8")
 
 
 def _explore_graph(overview: dict) -> PipelineGraph:
@@ -315,14 +322,15 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
     code = graph_to_code(graph, pipeline_name="round_trip_display_cards")
     _write_configs(graph, tmp_path)
 
-    assert "pivots=" in code
-    assert "charts=" in code
-    assert (
-        code.index("overview=")
-        < code.index("pivot_formulas=")
-        < code.index("pivots=")
-        < code.index("charts=")
-    )
+    # The decorator names the sidecar, and the sidecar holds every card.
+    assert '@pipeline.explore(config="config/explore/inspect_claims.json")\n' in code
+    assert "pivots=" not in code
+    assert set(json.loads(_sidecar_text(tmp_path))) == {
+        "overview",
+        "pivot_formulas",
+        "pivots",
+        "charts",
+    }
     parsed = parse_pipeline_source(
         code,
         source_file=str(tmp_path / "pipeline.py"),
@@ -422,8 +430,10 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
     code = graph_to_code(graph, pipeline_name="round_trip_shared_formulas")
     _write_configs(graph, tmp_path)
 
-    assert code.index("pivot_formulas=") < code.index("pivots=")
-    assert code.count('"expression": \'pl.col("claims").sum() / 100\'') == 1
+    # The shared formula is written once, beside the pivots that select it by id.
+    sidecar = _sidecar_text(tmp_path)
+    assert "pivot_formulas=" not in code
+    assert sidecar.count('"expression"') == 1
     parsed = parse_pipeline_source(
         code, source_file=str(tmp_path / "pipeline.py"), _base_dir=tmp_path
     )

@@ -435,12 +435,13 @@ def _examples():
                 positive_class="claim",
             ),
         ),
-        # Explore keeps its steps in the decorator beside its cards, so the
-        # round trip has to carry both.
+        # An Explore node's steps are rebuilt from its code, each id its kind and
+        # place, and its cards live in its sidecar (READ-43), so the round trip
+        # has to carry both.
         (
             NodeType.EXPLORE,
             {
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
                 "pivot_formulas": [_formula()],
                 "pivots": [_pivot(formulas=["formula_1"])],
             },

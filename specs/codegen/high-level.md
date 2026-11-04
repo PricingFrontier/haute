@@ -424,16 +424,14 @@ Scenario Expander or Explore config carries `steps`, the node is a hook and its 
 renders the steps in frame mode against the surface's eligible input names (every edge
 name for an External File, the empty list otherwise). The rendered lines are the hook's
 body, after the `df = <first input>` binding for an External File and before
-`return df`; an Explore node's step list is emitted as a `steps=` decorator argument,
-not a sidecar. When the steps cannot be rendered the hook's body is the raising
+`return df`; the steps are written nowhere else (READ-43, READ-44). When the steps cannot be rendered the hook's body is the raising
 placeholder instead, carrying the constant `INCOMPLETE_STEPS_MESSAGE`, so a standalone
 run of the module raises rather than running the node's configured work unchanged; the
 placeholder recogniser accepts either constant and extraction treats a recognised
 placeholder as generated, so the body reloads as empty code and the steps come back from
-the pipeline's `.haute.json`, where the save keeps an unfinished list (READ-44; an Explore
-node's travel in its decorator). The parser does not require extraction to be a fixpoint
-of rendering: it rebuilds a surface's steps from the extracted body, and compares an
-Explore node's extracted body with the rendering passed through the same finaliser
+the pipeline's `.haute.json`, where the save keeps an unfinished list (READ-44). The
+parser does not require extraction to be a fixpoint of rendering: it rebuilds a
+surface's steps from the extracted body, and `canonical_steps` models the finaliser
 extraction ends with.
 
 ## Design rationale

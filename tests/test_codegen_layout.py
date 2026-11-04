@@ -849,30 +849,31 @@ LONE_BREAKS = {
             nodes=[
                 _node("src", "Quotes", NodeType.DATA_INPUT, _data_input("d.parquet")),
                 _node(
-                    "ex",
-                    "Explore Quotes",
-                    NodeType.EXPLORE,
+                    "tx",
+                    "Keep Quote Columns",
+                    NodeType.POLARS,
                     {
-                        "overview": {
-                            "dataset_snapshot": True,
-                            "data_quality": True,
-                            "numeric_summary": False,
-                            "categorical_summary": True,
-                            "schema": True,
-                        }
+                        "code": "df = Quotes",
+                        "selected_columns": [
+                            "quote_reference",
+                            "policy_start_date",
+                            "vehicle_group",
+                            "driver_age",
+                            "annual_mileage",
+                        ],
                     },
                 ),
             ],
-            edges=[_edge("src", "ex")],
+            edges=[_edge("src", "tx")],
         ),
-        "@pipeline.explore(\n"
-        "    overview={\n"
-        '        "dataset_snapshot": True,\n'
-        '        "data_quality": True,\n'
-        '        "numeric_summary": False,\n'
-        '        "categorical_summary": True,\n'
-        '        "schema": True,\n'
-        "    }\n"
+        "@pipeline.polars(\n"
+        "    selected_columns=[\n"
+        '        "quote_reference",\n'
+        '        "policy_start_date",\n'
+        '        "vehicle_group",\n'
+        '        "driver_age",\n'
+        '        "annual_mileage",\n'
+        "    ]\n"
         ")\n",
     ),
 }
@@ -1079,14 +1080,24 @@ def _declarations_only(*, preamble: str = "") -> str:
                 _data_input("data/quotes.parquet"),
                 description="Read with pl.scan_parquet",
             ),
+            _node("pol", "Policies", NodeType.DATA_INPUT, _data_input("data/policies.parquet")),
+            # A join's settings, unlike an Explore node's (READ-43), are its decorator's.
             _node(
-                "explore",
-                "Explore Quotes",
-                NodeType.EXPLORE,
-                {"selected_columns": ["pl", "pl.col"]},
+                "join",
+                "Join Policies",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": ["quote_reference"],
+                    "maintain_order": "left",
+                    "selected_columns": ["pl", "pl.col"],
+                },
             ),
         ],
-        edges=[_edge("src", "explore")],
+        edges=[
+            _edge("src", "join", target_handle="base"),
+            _edge("pol", "join", target_handle="join"),
+        ],
     )
     return graph_to_code(graph, pipeline_name="declarations", preamble=preamble)
 
