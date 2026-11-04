@@ -127,7 +127,7 @@ Checking claim frequency by area:
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `overview` | object | Which overview cards are shown. |
     | `overview.dataset_snapshot` | `true` or `false` | Show the dataset snapshot card. |
     | `overview.data_quality` | `true` or `false` | Show the data quality card. |

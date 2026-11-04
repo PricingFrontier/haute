@@ -274,9 +274,10 @@ def _examples():
                 "mode": "read",
                 "records": [{"_id": 17, "nested": {"_key": "value"}}],
                 "arguments": {"infer_schema_length": 1},
-                # Post-load steps: the sidecar owns them and codegen renders
-                # them after the load scaffold (`df = df.head(2)`).
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                # Post-load steps: codegen renders them after the load scaffold
+                # (`df = df.head(2)`), the only copy of them, and the load rebuilds
+                # them with the ids it gives (READ-44).
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -342,14 +343,15 @@ def _examples():
                 "maintain_order": "left",
             },
         ),
-        # Frame-mode step lists: the sidecar owns them and codegen renders
-        # them after each surface's scaffold (`df = df.head(2)`).
+        # Frame-mode step lists: codegen renders them after each surface's
+        # scaffold (`df = df.head(2)`), the only copy of them, and the load
+        # rebuilds them with the ids it gives (READ-44).
         (
             NodeType.EXTERNAL_FILE,
             {
                 "path": "models/external.pkl",
                 "file_type": "pickle",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -364,7 +366,7 @@ def _examples():
                     }
                 ],
                 "combined_outputs": [],
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -375,7 +377,7 @@ def _examples():
                 "artifact_path": "models/score.cbm",
                 "task": "regression",
                 "output_column": "prediction",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -387,7 +389,7 @@ def _examples():
                 "max_value": 1.0,
                 "step_count": 3,
                 "step_column": "step_index",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         # A Tweedie GLM reporting robust standard errors, which a penalty would void.

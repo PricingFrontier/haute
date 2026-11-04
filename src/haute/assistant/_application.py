@@ -27,7 +27,12 @@ from haute._input_providers import (
     recording_schema_tiers,
 )
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
+from haute._polars_steps import (
+    STEPS_FROM_CODE,
+    is_stepped_config,
+    render_polars_steps,
+    stepped_surface_for,
+)
 from haute._polars_steps_lift import canonical_steps
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import normalise_combined_outputs, validate_banding_config
@@ -914,12 +919,13 @@ def _prove_steps_survive_save(
                     fix=_steps_fix(node),
                 ) from exc
             expected = node.data.config["steps"]
-            if node.data.nodeType == NodeType.POLARS:
-                # A transform's steps are rebuilt from its code, ids from kind and place
-                # (READ-22); while one cannot render, the list waits whole in .haute.json.
+            if node.data.nodeType in STEPS_FROM_CODE:
+                # A stepped node's steps are rebuilt from its code, ids from kind and place
+                # (READ-22, READ-44); while one cannot render, the list waits whole in
+                # .haute.json.
                 if node.data.editor.steps_error is not None:
                     continue
-                expected = canonical_steps(NodeType.POLARS, expected)
+                expected = canonical_steps(NodeType(node.data.nodeType), expected)
             discarded = resolved["editor"].steps_discarded
             if discarded or resolved["config"].get("steps") != expected:
                 reason = discarded or "Its steps change on reparse."

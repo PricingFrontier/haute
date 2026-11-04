@@ -37,6 +37,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
 from haute._json_files import ANY, OneLine, at, render_json
 from haute._logging import get_logger
+from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._rating_step_config import (
     compact_rating_config_for_sidecar,
     expand_rating_config_from_sidecar,
@@ -205,9 +206,9 @@ def _prepare_config_for_sidecar(
     # Nested mappings may contain arbitrary column names or user records, and
     # type-specific serializers own their nested records. The contract
     # annotation lives on the decorator; a sidecar copy goes stale.
-    filtered = {
-        k: deepcopy(v) for k, v in config.items() if k not in CODE_CONFIG_KEYS and k != "contract"
-    }
+    # A stepped node's code is the only copy of its steps (READ-44).
+    in_code = CODE_CONFIG_KEYS | ({"steps"} if node_type in STEPPED_NODE_TYPES else set())
+    filtered = {k: deepcopy(v) for k, v in config.items() if k not in in_code and k != "contract"}
 
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
@@ -429,6 +430,13 @@ def load_node_config(
         raise ValueError(f"Config path {config_path!r} resolves outside project root")
     config = _load_json_object(resolved)
     kind = node_type if node_type is not None else _config_node_type_from_path(resolved)
+    if kind in STEPPED_NODE_TYPES and "steps" in config:
+        raise ConfigError(
+            f"{resolved} holds the node's steps, the form before its code was their only "
+            'copy: remove "steps" from it. The steps are rebuilt from the function\'s body.',
+            config_path=str(resolved),
+            removed_config_keys=["steps"],
+        )
     loaded = _normalise_loaded_config(config, kind)
     if validate and kind is not None:
         from haute._config_validation import validate_node_config

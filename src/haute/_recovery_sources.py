@@ -9,9 +9,11 @@ from typing import Any
 
 from haute._artifact_paths import conflict, read_artifact, safe_path
 from haute._ast_helpers import _function_body_source, _get_decorator_kwargs
+from haute._code_extraction import is_declaration_body
 from haute._config_builder import (
     _attach_code_from_body,
     _reconcile_steps,
+    _with_lifted_steps,
     uncalled_function_body,
     validate_step_container,
 )
@@ -101,6 +103,20 @@ def read_raw_node_settings(
                 # The file's format decoded, as a load decodes it: the settings as the
                 # editor holds them, which recovery checks against the contract.
                 raw = {**config_from_sidecar(node_type, value), **raw}
+                if node_type in STEPPED_NODE_TYPES and "steps" in raw:
+                    # The form before a stepped node's code was its only copy of its
+                    # steps (READ-44): they are rebuilt from the body below.
+                    del raw["steps"]
+                    changes.append(
+                        RecoveryFieldChange(
+                            path="/steps",
+                            outcome="removed",
+                            reason=(
+                                f"{reference} held the node's steps, which its code now "
+                                "holds alone; they are rebuilt from the function's body."
+                            ),
+                        )
+                    )
             except (ValueError, UnicodeError) as exc:
                 # There is no archive to fall back to: replacing an unreadable
                 # sidecar from decorator evidence alone would silently discard
@@ -121,6 +137,16 @@ def read_raw_node_settings(
         )
         body = ""
     raw = _attach_code_from_body(raw, node_type, body, params)
+    if reference and node_type in STEPPED_NODE_TYPES:
+        # A stepped node with a sidecar has its steps rebuilt from its body (READ-44), as a
+        # load rebuilds them; one whose body was dropped is written as a declaration, which
+        # has none yet.
+        raw = _with_lifted_steps(
+            raw,
+            function.name,
+            node_type,
+            declaration=body_dropped or is_declaration_body(body),
+        )
     try:
         keyword_parameters = keyword_parameters_from_signature(
             function.args, node_type=node_type, stepped=bool(reference), node_id=function.name
@@ -137,7 +163,9 @@ def read_raw_node_settings(
     else:
         if keyword_parameters:
             raw[KEYWORD_PARAMETERS_KEY] = keyword_parameters
-    if node_type in STEPPED_NODE_TYPES and "steps" in raw:
+    if node_type in STEPPED_NODE_TYPES and "steps" in raw and not reference:
+        # An Explore node's decorator-carried steps (a stepped node with a sidecar has
+        # them rebuilt from its body, above).
         # The ``.py`` body is the runtime truth here as it is in ordinary
         # parsing: without this, a hand-edited body would be silently
         # regenerated from stale steps when ``NodeData`` materialises the

@@ -49,6 +49,7 @@ from haute._polars_steps import (
     STEP_KINDS,
     STEPPED_NODE_TYPES,
     STEPPED_SURFACE_LABELS,
+    STEPS_FROM_CODE,
     PolarsStepError,
     is_stepped_config,
     rename_step_inputs,
@@ -3247,8 +3248,8 @@ def _validate_assistant_authored_graph(
 
 
 def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
-    """*graph* with each transform's steps as the save's reload rebuilds them from its code
-    (READ-22): ids from kind and place, and the canonical form, so the plan's diff and
+    """*graph* with each stepped node's steps as the save's reload rebuilds them from its code
+    (READ-22, READ-44): ids from kind and place, and the canonical form, so the plan's diff and
     postconditions are what the committed graph holds. Steps that cannot render yet are
     saved whole beside the code, and stay as they are."""
     nodes: list[GraphNode] = []
@@ -3256,12 +3257,12 @@ def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
     for node in graph.nodes:
         steps = node.data.config.get("steps")
         if (
-            node.data.nodeType == NodeType.POLARS
+            node.data.nodeType in STEPS_FROM_CODE
             and isinstance(steps, list)
             and node.data.editor.steps_error is None
         ):
             try:
-                reloaded = canonical_steps(NodeType.POLARS, steps)
+                reloaded = canonical_steps(NodeType(node.data.nodeType), steps)
             except PolarsStepError:
                 reloaded = steps
             if reloaded != steps:

@@ -292,13 +292,15 @@ whose code opens with a comment therefore reloads with its steps on every surfac
 every skeleton and propagates any failure. For each skeleton it calls `_resolve_node_config`, which
 either: loads and normalises a `config=` sidecar via `_config_io.load_node_config` and
 attaches code parsed from the function body (`_attach_code_from_body`), then for a
-stepped node type's sidecar reconciles its `steps` with that body, as does an Explore
-node's decorator-carried list (`_reconcile_steps` with no config reference). A
-transform takes no `config=`, which is refused, saying the steps go in the function's body:
-its steps are rebuilt from its extracted body
+stepped node type rebuilds its steps from that body (`_with_lifted_steps(config,
+func_name, node_type)`, READ-44), its sidecar holding none: `load_node_config` refuses
+one that does. A transform takes no `config=`, which is refused, saying the steps go in
+the function's body: its steps are rebuilt from its extracted body
 by `_with_lifted_steps` (`lift_steps`), except for one with no code, the placeholder an
 unfinished step list is saved with included, or one with an `input_mapping`, which stay
-code-only (READ-22). For the other surfaces (`_reconcile_steps`,
+code-only (READ-22); a frame surface whose function is a declaration has an empty step
+list instead. An
+Explore node's decorator-carried list is reconciled (`_reconcile_steps`,
 rendering in the type's start mode against `step_input_names(node_type, param_names)`
 and comparing the extracted body with the rendering passed through the same
 extraction, `_code_extraction.normalise_user_code`, as programs rather than text

@@ -336,9 +336,12 @@ def test_scoped_save_that_adds_code_imports_polars_for_the_hook(tmp_path):
     rate = next(node for node in document.nodes if node.authored_id == "rate")
     assert rate.scoped_editable is True
 
+    # The declaration loads with no steps yet (READ-44); the save adds one.
+    assert (rate.config or {})["steps"] == []
+    added = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
     apply_scoped_node_save(
         project_root=tmp_path,
-        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "code": "df = df.head(1)"}),
+        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "steps": added}),
     )
 
     saved = main.read_text(encoding="utf-8")

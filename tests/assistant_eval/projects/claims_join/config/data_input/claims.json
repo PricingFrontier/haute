@@ -2,6 +2,5 @@
   "format": "parquet",
   "input_type": "file",
   "mode": "scan",
-  "path": "data/claims.parquet",
-  "steps": []
+  "path": "data/claims.parquet"
 }

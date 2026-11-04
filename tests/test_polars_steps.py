@@ -3899,9 +3899,12 @@ def _write_sidecars(root: Path, graph: PipelineGraph) -> None:
         target.write_text(content, encoding="utf-8")
 
 
-def _lifted(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The steps a transform's code loads back as (READ-22): their canonical form."""
-    return canonical_steps(NodeType.POLARS, steps)
+def _lifted(
+    steps: list[dict[str, Any]], node_type: NodeType | str = NodeType.POLARS
+) -> list[dict[str, Any]]:
+    """The steps a stepped node's code loads back as (READ-22, READ-44): their canonical
+    form."""
+    return canonical_steps(NodeType(node_type), steps)
 
 
 def test_codegen_parse_round_trip_reproduces_rendered_code(tmp_path: Path) -> None:
@@ -4385,7 +4388,7 @@ def test_a_leading_bare_string_step_is_a_fixed_point_with_its_value(tmp_path: Pa
     assert '    """"""\n    "Prämie  "\n' in generated
     _write_sidecars(tmp_path, graph)
     parsed = next(n for n in parse_pipeline_source(generated, _base_dir=tmp_path).nodes)
-    assert parsed.data.config["steps"] == steps
+    assert parsed.data.config["steps"] == _lifted(steps, parsed.data.nodeType)
     assert parsed.data.config["code"] == '"Prämie  "\ndf = df.head(1)'
 
 
@@ -5208,7 +5211,7 @@ def test_node_data_materialises_data_input_steps() -> None:
         )
 
 
-def test_data_input_sidecar_and_validation_carry_steps() -> None:
+def test_data_input_validation_carries_steps_and_its_sidecar_writes_none() -> None:
     config = {**make_file_input_config("quotes.parquet"), "steps": [step("l", "limit", n=2)]}
     assert validate_data_input_config(config)["steps"] == config["steps"]
     databricks = {
@@ -5225,7 +5228,8 @@ def test_data_input_sidecar_and_validation_carry_steps() -> None:
     written = json.loads(
         collect_node_configs(PipelineGraph(nodes=[node], edges=[]))["config/data_input/d.json"]
     )
-    assert written["steps"] == config["steps"]
+    # Its code is the only copy of its steps (READ-44).
+    assert "steps" not in written
     assert "code" not in written
 
 
@@ -5245,11 +5249,11 @@ def test_data_input_steps_execute_and_round_trip(tmp_path: Path) -> None:
     sidecar = json.loads(
         (tmp_path / "config" / "data_input" / "quotes.json").read_text(encoding="utf-8")
     )
-    assert sidecar["steps"] == [step("l", "limit", n=2)]
+    assert "steps" not in sidecar
 
     parsed = parse_pipeline_source(code, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "quotes")
-    assert node.data.config["steps"] == [step("l", "limit", n=2)]
+    assert node.data.config["steps"] == _lifted([step("l", "limit", n=2)], "dataInput")
     assert node.data.config["code"] == "df = df.head(2)"
     assert node.data.editor.steps_discarded is None
     reloaded = execute_graph(parsed)["quotes"]
@@ -5283,13 +5287,12 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     assert INCOMPLETE_STEPS_MESSAGE in str(result.error)
     assert "Step 1: Unknown input 'rates'; connected inputs: none." in str(result.error)
 
-    # Generated module: the placeholder replaces the post-load lines and reloads as kept steps.
-    code = graph_to_code(graph, pipeline_name="main")
+    # Generated module: the placeholder replaces the post-load lines, and the steps wait in
+    # .haute.json, which gives them back to the graph a run loads (READ-44).
+    code, node = _reparsed(tmp_path, graph, "quotes")
     assert INCOMPLETE_STEPS_MESSAGE in code
     assert "df.join" not in code
-    _write_sidecars(tmp_path, graph)
-    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
-    node = next(n for n in parsed.nodes if n.id == "quotes")
+    parsed = parse_pipeline_to_graph(tmp_path / "main.py")
     assert node.data.config["steps"] == [join]
     assert node.data.editor.steps_discarded is None
     assert execute_graph(parsed)["quotes"].status == "error"
@@ -5298,11 +5301,7 @@ def test_data_input_incomplete_steps_fail_on_every_path(tmp_path: Path) -> None:
     assert broken.data.editor.steps_error == "Step 1: Add at least one condition."
     broken_graph = PipelineGraph(nodes=[broken], edges=[])
     assert "Step 1: Add at least one condition." in str(execute_graph(broken_graph)["quotes"].error)
-    broken_code = graph_to_code(broken_graph, pipeline_name="main")
-    _write_sidecars(tmp_path, broken_graph)
-    reloaded = next(
-        n for n in parse_pipeline_source(broken_code, _base_dir=tmp_path).nodes if n.id == "quotes"
-    )
+    _broken_code, reloaded = _reparsed(tmp_path, broken_graph, "quotes")
     assert reloaded.data.config["steps"] == broken.data.config["steps"]
     assert reloaded.data.config["code"] == ""
     assert reloaded.data.editor.steps_error == "Step 1: Add at least one condition."
@@ -5391,7 +5390,7 @@ def test_data_input_steps_guard_the_deploy_bundled_snapshot_path(tmp_path: Path)
     assert "Step 1: Add at least one condition." in chain
 
 
-def test_data_input_hand_edit_discards_steps_without_sidecar_marker(tmp_path: Path) -> None:
+def test_data_input_hand_edit_is_read_back_as_steps(tmp_path: Path) -> None:
     quotes, _rates = _frames(tmp_path)
     graph = PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[])
     code = graph_to_code(graph, pipeline_name="main")
@@ -5401,9 +5400,10 @@ def test_data_input_hand_edit_discards_steps_without_sidecar_marker(tmp_path: Pa
 
     parsed = parse_pipeline_source(edited, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "quotes")
-    assert "steps" not in node.data.config
+    # Its code is the only copy of its steps (READ-44): the edit is the step it renders.
+    assert node.data.config["steps"] == _lifted([step("l", "limit", n=3)], "dataInput")
     assert node.data.config["code"] == "df = df.head(3)"
-    assert node.data.editor.steps_discarded.startswith("Steps were discarded because")
+    assert node.data.editor.steps_discarded is None
 
 
 def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
@@ -5418,8 +5418,9 @@ def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
 
     parsed = parse_pipeline_source(code, _base_dir=tmp_path)
     node = next(n for n in parsed.nodes if n.id == "quotes")
-    assert node.data.config["steps"] == steps
-    assert node.data.config["code"] == "df = (df.head(2))"
+    # Read through extraction's finaliser, the code is the Limit step's (READ-44).
+    assert node.data.config["steps"] == _lifted(steps, "dataInput")
+    assert node.data.config["code"] == "df = df.head(2)"
     assert node.data.editor.steps_discarded is None
     result = execute_graph(parsed)["quotes"]
     assert result.status == "ok", result.error
@@ -5510,7 +5511,7 @@ def test_corpus_translations_reload_unchanged_on_a_data_input(
     node = next(
         n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "quotes"
     )
-    assert node.data.config["steps"] == steps, name
+    assert node.data.config["steps"] == _lifted(steps, "dataInput"), name
     assert node.data.config["code"] == expected, name
     assert node.data.editor.steps_discarded is None, name
 
@@ -5527,7 +5528,7 @@ def test_data_input_free_code_opening_with_a_string_reloads_in_step_mode(tmp_pat
     node = next(
         n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == "quotes"
     )
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, "dataInput")
     assert node.data.config["code"] == '"""Keep two rows."""\ndf = df.head(2)'
     assert node.data.editor.steps_discarded is None
 
@@ -5617,9 +5618,13 @@ def _model_score(steps: list[dict[str, Any]]) -> GraphNode:
 
 
 def _reparsed(tmp_path: Path, graph: PipelineGraph, node_id: str) -> tuple[str, GraphNode]:
+    """*graph* saved under *tmp_path*, with its ``.haute.json``, and loaded back as a run
+    loads it: an unfinished step list comes back from ``.haute.json`` (READ-44)."""
     code = graph_to_code(graph, pipeline_name="main")
     _write_sidecars(tmp_path, graph)
-    parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+    (tmp_path / "main.py").write_text(code, encoding="utf-8")
+    save_sidecar(tmp_path / "main.py", graph)
+    parsed = parse_pipeline_to_graph(tmp_path / "main.py")
     return code, next(n for n in parsed.nodes if n.id == node_id)
 
 
@@ -5651,7 +5656,7 @@ def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> N
         "    df = quotes\n"
         "    df = df.join(\n"
     ) in code
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, "externalFile")
     assert (
         node.data.config["code"]
         == render_polars_steps(steps, ["quotes", "rates"], start="frame").code
@@ -5776,7 +5781,7 @@ def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
     code, node = _reparsed(tmp_path, graph, "rated")
     assert "def rated(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(2)\n    return df\n" in code
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, node.data.nodeType)
     assert node.data.config["code"] == "df = df.head(2)"
     assert node.data.editor.steps_discarded is None
 
@@ -5810,7 +5815,7 @@ def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
     code, node = _reparsed(tmp_path, graph, "grid")
     assert "def grid(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(4)\n    return df\n" in code
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, "scenarioExpander")
     assert node.data.config["step_count"] == 3
     assert node.data.editor.steps_discarded is None
 
@@ -5844,7 +5849,7 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
     code, node = _reparsed(tmp_path, graph, "scored")
     assert "def scored(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(2)\n    return df\n" in code
-    assert node.data.config["steps"] == steps
+    assert node.data.config["steps"] == _lifted(steps, node.data.nodeType)
     assert node.data.config["code"] == "df = df.head(2)"
     assert node.data.editor.steps_discarded is None
 
@@ -6018,8 +6023,9 @@ def test_frame_surface_free_code_with_redundant_parentheses_reloads_in_step_mode
     assert "df = (df.head(2))" in code
     _write_sidecars(tmp_path, graph)
     node = next(n for n in parse_pipeline_source(code, _base_dir=tmp_path).nodes if n.id == node_id)
-    assert node.data.config["steps"] == steps, surface
-    assert node.data.config["code"] == "df = (df.head(2))", surface
+    assert node.data.config["steps"] == _lifted(steps, node.data.nodeType), surface
+    # Read through extraction's finaliser, the code is the Limit step's (READ-44).
+    assert node.data.config["code"] == "df = df.head(2)", surface
     assert node.data.editor.steps_discarded is None, surface
 
 
@@ -6062,7 +6068,10 @@ def _scoring_model_stub() -> Iterator[None]:
 
 def _assert_comment_first_steps_kept(main: Path, node_id: str, surface: str) -> None:
     node = next(n for n in parse_pipeline_file(main).nodes if n.id == node_id)
-    assert node.data.config["steps"] == [step("c", "free_code", code=_COMMENT_FIRST_CODE)], surface
+    saved = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
+    # An Explore node's decorator carries its steps; another's come from its code.
+    expected = saved if surface == "explore" else _lifted(saved, node.data.nodeType)
+    assert node.data.config["steps"] == expected, surface
     assert node.data.config["code"] == _COMMENT_FIRST_CODE, surface
     assert node.data.editor.steps_discarded is None, surface
 
@@ -6243,13 +6252,16 @@ def test_recovery_keeps_a_hand_edited_body_over_stale_steps(
 
     raw, changes = _recovered_settings(project_root, node_id)
     assert raw["code"] == "df = df.head(3)", surface
-    assert "steps" not in raw, surface
     assert not any(key.startswith("_") for key in raw), surface
-    (discard,) = [change for change in changes if change.path == "/steps"]
-    assert discard.reason.startswith("Steps were discarded because"), surface
-    assert any(change.path == "/steps" and change.outcome == "removed" for change in changes), (
-        surface
-    )
+    if surface == "dataInput":
+        # Its code is the only copy of its steps (READ-44): the edit is the step it renders.
+        assert raw["steps"] == _lifted([step("l", "limit", n=3)], "dataInput")
+        assert not [change for change in changes if change.path == "/steps"]
+    else:
+        assert "steps" not in raw, surface
+        (discard,) = [change for change in changes if change.path == "/steps"]
+        assert discard.reason.startswith("Steps were discarded because"), surface
+        assert discard.outcome == "removed", surface
 
     # The recovered candidate materialises to the edited body, not the steps.
     recovered = GraphNode(
@@ -6275,18 +6287,20 @@ def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, su
     (project_root / "main.py").write_text(code, encoding="utf-8")
 
     raw, _changes = _recovered_settings(project_root, node_id)
-    assert raw["steps"] == steps, surface
+    assert raw["steps"] == (steps if surface == "explore" else _lifted(steps, surface)), surface
     assert not any(key.startswith("_") for key in raw), surface
 
 
-@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+@pytest.mark.parametrize("surface", ("explore",))
 def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
     project_root: Path, surface: str
 ) -> None:
-    """A function that is not a hook loses its body, never its steps.
+    """A function that is not a hook loses its body, never the steps its decorator carries.
 
-    Every generated body before node declarations took this form. The steps
-    are the node's settings, so the regenerated hook still performs them.
+    Every generated body before node declarations took this form. An Explore node's steps
+    are its settings, so the regenerated hook still performs them. Any other stepped node's
+    steps are its code's alone (READ-44), so its dropped body takes them with it:
+    ``test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook``.
     """
     from haute._pipeline_recovery import load_pipeline_editor_document
     from haute._pipeline_repair import build_recover_unavailable_node_plan
@@ -6337,7 +6351,8 @@ def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
 
 
 def test_recovery_plans_a_malformed_step_container_without_raising(project_root: Path) -> None:
-    """Recovery never raises on a bad field: the unusable list goes, the body stays.
+    """Recovery never raises on a bad field: the unusable list goes, the body stays, and
+    the steps are rebuilt from it (READ-44).
 
     A `ConfigError` here would escape the recovery route, which handles only
     `PipelineRepairError` and `OSError`, and the user would get an HTTP 500
@@ -6363,7 +6378,7 @@ def test_recovery_plans_a_malformed_step_container_without_raising(project_root:
 
     # The raw read degrades instead of raising.
     raw, changes = _recovered_settings(project_root, "quotes")
-    assert "steps" not in raw
+    assert raw["steps"] == _lifted([step("l", "limit", n=2)], "dataInput")
     assert raw["code"] == "df = df.head(2)"
     assert any(change.path == "/steps" and change.outcome == "removed" for change in changes)
 
@@ -6560,9 +6575,7 @@ def test_frame_global_df_saves_as_incomplete_placeholder(tmp_path: Path) -> None
     generated = graph_to_code(graph, pipeline_name="main")
     assert INCOMPLETE_STEPS_MESSAGE in generated
     compile(generated, "<generated>", "exec")
-    _write_sidecars(tmp_path, graph)
-    parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
-    parsed_node = next(n for n in parsed.nodes if n.id == node_id)
+    _code, parsed_node = _reparsed(tmp_path, graph, node_id)
     assert parsed_node.data.config["steps"] == offending_steps
 
 

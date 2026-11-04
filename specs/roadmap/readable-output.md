@@ -54,36 +54,18 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| READ-44 | Planned | P1 | Every stepped node's code is its only copy of its steps. |
 | READ-43 | Planned | P1 | An Explore node's settings live in its sidecar, and its steps in its code. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
 
-### READ-44 — Every stepped node's code is its only copy of its steps
-**Why:** A Polars node's steps are rebuilt from its body (READ-22). Data Input, External File, Rating Step, Model Score and Scenario Expander still write their steps into their sidecar beside the code, so an edit to a step changes the JSON tree and the code.
-
-**Plan:**
-- Each stepped node's steps are rebuilt from its body on load, as a Polars node's are: a statement a step renders exactly becomes that step, and other statements become a code step.
-- A sidecar writes no "steps". One that does is refused, saying the steps live in the code.
-- An unfinished step list waits in `.haute.json` behind the raising placeholder, for any stepped node.
-- commercial-pricing's two Rating Step sidecars lose their `"steps": []` by hand, in a commit of their own.
-
-**Acceptance:**
-- For each node type: steps saved and loaded back unchanged; a hand edit to one statement keeping the other steps; an unfinished list kept through a save; a sidecar holding "steps" refused.
-- commercial-pricing loads and scores the same after its edit.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_builder.py::_reconcile_steps`; `src/haute/routes/_helpers.py::save_sidecar`.
-
 ### READ-43 — An Explore node's settings live in its sidecar
 **Why:** An Explore node writes its overview, pivots, pivot formulas, charts and steps as arguments of its decorator in `main.py`, one setting a line, so one pivot can take 50 lines. Its steps are written there as well as in its body.
 
 **Plan:**
 - The node is `@pipeline.explore(config="config/explore/<node>.json")`, and the sidecar holds its overview, pivots, pivot formulas and charts. Its column settings go where the other node types with a sidecar keep theirs.
-- Its steps are rebuilt from its body (READ-44).
+- Its steps are rebuilt from its body, as every other stepped node's are (READ-44).
 - The printer writes each pivot placement, pivot formula and chart series on one line.
 - A decorator that still carries settings or steps is refused, naming the sidecar.
 
@@ -91,7 +73,7 @@ Each package states its formats in its owning specification before behaviour cha
 - An Explore node with pivots and charts saves its settings to its sidecar, and its decorator carries only `config=`.
 - It reloads to the same settings and steps, and the Explore view opens on the same results.
 
-**Dependencies:** READ-44.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_codegen_builders.py::_gen_explore`; `src/haute/_config_builder.py::_resolve_node_config`.
 

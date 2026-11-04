@@ -32,6 +32,7 @@ from haute._pipeline_repair import (
     _resolve_project_file,
     _wire_path,
 )
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._python_syntax import (
     SourceNodeReplacement,
     insert_import_after,
@@ -440,7 +441,7 @@ def _reset_node(
                     f"{target.authored_id!r} no longer names.",
                 )
             )
-    if node_type == NodeType.POLARS:
+    if node_type in STEPS_FROM_CODE:
         sidecar_edit = _unfinished_steps_edit(path, root, node)
         if sidecar_edit is not None:
             edits.append(sidecar_edit)

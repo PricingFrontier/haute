@@ -3,6 +3,5 @@
   "output_column": "expected_frequency",
   "run_id": "00000000000000000000000000000000",
   "source_type": "run",
-  "steps": [],
   "task": "regression"
 }

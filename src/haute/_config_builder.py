@@ -439,27 +439,36 @@ def validate_step_container(
         )
 
 
-def _with_lifted_steps(config: dict[str, Any], func_name: str) -> dict[str, Any]:
-    """*config* of a transform with the steps rebuilt from its code (READ-22).
+def _with_lifted_steps(
+    config: dict[str, Any],
+    func_name: str,
+    node_type: NodeType = NodeType.POLARS,
+    *,
+    declaration: bool = False,
+) -> dict[str, Any]:
+    """*config* of a stepped node with the steps rebuilt from its code (READ-22, READ-44).
 
     Each statement a step renders exactly becomes that step and each run of
     other statements one code step (``lift_steps``), so a hand edit or a
-    comment keeps the rest. A transform with no code (an empty body, or the
-    placeholder an unfinished step list is saved with, whose steps the editor
-    takes from ``.haute.json``), one that maps its inputs, which a stepped
-    transform never does, and one whose lines do not split into statements
-    stay code-only.
+    comment keeps the rest. A node that maps its inputs, which a stepped node
+    never does, and one whose lines do not split into statements stay
+    code-only, as does one with no code: an empty transform, or the placeholder
+    an unfinished step list is saved with, whose steps the loader takes from
+    ``.haute.json``. A frame surface whose function is a *declaration* has no
+    steps yet: an empty list, so the editor opens it on its steps.
     """
     code = str(config.get("code") or "")
-    if not code or config.get("input_mapping") is not None:
+    if config.get("input_mapping") is not None:
         return config
+    if not code:
+        return {**config, "steps": []} if declaration else config
     try:
-        steps = lift_steps(NodeType.POLARS, code)
+        steps = lift_steps(node_type, code)
     except StepLiftError:
         # Spaces ending a line, outside a string, are what ``ruff format`` takes off and a
         # rendering never holds: without them the statements are what they were.
         try:
-            steps = lift_steps(NodeType.POLARS, _without_line_end_spaces(code))
+            steps = lift_steps(node_type, _without_line_end_spaces(code))
         except StepLiftError as exc:
             logger.info("polars_steps_not_rebuilt", func_name=func_name, reason=str(exc))
             return config
@@ -663,8 +672,10 @@ def _resolve_node_config(
             list(edge_param_names if edge_param_names is not None else param_names),
         )
         if node_type in STEPPED_NODE_TYPES:
-            config, editor = _reconcile_steps(
-                config, node_type, param_names, normalised_ref, func_name
+            # Its code is the only copy of its steps (READ-44); its sidecar holds none. A
+            # declaration has none yet; a hook with no code is the unfinished placeholder.
+            config = _with_lifted_steps(
+                config, func_name, node_type, declaration=is_declaration_body(body)
             )
     elif has_config_folder(node_type):
         raise _sidecar_required_error(node_type, func_name)

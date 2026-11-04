@@ -348,7 +348,8 @@ produced by `_stepped_body_code(config, node_type, source_names)`: the rendering
 `render_polars_steps(steps, step_input_names(node_type, source_names), start="frame")`,
 or `incomplete=True` when they cannot be rendered, in which case the hook's body is
 the `INCOMPLETE_STEPS_BODY` placeholder (after an External File's binding line). The
-steps live in each type's required sidecar, except Explore's, which `_gen_explore`
+steps live only in the body (READ-44): the sidecar writes none, and an unfinished list
+waits in `.haute.json`. Explore's are the exception, which `_gen_explore`
 appends to its decorator keywords as `steps=[...]` and `_build_node_config` reads back
 from the decorator kwargs.
 A node with NO code cannot run at

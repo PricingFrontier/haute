@@ -19,7 +19,15 @@ from pathlib import Path
 import pytest
 
 from haute._graph_utils import _sanitize_func_name
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute._polars_steps_lift import canonical_steps
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    SubmodelDefinition,
+)
 from haute.assistant._ops import (
     AssistantOperationError,
     ConfigVisibility,
@@ -2107,15 +2115,17 @@ class TestSemanticPlans:
                 ],
             )
 
-        assert "step 2 ('logic')" in str(excinfo.value)
-        assert excinfo.value.where["step"] == "logic"
+        # The plan holds the steps as the save's reload will, each id its kind and place
+        # (READ-44).
+        assert "step 2 ('free_code-2')" in str(excinfo.value)
+        assert excinfo.value.where["step"] == "free_code-2"
 
     @pytest.mark.parametrize(
         ("node", "steps", "named"),
         [
             # The rendered `df = prepared` line retains a frame, but not this step's. The
-            # plan holds a transform's steps as its reload will, each id its kind and place
-            # (READ-22).
+            # plan holds a stepped node's steps as its reload will, each id its kind and
+            # place (READ-22, READ-44).
             (
                 "t",
                 [
@@ -2130,7 +2140,7 @@ class TestSemanticPlans:
                     {"id": "keep", "kind": "limit", "n": 2},
                     {"id": "logic", "kind": "free_code", "code": "# tidy\ndf.drop('x')"},
                 ],
-                "logic",
+                "free_code-2",
             ),
         ],
     )
@@ -2158,7 +2168,8 @@ class TestSemanticPlans:
             self._stepped_plan(tmp_path, "rated", steps)
         message = str(excinfo.value)
         assert f"Rating Step code sees only df; {name} is not in scope" in message
-        assert "step 1 ('logic')" in message
+        # The plan holds the steps as the save's reload will (READ-44).
+        assert "step 1 ('free_code-1')" in message
 
     @pytest.mark.parametrize(
         "code",
@@ -2193,7 +2204,7 @@ class TestSemanticPlans:
                 "rated",
                 [{"id": "logic", "kind": "free_code", "code": "df = df['prepared']"}],
                 "df is this node's own frame; transform df directly (df = df.filter(...)).",
-                "logic",
+                "free_code-1",
             ),
         ],
     )
@@ -2580,9 +2591,14 @@ class TestSemanticPlans:
         assert replayed.postconditions == plan.postconditions
 
         saved = _apply(graph, ops)
-        # Reparse returns code-mode code normalised; the digest compares it so.
+        # Reparse returns code-mode code normalised, and a stepped node's steps rebuilt from
+        # its code (READ-44); the digest compares them so.
         coded = _get(saved, "coded")
         saved.nodes[saved.nodes.index(coded)] = coded.with_config({"code": "df = src.head(3)"})
+        reloaded = _get(saved, "rated")
+        saved.nodes[saved.nodes.index(reloaded)] = reloaded.with_config(
+            {**reloaded.data.config, "steps": canonical_steps(NodeType.RATING_STEP, steps)}
+        )
         verify_postconditions(saved, plan.postconditions)
 
         rated = _get(saved, "rated")

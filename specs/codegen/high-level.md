@@ -429,10 +429,12 @@ not a sidecar. When the steps cannot be rendered the hook's body is the raising
 placeholder instead, carrying the constant `INCOMPLETE_STEPS_MESSAGE`, so a standalone
 run of the module raises rather than running the node's configured work unchanged; the
 placeholder recogniser accepts either constant and extraction treats a recognised
-placeholder as generated, so the body reloads as empty code with the steps kept. The
-parser does not require extraction to be a fixpoint of rendering: it compares the
-extracted body with the rendering passed through the same finaliser extraction ends
-with.
+placeholder as generated, so the body reloads as empty code and the steps come back from
+the pipeline's `.haute.json`, where the save keeps an unfinished list (READ-44; an Explore
+node's travel in its decorator). The parser does not require extraction to be a fixpoint
+of rendering: it rebuilds a surface's steps from the extracted body, and compares an
+Explore node's extracted body with the rendering passed through the same finaliser
+extraction ends with.
 
 ## Design rationale
 

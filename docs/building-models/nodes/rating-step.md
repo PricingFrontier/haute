@@ -122,7 +122,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | **COMBINED OUTPUT COLUMN** | `combined_outputs[].output_column` |
     | **OPERATION** | `combined_outputs[].operation`: `"multiply"`, `"add"`, `"min"` or `"max"` |
     | **BASE VALUE** | `combined_outputs[].base_value`, as text such as `"1.0"` |
-    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
+    | **TRANSFORM** tab | the function body, which Haute reads the steps back from |
     | **COLUMNS** tab | `selected_columns` |
 
     With no editor control:
@@ -153,7 +153,7 @@ With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `tables` | list of object | The rating tables. |
     | `tables[].factors` | list of text | The factor columns the table is keyed by, at most three. |
     | `tables[].factor_dtypes` | map of text to map of text to any JSON value | For each factor, the type its levels are read as. |

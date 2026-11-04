@@ -635,19 +635,24 @@ beside `obj`, the rated, scored or expanded frame). In frame mode an empty list 
 to empty code without error, because the node then simply keeps its base behaviour, a
 `source` step is refused at any position with a step-indexed message, and
 `join`/`concat` references are checked against the surface's eligible input names.
-Every surface but the transform keeps its steps in its own config, beside its other
-settings, while they still render its body: parsing renders them against the
-function's parameter names and compares the result with the code extracted from the
-body, as programs (the same syntax tree and comments, a comment's trailing whitespace
-aside), so a body saved in an earlier layout, quoting or call spelling keeps them; a
-different body, or one that is not empty while the steps cannot be rendered, discards
-them (the body was edited by hand), recording a `steps_discarded` reason in the node's
-editor state and logging a warning; an empty body with unrenderable steps keeps them,
-which is how such a surface's incomplete step list is saved. A config whose `steps`
-value is not a list fails the parse with a `ConfigError`.
+Every surface's code is the only copy of its steps (READ-44), as the transform's is:
+parsing rebuilds them from the body, a statement a step renders exactly becoming that
+step and each run of other statements one code step, so a hand edit keeps the other
+steps. A frame surface whose function is a declaration has no steps yet (an empty
+list), and one whose lines do not split into statements is code-only. Its sidecar writes no `steps`,
+and loading one that does is refused, naming the file and saying the steps are
+rebuilt from the body. An incomplete step list is saved as a transform's is: the body
+is the raising placeholder and the list waits in the pipeline's `.haute.json`
+(`unfinished_steps`), for any stepped node.
 Explore is the one stepped type with no config folder: its steps travel as a `steps=`
-decorator argument beside its overview, pivot and chart cards, and are reconciled
-against the body the same way.
+decorator argument beside its overview, pivot and chart cards, and are kept only while
+they render its body: parsing renders them against the function's parameter names and
+compares the result with the code extracted from the body, as programs (the same
+syntax tree and comments, a comment's trailing whitespace aside); a different body
+discards them (the body was edited by hand), recording a `steps_discarded` reason in
+the node's editor state and logging a warning, and an empty body with unrenderable
+steps keeps them. A config whose `steps` value is not a list fails the parse with a
+`ConfigError`.
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as

@@ -29,6 +29,7 @@ from haute._pipeline_recovery import (
     load_pipeline_editor_document,
     pipeline_document_fingerprint,
 )
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._project_context import current_project
 from haute._project_mutation_lock import ProjectMutationLock
 from haute._sidecar import (
@@ -729,6 +730,38 @@ def _sidecar_position_key(node: GraphNode) -> str:
     return _sanitize_func_name(node.data.label)
 
 
+def _unfinished_steps(graph: PipelineGraph) -> dict[str, list[dict[str, Any]]]:
+    """Each stepped node's step list that its save writes as the raising placeholder, by
+    position key (READ-22, READ-44): one that cannot be rendered, or not against the
+    inputs connected to it, as codegen renders it and the save warns of it. A step naming
+    an input that is not connected renders on its own, so its node's ``steps_error`` alone
+    would not say so."""
+    from haute._builders import stepped_code_problem
+    from haute._graph_utils import edge_input_name
+    from haute._polars_steps import step_input_names
+
+    node_map = {node.id: node for node in graph.nodes}
+    held: dict[str, list[dict[str, Any]]] = {}
+    for node in graph.nodes:
+        node_type = node.data.nodeType
+        steps = node.data.config.get("steps")
+        if node_type not in STEPS_FROM_CODE or not isinstance(steps, list):
+            continue
+        if node.data.editor.steps_error is None:
+            names = [
+                edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
+                for edge in graph.edges
+                if edge.target == node.id and edge.source in node_map
+            ]
+            problem = stepped_code_problem(
+                node.data.config, NodeType(node_type), step_input_names(node_type, names)
+            )
+            if problem is None:
+                continue
+        held[_sidecar_position_key(node)] = steps
+    return dict(sorted(held.items()))
+
+
 def save_sidecar(
     py_path: Path,
     graph: PipelineGraph,
@@ -791,15 +824,9 @@ def save_sidecar(
     # see spurious sidecar keys appear.  This is pinned by
     # ``test_route_helpers.py::test_default_source_not_saved``.
     model_kwargs: dict[str, Any] = {"positions": positions}
-    # A transform whose steps cannot be rendered yet is saved with the raising
-    # placeholder, so its step list is kept here until it is complete (READ-22).
-    unfinished = {
-        _sidecar_position_key(node): node.data.config["steps"]
-        for node in graph.nodes
-        if node.data.nodeType == NodeType.POLARS
-        and isinstance(node.data.config.get("steps"), list)
-        and node.data.editor.steps_error is not None
-    }
+    # A stepped node whose steps cannot be rendered yet is saved with the raising
+    # placeholder, so its step list is kept here until it is complete (READ-22, READ-44).
+    unfinished = _unfinished_steps(graph)
     if unfinished:
         model_kwargs["unfinished_steps"] = dict(sorted(unfinished.items()))
     if graph.sources and graph.sources != ["live"]:

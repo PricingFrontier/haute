@@ -783,6 +783,7 @@ class TestResolveNodeConfig:
             node_config_json,
             palette_default_config,
         )
+        from haute._polars_steps import STEPS_FROM_CODE
 
         folder = NODE_TYPE_TO_FOLDER[node_type]
         settings = palette_default_config(node_type)
@@ -804,6 +805,11 @@ class TestResolveNodeConfig:
 
         assert resolved_type == node_type
         expected = _normalise_loaded_config(json.loads(sidecar.read_bytes()), node_type)
+        if node_type in STEPS_FROM_CODE:
+            # Its sidecar holds no steps; a declaration has none yet, as a new node has
+            # (READ-44).
+            assert "steps" not in expected
+            expected = {**expected, "steps": []}
         assert {key: value for key, value in config.items() if key not in {"code", "inputs"}} == {
             key: value for key, value in expected.items() if key not in {"code", "inputs"}
         }

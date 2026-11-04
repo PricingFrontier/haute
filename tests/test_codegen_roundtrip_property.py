@@ -50,6 +50,8 @@ from haute._api_input_schema import columns_from_sidecar
 from haute._banding_config import expand_banding_config_from_sidecar
 from haute._config_io import collect_node_configs
 from haute._graph_utils import _sanitize_func_name
+from haute._polars_steps import STEPS_FROM_CODE, PolarsStepError
+from haute._polars_steps_lift import StepLiftError, canonical_steps, lift_steps
 from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code_multi
@@ -642,6 +644,20 @@ def _canonical_value(value: Any) -> Any:
     return value
 
 
+def _steps_as_reloaded(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
+    """A frame surface's *config* with the steps its saved code loads back as (READ-44)."""
+    steps = config.get("steps")
+    try:
+        if isinstance(steps, list):
+            return {**config, "steps": canonical_steps(node_type, steps)}
+        if config.get("code"):
+            return {**config, "steps": lift_steps(node_type, str(config["code"]))}
+    except (PolarsStepError, StepLiftError):
+        # An unfinished list waits in .haute.json; code that does not rebuild stays code.
+        return config
+    return {**config, "steps": []}
+
+
 def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[str, str]) -> Any:
     normalized = dict(config)
     if normalized.get("code") == "":
@@ -659,6 +675,10 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
         # A column's sidecar leaves out the settings inference gives it, and the load gives
         # them back (READ-42).
         normalized = columns_from_sidecar(normalized)
+    if node_type in STEPS_FROM_CODE and node_type != NodeType.POLARS:
+        # A frame surface's code is the only copy of its steps (READ-44): they come back as
+        # its code rebuilds them, and a declaration's as none yet.
+        normalized = _steps_as_reloaded(node_type, normalized)
     for field in _NODE_REFERENCE_CONFIG_FIELDS.get(node_type, frozenset()):
         value = normalized.get(field)
         if isinstance(value, str):

@@ -2804,8 +2804,9 @@ class TestStepsFirstAuthoring:
         graph = parse_pipeline_to_graph(steps_first_project / "main.py")
         assert [item.id for item in graph.nodes] == [item.id for item in before.nodes]
         saved = next(item for item in graph.nodes if item.id == node).data
-        # A transform's steps come back from its code; every other surface keeps its own.
-        assert saved.config["steps"] == (_reloaded(steps) if saved.nodeType == "polars" else steps)
+        # A stepped node's steps come back from its code (READ-22, READ-44); an Explore
+        # node's decorator keeps its own.
+        assert saved.config["steps"] == (steps if saved.nodeType == "explore" else _reloaded(steps))
         assert saved.editor.steps_error is None and saved.editor.steps_discarded is None
         with native_memory_backend_scope("rlimit"):
             result = execute_graph(graph, target_node_id=node)[node]
@@ -2950,8 +2951,9 @@ def _august_ops(code: str) -> list[dict[str, object]]:
 
 
 def _reloaded(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A transform's *steps* as its reload holds them: they live only in its code, and
-    loading gives each the id of its kind and place (READ-22). It holds for steps that each
+    """A stepped node's *steps* as its reload holds them: they live only in its code, and
+    loading gives each the id of its kind and place (READ-22, READ-44). It holds for steps
+    that each
     rebuild as themselves: a free-code statement a structured step renders exactly comes
     back as that step, and two adjacent code steps as one."""
     return [{**step, "id": f"{step['kind']}-{place}"} for place, step in enumerate(steps, 1)]

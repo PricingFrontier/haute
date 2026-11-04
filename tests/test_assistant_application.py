@@ -1290,12 +1290,12 @@ def _reparsed_config(root: Path, node_id: str) -> dict:
 
 
 def _as_reloaded(node: str, steps: list[dict]) -> list[dict]:
-    """*steps* as a reload holds them: a transform's (``t``) steps live only in its code
-    and come back with ids from kind and place (READ-22); every other stepped surface
-    keeps its steps, ids included, in its config. It holds for steps that each rebuild as
+    """*steps* as a reload holds them: a stepped node's steps live only in its code and come
+    back with ids from kind and place (READ-22, READ-44); an Explore node's (``explored``)
+    keep theirs, ids included, in its decorator. It holds for steps that each rebuild as
     themselves: a free-code statement a structured step renders exactly comes back as that
     step, and two adjacent code steps as one."""
-    if node != "t":
+    if node == "explored":
         return steps
     return [{**step, "id": f"{step['kind']}-{place}"} for place, step in enumerate(steps, 1)]
 

@@ -2,6 +2,5 @@
   "format": "parquet",
   "input_type": "file",
   "mode": "scan",
-  "path": "data/batch_quotes.parquet",
-  "steps": []
+  "path": "data/batch_quotes.parquet"
 }
