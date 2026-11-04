@@ -7,12 +7,8 @@ submodel = haute.Submodel(
     "vehicle_factors",
     description="Vehicle age and value factors shared by the pricing pipelines.",
     definition_id="definition_vehicle_factors",
-    input_ports=[
-        {"name": "vehicles", "targets": [{"node_id": "vehicle_age"}]}
-    ],
-    output_ports=[
-        {"name": "factored", "source": {"node_id": "vehicle_factor"}}
-    ],
+    input_ports=[{"name": "vehicles", "targets": [{"node_id": "vehicle_age"}]}],
+    output_ports=[{"name": "factored", "source": {"node_id": "vehicle_factor"}}],
     pipeline_dir="..",
 )
 

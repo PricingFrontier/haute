@@ -7,70 +7,14 @@
       "emit": true,
       "row_id_column": "quote_id",
       "columns": [
-        {
-          "name": "quote_id",
-          "path": "$[:].quote_id",
-          "type": "str",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "inception_date",
-          "path": "$[:].inception_date",
-          "type": "date",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "date_of_birth",
-          "path": "$[:].driver.date_of_birth",
-          "type": "date",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "licence_years",
-          "path": "$[:].driver.licence_years",
-          "type": "int",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "vehicle_value",
-          "path": "$[:].vehicle.value",
-          "type": "float",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "vehicle_group",
-          "path": "$[:].vehicle.group",
-          "type": "str",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "region_code",
-          "path": "$[:].region_code",
-          "type": "str",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        },
-        {
-          "name": "exposure",
-          "path": "$[:].exposure",
-          "type": "float",
-          "status": "Confirmed",
-          "selected": true,
-          "levels": null
-        }
+        {"name": "quote_id", "path": "$[:].quote_id", "type": "str", "status": "Confirmed"},
+        {"name": "inception_date", "path": "$[:].inception_date", "type": "date", "status": "Confirmed"},
+        {"name": "date_of_birth", "path": "$[:].driver.date_of_birth", "type": "date", "status": "Confirmed"},
+        {"name": "licence_years", "path": "$[:].driver.licence_years", "type": "int", "status": "Confirmed"},
+        {"name": "vehicle_value", "path": "$[:].vehicle.value", "type": "float", "status": "Confirmed"},
+        {"name": "vehicle_group", "path": "$[:].vehicle.group", "type": "str", "status": "Confirmed"},
+        {"name": "region_code", "path": "$[:].region_code", "type": "str", "status": "Confirmed"},
+        {"name": "exposure", "path": "$[:].exposure", "type": "float", "status": "Confirmed"}
       ]
     }
   ]

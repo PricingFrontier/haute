@@ -23,6 +23,7 @@ import pytest
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import build_input_snapshot
 from haute._polars_io_registry import data_input_is_direct
+from haute._polars_steps_lift import canonical_steps
 from haute._source_cache import SourceCacheStore
 from haute._types import NodeType, PipelineGraph
 from haute.assistant._node_cards import CARD_CONFIG_NAMES, node_card, node_card_fixture
@@ -304,6 +305,23 @@ def test_every_card_configuration_applies_and_executes(
         authored["steps"] = [
             {**step, "id": f"{step['kind']}-{place}"}
             for place, step in enumerate(authored["steps"], 1)
+        ]
+    elif isinstance(authored.get("steps"), list):
+        # Every other stepped node's steps live only in its code too (READ-43, READ-44): a
+        # card's code step comes back as the step its statement renders, if one does.
+        authored["steps"] = canonical_steps(node_type, authored["steps"])
+    if node_type == NodeType.API_INPUT:
+        # A column's sidecar leaves out the settings inference gives it, which the load
+        # gives back; one given no "selected" is written as not selected (READ-42).
+        defaults = {"status": "Inferred", "levels": None, "origin": "inferred", "key": False}
+        authored["tables"] = [
+            {
+                **table,
+                "columns": [
+                    {**defaults, "selected": False, **column} for column in table["columns"]
+                ],
+            }
+            for table in authored["tables"]
         ]
     assert {key: saved.get(key) for key in authored} == authored
     _prepare_snapshots(project, graph)
