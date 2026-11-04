@@ -38,9 +38,11 @@ export default function ContextMenu({
   const ref = useRef<HTMLDivElement>(null)
 
   const items = useMemo(() => {
-    // A request input or response node is named by its type alone (READ-46).
+    // A request input or response node is named by its type alone (READ-46); a submodel
+    // holding one keeps its own name's Rename.
+    const fixedName = isSingleton && !isSubmodel
     const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean }[] =
-      isSingleton ? [] : [{ label: "Rename", icon: Type, action: () => onRename(nodeId) }]
+      fixedName ? [] : [{ label: "Rename", icon: Type, action: () => onRename(nodeId) }]
     if (!isSingleton && !isSubmodel) {
       list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
     }

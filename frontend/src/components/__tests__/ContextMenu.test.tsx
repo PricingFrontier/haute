@@ -116,6 +116,11 @@ describe("ContextMenu", () => {
     expect(screen.getByText("Delete")).toBeInTheDocument()
   })
 
+  it("still offers Rename for a submodel that holds a singleton node", () => {
+    render(<ContextMenu {...makeProps({ isSubmodel: true, isSingleton: true })} />)
+    expect(screen.getByText("Rename")).toBeInTheDocument()
+  })
+
   it("shows Duplicate when isSingleton is false", () => {
     render(<ContextMenu {...makeProps({ isSingleton: false })} />)
     expect(screen.getByText("Duplicate")).toBeInTheDocument()
