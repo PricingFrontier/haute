@@ -160,3 +160,27 @@ def test_a_standalone_run_holds_explore_to_its_sidecar_as_the_parse_does(
     namespace = runpy.run_path(str(tmp_path / "main.py"), run_name="pipeline_under_test")
     with pytest.raises(ConfigError, match="explore sidecar"):
         namespace["pipeline"].run(source="live")
+
+
+def test_a_saved_module_with_a_declared_explore_contract_runs_on_its_own(tmp_path: Path) -> None:
+    """A declared column contract is the decorator's, beside ``config=``: the generated module
+    carries it, parses, and registers in a standalone run (READ-43)."""
+    import polars as pl
+
+    pl.DataFrame({"premium": [1.0, 2.0]}).write_parquet(tmp_path / "quotes.parquet")
+    # Fan-in metadata is what an Explore node's contract tells the parser beyond its settings.
+    contract = {
+        "inputs": ["premium"],
+        "outputs": [],
+        "inputs_by_parent": {"quotes": ["premium"]},
+    }
+    code = _saved(tmp_path, _graph({**SETTINGS, "contract": contract}))
+    (tmp_path / "haute.toml").write_bytes(b'[project]\nname = "t"\npipeline = "main.py"\n')
+    (tmp_path / ".git").mkdir()
+
+    assert "contract=" in code
+    assert _loaded(tmp_path, code).data.config["contract"]["inputs_by_parent"] == {
+        "quotes": ["premium"]
+    }
+    namespace = runpy.run_path(str(tmp_path / "main.py"), run_name="pipeline_under_test")
+    assert namespace["pipeline"].run(source="live").height == 2

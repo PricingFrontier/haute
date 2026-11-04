@@ -422,8 +422,9 @@ class NodeRegistry:
         declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
         if declared_type == NodeType.EXPLORE:
             # Its settings are in its sidecar alone (READ-43); a keyword beside config= is
-            # refused by name, as the parse refuses it.
-            keywords = sorted(set(config) - {"_node_type", "config"})
+            # refused by name, as the parse refuses it. Its declared column contract is the
+            # decorator's, as every node's is, and the sidecar never holds one.
+            keywords = sorted(set(config) - {"_node_type", "config", "contract"})
             if keywords:
                 raise ConfigError(
                     "An Explore node takes its settings from its config= sidecar, so its "
