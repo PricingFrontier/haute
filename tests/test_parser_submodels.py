@@ -503,7 +503,10 @@ class TestParseSubmodelSource:
         ("old", "new", "message"),
         [
             pytest.param(
-                '"node_id": "adjust"', '"node_id": "ghost"', "missing child nodes", id="missing-node"
+                '"node_id": "adjust"',
+                '"node_id": "ghost"',
+                "missing child nodes",
+                id="missing-node",
             ),
             pytest.param(
                 '"name": "priced"',

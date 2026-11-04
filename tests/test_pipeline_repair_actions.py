@@ -256,8 +256,7 @@ def test_reset_derives_uncached_instance_input_from_its_definition(tmp_path, ext
         child.write_text(
             child.read_text(encoding="utf-8").replace(
                 "output_ports=[",
-                'output_ports=[{"name": "audit", '
-                '"source": {"node_id": "live_switch"}}, ',
+                'output_ports=[{"name": "audit", "source": {"node_id": "live_switch"}}, ',
             ),
             encoding="utf-8",
             newline="\n",
