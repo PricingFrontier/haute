@@ -99,4 +99,62 @@ describe("prepareNodeUpdate on stepped transforms", () => {
     expect(result.ok).toBe(false)
     expect((result as NodeUpdatePlanFailure).error).toMatch(/already has an input named "quotes"/)
   })
+
+  it("keeps a code step reading a renamed input bound through input_mapping, its code run as code", () => {
+    const quotes = makeNode("quotes", "quotes")
+    const rates = makeNode("rates", "rates")
+    const steps = [
+      { id: "s", kind: "source", input: "quotes" },
+      { id: "f", kind: "free_code", code: "df = df.join(rates, on='k')" },
+    ]
+    const update = (code: string) => prepareNodeUpdate({
+      nodeId: "rates",
+      data: renamed(rates, "Rate Book"),
+      refreshSourceIdentity: true,
+      readOnly: false,
+      graph: {
+        nodes: [quotes, rates, makeNode("consumer", "Consumer", { steps, code })],
+        edges: [makeEdge("e1", "quotes", "consumer", "quotes"), makeEdge("e2", "rates", "consumer", "rates")],
+      },
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+    })
+
+    const result = update("df = quotes\ndf = df.join(rates, on='k')")
+    expect(result.ok).toBe(true)
+    const config = (result as PreparedNodeUpdate).nodes.find((n) => n.id === "consumer")?.data.config
+    expect(config).toEqual({ code: "df = quotes\ndf = df.join(rates, on='k')", input_mapping: { rates: "Rate_Book" } })
+
+    // Unfinished steps have no code to run that way, so the rename is refused.
+    const unfinished = update("")
+    expect(unfinished.ok).toBe(false)
+    expect((unfinished as NodeUpdatePlanFailure).error).toMatch(/code step that names an input this rename changes/)
+  })
+
+  it("rewrites the steps as usual when no code step names the renamed input", () => {
+    const quotes = makeNode("quotes", "quotes")
+    const rates = makeNode("rates", "rates")
+    const steps = [
+      { id: "s", kind: "source", input: "quotes" },
+      { id: "j", kind: "join", input: "rates", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_r" },
+      { id: "f", kind: "free_code", code: "df = df.with_columns(total=pl.col('a').rates)" },
+    ]
+    const result = prepareNodeUpdate({
+      nodeId: "rates",
+      data: renamed(rates, "Rate Book"),
+      refreshSourceIdentity: true,
+      readOnly: false,
+      graph: {
+        nodes: [quotes, rates, makeNode("consumer", "Consumer", { steps, code: "df = quotes" })],
+        edges: [makeEdge("e1", "quotes", "consumer", "quotes"), makeEdge("e2", "rates", "consumer", "rates")],
+      },
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+    })
+
+    expect(result.ok).toBe(true)
+    const config = (result as PreparedNodeUpdate).nodes.find((n) => n.id === "consumer")?.data.config as Record<string, unknown>
+    expect(config.input_mapping).toBeUndefined()
+    expect((config.steps as Record<string, unknown>[])[1].input).toBe("Rate_Book")
+  })
 })

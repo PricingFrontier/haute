@@ -47,6 +47,24 @@ export function steppedSurfaceAllowsInputReferences(nodeType: string): boolean {
 }
 
 /**
+ * Whether a free-code step among *steps* names one of *names* in its code: a
+ * rename cannot rewrite that code, so only `input_mapping` keeps it bound. The
+ * code is scanned, not parsed, so a name inside a string or a comment counts too.
+ */
+export function freeCodeNamesInput(steps: unknown[], names: Iterable<string>): boolean {
+  const codes = steps.flatMap((step) =>
+    isPlainObject(step) && step.kind === "free_code" && typeof step.code === "string" ? [step.code] : [],
+  )
+  if (codes.length === 0) return false
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const read = new RegExp(`(?<![\\w.])${escaped}(?!\\w)`, "u")
+    if (codes.some((code) => read.test(code))) return true
+  }
+  return false
+}
+
+/**
  * The input names a stepped node's steps may reference: the edge names for an
  * `edges` surface, none for a surface whose code sees only `df`. Every render
  * request takes its names from here, never from the input chips on display.

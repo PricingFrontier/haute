@@ -1637,6 +1637,83 @@ def test_flatten_keeps_the_input_names_a_load_file_childs_code_reads(tmp_path: P
         assert [arg.arg for arg in functions[name].args.kwonlyargs] == ["obj"]
 
 
+def test_flatten_runs_a_load_file_childs_code_step_through_the_names_it_reads(
+    tmp_path: Path,
+) -> None:
+    """A load rebuilds a Load File's steps from its code (READ-44); a code step naming a renamed
+    input cannot be rewritten, so the expanded node runs its code through ``input_mapping``.
+    Steps that do not render yet stay, and the node fails as unfinished, never passing its
+    input through."""
+    from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+    from haute.executor import execute_graph
+
+    lookup = tmp_path / "lookup.json"
+    lookup.write_text(json.dumps({"factor": 3}))
+    policies = tmp_path / "policies.parquet"
+    pl.DataFrame({"k": [1, 2], "x": [10, 20]}).write_parquet(policies)
+    rates = tmp_path / "rates.parquet"
+    pl.DataFrame({"k": [1, 2], "rate": [0.5, 2.0]}).write_parquet(rates)
+    join = {"id": "code-1", "kind": "free_code", "code": "df = df.join(rates, on='k')"}
+
+    def flattened(steps: list[dict[str, Any]]) -> PipelineGraph:
+        loader = _node(
+            "loader",
+            NodeType.EXTERNAL_FILE,
+            label="Loader",
+            config={"path": str(lookup), "file_type": "json", "steps": steps},
+        )
+        definition = _definition(
+            graph=PipelineGraph(nodes=[loader], edges=[]),
+            input_ports=[
+                SubmodelInputPort(name="policies", targets=[SubmodelEndpoint(node_id="loader")]),
+                SubmodelInputPort(name="rates", targets=[SubmodelEndpoint(node_id="loader")]),
+            ],
+            output_ports=[
+                SubmodelOutputPort(name="priced", source=SubmodelEndpoint(node_id="loader")),
+            ],
+        )
+        source = {
+            node_id: _node(
+                node_id, NodeType.DATA_INPUT, label=label, config=make_file_input_config(path)
+            )
+            for node_id, label, path in (
+                ("policy_table", "Policy table", policies),
+                ("rate_table", "Rate table", rates),
+            )
+        }
+        return flatten_graph(
+            PipelineGraph(
+                nodes=[*source.values(), _instance("pricing")],
+                edges=[
+                    GraphEdge(
+                        id="p", source="policy_table", target="pricing", targetHandle="in__policies"
+                    ),
+                    GraphEdge(
+                        id="r", source="rate_table", target="pricing", targetHandle="in__rates"
+                    ),
+                ],
+                submodels={"definition_scoring": definition},
+            )
+        )
+
+    loader_id = qualified_runtime_node_id("pricing", "loader")
+    finished = flattened([join])
+    config = finished.node_map[loader_id].data.config
+    assert "steps" not in config
+    assert config["input_mapping"] == {"policies": "Policy_table", "rates": "Rate_table"}
+    result = execute_graph(finished)[loader_id]
+    assert result.status == "ok", result.error
+    assert result.preview == [{"k": 1, "x": 10, "rate": 0.5}, {"k": 2, "x": 20, "rate": 2.0}]
+
+    unfinished = flattened(
+        [join, {"id": "filter-1", "kind": "filter", "match": "all", "conditions": []}]
+    )
+    assert unfinished.node_map[loader_id].data.config["steps"][0] == join
+    failed = execute_graph(unfinished)[loader_id]
+    assert failed.status == "error"
+    assert INCOMPLETE_STEPS_MESSAGE in str(failed.error)
+
+
 def test_flatten_preserves_public_output_label_for_ordinary_polars_code() -> None:
     child = PipelineGraph(nodes=[_node("output", label="Internal Output")], edges=[])
     definition = _definition(

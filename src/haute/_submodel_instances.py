@@ -486,11 +486,19 @@ def rewrite_boundary_input_names(
         steps = config.get("steps")
         # Transform and Load File code address their inputs by edge name.
         names_inputs = stepped_surface_allows_input_references(node.data.nodeType)
-        if names_inputs and isinstance(steps, list) and _free_code_reads(steps, renames):
+        if (
+            names_inputs
+            and isinstance(steps, list)
+            and config.get("code")
+            and node.data.editor.steps_error is None
+            and _free_code_reads(steps, renames)
+        ):
             # A free-code step names a renamed input inside its code, which the boundary
             # cannot rewrite. The expanded node runs its code as code without steps runs:
             # it keeps reading the names it was written with, through input_mapping. The
-            # load rebuilds steps from any body (READ-44), so such a node has steps.
+            # load rebuilds steps from any body (READ-44), so such a node has steps. Steps
+            # that do not render yet have no code to run: they stay, and the node fails as
+            # unfinished.
             del config["steps"]
             changed = True
             steps = None
