@@ -235,7 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.check:
             stale.append(page)
         else:
-            path.write_text(expected, encoding="utf-8")
+            # The repository pins LF; text mode on Windows would write CRLF.
+            path.write_text(expected, encoding="utf-8", newline="\n")
     if stale:
         print(
             "node reference config-keys tables are stale: "
