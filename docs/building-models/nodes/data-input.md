@@ -136,7 +136,7 @@ A Databricks table:
     | **SELECT CLAUSE** | `query` (absent when empty) |
     | **RECORDS** | `records`: a list of row objects |
     | **ARGUMENTS** | `arguments`: an object of argument names and values |
-    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
+    | **TRANSFORM** tab | the function body, which Haute reads the steps back from |
     | **COLUMNS** tab | `selected_columns` |
 
     The formats each provider accepts:
@@ -157,7 +157,7 @@ A Databricks table:
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `arguments` | map of text to any JSON value | Arguments passed to the Polars read or scan call, by parameter name. |
     | `mode` | `""` or `"read"` or `"scan"` | Whether the file is read eagerly or scanned lazily; empty or absent takes the format's default. With `input_type` `"file"`, `"lakehouse"`, `"inline"`. |
     | `input_type` | `"file"` | The provider: a file. |

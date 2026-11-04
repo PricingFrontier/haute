@@ -2,6 +2,5 @@
   "format": "csv",
   "input_type": "file",
   "mode": "scan",
-  "path": "data/quotes.csv",
-  "steps": []
+  "path": "data/quotes.csv"
 }

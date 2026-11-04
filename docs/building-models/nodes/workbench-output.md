@@ -61,12 +61,14 @@ The tables are the workbench's schema, edited in the Workbench view: **Edit in W
 A Workbench Output needs the project's workbench, as a [Workbench Input](workbench-input.md) does.
 
 ??? note "In the pipeline file"
-    The node's decorator in the pipeline's `.py` file names its JSON sidecar, `@pipeline.workbench_output(config="config/workbench_output/<node name>.json")`, which holds none of its tables: they are the workbench's files, read as a [Workbench Input](workbench-input.md)'s are, and a sidecar holding `tables` is refused.
+    A pipeline holds one Workbench Output, so the node is always named `workbench_output`, and it has no rename.
+
+    The node's decorator in the pipeline's `.py` file names its JSON sidecar, `@pipeline.workbench_output(config="config/workbench_output/workbench_output.json")`, which holds none of its tables: they are the workbench's files, read as a [Workbench Input](workbench-input.md)'s are, and a sidecar holding `tables` is refused.
 
     | Setting in the editor | Stored as |
     |---|---|
     | The tables | the workbench's files, a table each in `workbench/schema/`, never the sidecar |
-    | The table each connection fills | the `target_port` of each `pipeline.connect("priced", "response", target_port="pricing_output")` |
+    | The table each connection fills | the `target_port` of each `pipeline.connect("priced", "workbench_output", target_port="pricing_output")` |
 
     Deploying refuses a connection to a table the workbench does not have.
 

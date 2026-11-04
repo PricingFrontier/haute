@@ -477,13 +477,13 @@ class TestHauteModelPredict:
         from haute.parser import parse_pipeline_file
 
         full_graph = parse_pipeline_file(PIPELINE_FILE)
-        pruned, _kept, _removed = prune_for_deploy(full_graph, "output")
+        pruned, _kept, _removed = prune_for_deploy(full_graph, "quote_response")
 
         model = HauteModel()
         model._graph = pruned
         model._project = current_project()
-        model._input_node_ids = ["quotes"]
-        model._output_node_id = "output"
+        model._input_node_ids = ["quote_input"]
+        model._output_node_id = "quote_response"
         model._output_fields = output_fields
         model._request_rows = RequestRows("in_request_order")
         model._omittable = frozenset()
@@ -4267,11 +4267,13 @@ class TestResolveConfigEdgeCases:
         from haute._types import NodeType
 
         source = MagicMock()
-        source.id = "api"
+        source.id = "quote_input"
+        source.data.label = "quote_input"
         source.data.nodeType = NodeType.API_INPUT
         source.data.config = {}
         output = MagicMock()
-        output.id = "out"
+        output.id = "quote_response"
+        output.data.label = "quote_response"
         output.data.nodeType = NodeType.OUTPUT
         output.data.config = {}
         graph = MagicMock()
@@ -4411,12 +4413,12 @@ class TestResolveConfigEdgeCases:
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+                return_value=(graph, ["quote_input", "shape", "agg", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
         ):
@@ -4451,12 +4453,12 @@ class TestResolveConfigEdgeCases:
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+                return_value=(graph, ["quote_input", "shape", "agg", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
             patch("haute.deploy._schema.run_isolated_worker", forbidden_runner),
@@ -4505,12 +4507,12 @@ class TestResolveConfigEdgeCases:
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph) as parse,
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["api", "out"], []),
+                return_value=(graph, ["quote_input", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
@@ -4590,12 +4592,12 @@ class TestResolveConfigEdgeCases:
         graph = self._minimal_graph()
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["api", "out"], []),
+                return_value=(graph, ["quote_input", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
@@ -4621,12 +4623,12 @@ class TestResolveConfigEdgeCases:
         graph = self._minimal_graph()
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["api", "out"], []),
+                return_value=(graph, ["quote_input", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(

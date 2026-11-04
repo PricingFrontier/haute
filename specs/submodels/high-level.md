@@ -128,7 +128,11 @@ by one shared **definition** and any number of parent-graph **instances**:
   internal targets `{nodeId, handleId}`. Each occurrence may bind that public
   input from at most one parent edge; the single binding fans out to every
   declared target. A public output port has an immutable
-  `name` and exactly one internal source `{nodeId, handleId}`.
+  `name` and exactly one internal source `{nodeId, handleId}`. A definition module's
+  `haute.Submodel(...)` writes an endpoint in snake_case, `{"node_id": ...}`, and its
+  handle only when it has one (READ-45); a module that writes `nodeId` or `handleId` is
+  refused, naming each key's snake_case name. The graph the server and the browser
+  exchange keeps `{nodeId, handleId}`.
   Parent edges may address only `in__<name>` and `out__<name>` handles;
   internal child ids are never a parent-graph interface. After backend
   sanitisation, the public input port name is the child-side frame name.

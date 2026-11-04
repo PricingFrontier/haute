@@ -66,13 +66,13 @@ def raw_rows():
 
 @pipeline.polars
 def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
-    \"\"\"Core transform used by preview, trace, and editor browser flows.\"\"\"
+    \"\"\"Core transform used by preview, trace, editor and version-control browser flows.\"\"\"
     return raw_rows.with_columns(value_doubled=pl.col("value") * 2)
 
 
-@pipeline.output(config="config/quote_response/priced.json")
-def priced(enriched):
-    \"\"\"Core terminal node used by version-control browser flows.\"\"\"
+@pipeline.output(config="config/quote_response/quote_response.json")
+def quote_response(enriched):
+    \"\"\"Core terminal node: the pipeline's Quote Response.\"\"\"
 """
 _BROWSER_MODEL_BLOCK = """
 
@@ -331,8 +331,8 @@ _BROWSER_OPTIMISER_APPLY_CONFIG = """{
 _QUOTES_API_INPUT_BLOCK = """
 
 
-@pipeline.api_input(config="config/quote_input/quotes.json")
-def quotes():
+@pipeline.api_input(config="config/quote_input/quote_input.json")
+def quote_input():
     \"\"\"Browser E2E apiInput node for v2-native flow tests.\"\"\"
 """
 # V2-native starting state: a data path is set (so the Infer Tables
@@ -462,7 +462,7 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _BROWSER_CANVAS_BLOCK
     if "def browser_optimiser(" not in source:
         source = source.rstrip() + _BROWSER_OPTIMISER_BLOCK
-    if "def quotes(" not in source:
+    if "def quote_input(" not in source:
         source = source.rstrip() + _QUOTES_API_INPUT_BLOCK
     main_path.write_text(source, encoding="utf-8")
 
@@ -505,7 +505,7 @@ def _augment_starter_pipeline() -> None:
 
     quote_response_config_dir = E2E_PROJECT_DIR / "rating" / "config" / "quote_response"
     quote_response_config_dir.mkdir(parents=True, exist_ok=True)
-    (quote_response_config_dir / "priced.json").write_text(
+    (quote_response_config_dir / "quote_response.json").write_text(
         _BROWSER_OUTPUT_CONFIG,
         encoding="utf-8",
     )
@@ -555,7 +555,7 @@ def _augment_starter_pipeline() -> None:
     # via Infer Tables, plus the nested-JSON data fixture.
     quote_input_dir = E2E_PROJECT_DIR / "rating" / "config" / "quote_input"
     quote_input_dir.mkdir(parents=True, exist_ok=True)
-    (quote_input_dir / "quotes.json").write_text(_QUOTES_API_INPUT_CONFIG, encoding="utf-8")
+    (quote_input_dir / "quote_input.json").write_text(_QUOTES_API_INPUT_CONFIG, encoding="utf-8")
     quotes_data_dir = E2E_PROJECT_DIR / "data" / "quotes"
     quotes_data_dir.mkdir(parents=True, exist_ok=True)
     (quotes_data_dir / "sample_quote.json").write_text(_QUOTES_SAMPLE_DATA, encoding="utf-8")

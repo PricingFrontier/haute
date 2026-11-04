@@ -8,7 +8,6 @@ files via ``config="path/to/file.json"``.
 
 from __future__ import annotations
 
-import ast
 import io
 import json
 import tokenize
@@ -18,7 +17,6 @@ from typing import Any
 from haute._code_extraction import (
     extract_user_code,
     is_declaration_body,
-    normalise_user_code,
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
@@ -27,24 +25,16 @@ from haute._config_validation import (
 )
 from haute._contracts import Contract, declared_contract_json, get_node_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs, require_edge_join_order
-from haute._explore_charts import validate_explore_charts
-from haute._explore_overview import validate_explore_overview
-from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._node_config_models import COLUMN_CONFIG_KEYS
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
     STEPPED_NODE_TYPES,
-    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-    PolarsStepError,
-    render_polars_steps,
-    step_input_names,
-    stepped_surface_for,
 )
 from haute._polars_steps_lift import StepLiftError, lift_steps
 from haute._project_context import current_project
 from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._types import NodeEditorState, NodeType
+from haute._types import NodeEditorState, NodeType, singleton_name_problem
 from haute.errors import ConfigError, ContractMismatchError, HauteError, ParseError
 
 __all__ = [
@@ -83,7 +73,7 @@ def _build_node_config(
 ) -> dict[str, Any]:
     """Build the config of a node that keeps its settings on its decorator.
 
-    Only an Edge Join, an Explore and a transform do: every other node type
+    Only an Edge Join and a transform do: every other node type
     keeps them in a JSON sidecar, which ``_resolve_node_config`` loads, or
     refuses the node for lacking, before this runs.
     """
@@ -91,38 +81,6 @@ def _build_node_config(
     config: dict[str, Any] = {}
     if node_type == NodeType.EDGE_JOIN:
         config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
-    elif node_type == NodeType.EXPLORE:
-        code = extract_user_code(body, kind="hook") if body else ""
-        if code:
-            config["code"] = code
-        # Explore has no sidecar: its steps travel as a decorator argument
-        # beside its pivots and charts, and are reconciled with the body below.
-        if "steps" in decorator_kwargs:
-            config["steps"] = decorator_kwargs["steps"]
-        if "overview" in decorator_kwargs:
-            overview = validate_explore_overview(
-                decorator_kwargs["overview"],
-                context="explore decorator",
-            )
-            if overview:
-                config["overview"] = dict(overview)
-        if "pivots" in decorator_kwargs or "pivot_formulas" in decorator_kwargs:
-            shared_formulas, pivots = validate_explore_pivot_state(
-                decorator_kwargs.get("pivot_formulas"),
-                decorator_kwargs.get("pivots", []),
-                context="explore decorator",
-            )
-            if shared_formulas:
-                config["pivot_formulas"] = shared_formulas
-            if pivots:
-                config["pivots"] = pivots
-        if "charts" in decorator_kwargs:
-            charts = validate_explore_charts(
-                decorator_kwargs["charts"],
-                context="explore decorator",
-            )
-            if charts:
-                config["charts"] = charts
     elif node_type == NodeType.POLARS:
         config["code"] = (
             extract_user_code(body, kind="polars", param_names=param_names) if body else ""
@@ -388,82 +346,36 @@ def _validate_node_function(
         )
 
 
-def _comments(code: str) -> list[str]:
-    """The comments of *code*, each without the trailing whitespace ``ruff format`` removes."""
-    return [
-        token.string.rstrip()
-        for token in tokenize.generate_tokens(io.StringIO(code).readline)
-        if token.type == tokenize.COMMENT
-    ]
-
-
-def _same_program(rendered: str, body: str) -> bool:
-    """Whether a body is a rendering of the steps, whatever its layout.
-
-    The same syntax tree and the same comments make the same program: a body
-    saved under an earlier layout or quoting of the same steps, or reformatted
-    by ``ruff format``, still describes them, while any other change, a
-    comment in authored free code included, is a hand edit.
-    """
-    if rendered == body:
-        return True
-    try:
-        same_tree = ast.dump(ast.parse(rendered)) == ast.dump(ast.parse(body))
-        return same_tree and _comments(rendered) == _comments(body)
-    except (SyntaxError, tokenize.TokenError):
-        return False
-
-
-def validate_step_container(
+def _with_lifted_steps(
     config: dict[str, Any],
-    node_type: NodeType,
-    config_ref: str | None,
     func_name: str,
-) -> None:
-    """Refuse a ``steps`` value no stepped node can use, whatever its body.
-
-    It must be a list, and an edges surface takes its inputs from the edges,
-    so it cannot sit beside an ``input_mapping``.
-    """
-    if not isinstance(config["steps"], list):
-        raise ConfigError(
-            f"{node_type.value} 'steps' must be a list.",
-            func_name=func_name,
-            config_path=config_ref,
-        )
-    if stepped_surface_for(node_type).inputs == "edges" and config.get("input_mapping") is not None:
-        raise ConfigError(
-            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-            func_name=func_name,
-            config_path=config_ref,
-        )
-
-
-#: The one-off script that moves a project's Polars steps out of ``config/polars/``.
-POLARS_CODE_CONVERSION = "scripts/one_off/read_22_polars_code.py"
-
-
-def _with_lifted_steps(config: dict[str, Any], func_name: str) -> dict[str, Any]:
-    """*config* of a transform with the steps rebuilt from its code (READ-22).
+    node_type: NodeType = NodeType.POLARS,
+    *,
+    declaration: bool = False,
+) -> dict[str, Any]:
+    """*config* of a stepped node with the steps rebuilt from its code (READ-22, READ-44).
 
     Each statement a step renders exactly becomes that step and each run of
     other statements one code step (``lift_steps``), so a hand edit or a
-    comment keeps the rest. A transform with no code (an empty body, or the
-    placeholder an unfinished step list is saved with, whose steps the editor
-    takes from ``.haute.json``), one that maps its inputs, which a stepped
-    transform never does, and one whose lines do not split into statements
-    stay code-only.
+    comment keeps the rest. A node that maps its inputs, which a stepped node
+    never does, and one whose lines do not split into statements stay
+    code-only, as does one with no code: an empty transform, or the placeholder
+    an unfinished step list is saved with, whose steps the loader takes from
+    ``.haute.json``. A frame surface whose function is a *declaration* has no
+    steps yet: an empty list, so the editor opens it on its steps.
     """
     code = str(config.get("code") or "")
-    if not code or config.get("input_mapping") is not None:
+    if config.get("input_mapping") is not None:
         return config
+    if not code:
+        return {**config, "steps": []} if declaration else config
     try:
-        steps = lift_steps(NodeType.POLARS, code)
+        steps = lift_steps(node_type, code)
     except StepLiftError:
         # Spaces ending a line, outside a string, are what ``ruff format`` takes off and a
         # rendering never holds: without them the statements are what they were.
         try:
-            steps = lift_steps(NodeType.POLARS, _without_line_end_spaces(code))
+            steps = lift_steps(node_type, _without_line_end_spaces(code))
         except StepLiftError as exc:
             logger.info("polars_steps_not_rebuilt", func_name=func_name, reason=str(exc))
             return config
@@ -472,8 +384,6 @@ def _with_lifted_steps(config: dict[str, Any], func_name: str) -> dict[str, Any]
 
 def _without_line_end_spaces(code: str) -> str:
     """*code* with the spaces ending each line taken off, but inside a multiline string."""
-    import io
-    import tokenize
 
     kept: set[int] = set()
     try:
@@ -486,60 +396,6 @@ def _without_line_end_spaces(code: str) -> str:
     return "\n".join(
         line if number in kept else line.rstrip()
         for number, line in enumerate(code.split("\n"), start=1)
-    )
-
-
-def _reconcile_steps(
-    config: dict[str, Any],
-    node_type: NodeType,
-    param_names: list[str],
-    config_ref: str | None,
-    func_name: str,
-) -> tuple[dict[str, Any], NodeEditorState]:
-    """Keep a stepped surface's ``steps`` only while they still render the body.
-
-    For every surface but the transform, whose steps are rebuilt from its code
-    (``_with_lifted_steps``). The ``.py`` body is the runtime truth. A body
-    that differs from the rendering of the persisted steps was edited by hand,
-    so the steps are discarded and the node becomes code-only: the returned
-    editor state says why (``steps_discarded``). An empty body with
-    unrenderable steps is how an incomplete step list is saved, so it keeps
-    its steps.
-
-    The comparison is made on equal terms: the rendering is passed through
-    the same extraction the body received (``normalise_user_code``), because
-    a finaliser may normalise a rendering (a lone ``df = (df.head(2))``
-    free-code step loses its brackets) without anyone having edited it; and
-    it compares programs, not text (``_same_program``), so a body saved in an
-    earlier layout or quoting of the same steps keeps them.
-    """
-    if "steps" not in config:
-        return config, NodeEditorState()
-    validate_step_container(config, node_type, config_ref, func_name)
-    surface = stepped_surface_for(node_type)
-    steps = config["steps"]
-    body_code = str(config.get("code") or "")
-    try:
-        rendered = render_polars_steps(
-            steps, step_input_names(node_type, param_names), start=surface.start
-        ).code
-    except PolarsStepError as exc:
-        if not body_code:
-            return config, NodeEditorState()
-        reason = f"the steps cannot be rendered ({exc})"
-    else:
-        kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
-        if _same_program(normalise_user_code(rendered, kind=kind), body_code):
-            return config, NodeEditorState()
-        reason = "the function body no longer matches the rendered steps"
-    logger.warning(
-        "polars_steps_discarded",
-        func_name=func_name,
-        config_path=config_ref,
-        reason=reason,
-    )
-    return {k: v for k, v in config.items() if k != "steps"}, NodeEditorState(
-        steps_discarded=f"Steps were discarded because {reason}.",
     )
 
 
@@ -574,6 +430,10 @@ def _resolve_node_config(
 
     reject_removed_node_reuse_kwargs(decorator_kwargs)
     reject_camel_case_decorator_kwargs(decorator_kwargs, func_name)
+    if func_name and explicit_node_type is not None:
+        named = singleton_name_problem(explicit_node_type, func_name)
+        if named is not None:
+            raise ConfigError(named, func_name=func_name, node_type=explicit_node_type.value)
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or NodeType.POLARS
@@ -604,8 +464,8 @@ def _resolve_node_config(
         # A transform's steps live in its code alone (READ-22).
         raise ConfigError(
             f"Node {func_name!r} takes its steps from {config_ref}, the form before a Polars "
-            "node's steps lived in its code alone. Convert the project with "
-            f"{POLARS_CODE_CONVERSION}.",
+            "node's steps lived in its code alone. Write the steps in the function's body "
+            "and remove config=.",
             func_name=func_name,
             node_type=node_type.value,
             original_path=config_ref,
@@ -667,8 +527,10 @@ def _resolve_node_config(
             list(edge_param_names if edge_param_names is not None else param_names),
         )
         if node_type in STEPPED_NODE_TYPES:
-            config, editor = _reconcile_steps(
-                config, node_type, param_names, normalised_ref, func_name
+            # Its code is the only copy of its steps (READ-44); its sidecar holds none. A
+            # declaration has none yet; a hook with no code is the unfinished placeholder.
+            config = _with_lifted_steps(
+                config, func_name, node_type, declaration=is_declaration_body(body)
             )
     elif has_config_folder(node_type):
         raise _sidecar_required_error(node_type, func_name)
@@ -676,9 +538,6 @@ def _resolve_node_config(
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
         if node_type == NodeType.POLARS:
             config = _with_lifted_steps(config, func_name)
-        elif node_type in STEPPED_NODE_TYPES:
-            # Decorator-carried steps (Explore) reconcile with the body the same way.
-            config, editor = _reconcile_steps(config, node_type, param_names, None, func_name)
 
     if node_type == NodeType.LIVE_SWITCH:
         config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)

@@ -75,13 +75,13 @@ submodel = haute.Submodel(
     input_ports=[
         {{
             "name": "source",
-            "targets": [{{"nodeId": "{first_node}", "handleId": None}}],
+            "targets": [{{"node_id": "{first_node}"}}],
         }}
     ],
     output_ports=[
         {{
             "name": "result",
-            "source": {{"nodeId": "{last_node}", "handleId": None}},
+            "source": {{"node_id": "{last_node}"}},
         }}
     ],
     pipeline_dir="..",

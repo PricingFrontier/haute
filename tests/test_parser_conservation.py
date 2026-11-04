@@ -583,13 +583,13 @@ class TestGraphStructureConservationGate:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "transform", "handleId": None},
+                        "source": {"node_id": "transform"},
                     }
                 ],
                 pipeline_dir="..",
@@ -663,8 +663,8 @@ class TestGraphStructureConservationGate:
                         "name": "base",
                         "targets": [
                             {
-                                "nodeId": "child_in",
-                                "handleId": "child_input_handle",
+                                "node_id": "child_in",
+                                "handle_id": "child_input_handle",
                             }
                         ],
                     }
@@ -673,8 +673,8 @@ class TestGraphStructureConservationGate:
                     {
                         "name": "quotes",
                         "source": {
-                            "nodeId": "child_out",
-                            "handleId": "child_output_handle",
+                            "node_id": "child_out",
+                            "handle_id": "child_output_handle",
                         },
                     }
                 ],
@@ -860,13 +860,13 @@ class TestPrivateChildEndpoints:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "transform", "handleId": None},
+                        "source": {"node_id": "transform"},
                     }
                 ],
                 pipeline_dir="..",
@@ -939,13 +939,13 @@ class TestPrivateChildEndpoints:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "transform", "handleId": None},
+                        "source": {"node_id": "transform"},
                     }
                 ],
                 pipeline_dir="..",
@@ -1011,13 +1011,13 @@ class TestPrivateChildEndpoints:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "other", "handleId": None},
+                        "source": {"node_id": "other"},
                     }
                 ],
                 pipeline_dir="..",
@@ -1087,13 +1087,13 @@ class TestPrivateChildEndpoints:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "transform", "handleId": None},
+                        "source": {"node_id": "transform"},
                     }
                 ],
                 pipeline_dir="..",
@@ -1218,13 +1218,13 @@ class TestPrivateChildEndpoints:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "transform", "handleId": None},
+                        "source": {"node_id": "transform"},
                     }
                 ],
                 pipeline_dir="..",
@@ -1571,13 +1571,13 @@ class TestPolarsParameterBinding:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "transform", "handleId": None}],
+                        "targets": [{"node_id": "transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "transform", "handleId": None},
+                        "source": {"node_id": "transform"},
                     }
                 ],
                 pipeline_dir="..",
@@ -1742,13 +1742,13 @@ class TestPolarsParameterBinding:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "first_step", "handleId": None}],
+                        "targets": [{"node_id": "first_step"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "first_step", "handleId": None},
+                        "source": {"node_id": "first_step"},
                     }
                 ],
                 pipeline_dir="..",
@@ -1799,13 +1799,13 @@ class TestPolarsParameterBinding:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "first_step", "handleId": None}],
+                        "targets": [{"node_id": "first_step"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "first_step", "handleId": None},
+                        "source": {"node_id": "first_step"},
                     }
                 ],
                 pipeline_dir="..",

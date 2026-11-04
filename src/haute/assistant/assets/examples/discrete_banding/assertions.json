@@ -1,1 +1,1 @@
-{"target":"response","row_count":3,"required_columns":["property_group"],"checks":["parse","execute"]}
+{"target":"quote_response","row_count":3,"required_columns":["property_group"],"checks":["parse","execute"]}

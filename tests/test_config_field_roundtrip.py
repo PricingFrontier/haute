@@ -274,9 +274,10 @@ def _examples():
                 "mode": "read",
                 "records": [{"_id": 17, "nested": {"_key": "value"}}],
                 "arguments": {"infer_schema_length": 1},
-                # Post-load steps: the sidecar owns them and codegen renders
-                # them after the load scaffold (`df = df.head(2)`).
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                # Post-load steps: codegen renders them after the load scaffold
+                # (`df = df.head(2)`), the only copy of them, and the load rebuilds
+                # them with the ids it gives (READ-44).
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -342,14 +343,15 @@ def _examples():
                 "maintain_order": "left",
             },
         ),
-        # Frame-mode step lists: the sidecar owns them and codegen renders
-        # them after each surface's scaffold (`df = df.head(2)`).
+        # Frame-mode step lists: codegen renders them after each surface's
+        # scaffold (`df = df.head(2)`), the only copy of them, and the load
+        # rebuilds them with the ids it gives (READ-44).
         (
             NodeType.EXTERNAL_FILE,
             {
                 "path": "models/external.pkl",
                 "file_type": "pickle",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -364,7 +366,7 @@ def _examples():
                     }
                 ],
                 "combined_outputs": [],
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -375,7 +377,7 @@ def _examples():
                 "artifact_path": "models/score.cbm",
                 "task": "regression",
                 "output_column": "prediction",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -387,7 +389,7 @@ def _examples():
                 "max_value": 1.0,
                 "step_count": 3,
                 "step_column": "step_index",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         # A Tweedie GLM reporting robust standard errors, which a penalty would void.
@@ -433,12 +435,13 @@ def _examples():
                 positive_class="claim",
             ),
         ),
-        # Explore keeps its steps in the decorator beside its cards, so the
-        # round trip has to carry both.
+        # An Explore node's steps are rebuilt from its code, each id its kind and
+        # place, and its cards live in its sidecar (READ-43), so the round trip
+        # has to carry both.
         (
             NodeType.EXPLORE,
             {
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
                 "pivot_formulas": [_formula()],
                 "pivots": [_pivot(formulas=["formula_1"])],
             },
@@ -587,12 +590,43 @@ def test_every_declared_field_has_a_roundtrip_example_or_structural_policy():
     _assert_field_inventory(list(_examples()), _schemas())
 
 
+#: An API Input column's settings at the value inference gives them: its sidecar leaves
+#: them out and the load gives them back (READ-42). Written out here, not imported, so the
+#: oracle does not lean on the code it checks. A column given no "selected" is not
+#: selected, and the save writes it so.
+_API_INPUT_COLUMN_DEFAULTS = {
+    "status": "Inferred",
+    "selected": False,
+    "levels": None,
+    "origin": "inferred",
+    "key": False,
+}
+
+
+def _authored(node_type, key, value):
+    """*value* as the load gives it back, by the rules this oracle encodes."""
+    if node_type == NodeType.API_INPUT and key == "tables":
+        return [
+            {
+                **table,
+                "columns": [
+                    {**_API_INPUT_COLUMN_DEFAULTS, **column} for column in table["columns"]
+                ],
+            }
+            for table in value
+        ]
+    return value
+
+
 def _assert_authored_values(original, parsed):
     # This oracle deliberately does not call production normalizers: applying
     # the same lossy normalizer to both sides could conceal a persistence bug.
-    # The one equivalence it encodes is the contract rule itself: an absent
+    # It encodes two equivalences, both rules of the file format. An absent
     # contract and "opaque" mean the same, so codegen omits an opaque contract
     # and a node whose settings live in its decorator parses back without one.
+    # An API Input column given no "status", "levels", "origin" or "key" reads
+    # back with the value inference gives it, and one given no "selected" as not
+    # selected.
     for node in original.nodes:
         restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
         for key, value in node.data.config.items():
@@ -602,7 +636,8 @@ def _assert_authored_values(original, parsed):
                 )
                 continue
             assert key in restored, f"{node.data.nodeType}.{key} disappeared"
-            assert restored[key] == value, f"{node.data.nodeType}.{key} changed"
+            expected = _authored(node.data.nodeType, key, value)
+            assert restored[key] == expected, f"{node.data.nodeType}.{key} changed"
 
 
 @pytest.mark.parametrize(

@@ -63,7 +63,7 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     | **VALUE COLUMN** | `column_name` |
     | **Min** | `min_value` (absent means `0.8`) |
     | **Max** | `max_value` (absent means `1.2`) |
-    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
+    | **TRANSFORM** tab | the function body, which Haute reads the steps back from |
     | **COLUMNS** tab | `selected_columns` |
 
     <!-- config-keys:start -->
@@ -73,7 +73,7 @@ The index column keeps its default name, `scenario_index`. Both ends of the rang
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `quote_id` | text | The column identifying each quote. |
     | `column_name` | text | The column the grid value is written to, such as `scenario_value`. |
     | `min_value` | number | The grid's first value. |

@@ -35,27 +35,27 @@ test.describe("switching branches", () => {
 
   test("the canvas follows a switch and comes back with it", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     await openGitPanel(page)
     // A new branch starts at the latest milestone: the scaffold.
     await createBranchInManager(page, "other")
 
     await switchInManager(page, "other")
     await expectOnBranch(page, "other")
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    await expect(canvasNode(page, "priced_v1")).toHaveCount(0)
-    expect(pipelineOnDisk()).toContain("def priced(")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    await expect(canvasNode(page, "enriched_v1")).toHaveCount(0)
+    expect(pipelineOnDisk()).toContain("def enriched(")
 
     await switchInManager(page, work)
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
   })
 
   test("unsaved edits at a switch: Cancel keeps them, Discard drops them for good", async ({
     page,
   }) => {
     await page.goto("/")
-    await renameNode(page, "priced", "priced_draft")
+    await renameNode(page, "enriched", "enriched_draft")
     await openGitPanel(page)
     await createBranchInManager(page, "other")
 
@@ -65,35 +65,35 @@ test.describe("switching branches", () => {
     await page.getByTestId("git-navigation-cancel").click()
     await expect(confirm).toHaveCount(0)
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_draft")).toBeVisible()
+    await expect(canvasNode(page, "enriched_draft")).toBeVisible()
 
     await switchInManager(page, "other")
     await page.getByTestId("git-navigation-discard").click()
     await expectOnBranch(page, "other")
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
 
     // Undo takes the switch back, not the discarded edits.
     await undo(page)
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    await expect(canvasNode(page, "priced_draft")).toHaveCount(0)
-    expect(pipelineOnDisk()).not.toContain("priced_draft")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    await expect(canvasNode(page, "enriched_draft")).toHaveCount(0)
+    expect(pipelineOnDisk()).not.toContain("enriched_draft")
   })
 
   test("Save first keeps the edits on the branch being left", async ({ page }) => {
     await page.goto("/")
-    await renameNode(page, "priced", "priced_kept")
+    await renameNode(page, "enriched", "enriched_kept")
     await openGitPanel(page)
     await createBranchInManager(page, "other")
 
     await switchInManager(page, "other")
     await page.getByTestId("git-navigation-save").click()
     await expectOnBranch(page, "other")
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(pipelineSavedOn(work)).toContain("def priced_kept(")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(pipelineSavedOn(work)).toContain("def enriched_kept(")
 
     await switchInManager(page, work)
-    await expect(canvasNode(page, "priced_kept")).toBeVisible()
+    await expect(canvasNode(page, "enriched_kept")).toBeVisible()
   })
 
   // A branch made outside Haute in which the pipeline file was deleted.
@@ -111,7 +111,7 @@ test.describe("switching branches", () => {
     makeBranchWithoutThePipeline()
 
     await page.goto("/")
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
     await openGitPanel(page)
     await switchInManager(page, "no-pipeline")
 
@@ -125,7 +125,7 @@ test.describe("switching branches", () => {
     await switchInManager(page, work)
     await expectOnBranch(page, work)
     await expect(failure).toHaveCount(0)
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
   })
 
   test("reloaded on a branch without the pipeline, switching back still brings it back", async ({
@@ -147,7 +147,7 @@ test.describe("switching branches", () => {
     await switchInManager(page, work)
     await expectOnBranch(page, work)
     await expect(failure).toHaveCount(0)
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
     await expect(page.getByTestId("toolbar-save")).toBeEnabled()
   })
 })
@@ -240,7 +240,7 @@ test.describe("deleting and restoring branches", () => {
 
   test("deleting the branch you are on keeps its work restorable", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     await openGitPanel(page)
 
     await branchRow(page, work).getByTestId("branch-manager-delete").click()
@@ -259,7 +259,7 @@ test.describe("deleting and restoring branches", () => {
     await page.getByTestId("working-branch-new").fill("carry-on")
     await page.getByTestId("working-branch-confirm").click()
     await expectOnBranch(page, "carry-on")
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
 
     // The deleted branch, with its save, is still there to restore and open.
     await openGitPanel(page)
@@ -272,14 +272,14 @@ test.describe("deleting and restoring branches", () => {
     await expect(branchRow(page, work)).toBeVisible()
     await switchInManager(page, work)
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
   })
 
   test("archiving the branch you are on with unsaved edits asks first, and Cancel keeps them", async ({
     page,
   }) => {
     await page.goto("/")
-    await renameNode(page, "priced", "priced_draft")
+    await renameNode(page, "enriched", "enriched_draft")
     await openGitPanel(page)
 
     await branchRow(page, work).getByTestId("branch-manager-archive").click()
@@ -287,7 +287,7 @@ test.describe("deleting and restoring branches", () => {
     await page.getByTestId("git-navigation-cancel").click()
 
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_draft")).toBeVisible()
+    await expect(canvasNode(page, "enriched_draft")).toBeVisible()
     expect(branchExists(work)).toBe(true)
   })
 })

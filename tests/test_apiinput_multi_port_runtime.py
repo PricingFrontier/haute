@@ -1353,7 +1353,7 @@ def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
 
     plain = PipelineGraph(
         nodes=[
-            _api_input_node("api", config),
+            _api_input_node("quote_input", config),
             GraphNode(
                 id="original",
                 data=NodeData(
@@ -1364,7 +1364,7 @@ def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
             ),
         ],
         edges=[
-            GraphEdge(id="e_o", source="api", target="original", sourceHandle="policies"),
+            GraphEdge(id="e_o", source="quote_input", target="original", sourceHandle="policies"),
         ],
     )
     graph = create_node_instance_graph(
@@ -1385,7 +1385,7 @@ def _instance_after_two_frames(config: dict[str, Any]) -> PipelineGraph:
     graph.edges.append(
         GraphEdge(
             id="e_c",
-            source="api",
+            source="quote_input",
             target="copy",
             sourceHandle="drivers",
             targetHandle="in__policies",
@@ -1493,7 +1493,7 @@ def test_wrapped_instance_refuses_an_unidentified_request_frame(isolated_root, s
     graph = _instance_after_two_frames(config)
     graph.edges[-1].sourceHandle = source_handle
     if source_handle is None:
-        with pytest.raises(ParseError, match="executable input name.*source=api"):
+        with pytest.raises(ParseError, match="executable input name.*source=quote_input"):
             flatten_graph(graph)
     else:
         results = execute_graph(flatten_graph(graph))

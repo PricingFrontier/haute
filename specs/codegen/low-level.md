@@ -348,9 +348,9 @@ produced by `_stepped_body_code(config, node_type, source_names)`: the rendering
 `render_polars_steps(steps, step_input_names(node_type, source_names), start="frame")`,
 or `incomplete=True` when they cannot be rendered, in which case the hook's body is
 the `INCOMPLETE_STEPS_BODY` placeholder (after an External File's binding line). The
-steps live in each type's required sidecar, except Explore's, which `_gen_explore`
-appends to its decorator keywords as `steps=[...]` and `_build_node_config` reads back
-from the decorator kwargs.
+steps live only in the body (READ-43, READ-44): the sidecar writes none, and an
+unfinished list waits in `.haute.json`. `_gen_explore` emits an Explore node as the
+other config-backed types are emitted, its decorator carrying only `config=`.
 A node with NO code cannot run at
 all — there is no implicit single-input passthrough; codegen emits the
 `NotImplementedError` placeholder and the executor installs the matching
@@ -559,7 +559,7 @@ file tree on disk.
   transform contract and `inputs_by_parent`; a file saved with the keyword omitted parses back
   to the same effective contract, and a second save is byte-identical.
 - `tests/test_polars_steps.py::test_codegen_parse_round_trip_reproduces_rendered_code` — a stepped transform's generated module parses back to the rendered code and its steps; `test_stepped_original_rejects_input_mapping` covers the `input_mapping` rejection.
-- `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module is a `df` hook whose body is the rendered lines and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without recording a discarded sidecar, and a rendering the source finaliser normalises still reloads in step mode.
+- `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_is_read_back_as_steps` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module is a `df` hook whose body is the rendered lines and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder whose steps come back from `.haute.json`, a hand edit is read back as the step it renders, and a rendering the source finaliser normalises still reloads in step mode (READ-44).
 - `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module is a hook whose body is the rendering (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File node refuses `input_mapping`.
 - `tests/test_rename_stable_binding.py` — executes a coded transform before and after the rename shape the editor produces (edge renamed, `input_mapping` recording the logical name) with equal rows, shows the unmapped shape failing on the old name, and round-trips the mapping through codegen and the parser.
 

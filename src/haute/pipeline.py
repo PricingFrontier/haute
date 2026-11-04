@@ -51,9 +51,10 @@ from haute._types import (
     SubmodelEndpoint,
     SubmodelInputPort,
     SubmodelOutputPort,
+    singleton_name_problem,
 )
 from haute._workbench_output import as_response, quote_identity
-from haute.errors import ExecutionError
+from haute.errors import ConfigError, ExecutionError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
@@ -419,9 +420,23 @@ class NodeRegistry:
         reject_removed_node_reuse_kwargs(config)
         reject_camel_case_decorator_kwargs(config)
         declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
-        if declared_type in (NodeType.EDGE_JOIN, NodeType.EXPLORE):
-            # Their settings are the decorator's keywords, held to the config model's
-            # keys and shape as the parse holds the same keywords in a file.
+        if declared_type == NodeType.EXPLORE:
+            # Its settings are in its sidecar alone (READ-43); a keyword beside config= is
+            # refused by name, as the parse refuses it. Its declared column contract is the
+            # decorator's, as every node's is, and the sidecar never holds one.
+            keywords = sorted(set(config) - {"_node_type", "config", "contract"})
+            if keywords:
+                raise ConfigError(
+                    "An Explore node takes its settings from its config= sidecar, so its "
+                    f"decorator keywords {', '.join(repr(key) for key in keywords)} would be "
+                    "ignored: move them into that file, or remove them.",
+                    node_type=declared_type.value,
+                    keywords=keywords,
+                )
+        if declared_type == NodeType.EDGE_JOIN:
+            # Its settings are the decorator's keywords, held to the config model's keys
+            # and shape as the parse holds the same keywords in a file. An Explore node's
+            # are in its sidecar (READ-43).
             from haute._contracts import declared_contract_json
 
             declared = {key: value for key, value in config.items() if key != "_node_type"}
@@ -436,6 +451,9 @@ class NodeRegistry:
 
         def _register(f: Callable) -> Callable:
             node_type = NodeType(config.get("_node_type", NodeType.POLARS))
+            named = singleton_name_problem(node_type, f.__name__)
+            if named is not None:
+                raise ConfigError(named, func_name=f.__name__, node_type=node_type.value)
             if is_configured(node_type, config):
                 # A configured source's hook takes df, yet it has no inputs.
                 is_source = node_type in SOURCE_NODE_TYPES
@@ -634,10 +652,10 @@ class Pipeline(NodeRegistry):
         def transform(read_data: pl.LazyFrame) -> pl.LazyFrame:
             return read_data.filter(pl.col("premium") > 0)
 
-        @pipeline.output(config="config/quote_response/result.json")
-        def result(transform): ...
+        @pipeline.output(config="config/quote_response/quote_response.json")
+        def quote_response(transform): ...
 
-        pipeline.connect("read_data", "transform").connect("transform", "result")
+        pipeline.connect("read_data", "transform").connect("transform", "quote_response")
         result = pipeline.run(source="live")
     """
 
@@ -1269,6 +1287,8 @@ class Submodel(NodeRegistry):
                 f"the pipeline that registers it (got {pipeline_dir!r})."
             )
 
+        from haute._config_validation import camel_case_endpoint_message
+
         super().__init__(name, description)
         self._pipeline_dir = pipeline_dir
         self._definition_id = definition_id
@@ -1284,8 +1304,19 @@ class Submodel(NodeRegistry):
                                 "a public port has one name: "
                                 "replace 'portId' and 'label' with 'name'."
                             )
-        self._input_ports = [SubmodelInputPort.model_validate(port) for port in input_ports]
-        self._output_ports = [SubmodelOutputPort.model_validate(port) for port in output_ports]
+                    camel_case = camel_case_endpoint_message(port_field, port)
+                    if camel_case is not None:
+                        raise ValueError(camel_case)
+        # A module names an endpoint's keys in snake_case; the aliases are the graph
+        # API's (READ-45).
+        self._input_ports = [
+            SubmodelInputPort.model_validate(port, by_alias=False, by_name=True)
+            for port in input_ports
+        ]
+        self._output_ports = [
+            SubmodelOutputPort.model_validate(port, by_alias=False, by_name=True)
+            for port in output_ports
+        ]
 
     @property
     def definition_id(self) -> str:

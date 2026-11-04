@@ -11,7 +11,6 @@ import polars as pl
 import pytest
 
 from haute._config_io import load_node_config, node_config_json
-from haute._constant_config import CONSTANTS_CONVERSION
 from haute._node_apply import constant_frame
 from haute._types import NodeType
 from haute.errors import NodeConfigError
@@ -64,9 +63,9 @@ def test_a_row_without_a_name_is_not_written_and_a_name_twice_is_refused(
         )
 
 
-def test_a_sidecar_holding_rows_is_refused_naming_the_conversion(tmp_path: Path) -> None:
+def test_a_sidecar_holding_rows_is_refused_naming_the_map_form(tmp_path: Path) -> None:
     sidecar = tmp_path / "config" / "constant" / "rates.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_bytes(b'{"values": [{"name": "a", "value": "1"}]}')
-    with pytest.raises(NodeConfigError, match=CONSTANTS_CONVERSION):
+    with pytest.raises(NodeConfigError, match="Write them as a map from each constant's name"):
         load_node_config("config/constant/rates.json", base_dir=tmp_path)

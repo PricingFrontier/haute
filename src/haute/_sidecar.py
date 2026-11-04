@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -18,7 +18,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from haute._logging import get_logger
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._types import GraphNode, NodeType
+from haute.errors import ParseError
 
 logger = get_logger(component="sidecar")
 
@@ -82,10 +84,10 @@ class SidecarReadResult:
 
 
 def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[GraphNode]:
-    """*nodes* with each transform saved with an unfinished step list given its steps
-    from the sidecar (READ-22): one whose body is the placeholder, which loads with no
-    code and no steps. An entry for any other node is ignored; the next save drops it.
-    Every loader of a pipeline file applies it, the editor's document included."""
+    """*nodes* with each stepped node saved with an unfinished step list given its steps
+    from the sidecar (READ-22, READ-44): one whose body is the placeholder, which loads
+    with no code and no steps. An entry for any other node is ignored; the next save
+    drops it. Every loader of a pipeline file applies it, the editor's document included."""
     if not isinstance(unfinished, dict) or not unfinished:
         return nodes
     given: list[GraphNode] = []
@@ -93,7 +95,7 @@ def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[Graph
         steps = unfinished.get(node.id)
         config = node.data.config
         if (
-            node.data.nodeType == NodeType.POLARS
+            node.data.nodeType in STEPS_FROM_CODE
             and isinstance(steps, list)
             and not config.get("code")
             and "steps" not in config
@@ -101,6 +103,77 @@ def with_unfinished_steps(nodes: list[GraphNode], unfinished: Any) -> list[Graph
             given.append(node.with_config({**config, "steps": steps}))
         else:
             given.append(node)
+    return given
+
+
+def unfinished_step_list(
+    node: GraphNode, input_names: Sequence[str]
+) -> list[dict[str, Any]] | None:
+    """*node*'s step list when a save writes it as the raising placeholder and keeps the list
+    in ``.haute.json`` (READ-22, READ-44), else None: one that cannot be rendered, or not
+    against *input_names*, the inputs connected to it, as codegen renders it and the save
+    warns of it. A step naming an input that is not connected renders on its own, so the
+    node's ``steps_error`` alone would not say so. Every save that writes the file decides
+    by it, a whole save, one node's and Recover's alike."""
+    from haute._builders import stepped_code_problem
+    from haute._polars_steps import step_input_names
+
+    steps = node.data.config.get("steps")
+    if node.data.nodeType not in STEPS_FROM_CODE or not isinstance(steps, list):
+        return None
+    if node.data.editor.steps_error is not None:
+        return steps
+    node_type = NodeType(node.data.nodeType)
+    problem = stepped_code_problem(
+        node.data.config, node_type, step_input_names(node_type, list(input_names))
+    )
+    return None if problem is None else steps
+
+
+def missing_unfinished_steps(node_type: NodeType | str, held: bool) -> bool:
+    """Whether a node whose body is the unfinished-steps placeholder, given *held* (its list
+    is in the file's ``.haute.json``), must be refused: one whose code runs on a frame it
+    was given (any stepped node but a Transform) would, with no code and no steps, pass
+    that frame on with its steps skipped. A Transform with no code fails when run."""
+    return not held and node_type != NodeType.POLARS
+
+
+def missing_unfinished_steps_message(node_id: str, py_path: Path) -> str:
+    """The refusal of a placeholder whose unfinished steps the file's ``.haute.json`` does
+    not hold, as the parse and the editor's recovery both give it."""
+    return (
+        f"Node {node_id!r} is saved with unfinished steps, which wait in "
+        f"{py_path.with_suffix('.haute.json').name}, but that file does not hold them, so "
+        "running it would skip them. Write its steps again, or replace its body with `...` "
+        "to start afresh."
+    )
+
+
+def with_saved_unfinished_steps(
+    nodes: list[GraphNode],
+    placeholders: set[str],
+    py_path: Path,
+    *,
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes,
+) -> list[GraphNode]:
+    """*nodes*, parsed from *py_path*, given the unfinished step lists its ``.haute.json``
+    holds (READ-22, READ-44), as every load applies them: ``haute run``, a deploy and the
+    editor then fail such a node naming its unfinished step. *placeholders* are the nodes
+    whose body is the placeholder those lists are saved with; one the file does not hold
+    is refused (:func:`missing_unfinished_steps`). *read_bytes* reads the file; editor
+    recovery passes its load's capture."""
+    read = read_sidecar_state(py_path, read_bytes=read_bytes)
+    held = read.data.unfinished_steps if read.data is not None else {}
+    given = with_unfinished_steps(nodes, held)
+    for node in given:
+        if node.id in placeholders and missing_unfinished_steps(
+            node.data.nodeType, "steps" in node.data.config
+        ):
+            raise ParseError(
+                missing_unfinished_steps_message(node.id, py_path),
+                node_id=node.id,
+                source_file=str(py_path),
+            )
     return given
 
 

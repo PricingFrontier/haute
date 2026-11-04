@@ -85,7 +85,7 @@ df = df.with_columns(
     |---|---|
     | **FILE TYPE** | `file_type`: `"pickle"`, `"json"` or `"joblib"` |
     | **FILE PATH** | `path`: the file, relative to your project folder |
-    | **TRANSFORM** tab | `steps`, or the function body when the node's code is not steps |
+    | **TRANSFORM** tab | the function body, which Haute reads the steps back from |
     | **COLUMNS** tab | `selected_columns` |
 
     <!-- config-keys:start -->
@@ -95,7 +95,7 @@ df = df.with_columns(
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `path` | text | The file, relative to the project root. |
     | `file_type` | `"pickle"` or `"json"` or `"joblib"` | How the file is loaded. |
     | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |

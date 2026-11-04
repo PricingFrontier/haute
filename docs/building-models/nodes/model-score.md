@@ -185,7 +185,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | **ARTIFACT PATH** | `artifact_path` |
     | **TASK** | `task`: `"regression"` or `"classification"` |
     | **OUTPUT COLUMN** | `output_column` (defaults to `"prediction"`) |
-    | **TRANSFORM** tab | `steps` in the sidecar; their generated code in the function body |
+    | **TRANSFORM** tab | the function body, which Haute reads the steps back from |
     | **COLUMNS** tab | `selected_columns` |
 
     These keys have no editor control:
@@ -213,7 +213,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `source_type` | `""` or `"run"` or `"registered"` or `"file"` | Where the model comes from; empty or absent when no source is chosen yet. |
     | `model_path` | text | For a file source, the model file in the project, such as `models/freq.cbm`. |
     | `experiment_name` | text | For a run source, the experiment's name, shown when the panel reopens. |

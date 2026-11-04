@@ -19,11 +19,12 @@ from haute._ast_helpers import (
     _get_decorator_node_type,
     reject_removed_node_decorator,
 )
+from haute._code_extraction import holds_incomplete_steps_placeholder
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
 from haute._node_bindings import input_parameters
-from haute._polars_steps import stepped_surface_allows_input_references
+from haute._polars_steps import STEPS_FROM_CODE, stepped_surface_allows_input_references
 from haute._source_layout import python_lines
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
@@ -186,6 +187,12 @@ def _resolve_node_skeleton(
         "editor": editor,
         "param_names": list(skeleton.param_names),
         "edge_param_names": list(skeleton.edge_param_names),
+        # Its body is the placeholder an unfinished step list is saved with: the steps wait
+        # in the pipeline's .haute.json (READ-22, READ-44).
+        "steps_placeholder": node_type in STEPS_FROM_CODE
+        and not config.get("code")
+        and "steps" not in config
+        and holds_incomplete_steps_placeholder(skeleton.body),
     }
 
 

@@ -35,5 +35,5 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def priced(enriched):
+def quote_response(enriched):
     """Expose the enriched quote rows as the pipeline output."""

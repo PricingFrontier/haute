@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._types import NodeType
 from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_file
-from tests.conftest import write_data_input_config
+from tests.conftest import write_data_input_config, write_node_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,6 +22,31 @@ def _write_pipeline(tmp_path: Path, code: str) -> Path:
     p = tmp_path / "test_pipeline.py"
     p.write_text(code)
     return p
+
+
+def _explore_pipeline(tmp_path: Path, settings: dict, body: str = "(source): ...") -> Path:
+    """A source feeding ``inspect_claims``, an Explore node whose *settings* are its
+    sidecar's (READ-43), and *body* its signature and body; the pipeline's path."""
+    write_data_input_config(tmp_path, "source", "data.parquet")
+    write_node_config(tmp_path, NodeType.EXPLORE, "inspect_claims", settings)
+    code = f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_test")
+
+
+@pipeline.data_input(config="config/data_input/source.json")
+def source(): ...
+
+
+@pipeline.explore(config="config/explore/inspect_claims.json")
+def inspect_claims{body}
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+    return _write_pipeline(tmp_path, code)
 
 
 def _write_module(tmp_path: Path, name: str, code: str) -> Path:
@@ -196,88 +222,42 @@ def my_node() -> pl.DataFrame:
         assert graph.nodes[0].data.description == "This is the description."
 
     def test_explore_decorator_parses_as_explore_node(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_test")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        p = _explore_pipeline(tmp_path, {})
 
         graph = parse_pipeline_file(p)
         node_map = {n.id: n for n in graph.nodes}
 
         assert node_map["inspect_claims"].data.nodeType == "explore"
-        assert node_map["inspect_claims"].data.config == {}
+        # A declaration: no settings, no code, and so no steps yet.
+        assert node_map["inspect_claims"].data.config == {"code": "", "steps": []}
         assert ("source", "inspect_claims") in [(e.source, e.target) for e in graph.edges]
 
     def test_explore_decorator_extracts_polars_code(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_code")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore
-def inspect_claims(df: pl.LazyFrame) -> pl.LazyFrame:
-    df = df.filter(pl.col("premium") > 0)
-    df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))
-    return df
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        p = _explore_pipeline(
+            tmp_path,
+            {},
+            body=(
+                "(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+                '    df = df.filter(pl.col("premium") > 0)\n'
+                '    df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))\n'
+                "    return df"
+            ),
+        )
 
         graph = parse_pipeline_file(p)
         node_map = {n.id: n for n in graph.nodes}
 
+        config = node_map["inspect_claims"].data.config
         assert node_map["inspect_claims"].data.nodeType == "explore"
-        assert node_map["inspect_claims"].data.config == {
-            "code": (
-                'df = df.filter(pl.col("premium") > 0)\n'
-                'df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))'
-            )
-        }
+        assert config["code"] == (
+            'df = df.filter(pl.col("premium") > 0)\n'
+            'df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))'
+        )
+        # The code is the only copy of its steps, rebuilt from it on load (READ-43).
+        assert [step["id"] for step in config["steps"]] == ["filter-1", "with_column-2"]
 
     def test_explore_decorator_with_overview_extracts_into_config(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_overview")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore(overview={"dataset_snapshot": True})
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        p = _explore_pipeline(tmp_path, {"overview": {"dataset_snapshot": True}})
 
         graph = parse_pipeline_file(p)
         node_map = {n.id: n for n in graph.nodes}
@@ -286,25 +266,7 @@ pipeline.connect("source", "inspect_claims")
         assert node_map["inspect_claims"].data.config["overview"] == {"dataset_snapshot": True}
 
     def test_explore_decorator_with_schema_extracts_into_config(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_overview_schema")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore(overview={"schema": True})
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        p = _explore_pipeline(tmp_path, {"overview": {"schema": True}})
 
         graph = parse_pipeline_file(p)
         node_map = {n.id: n for n in graph.nodes}
@@ -313,66 +275,23 @@ pipeline.connect("source", "inspect_claims")
         assert node_map["inspect_claims"].data.config["overview"] == {"schema": True}
 
     def test_explore_decorator_with_concise_overview_cards_extracts_into_config(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_overview_concise")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore(
-    overview={
-        "dataset_snapshot": True,
-        "schema": True,
-        "numeric_summary": True,
-        "categorical_summary": True,
-        "data_quality": True,
-    }
-)
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
-
-        graph = parse_pipeline_file(p)
-        node_map = {n.id: n for n in graph.nodes}
-
-        assert node_map["inspect_claims"].data.nodeType == "explore"
-        assert node_map["inspect_claims"].data.config["overview"] == {
+        overview = {
             "dataset_snapshot": True,
             "schema": True,
             "numeric_summary": True,
             "categorical_summary": True,
             "data_quality": True,
         }
+        p = _explore_pipeline(tmp_path, {"overview": overview})
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config["overview"] == overview
 
     def test_explore_decorator_with_empty_overview_does_not_set_config(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_overview_empty")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore(overview={})
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        p = _explore_pipeline(tmp_path, {"overview": {}})
 
         graph = parse_pipeline_file(p)
         node_map = {n.id: n for n in graph.nodes}
@@ -380,103 +299,76 @@ pipeline.connect("source", "inspect_claims")
         assert node_map["inspect_claims"].data.nodeType == "explore"
         assert "overview" not in node_map["inspect_claims"].data.config
 
+    # A JSON object's keys are always strings, so the sidecar cannot hold the
+    # non-string overview key the decorator form could.
     @pytest.mark.parametrize(
-        ("decorator_arg", "message"),
+        ("overview", "message"),
         [
-            ('overview="yes"', "must be a dict"),
-            ('overview={"schema": "yes"}', "must be booleans"),
-            ("overview={1: True}", "keys must be strings"),
+            ("yes", "must be a dict"),
+            ({"schema": "yes"}, "must be booleans"),
         ],
     )
     def test_explore_decorator_with_invalid_overview_fails_loudly(
         self,
         tmp_path,
-        decorator_arg,
+        overview,
         message,
     ):
-        code = f"""\
-import polars as pl
-import haute
+        p = _explore_pipeline(tmp_path, {"overview": overview})
 
-pipeline = haute.Pipeline("explore_overview_invalid")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore({decorator_arg})
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
-
-        with pytest.raises(ConfigError, match=message):
+        with pytest.raises(ConfigError, match=message) as refused:
             parse_pipeline_file(p)
+        assert refused.value.context["context"] == "explore sidecar"
 
     def test_explore_decorator_rejects_an_unknown_overview_card(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_overview_unknown")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore(
-    overview={
-        "schema": True,
-        "custom_card": {
-            "label": "Loss ratio",
-            "columns": ["premium", "claims"],
-            "enabled": False,
-            "empty": None,
-        },
-    }
-)
-def inspect_claims(source): ...
-
-
-pipeline.connect("source", "inspect_claims")
-"""
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        p = _explore_pipeline(
+            tmp_path,
+            {
+                "overview": {
+                    "schema": True,
+                    "custom_card": {
+                        "label": "Loss ratio",
+                        "columns": ["premium", "claims"],
+                        "enabled": False,
+                        "empty": None,
+                    },
+                }
+            },
+        )
 
         with pytest.raises(ConfigError, match="Explore overview has no card 'custom_card'"):
             parse_pipeline_file(p)
 
+    def test_explore_decorator_settings_as_keywords_are_refused(self, tmp_path):
+        """Settings on the decorator are the form before READ-43: the parse names the
+        sidecar folder they belong in."""
+        p = _explore_pipeline(tmp_path, {"overview": {"schema": True}})
+        (tmp_path / "test_pipeline.py").write_text(
+            p.read_text().replace(
+                '@pipeline.explore(config="config/explore/inspect_claims.json")',
+                '@pipeline.explore(overview={"schema": True})',
+            )
+        )
+
+        with pytest.raises(ConfigError, match="not in decorator keywords") as refused:
+            parse_pipeline_file(p)
+        assert "stores its config in a JSON sidecar" in str(refused.value)
+        assert refused.value.context["config_folder"] == "config/explore"
+
     def test_explore_decorator_with_outgoing_edge_raises(self, tmp_path):
-        code = """\
-import polars as pl
-import haute
-
-pipeline = haute.Pipeline("explore_bad")
-
-
-@pipeline.data_input(config="config/data_input/source.json")
-def source(): ...
-
-
-@pipeline.explore
-def inspect_claims(source): ...
-
+        p = _explore_pipeline(tmp_path, {})
+        (tmp_path / "test_pipeline.py").write_text(
+            p.read_text()
+            + """
 
 @pipeline.polars
 def downstream(inspect_claims: pl.LazyFrame) -> pl.LazyFrame:
     return inspect_claims
 
 
-pipeline.connect("source", "inspect_claims")
 pipeline.connect("inspect_claims", "downstream")
 """
-        write_data_input_config(tmp_path, "source", "data.parquet")
-        p = _write_pipeline(tmp_path, code)
+        )
 
         with pytest.raises(ParseError, match="cannot have outgoing edges"):
             parse_pipeline_file(p)

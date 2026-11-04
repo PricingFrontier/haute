@@ -44,7 +44,7 @@ from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
 from haute._config_builder import _copy_config_keys, _resolve_node_config
 from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
-from haute._types import NodeEditorState, NodeType
+from haute._types import SINGLETON_NODE_NAMES, NodeEditorState, NodeType
 from haute.errors import ParseError
 
 # ===========================================================================
@@ -783,27 +783,33 @@ class TestResolveNodeConfig:
             node_config_json,
             palette_default_config,
         )
+        from haute._polars_steps import STEPS_FROM_CODE
 
         folder = NODE_TYPE_TO_FOLDER[node_type]
+        # A request input or response node takes its type's fixed name (READ-46).
+        name = SINGLETON_NODE_NAMES.get(node_type, "node")
         settings = palette_default_config(node_type)
-        sidecar = tmp_path / "config" / folder / "node.json"
+        sidecar = tmp_path / "config" / folder / f"{name}.json"
         sidecar.parent.mkdir(parents=True)
         # The sidecar as a save writes it: rating tables as grids, constants as a map.
-        sidecar.write_bytes(
-            node_config_json(node_type, settings, node_label="node").encode("utf-8")
-        )
+        sidecar.write_bytes(node_config_json(node_type, settings, node_label=name).encode("utf-8"))
 
         resolved_type, config, _editor = _resolve_node_config(
-            {"config": f"config/{folder}/node.json"},
+            {"config": f"config/{folder}/{name}.json"},
             "...",
             [],
             tmp_path,
-            func_name="node",
+            func_name=name,
             explicit_node_type=node_type,
         )
 
         assert resolved_type == node_type
         expected = _normalise_loaded_config(json.loads(sidecar.read_bytes()), node_type)
+        if node_type in STEPS_FROM_CODE:
+            # Its sidecar holds no steps; a declaration has none yet, as a new node has
+            # (READ-44).
+            assert "steps" not in expected
+            expected = {**expected, "steps": []}
         assert {key: value for key, value in config.items() if key not in {"code", "inputs"}} == {
             key: value for key, value in expected.items() if key not in {"code", "inputs"}
         }

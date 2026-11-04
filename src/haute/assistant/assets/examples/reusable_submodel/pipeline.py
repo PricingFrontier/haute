@@ -21,9 +21,9 @@ def quotes(): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(enriched): ...
+def quote_response(enriched): ...
 
 
 pipeline.submodel(reusable_enrichment.submodel, "enrichment")
 pipeline.connect("quotes", "enrichment", target_port="quotes")
-pipeline.connect("enrichment", "response", source_port="enriched")
+pipeline.connect("enrichment", "quote_response", source_port="enriched")

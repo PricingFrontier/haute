@@ -66,7 +66,7 @@ carries as its remediation (for the file path, `from modules import rates`, then
   span and resolvable incoming connections. It reads the node's sidecar as a load reads
   its file format (`haute._config_io.config_from_sidecar`: rating grids, band lists and
   constant maps decoded, defaults left unwritten given again), a file in a form before
-  one of those answered as unreadable, naming its conversion, and rebuilds the target's
+  one of those answered as unreadable, naming the current form, and rebuilds the target's
   configuration with the pure recovery engine: authored fields that are valid under the
   current contract
   are retained exactly; an invalid present value is replaced with the matching branch's

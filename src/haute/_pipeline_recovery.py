@@ -31,6 +31,7 @@ from haute._ast_helpers import (
     unkept_module_statements,
 )
 from haute._cache import canonical_json
+from haute._code_extraction import holds_incomplete_steps_placeholder
 from haute._config_io import node_configs_read_through
 from haute._editor_identities import (
     recoverable_request_input_source_handles,
@@ -62,10 +63,13 @@ from haute._parser_submodels import (
     submodel_imports,
 )
 from haute._pipeline_revision import pipeline_recovery_revision
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
+    missing_unfinished_steps,
+    missing_unfinished_steps_message,
     read_sidecar_state,
     with_unfinished_steps,
 )
@@ -1218,10 +1222,8 @@ def _canonical_snapshot(
         source_path, source_file=source_file, captures=captures, diagnostics=diagnostics
     )
     positions = _sidecar_values(sidecar)[0]
-    # A transform saved with an unfinished step list keeps the list in the sidecar.
-    graph_nodes = with_unfinished_steps(
-        graph.nodes, None if sidecar.data is None else sidecar.data.unfinished_steps
-    )
+    # The strict parse gave a node saved with unfinished steps its list from this sidecar.
+    graph_nodes = graph.nodes
 
     connected_handles_by_source: dict[str, list[str]] = {}
     for edge in graph.edges:
@@ -1470,21 +1472,44 @@ class _FileGraph:
 
 
 def _with_unfinished_candidate_steps(
-    candidate: _RecoveredCandidate, unfinished: Mapping[str, Any]
+    candidate: _RecoveredCandidate,
+    unfinished: Mapping[str, Any],
+    *,
+    placeholder: bool,
+    source_file: str,
+    diagnostics: list[PipelineRecoveryDiagnostic],
 ) -> _RecoveredCandidate:
-    """*candidate*, a transform saved with an unfinished step list, given its steps from
-    the sidecar by the rule a parsed graph's nodes are (:func:`with_unfinished_steps`)."""
-    if (
-        candidate.node_type != NodeType.POLARS
-        or candidate.config is None
-        or candidate.authored_id not in unfinished
-    ):
+    """*candidate*, a stepped node saved with an unfinished step list, given its steps from
+    the sidecar by the rule a parsed graph's nodes are (:func:`with_unfinished_steps`). One
+    whose body is the *placeholder* those lists are saved with, but whose list the sidecar
+    does not hold, is unavailable, as the parse refuses it (:func:`missing_unfinished_steps`)."""
+    if candidate.node_type not in STEPS_FROM_CODE or candidate.config is None:
+        return candidate
+    if candidate.authored_id not in unfinished:
+        if (
+            placeholder
+            and candidate.availability == "ready"
+            and "steps" not in candidate.config
+            and missing_unfinished_steps(candidate.node_type, held=False)
+        ):
+            diagnostic = _diagnostic(
+                code="node_parse_invalid",
+                scope="node",
+                message=missing_unfinished_steps_message(candidate.authored_id, Path(source_file)),
+                source_file=source_file,
+                element_id=candidate.recovery_id,
+                source_span=candidate.span,
+                remediation="Write its steps again, or replace its body with `...`.",
+            )
+            diagnostics.append(diagnostic)
+            candidate.diagnostic_ids.append(diagnostic.diagnostic_id)
+            candidate.availability = "unavailable"
         return candidate
     node = GraphNode(
         id=candidate.authored_id,
         data=NodeData(
             label=candidate.authored_id,
-            nodeType=NodeType.POLARS,
+            nodeType=candidate.node_type,
             config=candidate.config,
             editor=candidate.editor,
         ),
@@ -1545,6 +1570,9 @@ def _recover_file_graph(
                 diagnostics=diagnostics,
             ),
             unfinished_steps,
+            placeholder=holds_incomplete_steps_placeholder(skeleton.body),
+            source_file=source_file,
+            diagnostics=diagnostics,
         )
         for skeleton in skeletons
     ]
@@ -1860,6 +1888,11 @@ def _recover_registered_submodels(
                 child_source,
                 source_file=str(child_path),
                 _base_dir=config_base,
+                # Its nodes' unfinished steps come from the module's .haute.json, read
+                # through this load's capture; a missing list sends the module to recovery,
+                # which shows it on the node.
+                _unfinished_steps_from_sidecars=True,
+                _read_sidecar_bytes=captures.read_bytes,
             )
         except (HauteError, OSError) as exc:
             def_id = registration.path
@@ -2428,6 +2461,11 @@ def _load_readable_pipeline_editor_document(
             _submodel_base_dir=_infer_parse_base_dir(path),
             _read_submodel_source=read_submodel_source,
             _read_global_constants_bytes=captures.read_bytes,
+            # A node saved with unfinished steps takes them from each file's .haute.json, read
+            # through this load's capture; one whose list is missing fails the parse, and the
+            # recovery pass shows it on that node.
+            _unfinished_steps_from_sidecars=True,
+            _read_sidecar_bytes=captures.read_bytes,
         )
     except (HauteError, OSError) as exc:
         strict_failure = exc

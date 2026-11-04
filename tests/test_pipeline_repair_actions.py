@@ -19,7 +19,7 @@ def _legacy_demo(root: Path) -> Path:
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
         'output_ports=[{"portId": "output_1", "label": "live_switch", '
-        '"source": {"nodeId": "live_switch", "handleId": None}}], pipeline_dir="..")\n\n'
+        '"source": {"node_id": "live_switch"}}], pipeline_dir="..")\n\n'
         "@submodel.polars\ndef live_switch():\n"
         '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
         encoding="utf-8",
@@ -75,7 +75,7 @@ def _canonical_demo(root: Path, *, legacy_port: bool = False) -> Path:
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        f'output_ports=[{port}"source": {{"nodeId": "live_switch", "handleId": None}}}}], '
+        f'output_ports=[{port}"source": {{"node_id": "live_switch"}}}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef live_switch():\n"
         '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
@@ -256,8 +256,7 @@ def test_reset_derives_uncached_instance_input_from_its_definition(tmp_path, ext
         child.write_text(
             child.read_text(encoding="utf-8").replace(
                 "output_ports=[",
-                'output_ports=[{"name": "audit", '
-                '"source": {"nodeId": "live_switch", "handleId": None}}, ',
+                'output_ports=[{"name": "audit", "source": {"node_id": "live_switch"}}, ',
             ),
             encoding="utf-8",
             newline="\n",
@@ -1089,7 +1088,7 @@ def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_pa
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        'output_ports=[{"name": "joined", "source": {"nodeId": "joined", "handleId": None}}], '
+        'output_ports=[{"name": "joined", "source": {"node_id": "joined"}}], '
         'pipeline_dir="..")\n\n'
         + _ORDERLESS_JOIN.replace("OWNER", "submodel").replace("HOW", "left"),
         encoding="utf-8",
@@ -1246,7 +1245,7 @@ def _submodel_with_an_unbound_node(root: Path, *, parent_node: str) -> Path:
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "quotes"}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef quotes():\n"
         '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
@@ -1423,7 +1422,7 @@ def test_recover_commits_in_a_file_a_stray_statement_keeps_degraded(tmp_path):
 
 _PORT_FED = {
     "edge-join": (
-        '{"nodeId": "result", "handleId": "base"}',
+        '{"node_id": "result", "handle_id": "base"}',
         "@submodel.polars\ndef rates():\n"
         '    df = pl.LazyFrame({"quote_id": [1], "rate": [2.0]})\n    return df\n\n'
         '@submodel.edge_join(how="left", on=["quote_id"])\ndef result(records, rates): ...\n\n'
@@ -1431,7 +1430,7 @@ _PORT_FED = {
         'maintain_order="left_right"',
     ),
     "polars": (
-        '{"nodeId": "result", "handleId": None}',
+        '{"node_id": "result"}',
         '@submodel.polars(contract="none")\ndef result(records):\n'
         "    df = records.head(1)\n    return df\n",
         "df = records.head(1)",
@@ -1454,7 +1453,7 @@ def test_recover_keeps_the_input_a_submodel_port_feeds(tmp_path, kind):
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", '
         f'input_ports=[{{"name": "records", "targets": [{port_target}]}}], '
-        'output_ports=[{"name": "out", "source": {"nodeId": "result", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "result"}}], '
         'pipeline_dir="..")\n\n' + child_body,
         encoding="utf-8",
     )

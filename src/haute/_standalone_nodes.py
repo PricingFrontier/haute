@@ -1,8 +1,8 @@
 """What a configured node does when a pipeline file runs on its own.
 
 Every node type except ``polars`` is *configured*: its settings live in a JSON
-sidecar named by the decorator's ``config=`` keyword (or, for Edge Join and
-Explore, in the decorator's own keywords), and in a standalone
+sidecar named by the decorator's ``config=`` keyword (or, for Edge Join, in the
+decorator's own keywords), and in a standalone
 :meth:`~haute.pipeline.Pipeline.run` / :meth:`~haute.pipeline.Pipeline.score`
 the decorator performs the node's work through the same shared helpers canvas
 execution uses. The node's function says only what the user added:
@@ -119,7 +119,8 @@ def _parameters(fn: Callable[..., Any]) -> tuple[list[str], set[str]]:
 def is_configured(node_type: NodeType, config: Mapping[str, Any]) -> bool:
     """Whether a registered node has settings for its decorator to act on.
 
-    Edge Join and Explore carry theirs as decorator keywords; every other type
+    Edge Join carries its settings as decorator keywords, and an Explore node's analysis
+    settings, in its sidecar, do nothing in a run (READ-43); every other type
     except ``polars`` names a ``config=`` sidecar. A sidecar type registered
     without one is a plain function the run calls as written — a form the
     static parser rejects, so it never appears in a saved pipeline file.
@@ -274,12 +275,10 @@ def _run_configured_work(
             )
         _check_sidecar(node_type, name, config, fn, pipeline_dir)
         return _first(frames, name)
-    if node_type in (NodeType.DATA_OUTPUT, NodeType.EXTERNAL_FILE):
+    if node_type in (NodeType.DATA_OUTPUT, NodeType.EXTERNAL_FILE, NodeType.EXPLORE):
         # Their run passes the frame on, but their sidecar is still held to its model,
         # so a missing or malformed one fails the run as it fails the parse.
         _check_sidecar(node_type, name, config, fn, pipeline_dir)
-        return _first(frames, name)
-    if node_type == NodeType.EXPLORE:
         return _first(frames, name)
     if node_type == NodeType.EDGE_JOIN:
         from haute._edge_join import execute_edge_join

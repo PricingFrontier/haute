@@ -261,7 +261,7 @@ df = df.with_columns(
 
     | Setting in the editor | Stored as |
     |---|---|
-    | The steps on the **TRANSFORM** tab | `steps` in the sidecar: a list with one object per card, each with an `id` and a `kind` (`"source"` for **Start from**, then `"filter"`, `"with_column"`, `"join"`, `"free_code"` and so on) and the card's fields |
+    | The steps on the **TRANSFORM** tab | the function body, read back as `steps` in the node's configuration: a list with one object per card, each with an `id` and a `kind` (`"source"` for **Start from**, then `"filter"`, `"with_column"`, `"join"`, `"free_code"` and so on) and the card's fields |
     | The code of a node whose code is not steps | the function body (`code` in the node's configuration) |
     | Keyword-only parameters, written in the file | the signature, after `*` (`keyword_parameters` in the node's configuration: each one's name and default) |
     | **COLUMNS** tab | `selected_columns`, a decorator argument: the columns passed on (absent passes every column) |
@@ -275,7 +275,7 @@ df = df.with_columns(
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `keyword_parameters` | list of object | The keyword-only parameters of a transform written as code, each with its literal default. |
     | `keyword_parameters[].name` | text | The parameter's name in the function signature. |
     | `keyword_parameters[].default` | text or number or `true` or `false` or `null` | Its literal default, which a run binds. |

@@ -567,8 +567,8 @@ type through an explicit Add action, so a select's default (true, today's date) 
 be added like any other. A locked generated-code panel shows the code the render endpoint returns for
 the current steps, highlighted with the same Python parser and colours as code mode.
 There is no switch to code: a Free code step holds what no other step does, and a node
-shows the code box only while its code is not steps (a hand edit a surface's sidecar
-steps no longer match, or a Transform whose code does not rebuild as steps). Its lines are linked to their steps:
+shows the code box only while its code is not steps (code that does not rebuild as
+steps). Its lines are linked to their steps:
 pointing at or focusing a card tints that step's line range (every line of a step that
 spans several), pointing at a line highlights its card, and clicking a line opens that
 card (a line of the start step focuses the start selector). The code fades, with a

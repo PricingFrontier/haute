@@ -184,7 +184,7 @@ def _cached_api_graph(
 
         build_test_api_input_snapshots(data_path, config)
 
-    api = _node("api", "Quote Input", NodeType.API_INPUT, config)
+    api = _node("api", "quote_input", NodeType.API_INPUT, config)
     transform = _node("transform", "Price Transform", NodeType.POLARS, {"code": code})
     return PipelineGraph(
         nodes=[api, transform],
@@ -844,7 +844,7 @@ def test_output_late_nested_fields_survive_full_document_schema_inference(
     data_path.write_text(json.dumps(records), encoding="utf-8")
     api = _node(
         "api",
-        "rows",
+        "quote_input",
         NodeType.API_INPUT,
         {
             "path": str(data_path),
@@ -865,7 +865,7 @@ def test_output_late_nested_fields_survive_full_document_schema_inference(
     )
     out = _node(
         "out",
-        "response",
+        "quote_response",
         NodeType.OUTPUT,
         {
             "output_mapping": [
@@ -922,7 +922,7 @@ def test_generated_api_input_observes_sidecar_only_path_edit(
     pl.DataFrame({"value": [2]}).write_parquet(second)
     api = _node(
         "api",
-        "quotes",
+        "quote_input",
         NodeType.API_INPUT,
         {"path": "first.parquet", "contract": "opaque"},
     )
@@ -931,7 +931,7 @@ def test_generated_api_input_observes_sidecar_only_path_edit(
 
     assert _collect(module.pipeline.run(source="batch"))["value"].to_list() == [1]
 
-    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
+    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quote_input")
     sidecar.write_text(
         json.dumps({"path": "second.parquet", "contract": "opaque"}),
         encoding="utf-8",
@@ -960,7 +960,7 @@ def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
         nodes=[
             _node(
                 "api",
-                "quotes",
+                "quote_input",
                 NodeType.API_INPUT,
                 {"path": "data/source.parquet", "contract": "opaque"},
             )
@@ -1077,7 +1077,7 @@ def test_generated_retained_input_fails_on_malformed_sidecar(
         nodes=[
             _node(
                 "api",
-                "quotes",
+                "quote_input",
                 NodeType.API_INPUT,
                 {"path": "source.parquet", "contract": "opaque"},
             )
@@ -1085,7 +1085,7 @@ def test_generated_retained_input_fails_on_malformed_sidecar(
         edges=[],
     )
     module = _write_and_import(graph, isolated_project)
-    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
+    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quote_input")
     sidecar.write_text("[]", encoding="utf-8")
 
     with pytest.raises(ValueError, match="must contain an object"):

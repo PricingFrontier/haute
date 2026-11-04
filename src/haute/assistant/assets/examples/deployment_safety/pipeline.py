@@ -9,11 +9,11 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.api_input(config="config/request.json")
-def quote(): ...
+def quote_input(): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(quote): ...
+def quote_response(quote): ...
 
 
-pipeline.connect("quote", "response", source_port="quote")
+pipeline.connect("quote_input", "quote_response", source_port="quote")

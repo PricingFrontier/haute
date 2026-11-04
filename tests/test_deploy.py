@@ -220,13 +220,13 @@ class TestPruner:
         from haute.deploy._pruner import find_output_node
 
         output_id = find_output_node(full_graph)
-        assert output_id == "output"
+        assert output_id == "quote_response"
 
     def test_find_deploy_input_nodes(self, full_graph: dict) -> None:
         from haute.deploy._pruner import find_deploy_input_nodes
 
         inputs = find_deploy_input_nodes(full_graph)
-        assert inputs == ["quotes"]
+        assert inputs == ["quote_input"]
 
     def test_prune_for_deploy(self, full_graph: dict) -> None:
         from haute.deploy._pruner import find_output_node, prune_for_deploy
@@ -237,10 +237,10 @@ class TestPruner:
         kept_set = set(kept)
         removed_set = set(removed)
 
-        # Live scoring path: quotes → policies (switch) → area_lookup → output
-        assert "quotes" in kept_set
+        # Live scoring path: quote_input → policies (switch) → area_lookup → quote_response
+        assert "quote_input" in kept_set
         assert "policies" in kept_set
-        assert "output" in kept_set
+        assert "quote_response" in kept_set
 
         # Batch source pruned (liveSwitch keeps only live branch)
         assert "batch_quotes" in removed_set
@@ -558,7 +558,7 @@ class TestBundler:
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
+        artifacts = collect_artifacts(pruned, ["quote_input"], FIXTURE_DIR)
 
         # All artifact paths should exist
         for name, path in artifacts.items():
@@ -1299,7 +1299,7 @@ class TestScorer:
         result = score_graph(
             graph=pruned,
             input_df=sample,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
         )
 
@@ -1322,7 +1322,7 @@ class TestScorer:
         result = score_graph(
             graph=pruned,
             input_df=sample,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
         )
 
@@ -1430,7 +1430,7 @@ class TestSchema:
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        schema = infer_input_schema(pruned, "quotes")
+        schema = infer_input_schema(pruned, "quote_input")
 
         assert isinstance(schema, dict)
         assert len(schema) > 0
@@ -1444,7 +1444,7 @@ class TestSchema:
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
+        schema = infer_output_schema(pruned, output_id, ["quote_input"], project_root=tmp_path)
 
         assert isinstance(schema, dict)
         assert len(schema) > 0
@@ -1477,9 +1477,11 @@ class TestValidators:
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
-        artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
-        input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
+        artifacts = collect_artifacts(pruned, ["quote_input"], FIXTURE_DIR)
+        input_schema = infer_input_schema(pruned, "quote_input")
+        output_schema = infer_output_schema(
+            pruned, output_id, ["quote_input"], project_root=tmp_path
+        )
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1490,7 +1492,7 @@ class TestValidators:
             **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
             artifacts=artifacts,
             input_schema=input_schema,
@@ -1515,9 +1517,11 @@ class TestValidators:
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
-        artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
-        input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
+        artifacts = collect_artifacts(pruned, ["quote_input"], FIXTURE_DIR)
+        input_schema = infer_input_schema(pruned, "quote_input")
+        output_schema = infer_output_schema(
+            pruned, output_id, ["quote_input"], project_root=tmp_path
+        )
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1529,7 +1533,7 @@ class TestValidators:
             **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
             artifacts=artifacts,
             input_schema=input_schema,
@@ -1658,8 +1662,8 @@ allow_aggregate_statistics = false
         )
         resolved = resolve_config(config)
 
-        assert resolved.output_node_id == "output"
-        assert "quotes" in resolved.input_node_ids
+        assert resolved.output_node_id == "quote_response"
+        assert "quote_input" in resolved.input_node_ids
         assert len(resolved.input_schema) > 0
         assert len(resolved.output_schema) > 0
         assert len(resolved.removed_node_ids) > 0
@@ -2113,11 +2117,11 @@ class TestParserApiInput:
         graph = parse_pipeline_file(PIPELINE_FILE)
         quotes_node = None
         for n in graph.nodes:
-            if n.id == "quotes":
+            if n.id == "quote_input":
                 quotes_node = n
                 break
 
-        assert quotes_node is not None, "quotes node not found"
+        assert quotes_node is not None, "quote_input node not found"
         assert quotes_node.data.nodeType == "apiInput", (
             f"Expected apiInput nodeType, got: {quotes_node.data.nodeType}"
         )

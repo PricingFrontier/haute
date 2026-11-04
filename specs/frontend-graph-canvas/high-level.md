@@ -337,6 +337,11 @@ candidate, with the error toast.
   that does not rename keeps the node's name and sends no naming context. The Create
   Submodel dialog stays open with the typed name and shows a refusal inline,
   closing only on success.
+- **Fixed names.** A request input and a response node are named by their type alone
+  (`quote_input`, `quote_response`, `workbench_input`, `workbench_output`, READ-46): a new
+  or pasted one takes that name, never a numbered one, and the editor offers no rename for
+  it (a submodel holding one keeps its own Rename). The server's name allocation refuses
+  one whose name another node holds, saying to rename that node.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,

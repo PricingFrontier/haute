@@ -259,10 +259,11 @@ _RATING_TABLES = [
 ]
 
 _TARGETS: dict[str, tuple[GraphNode, str]] = {
-    # The target node and its generated signature.
+    # The target node and its generated signature; a Quote Response is named by its type
+    # (READ-46).
     "declaration": (
         _node(
-            "target",
+            "quote_response",
             NodeType.OUTPUT,
             {
                 "output_mapping": [
@@ -282,7 +283,7 @@ _TARGETS: dict[str, tuple[GraphNode, str]] = {
                 ]
             },
         ),
-        "def target(rows, extra): ...",
+        "def quote_response(rows, extra): ...",
     ),
     "frame_hook": (
         _node(
@@ -306,11 +307,13 @@ _TARGETS: dict[str, tuple[GraphNode, str]] = {
     ),
 }
 
-_CONNECTS = 'pipeline.connect("rows", "target")\npipeline.connect("extra", "target")'
+
+def _connects(name: str, *sources: str) -> str:
+    return "\n".join(f'pipeline.connect("{source}", "{name}")' for source in sources)
 
 
 def _mismatch(kind: str, mismatch: str) -> Callable[[str], str]:
-    signature = _TARGETS[kind][1]
+    target, signature = _TARGETS[kind]
     if mismatch == "parameter_names_no_input":
         return _replace((signature, signature.replace("extra", "extra, typo", 1)))
     if mismatch == "input_named_by_no_parameter":
@@ -323,9 +326,7 @@ def _mismatch(kind: str, mismatch: str) -> Callable[[str], str]:
     if mismatch == "parameter_disagrees_with_connect":
         return _replace((signature, signature.replace("extra", "other", 1)))
     assert mismatch == "connects_out_of_order"
-    return _replace(
-        (_CONNECTS, 'pipeline.connect("extra", "target")\npipeline.connect("rows", "target")')
-    )
+    return _replace((_connects(target.id, "rows", "extra"), _connects(target.id, "extra", "rows")))
 
 
 #: What each refusal names: the parameter, or the input no parameter names.
@@ -348,7 +349,7 @@ def _mismatch_graph() -> Callable[[GraphNode], PipelineGraph]:
                 _constant("other", "y", 2),
                 target,
             ],
-            edges=[_edge("rows", "target"), _edge("extra", "target")],
+            edges=[_edge("rows", target.id), _edge("extra", target.id)],
         )
 
     return build
@@ -360,21 +361,20 @@ def test_each_mismatch_is_refused_naming_the_node_and_parameter(
     project: Path, kind: str, mismatch: str
 ) -> None:
     (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
-    pipeline_file = _write_project(
-        _mismatch_graph()(_TARGETS[kind][0]), project, _mismatch(kind, mismatch)
-    )
+    target = _TARGETS[kind][0]
+    pipeline_file = _write_project(_mismatch_graph()(target), project, _mismatch(kind, mismatch))
 
     with pytest.raises(ParseError) as parsed:
         parse_pipeline_file(pipeline_file)
-    assert parsed.value.context["node_id"] == "target"
-    assert "The parameters of node 'target' do not match its inputs" in parsed.value.message
+    assert parsed.value.context["node_id"] == target.id
+    assert f"The parameters of node '{target.id}' do not match its inputs" in parsed.value.message
     assert _NAMED[mismatch] in parsed.value.message
 
     # A standalone run refuses the same file by the same rule, before any node runs.
     with pytest.raises(ExecutionError) as ran:
         _import(pipeline_file).pipeline.run(source="batch")
     assert ran.value.message == parsed.value.message
-    assert ran.value.context["node_id"] == "target"
+    assert ran.value.context["node_id"] == target.id
 
 
 def test_a_generated_file_binds_for_every_kind(project: Path) -> None:
@@ -383,8 +383,8 @@ def test_a_generated_file_binds_for_every_kind(project: Path) -> None:
         pipeline_file = _write_project(_mismatch_graph()(target), project, _unchanged)
         graph = parse_pipeline_file(pipeline_file)
         assert [(edge.source, edge.target) for edge in graph.edges] == [
-            ("rows", "target"),
-            ("extra", "target"),
+            ("rows", target.id),
+            ("extra", target.id),
         ]
 
 
@@ -418,7 +418,7 @@ def _priced_graph(project: Path) -> PipelineGraph:
     mapping = [("priced", "quote_id"), ("priced", "base"), ("priced", "rate")]
     return PipelineGraph(
         nodes=[
-            _node("quotes", NodeType.API_INPUT, quote_config),
+            _node("quote_input", NodeType.API_INPUT, quote_config),
             _constant("rates", "rate", 1.5),
             _node(
                 "priced",
@@ -428,7 +428,7 @@ def _priced_graph(project: Path) -> PipelineGraph:
                 {"code": "df = pl.concat([quotes, rates], how='diagonal')"},
             ),
             _node(
-                "result",
+                "quote_response",
                 NodeType.OUTPUT,
                 {
                     "output_mapping": [
@@ -444,10 +444,10 @@ def _priced_graph(project: Path) -> PipelineGraph:
             ),
         ],
         edges=[
-            _edge("quotes", "priced", source_port="quotes"),
+            _edge("quote_input", "priced", source_port="quotes"),
             _edge("rates", "priced"),
-            _edge("priced", "result"),
-            _edge("rates", "result"),
+            _edge("priced", "quote_response"),
+            _edge("rates", "quote_response"),
         ],
     )
 
@@ -460,22 +460,24 @@ _HAND_EDITS: dict[str, Callable[[str], str]] = {
             "def priced(quotes: pl.LazyFrame, rates: pl.LazyFrame)",
             "def priced(rates: pl.LazyFrame, quotes: pl.LazyFrame)",
         ),
-        ("def result(priced, rates)", "def result(rates, priced)"),
+        ("def quote_response(priced, rates)", "def quote_response(rates, priced)"),
         (
-            'pipeline.connect("quotes", "priced", source_port="quotes")\n'
+            'pipeline.connect("quote_input", "priced", source_port="quotes")\n'
             'pipeline.connect("rates", "priced")\n',
             'pipeline.connect("rates", "priced")\n'
-            'pipeline.connect("quotes", "priced", source_port="quotes")\n',
+            'pipeline.connect("quote_input", "priced", source_port="quotes")\n',
         ),
         (
-            'pipeline.connect("priced", "result")\npipeline.connect("rates", "result")',
-            'pipeline.connect("rates", "result")\npipeline.connect("priced", "result")',
+            'pipeline.connect("priced", "quote_response")\n'
+            'pipeline.connect("rates", "quote_response")',
+            'pipeline.connect("rates", "quote_response")\n'
+            'pipeline.connect("priced", "quote_response")',
         ),
     ),
     # The rates edges are implied by the parameters that name them.
     "implied_connections": _replace(
         ('pipeline.connect("rates", "priced")\n', ""),
-        ('pipeline.connect("rates", "result")', ""),
+        ('pipeline.connect("rates", "quote_response")', ""),
     ),
 }
 
@@ -487,9 +489,9 @@ def test_haute_run_standalone_and_deploy_give_the_same_answer(
     pipeline_file = _write_project(_priced_graph(project), project, _HAND_EDITS[hand_edit])
 
     graph = parse_pipeline_file(pipeline_file)
-    run = _haute_run(graph, "result", source="live")
+    run = _haute_run(graph, "quote_response", source="live")
     standalone = _import(pipeline_file).pipeline.run(source="live")
-    deployed = score_graph(graph, QuoteRequest(tuple(_RECORDS)), ["quotes"], "result")
+    deployed = score_graph(graph, QuoteRequest(tuple(_RECORDS)), ["quote_input"], "quote_response")
 
     assert run.to_dicts() == [
         {"quote_id": 1, "base": 100, "rate": None},
@@ -513,7 +515,10 @@ def test_a_parsed_node_has_its_edges_in_its_parameters_order(project: Path) -> N
         ),
     )
     graph = parse_pipeline_file(pipeline_file)
-    assert [edge.source for edge in graph.edges if edge.target == "priced"] == ["rates", "quotes"]
+    assert [edge.source for edge in graph.edges if edge.target == "priced"] == [
+        "rates",
+        "quote_input",
+    ]
 
 
 def test_ported_inputs_connected_join_first_run_alike(project: Path) -> None:
@@ -605,8 +610,8 @@ def test_a_submodel_node_reads_its_port_and_inner_inputs_by_name(project: Path) 
             submodel = haute.Submodel(
                 "scaling",
                 definition_id="definition_scaling",
-                input_ports=[{"name": "rows", "targets": [{"nodeId": "scaled", "handleId": None}]}],
-                output_ports=[{"name": "scaled", "source": {"nodeId": "scaled", "handleId": None}}],
+                input_ports=[{"name": "rows", "targets": [{"node_id": "scaled"}]}],
+                output_ports=[{"name": "scaled", "source": {"node_id": "scaled"}}],
                 pipeline_dir="..",
             )
 
@@ -685,7 +690,7 @@ def test_generated_code_states_only_the_edges_its_signatures_cannot(project: Pat
 
     # The Quote Input's table needs its port; the rates edges are said by the signatures.
     assert code.count("pipeline.connect(") == 1
-    assert 'pipeline.connect("quotes", "priced", source_port="quotes")' in code
+    assert 'pipeline.connect("quote_input", "priced", source_port="quotes")' in code
 
 
 def test_the_generated_form_runs_alike_in_every_context(project: Path) -> None:
@@ -697,9 +702,9 @@ def test_the_generated_form_runs_alike_in_every_context(project: Path) -> None:
     pipeline_file.write_text(graph_to_code(graph, pipeline_name="bindings"), encoding="utf-8")
 
     parsed = parse_pipeline_file(pipeline_file)
-    run = _haute_run(parsed, "result", source="live")
+    run = _haute_run(parsed, "quote_response", source="live")
     standalone = _import(pipeline_file).pipeline.run(source="live")
-    deployed = score_graph(parsed, QuoteRequest(tuple(_RECORDS)), ["quotes"], "result")
+    deployed = score_graph(parsed, QuoteRequest(tuple(_RECORDS)), ["quote_input"], "quote_response")
 
     assert sorted((e.source, e.target) for e in parsed.edges) == sorted(
         (e.source, e.target) for e in graph.edges

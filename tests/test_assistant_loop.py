@@ -2560,7 +2560,7 @@ class TestSystemPrompt:
         assert "prefer a recipe operation in `dry_run_graph_edits`" in prompt
         assert '`{"op": "recipe", "recipe": "<recipe id>", "arguments": {...}}`' in prompt
         assert "plan_recipe" not in prompt
-        assert "output_name` and `output_columns` together" in prompt
+        assert "`output_name` (always `quote_response`) and `output_columns` together" in prompt
         assert "`node:<node type id>`, `recipe:<recipe id>`, `example:<example name>`" in prompt
         for name, _summary in example_index():
             assert name in prompt

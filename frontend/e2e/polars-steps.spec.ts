@@ -236,7 +236,7 @@ test.describe("Transform step builder journey", () => {
     await expect(panel.locator(".cm-content .cm-line")).toHaveText(snippet.split("\n"))
   })
 
-  test("authors a Data Input's post-load steps on its Polars tab, saves them to its sidecar and reopens them", async ({ page }) => {
+  test("authors a Data Input's post-load steps on its Polars tab, saves them as its code and reopens them", async ({ page }) => {
     test.slow()
     await openApp(page)
 
@@ -291,18 +291,19 @@ test.describe("Transform step builder journey", () => {
     await expect(previewTable.getByRole("cell", { name: "11", exact: true })).toBeVisible()
     await expect(previewTable.getByRole("cell", { name: "23", exact: true })).toBeVisible()
 
-    // Saving writes the steps into the Data Input's own sidecar and the rendering after the load scaffold.
+    // Saving writes the rendering after the load scaffold, the steps' only copy (READ-44): the
+    // Data Input's sidecar holds its source settings and neither steps nor code.
     await save(page)
     const inputSidecarPath = resolve(e2eProjectRoot, "rating", "config", "data_input", "stepped_in.json")
     await expect.poll(() => existsSync(inputSidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(inputSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; code?: string }
-    expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
+    const sidecar = JSON.parse(readFileSync(inputSidecarPath, "utf8")) as { steps?: unknown; code?: string }
+    expect(sidecar.steps).toBeUndefined()
     expect(sidecar.code).toBeUndefined()
     const main = readFileSync(mainPath, "utf8")
     expect(main).toContain("def stepped_in(df: pl.LazyFrame) -> pl.LazyFrame:")
     expect(main).toContain("df = df.head(2)")
 
-    // Reopening parses the sidecar back into the step card.
+    // Reopening rebuilds the step card from the code.
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByRole("button", { name: /Data Input node: stepped_in/i }).click()
@@ -398,16 +399,17 @@ test.describe("Transform step builder journey", () => {
     // The 8 rows above 100 under live, with the computed column added to the sample's six.
     await expect(page.getByText("8 rows · 7 cols")).toBeVisible()
 
-    // Saving keeps the operand in the sidecar and writes the constants file.
+    // Saving writes the operand into the code, the steps' only copy (READ-44), and writes the
+    // constants file.
     await save(page)
     const inputSidecarPath = resolve(e2eProjectRoot, "rating", "config", "data_input", "constant_filter.json")
     await expect.poll(() => existsSync(inputSidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(inputSidecarPath, "utf8")) as { steps: Array<{ conditions: Array<{ value: unknown }> }> }
-    expect(sidecar.steps[0].conditions[0].value).toEqual({ kind: "constant", name: "threshold" })
+    const sidecar = JSON.parse(readFileSync(inputSidecarPath, "utf8")) as { steps?: unknown }
+    expect(sidecar.steps).toBeUndefined()
     expect(readFileSync(mainPath, "utf8")).toContain("global_constants.threshold")
   })
 
-  test("authors a Rating Step's post-rating steps on its Polars tab and saves them to its sidecar", async ({ page }) => {
+  test("authors a Rating Step's post-rating steps on its Polars tab and saves them as its code", async ({ page }) => {
     test.slow()
     await openApp(page)
 
@@ -456,17 +458,18 @@ test.describe("Transform step builder journey", () => {
     await expect(previewTable).toBeVisible()
     await expect(previewTable.locator("tbody tr")).toHaveCount(2)
 
-    // Saving writes the steps into the rating step's own sidecar and the rendering after the rating scaffold.
+    // Saving writes the rendering after the rating scaffold, the steps' only copy (READ-44): the
+    // rating step's sidecar holds neither steps nor code.
     await save(page)
     const ratingSidecarPath = resolve(e2eProjectRoot, "rating", "config", "rating_step", "browser_rating.json")
     await expect.poll(() => existsSync(ratingSidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(ratingSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; code?: string }
-    expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
+    const sidecar = JSON.parse(readFileSync(ratingSidecarPath, "utf8")) as { steps?: unknown; code?: string }
+    expect(sidecar.steps).toBeUndefined()
     expect(sidecar.code).toBeUndefined()
     const main = readFileSync(mainPath, "utf8")
     expect(main).toMatch(/def browser_rating\(df: pl\.LazyFrame[^)]*\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = df\.head\(2\)/)
 
-    // Reopening parses the sidecar back into the same step card.
+    // Reopening rebuilds the same step card from the code.
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByRole("button", { name: /Rating Step node: browser_rating/i }).click()
@@ -500,6 +503,11 @@ test.describe("Transform step builder journey", () => {
     await expect(panel).toBeVisible()
     await recorded
     await panel.getByRole("button", { name: /^transform$/i }).click()
+    // A Rating Step declared with no code loads with no steps yet (READ-44), so its code
+    // is typed into a Free code step.
+    const editor = panel.getByTestId("polars-steps-editor")
+    await editor.getByRole("button", { name: "Add step" }).click()
+    await editor.getByRole("menuitem", { name: "Free code" }).click()
 
     // Pausing past the editor's commit debounce on every key commits each
     // half-typed edit, which clears the node's recorded columns until the
@@ -561,8 +569,9 @@ test.describe("Transform step builder journey", () => {
     await save(page)
     const gridSidecarPath = resolve(e2eProjectRoot, "rating", "config", "expander", "browser_grid.json")
     await expect.poll(() => existsSync(gridSidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(gridSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>>; step_count: number }
-    expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 4 })])
+    // The steps are in the code alone (READ-44); the sidecar keeps the grid's size.
+    const sidecar = JSON.parse(readFileSync(gridSidecarPath, "utf8")) as { steps?: unknown; step_count: number }
+    expect(sidecar.steps).toBeUndefined()
     expect(sidecar.step_count).toBe(3)
     expect(readFileSync(mainPath, "utf8")).toMatch(
       /def browser_grid\(df: pl\.LazyFrame[^)]*\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = df\.head\(4\)/,
@@ -624,8 +633,9 @@ test.describe("Transform step builder journey", () => {
     await save(page)
     const externalSidecarPath = resolve(e2eProjectRoot, "rating", "config", "load_file", "browser_external.json")
     await expect.poll(() => existsSync(externalSidecarPath)).toBe(true)
-    const sidecar = JSON.parse(readFileSync(externalSidecarPath, "utf8")) as { steps: Array<Record<string, unknown>> }
-    expect(sidecar.steps).toEqual([expect.objectContaining({ kind: "limit", n: 2 })])
+    // The steps are in the code alone (READ-44).
+    const sidecar = JSON.parse(readFileSync(externalSidecarPath, "utf8")) as { steps?: unknown }
+    expect(sidecar.steps).toBeUndefined()
     expect(readFileSync(mainPath, "utf8")).toMatch(
       /def browser_external\([^)]*\*, obj\) -> pl\.LazyFrame:\s+(?:"""[^"]*"""\s+)?df = \w+\s+df = df\.head\(2\)/,
     )

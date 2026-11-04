@@ -61,6 +61,9 @@ def _normalize_value(value: Any) -> Any:
             normalized_value = _normalize_value(value[key])
             if key == "code" and normalized_value == "":
                 continue
+            # A stepped node declared with no code loads with no steps yet (READ-44).
+            if key == "steps" and normalized_value == []:
+                continue
             normalized[key] = normalized_value
         return normalized
     if isinstance(value, list):

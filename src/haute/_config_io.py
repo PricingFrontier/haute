@@ -26,6 +26,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from haute._api_input_schema import columns_for_sidecar, columns_from_sidecar
 from haute._banding_config import (
     bands_read_from_sidecar,
     compact_banding_config_for_sidecar,
@@ -36,6 +37,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
 from haute._json_files import ANY, OneLine, at, render_json
 from haute._logging import get_logger
+from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._rating_step_config import (
     compact_rating_config_for_sidecar,
     expand_rating_config_from_sidecar,
@@ -75,6 +77,7 @@ NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
     NodeType.OPTIMISER_APPLY: "apply_optimisation",
     NodeType.SCENARIO_EXPANDER: "expander",
     NodeType.CONSTANT: "constant",
+    NodeType.EXPLORE: "explore",
 }
 
 FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
@@ -152,6 +155,32 @@ def _config_node_type_from_path(path: Path) -> NodeType | None:
     return FOLDER_TO_NODE_TYPE.get(path.parent.name)
 
 
+def explore_settings(config: dict[str, Any], *, context: str) -> dict[str, Any]:
+    """An Explore node's *config* with its overview, pivot formulas, pivots and charts
+    checked and normalised, each left out when empty (READ-43); anything else as given.
+    *context* names where they were read in a refusal."""
+    from haute._explore_charts import validate_explore_charts
+    from haute._explore_overview import validate_explore_overview
+    from haute._explore_pivots import validate_explore_pivot_state
+
+    settings = {"overview", "pivot_formulas", "pivots", "charts"}
+    result = {key: value for key, value in config.items() if key not in settings}
+    overview = validate_explore_overview(config.get("overview", {}), context=context)
+    formulas, pivots = validate_explore_pivot_state(
+        config.get("pivot_formulas"), config.get("pivots", []), context=context
+    )
+    charts = validate_explore_charts(config.get("charts", []), context=context)
+    for key, value in (
+        ("overview", dict(overview) if overview else None),
+        ("pivot_formulas", formulas),
+        ("pivots", pivots),
+        ("charts", charts),
+    ):
+        if value:
+            result[key] = value
+    return result
+
+
 def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None) -> dict[str, Any]:
     if node_type is None:
         return config
@@ -159,15 +188,18 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
 
     reject_removed_config_keys(node_type, config)
     reject_form_given_keys(node_type, config)
+    if node_type == NodeType.EXPLORE:
+        # Its overview, pivots and charts are checked as the editor's are (READ-43).
+        config = explore_settings(config, context="explore sidecar")
     return config_from_sidecar(node_type, config)
 
 
 def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
     """A sidecar's settings as the editor and the engine hold them, its file format decoded:
     rating tables from grids, banding from band lists, constants from a map, and a setting
-    left out at its default given it again (READ-10, 26, 27, 28). A file in a form before
-    one of those is refused, naming its conversion. Nothing else is checked, so Recover can
-    read a sidecar whose keys the contract no longer takes."""
+    left out at its default given it again (READ-10, 26, 27, 28, 42). A file in a form before
+    one of those is refused. Nothing else is checked, so Recover can read a sidecar whose
+    keys the contract no longer takes."""
     # A setting a sidecar leaves out at its default reads as that default (READ-10), so
     # the config is the one the node had before it was written.
     for key, default in _SIDECAR_DEFAULTS.get(node_type, {}).items():
@@ -182,6 +214,9 @@ def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str
     if node_type == NodeType.RATING_STEP:
         # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
         return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
+    if node_type == NodeType.API_INPUT:  # the Quote Input alone
+        # A column leaves out the settings inference gives it (READ-42).
+        return columns_from_sidecar(config)
     return config
 
 
@@ -201,9 +236,9 @@ def _prepare_config_for_sidecar(
     # Nested mappings may contain arbitrary column names or user records, and
     # type-specific serializers own their nested records. The contract
     # annotation lives on the decorator; a sidecar copy goes stale.
-    filtered = {
-        k: deepcopy(v) for k, v in config.items() if k not in CODE_CONFIG_KEYS and k != "contract"
-    }
+    # A stepped node's code is the only copy of its steps (READ-44).
+    in_code = CODE_CONFIG_KEYS | ({"steps"} if node_type in STEPPED_NODE_TYPES else set())
+    filtered = {k: deepcopy(v) for k, v in config.items() if k not in in_code and k != "contract"}
 
     if node_type == NodeType.BANDING:
         return compact_banding_config_for_sidecar(filtered)
@@ -213,6 +248,10 @@ def _prepare_config_for_sidecar(
         normalised = normalise_rating_step_config(filtered)
         refuse_levels_equal_under_factor_dtypes(normalised)
         return compact_rating_config_for_sidecar(normalised)
+    if node_type == NodeType.API_INPUT:  # the Quote Input alone
+        return columns_for_sidecar(filtered)
+    if node_type == NodeType.EXPLORE:
+        return explore_settings(filtered, context="explore node config")
     return filtered
 
 
@@ -241,8 +280,10 @@ _NO_PLACE: OneLine = at()
 
 
 #: Each node type's records written on one line each: a rating table's factors, its columns
-#: and each row of its grid (READ-26), and a banding factor's bands (READ-27). Keyed by the
-#: node type, so another type's ``tables`` or ``factors`` keeps one item a line.
+#: and each row of its grid (READ-26), a banding factor's bands (READ-27), an API Input
+#: column and a Quote Response mapping row (READ-42), and an Explore node's placements,
+#: formulas and chart series (READ-43). Keyed by the node type, so another
+#: type's ``tables`` or ``factors`` keeps one item a line.
 _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
     NodeType.RATING_STEP: at(
         ("tables", ANY, "factors"),
@@ -250,6 +291,19 @@ _SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
         ("tables", ANY, "rows", ANY),
     ),
     NodeType.BANDING: at(("factors", ANY, "rules", ANY)),
+    NodeType.API_INPUT: at(("tables", ANY, "columns", ANY)),  # the Quote Input alone
+    NodeType.OUTPUT: at(("output_mapping", ANY)),
+    # An Explore pivot's placements and the shared formulas, and a chart's value encodings
+    # and series overrides (READ-43).
+    NodeType.EXPLORE: at(
+        ("pivots", ANY, "filters", ANY),
+        ("pivots", ANY, "columns", ANY),
+        ("pivots", ANY, "rows", ANY),
+        ("pivots", ANY, "values", ANY),
+        ("pivot_formulas", ANY),
+        ("charts", ANY, "value_encodings", ANY),
+        ("charts", ANY, "series_overrides", ANY),
+    ),
 }
 
 
@@ -420,6 +474,13 @@ def load_node_config(
         raise ValueError(f"Config path {config_path!r} resolves outside project root")
     config = _load_json_object(resolved)
     kind = node_type if node_type is not None else _config_node_type_from_path(resolved)
+    if kind in STEPPED_NODE_TYPES and "steps" in config:
+        raise ConfigError(
+            f"{resolved} holds the node's steps, the form before its code was their only "
+            'copy: remove "steps" from it. The steps are rebuilt from the function\'s body.',
+            config_path=str(resolved),
+            removed_config_keys=["steps"],
+        )
     loaded = _normalise_loaded_config(config, kind)
     if validate and kind is not None:
         from haute._config_validation import validate_node_config

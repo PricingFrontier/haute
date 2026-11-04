@@ -489,12 +489,15 @@ describe("useKeyboardShortcuts", () => {
     params.graphRef.current.nodes = []
     params.clipboard.current = {
       nodes: [
-        { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
+        { id: "api1", position: { x: 0, y: 0 }, data: { label: "quote_input", nodeType: "apiInput" }, type: "pipelineNode" } as unknown as Node,
       ],
       edges: [],
     }
     fireKey("v", { ctrlKey: true })
     await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    // A pasted singleton keeps its fixed name, never "quote_input copy" (READ-46).
+    const [nodes] = committedPaste(params)
+    expect(nodes.map((n) => n.data.label)).toEqual(["quote_input"])
   })
 
   it("Ctrl+V with empty clipboard does nothing", () => {

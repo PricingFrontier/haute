@@ -91,7 +91,7 @@ def _graph(root: Path) -> PipelineGraph:
     return PipelineGraph.model_validate(
         {
             "nodes": [
-                node("quotes", "apiInput", {"path": str(quotes)}),
+                node("quote_input", "apiInput", {"path": str(quotes)}),
                 node("rates", "dataInput", make_ready_file_input_config(rates)),
                 node("bands", "dataInput", make_ready_file_input_config(bands)),
                 node(
@@ -102,7 +102,7 @@ def _graph(root: Path) -> PipelineGraph:
                 node("ordered", "polars", {"steps": steps}),
                 node("written", "dataOutput", make_file_output_config(root / "written.parquet")),
                 node(
-                    "out",
+                    "quote_response",
                     "output",
                     {
                         "output_mapping": [
@@ -120,7 +120,7 @@ def _graph(root: Path) -> PipelineGraph:
             "edges": [
                 {
                     "id": "q",
-                    "source": "quotes",
+                    "source": "quote_input",
                     "target": "priced",
                     "sourceHandle": "quotes",
                     "targetHandle": "base",
@@ -129,7 +129,7 @@ def _graph(root: Path) -> PipelineGraph:
                 {"id": "p", "source": "priced", "target": "ordered"},
                 {"id": "b", "source": "bands", "target": "ordered"},
                 {"id": "w", "source": "ordered", "target": "written"},
-                {"id": "o", "source": "written", "target": "out"},
+                {"id": "o", "source": "written", "target": "quote_response"},
             ],
         }
     )
@@ -187,7 +187,7 @@ def test_every_surface_gives_the_same_rows_in_the_same_order_on_every_run(
         deployed = score_graph(
             graph=graph,
             input_df=_quotes(),
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id="ordered",
         )
         assert_frame_equal(deployed[COLUMNS], expected)
@@ -195,7 +195,9 @@ def test_every_surface_gives_the_same_rows_in_the_same_order_on_every_run(
 
 def test_an_unpivot_gives_the_same_rows_as_a_set_on_every_run(haute_scratch: Path) -> None:
     graph = _graph(haute_scratch)
-    nodes = [node.model_dump() for node in graph.nodes if node.id in {"quotes", "rates", "priced"}]
+    nodes = [
+        node.model_dump() for node in graph.nodes if node.id in {"quote_input", "rates", "priced"}
+    ]
     nodes.append(
         {
             "id": "long",
@@ -214,7 +216,7 @@ def test_an_unpivot_gives_the_same_rows_as_a_set_on_every_run(haute_scratch: Pat
         frame = score_graph(
             graph=unpivoted,
             input_df=_quotes(),
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id="long",
         )
         return frame.sort(["quote_id", "variable"])

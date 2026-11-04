@@ -67,6 +67,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
     SubmodelDefinition,
+    singleton_name_problem,
 )
 from haute.errors import ConfigError, HauteError, ParseError
 
@@ -406,6 +407,20 @@ def _emit_preserved_block(block: str) -> str:
 def _build_id_to_func(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     """Map node.id -> sanitized function name for sorted nodes."""
     return {node.id: _sanitize_func_name(node.data.label) for node in sorted_nodes}
+
+
+def check_singleton_names(graph: PipelineGraph) -> None:
+    """Refuse a request input or response node, in the pipeline or a submodel module, whose
+    function would have another name than its type's one (READ-46): the parser refuses the
+    file it would be written to."""
+    graphs = [graph, *(definition.graph for definition in (graph.submodels or {}).values())]
+    for scoped in graphs:
+        for node in scoped.nodes:
+            problem = singleton_name_problem(
+                node.data.nodeType, _sanitize_func_name(node.data.label)
+            )
+            if problem is not None:
+                raise ConfigError(problem, node_id=node.id, node_type=node.data.nodeType)
 
 
 def check_executable_names(graph: PipelineGraph) -> None:
@@ -1117,6 +1132,7 @@ def _graph_to_code_multi_instances(
     root_node_ids = {node.id for node in root_nodes}
     validate_graph_shape_contracts(graph, graph_label=pipeline_name)
     check_executable_names(graph)
+    check_singleton_names(graph)
 
     files: dict[str, str] = {}
     for definition_id in definition_order:
@@ -1160,19 +1176,21 @@ def _graph_to_code_multi_instances(
             )
             for edge in child_edges
         ]
+        # A module writes its port endpoints in snake_case, a handle only when it has one
+        # (READ-45); the graph the browser exchanges keeps its own names.
         constructor_keywords: list[tuple[str, object]] = [
             ("definition_id", definition_id),
             (
                 "input_ports",
                 [
-                    port.model_dump(mode="json", by_alias=True, exclude_none=False)
+                    port.model_dump(mode="json", by_alias=False, exclude_none=True)
                     for port in definition.input_ports
                 ],
             ),
             (
                 "output_ports",
                 [
-                    port.model_dump(mode="json", by_alias=True, exclude_none=False)
+                    port.model_dump(mode="json", by_alias=False, exclude_none=True)
                     for port in definition.output_ports
                 ],
             ),
@@ -1396,6 +1414,7 @@ def graph_to_code_multi(
 
     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
     check_executable_names(graph)
+    check_singleton_names(graph)
 
     main_key = source_file or f"{pipeline_name}.py"
     node_map = {node.id: node for node in graph.nodes}

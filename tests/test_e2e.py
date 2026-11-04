@@ -125,17 +125,17 @@ class TestEndToEnd:
         graph = parse_pipeline_file(PIPELINE_FILE)
         node_ids = {n.id for n in graph.nodes}
         expected_nodes = {
-            "quotes",
+            "quote_input",
             "batch_quotes",
             "policies",
             "area_lookup",
             "calculate_premium",
-            "output",
+            "quote_response",
             "results_write",
         }
         assert node_ids == expected_nodes
         assert len(graph.edges) == 6
-        quotes_edge = next(edge for edge in graph.edges if edge.source == "quotes")
+        quotes_edge = next(edge for edge in graph.edges if edge.source == "quote_input")
         assert quotes_edge.sourceHandle == "quotes"
 
     def test_execute_all_nodes(self):
@@ -148,18 +148,18 @@ class TestEndToEnd:
         # Non-preview ancestors report schema without forcing collection, and
         # an unselected multi-frame source has no canonical flat row count.
         # The materialised output is the row-bearing end-to-end oracle.
-        assert results["output"].row_count > 0
+        assert results["quote_response"].row_count > 0
 
-        output_row = results["output"].preview[0]
+        output_row = results["quote_response"].preview[0]
         assert output_row["area_factor"] == pytest.approx(1.1)
         assert output_row["premium"] == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
 
     def test_execute_target_node(self):
         """Executing with a target returns results for the target and its ancestors."""
         graph = parse_pipeline_file(PIPELINE_FILE)
-        results = execute_graph(graph, target_node_id="output")
-        assert "output" in results
-        assert results["output"].status == "ok"
+        results = execute_graph(graph, target_node_id="quote_response")
+        assert "quote_response" in results
+        assert results["quote_response"].status == "ok"
         # All ancestors of output should be present
         assert "calculate_premium" in results
         assert "area_lookup" in results
@@ -167,16 +167,16 @@ class TestEndToEnd:
     def test_trace_produces_steps(self):
         """Trace returns steps and the final traced price is exact."""
         graph = parse_pipeline_file(PIPELINE_FILE)
-        trace = execute_trace(graph, row_index=0, target_node_id="output", column="premium")
+        trace = execute_trace(graph, row_index=0, target_node_id="quote_response", column="premium")
         assert len(trace.steps) > 0
         step_names = [s.node_id for s in trace.steps]
-        assert "output" in step_names
+        assert "quote_response" in step_names
         assert trace.output_value == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
 
     def test_trace_row_has_data(self):
         """Each trace step includes output values and schema diff."""
         graph = parse_pipeline_file(PIPELINE_FILE)
-        trace = execute_trace(graph, row_index=0, target_node_id="output")
+        trace = execute_trace(graph, row_index=0, target_node_id="quote_response")
         for step in trace.steps:
             assert isinstance(step.output_values, dict)
             assert step.schema_diff is not None
@@ -241,13 +241,13 @@ class TestEndToEnd:
 
         # Step 2: Execute
         results = execute_graph(graph)
-        output_result = results["output"]
+        output_result = results["quote_response"]
         assert output_result.status == "ok"
         orig_row_count = output_result.row_count
         assert output_result.preview[0]["premium"] == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
 
         # Step 3: Trace
-        trace = execute_trace(graph, row_index=0, target_node_id="output")
+        trace = execute_trace(graph, row_index=0, target_node_id="quote_response")
         assert len(trace.steps) > 0
 
         # Step 4: Codegen → re-parse
@@ -265,7 +265,7 @@ class TestEndToEnd:
 
         # Step 5: Re-execute the re-parsed graph
         results2 = execute_graph(reparsed)
-        output_result2 = results2["output"]
+        output_result2 = results2["quote_response"]
         assert output_result2.status == "ok"
         assert output_result2.row_count == orig_row_count
         assert output_result2.preview[0]["premium"] == pytest.approx(EXPECTED_FIXTURE_PREMIUM)
@@ -346,15 +346,15 @@ class TestFullPipelineLifecycle:
                 {"code": "df = src.with_columns(doubled=pl.col('value') * 2)"},
             ),
             _make_node(
-                "out",
-                "out",
+                "quote_response",
+                "quote_response",
                 NodeType.OUTPUT,
                 make_output_config(["id", "value", "region", "doubled"]),
             ),
         ]
         edges = [
             _make_edge("src", "transform"),
-            _make_edge("transform", "out"),
+            _make_edge("transform", "quote_response"),
         ]
         return PipelineGraph(
             nodes=nodes,
@@ -365,15 +365,15 @@ class TestFullPipelineLifecycle:
     def test_create_execute_trace_save_reload(self, tmp_path, pipeline_graph, _widen_sandbox_root):
         # Step 1: Execute
         results = execute_graph(pipeline_graph)
-        assert results["out"].status == "ok"
-        assert results["out"].row_count == 5
-        out_cols = {c.name for c in results["out"].columns}
+        assert results["quote_response"].status == "ok"
+        assert results["quote_response"].row_count == 5
+        out_cols = {c.name for c in results["quote_response"].columns}
         assert "doubled" in out_cols
 
         # Step 2: Trace
-        trace = execute_trace(pipeline_graph, row_index=0, target_node_id="out")
+        trace = execute_trace(pipeline_graph, row_index=0, target_node_id="quote_response")
         assert len(trace.steps) == 3
-        assert trace.steps[-1].node_id == "out"
+        assert trace.steps[-1].node_id == "quote_response"
         assert "doubled" in trace.steps[-1].output_values
 
         # Step 3: Save (codegen + config files)
@@ -396,8 +396,8 @@ class TestFullPipelineLifecycle:
 
         # Step 5: Re-execute reloaded graph and verify identical output
         results2 = execute_graph(reloaded)
-        assert results2["out"].status == "ok"
-        assert results2["out"].row_count == results["out"].row_count
+        assert results2["quote_response"].status == "ok"
+        assert results2["quote_response"].row_count == results["quote_response"].row_count
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -434,8 +434,8 @@ class TestAllNodeTypesRoundtrip:
                 make_ready_file_input_config(_posix_path(data_path)),
             ),
             _make_node(
-                "api",
-                "api",
+                "quote_input",
+                "quote_input",
                 NodeType.API_INPUT,
                 {
                     "path": _posix_path(json_path),
@@ -577,13 +577,13 @@ class TestAllNodeTypesRoundtrip:
                 NodeType.DATA_OUTPUT,
                 make_file_output_config(sink_path),
             ),
-            _make_node("out", "out", NodeType.OUTPUT, make_output_config([])),
+            _make_node("quote_response", "quote_response", NodeType.OUTPUT, make_output_config([])),
         ]
 
         # Chain them linearly so every node has a source_name
         edges = [
             _make_edge("ds", "switch"),
-            _make_edge("api", "switch", source_port="api"),
+            _make_edge("quote_input", "switch", source_port="api"),
             _make_edge("switch", "transform"),
             _make_edge("transform", "band"),
             _make_edge("band", "rating"),
@@ -593,7 +593,7 @@ class TestAllNodeTypesRoundtrip:
             _make_edge("opt", "opt_apply"),
             _make_edge("opt_apply", "ext"),
             _make_edge("ext", "sink"),
-            _make_edge("ext", "out"),
+            _make_edge("ext", "quote_response"),
             _make_edge("const", "transform"),
         ]
 
@@ -658,18 +658,23 @@ class TestSubmodelLifecycle:
                     "code": "df = step_one.with_columns(b=pl.col('a') + 10)",
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, make_output_config(["x", "y", "a", "b"])),
+            _make_node(
+                "quote_response",
+                "quote_response",
+                NodeType.OUTPUT,
+                make_output_config(["x", "y", "a", "b"]),
+            ),
         ]
         edges = [
             _make_edge("src", "t1"),
             _make_edge("t1", "t2"),
-            _make_edge("t2", "out"),
+            _make_edge("t2", "quote_response"),
         ]
         graph = PipelineGraph(nodes=nodes, edges=edges, pipeline_name="submodel_test")
         # Step 1: Execute original
         results = execute_graph(graph)
-        assert results["out"].status == "ok"
-        orig_row_count = results["out"].row_count
+        assert results["quote_response"].status == "ok"
+        orig_row_count = results["quote_response"].row_count
 
         # Step 2: Extract submodel (t1 + t2)
         result = create_submodel_graph(graph, ["t1", "t2"], "inner_group")
@@ -704,19 +709,19 @@ class TestSubmodelLifecycle:
         runtime_t1 = qualified_runtime_node_id(sm_node.id, "t1")
         runtime_t2 = qualified_runtime_node_id(sm_node.id, "t2")
         flat_node_ids = {n.id for n in flat.nodes}
-        assert flat_node_ids == {"src", "out", runtime_t1, runtime_t2}
+        assert flat_node_ids == {"src", "quote_response", runtime_t1, runtime_t2}
 
         flat_edge_pairs = {(e.source, e.target) for e in flat.edges}
         assert flat_edge_pairs == {
             ("src", runtime_t1),
             (runtime_t1, runtime_t2),
-            (runtime_t2, "out"),
+            (runtime_t2, "quote_response"),
         }
 
         # Step 5: Execute the dissolved graph — should produce same results
         results2 = execute_graph(flat)
-        assert results2["out"].status == "ok"
-        assert results2["out"].row_count == orig_row_count
+        assert results2["quote_response"].status == "ok"
+        assert results2["quote_response"].row_count == orig_row_count
 
 
 # ═══════════════════════════════════════════════════════════════════════════

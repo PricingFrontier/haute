@@ -249,9 +249,6 @@ def refuse_levels_equal_under_factor_dtypes(config: dict[str, Any]) -> None:
 # The sidecar's grid (READ-26)
 # ---------------------------------------------------------------------------
 
-#: The conversion a rating sidecar still in the row-array form needs.
-GRID_CONVERSION = "scripts/one_off/read_26_rating_grid.py"
-
 
 def _level_key(level: Any) -> str:
     """A level's identity as written: ``25`` and ``"25"`` stay distinct."""
@@ -307,12 +304,13 @@ def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
 
 def entries_from_grid(table: dict[str, Any], table_index: int) -> dict[str, Any]:
     """*table* as its sidecar holds it, its grid read back into ``entries``: a ``null`` cell
-    no entry. A table in the old row-array form is refused, naming the conversion."""
+    no entry. A table in the old row-array form is refused."""
     context = _table_context(table_index)
     if "entries" in table:
         raise ConfigSettingError(
             f"{context} is in the row-array form rating tables had before they were written as "
-            f"a grid. Convert the project's rating sidecars with {GRID_CONVERSION}.",
+            'a grid. Write its "entries" as the grid\'s "rows", with "columns" for the last '
+            "factor's levels when it has more than one factor.",
             setting="tables",
         )
     result = {key: value for key, value in table.items() if key not in ("columns", "rows")}

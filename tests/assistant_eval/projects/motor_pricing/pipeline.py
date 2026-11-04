@@ -9,8 +9,8 @@ pipeline = haute.Pipeline(
 )
 
 
-@pipeline.api_input(config="config/quote_input/quote_request.json")
-def quote_request(): ...
+@pipeline.api_input(config="config/quote_input/quote_input.json")
+def quote_input(): ...
 
 
 @pipeline.data_input(config="config/data_input/batch_quotes.json")
@@ -57,16 +57,7 @@ def base_premium(df: pl.LazyFrame) -> pl.LazyFrame:
 def quote_response(base_premium): ...
 
 
-@pipeline.explore(
-    overview={
-        "dataset_snapshot": True,
-        "data_quality": True,
-        "numeric_summary": True,
-        "categorical_summary": True,
-        "schema": True,
-    },
-    steps=[],
-)
+@pipeline.explore(config="config/explore/premium_explore.json")
 def premium_explore(base_premium): ...
 
 
@@ -74,5 +65,5 @@ def premium_explore(base_premium): ...
 def priced_batch(base_premium): ...
 
 
-pipeline.connect("quote_request", "policies", source_port="quotes")
+pipeline.connect("quote_input", "policies", source_port="quotes")
 pipeline.connect("rating_bands", "base_premium")

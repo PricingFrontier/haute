@@ -31,7 +31,7 @@ In scope:
   otherwise its text, a date or a date with a time among them; whether a band
   includes its upper edge stays the factor's `right_closed`, and a `default` of
   null is left out. A sidecar still writing breakpoints as a map from edge to
-  label is refused, naming its one-off conversion. Categorical banding keeps its
+  label is refused, naming the list form. Categorical banding keeps its
   value-to-group map, identity entries included, since an unlisted value falls to
   the default.
 - The dtype-faithful canonical string form of a rating-table factor key
@@ -219,7 +219,7 @@ Out of scope (owned by neighbouring components):
   line. `_rating_step_config.compact_rating_config_for_sidecar` writes the grid
   and `expand_rating_config_from_sidecar` reads it back into the entries the
   editor and the engine work with; a sidecar still in the row-array form is
-  refused, naming its one-off conversion. Table order, factor order, scalar
+  refused, naming the grid. Table order, factor order, scalar
   identity, outputs, defaults, miss policy and `factor_dtypes` survive a save and
   load; entries come back in the grid's row-major order.
 - **Two entries for the same levels are refused, never resolved.** A rating

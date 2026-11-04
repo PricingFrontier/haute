@@ -47,6 +47,30 @@ export function steppedSurfaceAllowsInputReferences(nodeType: string): boolean {
 }
 
 /**
+ * The first of *names* a free-code step among *steps* reads in its code, or null:
+ * a rename cannot rewrite that code. The code is scanned, not parsed, so a name
+ * inside a string or a comment counts too.
+ */
+export function freeCodeInputRead(steps: unknown[], names: Iterable<string>): string | null {
+  const codes = steps.flatMap((step) =>
+    isPlainObject(step) && step.kind === "free_code" && typeof step.code === "string" ? [step.code] : [],
+  )
+  if (codes.length === 0) return null
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const read = new RegExp(`(?<![\\w.])${escaped}(?!\\w)`, "u")
+    if (codes.some((code) => read.test(code))) return name
+  }
+  return null
+}
+
+/** Why an input a stepped node's code step reads by *name* cannot be renamed or joined. */
+export function codeStepReadsInputMessage(label: string, name: string): string {
+  return `"${label}" has a code step that reads "${name}" by name, which cannot be changed in its code: `
+    + "read it with a Join step instead, or remove that code step, then try again."
+}
+
+/**
  * The input names a stepped node's steps may reference: the edge names for an
  * `edges` surface, none for a surface whose code sees only `df`. Every render
  * request takes its names from here, never from the input chips on display.

@@ -32,6 +32,7 @@ from haute._pipeline_repair import (
     _resolve_project_file,
     _wire_path,
 )
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._python_syntax import (
     SourceNodeReplacement,
     insert_import_after,
@@ -126,14 +127,18 @@ def _edit(
     )
 
 
-def _unfinished_steps_edit(path: Path, root: Path, node: GraphNode) -> RepairArtifactEdit | None:
-    """The edit to *path*'s canvas sidecar that keeps the transform *node*'s step list while
-    one of its steps is unfinished, or drops it once none is (READ-22): its body is then the
-    raising placeholder, so the sidecar holds the steps' only copy. None when it holds them
-    as they should be. The sidecar is read as the editor reads it and written as a save
-    writes it, so a sidecar the editor would refuse refuses the save, nothing written."""
+def _unfinished_steps_edit(
+    path: Path, root: Path, node: GraphNode, source_names: list[str]
+) -> RepairArtifactEdit | None:
+    """The edit to *path*'s canvas sidecar that keeps the stepped *node*'s step list while
+    one of its steps is unfinished against its inputs, *source_names*, or drops it once
+    none is (READ-22, READ-44; :func:`haute._sidecar.unfinished_step_list`, the rule every
+    save keeps): its body is then the raising placeholder, so the sidecar holds the steps'
+    only copy. None when it holds them as they should be. The sidecar is read as the editor
+    reads it and written as a save writes it, so a sidecar the editor would refuse refuses
+    the save, nothing written."""
     from haute._json_files import render_json
-    from haute._sidecar import SidecarModel, read_sidecar_state
+    from haute._sidecar import SidecarModel, read_sidecar_state, unfinished_step_list
 
     sidecar = path.with_suffix(".haute.json")
     read = read_sidecar_state(path)
@@ -144,8 +149,8 @@ def _unfinished_steps_edit(path: Path, root: Path, node: GraphNode) -> RepairArt
         )
     held = read.data if read.data is not None else SidecarModel()
     unfinished = dict(held.unfinished_steps)
-    steps = node.data.config.get("steps")
-    if isinstance(steps, list) and node.data.editor.steps_error is not None:
+    steps = unfinished_step_list(node, source_names)
+    if steps is not None:
         if unfinished.get(node.id) == steps:
             return None
         unfinished[node.id] = steps
@@ -440,8 +445,8 @@ def _reset_node(
                     f"{target.authored_id!r} no longer names.",
                 )
             )
-    if node_type == NodeType.POLARS:
-        sidecar_edit = _unfinished_steps_edit(path, root, node)
+    if node_type in STEPS_FROM_CODE:
+        sidecar_edit = _unfinished_steps_edit(path, root, node, source_names)
         if sidecar_edit is not None:
             edits.append(sidecar_edit)
     # LibCST matches the function's definition span and replaces its decorators too.

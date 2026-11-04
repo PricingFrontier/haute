@@ -115,7 +115,9 @@ A preview file might look like this:
     When deployed, the preview file is ignored  - the node receives live JSON requests from your API instead. The schema should match your preview file so your pipeline works identically in both modes.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/quote_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.api_input(config="config/quote_input/<node name>.json")`.
+    A pipeline holds one Quote Input, so the node is always named `quote_input`, and it has no rename.
+
+    The node's settings are stored in a JSON sidecar, `config/quote_input/quote_input.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.api_input(config="config/quote_input/quote_input.json")`.
 
     | Setting in the editor | Stored as |
     |---|---|

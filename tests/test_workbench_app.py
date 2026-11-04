@@ -870,8 +870,8 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     with pytest.raises(DeployError) as unconnectable:
         build_release(project, project / "build" / "app")
     assert unconnectable.value.message == (
-        "'item_premiums' fills table 'item_prices' of Workbench Output 'response', which "
-        "workbench does not have."
+        "'item_premiums' fills table 'item_prices' of Workbench Output 'workbench_output', "
+        "which workbench does not have."
     )
     write_sheets(project, PROJECT_TABLES)
 

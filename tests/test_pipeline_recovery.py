@@ -26,7 +26,7 @@ from haute.schemas import (
     RecoveryUnresolvedConnection,
 )
 from tests._project import use_project
-from tests.conftest import write_data_input_config
+from tests.conftest import write_data_input_config, write_node_config
 
 
 def _write(path: Path, source: str) -> Path:
@@ -56,7 +56,8 @@ def _healthy_source(name: str = "healthy") -> str:
 
 
 def _legacy_explore_source(name: str = "legacy") -> str:
-    """Return a valid pipeline whose old Explore pivot lacks value_order."""
+    """Return a pipeline whose Explore node keeps its settings, an old pivot that lacks
+    value_order, in decorator keywords: the form before READ-43, which the parse refuses."""
     return f'''\
         import haute
 
@@ -629,7 +630,7 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    config = tmp_path / "config" / "quote_input" / "request.json"
+    config = tmp_path / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
         """{
@@ -651,29 +652,29 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
         import haute
         pipeline = haute.Pipeline("identity-document")
 
-        @pipeline.api_input(config="config/quote_input/request.json")
-        def request(): ...
+        @pipeline.api_input(config="config/quote_input/quote_input.json")
+        def quote_input(): ...
 
         @pipeline.polars
         def consume(quotes):
             return quotes
 
-        pipeline.connect("request", "consume", source_port="quotes")
+        pipeline.connect("quote_input", "consume", source_port="quotes")
         """,
     )
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     assert document.load_status == "ready"
-    request = next(node for node in document.nodes if node.authored_id == "request")
-    assert request.function_name == "request"
+    request = next(node for node in document.nodes if node.authored_id == "quote_input")
+    assert request.function_name == "quote_input"
     assert request.default_input_name is None
-    assert request.config_reference == "config/quote_input/request.json"
+    assert request.config_reference == "config/quote_input/quote_input.json"
     assert request.source_handle_input_names == {
         "quotes": "quotes",
         "vehicles": "vehicles",
     }
-    edge = next(item for item in document.edges if item.source_authored_id == "request")
+    edge = next(item for item in document.edges if item.source_authored_id == "quote_input")
     assert edge.input_name == "quotes"
     assert document.capabilities.reserved_api_input_frame_labels == sorted(
         document.capabilities.reserved_api_input_frame_labels
@@ -686,7 +687,7 @@ def test_ready_document_keeps_incomplete_api_input_config_repairable(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    config = tmp_path / "config" / "quote_input" / "request.json"
+    config = tmp_path / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
         """{
@@ -716,15 +717,15 @@ def test_ready_document_keeps_incomplete_api_input_config_repairable(
         import haute
         pipeline = haute.Pipeline("identity-document")
 
-        @pipeline.api_input(config="config/quote_input/request.json")
-        def request(): ...
+        @pipeline.api_input(config="config/quote_input/quote_input.json")
+        def quote_input(): ...
         """,
     )
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     assert document.load_status == "ready"
-    request = next(node for node in document.nodes if node.authored_id == "request")
+    request = next(node for node in document.nodes if node.authored_id == "quote_input")
     assert len(request.config["tables"]) == 4
     assert request.config["tables"][0]["columns"][1]["name"] == ""
     assert request.config["tables"][3]["label"] == ""
@@ -739,8 +740,9 @@ def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
     pipeline_file = _write(tmp_path / "main.py", _legacy_explore_source())
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    with pytest.raises(ConfigError, match="value_order"):
+    with pytest.raises(ConfigError, match="stores its config in a JSON sidecar") as refused:
         parse_pipeline_file(pipeline_file)
+    assert refused.value.context["config_folder"] == "config/explore"
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
@@ -763,7 +765,7 @@ def test_legacy_explore_failure_is_localised_without_writing_project_bytes(
         item for item in document.diagnostics if item.diagnostic_id in explore.diagnostic_ids
     )
     assert diagnostic.code == "node_config_invalid"
-    assert "value_order" in diagnostic.message
+    assert "stores its config in a JSON sidecar" in diagnostic.message
     assert diagnostic.source_span is not None
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
@@ -1435,11 +1437,11 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
             definition_id="child-definition",
             input_ports=[{
                 "name": "input_1",
-                "targets": [{"nodeId": "transform", "handleId": None}],
+                "targets": [{"node_id": "transform"}],
             }],
             output_ports=[{
                 "name": "output_1",
-                "source": {"nodeId": "transform", "handleId": None},
+                "source": {"node_id": "transform"},
             }],
             pipeline_dir="..",
         )
@@ -1912,6 +1914,7 @@ def test_explore_shape_failure_is_local_and_blocks_only_downstream(
 ) -> None:
     from haute._pipeline_recovery import load_pipeline_editor_document
 
+    write_node_config(tmp_path, NodeType.EXPLORE, "inspect", {})
     pipeline_file = _write(
         tmp_path / "main.py",
         """
@@ -1922,7 +1925,7 @@ def test_explore_shape_failure_is_local_and_blocks_only_downstream(
         def source():
             return None
 
-        @pipeline.explore(pivots=[])
+        @pipeline.explore(config="config/explore/inspect.json")
         def inspect(source): ...
 
         @pipeline.polars
@@ -2290,13 +2293,13 @@ def test_a_refusal_shown_element_by_element_is_not_listed_again(tmp_path: Path) 
     ("output_ports", "message"),
     [
         pytest.param(
-            '[{"name": "out", "source": {"nodeId": "ghost", "handleId": None}}]',
+            '[{"name": "out", "source": {"node_id": "ghost"}}]',
             "missing child nodes: ['ghost']",
             id="missing-node",
         ),
         pytest.param(
-            '[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}, '
-            '{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}]',
+            '[{"name": "out", "source": {"node_id": "quotes"}}, '
+            '{"name": "out", "source": {"node_id": "quotes"}}]',
             "duplicate public port names: ['out']",
             id="duplicate-name",
         ),
@@ -3383,13 +3386,16 @@ def test_remove_connection_takes_out_one_duplicate_at_a_time(
 def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
     tmp_path: Path,
 ) -> None:
-    """An input may name a table after itself; a connect() binding that table is no mistake."""
+    """An input may name a table after itself; a connect() binding that table is no mistake.
+
+    A Quote Input is named by its type (READ-46), so its table takes that name.
+    """
     from haute._pipeline_recovery import load_pipeline_editor_document
 
-    config = tmp_path / "config" / "quote_input" / "quotes.json"
+    config = tmp_path / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
-        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
+        '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quote_input", '
         '"emit": true, "columns": [{"name": "id", "path": "$[:].id", "type": "int", '
         '"status": "Confirmed", "selected": true}]}]}',
         encoding="utf-8",
@@ -3400,12 +3406,12 @@ def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
         import haute
         pipeline = haute.Pipeline("frames")
 
-        @pipeline.api_input(config="config/quote_input/quotes.json")
-        def quotes(): ...
+        @pipeline.api_input(config="config/quote_input/quote_input.json")
+        def quote_input(): ...
 
         @pipeline.polars
-        def priced(quotes):
-            return quotes
+        def priced(quote_input):
+            return quote_input
 
         @pipeline.polars
         def rates():
@@ -3414,7 +3420,7 @@ def test_a_quote_input_named_after_its_table_keeps_its_connected_consumer(
         @pipeline.edge_join(how="left", on=["id"])
         def joined(priced, rates): ...
 
-        pipeline.connect("quotes", "priced", source_port="quotes")
+        pipeline.connect("quote_input", "priced", source_port="quote_input")
         pipeline.connect("priced", "joined", target_port="base")
         pipeline.connect("rates", "joined", target_port="join")
         """,
@@ -3470,7 +3476,7 @@ def test_remove_connection_reaches_a_broken_connection_inside_a_submodel(
         tmp_path / "modules" / "inputs.py",
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports=[], '
-        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "quotes"}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef quotes():\n    return None\n\n"
         'submodel.connect("ghost", "quotes")\n',
@@ -3558,7 +3564,7 @@ def test_remove_connection_mends_a_submodel_with_no_nodes(
 _PRICING = (
     "import haute\nimport polars as pl\n\n"
     'submodel = haute.Submodel("pricing", definition_id="pricing", input_ports=[], '
-    'output_ports=[{"name": "out", "source": {"nodeId": "rates", "handleId": None}}], '
+    'output_ports=[{"name": "out", "source": {"node_id": "rates"}}], '
     'pipeline_dir="..")\n\n'
     "@submodel.polars\ndef rates():\n    return None\n"
 )
@@ -3676,7 +3682,7 @@ def _submodel_project(root: Path, *, input_ports: str, body: str, parent_extra: 
         root / "modules" / "inputs.py",
         "import haute\nimport polars as pl\n\n"
         f'submodel = haute.Submodel("inputs", definition_id="inputs", input_ports={input_ports}, '
-        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "quotes"}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef quotes():\n    return None\n\n" + body,
     )
@@ -3693,8 +3699,11 @@ def test_an_explore_with_no_input_inside_a_submodel_is_listed_in_it(tmp_path: Pa
     """Checked by the submodel's own parse, the failure is attributed to its node."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
+    write_node_config(tmp_path, NodeType.EXPLORE, "look", {})
     pipeline_file = _submodel_project(
-        tmp_path, input_ports="[]", body="@submodel.explore\ndef look(): ...\n"
+        tmp_path,
+        input_ports="[]",
+        body='@submodel.explore(config="config/explore/look.json")\ndef look(): ...\n',
     )
     with pytest.raises(ParseError, match="exactly one incoming edge") as refused:
         parse_pipeline_file(pipeline_file)
@@ -3718,10 +3727,11 @@ def test_an_explore_a_port_feeds_is_not_flagged_in_an_unavailable_submodel(
     """The port is its input: recovery counts it, as the parse does."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
+    write_node_config(tmp_path, NodeType.EXPLORE, "look", {})
     pipeline_file = _submodel_project(
         tmp_path,
-        input_ports='[{"name": "records", "targets": [{"nodeId": "look", "handleId": None}]}]',
-        body="@submodel.explore\ndef look(records): ...\n\n"
+        input_ports='[{"name": "records", "targets": [{"node_id": "look"}]}]',
+        body='@submodel.explore(config="config/explore/look.json")\ndef look(records): ...\n\n'
         "@submodel.polars\ndef rates():\n    return None\n\n"
         '@submodel.edge_join(how="left", on=["id"])\ndef joined(quotes, rates): ...\n\n'
         'submodel.connect("quotes", "joined", target_port="base")\n'
@@ -3773,7 +3783,7 @@ def test_a_submodel_copy_naming_a_missing_original_is_its_own_to_remove(
 
 def _quote_input_project(root: Path, consumer: str, connect: str) -> Path:
     """A Quote Input with one table, `quotes`, and a consumer written as given."""
-    config = root / "config" / "quote_input" / "request.json"
+    config = root / "config" / "quote_input" / "quote_input.json"
     config.parent.mkdir(parents=True)
     config.write_text(
         '{"path": "data/request.json", "tables": [{"path": "$[:]", "label": "quotes", '
@@ -3785,8 +3795,8 @@ def _quote_input_project(root: Path, consumer: str, connect: str) -> Path:
         root / "main.py",
         "import haute\n"
         'pipeline = haute.Pipeline("frames")\n\n'
-        '@pipeline.api_input(config="config/quote_input/request.json")\n'
-        "def request(): ...\n\n" + consumer + "\n" + connect,
+        '@pipeline.api_input(config="config/quote_input/quote_input.json")\n'
+        "def quote_input(): ...\n\n" + consumer + "\n" + connect,
     )
 
 
@@ -3801,11 +3811,11 @@ def test_a_quote_input_connection_naming_no_table_is_a_connection_to_remove(
     pipeline_file = _quote_input_project(
         tmp_path,
         "@pipeline.polars\ndef consume(quotes):\n    return quotes\n",
-        'pipeline.connect("request", "consume")\n',
+        'pipeline.connect("quote_input", "consume")\n',
     )
     with pytest.raises(ParseError, match="does not name the table it takes") as refused:
         parse_pipeline_file(pipeline_file)
-    assert refused.value.context["frame_missing_edges"] == ["request -> consume"]
+    assert refused.value.context["frame_missing_edges"] == ["quote_input -> consume"]
     use_project(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     assert document.load_status == "degraded"
@@ -3827,7 +3837,7 @@ def test_a_parameter_named_after_a_quote_input_is_its_nodes_to_recover(tmp_path:
     from haute.schemas import PipelineRepairRecoverRequest
 
     pipeline_file = _quote_input_project(
-        tmp_path, "@pipeline.polars\ndef consume(request):\n    return request\n", ""
+        tmp_path, "@pipeline.polars\ndef consume(quote_input):\n    return quote_input\n", ""
     )
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     consume = next(node for node in document.nodes if node.authored_id == "consume")

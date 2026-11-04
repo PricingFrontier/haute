@@ -32,6 +32,7 @@ from hypothesis import HealthCheck, assume, given, settings
 from haute._config_io import collect_node_configs
 from haute._graph_utils import _sanitize_func_name
 from haute._types import (
+    SINGLETON_NODE_NAMES,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -340,6 +341,9 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
     - First node is always a source type (dataInput or apiInput)
     - Remaining nodes are non-source types that need upstream inputs
     - All labels sanitize to unique function names
+    - A Quote Input and a Quote Response are named by their type, and the chain holds at
+      most one Quote Response (READ-46); a drawn label holds no underscore, so never
+      collides with either name
     - Edges form a linear chain: node[0] -> node[1] -> ... -> node[n-1]
     """
     n_nodes = draw(st.integers(min_value=2, max_value=5))
@@ -348,6 +352,7 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
     # First node: must be a source type
     first_type = draw(st.sampled_from([NodeType.DATA_INPUT, NodeType.API_INPUT]))
     first_config = draw(_CONFIG_STRATEGY[first_type])
+    labels[0] = SINGLETON_NODE_NAMES.get(first_type, labels[0])
     first_name = _sanitize_func_name(labels[0])
 
     nodes: list[GraphNode] = [
@@ -367,6 +372,10 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
     downstream_types = [t for t in ROUNDTRIP_TYPES if t in _NEEDS_UPSTREAM]
     for i in range(1, n_nodes):
         ntype = draw(st.sampled_from(downstream_types))
+        if ntype == NodeType.OUTPUT:
+            # A pipeline holds one Quote Response.
+            downstream_types.remove(NodeType.OUTPUT)
+        labels[i] = SINGLETON_NODE_NAMES.get(ntype, labels[i])
         config = draw(_CONFIG_STRATEGY[ntype])
         func_name = _sanitize_func_name(labels[i])
         if ntype == NodeType.DATA_OUTPUT:
@@ -703,15 +712,15 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="result",
+                    id="quote_response",
                     data=NodeData(
-                        label="result",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config(["premium", "discount"]),
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="source", target="result")],
+            edges=[GraphEdge(id="e1", source="source", target="quote_response")],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)
@@ -969,9 +978,9 @@ class TestEdgeCases:
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
-                    id="api",
+                    id="quote_input",
                     data=NodeData(
-                        label="api",
+                        label="quote_input",
                         nodeType=NodeType.API_INPUT,
                         config={"path": "data/request.parquet"},
                     ),
@@ -988,7 +997,7 @@ class TestEdgeCases:
             edges=[
                 GraphEdge(
                     id="e1",
-                    source="api",
+                    source="quote_input",
                     target="process",
                     sourceHandle="api_frame",
                 )
@@ -1060,9 +1069,9 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="result",
+                    id="quote_response",
                     data=NodeData(
-                        label="result",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config(["premium"]),
                     ),
@@ -1072,7 +1081,7 @@ class TestEdgeCases:
                 GraphEdge(id="e1", source="load", target="clean"),
                 GraphEdge(id="e2", source="clean", target="band"),
                 GraphEdge(id="e3", source="band", target="rate"),
-                GraphEdge(id="e4", source="rate", target="result"),
+                GraphEdge(id="e4", source="rate", target="quote_response"),
             ],
             pipeline_name="roundtrip_test",
         )
@@ -1152,15 +1161,15 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="out",
+                    id="quote_response",
                     data=NodeData(
-                        label="out",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config([]),
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="source", target="out")],
+            edges=[GraphEdge(id="e1", source="source", target="quote_response")],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)
@@ -1221,15 +1230,15 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="out",
+                    id="quote_response",
                     data=NodeData(
-                        label="out",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config(["col_a"]),
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="csv_src", target="out")],
+            edges=[GraphEdge(id="e1", source="csv_src", target="quote_response")],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)
@@ -1255,15 +1264,15 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="out",
+                    id="quote_response",
                     data=NodeData(
-                        label="out",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config(["x"]),
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="src", target="out")],
+            edges=[GraphEdge(id="e1", source="src", target="quote_response")],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)
@@ -1292,15 +1301,15 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="out",
+                    id="quote_response",
                     data=NodeData(
-                        label="out",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config(["a"]),
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="src", target="out")],
+            edges=[GraphEdge(id="e1", source="src", target="quote_response")],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)
@@ -1327,15 +1336,15 @@ class TestEdgeCases:
                     ),
                 ),
                 GraphNode(
-                    id="use_consts",
+                    id="quote_response",
                     data=NodeData(
-                        label="use_consts",
+                        label="quote_response",
                         nodeType=NodeType.OUTPUT,
                         config=make_output_config(["pi", "greeting", "count"]),
                     ),
                 ),
             ],
-            edges=[GraphEdge(id="e1", source="consts", target="use_consts")],
+            edges=[GraphEdge(id="e1", source="consts", target="quote_response")],
             pipeline_name="roundtrip_test",
         )
         parsed = _parse_roundtrip(graph, tmp_path)

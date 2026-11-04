@@ -23,16 +23,16 @@ async function openGitPanel(page: Page): Promise<void> {
   await expect(page.getByTestId("git-panel")).toBeVisible()
 }
 
-// Rename the starter "priced" node and Save — the same ledger-feeding edit as
+// Rename the starter "enriched" node and Save — the same ledger-feeding edit as
 // the core-flows git test. Clicking a canvas node closes an open git panel,
 // so tests always edit BEFORE opening the panel.
 async function renameNodeAndSave(page: Page, newLabel: string): Promise<void> {
-  const pricedNode = page.getByRole("button", { name: /priced/i })
-  await expect(pricedNode).toBeVisible()
-  await pricedNode.click()
+  const enrichedNode = page.getByRole("button", { name: /enriched/i })
+  await expect(enrichedNode).toBeVisible()
+  await enrichedNode.click()
 
   const labelInput = page.locator("input.node-label-input")
-  await expect(labelInput).toHaveValue("priced")
+  await expect(labelInput).toHaveValue("enriched")
   await labelInput.fill(newLabel)
 
   await page.getByRole("button", { name: "Save", exact: true }).click()
@@ -107,7 +107,7 @@ test.describe("git sidebar regression", () => {
   test("a labelled milestone commit renders a version-label chip", async ({ page }) => {
     const label = `e2e-${RUN_STAMP}`
     await page.goto("/")
-    await renameNodeAndSave(page, "priced_labelled")
+    await renameNodeAndSave(page, "enriched_labelled")
     await commitMilestone(page, "Label the pricing tweak", label)
 
     await openGitPanel(page)
@@ -120,7 +120,7 @@ test.describe("git sidebar regression", () => {
 
   test("milestone rows expand to their folded saves and collapse again", async ({ page }) => {
     await page.goto("/")
-    await renameNodeAndSave(page, "priced_expand")
+    await renameNodeAndSave(page, "enriched_expand")
     await commitMilestone(page, "Fold the rename")
 
     await openGitPanel(page)
@@ -142,7 +142,7 @@ test.describe("git sidebar regression", () => {
     page,
   }) => {
     await page.goto("/")
-    await renameNodeAndSave(page, "priced_pending")
+    await renameNodeAndSave(page, "enriched_pending")
 
     await openGitPanel(page)
     const pending = page.getByTestId("git-panel-pending")
@@ -166,7 +166,7 @@ test.describe("git sidebar regression", () => {
 
   test("peeking another branch shows the banner and resets expansion", async ({ page }) => {
     await page.goto("/")
-    await renameNodeAndSave(page, "priced_peek")
+    await renameNodeAndSave(page, "enriched_peek")
     await commitMilestone(page, "Milestone before peeking")
 
     await openGitPanel(page)
@@ -270,7 +270,7 @@ test.describe("git sidebar regression", () => {
     // The root is the current version until a save lands on top of it, and a
     // restore is never offered on the current version.
     await page.goto("/")
-    await renameNodeAndSave(page, "priced_restore_probe")
+    await renameNodeAndSave(page, "enriched_restore_probe")
     await openGitPanel(page)
 
     await page.getByTestId("git-panel-milestone").first().getByTestId("git-panel-restore").click()

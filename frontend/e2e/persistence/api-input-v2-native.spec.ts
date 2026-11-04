@@ -11,7 +11,7 @@ const quotesConfigPath = resolve(
   "rating",
   "config",
   "quote_input",
-  "quotes.json",
+  "quote_input.json",
 )
 const quotesDataPath = resolve(
   e2eProjectRoot,
@@ -28,7 +28,7 @@ test.describe("apiInput persistence", () => {
     // Sanity-check the harness scaffolded what we need. If these fail the
     // harness extension didn't run; tests below would fail with confusing
     // selector errors rather than a clear "fixture missing" message.
-    expect(existsSync(quotesConfigPath), "harness wrote empty quotes.json").toBe(true)
+    expect(existsSync(quotesConfigPath), "harness wrote empty quote_input.json").toBe(true)
     expect(existsSync(quotesDataPath), "harness copied sample_quote.json").toBe(true)
     const initialCfg = JSON.parse(readFileSync(quotesConfigPath, "utf8"))
     expect(initialCfg, "starting state has a path and no inferred schema").toEqual(
@@ -58,7 +58,7 @@ test.describe("apiInput persistence", () => {
     ).toBeVisible()
 
     await test.step("1. Open apiInput node panel", async () => {
-      await page.locator('[data-testid="rf__node-quotes"]').click()
+      await page.locator('[data-testid="rf__node-quote_input"]').click()
       await expect(page.locator('[data-testid="api-input-editor"]')).toBeVisible()
     })
 
@@ -170,7 +170,7 @@ test.describe("apiInput persistence", () => {
       await expect(
         page.getByRole("toolbar", { name: /pipeline toolbar/i }),
       ).toBeVisible()
-      await page.locator('[data-testid="rf__node-quotes"]').click()
+      await page.locator('[data-testid="rf__node-quote_input"]').click()
       await expect(page.locator('[data-testid="api-input-editor"]')).toBeVisible()
       expect(await page.getByTestId(/^api-input-table-\d+$/).count()).toBeGreaterThanOrEqual(2)
     })

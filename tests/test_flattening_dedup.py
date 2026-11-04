@@ -326,13 +326,13 @@ class TestParsePipelineFlattenRegression:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "Transform", "handleId": None}],
+                        "targets": [{"node_id": "Transform"}],
                     }
                 ],
                 output_ports=[
                     {
                         "name": "result",
-                        "source": {"nodeId": "Finalise", "handleId": None},
+                        "source": {"node_id": "Finalise"},
                     }
                 ],
                 pipeline_dir="..",
@@ -404,7 +404,7 @@ class TestParsePipelineFlattenRegression:
                 input_ports=[
                     {
                         "name": "source",
-                        "targets": [{"nodeId": "Transform", "handleId": None}],
+                        "targets": [{"node_id": "Transform"}],
                     }
                 ],
                 output_ports=[],

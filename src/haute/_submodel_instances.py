@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, unquote
@@ -351,6 +353,22 @@ def _reject_output_mapping_collisions(
         by_destination[destination] = source_column
 
 
+def _free_code_reads(steps: list[Any], renames: Mapping[str, str]) -> bool:
+    """Whether a free-code step among *steps* names an input *renames* renames: its code
+    reads the input by the name the boundary changes, which only ``input_mapping`` keeps."""
+    renamed = {old for old, new in renames.items() if old != new}
+    for step in steps:
+        if not isinstance(step, Mapping) or step.get("kind") != "free_code":
+            continue
+        try:
+            tree = ast.parse(str(step.get("code") or ""))
+        except SyntaxError:
+            continue
+        if any(isinstance(node, ast.Name) and node.id in renamed for node in ast.walk(tree)):
+            return True
+    return False
+
+
 def rewrite_boundary_input_names(
     nodes: list[GraphNode],
     rename_map_by_node: dict[str, dict[str, str]],
@@ -468,6 +486,22 @@ def rewrite_boundary_input_names(
         steps = config.get("steps")
         # Transform and Load File code address their inputs by edge name.
         names_inputs = stepped_surface_allows_input_references(node.data.nodeType)
+        if (
+            names_inputs
+            and isinstance(steps, list)
+            and config.get("code")
+            and node.data.editor.steps_error is None
+            and _free_code_reads(steps, renames)
+        ):
+            # A free-code step names a renamed input inside its code, which the boundary
+            # cannot rewrite. The expanded node runs its code as code without steps runs:
+            # it keeps reading the names it was written with, through input_mapping. The
+            # load rebuilds steps from any body (READ-44), so such a node has steps. Steps
+            # that do not render yet have no code to run: they stay, and the node fails as
+            # unfinished.
+            del config["steps"]
+            changed = True
+            steps = None
         if names_inputs and isinstance(steps, list):
             # Steps hold the edge names themselves, so the boundary rename
             # rewrites the references inside the steps rather than recording

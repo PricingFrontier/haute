@@ -158,8 +158,8 @@ class TestValidateSingletons:
     def test_valid_graph_single_api_input(self) -> None:
         """A graph with exactly one of each singleton type passes."""
         graph = _make_graph(
-            _make_node("a", "Api Input", "apiInput", {"path": "data.parquet"}),
-            _make_node("o", "Output", "output", make_output_config([])),
+            _make_node("a", "quote_input", "apiInput", {"path": "data.parquet"}),
+            _make_node("o", "quote_response", "output", make_output_config([])),
             _make_node("t", "Transform", "polars"),
         )
         # Should not raise
@@ -1681,12 +1681,12 @@ class TestSaveEndpointIntegration:
 
         graph = {
             "nodes": [
-                node("quote", "apiInput", _quote_input_config("quotes")),
+                node("quote_input", "apiInput", _quote_input_config("quotes")),
                 node("quotes", "polars", {"code": "df = pl.LazyFrame({'x': [1]})"}),
                 node("aged", "polars", {"code": "df = quotes"}),
             ],
             "edges": [
-                {"id": "e1", "source": "quote", "target": "aged", "sourceHandle": "quotes"},
+                {"id": "e1", "source": "quote_input", "target": "aged", "sourceHandle": "quotes"},
             ],
         }
         resp = client.post(
@@ -1703,7 +1703,7 @@ class TestSaveEndpointIntegration:
         assert resp.status_code == 400
         detail = resp.json()["detail"]
         assert "table 'quotes'" in detail
-        assert "Quote Input 'quote'" in detail
+        assert "Quote Input 'quote_input'" in detail
         assert "node 'quotes'" in detail
         assert not (tmp_path / "clash.py").exists()
 
@@ -2058,7 +2058,7 @@ class TestValidateApiInputsHaveSchemas:
                 }
             ],
         }
-        graph = _make_graph(_make_node("api", "api_input", "apiInput", config))
+        graph = _make_graph(_make_node("api", "quote_input", "apiInput", config))
 
         saved = SavePipelineService(tmp_path).save(
             SavePipelineRequest(

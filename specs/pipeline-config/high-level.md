@@ -57,9 +57,9 @@ several types, from Python code extracted out of the function body. The live `Pi
 API records `config=` and the other keywords as node metadata at import time and reads a sidecar
 only when a standalone run executes the node (see Standalone execution).
 
-**Declarations and hooks.** A node with settings is a configured node: an Edge Join or
-Explore node (its settings are its decorator keywords), or a node of any other type except
-`polars` that names a `config=` sidecar. Its decorator performs the node's configured work —
+**Declarations and hooks.** A node with settings is a configured node: an Edge Join (its
+settings are its decorator keywords), an Explore node, whose analysis settings do nothing
+in a run, or a node of any other type except `polars` that names a `config=` sidecar. Its decorator performs the node's configured work —
 loading, scoring, rating, expanding, joining, switching, assembling — when the file runs on its
 own, and the function says only what the user added. On a type that accepts code (Data
 Input, External File, Rating Step, Model Score, Scenario Expander, Explore), a function whose
@@ -111,8 +111,11 @@ node that binds receives its frames in the order its parameters read them, in ev
 `.haute.json`, the global constants, the Workbench form folder and a test quote. It writes
 UTF-8 with nothing escaped, LF line endings, a two-space indent and a final newline, and
 shapes a record by its kind, never by a width limit, so a one-character edit changes one
-line: a rating entry, a node position, a Workbench layout box, a schema column and a
-show-when condition each sit on one line, as does any list or mapping of numbers alone
+line: a rating entry, a node position, a Workbench layout box, a schema column, a
+show-when condition, an API Input column, a Quote Response mapping row (READ-42), and an
+Explore pivot's filter, column, row and value placements, a pivot formula and a chart's
+value encoding and series override (READ-43) each sit on one line, as does any list or
+mapping of numbers alone
 (a node position is whole pixels: the canvas places and drags nodes on them, and the save
 rounds an older fractional one half up, as the canvas does, so loading and saving an
 unchanged pipeline leaves its `.haute.json` byte for byte the same);
@@ -149,6 +152,14 @@ location, message and fix, and leaves the file untouched.
 Every mutation of a persisted document, including Save, names the `source_revision` it was
 based on and fails closed when the on-disk document has moved; initial creation names no
 revision and succeeds only while the target file is absent.
+
+**The request input and the response node are named by their type.** A pipeline holds at
+most one request input and one response node, so each has one name: a Quote Input is
+`quote_input`, a Quote Response `quote_response`, a Workbench Input `workbench_input` and
+a Workbench Output `workbench_output` (`SINGLETON_NODE_NAMES`, READ-46), in a pipeline or a
+submodel module. A file whose function for one of them has another name is refused, naming
+the name it must have, as is a standalone run of it; a save, a deploy and an assistant
+edit refuse a graph that names one otherwise.
 
 **Wiring.** In the statically parsed source graph, edges come from exactly two declared
 sources: explicit `connect()` calls and function parameter names matching other node names.
@@ -443,8 +454,8 @@ reference's tables of config keys are generated from them.
 **Keys are snake_case.** Every key a Haute schema owns is snake_case, in a node's config and its
 sidecar, in a Polars step, in `.haute.json`, the global constants and the Workbench form folder,
 and the browser's config types carry the same keys (READ-29). Before READ-29 these keys were
-camelCase, and the loader refuses that form; `scripts/one_off/read_29_snake_case_keys.py`
-converts a project. The keys renamed:
+camelCase, and the loader refuses that form, naming each key's snake_case name. The keys
+renamed:
 
 | Before | Now | Where |
 |---|---|---|
@@ -465,6 +476,7 @@ converts a project. The keys renamed:
 | `nullsLast` | `nulls_last` | the sort step |
 | `numberType` | `number_type` | a condition's list of numbers |
 | `variableName`, `valueName` | `variable_name`, `value_name` | the unpivot step |
+| `nodeId`, `handleId` | `node_id`, `handle_id` | a port endpoint in a submodel module's `haute.Submodel(...)` (READ-45) |
 
 A key the analyst names never changes, whatever its casing: a column, a categorical level, an
 input name in `input_mapping`, a factor in `factor_dtypes`, a source in `by_source`, a constant,
@@ -494,7 +506,7 @@ steps, so a hand edit to one statement or a comment keeps the rest. A body that 
 not rebuild at all (one whose lines cannot be split into statements) loads as a
 code-only transform. Each step's id is its kind and its place (`filter-3`), given anew at
 each load. A `@pipeline.polars(config=...)` is the form before READ-22 and is refused,
-naming `scripts/one_off/read_22_polars_code.py`. One renderer (`src/haute/_polars_steps.py`) validates the closed step
+saying the steps go in the function's body. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive
 line range and raising a step-indexed error for any malformed or incomplete step.
 Each structured step renders one statement in common Python style, as ruff and the
@@ -617,8 +629,9 @@ is saved with the raising placeholder for its body and its whole step list, the 
 before and after the unfinished one included, in the pipeline's `.haute.json` under
 the node's name (`unfinished_steps`), and the save warns which step; so the node fails
 in the editor, `haute run`, a standalone run and a deploy alike, never returning the
-steps before the unfinished one. Loading in the editor gives such a node the steps the
-sidecar holds, in a degraded document too; a save of the one node keeps them in its
+steps before the unfinished one. Every load of the file gives such a node the steps the
+sidecar holds (the editor's, `haute run`'s and a deploy's parse, a degraded document and
+Recover alike); a save of the one node keeps them in its
 file's sidecar as a whole save does; once every step is complete the next save renders
 them into the body and drops them from the sidecar. A sidecar entry for a node whose body is not the
 placeholder is ignored, and the next save drops it.
@@ -633,29 +646,40 @@ beside `obj`, the rated, scored or expanded frame). In frame mode an empty list 
 to empty code without error, because the node then simply keeps its base behaviour, a
 `source` step is refused at any position with a step-indexed message, and
 `join`/`concat` references are checked against the surface's eligible input names.
-Every surface but the transform keeps its steps in its own config, beside its other
-settings, while they still render its body: parsing renders them against the
-function's parameter names and compares the result with the code extracted from the
-body, as programs (the same syntax tree and comments, a comment's trailing whitespace
-aside), so a body saved in an earlier layout, quoting or call spelling keeps them; a
-different body, or one that is not empty while the steps cannot be rendered, discards
-them (the body was edited by hand), recording a `steps_discarded` reason in the node's
-editor state and logging a warning; an empty body with unrenderable steps keeps them,
-which is how such a surface's incomplete step list is saved. A config whose `steps`
-value is not a list fails the parse with a `ConfigError`.
-Explore is the one stepped type with no config folder: its steps travel as a `steps=`
-decorator argument beside its overview, pivot and chart cards, and are reconciled
-against the body the same way.
+Every surface's code is the only copy of its steps (READ-44), as the transform's is:
+parsing rebuilds them from the body, a statement a step renders exactly becoming that
+step and each run of other statements one code step, so a hand edit keeps the other
+steps. A frame surface whose function is a declaration has no steps yet (an empty
+list), and one whose lines do not split into statements is code-only. Its sidecar writes no `steps`,
+and loading one that does is refused, naming the file and saying the steps are
+rebuilt from the body. An incomplete step list is saved as a transform's is: the body
+is the raising placeholder and the list waits in the pipeline's `.haute.json`
+(`unfinished_steps`), for any stepped node.
+An Explore node keeps its overview, pivot formulas, pivots and charts in its sidecar,
+`config/explore/<node>.json`, checked and normalised on the way out and in by the
+Explore display-config validators, each left out when empty; its decorator carries only
+`config=`, and one that still carries settings or steps is refused like any node whose
+settings belong in a sidecar (READ-43). A standalone run of the module refuses them too,
+and holds the sidecar to the same validators, so a malformed one fails the run as it
+fails the parse.
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as
 `df`), `none` for the surfaces whose code sees only `df` (Data Input, Rating Step,
 Model Score, Scenario Expander, Explore), where a join or concat is refused. Every path that
-renders a node's steps (the node data model, the parser's reconcile, the executor
+renders a node's steps (the node data model, the parser's rebuild, the executor
 builder, codegen, the deploy interceptors and the render endpoint) obtains the
 eligible names from it. Only an `edges` surface has its step references rewritten when
 an input is renamed (a node rename, an Edge Join insertion, a submodel boundary), and a
-stepped `edges` original never carries `input_mapping`. A node
+stepped `edges` original never carries `input_mapping`. A free-code step's code is not
+rewritten. Where a submodel boundary renames an input such a step names, the expanded
+node runs its code (the server's rendering of its current steps) as code without steps
+runs, reading the name it was written with through `input_mapping`; steps that do not
+render yet stay, so the node still fails as unfinished. The editor refuses a node rename
+or an Edge Join insertion that would change an input such a step reads, scanning the
+code's text for the name, since its copy of the code may not be the current steps'
+rendering: the message says to read the input with a Join step, or remove the code step.
+A node
 type outside that table that carries a `steps` key is left alone. A Scenario
 Expander's grid size is its required `step_count` (a whole number of at least 1, read
 by the executor builder, the standalone runtime's helper, the chunk planner, the RAM
@@ -666,18 +690,17 @@ user can fix, so `scenario_step_count` raises `NodeConfigError` (stable code
 `node_config_invalid`, safe field `setting`): a preview, trace, output write or job reports
 it as the public contract failure (HTTP 422, background `contract_error`) with the message
 naming the setting, never as an internal error. The planner and estimator, which only ask
-whether they can plan the node, still see it as a `ValueError`. The node-data invariant, the sidecar filter and the reconcile rule
-apply to every stepped type: a Data Input's `steps` persist in its required
-`config/data_input/<name>.json` sidecar beside its source settings, `code` is always
-their rendering (or empty, with a steps error), and on load the parser compares the
-code extracted from the body with the rendering after the same extraction, so a
-rendering the extractor normalises (a lone `df = (df.head(2))` free-code step loses
-its brackets) still reloads in step mode; a discarded sidecar is recorded only
-for the transform, whose sidecar is optional, while a Data Input's sidecar stays and
-is next written without `steps`. An unrenderable Data Input step list is saved
-as a hook whose body is the generated placeholder, so a standalone run raises rather
-than silently reading the source unchanged, and reload keeps the steps behind empty
-code exactly as for a transform. A new Data Input starts in step mode with an
+whether they can plan the node, still see it as a `ValueError`. The node-data invariant applies to every stepped type:
+`code` is always the steps' rendering (or empty, with a steps error), and on load the
+steps are rebuilt from the body (READ-44), the rebuild modelling what the extractor
+normalises (a lone `df = (df.head(2))` free-code step loses its brackets) so the node
+still reloads in step mode. A Data Input's sidecar holds its source settings and never
+`steps`. An unrenderable Data Input step list is saved as a hook whose body is the
+generated placeholder, with the list in the pipeline's `.haute.json`, so `haute run`, a
+deploy and a standalone run raise rather than silently reading the source unchanged,
+and every load gives the node its steps back, exactly as for a transform; a placeholder
+whose list that file does not hold is refused, naming the node, since running it would
+skip the steps. A new Data Input starts in step mode with an
 empty list.
 
 A `free_code` step carries a `code` string containing Python statements and can
@@ -904,7 +927,7 @@ one a line (`haute._constant_config`, READ-28): a value that reads as a number a
 reads back to the text it was typed as is a JSON number, anything else as typed; each
 runs as before, and the editor reads the map back into its rows. A row without a name
 is not written, two rows with one name are refused, and a sidecar still holding rows is
-refused, naming its one-off conversion. An
+refused, naming the map form. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent

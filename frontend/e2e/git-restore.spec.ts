@@ -23,7 +23,7 @@ import { e2eGit, e2eWorkingBranch, resetE2eProject } from "./projectIsolation"
 // the mistakes an analyst can make on the way: unsaved edits at the prompt,
 // changing their mind, clicking twice, restoring the wrong version, and branch
 // names that cannot be used. Each test builds its history through the editor
-// from the seeded root ("Initial scaffold", where the node is "priced").
+// from the seeded root ("Initial scaffold", where the edited transform is "enriched").
 
 const work = e2eWorkingBranch
 
@@ -47,8 +47,8 @@ test.describe("restoring a version", () => {
 
   test("an earlier save comes back as a new save on the same branch", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
-    await renameAndSave(page, "priced_v1", "priced_v2")
+    await renameAndSave(page, "enriched", "enriched_v1")
+    await renameAndSave(page, "enriched_v1", "enriched_v2")
 
     await openGitPanel(page)
     await expect(page.getByTestId("git-panel-pending")).toContainText(
@@ -69,9 +69,9 @@ test.describe("restoring a version", () => {
     // The page reloads onto the restored files and says what came back.
     await expect(toast(page, /^Restored .+ as a new save\.$/)).toBeVisible()
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
-    await expect(canvasNode(page, "priced_v2")).toHaveCount(0)
-    expect(pipelineOnDisk()).toContain("def priced_v1(")
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
+    await expect(canvasNode(page, "enriched_v2")).toHaveCount(0)
+    expect(pipelineOnDisk()).toContain("def enriched_v1(")
     // Still on the branch's own history, not an earlier version: no new branch
     // and no reconnecting needed.
     expect(checkedOutBranch()).toBe(ledgerOf(work))
@@ -84,8 +84,8 @@ test.describe("restoring a version", () => {
 
   test("a save folded into a milestone restores from the row menu", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
-    await renameAndSave(page, "priced_v1", "priced_v2")
+    await renameAndSave(page, "enriched", "enriched_v1")
+    await renameAndSave(page, "enriched_v1", "enriched_v2")
     await commitMilestone(page, "Two renames")
 
     await openGitPanel(page)
@@ -101,7 +101,7 @@ test.describe("restoring a version", () => {
     await page.getByTestId("restore-confirm").click()
 
     await expect(toast(page, /^Restored .+ as a new save\.$/)).toBeVisible()
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
     await expectOnBranch(page, work)
   })
 
@@ -139,7 +139,7 @@ test.describe("restoring a version", () => {
     page,
   }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     const before = saveSubjects(work)
 
     await openGitPanel(page)
@@ -158,15 +158,15 @@ test.describe("restoring a version", () => {
     await expect(modal).toHaveCount(0)
 
     await expect(page.getByTestId("git-panel")).toBeVisible()
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
-    expect(pipelineOnDisk()).toContain("def priced_v1(")
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
+    expect(pipelineOnDisk()).toContain("def enriched_v1(")
     expect(saveSubjects(work)).toEqual(before)
   })
 
   test("Save & restore keeps the unsaved edits as a save before restoring", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
-    await renameNode(page, "priced_v1", "priced_unsaved")
+    await renameAndSave(page, "enriched", "enriched_v1")
+    await renameNode(page, "enriched_v1", "enriched_unsaved")
 
     await openGitPanel(page)
     await restoreFrom(rootMilestone(page), page)
@@ -175,43 +175,43 @@ test.describe("restoring a version", () => {
     await page.getByTestId("restore-save").click()
 
     await expect(toast(page, /^Restored Initial scaffold as a new save\.$/)).toBeVisible()
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(pipelineOnDisk()).not.toContain("priced_unsaved")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(pipelineOnDisk()).not.toContain("enriched_unsaved")
     // The edit is in the history, one save below the restore.
     expect(e2eGit(["show", `${ledgerOf(work)}~1:rating/main.py`])).toContain(
-      "def priced_unsaved(",
+      "def enriched_unsaved(",
     )
   })
 
   test("Discard & restore throws the unsaved edits away for good", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
-    await renameNode(page, "priced_v1", "priced_thrown_away")
+    await renameAndSave(page, "enriched", "enriched_v1")
+    await renameNode(page, "enriched_v1", "enriched_thrown_away")
 
     await openGitPanel(page)
     await restoreFrom(rootMilestone(page), page)
     await page.getByTestId("restore-discard").click()
 
     await expect(toast(page, /^Restored Initial scaffold as a new save\.$/)).toBeVisible()
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(e2eGit(["log", "-S", "priced_thrown_away", "--oneline", ledgerOf(work)])).toBe("")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(e2eGit(["log", "-S", "enriched_thrown_away", "--oneline", ledgerOf(work)])).toBe("")
 
     // Nothing brings them back on the next load either.
     await page.reload()
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    await expect(canvasNode(page, "priced_thrown_away")).toHaveCount(0)
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    await expect(canvasNode(page, "enriched_thrown_away")).toHaveCount(0)
   })
 
   test("restoring the wrong version is put right by restoring the one before it", async ({
     page,
   }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
 
     await openGitPanel(page)
     await restoreFrom(rootMilestone(page), page)
     await page.getByTestId("restore-confirm").click()
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
 
     // The save made before the mistaken restore is still in the history.
     await openGitPanel(page)
@@ -219,8 +219,8 @@ test.describe("restoring a version", () => {
     await restoreFrom(pendingRows(page).last(), page)
     await page.getByTestId("restore-confirm").click()
 
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
-    expect(pipelineOnDisk()).toContain("def priced_v1(")
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
+    expect(pipelineOnDisk()).toContain("def enriched_v1(")
     const [newest, second, third] = saveSubjects(work)
     expect(newest).toMatch(/^Restored /)
     expect(second).toMatch(/^Restored /)
@@ -229,7 +229,7 @@ test.describe("restoring a version", () => {
 
   test("a double click on Restore makes one restore", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     const before = saveSubjects(work).length
 
     await openGitPanel(page)
@@ -237,17 +237,17 @@ test.describe("restoring a version", () => {
     await page.getByTestId("restore-confirm").dblclick()
 
     await expect(toast(page, /^Restored Initial scaffold as a new save\.$/)).toBeVisible()
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
     expect(saveSubjects(work).length).toBe(before + 1)
   })
 
   test("after a restore the branch commits a milestone as usual", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     await openGitPanel(page)
     await restoreFrom(rootMilestone(page), page)
     await page.getByTestId("restore-confirm").click()
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
 
     await commitMilestone(page, "Back to the scaffold")
 
@@ -273,7 +273,7 @@ test.describe("starting a branch from a version", () => {
     page,
   }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
 
     await openGitPanel(page)
     await rootMilestone(page).getByTestId("git-panel-start-branch").click()
@@ -284,16 +284,16 @@ test.describe("starting a branch from a version", () => {
     await forkCreate(page).click()
 
     await expectOnBranch(page, "from-root")
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(pipelineOnDisk()).toContain("def priced(")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(pipelineOnDisk()).toContain("def enriched(")
     // The branch left behind keeps its save.
-    expect(pipelineSavedOn(work)).toContain("def priced_v1(")
+    expect(pipelineSavedOn(work)).toContain("def enriched_v1(")
   })
 
   test("the row menu starts one from a pending save", async ({ page }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
-    await renameAndSave(page, "priced_v1", "priced_v2")
+    await renameAndSave(page, "enriched", "enriched_v1")
+    await renameAndSave(page, "enriched_v1", "enriched_v2")
 
     await openGitPanel(page)
     await pendingRows(page).last().click({ button: "right" })
@@ -302,16 +302,16 @@ test.describe("starting a branch from a version", () => {
     await forkCreate(page).click()
 
     await expectOnBranch(page, "from-v1")
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
-    expect(pipelineSavedOn(work)).toContain("def priced_v2(")
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
+    expect(pipelineSavedOn(work)).toContain("def enriched_v2(")
   })
 
   test("with unsaved edits, Cancel keeps them and Save first keeps them on the old branch", async ({
     page,
   }) => {
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
-    await renameNode(page, "priced_v1", "priced_draft")
+    await renameAndSave(page, "enriched", "enriched_v1")
+    await renameNode(page, "enriched_v1", "enriched_draft")
 
     await openGitPanel(page)
     await rootMilestone(page).getByTestId("git-panel-start-branch").click()
@@ -323,20 +323,20 @@ test.describe("starting a branch from a version", () => {
     await page.getByTestId("git-navigation-cancel").click()
     await expect(confirm).toHaveCount(0)
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_draft")).toBeVisible()
+    await expect(canvasNode(page, "enriched_draft")).toBeVisible()
     expect(branchExists("after-draft")).toBe(false)
 
     await forkCreate(page).click()
     await page.getByTestId("git-navigation-save").click()
 
     await expectOnBranch(page, "after-draft")
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(pipelineSavedOn(work)).toContain("def priced_draft(")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(pipelineSavedOn(work)).toContain("def enriched_draft(")
   })
 
   test("Discard opens the new branch without the unsaved edits", async ({ page }) => {
     await page.goto("/")
-    await renameNode(page, "priced", "priced_draft")
+    await renameNode(page, "enriched", "enriched_draft")
 
     await openGitPanel(page)
     // The root is the current version: a branch can still start from it.
@@ -346,8 +346,8 @@ test.describe("starting a branch from a version", () => {
     await page.getByTestId("git-navigation-discard").click()
 
     await expectOnBranch(page, "clean-start")
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(e2eGit(["log", "--all", "-S", "priced_draft", "--oneline"])).toBe("")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(e2eGit(["log", "--all", "-S", "enriched_draft", "--oneline"])).toBe("")
   })
 
   test("names that cannot be used are refused, and a corrected name goes through", async ({

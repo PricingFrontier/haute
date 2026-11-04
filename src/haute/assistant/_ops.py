@@ -49,6 +49,7 @@ from haute._polars_steps import (
     STEP_KINDS,
     STEPPED_NODE_TYPES,
     STEPPED_SURFACE_LABELS,
+    STEPS_FROM_CODE,
     PolarsStepError,
     is_stepped_config,
     rename_step_inputs,
@@ -64,12 +65,14 @@ from haute._polars_steps_lift import canonical_steps
 from haute._sandbox import _bound_names
 from haute._types import (
     REQUEST_INPUT_NODE_TYPES,
+    SINGLETON_NODE_NAMES,
     GraphEdge,
     GraphNode,
     NodeData,
     NodeType,
     PipelineGraph,
     SubmodelDefinition,
+    singleton_name_problem,
 )
 from haute.assistant._catalog import INPUT_NAMING_RULE, capability_manifest, new_logic_steps
 from haute.assistant._wire_ops import (
@@ -521,6 +524,14 @@ def _apply_add_node(
     _validate_config(op.node_type, op.config, operation="add_node")
 
     node_id = _sanitize_func_name(op.name)
+    if singleton_name_problem(op.node_type, node_id) is not None:
+        fixed = SINGLETON_NODE_NAMES[op.node_type]
+        _invalid(
+            f"Cannot add node {op.name!r}: this node type is always named {fixed!r}, "
+            "since a pipeline holds one",
+            where={"node": node_id},
+            fix=f"Name it {fixed!r}.",
+        )
     if _node_index(graph, node_id) is not None:
         _invalid(
             f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists",
@@ -1067,6 +1078,13 @@ def _apply_rename_node(
     _refuse_workbench_input(graph, old_id, "rename")
     index = _node_index(graph, old_id)
     assert index is not None
+    fixed = SINGLETON_NODE_NAMES.get(NodeType(graph.nodes[index].data.nodeType))
+    if fixed is not None:
+        _invalid(
+            f"Cannot rename {old_id!r}: it is always named {fixed!r}, since a pipeline holds one",
+            where={"node": old_id},
+            fix="Leave its name as it is.",
+        )
     new_id = _sanitize_func_name(op.new_name)
     if new_id != old_id and _node_index(graph, new_id) is not None:
         _invalid(
@@ -3247,8 +3265,8 @@ def _validate_assistant_authored_graph(
 
 
 def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
-    """*graph* with each transform's steps as the save's reload rebuilds them from its code
-    (READ-22): ids from kind and place, and the canonical form, so the plan's diff and
+    """*graph* with each stepped node's steps as the save's reload rebuilds them from its code
+    (READ-22, READ-44): ids from kind and place, and the canonical form, so the plan's diff and
     postconditions are what the committed graph holds. Steps that cannot render yet are
     saved whole beside the code, and stay as they are."""
     nodes: list[GraphNode] = []
@@ -3256,12 +3274,12 @@ def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
     for node in graph.nodes:
         steps = node.data.config.get("steps")
         if (
-            node.data.nodeType == NodeType.POLARS
+            node.data.nodeType in STEPS_FROM_CODE
             and isinstance(steps, list)
             and node.data.editor.steps_error is None
         ):
             try:
-                reloaded = canonical_steps(NodeType.POLARS, steps)
+                reloaded = canonical_steps(NodeType(node.data.nodeType), steps)
             except PolarsStepError:
                 reloaded = steps
             if reloaded != steps:

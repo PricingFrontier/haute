@@ -1290,13 +1290,10 @@ def _reparsed_config(root: Path, node_id: str) -> dict:
 
 
 def _as_reloaded(node: str, steps: list[dict]) -> list[dict]:
-    """*steps* as a reload holds them: a transform's (``t``) steps live only in its code
-    and come back with ids from kind and place (READ-22); every other stepped surface
-    keeps its steps, ids included, in its config. It holds for steps that each rebuild as
-    themselves: a free-code statement a structured step renders exactly comes back as that
-    step, and two adjacent code steps as one."""
-    if node != "t":
-        return steps
+    """*steps* as a reload holds them: a stepped node's steps live only in its code and come
+    back with ids from kind and place (READ-22, READ-43, READ-44). It holds for steps that
+    each rebuild as themselves: a free-code statement a structured step renders exactly
+    comes back as that step, and two adjacent code steps as one."""
     return [{**step, "id": f"{step['kind']}-{place}"} for place, step in enumerate(steps, 1)]
 
 
@@ -1889,7 +1886,13 @@ _QUOTE_INPUT = {
 
 def _add_quote_input_and_transform(config: dict[str, object]) -> list[dict[str, object]]:
     return [
-        {"op": "add_node", "node_type": "apiInput", "name": "quote", "ref": "q", "config": config},
+        {
+            "op": "add_node",
+            "node_type": "apiInput",
+            "name": "quote_input",
+            "ref": "q",
+            "config": config,
+        },
         {
             "op": "add_node",
             "node_type": "polars",
@@ -1928,7 +1931,7 @@ class TestDeclaredQuoteInputSchemas:
         assert declared == [
             {
                 "kind": "input_schema_declared",
-                "node": "quote",
+                "node": "quote_input",
                 "table": "policy",
                 "tier": "declared",
                 "column_count": 2,
@@ -1986,7 +1989,7 @@ class TestDeclaredQuoteInputSchemas:
         assert raised.value.status_code == 400
         detail = str(raised.value.detail)
         assert "table 'quotes'" in detail
-        assert "Quote Input 'quote'" in detail
+        assert "Quote Input 'quote_input'" in detail
         assert "node 'quotes'" in detail
         assert source.read_text(encoding="utf-8") == PIPELINE_SOURCE
         assert len(service.plan_store) == 0

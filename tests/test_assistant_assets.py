@@ -147,7 +147,9 @@ class TestExemplars:
         factor = nodes["banded"]["config"]["factors"][0]
         assert factor["banding"] == "categorical"
         assert {"value": "detached", "assignment": "house"} in factor["rules"]
-        assert nodes["response"]["config"]["output_mapping"][0]["output_path"].startswith("$[:].")
+        assert nodes["quote_response"]["config"]["output_mapping"][0]["output_path"].startswith(
+            "$[:]."
+        )
 
     def test_summary_is_first_docstring_line(self):
         for name, summary in example_index():
@@ -366,9 +368,9 @@ class TestExecutableBundles:
     ):
         resources = {
             "expected_graph.json": {"node_types": ["output"], "edge_count": 0},
-            "expected_schema.json": {"target": "response", "required_columns": ["expected"]},
+            "expected_schema.json": {"target": "quote_response", "required_columns": ["expected"]},
             "assertions.json": {
-                "target": "response",
+                "target": "quote_response",
                 "required_columns": ["actual"],
                 "checks": ["parse", "execute"],
             },
@@ -395,7 +397,7 @@ class TestExecutableBundles:
             _assets,
             "_read_bundle_json",
             lambda _bundle, _path: {
-                "target": "response",
+                "target": "quote_response",
                 "required_columns": ["value"],
                 "checks": ["parse", "execute", "trace"],
             },

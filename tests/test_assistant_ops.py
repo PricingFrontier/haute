@@ -19,7 +19,15 @@ from pathlib import Path
 import pytest
 
 from haute._graph_utils import _sanitize_func_name
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute._polars_steps_lift import canonical_steps
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    SubmodelDefinition,
+)
 from haute.assistant._ops import (
     AssistantOperationError,
     ConfigVisibility,
@@ -188,6 +196,19 @@ class TestAddNode:
     def test_unknown_node_type_rejected(self):
         with pytest.raises(OpValidationError):
             _apply(_graph([]), [{"op": "add_node", "node_type": "notAType", "name": "x"}])
+
+    def test_a_quote_input_is_named_by_its_type(self):
+        """A pipeline holds one Quote Input, so its type names it (READ-46)."""
+
+        with pytest.raises(OpValidationError, match="always named 'quote_input'") as refused:
+            _apply(_graph([]), [{"op": "add_node", "node_type": "apiInput", "name": "quote"}])
+        assert refused.value.fix == "Name it 'quote_input'."
+        assert refused.value.where["node"] == "quote"
+
+        out = _apply(
+            _graph([]), [{"op": "add_node", "node_type": "apiInput", "name": "quote_input"}]
+        )
+        assert _get(out, "quote_input").data.nodeType == NodeType.API_INPUT
 
     def test_sanitized_id_collision_is_rejected_without_changing_input(self):
         graph = _graph([_node("My_Step")])
@@ -462,7 +483,7 @@ def test_an_output_row_ref_to_a_node_the_plan_deleted_is_an_unknown_reference():
                 {
                     "op": "add_node",
                     "node_type": "output",
-                    "name": "response",
+                    "name": "quote_response",
                     "config": {"output_mapping": [row]},
                 },
             ],
@@ -1264,15 +1285,29 @@ class TestRenameNode:
 
         assert "renamed" in _ids(out)
 
-    def test_rename_of_an_api_input_keeps_its_frame_names(self):
+    @pytest.mark.parametrize(
+        ("node_id", "node_type"),
+        [("quote_input", "apiInput"), ("quote_response", "output")],
+    )
+    def test_a_quote_input_or_response_keeps_its_one_name(self, node_id: str, node_type: str):
+        """A pipeline holds one of each, so its type names it and no rename applies (READ-46)."""
+
         graph = _graph(
-            [_node("api", "apiInput"), _node("sink", code="df = quotes")],
-            [_edge("api", "sink", sh="quotes")],
+            [_node("priced", code="df = quotes"), _node(node_id, node_type)],
+            [
+                _edge("quote_input", "priced", sh="quotes")
+                if node_type == "apiInput"
+                else _edge("priced", "quote_response")
+            ],
         )
 
-        out = _apply(graph, [{"op": "rename_node", "node": "api", "new_name": "requests"}])
+        with pytest.raises(
+            OpValidationError, match=f"Cannot rename '{node_id}': it is always named '{node_id}'"
+        ) as refused:
+            _apply(graph, [{"op": "rename_node", "node": node_id, "new_name": "requests"}])
 
-        assert "requests" in _ids(out)
+        assert refused.value.where["node"] == node_id
+        assert _ids(graph) == {"priced", node_id}
 
     def test_rename_applies_after_an_earlier_op_rewrites_the_consumer(self):
         graph = _graph(
@@ -2107,15 +2142,17 @@ class TestSemanticPlans:
                 ],
             )
 
-        assert "step 2 ('logic')" in str(excinfo.value)
-        assert excinfo.value.where["step"] == "logic"
+        # The plan holds the steps as the save's reload will, each id its kind and place
+        # (READ-44).
+        assert "step 2 ('free_code-2')" in str(excinfo.value)
+        assert excinfo.value.where["step"] == "free_code-2"
 
     @pytest.mark.parametrize(
         ("node", "steps", "named"),
         [
             # The rendered `df = prepared` line retains a frame, but not this step's. The
-            # plan holds a transform's steps as its reload will, each id its kind and place
-            # (READ-22).
+            # plan holds a stepped node's steps as its reload will, each id its kind and
+            # place (READ-22, READ-44).
             (
                 "t",
                 [
@@ -2130,7 +2167,7 @@ class TestSemanticPlans:
                     {"id": "keep", "kind": "limit", "n": 2},
                     {"id": "logic", "kind": "free_code", "code": "# tidy\ndf.drop('x')"},
                 ],
-                "logic",
+                "free_code-2",
             ),
         ],
     )
@@ -2158,7 +2195,8 @@ class TestSemanticPlans:
             self._stepped_plan(tmp_path, "rated", steps)
         message = str(excinfo.value)
         assert f"Rating Step code sees only df; {name} is not in scope" in message
-        assert "step 1 ('logic')" in message
+        # The plan holds the steps as the save's reload will (READ-44).
+        assert "step 1 ('free_code-1')" in message
 
     @pytest.mark.parametrize(
         "code",
@@ -2193,7 +2231,7 @@ class TestSemanticPlans:
                 "rated",
                 [{"id": "logic", "kind": "free_code", "code": "df = df['prepared']"}],
                 "df is this node's own frame; transform df directly (df = df.filter(...)).",
-                "logic",
+                "free_code-1",
             ),
         ],
     )
@@ -2580,9 +2618,14 @@ class TestSemanticPlans:
         assert replayed.postconditions == plan.postconditions
 
         saved = _apply(graph, ops)
-        # Reparse returns code-mode code normalised; the digest compares it so.
+        # Reparse returns code-mode code normalised, and a stepped node's steps rebuilt from
+        # its code (READ-44); the digest compares them so.
         coded = _get(saved, "coded")
         saved.nodes[saved.nodes.index(coded)] = coded.with_config({"code": "df = src.head(3)"})
+        reloaded = _get(saved, "rated")
+        saved.nodes[saved.nodes.index(reloaded)] = reloaded.with_config(
+            {**reloaded.data.config, "steps": canonical_steps(NodeType.RATING_STEP, steps)}
+        )
         verify_postconditions(saved, plan.postconditions)
 
         rated = _get(saved, "rated")

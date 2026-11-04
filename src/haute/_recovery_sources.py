@@ -9,11 +9,11 @@ from typing import Any
 
 from haute._artifact_paths import conflict, read_artifact, safe_path
 from haute._ast_helpers import _function_body_source, _get_decorator_kwargs
+from haute._code_extraction import holds_incomplete_steps_placeholder, is_declaration_body
 from haute._config_builder import (
     _attach_code_from_body,
-    _reconcile_steps,
+    _with_lifted_steps,
     uncalled_function_body,
-    validate_step_container,
 )
 from haute._config_io import (
     config_from_sidecar,
@@ -22,10 +22,11 @@ from haute._config_io import (
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
 from haute._polars_steps import STEPPED_NODE_TYPES
 from haute._recovery_schemas import RecoveryFieldChange
+from haute._sidecar import read_sidecar_state
 from haute._source_layout import python_lines
 from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
-from haute.errors import ConfigError, ParseError
+from haute.errors import ParseError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
 
 
@@ -101,6 +102,20 @@ def read_raw_node_settings(
                 # The file's format decoded, as a load decodes it: the settings as the
                 # editor holds them, which recovery checks against the contract.
                 raw = {**config_from_sidecar(node_type, value), **raw}
+                if node_type in STEPPED_NODE_TYPES and "steps" in raw:
+                    # The form before a stepped node's code was its only copy of its
+                    # steps (READ-44): they are rebuilt from the body below.
+                    del raw["steps"]
+                    changes.append(
+                        RecoveryFieldChange(
+                            path="/steps",
+                            outcome="removed",
+                            reason=(
+                                f"{reference} held the node's steps, which its code now "
+                                "holds alone; they are rebuilt from the function's body."
+                            ),
+                        )
+                    )
             except (ValueError, UnicodeError) as exc:
                 # There is no archive to fall back to: replacing an unreadable
                 # sidecar from decorator evidence alone would silently discard
@@ -121,6 +136,36 @@ def read_raw_node_settings(
         )
         body = ""
     raw = _attach_code_from_body(raw, node_type, body, params)
+    if node_type in STEPPED_NODE_TYPES and node_type != NodeType.POLARS:
+        if "steps" in raw:
+            # An Explore decorator's steps, the form before READ-43.
+            del raw["steps"]
+            changes.append(
+                RecoveryFieldChange(
+                    path="/steps",
+                    outcome="removed",
+                    reason=(
+                        "The decorator held the node's steps, which its code now holds "
+                        "alone; they are rebuilt from the function's body."
+                    ),
+                )
+            )
+        # A stepped node has its steps rebuilt from its body (READ-43, READ-44), as a load
+        # rebuilds them; one whose body was dropped is written as a declaration, which has
+        # none yet.
+        raw = _with_lifted_steps(
+            raw,
+            function.name,
+            node_type,
+            declaration=body_dropped or is_declaration_body(body),
+        )
+        if not body_dropped and holds_incomplete_steps_placeholder(body):
+            # Its steps wait in the file's .haute.json, their only copy (READ-22, READ-44):
+            # the recovered node keeps them, and is written as the placeholder again.
+            held = read_sidecar_state(safe_path(root, source_file))
+            saved = held.data.unfinished_steps.get(function.name) if held.data else None
+            if isinstance(saved, list):
+                raw["steps"] = saved
     try:
         keyword_parameters = keyword_parameters_from_signature(
             function.args, node_type=node_type, stepped=bool(reference), node_id=function.name
@@ -137,36 +182,6 @@ def read_raw_node_settings(
     else:
         if keyword_parameters:
             raw[KEYWORD_PARAMETERS_KEY] = keyword_parameters
-    if node_type in STEPPED_NODE_TYPES and "steps" in raw:
-        # The ``.py`` body is the runtime truth here as it is in ordinary
-        # parsing: without this, a hand-edited body would be silently
-        # regenerated from stale steps when ``NodeData`` materialises the
-        # recovered candidate, losing the authored edit. A dropped body was
-        # never run, so nothing competes with the steps: they are settings,
-        # kept to regenerate the hook.
-        #
-        # Recovery never raises on a bad field, so a step list the parser
-        # rejects outright (a malformed container, or a list beside an
-        # ``input_mapping`` an edges surface refuses) is dropped rather than
-        # propagated: the node keeps the code its body already holds. The
-        # key is removed, never defaulted to ``[]``, because an empty list
-        # would materialise as empty code and discard that body.
-        try:
-            if body_dropped:
-                validate_step_container(raw, node_type, reference, function.name)
-                reconciled = raw
-                reason = ""
-            else:
-                reconciled, editor = _reconcile_steps(
-                    raw, node_type, params, reference, function.name
-                )
-                reason = editor.steps_discarded or ""
-        except ConfigError as exc:
-            reconciled = {key: value for key, value in raw.items() if key != "steps"}
-            reason = f"{exc}. The node keeps the code in its body."
-        if "steps" not in reconciled:
-            changes.append(RecoveryFieldChange(path="/steps", outcome="removed", reason=reason))
-        raw = reconciled
     return node_type, raw, changes
 
 

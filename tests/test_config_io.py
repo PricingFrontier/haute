@@ -55,9 +55,9 @@ class TestMappings:
             assert FOLDER_TO_NODE_TYPE[folder] is nt
 
     def test_all_non_transform_non_submodel_types_mapped(self):
+        # An Explore node's settings live in config/explore/ (READ-43).
         excluded = {
             NodeType.POLARS,
-            NodeType.EXPLORE,
             # edge-join stores its config inline (decorator kwargs + body,
             # like POLARS) — no sidecar config folder.
             NodeType.EDGE_JOIN,
@@ -90,7 +90,7 @@ class TestConfigPathForNode:
             p = config_path_for_node(nt, "test_node")
             assert p == Path(f"config/{folder}/test_node.json")
 
-    @pytest.mark.parametrize("node_type", [NodeType.EDGE_JOIN, NodeType.EXPLORE, NodeType.POLARS])
+    @pytest.mark.parametrize("node_type", [NodeType.EDGE_JOIN, NodeType.POLARS])
     def test_no_config_folder_type_raises(self, node_type):
         with pytest.raises(ValueError, match="No config folder"):
             config_path_for_node(node_type, "my_transform")

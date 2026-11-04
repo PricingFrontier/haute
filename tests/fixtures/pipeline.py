@@ -14,7 +14,7 @@ pipeline = haute.Pipeline("test_pipeline", description="Test fixture pipeline")
 
 
 @pipeline.api_input(config="config/quote_input/quotes.json")
-def quotes():
+def quote_input():
     """API input source."""
 
 
@@ -56,7 +56,7 @@ def calculate_premium(area_lookup: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/quote_response/output.json")
-def output(calculate_premium):
+def quote_response(calculate_premium):
     """Output node."""
 
 
@@ -65,9 +65,9 @@ def results_write(calculate_premium):
     """Sink node."""
 
 
-pipeline.connect("quotes", "policies", source_port="quotes")
+pipeline.connect("quote_input", "policies", source_port="quotes")
 pipeline.connect("batch_quotes", "policies")
 pipeline.connect("policies", "area_lookup")
 pipeline.connect("area_lookup", "calculate_premium")
-pipeline.connect("calculate_premium", "output")
+pipeline.connect("calculate_premium", "quote_response")
 pipeline.connect("calculate_premium", "results_write")

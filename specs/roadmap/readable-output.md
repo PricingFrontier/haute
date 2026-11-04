@@ -3,7 +3,7 @@
 ## Scope
 
 These packages cover what Haute writes into a project's repository, read as a diff:
-- `main.py` and its `.haute.json` sidecar;
+- `main.py`, the submodel modules and their `.haute.json` sidecars;
 - the node configs under `config/` and the global constants;
 - the Workbench form folder (`workbench/`) and the test quotes;
 - the files `haute init` scaffolds.
@@ -32,9 +32,22 @@ The owner decided the following on 3 November 2026:
   - schema keys on disk are snake_case;
   - generated workflows repeat nothing.
 
+A second look on 4 November 2026, from [throwaway-testing pull request #1](https://github.com/PricingFrontier/throwaway-testing/pull/1), found:
+- **An API Input sidecar takes 10 lines per column.** Its 152 columns made `api_input.json` 1,588 lines, and every column wrote the five settings inference gives it. A response field takes 6 lines.
+- **Five more stepped node types store their steps twice.** Data Input, External File, Rating Step, Model Score and Scenario Expander keep the steps in their sidecar beside the code in their body, so two steps take 36 lines of JSON. Explore keeps them in its decorator.
+- **An Explore node writes its settings into `main.py`**, one setting a line, so one pivot can take 50 lines.
+- **A submodel module writes its port endpoints in camelCase**, `{"nodeId": ..., "handleId": None}`.
+
+The owner decided the following on 4 November 2026:
+- What a run writes, such as an optimiser result, a trained model or a report, is out of scope.
+- An Explore node's settings live in a sidecar, so they do not crowd `main.py`.
+- Every stepped node's code is its only copy of its steps, as a Polars node's is.
+- commercial-pricing's two `"steps": []` lines are removed by hand, in a commit of their own, with no script.
+- A pipeline holds one request input and one response node, so each is named by its type alone, `quote_input`, `quote_response`, `workbench_input` or `workbench_output`, with no number after it (`Workbench_Input_1`). The name is fixed. commercial-pricing's two are renamed by hand.
+
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
-All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). Each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
+All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). A change that only leaves something out, as READ-42 did for API Input columns, needs no conversion: the old file still loads and its next save writes the new form. In the 4 November round, Haute's fixtures are converted in the change's own pull request and commercial-pricing by hand (READ-44). Otherwise each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
 

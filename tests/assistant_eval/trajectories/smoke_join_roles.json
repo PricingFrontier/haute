@@ -41,7 +41,7 @@
                       "right_on": [
                         "quote_id"
                       ],
-                      "output_name": "enriched_quotes",
+                      "output_name": "quote_response",
                       "output_columns": [
                         "quote_id",
                         "premium",

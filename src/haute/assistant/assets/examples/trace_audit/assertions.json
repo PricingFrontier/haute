@@ -1,1 +1,1 @@
-{"target":"response","row_count":2,"required_columns":["derived_value"],"checks":["parse","execute","trace","dry_run"]}
+{"target":"quote_response","row_count":2,"required_columns":["derived_value"],"checks":["parse","execute","trace","dry_run"]}

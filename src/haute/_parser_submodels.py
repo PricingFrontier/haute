@@ -10,7 +10,7 @@ Handles:
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -27,6 +27,7 @@ from haute._ast_helpers import (
     _reject_reserved_global_constants_bindings,
     is_submodel_import,
 )
+from haute._config_validation import camel_case_endpoint_message
 from haute._flatten import flatten_graph
 from haute._graph_builders import (
     _build_edges,
@@ -553,8 +554,13 @@ def _extract_definition_contract(
                                 "{'name': ..., 'targets': [...]} or {'name': ..., 'source': {...}}."
                             ),
                         )
+                camel_case = camel_case_endpoint_message(field, raw_port)
+                if camel_case is not None:
+                    raise ParseError(camel_case, field=field)
         try:
-            return [model.model_validate(port) for port in raw_ports]
+            # A module names an endpoint's keys in snake_case; the aliases are the
+            # graph API's (READ-45).
+            return [model.model_validate(port, by_alias=False, by_name=True) for port in raw_ports]
         except ValueError as exc:
             raise ParseError(
                 f"Submodel {field} contains an invalid public port.",
@@ -572,12 +578,17 @@ def parse_submodel_source(
     source: str,
     source_file: str = "",
     _base_dir: Path | None = None,
+    *,
+    _unfinished_steps_from_sidecars: bool = False,
+    _read_sidecar_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> PipelineGraph:
     """Parse submodel source code and return a PipelineGraph.
 
     *_base_dir* is the directory of the pipeline that registers the file: its
     ``config=`` references resolve there, and the constructor's ``pipeline_dir``
-    must lead there from the file.
+    must lead there from the file. With *_unfinished_steps_from_sidecars*, a node
+    saved with an unfinished step list takes it from the module's ``.haute.json``,
+    as the pipeline's nodes take theirs.
     """
 
     try:
@@ -619,6 +630,15 @@ def parse_submodel_source(
     explicit_connects = _extract_connect_calls(tree, receiver="submodel")
     edges = _build_edges(raw_nodes, explicit_connects)
     rf_nodes = _build_rf_nodes(raw_nodes)
+    if _unfinished_steps_from_sidecars and source_file:
+        from haute._sidecar import with_saved_unfinished_steps
+
+        rf_nodes = with_saved_unfinished_steps(
+            rf_nodes,
+            {str(node["func_name"]) for node in raw_nodes if node["steps_placeholder"]},
+            Path(source_file),
+            read_bytes=_read_sidecar_bytes,
+        )
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,
         explicit_connects=explicit_connects,

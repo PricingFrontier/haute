@@ -94,7 +94,8 @@ class CodeSurfaceConfig(NodeConfigBase, total=False):
     code: str
     """The Polars code the node's function runs; when `steps` are present, their rendering."""
     steps: list[dict[str, Any]]
-    """The low-code steps the node's code is rendered from, in order."""
+    """The low-code steps, in order, rebuilt from the node's code each time it loads; the
+    config file does not hold them."""
 
 
 # ---------------------------------------------------------------------------

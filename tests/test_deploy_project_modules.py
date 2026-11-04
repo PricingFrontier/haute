@@ -46,7 +46,7 @@ pipeline = haute.Pipeline("utility_quote", description="Scales the quote by a ut
 
 
 @pipeline.api_input(config="config/request.json")
-def quote(): ...
+def quote_input(): ...
 
 
 @pipeline.polars
@@ -55,11 +55,11 @@ def scaled(quote: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def response(scaled): ...
+def quote_response(scaled): ...
 
 
-pipeline.connect("quote", "scaled", source_port="quote")
-pipeline.connect("scaled", "response")
+pipeline.connect("quote_input", "scaled", source_port="quote")
+pipeline.connect("scaled", "quote_response")
 '''
 
 _CONTAINER_DEPLOY = (

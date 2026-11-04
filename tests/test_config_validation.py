@@ -205,13 +205,6 @@ class TestBuildNodeConfigProducesValidKeys:
                 id="edge_join",
             ),
             pytest.param(
-                NodeType.EXPLORE,
-                {},
-                "",
-                ["df"],
-                id="explore",
-            ),
-            pytest.param(
                 NodeType.POLARS,
                 {},
                 '    """doc"""\n    return df',
@@ -235,16 +228,12 @@ class TestBuildNodeConfigProducesValidKeys:
 
     @pytest.mark.parametrize("overview", [True, "schema", ["schema"]])
     def test_explore_overview_must_be_a_dict(self, overview):
-        """Explore overview decorators fail loudly when the block is not a dict."""
-        from haute._config_builder import _build_node_config
+        """An Explore sidecar's overview fails loudly when the block is not a dict: its
+        settings are read from the sidecar (READ-43)."""
+        from haute._config_io import explore_settings
 
         with pytest.raises(ConfigError, match="overview config must be a dict"):
-            _build_node_config(
-                NodeType.EXPLORE,
-                {"overview": overview},
-                "",
-                ["df"],
-            )
+            explore_settings({"overview": overview}, context="explore sidecar")
 
     @pytest.mark.parametrize(
         "key",
@@ -259,15 +248,10 @@ class TestBuildNodeConfigProducesValidKeys:
     @pytest.mark.parametrize("value", ["true", 1, None])
     def test_explore_overview_known_keys_must_be_boolean(self, key, value):
         """Known overview-card toggles must be real booleans, not truthy values."""
-        from haute._config_builder import _build_node_config
+        from haute._config_io import explore_settings
 
         with pytest.raises(ConfigError, match="known overview key"):
-            _build_node_config(
-                NodeType.EXPLORE,
-                {"overview": {key: value}},
-                "",
-                ["df"],
-            )
+            explore_settings({"overview": {key: value}}, context="explore sidecar")
 
 
 def _node_defaults() -> dict[str, dict[str, Any]]:

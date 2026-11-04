@@ -375,11 +375,13 @@ test.describe("Explore cached field pivot journey", () => {
 
     // Edit Explore Polars code to raise
     await page.getByTestId("node-panel").getByRole("tab", { name: "Transform", exact: true }).click()
-    // The reloaded step list opens with its cards collapsed, so the Free code
-    // card is expanded before its editor can be typed into.
-    const freeCodeCard = page.getByRole("button", { name: "Step 1: Free code", exact: true })
-    await expect(freeCodeCard).toBeVisible()
-    if ((await freeCodeCard.getAttribute("aria-expanded")) !== "true") await freeCodeCard.click()
+    // Reloaded, the steps are rebuilt from the saved code (READ-43): the column the Free
+    // code step computed is a Formula step now, so the raising code goes in a new
+    // Free code step after it.
+    const reloadedSteps = page.getByTestId("polars-steps-editor")
+    await expect(reloadedSteps.getByRole("button", { name: "Step 1: Formula", exact: true })).toBeVisible()
+    await reloadedSteps.getByRole("button", { name: "Add step" }).click()
+    await reloadedSteps.getByRole("menuitem", { name: "Free code" }).click()
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.press("Control+A")
@@ -408,11 +410,9 @@ test.describe("Explore cached field pivot journey", () => {
     // The previous generation is still there, now stale for this code
     await expect(exploreData(page)).toHaveAttribute("data-availability", "stale")
 
-    // Restore code and Re-cache: report is fresh again
-    await editor.click()
-    await page.keyboard.press("Control+A")
-    await page.keyboard.type('df = df.with_columns((pl.col("value") * 2000).alias("derived_value"))')
-    await expect(editor).toContainText("derived_value")
+    // Remove the raising step, which restores the cached code, and Re-cache: fresh again
+    await reloadedSteps.getByRole("button", { name: /^Delete Step 2/ }).click()
+    await expect(reloadedSteps.getByRole("button", { name: /^Step 2:/ })).toHaveCount(0)
 
     await refreshNode(page)
     await expect(exploreData(page)).toHaveAttribute("data-availability", "current", { timeout: 60_000 })

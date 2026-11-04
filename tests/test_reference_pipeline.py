@@ -54,12 +54,12 @@ def test_default_pipeline_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     assert result.exit_code == 0, result.output
     assert "Pipeline: reference (3 nodes)" in result.output
-    assert "\u2713 priced: 4 cols" in result.output
-    assert "Output - priced (6 rows):" in result.output
+    assert "\u2713 quote_response: 4 cols" in result.output
+    assert "Output - quote_response (6 rows):" in result.output
     assert "\u2717" not in result.output
 
     # The same parse-and-execute path `haute run` takes, read back as records.
-    priced = execute_graph(parse_pipeline_file(checkout / pipeline))["priced"]
+    priced = execute_graph(parse_pipeline_file(checkout / pipeline))["quote_response"]
     assert priced.status == "ok", priced.error
     assert priced.preview == [
         {"quote_id": "q1", "vehicle_age": 7, "driver_band": "(-inf, 25]", "sum_insured": 18000},

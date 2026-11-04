@@ -462,8 +462,8 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
     graph = PipelineGraph(
         nodes=[
             GraphNode(
-                id="request",
-                data=NodeData(label="request", nodeType=NodeType.API_INPUT, config={}),
+                id="quote_input",
+                data=NodeData(label="quote_input", nodeType=NodeType.API_INPUT, config={}),
             ),
             _edge_join_node(
                 {
@@ -476,14 +476,14 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
         edges=[
             GraphEdge(
                 id="e_quotes_join",
-                source="request",
+                source="quote_input",
                 sourceHandle="quotes",
                 target="join",
                 targetHandle="base",
             ),
             GraphEdge(
                 id="e_lookup_join",
-                source="request",
+                source="quote_input",
                 sourceHandle="lookup",
                 target="join",
                 targetHandle="join",
@@ -494,11 +494,11 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
     code = graph_to_code(graph, pipeline_name="joins")
 
     assert (
-        'pipeline.connect("request", "Join_Rates", source_port="quotes", target_port="base")'
+        'pipeline.connect("quote_input", "Join_Rates", source_port="quotes", target_port="base")'
         in code
     )
     assert (
-        'pipeline.connect("request", "Join_Rates", source_port="lookup", target_port="join")'
+        'pipeline.connect("quote_input", "Join_Rates", source_port="lookup", target_port="join")'
         in code
     )
 
@@ -596,7 +596,7 @@ def test_submodel_edge_join_codegen_uses_public_input_role_edge() -> None:
     module = files["modules/rating.py"]
     assert "base_input=" not in module
     assert "join_input=" not in module
-    assert '"targets": [{"nodeId": "join", "handleId": "base"}]' in module
+    assert '"targets": [{"node_id": "join", "handle_id": "base"}]' in module
     assert 'submodel.connect("Lookup", "Join", target_port="join")' in module
 
 
@@ -814,7 +814,7 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.api_input(api_input=True)
-    def quotes() -> pl.DataFrame:
+    def quote_input() -> pl.DataFrame:
         raise AssertionError("score() should seed API inputs without calling the source")
 
     @pipeline.data_input
@@ -822,9 +822,9 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(quotes, lookup): ...
+    def join_rates(quote_input, lookup): ...
 
-    pipeline.connect("quotes", "join_rates", target_port="base")
+    pipeline.connect("quote_input", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
 
     result = pipeline.score(pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]}))

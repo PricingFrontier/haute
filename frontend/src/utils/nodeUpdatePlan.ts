@@ -9,7 +9,12 @@ import {
 } from "./apiInputPorts"
 import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
-import { renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
+import {
+  codeStepReadsInputMessage,
+  freeCodeInputRead,
+  renameStepInputs,
+  steppedSurfaceAllowsInputReferences,
+} from "./polarsStepInputs"
 import { isPlainObject } from "../types/guards"
 
 type RenamePair = { from: string; to: string }
@@ -265,21 +270,45 @@ function targetInputCollision(affected: AffectedRenameTarget): string | null {
   return null
 }
 
+/** *target*'s config as the plan has changed it so far. */
+function plannedConfig(changes: MappingChanges, affected: AffectedRenameTarget): Record<string, unknown> {
+  return changes.get(affected.scope)?.get(affected.target.id)
+    ?? ((affected.target.data.config ?? {}) as Record<string, unknown>)
+}
+
 /** A stepped original on a surface whose steps may name its inputs (a Transform, an External File). */
-function isSteppedOrdinaryTransform(node: Node): boolean {
+function isSteppedOrdinaryTransform(node: Node, config: Record<string, unknown>): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
-  const config = (node.data.config ?? {}) as Record<string, unknown>
   return Array.isArray(config.steps)
 }
 
 /** A free-code original on a surface whose code names its inputs (a Transform, an External File). */
-function isCodedOrdinaryTransform(node: Node): boolean {
+function isCodedOrdinaryTransform(node: Node, config: Record<string, unknown>): boolean {
   if (!steppedSurfaceAllowsInputReferences(String(node.data.nodeType))) return false
-  const config = (node.data.config ?? {}) as Record<string, unknown>
   // A stepped transform's `code` is the rendering of its steps; renames
   // rewrite the step references instead of recording an input_mapping.
   if (Array.isArray(config.steps)) return false
   return typeof config.code === "string" && config.code.trim().length > 0
+}
+
+/**
+ * A stepped transform whose free-code step reads a renamed input by name would
+ * keep reading the old name, which the rename cannot rewrite in its code; the
+ * browser's copy of the code may not be the current steps' rendering, so the
+ * node cannot safely become code either. The rename is refused, saying how to
+ * read the input instead.
+ */
+function refuseCodeStepReadingRenamedInput(
+  changes: MappingChanges,
+  affected: AffectedRenameTarget,
+): NodeUpdatePlanFailure | null {
+  const { target, pairs } = affected
+  const config = plannedConfig(changes, affected)
+  if (!isSteppedOrdinaryTransform(target, config)) return null
+  const renamed = pairs.filter(({ from, to }) => from !== to).map(({ from }) => from)
+  const read = freeCodeInputRead(config.steps as unknown[], renamed)
+  if (read === null) return null
+  return { ok: false, error: codeStepReadsInputMessage(String(target.data.label ?? target.id), read) }
 }
 
 /**
@@ -293,14 +322,14 @@ function rewriteSteppedTransformInputs(
   affected: AffectedRenameTarget,
 ): NodeUpdatePlanFailure | null {
   const { scope, target, pairs } = affected
-  if (!isSteppedOrdinaryTransform(target)) return null
+  const config = plannedConfig(changes, affected)
+  if (!isSteppedOrdinaryTransform(target, config)) return null
   const label = String(target.data.label ?? target.id)
   const edgeCollision = targetInputCollision(affected)
   if (edgeCollision !== null) {
     return { ok: false, error: `Target "${label}" already has an input named "${edgeCollision}".` }
   }
   const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
-  const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
   const renamed = renameStepInputs(config.steps as unknown[], new Map(pairs.map(({ from, to }) => [from, to])))
   if (!renamed.ok) return { ok: false, error: `Target "${label}" already has an input named "${renamed.duplicate}".` }
   if (!renamed.changed) return null
@@ -320,14 +349,14 @@ function preserveCodedTransformBindings(
   affected: AffectedRenameTarget,
 ): NodeUpdatePlanFailure | null {
   const { scope, target, pairs } = affected
-  if (!isCodedOrdinaryTransform(target)) return null
+  const config = plannedConfig(changes, affected)
+  if (!isCodedOrdinaryTransform(target, config)) return null
   const edgeCollision = targetInputCollision(affected)
   const label = String(target.data.label ?? target.id)
   if (edgeCollision !== null) {
     return { ok: false, error: `Target "${label}" already has an input named "${edgeCollision}".` }
   }
   const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
-  const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
   const mapping: Record<string, string> = {}
   if (isPlainObject(config.input_mapping)) {
     for (const [logical, current] of Object.entries(config.input_mapping)) {
@@ -437,6 +466,8 @@ function collectMappingChanges(
         false,
       )
       if (failure) return failure
+      const codeStepFailure = refuseCodeStepReadingRenamedInput(changes, affected)
+      if (codeStepFailure) return codeStepFailure
       const bindingFailure = preserveCodedTransformBindings(changes, affected)
       if (bindingFailure) return bindingFailure
       const stepFailure = rewriteSteppedTransformInputs(changes, affected)

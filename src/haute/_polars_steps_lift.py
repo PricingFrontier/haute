@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal
 
+from haute._code_extraction import normalise_user_code
 from haute._polars_steps import (
     _OPERAND_ARGUMENT_LITERALS,
     _STRING_OPERATORS,
@@ -100,6 +101,16 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
     """
     rendered = render_node_steps(node_type, steps)
     assert isinstance(steps, list)
+    if stepped_surface_for(node_type).start == "frame":
+        # A frame surface's body is read through extraction's finaliser, which takes the
+        # provably redundant brackets off a lone ``df = (...)`` (READ-44): such steps are
+        # what that code rebuilds as. Every kind's finaliser is the one ``polars`` names.
+        read = normalise_user_code(rendered.code, kind="polars")
+        if read != rendered.code.strip():
+            try:
+                return lift_steps(node_type, read)
+            except StepLiftError:
+                pass
     owner: dict[int, Mapping[str, Any]] = {}
     for step, (start, end) in zip(steps, rendered.step_lines, strict=True):
         for line in range(start, end + 1):

@@ -336,9 +336,12 @@ def test_scoped_save_that_adds_code_imports_polars_for_the_hook(tmp_path):
     rate = next(node for node in document.nodes if node.authored_id == "rate")
     assert rate.scoped_editable is True
 
+    # The declaration loads with no steps yet (READ-44); the save adds one.
+    assert (rate.config or {})["steps"] == []
+    added = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
     apply_scoped_node_save(
         project_root=tmp_path,
-        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "code": "df = df.head(1)"}),
+        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "steps": added}),
     )
 
     saved = main.read_text(encoding="utf-8")
@@ -609,27 +612,29 @@ def test_scoped_save_refuses_a_config_error_as_not_loadable(
     """A setting the validator refuses with a ``ConfigError`` (not a ``ValueError``)
     gets the same structured not-loadable refusal, never an unhandled 500."""
     from haute._config_io import config_path_for_node, node_config_json, palette_default_config
-    from haute._types import NODE_TYPE_TO_DECORATOR
+    from haute._types import NODE_TYPE_TO_DECORATOR, SINGLETON_NODE_NAMES
 
     config = palette_default_config(node_type)
     if node_type is NodeType.MODEL_SCORE:
         config["registered_model"] = "motor"
-    sidecar = config_path_for_node(node_type, "target").as_posix()
+    # A Quote Response is named by its type (READ-46).
+    name = SINGLETON_NODE_NAMES.get(node_type, "target")
+    sidecar = config_path_for_node(node_type, name).as_posix()
     decorator = NODE_TYPE_TO_DECORATOR[node_type]
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     # A broken sibling makes the document degraded, where the scoped save applies.
     (tmp_path / "main.py").write_text(
         "import haute\n"
         'pipeline = haute.Pipeline("demo")\n'
-        f'@pipeline.{decorator}(config="{sidecar}")\ndef target(): ...\n'
+        f'@pipeline.{decorator}(config="{sidecar}")\ndef {name}(): ...\n'
         '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
     )
     (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
     (tmp_path / sidecar).parent.mkdir(parents=True)
-    (tmp_path / sidecar).write_text(node_config_json(node_type, config, node_label="target"))
+    (tmp_path / sidecar).write_text(node_config_json(node_type, config, node_label=name))
     use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
-    target = next(node for node in document.nodes if node.authored_id == "target")
+    target = next(node for node in document.nodes if node.authored_id == name)
     assert target.scoped_editable is True
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 

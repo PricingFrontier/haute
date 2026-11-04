@@ -19,7 +19,7 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.api_input(config="config/request.json")
-def quote():
+def quote_input():
     """Represent the live quote request source."""
 
 
@@ -47,12 +47,12 @@ def combined(vehicle_features: pl.LazyFrame, customer_features: pl.LazyFrame) ->
 
 
 @pipeline.output(config="config/output.json")
-def response(combined):
+def quote_response(combined):
     """Return the combined features for the response."""
 
 
-pipeline.connect("quote", "vehicle_features", source_port="quote")
-pipeline.connect("quote", "customer_features", source_port="quote")
+pipeline.connect("quote_input", "vehicle_features", source_port="quote")
+pipeline.connect("quote_input", "customer_features", source_port="quote")
 pipeline.connect("vehicle_features", "combined")
 pipeline.connect("customer_features", "combined")
-pipeline.connect("combined", "response")
+pipeline.connect("combined", "quote_response")

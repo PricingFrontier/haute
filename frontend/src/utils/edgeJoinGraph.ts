@@ -1,5 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
-import { isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
+import { codeStepReadsInputMessage, freeCodeInputRead, isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { withEdgeIdentity } from "./edgeIds"
@@ -462,6 +462,11 @@ function rewriteDownstreamInputMapping(
 
   const config = { ...(node.data.config as Record<string, unknown> | undefined) }
   if (isSteppedTransformConfig(config)) {
+    // A code step reading the input by name would keep the old name, which the join's
+    // name cannot replace inside its code, so the insertion is refused.
+    if (freeCodeInputRead(config.steps, [oldCurrentInputName]) !== null) {
+      throw new Error(codeStepReadsInputMessage(String(node.data.label ?? node.id), oldCurrentInputName))
+    }
     // A stepped transform addresses inputs by edge name inside its steps and
     // never carries input_mapping, so the join name replaces the old input
     // reference directly.

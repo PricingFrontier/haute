@@ -1,6 +1,6 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
 import { edgeId } from "./edgeIds"
-import { NODE_TYPE_META, type NodeTypeValue } from "./nodeTypes"
+import { NODE_TYPE_META, SINGLETON_NODE_NAMES, type NodeTypeValue } from "./nodeTypes"
 
 type AppNodeParams = {
   id: string
@@ -78,6 +78,9 @@ const functionKey = (label: string): string => label.trim().replace(/\W+/g, "_")
  * holds the name (`polars`, then `polars_2`), ignoring case as function names must differ.
  */
 export function freshNodeLabel(type: NodeTypeValue, taken: Iterable<string>): string {
+  // A request input or response node has its type's one name (READ-46).
+  const fixed = SINGLETON_NODE_NAMES[type]
+  if (fixed !== undefined) return fixed
   const used = new Set([...taken].map(functionKey))
   const base = typeName(type)
   if (!used.has(base)) return base

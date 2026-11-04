@@ -16,7 +16,6 @@ import pytest
 from haute._config_io import load_node_config, node_config_json
 from haute._rating import _apply_rating_table
 from haute._rating_step_config import (
-    GRID_CONVERSION,
     compact_rating_config_for_sidecar,
     entries_from_grid,
     grid_from_entries,
@@ -130,7 +129,7 @@ def test_a_missing_cell_misses_and_a_zero_is_a_rate() -> None:
     assert _apply_rating_table(frame, table).collect()["f"].to_list() == [0.0, 9.0]
 
 
-def test_a_sidecar_in_the_row_array_form_is_refused_naming_the_conversion(
+def test_a_sidecar_in_the_row_array_form_is_refused_naming_the_grid(
     tmp_path: Path,
 ) -> None:
     sidecar = tmp_path / "config" / "rating_step" / "rate.json"
@@ -139,7 +138,7 @@ def test_a_sidecar_in_the_row_array_form_is_refused_naming_the_conversion(
         b'{"tables": [{"factors": ["k"], "output_column": "f", '
         b'"entries": [{"k": "a", "value": 1}]}]}'
     )
-    with pytest.raises(ConfigSettingError, match=GRID_CONVERSION):
+    with pytest.raises(ConfigSettingError, match='Write its "entries" as the grid'):
         load_node_config("config/rating_step/rate.json", base_dir=tmp_path)
 
 

@@ -1,1 +1,1 @@
-{"target":"response","required_columns":["prediction"]}
+{"target":"quote_response","required_columns":["prediction"]}

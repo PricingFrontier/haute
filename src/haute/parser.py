@@ -54,6 +54,7 @@ from haute._parser_submodels import (
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
+from haute._sidecar import with_saved_unfinished_steps
 from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
 from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
@@ -157,6 +158,7 @@ def parse_pipeline_file(filepath: str | Path, *, flatten: bool = False) -> Pipel
         flatten=flatten,
         _base_dir=filepath.parent,
         _submodel_base_dir=submodel_base_dir,
+        _unfinished_steps_from_sidecars=True,
     )
 
 
@@ -178,6 +180,7 @@ def parse_submodel_file(
         source,
         source_file=str(filepath),
         _base_dir=_base_dir or _infer_parse_base_dir(filepath),
+        _unfinished_steps_from_sidecars=True,
     )
 
 
@@ -190,6 +193,8 @@ def parse_pipeline_source(
     _submodel_base_dir: Path | None = None,
     _read_submodel_source: Callable[[Path], str] | None = None,
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
+    _unfinished_steps_from_sidecars: bool = False,
+    _read_sidecar_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> PipelineGraph:
     """Parse pipeline source code strictly, refusing any executable-name violation.
 
@@ -205,6 +210,8 @@ def parse_pipeline_source(
         _submodel_base_dir=_submodel_base_dir,
         _read_submodel_source=_read_submodel_source,
         _read_global_constants_bytes=_read_global_constants_bytes,
+        _unfinished_steps_from_sidecars=_unfinished_steps_from_sidecars,
+        _read_sidecar_bytes=_read_sidecar_bytes,
     )
     if violations:
         raise ParseError(format_name_violations(violations), source_file=source_file or None)
@@ -221,6 +228,8 @@ def parse_pipeline_source_with_name_violations(
     _read_submodel_source: Callable[[Path], str] | None = None,
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
     _read_utility_source: UtilityReader | None = None,
+    _unfinished_steps_from_sidecars: bool = False,
+    _read_sidecar_bytes: Callable[[Path], bytes] = Path.read_bytes,
 ) -> tuple[PipelineGraph, list[NameViolation]]:
     """Parse pipeline source code and return a PipelineGraph with its name violations.
 
@@ -242,6 +251,11 @@ def parse_pipeline_source_with_name_violations(
             than its revision authenticates. Defaults to ``read_user_source``.
         _read_global_constants_bytes: The same override for the global
             constants file the constructor names. Defaults to reading it.
+        _unfinished_steps_from_sidecars: Give each node saved with an unfinished step
+            list its steps from the ``.haute.json`` beside its file, the pipeline's and
+            each submodel module's (:func:`haute._sidecar.with_saved_unfinished_steps`).
+            The file loaders set it, and so does the editor, reading each file through
+            its load's capture (*_read_sidecar_bytes*).
     """
     # Invalid syntax is refused: canonical consumers never receive a recovered graph.
     try:
@@ -275,6 +289,13 @@ def parse_pipeline_source_with_name_violations(
     explicit_connects = _extract_connect_calls(tree)
     edges = _build_edges(raw_nodes, explicit_connects) if raw_nodes else []
     rf_nodes = _build_rf_nodes(raw_nodes)
+    if _unfinished_steps_from_sidecars and source_file:
+        rf_nodes = with_saved_unfinished_steps(
+            rf_nodes,
+            {str(node["func_name"]) for node in raw_nodes if node["steps_placeholder"]},
+            Path(source_file),
+            read_bytes=_read_sidecar_bytes,
+        )
     preamble = _extract_preamble(source, tree=tree)
     preserved_blocks = _extract_preserved_blocks(source)
     preserved = _module_preserve_spans(python_lines(source))
@@ -381,6 +402,8 @@ def parse_pipeline_source_with_name_violations(
                 child_source,
                 source_file=str(sm_filepath),
                 _base_dir=sm_base_dir,
+                _unfinished_steps_from_sidecars=_unfinished_steps_from_sidecars,
+                _read_sidecar_bytes=_read_sidecar_bytes,
             )
             definition_id = child_graph._parser_definition_id
             if definition_id is None:

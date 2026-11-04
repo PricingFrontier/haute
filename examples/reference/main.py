@@ -29,6 +29,6 @@ def features(quotes: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.output(config="config/quote_response/priced.json")
-def priced(features):
+@pipeline.output(config="config/quote_response/quote_response.json")
+def quote_response(features):
     """Return the priced quote rows."""

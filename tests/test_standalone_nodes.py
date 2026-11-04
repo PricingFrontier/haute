@@ -217,7 +217,7 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
         tmp_path,
         NodeType.LIVE_SWITCH,
         "switch",
-        {"input_scenario_map": {"quotes": "live", "cleaned": "batch"}},
+        {"input_scenario_map": {"quote_input": "live", "cleaned": "batch"}},
     )
     namespace = _run_file(
         tmp_path,
@@ -226,8 +226,8 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
         'pipeline = haute.Pipeline("p")\n'
         "opened = []\n\n\n"
         "@pipeline.api_input\n"
-        "def quotes() -> pl.LazyFrame:\n"
-        '    opened.append("quotes")\n'
+        "def quote_input() -> pl.LazyFrame:\n"
+        '    opened.append("quote_input")\n'
         '    return pl.LazyFrame({"source": ["live"]})\n\n\n'
         "@pipeline.polars\n"
         "def history() -> pl.LazyFrame:\n"
@@ -238,15 +238,15 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
         '    opened.append("cleaned")\n'
         "    return history\n\n\n"
         f'@pipeline.live_switch(config="{switch}")\n'
-        "def switch(quotes, cleaned): ...\n\n\n"
-        'pipeline.connect("quotes", "switch")\n'
+        "def switch(quote_input, cleaned): ...\n\n\n"
+        'pipeline.connect("quote_input", "switch")\n'
         'pipeline.connect("history", "cleaned")\n'
         'pipeline.connect("cleaned", "switch")\n',
     )
     pipeline, opened = namespace["pipeline"], namespace["opened"]
 
     assert _collect(pipeline.run(source="live")).to_dicts() == [{"source": "live"}]
-    assert opened == ["quotes"]
+    assert opened == ["quote_input"]
 
     opened.clear()
     assert _collect(pipeline.score(pl.DataFrame({"source": ["scored"]}))).to_dicts() == [
@@ -288,7 +288,7 @@ def test_an_output_declaration_assembles_its_document(tmp_path: Path) -> None:
     output = write_node_config(
         tmp_path,
         NodeType.OUTPUT,
-        "response",
+        "quote_response",
         {
             "output_mapping": [
                 {
@@ -307,8 +307,8 @@ def test_an_output_declaration_assembles_its_document(tmp_path: Path) -> None:
         f'@pipeline.constant(config="{rows}")\n'
         "def rows(): ...\n\n\n"
         f'@pipeline.output(config="{output}")\n'
-        "def response(rows): ...\n\n\n"
-        'pipeline.connect("rows", "response")\n',
+        "def quote_response(rows): ...\n\n\n"
+        'pipeline.connect("rows", "quote_response")\n',
     )
 
     document = _collect(namespace["pipeline"].run(source="batch"))
@@ -674,7 +674,7 @@ def test_a_submodel_definition_reads_its_sidecars_from_the_owning_pipeline(
         '    "rates",\n'
         '    definition_id="rates",\n'
         "    input_ports=[],\n"
-        '    output_ports=[{"name": "rates", "source": {"nodeId": "rates"}}],\n'
+        '    output_ports=[{"name": "rates", "source": {"node_id": "rates"}}],\n'
         '    pipeline_dir="..",\n'
         ")\n\n\n"
         f'@submodel.constant(config="{config}")\n'

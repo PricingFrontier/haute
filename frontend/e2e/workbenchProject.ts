@@ -78,7 +78,7 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
         source_handle: string | null
         target_handle: string | null
       }
-      const replaced = new Set(["quotes", "priced"])
+      const replaced = new Set(["quote_input", "quote_response"])
       const nodes = (document.nodes as DocumentNode[])
         .filter((node) => !replaced.has(node.label))
         .map((node) => ({
@@ -104,10 +104,10 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
         }))
       nodes.push(
         {
-          id: "quote",
+          id: "workbench_input",
           type: "custom",
           position: { x: 60, y: 720 },
-          data: { label: "quote", description: "", nodeType: "workbenchInput", config: {} },
+          data: { label: "workbench_input", description: "", nodeType: "workbenchInput", config: {} },
         },
         {
           id: "premium",
@@ -121,15 +121,15 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
           },
         },
         {
-          id: "response",
+          id: "workbench_output",
           type: "custom",
           position: { x: 700, y: 720 },
-          data: { label: "response", description: "", nodeType: "workbenchOutput", config: {} },
+          data: { label: "workbench_output", description: "", nodeType: "workbenchOutput", config: {} },
         },
       )
       edges.push(
-        { id: "e_quote_premium", source: "quote", target: "premium", sourceHandle: "policy", targetHandle: null },
-        { id: "e_premium_response", source: "premium", target: "response", sourceHandle: null, targetHandle: "pricing" },
+        { id: "e_workbench_input_premium", source: "workbench_input", target: "premium", sourceHandle: "policy", targetHandle: null },
+        { id: "e_premium_workbench_output", source: "premium", target: "workbench_output", sourceHandle: null, targetHandle: "pricing" },
       )
       const saved = await fetch("/api/pipeline/save", {
         method: "POST",

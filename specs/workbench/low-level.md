@@ -2360,8 +2360,7 @@ no longer has; and `InputSource` in
   nothing written; a junction inside the project at `workbench/schema/` and one to a
   folder outside it each refused before any write, neither destination changed; a write
   that fails half way leaving every file as it was, and one whose rollback cannot put a
-  file back naming it; commercial-pricing's form, converted by the one-off script, reading
-  back to the same compiled form but for its sheets', sections' and components' ids.
+  file back naming it.
 - `tests/test_workbench_form.py` covers the blank form's text, `render_form` and
   `form_revision` as a release and the quote store use them, every field written in the
   one document (a column without `index` or its display
