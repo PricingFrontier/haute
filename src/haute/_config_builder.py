@@ -8,7 +8,6 @@ files via ``config="path/to/file.json"``.
 
 from __future__ import annotations
 
-import ast
 import io
 import json
 import tokenize
@@ -31,8 +30,6 @@ from haute._node_config_models import COLUMN_CONFIG_KEYS
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
     STEPPED_NODE_TYPES,
-    STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-    stepped_surface_for,
 )
 from haute._polars_steps_lift import StepLiftError, lift_steps
 from haute._project_context import current_project
@@ -349,57 +346,6 @@ def _validate_node_function(
         )
 
 
-def _comments(code: str) -> list[str]:
-    """The comments of *code*, each without the trailing whitespace ``ruff format`` removes."""
-    return [
-        token.string.rstrip()
-        for token in tokenize.generate_tokens(io.StringIO(code).readline)
-        if token.type == tokenize.COMMENT
-    ]
-
-
-def _same_program(rendered: str, body: str) -> bool:
-    """Whether a body is a rendering of the steps, whatever its layout.
-
-    The same syntax tree and the same comments make the same program: a body
-    saved under an earlier layout or quoting of the same steps, or reformatted
-    by ``ruff format``, still describes them, while any other change, a
-    comment in authored free code included, is a hand edit.
-    """
-    if rendered == body:
-        return True
-    try:
-        same_tree = ast.dump(ast.parse(rendered)) == ast.dump(ast.parse(body))
-        return same_tree and _comments(rendered) == _comments(body)
-    except (SyntaxError, tokenize.TokenError):
-        return False
-
-
-def validate_step_container(
-    config: dict[str, Any],
-    node_type: NodeType,
-    config_ref: str | None,
-    func_name: str,
-) -> None:
-    """Refuse a ``steps`` value no stepped node can use, whatever its body.
-
-    It must be a list, and an edges surface takes its inputs from the edges,
-    so it cannot sit beside an ``input_mapping``.
-    """
-    if not isinstance(config["steps"], list):
-        raise ConfigError(
-            f"{node_type.value} 'steps' must be a list.",
-            func_name=func_name,
-            config_path=config_ref,
-        )
-    if stepped_surface_for(node_type).inputs == "edges" and config.get("input_mapping") is not None:
-        raise ConfigError(
-            STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
-            func_name=func_name,
-            config_path=config_ref,
-        )
-
-
 def _with_lifted_steps(
     config: dict[str, Any],
     func_name: str,
@@ -438,8 +384,6 @@ def _with_lifted_steps(
 
 def _without_line_end_spaces(code: str) -> str:
     """*code* with the spaces ending each line taken off, but inside a multiline string."""
-    import io
-    import tokenize
 
     kept: set[int] = set()
     try:

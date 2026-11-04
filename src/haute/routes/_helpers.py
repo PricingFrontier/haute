@@ -743,10 +743,10 @@ def _unfinished_steps(graph: PipelineGraph) -> dict[str, list[dict[str, Any]]]:
     node_map = {node.id: node for node in graph.nodes}
     held: dict[str, list[dict[str, Any]]] = {}
     for node in graph.nodes:
-        node_type = node.data.nodeType
         steps = node.data.config.get("steps")
-        if node_type not in STEPS_FROM_CODE or not isinstance(steps, list):
+        if node.data.nodeType not in STEPS_FROM_CODE or not isinstance(steps, list):
             continue
+        node_type = NodeType(node.data.nodeType)
         if node.data.editor.steps_error is None:
             names = [
                 edge_input_name(edge, node_map[edge.source], submodels=graph.submodels)
@@ -754,7 +754,7 @@ def _unfinished_steps(graph: PipelineGraph) -> dict[str, list[dict[str, Any]]]:
                 if edge.target == node.id and edge.source in node_map
             ]
             problem = stepped_code_problem(
-                node.data.config, NodeType(node_type), step_input_names(node_type, names)
+                node.data.config, node_type, step_input_names(node_type, names)
             )
             if problem is None:
                 continue
