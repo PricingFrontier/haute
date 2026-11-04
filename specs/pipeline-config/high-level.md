@@ -659,7 +659,9 @@ An Explore node keeps its overview, pivot formulas, pivots and charts in its sid
 `config/explore/<node>.json`, checked and normalised on the way out and in by the
 Explore display-config validators, each left out when empty; its decorator carries only
 `config=`, and one that still carries settings or steps is refused like any node whose
-settings belong in a sidecar (READ-43).
+settings belong in a sidecar (READ-43). A standalone run of the module refuses them too,
+and holds the sidecar to the same validators, so a malformed one fails the run as it
+fails the parse.
 One table (`STEPPED_NODE_TYPES` in `haute._polars_steps`) maps every stepped node type
 to its start mode and its input eligibility: `edges` for a transform and for an
 External File (whose code sees every connected input by name, the first also as

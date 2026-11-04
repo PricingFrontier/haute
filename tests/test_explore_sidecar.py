@@ -132,3 +132,31 @@ def test_a_saved_module_runs_on_its_own_and_explore_passes_the_frame_through(
 
     # The Explore node is the pipeline's last: its hook ran on the frame it passed on.
     assert frame.height == 5
+
+
+def test_a_standalone_run_holds_explore_to_its_sidecar_as_the_parse_does(
+    tmp_path: Path,
+) -> None:
+    """Run on its own, the module refuses a settings keyword on the decorator and a malformed
+    sidecar, as the parse refuses them (READ-43)."""
+    import polars as pl
+
+    pl.DataFrame({"premium": [1.0, 2.0]}).write_parquet(tmp_path / "quotes.parquet")
+    code = _saved(tmp_path, _graph(SETTINGS))
+    (tmp_path / "haute.toml").write_bytes(b'[project]\nname = "t"\npipeline = "main.py"\n')
+    (tmp_path / ".git").mkdir()
+
+    old_form = code.replace(
+        '@pipeline.explore(config="config/explore/look.json")',
+        '@pipeline.explore(config="config/explore/look.json", overview={"schema": True})',
+    )
+    (tmp_path / "old_form.py").write_bytes(old_form.encode("utf-8"))
+    with pytest.raises(ConfigError, match="decorator keywords 'overview' would be ignored"):
+        runpy.run_path(str(tmp_path / "old_form.py"), run_name="pipeline_under_test")
+
+    (tmp_path / "config/explore/look.json").write_text(
+        json.dumps({"overview": {"no_such_card": True}}), encoding="utf-8"
+    )
+    namespace = runpy.run_path(str(tmp_path / "main.py"), run_name="pipeline_under_test")
+    with pytest.raises(ConfigError, match="explore sidecar"):
+        namespace["pipeline"].run(source="live")

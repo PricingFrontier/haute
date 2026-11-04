@@ -275,12 +275,10 @@ def _run_configured_work(
             )
         _check_sidecar(node_type, name, config, fn, pipeline_dir)
         return _first(frames, name)
-    if node_type in (NodeType.DATA_OUTPUT, NodeType.EXTERNAL_FILE):
+    if node_type in (NodeType.DATA_OUTPUT, NodeType.EXTERNAL_FILE, NodeType.EXPLORE):
         # Their run passes the frame on, but their sidecar is still held to its model,
         # so a missing or malformed one fails the run as it fails the parse.
         _check_sidecar(node_type, name, config, fn, pipeline_dir)
-        return _first(frames, name)
-    if node_type == NodeType.EXPLORE:
         return _first(frames, name)
     if node_type == NodeType.EDGE_JOIN:
         from haute._edge_join import execute_edge_join

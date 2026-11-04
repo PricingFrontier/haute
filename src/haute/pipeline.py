@@ -420,6 +420,18 @@ class NodeRegistry:
         reject_removed_node_reuse_kwargs(config)
         reject_camel_case_decorator_kwargs(config)
         declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
+        if declared_type == NodeType.EXPLORE:
+            # Its settings are in its sidecar alone (READ-43); a keyword beside config= is
+            # refused by name, as the parse refuses it.
+            keywords = sorted(set(config) - {"_node_type", "config"})
+            if keywords:
+                raise ConfigError(
+                    "An Explore node takes its settings from its config= sidecar, so its "
+                    f"decorator keywords {', '.join(repr(key) for key in keywords)} would be "
+                    "ignored: move them into that file, or remove them.",
+                    node_type=declared_type.value,
+                    keywords=keywords,
+                )
         if declared_type == NodeType.EDGE_JOIN:
             # Its settings are the decorator's keywords, held to the config model's keys
             # and shape as the parse holds the same keywords in a file. An Explore node's
