@@ -280,6 +280,27 @@ def test_a_file_whose_conversion_would_lose_a_value_refuses_the_whole_run(
     assert _files(tmp_path) == before
 
 
+def test_a_decorator_with_unrelated_and_unpacked_keywords_is_left_as_written(
+    tmp_path: Path, conversion: ModuleType
+) -> None:
+    """Only a keyword in its camelCase form is a key's spelling; ``ids=`` beside a
+    ``**options`` argument is neither, and the decorator is left alone."""
+    pipeline = _project(tmp_path)
+    helper = tmp_path / "helpers.py"
+    helper.write_text(
+        "import pytest\n\noptions = {}\n\n\n"
+        '@pytest.mark.parametrize("x", [1], ids=["one"], **options)\n'
+        "def check(x): ...\n",
+        encoding="utf-8",
+    )
+    helper_before = helper.read_bytes()
+
+    written = conversion.convert([tmp_path])
+
+    assert pipeline.resolve() in written
+    assert helper.read_bytes() == helper_before
+
+
 def test_a_decorator_with_both_spellings_of_a_keyword_refuses_the_whole_run(
     tmp_path: Path, conversion: ModuleType
 ) -> None:

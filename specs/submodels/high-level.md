@@ -652,7 +652,7 @@ across a rewire.
 - A connection dropped on an instance whose every public input is bound is
   refused in the editor, naming the instance; no edge is added.
 - A pipeline file that registers a node with `@pipeline.instance`, gives a node
-  decorator `of=`, or whose node config carries `instance_of` on anything but a
+  decorator `of=`, or whose node config carries `instanceOf` on anything but a
   submodel occurrence fails to parse with a `ParseError` naming the removed form
   and its replacement: the node in its own module `modules/<name>.py`,
   registered as `pipeline.submodel(<name>.submodel, "<original>")` and

@@ -206,9 +206,10 @@ def _decorator_configs(
                 continue
             node_type = DECORATOR_TO_NODE_TYPE.get(decorator.func.attr)
             declared = NODE_CONFIG_MODELS[node_type].keys if node_type else frozenset()
-            written = {keyword.arg for keyword in decorator.keywords}
+            # A ``**options`` argument has no name, so it is never a spelling of a key.
+            written = {keyword.arg for keyword in decorator.keywords if keyword.arg is not None}
             for keyword in decorator.keywords:
-                if keyword.arg is not None and SNAKE_CASE_KEYS.get(keyword.arg) in written:
+                if keyword.arg in SNAKE_CASE_KEYS and SNAKE_CASE_KEYS[keyword.arg] in written:
                     raise SystemExit(
                         f"{path}:{keyword.lineno}: {keyword.arg}= and "
                         f"{SNAKE_CASE_KEYS[keyword.arg]}= on one decorator; nothing converted."

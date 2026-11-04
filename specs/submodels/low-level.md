@@ -318,7 +318,7 @@ input.
 
 **Removed node-level instances.** No graph node but a `SUBMODEL` occurrence
 carries `instance_of`. The parser refuses `@pipeline.instance(...)` and an `of=`
-keyword on any node decorator, config validation refuses `instance_of` on every
+keyword on any node decorator, config validation refuses `instanceOf` on every
 other node type, and the editor's recovery shows such a node unavailable with
 the parser's message. `Pipeline` has no `instance` method.
 
