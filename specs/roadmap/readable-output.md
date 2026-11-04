@@ -3,7 +3,7 @@
 ## Scope
 
 These packages cover what Haute writes into a project's repository, read as a diff:
-- `main.py` and its `.haute.json` sidecar;
+- `main.py`, the submodel modules and their `.haute.json` sidecars;
 - the node configs under `config/` and the global constants;
 - the Workbench form folder (`workbench/`) and the test quotes;
 - the files `haute init` scaffolds.
@@ -32,9 +32,21 @@ The owner decided the following on 3 November 2026:
   - schema keys on disk are snake_case;
   - generated workflows repeat nothing.
 
+A second look on 4 November 2026, from [throwaway-testing pull request #1](https://github.com/PricingFrontier/throwaway-testing/pull/1), found:
+- **An API Input sidecar takes 10 lines per column.** Its 152 columns made `api_input.json` 1,588 lines, and every column wrote the five settings inference gives it. A response field takes 6 lines.
+- **Five more stepped node types store their steps twice.** Data Input, External File, Rating Step, Model Score and Scenario Expander keep the steps in their sidecar beside the code in their body, so two steps take 36 lines of JSON. Explore keeps them in its decorator.
+- **An Explore node writes its settings into `main.py`**, one setting a line, so one pivot can take 50 lines.
+- **A submodel module writes its port endpoints in camelCase**, `{"nodeId": ..., "handleId": None}`.
+
+The owner decided the following on 4 November 2026:
+- What a run writes, such as an optimiser result, a trained model or a report, is out of scope.
+- An Explore node's settings live in a sidecar, so they do not crowd `main.py`.
+- Every stepped node's code is its only copy of its steps, as a Polars node's is.
+- commercial-pricing's two `"steps": []` lines are removed by hand, in a commit of their own, with no script.
+
 **Out of scope:** `haute init` rewrites `haute.toml` from scratch on a re-run, as decided on 1 November 2026, so editing that file in place is not planned.
 
-All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). Each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
+All the packages left are **format changes**. The loader accepts only the current format ([specification governance](../README.md)). A change that only leaves something out, as READ-42 does, needs no conversion: the old file still loads and its next save writes the new form. In the 4 November round, Haute's fixtures are converted in the change's own pull request and commercial-pricing by hand (READ-44). Otherwise each change carries a one-off script in `scripts/one_off/` that converts Haute's fixtures in its pull request and, run once by the owner in a commit of its own, commercial-pricing. It converts each file still in the old form and leaves the rest, so it runs on a branch part-converted, and it is proven on commercial-pricing: the converted files load to the same values, a second save changes nothing, and every node's configuration matches what main's Haute reads from the original. The script is removed once it has run.
 
 Each package states its formats in its owning specification before behaviour changes, and names the contract it replaces there. Golden tests are written from those specifications, not from the implementation's output.
 
@@ -42,10 +54,79 @@ Each package states its formats in its owning specification before behaviour cha
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
+| READ-42 | Planned | P1 | An API Input column and a response field are one line each, and a column leaves out the settings inference gives it. |
+| READ-45 | Planned | P2 | A submodel module writes its port endpoints in snake_case. |
+| READ-44 | Planned | P1 | Every stepped node's code is its only copy of its steps. |
+| READ-43 | Planned | P1 | An Explore node's settings live in its sidecar, and its steps in its code. |
 | READ-33 | Deferred | P2 | A column or table renamed against the project's default branch keeps its saved values in the quote store. |
 | READ-40 | Planned | P3 | Generated workflows declare each secret, setup and check once. |
 
 ## Planned improvements
+
+### READ-42 — An API Input column and a response field are one line each
+**Why:** An API Input sidecar writes each column over 10 lines, and every column carries the five settings inference gives it. An Output sidecar writes each response field over 6 lines.
+
+**Plan:**
+- The printer writes each API Input column and each Output mapping row on one line.
+- An API Input column leaves out a setting at the value inference gives it: "status" Inferred, "selected" true, "levels" null, "origin" inferred and "key" false. The loader gives them back before anything reads the config, since a run takes an absent "selected" as false.
+- A file that still writes them loads as it is, and its next save writes the short form, so nothing is converted.
+
+**Acceptance:**
+- throwaway-testing's `api_input.json` saves as about 220 lines and reads back to the same config.
+- A project whose columns leave "selected" out builds and scores the same response.
+- Golden sidecars for both node types.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_io.py::node_config_json`; `src/haute/_api_input_schema.py::validate_v2_schema`.
+
+### READ-45 — A submodel module writes its port endpoints in snake_case
+**Why:** A module's `haute.Submodel(...)` header writes each port endpoint as `{"nodeId": ..., "handleId": None}`, in camelCase and with a handle that is None.
+
+**Plan:**
+- The header writes `{"node_id": ...}`, with a handle only when the endpoint has one.
+- A module that writes the camelCase keys is refused, naming each key's snake_case name.
+- The graph API keeps its own names.
+
+**Acceptance:** A golden module header; a header in camelCase refused.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_types.py::SubmodelEndpoint`; `src/haute/_parser_submodels.py`.
+
+### READ-44 — Every stepped node's code is its only copy of its steps
+**Why:** A Polars node's steps are rebuilt from its body (READ-22). Data Input, External File, Rating Step, Model Score and Scenario Expander still write their steps into their sidecar beside the code, so an edit to a step changes the JSON tree and the code.
+
+**Plan:**
+- Each stepped node's steps are rebuilt from its body on load, as a Polars node's are: a statement a step renders exactly becomes that step, and other statements become a code step.
+- A sidecar writes no "steps". One that does is refused, saying the steps live in the code.
+- An unfinished step list waits in `.haute.json` behind the raising placeholder, for any stepped node.
+- commercial-pricing's two Rating Step sidecars lose their `"steps": []` by hand, in a commit of their own.
+
+**Acceptance:**
+- For each node type: steps saved and loaded back unchanged; a hand edit to one statement keeping the other steps; an unfinished list kept through a save; a sidecar holding "steps" refused.
+- commercial-pricing loads and scores the same after its edit.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_config_builder.py::_reconcile_steps`; `src/haute/routes/_helpers.py::save_sidecar`.
+
+### READ-43 — An Explore node's settings live in its sidecar
+**Why:** An Explore node writes its overview, pivots, pivot formulas, charts and steps as arguments of its decorator in `main.py`, one setting a line, so one pivot can take 50 lines. Its steps are written there as well as in its body.
+
+**Plan:**
+- The node is `@pipeline.explore(config="config/explore/<node>.json")`, and the sidecar holds its overview, pivots, pivot formulas and charts. Its column settings go where the other node types with a sidecar keep theirs.
+- Its steps are rebuilt from its body (READ-44).
+- The printer writes each pivot placement, pivot formula and chart series on one line.
+- A decorator that still carries settings or steps is refused, naming the sidecar.
+
+**Acceptance:**
+- An Explore node with pivots and charts saves its settings to its sidecar, and its decorator carries only `config=`.
+- It reloads to the same settings and steps, and the Explore view opens on the same results.
+
+**Dependencies:** READ-44.
+
+**Evidence:** `src/haute/_codegen_builders.py::_gen_explore`; `src/haute/_config_builder.py::_resolve_node_config`.
 
 ### READ-33 — A column or table renamed against the default branch keeps its values
 **Why:** Workbench tables and columns are known by their names, so a column renamed in the form reads as removed and added when compared with the default branch. The store keeps the old SQL column and its values through saves, but the renamed column starts empty. The schema pane already pairs a renamed column with its column when comparing against a database.
