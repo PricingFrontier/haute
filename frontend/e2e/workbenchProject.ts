@@ -17,7 +17,7 @@ export const FORM_FOLDER = resolve(e2eProjectRoot, "rating", "workbench")
  * policy table in, a pricing table out, and one blank sheet.
  */
 export const FORM_FILES: Record<string, unknown> = {
-  "form.json": { version: 1, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
+  "form.json": { version: 2, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
   "schema/quote_details.json": { columns: [] },
   "schema/policy.json": {
     role: "input",
@@ -28,8 +28,7 @@ export const FORM_FILES: Record<string, unknown> = {
     ],
   },
   "schema/pricing.json": { role: "output", rows: "one", columns: [{ name: "premium", type: "float" }] },
-  "sheets/sheet_1.json": { title: "Sheet 1", sections: [{ title: "Section 1", components: [] }] },
-  "sheets/sheet_1.layout.json": { width: 1280, sections: { "Section 1": { height: 560, components: {} } } },
+  "sheets/sheet_1.json": { title: "Sheet 1", width: 1280, sections: [{ title: "Section 1", height: 560, components: [] }] },
 }
 
 export const readFormFile = (path: string) => JSON.parse(readFileSync(resolve(FORM_FOLDER, path), "utf8"))

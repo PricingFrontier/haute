@@ -7,6 +7,7 @@ import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { updateWidget } from "../../utils/workbenchForm"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { WIDGET_KINDS } from "../widgetKinds"
+import { ComponentNameField } from "./ComponentNameField"
 import { Section } from "./Section"
 
 const HEADING_SIZES: ReadonlyArray<{ value: HeadingWidget["size"]; label: string }> = [
@@ -26,6 +27,7 @@ export function HeadingSettings({ form, widget }: { form: FormSpec; widget: Head
   const change = useWorkbenchFormStore((s) => s.change)
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs">
+      <ComponentNameField form={form} widget={widget} />
       <Section title="Text">
         <CommittedTextField
           aria-label="Heading text"

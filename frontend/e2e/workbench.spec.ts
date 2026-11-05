@@ -104,15 +104,13 @@ test.describe("workbench", () => {
     // The column is in the form folder alone: neither workbench node's config file holds a copy.
     expect(readNodeConfig("workbench_input", "workbench_input")).toEqual({})
     expect(readNodeConfig("workbench_output", "workbench_output")).toEqual({})
-    // The Collection in the sheet's file, its fields by name, and its place in the sheet's layout.
+    // The Collection placed by its name in the sheet's file, and in its own file its fields by name.
     const savedSheet = readFormFile("sheets/sheet_1.json")
-    expect(savedSheet.sections[0].components).toHaveLength(1)
-    expect(savedSheet.sections[0].components[0]).toMatchObject({
+    expect(savedSheet.sections[0].components).toEqual([expect.objectContaining({ component: "collection_1" })])
+    expect(readFormFile("components/collection_1.json")).toMatchObject({
       type: "collection",
       fields: ["policy.limit", "policy.region", "pricing.premium"],
     })
-    const savedLayout = readFormFile("sheets/sheet_1.layout.json")
-    expect(Object.keys(savedLayout.sections["Section 1"].components)).toEqual([String(savedSheet.sections[0].components[0].number)])
     expect(readFormFile("sample/policy.json")).toEqual([{ limit: "1000", region: "north" }])
   })
 })

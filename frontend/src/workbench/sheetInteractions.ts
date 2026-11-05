@@ -283,7 +283,7 @@ export function startCreate(e: ReactPointerEvent, type: PaletteType): void {
       }
       const drop = dropAt(type, event.clientX, event.clientY)
       if (drop === null) return
-      const widget = createWidget(type, drop.rect, formPartIds(form))
+      const widget = createWidget(type, drop.rect, form)
       change((spec) => addWidget(spec, drop.sectionId, widget))
       view.showPage(page.id)
       view.select(widget.id)

@@ -579,7 +579,7 @@ describe("useWorkbenchFormStore", () => {
     })
     const store = useWorkbenchFormStore.getState
     await store().load()
-    store().change((form) => addWidget(form, "section_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 })))
+    store().change((form) => addWidget(form, "section_1", createWidget("collection", { x: 0, y: 0, w: 720, h: 120 }, form)))
     expect(store().dirty).toBe(true)
 
     await expect(store().save()).resolves.toBe(true)

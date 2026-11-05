@@ -9,6 +9,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { updateWidget, type ButtonWidget, type ImportFormat } from "../../utils/workbenchForm"
 import { ShowWhenEditor } from "../ShowWhenEditor"
 import { FORMAT_MARKS, WIDGET_KINDS } from "../widgetKinds"
+import { ComponentNameField } from "./ComponentNameField"
 import { WIDGET_PANES } from "./FieldsSettings"
 import { Section } from "./Section"
 
@@ -65,7 +66,10 @@ export function ButtonPanes({ form, widget, children }: { form: FormSpec; widget
         className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 py-3 text-xs"
       >
         {pane === "config" ? (
-          children
+          <>
+            <ComponentNameField form={form} widget={widget} />
+            {children}
+          </>
         ) : (
           <>
             <Section title="Label">

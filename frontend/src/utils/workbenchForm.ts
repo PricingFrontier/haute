@@ -1123,13 +1123,15 @@ export const CHART_OPTIONS: Readonly<ChartOptions> = {
 /** A new Heading's options: medium, a section's heading, aligned left. */
 export const HEADING_OPTIONS: Readonly<HeadingOptions> = { size: "medium", align: "left" }
 
-/** A new component of `type` at `rect`, showing nothing yet, and always, its id none of `taken`, the form's own (`formPartIds`). */
-export function createWidget<T extends WidgetType>(type: T, rect: Rect, taken?: Iterable<string>): Extract<Widget, { type: T }>
-export function createWidget(type: WidgetType, rect: Rect, taken: Iterable<string> = []): Widget {
+/**
+ * A new component of `type` at `rect` for `spec`, showing nothing yet, and always: named by
+ * its kind (`nextWidgetName`), its id none of the form's own (`formPartIds`).
+ */
+export function createWidget<T extends WidgetType>(type: T, rect: Rect, spec: FormSpec): Extract<Widget, { type: T }>
+export function createWidget(type: WidgetType, rect: Rect, spec: FormSpec): Widget {
   // In the file's order, so a component the view made compares equal to it saved.
   const { x, y, w, h } = rect
-  // No number until it enters a section (`nextWidgetNumber`).
-  const placed = { id: newPartId(partKind(type), taken), number: null, x, y, w, h }
+  const placed = { id: newPartId(partKind(type), formPartIds(spec)), name: nextWidgetName(spec, type), x, y, w, h }
   const showing = { title: "", fields: [] as FieldRef[], show_when: alwaysShown() }
   switch (type) {
     case "collection":
@@ -1168,17 +1170,70 @@ export const setThemeColour = (spec: FormSpec, key: ThemeColour, colour: string 
     draft.theme[key] = colour
   })
 
-/**
- * A component's number on entering `section`: one more than the highest there, so the
- * first is 1. It keys the component's box in the layout file (READ-24).
- */
-export const nextWidgetNumber = (section: Section): number =>
-  Math.max(0, ...section.widgets.map((widget) => widget.number ?? 0)) + 1
+/** The word a component of `type`'s name starts with until the builder names it: its kind, `table` for a Table. */
+const NAME_WORDS: Record<WidgetType, string> = {
+  tableInput: "table",
+  collection: "collection",
+  chart: "chart",
+  heading: "heading",
+  import: "import",
+  export: "export",
+}
+
+/** Every component's name in `spec`, whatever its case, which a new one must not take. */
+const componentNames = (spec: FormSpec): Set<string> => new Set(allWidgets(spec).map((widget) => folded(widget.name)))
+
+/** `stem`, `_` and the first number from `from` that makes a name none of `spec`'s components has. */
+function firstFreeName(spec: FormSpec, stem: string, from: number): string {
+  const taken = componentNames(spec)
+  let n = from
+  while (taken.has(folded(`${stem}_${n}`))) n += 1
+  return `${stem}_${n}`
+}
 
 /**
- * Add a new component to a section, numbered there (`nextWidgetNumber`), kept inside it and
- * its sheet's width (`keptInside`); only one taller than the section grows it, and only one
- * wider than the sheet widens it.
+ * A new component's name: its kind's word and the first number from 1 that makes a name no
+ * component has, whatever its case (`table_1`, then `table_2`). It names the component's file.
+ */
+export const nextWidgetName = (spec: FormSpec, type: WidgetType): string => firstFreeName(spec, NAME_WORDS[type], 1)
+
+/**
+ * A copy's name, duplicated or pasted: its original's without a final `_` and digits, then
+ * `_` and the first number from 2 that makes a free name, so "layers" gives "layers_2" and
+ * "table_1" gives "table_2".
+ */
+export const copyName = (spec: FormSpec, name: string): string => firstFreeName(spec, name.replace(/_\d+$/, ""), 2)
+
+/** Names Windows keeps for devices, which no file can take, whatever their case. */
+const WINDOWS_DEVICE_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+
+/**
+ * Why `name` cannot be the component `id`'s, or null: a name is an identifier, as a column's
+ * is, names the component's file, so not one Windows keeps, and is no other component's
+ * whatever its case.
+ */
+export function componentNameProblem(spec: FormSpec, id: string, name: string): string | null {
+  if (!ASCII_IDENTIFIER_RE.test(name)) return "Use letters, digits and _, not starting with a digit"
+  if (WINDOWS_DEVICE_RE.test(name)) return `${name} is a name Windows keeps for itself`
+  const other = allWidgets(spec).find((widget) => widget.id !== id && folded(widget.name) === folded(name))
+  return other === undefined ? null : `Another component is named ${other.name}`
+}
+
+/** Give a component a name, refusing one `componentNameProblem` refuses. */
+export function renameWidget(spec: FormSpec, id: string, name: string): FormSpec {
+  const problem = componentNameProblem(spec, id, name)
+  if (problem !== null) throw new Error(problem)
+  return edit(spec, (draft) => {
+    const found = findWidget(draft, id)
+    if (found === null) throw new Error(`No sheet has a component ${id}`)
+    found.widget.name = name
+  })
+}
+
+/**
+ * Add a new component to a section under the name it holds, kept inside it and its sheet's
+ * width (`keptInside`); only one taller than the section grows it, and only one wider than
+ * the sheet widens it.
  */
 export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): FormSpec =>
   edit(spec, (draft) => {
@@ -1187,7 +1242,6 @@ export const addWidget = (spec: FormSpec, sectionId: string, widget: Widget): Fo
     const { section, page } = found
     const kept = {
       ...widget,
-      number: nextWidgetNumber(section),
       x: keptInside(widget.x, widget.w, page.width),
       y: keptInside(widget.y, widget.h, section.height),
     }
@@ -1204,12 +1258,11 @@ export function addWidgetInFreePlace(spec: FormSpec, sectionId: string, type: Wi
   const found = findSection(spec, sectionId)
   if (found === null) throw new Error(`No sheet has a section ${sectionId}`)
   const fitted = { w: Math.min(size.w, found.page.width), h: size.h }
-  const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted }, formPartIds(spec))
+  const widget = createWidget(type, { ...freePlace(found.section.widgets, fitted, found.page.width), ...fitted }, spec)
   const next = edit(spec, (draft) => {
     const { page, section } = findSection(draft, sectionId)!
-    const numbered = { ...widget, number: nextWidgetNumber(section) }
-    section.widgets.push(numbered)
-    holdWidget(page, section, numbered)
+    section.widgets.push(widget)
+    holdWidget(page, section, widget)
   })
   return { spec: next, id: widget.id }
 }
@@ -1289,7 +1342,7 @@ export const keptInside = (y: number, h: number, height: number): number => Math
 /**
  * Move a component to `rect` in a section, its own or another, kept inside it and its
  * sheet's width (`keptInside`); into another it goes last, so it is drawn over the
- * components there, and takes the next number there (`nextWidgetNumber`). Only a component taller than the section it lands in grows it, or one
+ * components there, keeping its name. Only a component taller than the section it lands in grows it, or one
  * wider than the sheet widens it; the section it left keeps its height.
  */
 export function placeWidget(spec: FormSpec, id: string, sectionId: string, rect: Rect): FormSpec {
@@ -1307,7 +1360,7 @@ export function placeWidget(spec: FormSpec, id: string, sectionId: string, rect:
       from.widgets[found.index] = placed
     } else {
       from.widgets.splice(found.index, 1)
-      section.widgets.push({ ...placed, number: nextWidgetNumber(section) })
+      section.widgets.push(placed)
     }
     holdWidget(page, section, placed)
   })
@@ -1329,11 +1382,12 @@ export const removeWidget = (spec: FormSpec, id: string): FormSpec =>
 /** How far below and to the right of a component its copy sits. */
 export const COPY_OFFSET = 16
 
-/** A copy of a component just below and to the right of it, in the same section, kept inside it and its sheet's width (`keptInside`). */
+/** A copy of a component just below and to the right of it, in the same section, kept inside it and its sheet's width (`keptInside`), named as a copy is (`copyName`). */
 export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; id: string } {
   const original = findWidget(spec, id)
   if (original === null) throw new Error(`No sheet has a component ${id}`)
   const copyId = newPartId(partKind(original.widget.type), formPartIds(spec))
+  const name = copyName(spec, original.widget.name)
   const next = edit(spec, (draft) => {
     const found = findWidget(draft, id)
     if (found === null) throw new Error(`No sheet has a component ${id}`)
@@ -1341,7 +1395,7 @@ export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; i
     const copy = {
       ...structuredClone(found.widget),
       id: copyId,
-      number: nextWidgetNumber(found.section),
+      name,
       x: keptInside(x + COPY_OFFSET, w, found.page.width),
       y: keptInside(y + COPY_OFFSET, h, found.section.height),
     }
@@ -1353,9 +1407,9 @@ export function duplicateWidget(spec: FormSpec, id: string): { spec: FormSpec; i
 /**
  * Paste a copy of `widget`, a component copied before, into a section: where it sat, moved
  * `COPY_OFFSET` down and to the right while a component in the section sits at exactly that
- * place, kept inside the section and its sheet's width (`addWidget`), with a new id. What it
- * shows or tests of a column the schema has lost since is left out, as removing the column
- * took it out of every component then.
+ * place, kept inside the section and its sheet's width (`addWidget`), with a new id and named
+ * as a copy is (`copyName`). What it shows or tests of a column the schema has lost since is
+ * left out, as removing the column took it out of every component then.
  */
 export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): { spec: FormSpec; id: string } {
   const found = findSection(spec, sectionId)
@@ -1370,8 +1424,7 @@ export function pasteWidget(spec: FormSpec, widget: Widget, sectionId: string): 
     at = next
   }
   const id = newPartId(partKind(widget.type), formPartIds(spec))
-  // Numbered as it enters the section (`addWidget`).
-  const copy: Widget = { ...structuredClone(widget), id, number: null, ...at }
+  const copy: Widget = { ...structuredClone(widget), id, name: copyName(spec, widget.name), ...at }
   const gone = (field: FieldRef) => fieldColumn(spec, field) === null
   dropShown(copy, gone)
   dropButtonUses(copy, (table) => !spec.schema.tables.some((candidate) => candidate.name === table), gone)

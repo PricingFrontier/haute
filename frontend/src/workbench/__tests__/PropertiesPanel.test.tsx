@@ -108,13 +108,13 @@ describe("PropertiesPanel", () => {
     const pane = () => screen.getByRole("tabpanel")
     const regions = () => within(pane()).getAllByRole("region").map((region) => region.getAttribute("aria-label"))
 
-    // Config first, in the component's colour: its order and its fields.
+    // Config first, in the component's colour: its name, its order and its fields.
     expect(within(screen.getByRole("tablist", { name: "Table panes" })).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Config", "Display"])
     const config = screen.getByRole("tab", { name: "Config" })
     expect(config).toHaveAttribute("aria-selected", "true")
     expect(config).toHaveStyle({ color: COMPONENT_COLOR })
     expect(pane()).toHaveAttribute("aria-labelledby", "component-config-tab")
-    expect(regions()).toEqual(["Order", "Fields"])
+    expect(regions()).toEqual(["Component name", "Order", "Fields"])
     // Display: its title, when it shows, its layout and its look: its header, its lines,
     // its frame and its columns' own looks.
     showPane("Display")
@@ -132,6 +132,50 @@ describe("PropertiesPanel", () => {
     expect(screen.getByRole("tab", { name: "Display" })).toHaveAttribute("aria-selected", "true")
     // The pane is the view's, not the form's: nothing to undo.
     expect(useWorkbenchFormStore.getState().undoStack).toEqual([])
+  })
+
+  it("starts every component's panel with its Component name, at the top of its Config pane or its one list", () => {
+    const form = sheetForm()
+    addTo(form, chartWidget("w_chart", []))
+    addTo(form, headingWidget("w_head", "Cover"))
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_in" })
+    addTo(form, { ...createWidget("export", { x: 192, y: 380, w: 160, h: 40 }, form), id: "w_out" })
+    loadForm(form)
+    const { rerender } = render(<PropertiesPanel />)
+    const firstRegion = () => within(screen.getByTestId("workbench-properties")).getAllByRole("region")[0].getAttribute("aria-label")
+    for (const [id, name] of [["w_grid", "w_grid"], ["w_boxes", "w_boxes"], ["w_chart", "w_chart"], ["w_head", "w_head"], ["w_in", "import_1"], ["w_out", "export_1"]]) {
+      select(id)
+      rerender(<PropertiesPanel />)
+      expect(firstRegion()).toBe("Component name")
+      expect(screen.getByTestId("component-name")).toHaveValue(name)
+    }
+  })
+
+  it("renames a component on Enter or blur as one undo step, and refuses a name that is no identifier or another's", () => {
+    select("w_grid")
+    render(<PropertiesPanel />)
+    const field = () => screen.getByTestId("component-name")
+    const name = () => findWidget(currentForm(), "w_grid")!.widget.name
+    const undo = () => useWorkbenchFormStore.getState().undoStack
+
+    fireEvent.change(field(), { target: { value: "equipment" } })
+    fireEvent.keyDown(field(), { key: "Enter" })
+    expect(name()).toBe("equipment")
+    expect(undo()).toHaveLength(1)
+    fireEvent.change(field(), { target: { value: "Equipment_rows" } })
+    fireEvent.blur(field())
+    expect(name()).toBe("Equipment_rows")
+    expect(undo()).toHaveLength(2)
+
+    // Refused at the field, saying why: the component keeps its name and nothing is recorded.
+    fireEvent.change(field(), { target: { value: "2nd" } })
+    fireEvent.blur(field())
+    expect(screen.getByTestId("component-name-error")).toHaveTextContent("Use letters, digits and _, not starting with a digit")
+    fireEvent.change(field(), { target: { value: "W_BOXES" } })
+    fireEvent.keyDown(field(), { key: "Enter" })
+    expect(screen.getByTestId("component-name-error")).toHaveTextContent("Another component is named w_boxes")
+    expect(name()).toBe("Equipment_rows")
+    expect(undo()).toHaveLength(2)
   })
 
   it("starts a Table's grid in the sample again at the rows it is given, keeping every value typed, each one undo step", () => {
@@ -1175,7 +1219,7 @@ describe("PropertiesPanel", () => {
 
   it("sets an Import's format and its settings, the table it fills and where its columns are read from, and its label in Display", () => {
     const form = sheetForm()
-    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }), id: "w_in" })
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_in" })
     loadForm(form)
     select("w_in")
     render(<PropertiesPanel />)
@@ -1246,7 +1290,7 @@ describe("PropertiesPanel", () => {
 
   it("sets an Export's format, its file's settings or a database's, and the tables it exports", () => {
     const form = sheetForm()
-    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }), id: "w_out" })
+    addTo(form, { ...createWidget("export", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_out" })
     loadForm(form)
     select("w_out")
     render(<PropertiesPanel />)
