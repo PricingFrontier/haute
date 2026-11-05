@@ -218,13 +218,11 @@ class StoreSchema:
                 return stored
         raise KeyError(name)
 
-    def of_role(self, role: str) -> tuple[StoredTable, ...]:
-        return tuple(stored for stored in self.tables if stored.form.role == role)
-
 
 def structure(form: FormSpec) -> dict[str, Any]:
-    """What of *form* decides the store's tables: each table's name, role and rows, and each
-    column's name, type and whether it is the index, as the SQL Haute writes plans from it,
+    """What of *form* decides the store's tables: each table's name and rows, and each
+    column's name, type and whether it is the index, whatever its block, as the SQL Haute
+    writes plans from it,
     each table and column under the ``key`` it is planned by, its name in the form (READ-23).
     Labels, rules and the sheets decide nothing there."""
     return {
@@ -232,7 +230,6 @@ def structure(form: FormSpec) -> dict[str, Any]:
             {
                 "key": table.name,
                 "name": table.name,
-                "role": table.role,
                 "rows": table.rows,
                 "columns": [
                     {
@@ -296,12 +293,13 @@ def with_kept_columns(
 
     A column leaves the form but the SQL Haute writes keeps it, so a saved quote's values stay
     in it. A save deletes a quote's rows and writes them again, so its rows carry those values
-    back. ``quote_details`` is updated in place, and the output tables are written afresh by
-    each pricing, so neither carries any; nor does a column of a kind Haute never writes.
+    back, a former output's of an input table among them. ``quote_details`` is updated in
+    place, and a table of outputs alone is written afresh by each pricing, so neither carries
+    any; nor does a column of a kind Haute never writes.
     """
     kept: dict[str, tuple[tuple[str, str], ...]] = {}
     for stored in schema.tables:
-        if stored.form.role != "input" or stored.form.name == QUOTE_DETAILS_NAME:
+        if not stored.form.has_inputs or stored.form.name == QUOTE_DETAILS_NAME:
             continue
         carried = tuple(
             (name, kind)

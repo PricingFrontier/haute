@@ -33,6 +33,7 @@ from haute._workbench_form import (
 from haute._workbench_tables import (
     QUOTE_ROW,
     WorkbenchTable,
+    holds_output,
     input_tables,
     output_tables,
     preset_column,
@@ -168,7 +169,7 @@ def input_rows(
     misfits: list[MisfitCell] = []
     rows: dict[str, Rows] = {}
     for table in form.data_schema.tables:
-        if table.role != "input":
+        if not table.has_inputs:
             continue
         workbench = by_name[table.name]
         labels = {column.name: _label(column) for column in table.columns}
@@ -240,7 +241,7 @@ def output_rows(
     reference, option = identity
     rows: dict[str, Rows] = {}
     for table in form.data_schema.tables:
-        if table.role != "output":
+        if not table.has_outputs or table.has_inputs:
             continue
         workbench: WorkbenchTable = by_name[table.name]
         part = None if document is None else document.get(table.name)
@@ -260,15 +261,77 @@ def output_rows(
     return rows
 
 
+def with_outputs(
+    form: FormSpec, rows: Mapping[str, Rows], document: Mapping[str, Any] | None
+) -> dict[str, Rows]:
+    """*rows*, each input table's rows of its inputs, given its outputs from the pricing's
+    typed *document*: a one-row table's one row the document's row of it; a many-row
+    table's each row those of the document's row holding its key value, matched as typed;
+    every output null while the quote is unpriced (no *document*) or the document gives that
+    row none; a value that is not finite null. A document row whose key no input row holds,
+    or one key on two rows, is refused with nothing written: a pricing that passed
+    ``output_misfit`` never gives one."""
+    sides = {table.name: table for table in output_tables(form)}
+    given: dict[str, Rows] = dict(rows)
+    for table in form.data_schema.tables:
+        if not (table.has_inputs and table.has_outputs):
+            continue
+        side = sides[table.name]
+        filled = [column.name for column in side.columns if column.name not in _OUTPUT_ASIDE]
+        filled = [name for name in filled if name != side.key]
+        part = None if document is None else document.get(table.name)
+        held = [dict(row) for row in given.get(table.name, [])]
+        if side.key is None:
+            answered = part if isinstance(part, Mapping) else {}
+            for row in held:
+                row.update({name: _finite(answered.get(name)) for name in filled})
+            given[table.name] = held
+            continue
+        records = part if isinstance(part, list) else []
+        by_key: dict[Any, Mapping[str, Any]] = {}
+        typed = {row.get(side.key) for row in held}
+        for record in records:
+            value = record.get(side.key)
+            if value in by_key or value not in typed:
+                raise QuoteValuesError(
+                    f"The pricing gives {table.name} a row of {side.key} {value!r}, which is "
+                    "on no row of the quote or on two, so the quote was not saved.",
+                    cells=[],
+                )
+            by_key[value] = record
+        for row in held:
+            record = by_key.get(row.get(side.key), {})
+            row.update({name: _finite(record.get(name)) for name in filled})
+        given[table.name] = held
+    return given
+
+
+#: A response row's columns the store keeps from the request, not from the pricing.
+_OUTPUT_ASIDE = frozenset({"quote_reference", "quote_option"})
+
+
 def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
-    """The output tables held in *rows* (by table name) rendered as the pricing rendered them:
-    each table's rows by name, without the store's row numbers, pruned and JSON-safe."""
+    """The outputs held in *rows* (by table name) rendered as the pricing rendered them:
+    each output table's rows by name, without the store's row numbers, pruned and JSON-safe.
+    An input table gives its output side's columns of each stored row holding an output
+    value, a one-row table its one row's; a table of outputs alone its rows in order."""
+    sides = {table.name: table for table in output_tables(form)}
     document: dict[str, Any] = {}
     for table in form.data_schema.tables:
-        if table.role != "output":
+        if not table.has_outputs:
             continue
         held = sorted(rows.get(table.name, []), key=lambda row: row.get(QUOTE_ROW, 0))
-        records = [{key: value for key, value in row.items() if key != QUOTE_ROW} for row in held]
+        if table.has_inputs:
+            side = sides[table.name]
+            names = [column.name for column in side.columns]
+            outputs = [column.name for column in table.own_outputs]
+            if table.rows == "many":
+                held = [row for row in held if any(holds_output(row.get(n)) for n in outputs)]
+            records = [{name: row.get(name) for name in names} for row in held]
+        else:
+            records = [
+                {key: value for key, value in row.items() if key != QUOTE_ROW} for row in held
+            ]
         if table.rows == "many":
             document[table.name] = records
         elif records:
@@ -298,7 +361,7 @@ def _row_cells(
 ) -> dict[str, Cell]:
     details = table.name == QUOTE_DETAILS_NAME
     cells: dict[str, Cell] = {}
-    for column in table.columns:
+    for column in table.inputs:
         if column.index or (not details and column.name in IDENTITY_NAMES):
             continue
         cell = _cell(row.get(column.name))
@@ -323,7 +386,7 @@ def cells(
     values: Values = {}
     dropped: list[str] = []
     for table in form.data_schema.tables:
-        if table.role != "input":
+        if not table.has_inputs:
             continue
         held = rows.get(table.name, [])
         if table.rows == "one":

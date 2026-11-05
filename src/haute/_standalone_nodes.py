@@ -25,13 +25,16 @@ import inspect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
 
 from haute._node_specs import CODE_NODE_TYPES, node_spec, node_type_table
 from haute._types import NodeType
 from haute.errors import ConfigError, ExecutionError
+
+if TYPE_CHECKING:
+    from haute._workbench_tables import WorkbenchTable
 
 __all__ = [
     "FunctionKind",
@@ -202,15 +205,15 @@ def pipeline_directory(fn: Callable[..., Any], node_name: str, pipeline_dir: str
     return (Path(file).resolve().parent / pipeline_dir).resolve()
 
 
-def seeded_workbench_input_ports(
+def seeded_workbench_input_tables(
     *, name: str, config: Mapping[str, Any], fn: Callable[..., Any], pipeline_dir: str
-) -> tuple[str, ...]:
-    """The ports of a Workbench Input ``score()`` seeds with frames: its sidecar read, what it
-    may not hold refused, and given the tables of its project's form as a run gives them, so
-    a seeded one is held to its form as a run's is (specs/workbench)."""
-    from haute._node_apply import workbench_input_ports_from_config
+) -> tuple[WorkbenchTable, ...]:
+    """The tables of a Workbench Input ``score()`` seeds with frames: its sidecar read, what
+    it may not hold refused, and given the tables of its project's form as a run gives them,
+    so a seeded one is held to its form as a run's is (specs/workbench)."""
+    from haute._node_apply import workbench_input_tables_from_config
 
-    return workbench_input_ports_from_config(
+    return workbench_input_tables_from_config(
         _sidecar(config, NodeType.WORKBENCH_INPUT, name),
         base_dir=pipeline_directory(fn, name, pipeline_dir),
     )

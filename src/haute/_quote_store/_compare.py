@@ -294,9 +294,7 @@ def compare(
             continue
         key = f"{_THE_DATABASE_S}{found.name}"
         matcher.extras.append(Extra(found.name, None, None, found.quotes))
-        matcher.tables.append(
-            {"key": key, "name": found.name, "role": "", "rows": "one", "columns": []}
-        )
+        matcher.tables.append({"key": key, "name": found.name, "rows": "one", "columns": []})
         matcher.count((key, None), found.quotes)
     activity = catalogue.table(ACTIVITY_TABLE)
     if activity is None:
@@ -422,7 +420,6 @@ def _match_table(
         {
             "key": table["key"],
             "name": found.name,
-            "role": table["role"],
             "rows": "many" if many else "one",
             "columns": live,
         }

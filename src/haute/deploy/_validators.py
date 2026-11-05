@@ -21,6 +21,7 @@ from haute._types import GLOBAL_CONSTANTS_FILE, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
 from haute._workbench_form import identity_clashes
+from haute._workbench_tables import key_collisions
 from haute.deploy._config import (
     ResolvedDeploy,
     in_resolved_project,
@@ -479,13 +480,19 @@ def _workbench_form_errors(resolved: ResolvedDeploy) -> list[str]:
     Resolution read the form strictly, gave each Workbench Input and Workbench Output its
     tables from it (``resolved.workbench_form``) and refused a connection to a table it does
     not have; a table a column of the project's own keeps from the quote's reference and
-    option, and a sheet naming a table or column the schema does not hold, are refused here.
+    option, allowed values keying a table that read as one value, and a sheet naming a
+    table or column the schema does not hold, are refused here.
     """
     document = resolved.workbench_form
     if document is None:
         return []
     form = read_workbench_config(resolved.project_root).form
     errors = [f"{form}: {clash}." for clash in identity_clashes(document.spec)]
+    errors += [
+        f"{form}: {collision}."
+        for table in document.spec.data_schema.tables
+        for collision in key_collisions(table)
+    ]
     return errors + [f"{form}/{found}." for found in unresolved_references(document.spec)]
 
 

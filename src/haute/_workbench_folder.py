@@ -72,7 +72,6 @@ from haute._workbench_folder_files import (
     TableFile,
 )
 from haute._workbench_form import (
-    IDENTITY_COLUMNS,
     QUOTE_DETAILS_NAME,
     ExportWidget,
     FormDocument,
@@ -85,7 +84,6 @@ from haute._workbench_form import (
     WorkbenchFormError,
     _condition_kind,
     _grown_to_hold,
-    holds_identity,
     quote_details_table,
     sheet_name,
     with_quote_details,
@@ -101,7 +99,7 @@ SAMPLE_DIR = "sample"
 #: The folder format: what each file holds and each setting's default. Version 1 kept each
 #: sheet's components in its file, by their numbers in their sections, and where they sat in
 #: a layout file beside it.
-FOLDER_VERSION = 2
+FOLDER_VERSION = 3
 #: The longest full path a file of the folder may have.
 PATH_MAX = 240
 
@@ -248,8 +246,16 @@ def _a_condition(path: JsonPath) -> bool:
     return len(path) >= 2 and path[-2] == "conditions" and isinstance(path[-1], int)
 
 
-#: A schema file's columns, one a line.
-_SCHEMA_ONE_LINE = at(("columns", ANY))
+#: A schema file's columns, one a line: quote_details' columns and each block's.
+_schema_columns = at(("columns", ANY))
+_schema_inputs = at(("inputs", ANY))
+_schema_outputs = at(("outputs", ANY))
+
+
+def _schema_one_line(path: JsonPath) -> bool:
+    return _schema_columns(path) or _schema_inputs(path) or _schema_outputs(path)
+
+
 #: A sheet file's placements, one a line.
 _a_placement = at(("sections", ANY, "components", ANY))
 
@@ -277,7 +283,7 @@ def render_folder_file(value: BaseModel | list[Any]) -> bytes:
         if isinstance(value, SheetFile)
         else _a_condition
         if isinstance(value, COMPONENT_FILES)
-        else _SCHEMA_ONE_LINE
+        else _schema_one_line
         if isinstance(value, TableFile | QuoteDetailsFile)
         else _never
     )
@@ -436,29 +442,31 @@ def _sheet_file(page: Any) -> SheetFile:
 
 
 def _table_file_model(table: SchemaTable, problems: list[str]) -> TableFile:
-    """*table*'s file but its name. The quote's identity at its head is Haute's and not
-    written; a column of either name elsewhere is the project's own and is. An output's
-    columns are written without the rules only an input column takes, which they hold only
-    at their defaults; one set is a problem."""
-    columns: list[dict[str, Any]] = []
-    held = len(IDENTITY_COLUMNS) if holds_identity(table) else 0
-    for column in table.columns[held:]:
+    """*table*'s file but its name. The quote's identity at its first block's head is
+    Haute's and not written; a column of either name elsewhere is the project's own and is.
+    An output is written without what only an input takes, which it holds only at its
+    defaults; one set is a problem."""
+    inputs: list[dict[str, Any]] = []
+    for column in table.own_inputs:
         data = column.model_dump(mode="json")
-        if table.role == "input" and column.options_source is not None:
+        if column.options_source is not None:
             # Its values are its params file's, read with the form (READ-25): only the
             # reference is written.
             data["options"] = []
-        if table.role == "output":
-            for key in INPUT_ONLY:
-                if data.pop(key) != SchemaColumn.model_fields[key].get_default(
-                    call_default_factory=True
-                ):
-                    problems.append(
-                        f"output column {table.name}.{column.name} holds {key}, which only an "
-                        "input column takes"
-                    )
-        columns.append(data)
-    return TableFile.model_validate({"role": table.role, "rows": table.rows, "columns": columns})
+        inputs.append(data)
+    outputs: list[dict[str, Any]] = []
+    for column in table.own_outputs:
+        data = column.model_dump(mode="json")
+        for key in (*INPUT_ONLY, "index"):
+            if data.pop(key) != SchemaColumn.model_fields[key].get_default(
+                call_default_factory=True
+            ):
+                problems.append(
+                    f"{table.name}.{column.name} is an output and holds {key}, which only an "
+                    "input takes"
+                )
+        outputs.append(data)
+    return TableFile.model_validate({"rows": table.rows, "inputs": inputs, "outputs": outputs})
 
 
 def _quote_details_file(table: SchemaTable) -> QuoteDetailsFile:
@@ -480,7 +488,7 @@ def _quote_details_file(table: SchemaTable) -> QuoteDetailsFile:
 def _sample_rows(table: SchemaTable, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*rows* by column name in the table's column order, any name the table does not hold
     after them, kept as written."""
-    order = [column.name for column in table.columns]
+    order = [column.name for column in table.inputs]
     return [
         {
             **{name: row[name] for name in order if name in row},
@@ -527,7 +535,7 @@ def folder_files(spec: FormSpec, folder: Path) -> dict[str, bytes]:
         for section in page.sections:
             for widget in section.widgets:
                 files[_component_path(widget.name)] = render_folder_file(_component_file(widget))
-    inputs = {table.name: table for table in tables if table.role == "input"}
+    inputs = {table.name: table for table in tables if table.has_inputs}
     for table_name, rows in spec.sample.items():
         if not rows:
             continue
@@ -840,7 +848,10 @@ def _check_version(config: WorkbenchConfig, files: Mapping[str, bytes]) -> None:
         return
     where = f"{config.form}/{INDEX_FILE}"
     said = (
-        f"which keeps each component in {COMPONENTS_DIR}/"
+        f"which keeps each component in {COMPONENTS_DIR}/ and gives each table its inputs and "
+        "outputs"
+        if version < FOLDER_VERSION - 1
+        else "which gives each table its inputs and outputs"
         if version < FOLDER_VERSION
         else "and a later Haute wrote this one"
     )
@@ -1007,7 +1018,7 @@ def form_from_files(
         column.name: column.model_dump(mode="json", exclude_unset=True)
         for column in details.columns
     }
-    for column in quote_details["columns"]:
+    for column in quote_details["inputs"]:
         column.update(given.get(column["name"], {}))
     tables: list[dict[str, Any]] = [quote_details]
     parsed_tables: list[tuple[str, TableFile]] = []
@@ -1017,9 +1028,9 @@ def form_from_files(
         tables.append(
             {
                 "name": name,
-                "role": table.role,
                 "rows": table.rows,
-                "columns": [column.model_dump(mode="json") for column in table.columns],
+                "inputs": [column.model_dump(mode="json") for column in table.inputs],
+                "outputs": [column.model_dump(mode="json") for column in table.outputs],
             }
         )
 
@@ -1027,13 +1038,15 @@ def form_from_files(
 
     pages = [_page(config, name, sheet, files) for name, sheet in folder.sheets.items()]
 
-    roles = {name: table.role for name, table in parsed_tables}
+    typed = {
+        name for name, table in parsed_tables if any(not column.index for column in table.inputs)
+    }
     sample: dict[str, list[dict[str, Any]]] = {}
     for name in index.tables:
         path = _sample_file(name)
         if path not in files:
             continue
-        if name == QUOTE_DETAILS_NAME or roles.get(name) == "input":
+        if name == QUOTE_DETAILS_NAME or name in typed:
             sample[name] = [dict(row) for row in _parse(config, files, path, SAMPLE)]
         else:
             raise WorkbenchFormError(

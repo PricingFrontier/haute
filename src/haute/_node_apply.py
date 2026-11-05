@@ -33,6 +33,7 @@ from haute._types import NodeType, _Frame
 
 if TYPE_CHECKING:
     from haute._workbench_output import WorkbenchOutputTables
+    from haute._workbench_tables import WorkbenchTable
 
 #: A frame in either evaluation mode, returned in the mode it was given.
 _EagerOrLazy = TypeVar("_EagerOrLazy", pl.LazyFrame, pl.DataFrame)
@@ -247,17 +248,29 @@ def resolve_workbench_input_from_config(
     return dict(workbench_table_frames(config, port_columns=port_columns))
 
 
+def workbench_input_tables_from_config(
+    config_or_path: Mapping[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> tuple[WorkbenchTable, ...]:
+    """A Workbench Input's tables, given as a run gives them (:func:`_workbench_node_config`),
+    its sample left unread."""
+    from haute._workbench_input import workbench_input_tables
+
+    return workbench_input_tables(
+        _workbench_node_config(NodeType.WORKBENCH_INPUT, config_or_path, base_dir)
+    )
+
+
 def workbench_input_ports_from_config(
     config_or_path: Mapping[str, Any] | str | PathLike[str],
     *,
     base_dir: str | Path | None = None,
 ) -> tuple[str, ...]:
-    """A Workbench Input's ports, its tables given as a run gives them
-    (:func:`_workbench_node_config`), its sample left unread."""
-    from haute._workbench_input import workbench_table_labels
-
-    return workbench_table_labels(
-        _workbench_node_config(NodeType.WORKBENCH_INPUT, config_or_path, base_dir)
+    """A Workbench Input's ports, ``<table>_input``, its tables given as a run gives them."""
+    return tuple(
+        table.port
+        for table in workbench_input_tables_from_config(config_or_path, base_dir=base_dir)
     )
 
 
@@ -737,7 +750,7 @@ def assemble_workbench_output_from_config(
 
     cfg = _workbench_node_config(NodeType.WORKBENCH_OUTPUT, config, base_dir)
     tables = workbench_output_tables(cfg)
-    labels = [table.name for table in tables]
+    labels = [table.port for table in tables]
     if ports is None or len(ports) != len(dfs):
         raise WorkbenchOutputError(
             "A Workbench Output fills each table from the frame connected to its port, so it "

@@ -38,7 +38,7 @@ from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_utils import streaming_collect
 from haute._types import GraphNode, PipelineGraph, _Frame
 from haute._workbench_input import workbench_request_frames
-from haute._workbench_output import as_response, quote_identity
+from haute._workbench_output import as_response
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_quote_input, is_workbench_input
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
@@ -1166,7 +1166,7 @@ def _score_graph_lazy(
             ),
             None,
         )
-        output_lf = as_response(output_lf, quote_identity(workbench_quote))
+        output_lf = as_response(output_lf, workbench_quote)
 
         if output_fields:
             retained_lazy_frames.append(output_lf)

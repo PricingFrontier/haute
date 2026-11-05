@@ -403,22 +403,23 @@ class SheetFile(_File):
 
 
 class TableFile(_File):
-    """A table but its name, which is its index entry: each column named once whatever its
-    case, and an output's columns holding no rule. The quote's identity, which Haute gives
-    every table, is written in none; a column of either name is the project's own, a clash
-    the schema's problems name (``haute._workbench_form.identity_clashes``)."""
+    """A table but its name, which is its index entry: its inputs and its outputs, each
+    column named once whatever its case across both, and an output holding no rule but
+    Required and no index. The quote's identity, which Haute gives every table, is written in
+    none; a column of either name is the project's own, a clash the schema's problems name
+    (``haute._workbench_form.identity_clashes``)."""
 
-    role: Literal["input", "output"]
     rows: Literal["one", "many"]
-    columns: list[ColumnFile]
+    inputs: list[ColumnFile] = Field(default_factory=list)
+    outputs: list[ColumnFile] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _holds_its_own_columns(self) -> TableFile:
         # A column is known by its name (READ-23): two of one name whatever their case, as a
         # merge can leave them, would give the sheets one of them and not the other, and a
-        # database that ignores case one column for both.
+        # database that ignores case one column for both, whichever blocks hold them.
         names: dict[str, str] = {}
-        for column in self.columns:
+        for column in [*self.inputs, *self.outputs]:
             folded = column.name.casefold()
             if folded in names:
                 raise ValueError(
@@ -426,13 +427,13 @@ class TableFile(_File):
                     "a table needs a name of its own, whatever its case"
                 )
             names[folded] = column.name
-            if self.role == "output":
-                rules = [key for key in INPUT_ONLY if key in column.model_fields_set]
-                if rules:
-                    raise ValueError(
-                        f"output column {column.name} holds {', '.join(rules)}, which only "
-                        "an input column takes"
-                    )
+        for column in self.outputs:
+            rules = [key for key in (*INPUT_ONLY, "index") if key in column.model_fields_set]
+            if rules:
+                raise ValueError(
+                    f"{column.name} is an output and holds {', '.join(rules)}, which only an "
+                    "input takes"
+                )
         return self
 
 
@@ -463,7 +464,7 @@ class QuoteDetailsFile(_File):
 class IndexFile(_File):
     model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
 
-    version: Literal[2]
+    version: Literal[3]
     name: str
     theme: Theme = Field(default_factory=Theme)
     #: ``schema`` in the file; ``BaseModel`` already has a ``schema`` attribute.

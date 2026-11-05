@@ -473,7 +473,7 @@ def _fits(column: SchemaColumn, value: Any) -> bool:
 def _row_values(
     table: SchemaTable, row: Any, where: str, not_opened: list[str]
 ) -> dict[str, str | bool]:
-    columns = {column.name: column for column in table.columns}
+    columns = {column.name: column for column in table.inputs}
     cells: dict[str, str | bool] = {}
     if not isinstance(row, Mapping):
         not_opened.append(where)
@@ -501,7 +501,7 @@ def opened_values(
 ) -> tuple[dict[str, list[dict[str, str | bool]]], list[str]]:
     """*request* put back on *form*'s sheets: each input table's rows by table and column
     name as the sheets hold values, and each value it cannot place, named."""
-    tables = {table.name: table for table in form.data_schema.tables if table.role == "input"}
+    tables = {table.name: table for table in form.data_schema.tables if table.has_inputs}
     values: dict[str, list[dict[str, str | bool]]] = {}
     not_opened: list[str] = []
     for name, held in request.items():

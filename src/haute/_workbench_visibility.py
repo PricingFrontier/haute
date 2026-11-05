@@ -188,8 +188,8 @@ def visibility(spec: FormSpec, rows: Rows) -> Visibility:
     inputs = {
         (table.name, column.name)
         for table in spec.data_schema.tables
-        if table.role == "input"
-        for column in table.columns
+        if table.has_inputs
+        for column in table.inputs
         if not column.index
     }
     hidden = (on_widgets - shown) & inputs
@@ -229,7 +229,7 @@ def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
         if found is None:
             return False
         own, column = found
-        if own.role == "output" and condition.field is not None:
+        if own.is_output(column.name) and condition.field is not None:
             return False
         return _fits(column.type, condition, _other_column(spec, condition))
     table = _list_table(spec, condition)
@@ -237,12 +237,17 @@ def condition_fits(spec: FormSpec, condition: SingleCondition) -> bool:
 
 
 def _on_price(spec: FormSpec, condition: SingleCondition) -> bool:
-    """Whether *condition* tests an output table's column or rows: the price, which the view
-    tests once what shows is decided, so here it holds while it fits."""
-    return any(
-        table.name == condition.table and table.role == "output"
-        for table in spec.data_schema.tables
-    )
+    """Whether *condition* tests the price, which the view tests once what shows is decided,
+    so here it holds while it fits: an output's column, a list's rows whose tests or total
+    name an output, or the rows of a table with no inputs, a count without tests included.
+    Never by its table alone, so a count without tests on an input table counts its typed
+    rows (``onPrice`` in the view)."""
+    table = next((held for held in spec.data_schema.tables if held.name == condition.table), None)
+    if table is None:
+        return False
+    if isinstance(condition, Condition):
+        return table.is_output(condition.column)
+    return any(table.is_output(name) for name in _list_columns(condition)) or not table.has_inputs
 
 
 def _shows(spec: FormSpec, show_when: ShowWhen, rows: Rows, shown: set[tuple[str, str]]) -> bool:
@@ -314,9 +319,7 @@ def _list_holds(
     if tested:
         if not all((table.name, column_name) in shown for column_name in tested):
             return False
-    elif not any(
-        (table.name, column.name) in shown for column in table.columns if not column.index
-    ):
+    elif not any((table.name, column.name) in shown for column in table.inputs if not column.index):
         return False
     typed = _typed_rows(table, rows.get(table.name, ()))
     passing = _passing_rows(table, condition.where, typed)
@@ -410,19 +413,18 @@ def _typed_rows(
     return [
         row
         for row in preset_rows(table, rows)
-        if any(_filled(row.get(column.name)) for column in table.columns if not column.index)
+        if any(_filled(row.get(column.name)) for column in table.inputs if not column.index)
     ]
 
 
 def _tested_column(spec: FormSpec, table_name: str, column_name: str) -> SchemaColumn | None:
-    """A one-row table's column, while it is in a one-row input table: a condition's, or the
-    field one tests against."""
+    """A one-row table's input: a condition's, or the field one tests against."""
     return next(
         (
             column
             for table in spec.data_schema.tables
-            if table.name == table_name and table.role == "input" and table.rows == "one"
-            for column in table.columns
+            if table.name == table_name and table.rows == "one"
+            for column in table.inputs
             if column.name == column_name
         ),
         None,
@@ -465,12 +467,16 @@ def _list_table(spec: FormSpec, condition: ListCondition) -> SchemaTable | None:
 
 
 def _list_fits(table: SchemaTable, condition: ListCondition) -> bool:
-    """Whether a condition on *table*'s rows can hold as written: each test of a row on a
-    column of the table other than its index, fitting as a one-row table's condition fits,
-    and a total's column a number column of the table other than its index, its value a
-    number. An output table's tests are against values typed alone."""
+    """Whether a condition on *table*'s rows can hold as written: its tests and its total
+    on one block, its inputs or its outputs; each test of a row on a column of the table
+    other than its index, fitting as a one-row table's condition fits, a field it tests
+    against an input of the same block; and a total's column a number column of the table
+    other than its index, its value a number. An output's tests are against values typed
+    alone."""
+    if len({table.is_output(name) for name in _list_columns(condition)}) > 1:
+        return False
     for test in condition.where:
-        if table.role == "output" and test.field is not None:
+        if test.field is not None and (table.is_output(test.column) or table.is_output(test.field)):
             return False
         column = _row_column(table, test.column)
         other = None if test.field is None else _row_column(table, test.field)

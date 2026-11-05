@@ -51,6 +51,7 @@ from haute._quote_store._rows import (
     input_rows,
     output_rows,
     rendered_outputs,
+    with_outputs,
 )
 from haute._quote_store._schema import (
     NAME_LENGTH,
@@ -935,12 +936,15 @@ class QuoteBook:
         current = self.get(reference, option)
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)
-        rows = {
-            **input_rows(self._form, written, (reference, option), self._schema.kept),
-            **output_rows(
-                self._form, None if priced is None else priced.document, (reference, option)
-            ),
-        }
+        document = None if priced is None else priced.document
+        rows = with_outputs(
+            self._form,
+            {
+                **input_rows(self._form, written, (reference, option), self._schema.kept),
+                **output_rows(self._form, document, (reference, option)),
+            },
+            document,
+        )
         details = rows.pop(QUOTE_DETAILS_NAME)[0]
         try:
             with writing(self._engine) as connection:
