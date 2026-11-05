@@ -1081,7 +1081,6 @@ class TestStarterFiles:
             "form.json",
             "schema/quote_details.json",
             "sheets/sheet_1.json",
-            "sheets/sheet_1.layout.json",
         ]
         config = WorkbenchConfig(enabled=True, project_root=tmp_path, form="rating/workbench")
         spec, repairs = form_from_files(

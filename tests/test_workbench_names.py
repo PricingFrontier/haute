@@ -84,6 +84,7 @@ def _form(*, limit: str = "limit", extra: list[dict[str, Any]] | None = None) ->
                                 "widgets": [
                                     {
                                         "id": "w",
+                                        "name": "cover",
                                         "type": "collection",
                                         "x": 0,
                                         "y": 0,

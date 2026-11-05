@@ -366,14 +366,14 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
     release_dir: Path, tmp_path: Path
 ) -> None:
     # The policy shows on quotes Ana made, by a condition on the detail the app sets, which
-    # its own Collection shows. Each component is numbered in its section, as the editor
-    # numbers it there, which identifies it in the release (READ-24).
+    # its own Collection shows. Each component has its name, as the editor names it, which
+    # identifies it in the release (READ-24).
     spec = json.loads(json.dumps(FORM))
     spec["pages"][0]["sections"][0]["height"] = 240
     spec["pages"][0]["sections"][0]["widgets"] = [
         {
             "id": "w_made",
-            "number": 1,
+            "name": "made",
             "type": "collection",
             "x": 0,
             "y": 120,
@@ -383,7 +383,7 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
         },
         {
             "id": "w_policy",
-            "number": 2,
+            "name": "policy",
             "type": "collection",
             "x": 0,
             "y": 0,

@@ -76,6 +76,7 @@
             "widgets": [
               {
                 "id": "w_policy",
+                "name": "w_policy",
                 "x": 0,
                 "y": 0,
                 "w": 720,
@@ -91,6 +92,7 @@
               },
               {
                 "id": "w_flood",
+                "name": "w_flood",
                 "x": 0,
                 "y": 160,
                 "w": 720,
@@ -107,6 +109,7 @@
               },
               {
                 "id": "w_perils",
+                "name": "w_perils",
                 "x": 0,
                 "y": 320,
                 "w": 720,
@@ -120,6 +123,7 @@
               },
               {
                 "id": "w_made",
+                "name": "w_made",
                 "x": 0,
                 "y": 540,
                 "w": 720,

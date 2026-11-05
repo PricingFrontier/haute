@@ -241,18 +241,23 @@ class TestCommitSave:
         assert sha is not None
         assert _git(repo, "log", "-1", "--format=%s", sha) == "Updated rating"
 
-    def test_a_form_folder_save_names_the_tables_and_sheets_it_changed(self, repo: Path) -> None:
+    def test_a_form_folder_save_names_the_tables_sheets_and_components_it_changed(
+        self, repo: Path
+    ) -> None:
         sha = _write_and_save(
             repo,
             WORKING,
             {
                 "rating/workbench/schema/perils.json": "{}\n",
-                "rating/workbench/sheets/br_coverages.layout.json": "{}\n",
+                "rating/workbench/sheets/br_coverages.json": "{}\n",
+                "rating/workbench/components/layers.json": "{}\n",
             },
         )
         assert sha is not None
+        # Each file by its path in the folder, a component's under components/.
         assert _git(repo, "log", "-1", "--format=%s", sha) == (
-            "Updated workbench/schema/perils, workbench/sheets/br_coverages layout"
+            "Updated workbench/components/layers, workbench/schema/perils, "
+            "workbench/sheets/br_coverages"
         )
 
     def test_a_save_during_a_merge_is_refused_with_the_reason(self, repo: Path) -> None:
@@ -1524,7 +1529,7 @@ class TestSeedGitignoreGuards:
             "rating/workbench/form.json",
             "rating/workbench/schema/quote_details.json",
             "rating/workbench/sheets/sheet_1.json",
-            "rating/workbench/sheets/sheet_1.layout.json",
+            "rating/workbench/components/table_1.json",
             "workbench/sample/perils.json",
             "prompts/starter.md",
             "tests/test_pipeline.py",

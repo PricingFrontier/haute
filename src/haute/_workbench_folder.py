@@ -63,7 +63,6 @@ from haute._workbench_folder_files import (
     INPUT_ONLY,
     NAME_PATTERN,
     NOT_IN_COMPONENT_FILE,
-    PLACEMENT,
     SAMPLE,
     IndexFile,
     PlacementFile,
@@ -1068,10 +1067,10 @@ _WIDGET_KINDS = frozenset({"tableInput", "collection", "chart", "heading", "impo
 
 
 def _place_in_sheet(name: str, sheet: SheetFile, rest: list[Any]) -> str:
-    """An error in a sheet of the form as the folder spells its place: a component's
-    settings in its component file, its name and place in its sheet's placement, and
-    anything else in the sheet's file."""
-    sheet_path = _sheet_path(name)
+    """An error in a sheet of the form as the folder spells its place: one in a component in
+    its component file, anything else in the sheet's file. A component's name and place,
+    which its sheet's file holds, are held there to all ``FormSpec`` asks of them
+    (``PlacementFile``), so an error in a component is in its settings."""
     if (
         len(rest) >= 4
         and rest[0] == "sections"
@@ -1081,16 +1080,12 @@ def _place_in_sheet(name: str, sheet: SheetFile, rest: list[Any]) -> str:
         and rest[1] < len(sheet.sections)
         and rest[3] < len(sheet.sections[rest[1]].components)
     ):
-        placed = sheet.sections[rest[1]].components[rest[3]]
+        path = _component_path(sheet.sections[rest[1]].components[rest[3]].component)
         tail = [str(part) for part in rest[4:]]
         if tail[:1] and tail[0] in _WIDGET_KINDS:
             tail = tail[1:]
-        if not tail or tail[0] not in PLACEMENT | {"name"}:
-            path = _component_path(placed.component)
-            return f"{path}: {'.'.join(tail)}" if tail else path
-        key = "component" if tail[0] == "name" else tail[0]
-        return f"{sheet_path}: sections.{rest[1]}.components.{rest[3]}.{key}"
-    return f"{sheet_path}: " + ".".join(
+        return f"{path}: {'.'.join(tail)}" if tail else path
+    return f"{_sheet_path(name)}: " + ".".join(
         "components" if part == "widgets" else str(part) for part in rest
     )
 
