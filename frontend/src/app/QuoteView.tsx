@@ -2,7 +2,7 @@
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
  * to Quotes, its reference and option, name and stage, Save and Mark final or Amend,
  * History, the zoom, and why it has no price), a line of who saved it,
- * the release that priced it, where it came from and who it is with, and the notices of
+ * where it came from and who it is with, and the notices of
  * anything that stands in the way. The quote is priced as it is typed. Values not saved are
  * kept in the browser and leaving with them asks first.
  */
@@ -205,8 +205,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
   const typed = form !== null && quoteEligible(form, values, appSet)
   const priced = form !== null && price !== null && price.basis === basisOf(form, values)
-  // Its last pricing failed: a save keeps it unpriced.
-  const unpriceable = !priced && error !== null
   const closed = reason !== null
   // The quote's name is its quote_details.quote_name cell, on the sheets or not.
   const name = values[QUOTE_DETAILS_NAME]?.[0]?.[NAME_COLUMN]
@@ -217,13 +215,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     : savedTables === null
   const nothingNew = quote !== null && !dirty && samePrice
 
-  const saveTitle = closed
-    ? "This quote does not take changes as it is"
-    : !typed
-      ? "Type the quote first"
-      : unpriceable
-        ? "Save the quote unpriced: it could not be priced (Ctrl+S)"
-        : "Save the quote with its price (Ctrl+S)"
+  const saveTitle = closed ? "This quote does not take changes as it is" : !typed ? "Type the quote first" : "Save the quote (Ctrl+S)"
 
   // Whether each required field holds a value is the server's to say as the quote is marked final.
   const finalBlock = !editor
@@ -235,9 +227,9 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         : dirty
           ? "Save your changes first"
           : quote.priced_release === null
-            ? "Save the quote with its price first"
+            ? "Save the quote first"
             : quote.priced_release !== release?.id
-              ? "Priced on an earlier release: save it again first"
+              ? "Saved on an earlier release: save it again first"
               : null
 
   const markFinal = async () => {
@@ -300,7 +292,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
       </div>
       <ToolbarColumn role="group" aria-label="Save">
         <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
-          {saving ? "Saving…" : unpriceable && !closed ? "Save unpriced" : "Save"}
+          {saving ? "Saving…" : "Save"}
         </button>
         {quote?.stage === "final" ? (
           <ToolbarButton icon={LockOpen} onClick={() => void amend()} disabled={working || !editor || quote.archived} title="Take the quote back to draft to amend it, giving a reason">
@@ -327,7 +319,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   )
 }
 
-/** The line under the bar: who saved the quote, the release that priced it, where it came from, who it is with. */
+/** The line under the bar: who saved the quote, where it came from, who it is with. */
 function QuoteLine() {
   const release = useAppStore((s) => s.release)
   const people = useAppStore((s) => s.people)
@@ -365,13 +357,6 @@ function QuoteLine() {
         <>
           <span style={muted} title={fullTime(quote.saved_at)}>
             Saved {relativeTime(new Date(quote.saved_at))} by {quote.saved_by}
-          </span>
-          <span style={muted}>
-            {quote.priced_release === null
-              ? "Unpriced"
-              : quote.priced_release === release?.id
-                ? `Priced on this release`
-                : `Priced on release ${quote.priced_release}`}
           </span>
           {quote.relation !== null && sourcePath !== null && (
             <span style={muted}>
@@ -518,7 +503,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {moved && (
         <Notice tone="warning" testId="notice-moved" onDismiss={() => dismiss("moved")}>
-          The app priced the quote again as it saved it, and the price changed: the sheets show the price saved.
+          The quote ran again as it was saved and its results changed: the sheets show the results saved.
         </Notice>
       )}
       {dropped.length > 0 && (

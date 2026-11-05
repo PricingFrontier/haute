@@ -491,7 +491,7 @@ export function activityText(entry: WorkbenchAppQuoteActivityEntry, source: Work
     case "created":
       return source === null ? "made it" : `made it as ${RELATION_TEXT[source.relation]} of ${source.label}`
     case "saved":
-      return entry.priced_release === null ? "saved it, unpriced" : "saved it, priced"
+      return "saved it"
     case "assigned":
       return entry.assignee === null ? "assigned it" : `assigned it to ${entry.assignee}`
     case "noted":

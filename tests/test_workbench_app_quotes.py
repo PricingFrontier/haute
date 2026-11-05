@@ -938,7 +938,9 @@ def test_mark_final_needs_a_price_of_the_release_running(
     unpriced = page.change(page.create().json()["quote"], "final")
     assert unpriced.status_code == 409
     assert unpriced.json()["detail"]["error_code"] == "quote_not_ready"
-    assert "is not priced" in unpriced.json()["detail"]["message"]
+    assert unpriced.json()["detail"]["message"] == (
+        "Save Q-000001/1 without errors before marking it final."
+    )
 
     priced = page.priced()
     # The next release, on the same store, did not price it.
@@ -949,7 +951,7 @@ def test_mark_final_needs_a_price_of_the_release_running(
         )
     assert refused.status_code == 409
     assert (
-        f"was priced on release {page.release}, not this one"
+        f"was saved on release {page.release}, not this one"
         in (refused.json()["detail"]["message"])
     )
     assert page.change(priced, "final").json()["quote"]["stage"] == "final"

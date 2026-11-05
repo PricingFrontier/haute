@@ -376,7 +376,7 @@ def test_mark_final_needs_a_price_of_the_running_release_and_every_required_valu
 ) -> None:
     quote = make(book, values=values(policy=[{"region": "north"}]))
     unpriced = save(book, quote, priced=False)
-    with pytest.raises(QuoteNotReadyError, match="is not priced"):
+    with pytest.raises(QuoteNotReadyError, match="Save A-1/1 without errors before marking"):
         book.finalise("A-1", 1, version=unpriced.version, actor=ANA, release=RELEASE)
 
     priced = save(

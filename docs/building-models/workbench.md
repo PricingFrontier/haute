@@ -994,12 +994,13 @@ A quote opens at its own address, under a bar holding its reference and option
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
   when it was saved unpriced or priced on an earlier release. **Save** waits for that
-  pricing and keeps the quote with its price, or unpriced when it could not be priced (the
-  button says **Save unpriced** then, and the bar says why); the app prices it again as it
-  saves, and says so if the price it keeps moved. A save replaces what the quote held, so
-  duplicate the quote from the Quotes page first to keep an offer as it stood. A save is refused only when a value
-  is not of its column's type, naming each one; a required value left empty, or a value
-  outside its range, saves.
+  pricing and keeps the quote with its price, or without one when it could not be priced
+  (the bar says why); the app prices it again as it saves, and says so if the results it
+  keeps changed. The app never shows underwriters whether a quote is priced: what they
+  see is whether it is final. A save replaces what the quote held, so duplicate the quote
+  from the Quotes page first to keep an offer as it stood. A save is refused only when a
+  value is not of its column's type, naming each one; a required value left empty, or a
+  value outside its range, saves.
 - **Mark final** makes the quote the final quotation, once it is saved with a price of the
   running release and every column the analyst made required, input or output, holds a
   value; otherwise the app names each one that does not. A final quote cannot be saved until
@@ -1008,8 +1009,8 @@ A quote opens at its own address, under a bar holding its reference and option
 - **History**: the handover note, the quotes it came from or that were made from it, and
   what was done to the quote, by whom and when, with the reasons given for amending it.
 
-Beneath the bar are who saved it and when, the release that priced it, where the quote came
-from, and who it is with, which you can change. A quote opens on the release's sheets; a row
+Beneath the bar are who saved it and when, where the quote came from, and who it is with,
+which you can change. A quote opens on the release's sheets; a row
 whose value a later release no longer allows is named as no longer fitting. If a colleague
 saves a quote while you have it open, your save is refused naming who did it, with your
 values kept: open the newest, or save yours as a new quote, keying its reference in the

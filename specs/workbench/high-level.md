@@ -1677,12 +1677,12 @@ Out of scope:
   `quote_details.quote_name`, typed in the bar as on the sheets and saved with the next
   Save), its stage, Draft or Final, and, when archived, Archived, who it is with (reassigned
   from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
-  Amend, which asks why, History, and why the quote has no price. Beneath are who saved it and when,
-  the release that priced it and the quote it came from. The quote is priced as it is
+  Amend, which asks why, History, and why the quote has no price. Beneath are who saved it
+  and when and the quote it came from. The quote is priced as it is
   typed, and as it opens while it may change and has no price of this release, unpriced or
   priced on an earlier one. Save waits for that pricing to settle, a value entered while it
   waits priced too, and keeps the quote priced when the values settle on a price, and
-  unpriced when they could not be priced, which its label ("Save unpriced") and title say;
+  unpriced when they could not be priced, its label Save either way;
   with nothing typed, the details the app sets and the defaults aside, there is nothing to
   save, and nothing new to save while the values are as saved and priced as saved on this
   release (a price made since, or one of an earlier release, is new). A save holding a value
@@ -1692,7 +1692,11 @@ Out of scope:
   store keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
   the quote stays open, and a quote opened again starts those cells as Defaults says.
   Mark final is off while the quote has unsaved values or no price of this release, and is
-  refused naming each required field without a value. A save and a change name the version
+  refused naming each required field without a value. Whether a saved quote is priced is
+  for Mark final alone: neither the page nor its history says priced or unpriced, as an
+  underwriter cares whether a quote is final, and a pipeline run is not a quotation
+  (decided 2026-11-05). Mark final's reasons and refusals ask for the quote to be saved, or
+  saved again on this release, without saying priced. A save and a change name the version
   the values were opened or saved at, which a note does not move, so a save over a quote a
   colleague moved on meanwhile is refused rather than written over theirs; an answer
   arriving once another quote is open, or the quote was left, is that quote's no longer and

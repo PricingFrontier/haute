@@ -163,14 +163,14 @@ describe("QuoteView", () => {
     expect(window.location.pathname).toBe("/")
   })
 
-  it("shows who saved it and the release that priced it, and saves on Ctrl+S", async () => {
+  it("shows who saved it, saying nothing of a price, and saves on Ctrl+S", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }))
     await opened()
 
     const line = screen.getByTestId("quote-line")
     expect(line).toHaveTextContent("by ana@example.com")
-    expect(line).toHaveTextContent("Priced on this release")
+    expect(line).not.toHaveTextContent(/priced/i)
     expect(line).not.toHaveTextContent("Revision")
     expect(screen.getByTestId("stage-draft")).toBeInTheDocument()
     expect(screen.getByTestId("save-quote")).toBeDisabled()
@@ -320,13 +320,13 @@ describe("QuoteView", () => {
 
     const final = screen.getByRole("button", { name: "Mark final" })
     expect(final).toBeDisabled()
-    expect(final).toHaveAttribute("title", "Priced on an earlier release: save it again first")
-    expect(screen.getByTestId("quote-line")).toHaveTextContent("Priced on release rel-0")
+    expect(final).toHaveAttribute("title", "Saved on an earlier release: save it again first")
+    expect(screen.getByTestId("quote-line")).not.toHaveTextContent(/priced/i)
 
     view.unmount()
     await opened()
-    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Save the quote with its price first")
-    expect(screen.getByTestId("quote-line")).toHaveTextContent("Unpriced")
+    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Save the quote first")
+    expect(screen.getByTestId("quote-line")).not.toHaveTextContent(/priced/i)
   })
 
   it("offers to open the newest or save the values as a new quote, keyed in the window, when the quote moved on", async () => {
@@ -438,7 +438,7 @@ describe("QuoteView", () => {
     expect(within(bar).getByRole("button", { name: "History" })).toBeInTheDocument()
   })
 
-  it("offers to save a quote unpriced once its pricing failed, saying why", async () => {
+  it("offers Save once its pricing failed, saying why, never that it saves unpriced", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     await opened()
 
@@ -446,8 +446,8 @@ describe("QuoteView", () => {
     act(() => useWorkbenchPreviewStore.setState({ price: null, error: "Pricing failed: The pipeline refused it." }))
 
     const save = screen.getByTestId("save-quote")
-    expect(save).toHaveTextContent("Save unpriced")
-    expect(save).toHaveAttribute("title", "Save the quote unpriced: it could not be priced (Ctrl+S)")
+    expect(save).toHaveTextContent(/^Save$/)
+    expect(save).toHaveAttribute("title", "Save the quote (Ctrl+S)")
     expect(screen.getByTestId("app-pricing-error")).toHaveTextContent("Pricing failed: The pipeline refused it.")
   })
 
@@ -555,7 +555,7 @@ describe("QuoteView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "History" }))
     const panel = await screen.findByTestId("quote-history")
-    expect(await within(panel).findByText("jo@example.com saved it, priced")).toBeInTheDocument()
+    expect(await within(panel).findByText("jo@example.com saved it")).toBeInTheDocument()
     expect(within(panel).getByText("ana@example.com made it as a renewal of Q-000000/1")).toBeInTheDocument()
     expect(within(panel).getByText("jo@example.com amended it: Broker asked")).toBeInTheDocument()
     expect(within(panel).getAllByTestId(/^activity-/).map((item) => item.dataset.testid)).toEqual(["activity-amended", "activity-saved", "activity-created"])

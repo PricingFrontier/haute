@@ -193,8 +193,8 @@ describe("activityText", () => {
 
   it.each([
     [entry("created"), "made it"],
-    [entry("saved", { priced_release: "rel-1" }), "saved it, priced"],
-    [entry("saved"), "saved it, unpriced"],
+    [entry("saved", { priced_release: "rel-1" }), "saved it"],
+    [entry("saved"), "saved it"],
     [entry("assigned", { assignee: "jo" }), "assigned it to jo"],
     [entry("noted", { note: "x", version: null }), "wrote the note"],
     [entry("noted", { note: "", version: null }), "cleared the note"],

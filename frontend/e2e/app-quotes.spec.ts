@@ -133,7 +133,8 @@ test.describe("the underwriter app's quotes", () => {
       await expect(unsaved).toBeVisible()
       await page.getByTestId("save-quote").click()
       await expect(unsaved).toHaveCount(0)
-      await expect(page.getByTestId("quote-line")).toContainText("Priced on this release")
+      // Saved with a price of this release, which the page never calls priced: Mark final is offered.
+      await expect(page.getByRole("button", { name: "Mark final" })).toBeEnabled()
     })
 
     await test.step("its rows read from dev's database: the values typed and the price, under its reference and option", async () => {
