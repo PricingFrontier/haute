@@ -70,10 +70,10 @@ it looks changes only its own.
 | File | What it holds |
 |---|---|
 | `workbench/form.json` | The project's name, the sheets' colours set under **Display** in the toolbar, and the order of the tables and of the sheets |
-| `workbench/schema/<table>.json` | A table: its role, its rows and its columns with their settings. `quote_details.json` holds only what the project sets on Haute's own table |
+| `workbench/schema/<table>.json` | A table: its rows, its inputs and its outputs, each column with its settings. `quote_details.json` holds only what the project sets on Haute's own table |
 | `workbench/sheets/<sheet>.json` | A sheet: its width and its sections, each with its height and, by name, the components in it and where each sits |
 | `workbench/components/<component>.json` | A component: what it shows and how it looks |
-| `workbench/sample/<table>.json` | The sample's rows for an input table, while it has any |
+| `workbench/sample/<table>.json` | The sample's rows for a table with inputs, while it has any |
 
 A table's files are named after the table in lower case, a component's after its
 **Component name** in lower case, and a sheet's after its title
@@ -103,18 +103,22 @@ not added or moved. Clear it, or press Escape in it, to see the whole schema aga
 sheet stays where it is under the pane, and the pane stays open as you switch sheets or go
 to Preview, where it shows the schema without letting you change it.
 
-The schema holds the tables the sheets work with, and the pipeline's tables. Each table has a name, a role —
-**Input**, sent to the pricing engine, or **Output**, returned by it — and its rows: **One
-row** per quote, such as policy details, or **Many rows**, such as an equipment schedule.
-Each column has a type (Text, Integer, Decimal, True/false or Date, drawn as the step editor
-draws a value of that kind and changed from its marker), a name and, in a many-row table,
-whether it is a **key**, part of what says which row is which. **Label, help, rules and
+The schema holds the tables the sheets work with, and the pipeline's tables. Each table has a
+name, its rows (**One row** per quote, such as policy details, or **Many rows**, such as an
+equipment schedule) and its columns under two headings: **Inputs**, which the underwriter
+types and the pricing engine is sent, and **Outputs**, which pricing returns. A table can
+have either or both: an equipment schedule's inputs are each item's details and its outputs
+each item's premium, so the sheets, the saved quotes and your reports keep an item and its
+price on one row. Each heading has its own **Add column**, and a column dragged from one
+heading to the other moves there. Each column has a type (Text, Integer, Decimal, True/false
+or Date, drawn as the step editor draws a value of that kind and changed from its marker)
+and a name. **Label, help, rules and
 format** beside a column opens its details: its label; its **group**, a name you give the
 columns that belong together (type the same group on each; the table's groups are offered
 as you type), which a Table can show over its labels; its **help**, shown as a
 small mark beside the label on the sheets; for an Integer or a Decimal, its **format**
 (General, Number, Percentage or a currency), decimal places and thousands separators, as
-the Explore pivot offers them; and, in an input table, its **default**, its
+the Explore pivot offers them; and, for an input, its **default**, its
 **placeholder**, what an empty cell shows (any type but True/false and Date), and the
 rules an underwriter's value must meet: required, a range for a number, the allowed
 values. A number shows in its format wherever the sheets show it, and in its default, a
@@ -126,11 +130,21 @@ its format, its allowed values, and a number's format and decimal places.
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
 quotes are put together, in the app's saved quotes, in exports and in joins. They come
-first and are locked: they cannot be renamed, retyped, moved or removed, take no label,
+first, under Inputs, or under Outputs in a table with no inputs, and are locked: they
+cannot be renamed, retyped, moved or removed, take no label,
 group, help, rules, default or format, and are not offered to the sheets, where
 `quote_details`' own stand for them. They are not a key: rows still line up by the table's
-own key. A table you add has them at once, and a project saved before them takes them on
-when it is opened.
+own key. A table you add has them at once.
+
+A many-row table's **key** says which of its rows is which, and the underwriter never types
+it. A table with inputs is keyed by its **index**, `row_number` until you rename it, which
+Haute adds as the table gets its first input and which numbers the rows from 1; or, when a
+column gives the table a row for each of its allowed values (below), by that column. Its
+outputs belong to the row holding the same key, so the pipeline must carry the key column
+through to the rows it returns: pricing fails, saying which table and rows, when a row it
+returns has no key, repeats one, or has a key no row of the quote holds. A row the pricing
+returns nothing for shows dashes. A table of outputs alone, such as a premium broken down by
+peril, is keyed by the outputs you mark as its **key**, which the pricing fills.
 
 A column's **allowed values** come from a CSV in the pipeline's params folder
 (`rating/files/params/`, **params** in the Pipeline files panel); they are never typed in.
@@ -156,30 +170,35 @@ to the pipeline once the quote is priced, a peril with nothing else typed includ
 perils alone are not typing: a quote holding nothing else is not priced, marked or saved.
 The rows follow the params file: refresh the values, or build the app, and a new peril gets
 a row, while what was typed for a peril stays with it. Only one column in a table gives its
-rows, so ticking another unticks the first. Make the column the table's key if an output
-table keyed by peril should line up with the rows.
+rows, so ticking another unticks the first. That column is the table's key, so each output
+row pricing returns lines up with its peril's row.
 
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
-a date for a Date, or typed. Only a one-row input table's columns take one. Build shows a
+a date for a Date, or typed. Only a one-row table's inputs take one. Build shows a
 new quote with its defaults, and the underwriter app's **New quote** window starts with them; the
 sample you type in Preview, and a quote made from another quote, keep their own values. A
 quote holding nothing but its defaults is not priced, marked or saved until something is
 typed, and a value typed equal to its default counts as the default.
 
-- Enter in the last column's name adds the next column; in any other column's name it just
-  keeps what you typed. A column added, by Enter or **Add column**, takes the type of the
-  column above it: Text when it is the table's first or comes under the index.
-- Drag a column by the grip at its left, or press Alt+Up and Alt+Down in its name, to move
-  it within its table. Drag a table by the grip beside its name, or press Alt+Up and
-  Alt+Down in its name, to move the table. A grip shows while the pointer is over its row.
-- **Add index** on a many-row table adds a column first in the table after
-  **quote_reference** and **quote_option**, `row_number` until renamed, that numbers the
-  rows from 1. It is an Integer and can be the table's key.
+- Enter in the last column's name adds the next column under the same heading; in any other
+  column's name it just keeps what you typed. A column added, by Enter or **Add column**,
+  takes the type of the column above it: Text when it is the first under its heading or
+  comes under the index.
+- Drag a column by the grip at its left to move it within its heading or to the other one,
+  or press Alt+Up and Alt+Down in its name to move it within its heading. A column moved to
+  Outputs loses its default, its allowed values and range and the values typed into it in
+  the sample, which only an input has. Drag a table by the grip beside its name, or press
+  Alt+Up and Alt+Down in its name, to move the table. A grip shows while the pointer is over
+  its row.
+- The index comes first under Inputs, after **quote_reference** and **quote_option**. It is
+  an Integer, cannot be moved or removed, and goes when the table loses its last other input
+  or switches to one row.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
-  held to the rules a Quote Input's labels follow (an identifier, no reserved name, unique
-  whatever its case), a column's name is an identifier that is not a Python keyword, unique
-  in its table, a many-row table needs a key, an input column's range must not be inverted
+  an identifier, unique whatever its case, and its pipeline names, the name with `_input`
+  and `_output`, are held to the rules a Quote Input's labels follow, a column's name is an
+  identifier that is not a Python keyword, unique in its table across both headings, a
+  many-row table of outputs alone needs a key, an input column's range must not be inverted
   and its allowed values must be of its type and read from a params file, a True/false or
   Date column can have none, a default must be a value the column takes (of its type,
   in its range, one of its allowed values), and only one column in a table gives it a row
@@ -323,7 +342,7 @@ rows of many-row tables, or Row number), its **Legend**, and whether it is **Sta
 **Horizontal** and shows **Data labels**; its fields come from any table, number columns
 other than an index. A grid holds one kind of row, so once a Table or a Chart shows a
 field, tables whose rows do not line up with it (keyed differently) are greyed out; an
-input table and an output table with the same key line up, so each row can show its
+table's inputs and outputs always line up, and two tables with the same key line up, so each row can show its
 premium. Output columns are shaded. A transposed Table turns its grid on its side: each
 field is a line, labelled at its left, and each row is a column, numbered along the top;
 its stripes and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
@@ -351,7 +370,7 @@ though an Export keeps its file name, headers and values between CSV and Excel.
   **Parameters** for each `:name` in the query, where you choose the one-row input column
   whose value it takes. **Into** is the input table it fills. For a many-row table,
   **Rows** says whether the rows it brings **Replace** the table's rows, **Append** to
-  them, or **Update by key**, matching rows on the table's keys. **Columns** lists the
+  them, or **Update by key**, matching rows on the table's key. **Columns** lists the
   table's columns an underwriter types; a column is read from the column of the same name
   or label, whatever its case, unless you type the name it has in the file or the query's
   answer.
@@ -653,8 +672,9 @@ column's rules (a required cell left empty, a number that is not one, a whole nu
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
 outlined, naming the problem when you hover, and priced all the same. When pricing fails —
 no Workbench Output on the pipeline, a value that does not fit its column — the toolbar
-says why. An output table with nothing connected, or an output column the pipeline doesn't
-fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
+says why, as it does when the pipeline returns output rows that do not fit their table's
+rows (a key missing, repeated or on no row). A table's outputs with nothing connected, or an
+output the pipeline doesn't fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
 
 ### Test quotes
 
@@ -917,13 +937,20 @@ A page opened before a new release is refused when it prices or saves, and offer
 ### Reading quotes with SQL
 The app keeps each quote in your schema's own tables, so a report reads them with plain SQL.
 Each table of the schema is a table of the same name, `quote_details` included, with the
-schema's columns under their names: an Integer a 64-bit integer, a Decimal a
+schema's columns under their names, its inputs and then its outputs, so an item and its
+price are one row: an Integer a 64-bit integer, a Decimal a
 double-precision number, Text text, True/false a boolean and a Date a date. Every row holds
 the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
-**quote_row** too: an input row's place on its sheet, blank rows counted, and an output
-row's place in the pricing. Join the tables on **quote_reference** and **quote_option**:
+**quote_row** too: in a table with inputs its row's place on its sheet, blank rows counted
+(the index's number), and in a table of outputs alone its place in the pricing. Read an
+item and its price from one table, and join tables on **quote_reference** and
+**quote_option**:
 
 ```sql
+SELECT equipment_type, SUM(final_premium) AS premium
+FROM ce_equipment
+GROUP BY equipment_type;
+
 SELECT d.broker, SUM(p.total_premium) AS premium
 FROM quote_details AS d
 JOIN premium AS p ON p.quote_reference = d.quote_reference
@@ -933,7 +960,7 @@ GROUP BY d.broker;
 ```
 
 A table holds each quote as it was last saved: a save replaces the quote's rows, and the
-output tables hold the price it was saved with, none when it was saved unpriced. A value a
+outputs hold the price it was saved with, none when it was saved unpriced. A value a
 Show when hid is saved blank, and an output that was not a number, such as infinity, is
 saved empty. `quote_details` also holds what the app keeps about each quote:
 **quote_version**, which every change moves on; **saved_at** and **saved_by**, the last

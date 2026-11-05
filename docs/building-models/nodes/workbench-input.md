@@ -5,7 +5,7 @@ When your quotes are keyed in through the project's workbench, its schema alread
 !!! info "When to use"
     While the project's workbench is enabled in `haute.toml` (`[workbench] enabled = true`, which `haute init --workbench` writes), the palette offers the Workbench Input in place of the [Quote Input](quote-input.md). Use it as the entry point for live pricing of keyed-in quotes. Without a workbench, use the Quote Input and build its tables from a sample file.
 
-A Workbench Input has no inputs. Each table of the workbench's schema that has a column is a separate output, named by the table's name; connect each output to the node that uses it. A pipeline has only one Quote Input or Workbench Input: once it has either, the palette entry is greyed out with "Only one Quote Input or Workbench Input allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Input for a Workbench Input, delete it and drag in the other.
+A Workbench Input has no inputs. Each table of the workbench's schema that has inputs is a separate output, named by the table's name with `_input` (`ce_equipment_input`), holding the table's inputs; connect each output to the node that uses it. A pipeline has only one Quote Input or Workbench Input: once it has either, the palette entry is greyed out with "Only one Quote Input or Workbench Input allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Input for a Workbench Input, delete it and drag in the other.
 
 The panel has no tabs. A banner at the top reads "This node receives live API requests at deploy time", and a note under it says what previews run on: "Previews run on the workbench's sample values, read as a request is: a table with many rows and nothing typed has none." once the workbench supplies a sample, and "Previews run on one row of nulls per table until the workbench supplies values." until then.
 
@@ -15,15 +15,15 @@ Every table but `quote_details` leads with the quote's **quote_reference** and *
 
 ## TABLES FROM THE WORKBENCH
 
-The section lists the workbench's input tables. You can't edit them here:
+The section lists the workbench's tables that have inputs, each holding its inputs. You can't edit them here:
 
 | Shown | What it means |
 |---|---|
-| The table's name | The output's name, and the input name downstream nodes see. |
+| The table's name with `_input` | The output's name, and the input name downstream nodes see. |
 | **one per quote** or **many per quote** | Whether a quote has one row of the table or a list of them. |
 | Its columns | Each column's name and type. |
 | A warning under the name | The name can't be an output: it isn't an identifier, it's a Python keyword, or another table has it. Rename the table in the workbench. |
-| **No columns yet, so no port.** | The table has no columns, so there is nothing to read into it. Add its columns in the workbench. |
+| **No columns yet, so no port.** | The table has no inputs, so there is nothing to read into it. Add its inputs in the workbench. |
 
 The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When you save (**Save**, or Ctrl+S, from either view), the workbench's files are saved first, the editor fetches the tables again and the node's outputs follow, then the pipeline is saved. The editor fetches them too when the workbench's files change on disk, by hand or with a branch switch. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message; an undo never brings it back. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved. A Workbench Input inside a submodel takes the same tables.
 

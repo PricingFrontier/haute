@@ -294,8 +294,9 @@ failure named as such, never a truncated answer. Pricing all runs one quote at a
 can be cancelled.
 
 *Moved.* One comparison, used by Preview and CI alike, compares `expected` with the new
-answer on the output tables of the form as it stands: a one-row table column by column; a
-many-row table's rows matched by the columns the form marks as its keys, else by position
+answer on the outputs of the form as it stands: a one-row table column by column; a
+many-row table's rows matched by its key (its index, the column giving its rows, or, for a
+table of outputs alone, the outputs marked as keys), else by position
 when the counts match; a number moved when it differs by more than a millionth of a percent
 of the expected value, or by more than the row's `tolerance_pct` when it gives one; a field
 only one side holds named as added or removed. The outcomes are unchanged, moved (each
