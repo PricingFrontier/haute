@@ -1,5 +1,5 @@
 import { Database } from "lucide-react"
-import { useState } from "react"
+import { useCallback, useLayoutEffect, useRef, useState } from "react"
 import { halfWindowWidth, SidePanel } from "../haute-ui"
 import useWorkbenchViewStore, { SCHEMA_FULL_WIDTH } from "../stores/useWorkbenchViewStore"
 import SchemaEditor from "./SchemaEditor"
@@ -11,10 +11,20 @@ import { COMPONENT_COLOR } from "./widgetKinds"
 const MIN_WIDTH = 320
 
 /**
- * At most half the window, so the sheet stays in view beside it, but never short of the
- * width its fields take at full stretch.
+ * The width of the sheet's area the pane lies over, measured as it changes (the window
+ * resized, the palette collapsed), or null where nothing measures it.
  */
-const maxWidth = () => halfWindowWidth(SCHEMA_FULL_WIDTH)
+function useRoom(pane: { current: HTMLElement | null }): number | null {
+  const [room, setRoom] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const area = pane.current?.parentElement
+    if (!area || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(([entry]) => setRoom(Math.floor(entry.contentRect.width)))
+    observer.observe(area)
+    return () => observer.disconnect()
+  }, [pane])
+  return room
+}
 
 /**
  * The schema's pane (specs/workbench): over the sheet's left part, under the sheet tabs,
@@ -23,7 +33,9 @@ const maxWidth = () => halfWindowWidth(SCHEMA_FULL_WIDTH)
  * only in Preview. Its Compare compares the form with an environment's tables
  * (`StoreCompare`), its marks on the tables and what it found above them; its SQL, while
  * building, opens the tables' SQL (`StoreSqlWindow`). It registers itself with the view
- * store, so nothing dragged out of the palette lands on the sheet it covers.
+ * store, so nothing dragged out of the palette lands on the sheet it covers. It is never
+ * wider than the sheet's area, so a narrow window keeps its right edge, its Close and its
+ * drag handle in view.
  */
 export default function SchemaPane() {
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
@@ -33,8 +45,23 @@ export default function SchemaPane() {
   const setPane = useWorkbenchViewStore((s) => s.setSchemaPane)
   const [storeSqlOpen, setStoreSqlOpen] = useState(false)
   useStoreComparison()
+  const pane = useRef<HTMLDivElement | null>(null)
+  const register = useCallback(
+    (element: HTMLDivElement | null) => {
+      pane.current = element
+      setPane(element)
+    },
+    [setPane],
+  )
+  const room = useRoom(pane)
+  // At most half the window, so the sheet stays in view beside it, but never short of the
+  // width its fields take at full stretch; and never past the sheet's area.
+  const widest = () => {
+    const most = halfWindowWidth(SCHEMA_FULL_WIDTH)
+    return room === null ? most : Math.max(MIN_WIDTH, Math.min(most, room))
+  }
   return (
-    <div ref={setPane} className="absolute inset-y-0 left-0 z-20 flex shadow-2xl" data-testid="schema-pane">
+    <div ref={register} className="absolute inset-y-0 left-0 z-20 flex shadow-2xl" data-testid="schema-pane">
       <SidePanel
         side="left"
         title="Schema"
@@ -53,10 +80,10 @@ export default function SchemaPane() {
             </button>
           </>
         }
-        width={width}
+        width={Math.min(width, widest())}
         onWidthChange={setWidth}
         minWidth={MIN_WIDTH}
-        maxWidth={maxWidth}
+        maxWidth={widest}
       >
         <ComparePanel />
         <SchemaEditor readOnly={previewing} />

@@ -707,9 +707,10 @@ Out of scope:
     the left over the sheet, under the sheet tabs, covering the sheet's left part without
     moving it; the part it covers takes no presses and no drops while it is open. Its
     right edge is dragged to resize it, from 320px to half the window, or to the width its
-    fields take at full stretch where that is wider; it opens at that width, kept while the
-    editor is open, and its Close, or Schema again, closes it. Opened again, it is as it
-    was closed: scrolled where it was, the same tables collapsed, the same column's label
+    fields take at full stretch where that is wider, and never wider than the sheet's area
+    beside the palette, so a narrow window keeps its right edge in view; it opens at that
+    width, kept while the editor is open, and its Close, or Schema again, closes it. Opened
+    again, it is as it was closed: scrolled where it was, the same tables collapsed, the same column's label
     and rules open and the same search. A search box at its top filters the schema as it is
     typed: only the columns whose name or label holds the text, whatever its case, show, in
     the tables holding one, each open though it was collapsed; with none, "No fields
