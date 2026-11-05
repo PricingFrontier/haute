@@ -3,7 +3,7 @@
  * summary to their right, dragged or moved within its block or into the other, removed and opened
  * for its details; and the row of a column the quote store keeps (specs/workbench).
  */
-import { KeyRound, Lock, SlidersHorizontal, X, type LucideIcon } from "lucide-react"
+import { KeyRound, SlidersHorizontal, X, type LucideIcon } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, IconSelect, INPUT_STYLE } from "../../components/form"
@@ -22,7 +22,7 @@ import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { IndexMarker, KeyMark } from "./IndexControl"
-import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, HOVER_ONLY, MARKER_STYLE, usedBy } from "./schemaText"
+import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, HOVER_ONLY, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
 
 /** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
 const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: LucideIcon; color: string }> = {
@@ -153,8 +153,9 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           {...fresh}
           readOnly={fixed}
           onKeyDown={onKeyDown}
+          title={identity ? "Haute's column" : undefined}
           className={`${COMPACT_FIELD_CLASS} ${COLUMN_NAME_WIDTH} font-mono`}
-          style={INPUT_STYLE}
+          style={identity ? LOCKED_FIELD_STYLE : INPUT_STYLE}
         />
         <DatabaseMark table={table.name} column={column.name} />
         {keying && <KeyMark column={column} />}
@@ -171,7 +172,8 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           />
         )}
         {identity ? (
-          <Lock size={11} aria-label="Haute's column" className="shrink-0 self-center" style={{ color: "var(--text-muted)" }} />
+          // The quote's identity has no label or rules to open.
+          <span className="size-5 shrink-0" aria-hidden="true" />
         ) : (
           <IconButton
             icon={SlidersHorizontal}
@@ -179,7 +181,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
             aria-expanded={open}
             aria-label={`Label and rules of ${column.name}`}
             title="Label, help, rules and format"
-            className={`self-center ${open ? "" : HOVER_ONLY}`}
+            className="self-center"
             style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
           />
         )}
@@ -221,10 +223,13 @@ export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
       <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
         <Icon size={12} aria-hidden="true" />
       </span>
-      <span className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`} style={{ border: "1px solid transparent", color: "var(--text-muted)" }}>
+      <span
+        className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
+        style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
+        title="Kept by the quote store"
+      >
         {column.name}
       </span>
-      <Lock size={11} aria-label="Kept by the quote store" className="shrink-0 self-center" style={{ color: "var(--text-muted)" }} />
     </div>
   )
 }

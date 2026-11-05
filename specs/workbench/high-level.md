@@ -883,13 +883,15 @@ Out of scope:
   above it; its columns take labels, groups and help, and
   those the underwriter types their defaults, placeholders and rules, while the columns
   the app sets take a label, a group and help alone. Every other table's `quote_reference` and
-  `quote_option` lead its inputs, or its outputs while it has no inputs of its own, locked: not
+  `quote_option` lead its inputs, or its outputs while it has no inputs of its own, locked,
+  their names on a grey lighter than the pane's: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
   format; a table added has them at once, under Inputs, and an index goes after them. They are not keys,
   and the sheets are never offered them: a component's fields, a Show when's columns and a
   Chart's rows leave them out. Under each table's own columns are those the quote store keeps
   in it that the form does not, quote_details' own and a many-row table's `quote_row`, each
-  with what it holds and a lock, and nothing to change; a search shows none of them.
+  with what it holds and its name on that grey, and nothing to change; a search shows none of
+  them. A column's Label and rules button always shows; its Remove shows on hover.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas

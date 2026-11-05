@@ -1,6 +1,7 @@
 /** What the schema editor's parts share: their classes, the form as it is now, and how a column's rules and its uses are said (specs/workbench). */
 import { type FocusEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
+import { INPUT_STYLE } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { isOutputColumn } from "../../utils/quoteIdentity"
 import { formattedNumber, presetColumn } from "../../utils/sheetValues"
@@ -19,7 +20,10 @@ const FORMAT_NAMES: Readonly<Record<SchemaColumn["number_format"], string>> = {
 export const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
 
 /** A column's name box: a set width, its summary to its right, shrinking only as the pane narrows. */
-export const COLUMN_NAME_WIDTH = "w-64 min-w-0"
+export const COLUMN_NAME_WIDTH = "w-96 min-w-0"
+
+/** A locked column's name box: a field's border, on a grey lighter than the pane's. */
+export const LOCKED_FIELD_STYLE = { ...INPUT_STYLE, background: "var(--bg-hover)" }
 
 /** The box a column's type marker sits in. */
 export const MARKER_STYLE = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }

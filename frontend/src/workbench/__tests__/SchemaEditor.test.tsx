@@ -749,7 +749,7 @@ describe("SchemaEditor", () => {
     const details = tableNamed("quote_details")
     const version = within(details).getByTestId("schema-store-column-quote_version")
     expect(version).toHaveTextContent("quote_version")
-    expect(within(version).getByLabelText("Kept by the quote store")).toBeInTheDocument()
+    expect(within(version).getByTitle("Kept by the quote store")).toHaveTextContent("quote_version")
     expect(within(version).getByTitle("Integer")).toBeInTheDocument()
     expect(within(within(details).getByTestId("schema-store-column-saved_at")).getByTitle("Date and time")).toBeInTheDocument()
     // After the table's own columns, under its inputs, and none of them.
@@ -933,7 +933,7 @@ describe("SchemaEditor", () => {
       expect(within(row).queryByRole("button", { name: `Key: ${name}` })).toBeNull()
       expect(within(row).queryByRole("button", { name: `Label and rules of ${name}` })).toBeNull()
       expect(within(row).queryByRole("button", { name: `Remove column ${name}` })).toBeNull()
-      expect(within(row).getByLabelText("Haute's column")).toBeInTheDocument()
+      expect(within(row).getByRole("textbox", { name: "Column name" })).toHaveAttribute("title", "Haute's column")
     }
 
     fireEvent.click(within(blockOf("table", "Inputs")).getByRole("button", { name: "Add column" }))
