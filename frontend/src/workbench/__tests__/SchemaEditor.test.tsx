@@ -292,8 +292,9 @@ describe("SchemaEditor", () => {
 
     expect(current().schema.tables[0].inputs[0].type).toBe("bool")
     expect(current().schema.tables[1].outputs[1].key).toBe(true)
-    // An input is never a key, nor an output of a one-row table.
+    // An input is never a key, nor an output of a one-row table; a one-row table shows no key at all.
     expect(screen.queryByRole("button", { name: "Key: state" })).not.toBeInTheDocument()
+    expect(within(screen.getByTestId("schema-column-state")).queryByRole("img", { name: /key/ })).toBeNull()
 
     // Gaining its first input, the table is keyed by its index: its outputs' keys go, and their toggles.
     fireEvent.click(within(blockOf("layers", "Inputs")).getByRole("button", { name: "Add column" }))
@@ -303,13 +304,27 @@ describe("SchemaEditor", () => {
     expect(within(screen.getByTestId("schema-column-row_number")).getByRole("img", { name: "row_number is the key" })).toBeInTheDocument()
   })
 
-  it("marks the column giving a table a row for each value as its key, not its index", () => {
+  it("marks the column giving a table a row for each value as its key, not its index, and every other column as not the key", () => {
     const perils = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }
-    load(form(table("coverage", { rows: "many", inputs: [INDEX, column("peril", perils), column("limit", { type: "float" })] })))
+    load(
+      form(
+        table("coverage", {
+          rows: "many",
+          inputs: [...IDENTITY, INDEX, column("peril", perils), column("limit", { type: "float" })],
+          outputs: [column("premium", { type: "float" })],
+        }),
+      ),
+    )
     render(<SchemaEditor />)
 
     expect(within(screen.getByTestId("schema-column-peril")).getByRole("img", { name: "peril is the key" })).toBeInTheDocument()
     expect(within(screen.getByTestId("schema-column-row_number")).queryByRole("img", { name: "row_number is the key" })).toBeNull()
+    // Grey on the rest, an output too, and still not a control; none on the quote's identity, never a key.
+    for (const name of ["row_number", "limit", "premium"]) {
+      expect(within(screen.getByTestId(`schema-column-${name}`)).getByRole("img", { name: `${name} is not the key` })).toBeInTheDocument()
+    }
+    expect(screen.queryByRole("button", { name: /^Key: / })).toBeNull()
+    expect(within(screen.getByTestId("schema-column-quote_reference")).queryByRole("img", { name: /key/ })).toBeNull()
   })
 
   it("adds a column to either block with its own Add column, an output taking no input's rules", () => {

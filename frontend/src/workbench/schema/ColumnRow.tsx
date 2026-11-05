@@ -22,7 +22,7 @@ import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
 import { IndexMarker, KeyMark } from "./IndexControl"
-import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, HOVER_ONLY, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
+import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
 
 /** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
 const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: LucideIcon; color: string }> = {
@@ -158,19 +158,25 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           style={identity ? LOCKED_FIELD_STYLE : INPUT_STYLE}
         />
         <DatabaseMark table={table.name} column={column.name} />
-        {keying && <KeyMark column={column} />}
-        {keyable && (
-          <IconButton
-            icon={KeyRound}
-            onClick={() => set({ key: !column.key })}
-            aria-pressed={column.key}
-            disabled={readOnly}
-            aria-label={`Key: ${column.name}`}
-            title={column.key ? "A key: it says which row is which (click to unmark)" : "Make this a key: it says which row is which"}
-            className="self-center"
-            style={{ color: column.key ? "var(--accent)" : "var(--text-muted)" }}
-          />
-        )}
+        {/* A many-row table's every column says whether it keys the table; a one-row table has no key. */}
+        {table.rows === "many" &&
+          (identity ? (
+            // The quote's identity is never a key.
+            <span className="size-5 shrink-0" aria-hidden="true" />
+          ) : keyable ? (
+            <IconButton
+              icon={KeyRound}
+              onClick={() => set({ key: !column.key })}
+              aria-pressed={column.key}
+              disabled={readOnly}
+              aria-label={`Key: ${column.name}`}
+              title={column.key ? "A key: it says which row is which (click to unmark)" : "Make this a key: it says which row is which"}
+              className="self-center"
+              style={{ color: column.key ? "var(--accent)" : "var(--text-muted)" }}
+            />
+          ) : (
+            <KeyMark column={column} isKey={keying} />
+          ))}
         {identity ? (
           // The quote's identity has no label or rules to open.
           <span className="size-5 shrink-0" aria-hidden="true" />
@@ -194,7 +200,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
             onClick={() => void remove()}
             aria-label={`Remove column ${column.name}`}
             title="Remove column"
-            className={`icon-danger-btn self-center ${HOVER_ONLY}`}
+            className="icon-danger-btn self-center"
           />
         )}
         {summary && (

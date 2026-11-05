@@ -806,8 +806,10 @@ Out of scope:
   own showing Add column alone; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, its name and, among the outputs of a many-row table with no inputs of its own,
-  whether it is a key; the column keying a table with inputs is marked as its key, a mark
-  that is not a control. A column's label, group
+  whether it is a key, blue on a key and grey otherwise; the column keying a table with
+  inputs is marked as its key in blue and its other columns grey, marks that are not
+  controls; the quote's identity and a one-row table's columns show no key. A column's
+  label, group
   and help open beside it, the group offered from those its table's columns have, the boxes
   holding no hint text; for an Integer or a Decimal other than the index, its format, decimal
   places and thousands separators, separators ticked under General making it a Number as
@@ -891,7 +893,7 @@ Out of scope:
   Chart's rows leave them out. Under each table's own columns are those the quote store keeps
   in it that the form does not, quote_details' own and a many-row table's `quote_row`, each
   with what it holds and its name on that grey, and nothing to change; a search shows none of
-  them. A column's Label and rules button always shows; its Remove shows on hover.
+  them. A column's Label and rules button and its Remove always show.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas

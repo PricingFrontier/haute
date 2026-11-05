@@ -19,11 +19,20 @@ export function IndexMarker() {
   )
 }
 
-/** The mark on the column keying a table with inputs: its index, or the column giving its rows. */
-export function KeyMark({ column }: { column: SchemaColumn }) {
+/**
+ * Whether a column of a many-row table with inputs keys it, blue on the key (its index, or
+ * the column giving its rows) and grey on every other column.
+ */
+export function KeyMark({ column, isKey }: { column: SchemaColumn; isKey: boolean }) {
+  const title = !isKey ? "Not the key" : column.index ? "The key: each row's number" : "The key: a row for each value"
   return (
-    <span className="flex size-5 shrink-0 items-center justify-center self-center" title={column.index ? "The key: each row's number" : "The key: a row for each value"}>
-      <KeyRound size={12} role="img" aria-label={`${column.name} is the key`} style={{ color: "var(--accent)" }} />
+    <span className="flex size-5 shrink-0 items-center justify-center self-center" title={title}>
+      <KeyRound
+        size={12}
+        role="img"
+        aria-label={isKey ? `${column.name} is the key` : `${column.name} is not the key`}
+        style={{ color: isKey ? "var(--accent)" : "var(--text-muted)" }}
+      />
     </span>
   )
 }
