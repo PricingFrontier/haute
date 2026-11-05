@@ -40,7 +40,9 @@ from haute._workbench_tables import (
     priced_tables,
     quote_request_rows,
     request_columns,
+    starting_value,
 )
+from haute._workbench_visibility import visibility
 
 #: The values typed into the sheets: by table name, rows keyed by column name, as typed.
 Values = dict[str, list[dict[str, Cell]]]
@@ -314,8 +316,9 @@ def cells(
     """The values *rows* (by table name) read back as on the sheets, and each row that no longer
     fits them: a many-row table's rows in their places by ``quote_row``, a gap a blank row;
     a preset row whose value is no longer allowed left out and named as ``table row N
-    (value)``. With *kept*, each row carries its values in the store's columns outside the
-    form in its kept field (:data:`KEPT_KEY`)."""
+    (value)``; each empty cell the sheets hide in a one-row table starting at its default
+    (:func:`_hidden_defaults`). With *kept*, each row carries its values in the store's
+    columns outside the form in its kept field (:data:`KEPT_KEY`)."""
     kept = kept or {}
     values: Values = {}
     dropped: list[str] = []
@@ -340,4 +343,22 @@ def cells(
             placed[number] = _row_cells(table, row, kept.get(table.name, ()))
         if placed:
             values[table.name] = [placed.get(number, {}) for number in range(1, max(placed) + 1)]
-    return values, dropped
+    return _hidden_defaults(form, values), dropped
+
+
+def _hidden_defaults(form: FormSpec, values: Values) -> Values:
+    """*values* with each empty cell of a one-row input table that the sheets hide for them
+    holding the default a new quote starts its column with: the store keeps nothing of a
+    hidden cell, so a sheet hidden when the quote was saved shows its defaults once it shows.
+    ``quote_details`` is stored whole, its cells read as saved. A hidden column decides
+    nothing that shows, so filling one changes nothing that hides."""
+    hidden = visibility(form, values).hidden
+    for table in form.data_schema.tables:
+        if table.name == QUOTE_DETAILS_NAME:
+            continue
+        for column in table.columns:
+            start = starting_value(table, column)
+            if start is not None and (table.name, column.name) in hidden:
+                [row] = values.setdefault(table.name, [{}])
+                row.setdefault(column.name, start)
+    return values

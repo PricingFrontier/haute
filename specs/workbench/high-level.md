@@ -1230,10 +1230,14 @@ Out of scope:
 - **Defaults.** A new quote starts with each one-row input table's row holding its
   columns' defaults, as if typed: while building, and in the underwriter app's new quote.
   The sample keeps what was typed into it, and a quote made from another quote its
-  values. A default is not typing: a quote holding nothing else typed, the details the
-  app sets aside, is neither marked nor priced nor saved, as a blank one is not, and a value
-  typed equal to its column's default counts as the default. A many-row table's columns
-  take no default.
+  values. The quote store keeps nothing of a cell the sheets hide, so a quote the app
+  opens starts each such cell of a one-row input table at its column's default too, as a
+  new quote does: a sheet hidden as the quote is made, such as a cover's sheet before the
+  cover is ticked, shows its defaults once it shows. `quote_details` is kept whole, so its
+  cells read back as saved. A default is not typing: a quote holding nothing else typed,
+  the details the app sets aside, is neither marked nor priced nor saved, as a blank one is
+  not, and a value typed equal to its column's default counts as the default. A many-row
+  table's columns take no default.
 - **A row for each value.** A column of a many-row input table that has allowed values can
   give the table a row for each of them, in their order (`row_per_value`), such as a
   coverage table with a row for each peril: the table then has those rows, each holding
@@ -1676,6 +1680,9 @@ Out of scope:
   save, and nothing new to save while the values are as saved and priced as saved on this
   release (a price made since, or one of an earlier release, is new). A save holding a value
   not of its column's type is refused, naming each, its values kept on the sheets unsaved.
+  A save keeps on the sheets what was typed into the cells they hide, though the store
+  keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
+  the quote stays open, and a quote opened again starts those cells as Defaults says.
   Mark final is off while the quote has unsaved values or no price of this release, and is
   refused naming each required field without a value. A save and a change name the version
   the values were opened or saved at, which a note does not move, so a save over a quote a
@@ -2173,6 +2180,8 @@ Out of scope:
   underwriter types do. Every column of `quote_details` is stored, and each that reaches the
   pipeline is priced, whatever the sheets hide; any other cell a Show when hides is saved
   blank, as the request leaves it out, so the input tables hold what the quote was priced on.
+  Read back, such a cell of a one-row table, empty in the store, holds its column's default
+  (`cells`), as a new quote starts it; a stored value is read as stored.
 
   A save is priced first, then written in one transaction: the quote's `quote_details` row
   updated where its `quote_version` is the one the page opened or saved it at and the quote
@@ -2528,7 +2537,10 @@ Out of scope:
   quote ticked, filled and unticked again would price differently from one never ticked.
   Leaving hidden values out makes a quote what its sheets show, whatever order it was
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
-  again loses nothing. The server leaves them out where it makes the quote, the one place
+  again loses nothing: in the sample, and in the app's quote while it stays open, saved or
+  not. The store keeps only what was priced, so a quote opened again starts a hidden cell
+  at its default (decided 2026-11-05: what was typed is kept for the session, not in the
+  database). The server leaves them out where it makes the quote, the one place
   the sample priced in Preview, the Workbench Input's sample and the app's quote all come
   from, and the view, which hides and shows as each value is typed, applies the same
   rules, the two held to one set of cases both test against.

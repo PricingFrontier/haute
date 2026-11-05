@@ -25,7 +25,7 @@ import type { FormSpec, WorkbenchAppQuoteActivityResponse, WorkbenchAppQuoteChan
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type QuotePricer } from "../../stores/useWorkbenchPricingStore"
-import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
+import { detailsTable, sectionedForm, sheetForm } from "../../workbench/__tests__/fixtures"
 import { basisOf } from "../../utils/sheetVisibility"
 import { draftKey, readDraft, valuesKey, writeDraft, type PendingWrite } from "../quoteValues"
 import useAppStore from "../useAppStore"
@@ -156,6 +156,25 @@ describe("useOpenQuoteStore", () => {
     expect(store().baseline).not.toBe(valuesKey(preview().quote))
     // What was typed during the save is kept in this browser over the version it saved.
     expect(readDraft(KEY)).toMatchObject({ values: typed("CA"), version: 2 })
+  })
+
+  it("keeps what was typed into what the sheets hide through a save, which the store keeps nothing of", async () => {
+    form = sectionedForm()
+    useAppStore.setState({ form })
+    useWorkbenchFormStore.setState({ form })
+    const equipment = [{ item: "Crane", value: "10" }, { item: "Truck", value: "20" }]
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { policy: [{ state: "NY", cover: true, year: "1990" }], equipment } }))
+    await store().openQuote("Q-000001", 1)
+
+    // Unticked, the cover hides the year and the equipment, which the store saves blank.
+    preview().setCell("policy", 0, "cover", "")
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }, { values: { policy: [{ state: "NY" }] } }))
+    await store().save()
+
+    expect(preview().quote).toEqual({ policy: [{ state: "NY", year: "1990" }], equipment })
+    expect(store().baseline).toBe(valuesKey(preview().quote))
+    preview().setCell("policy", 0, "cover", true)
+    expect(preview().quote).toEqual({ policy: [{ state: "NY", cover: true, year: "1990" }], equipment })
   })
 
   it("saves once the quote's pricing settles, keeping the price it settles on", async () => {

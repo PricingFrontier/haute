@@ -12,8 +12,8 @@ import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { operationKey } from "../utils/operationKey"
-import { formattedNumber } from "../utils/sheetValues"
-import { basisOf, columnKey } from "../utils/sheetVisibility"
+import { formattedNumber, withPresetRows } from "../utils/sheetValues"
+import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
@@ -98,6 +98,33 @@ export function withAppDetails(values: Values, saved: Values): Values {
 
 /** `values` without the quote_details cells the app sets: a quote's, which a quote made from it does not take. */
 export const withoutAppDetails = (values: Values): Values => withAppDetails(values, {})
+
+/**
+ * `saved`, the values a save of `sent` answered, with the cells the sheets hide for `sent`
+ * taken from `sent`: the store keeps nothing of a hidden cell, so what was typed into one
+ * stays on the sheets while the quote is open (specs/workbench). A many-row table's rows
+ * line up as the server numbers them, as `withPresetRows` reads them. `quote_details` is
+ * stored whole, so it is the answer's.
+ */
+export function withHiddenCells(form: FormSpec, saved: Values, sent: Values): Values {
+  const { hidden } = sheetVisibility(form, sent)
+  if (hidden.size === 0) return saved
+  const placed = withPresetRows(form.schema, sent)
+  const merged: Values = { ...saved }
+  for (const table of form.schema.tables) {
+    if (table.role !== "input" || table.name === QUOTE_DETAILS_NAME) continue
+    const kept = new Set(table.columns.filter((column) => hidden.has(columnKey(table.name, column.name))).map((column) => column.name))
+    if (kept.size === 0) continue
+    const answered = saved[table.name] ?? []
+    const typed = (placed[table.name] ?? []).slice(0, table.rows === "one" ? 1 : undefined)
+    const rows = Array.from({ length: Math.max(answered.length, typed.length) }, (_, place): SampleRow => ({
+      ...Object.fromEntries(Object.entries(answered[place] ?? {}).filter(([id]) => !kept.has(id))),
+      ...Object.fromEntries(Object.entries(typed[place] ?? {}).filter(([id]) => kept.has(id))),
+    }))
+    if (rows.length > 0) merged[table.name] = rows
+  }
+  return merged
+}
 
 /**
  * The quote_details cells the app sets, as the quote's `details` (its row by column name)
