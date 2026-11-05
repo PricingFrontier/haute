@@ -64,13 +64,13 @@ Two naming notes:
 
 ## 4. Workbench
 
-- **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its schema, sheets and sample saved in the pipeline folder's `workbench/` folder, a file for each table and each sheet. In user-facing text say "the workbench" (lower case) and "the sheets" or the folder's path, never "the form".
+- **workbench** — the project's view where a pricing team lays out the sheets an underwriter keys a quote into, enabled by `[workbench]` in `haute.toml`, with its schema, sheets and sample saved in the pipeline folder's `workbench/` folder, a file for each table, each sheet and each component. In user-facing text say "the workbench" (lower case) and "the sheets" or the folder's path, never "the form".
 
-- **sheet** — one page of the workbench: a canvas of a set width, its sections stacked down it, the components laid out in them. A file of its own in `workbench/sheets/`, its layout in another beside it; `pages` in the form the editor and the release hold.
+- **sheet** — one page of the workbench: a canvas of a set width, its sections stacked down it, the components laid out in them. A file of its own in `workbench/sheets/`, holding its sections and where each component sits; `pages` in the form the editor and the release hold.
 
 - **section (of a sheet)** — a strip across a sheet's whole width, one of the sheet's stack, holding components placed freely in it, with a height and its own Show when; hidden, it closes up in Preview. `sections` in the file. Not the view's sections (the sheets, the schema, Preview).
 
-- **component** — a Table, a Collection, a Chart or a Heading in a sheet's section. `components` in a sheet's file, `widgets` in the form the editor and the release hold; say "component" in prose and in UI copy, never "widget".
+- **component** — a Table, a Collection, a Chart, a Heading, an Import or an Export in a sheet's section, known by its **Component name**, an identifier unique in the workbench. A file of its own in `workbench/components/`, placed by name in a sheet's file's `components`; `widgets` in the form the editor and the release hold; say "component" in prose and in UI copy, never "widget".
 
 - **Table (component)** — a grid of rows showing columns of the schema's many-row tables (`table` in a sheet's file, `tableInput` in the form the editor and the release hold). Not a schema table.
 

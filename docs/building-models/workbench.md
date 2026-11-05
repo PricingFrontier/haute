@@ -52,7 +52,7 @@ when one of the workbench's files changed on disk since the workbench read them 
 by hand, or a branch switched outside Haute), and then the pipeline is not saved either;
 the banner's **Reload** reads them again, dropping your unsaved edits. When one of them
 changes on disk (an edit by hand, a pull, or a branch switched), the workbench follows
-it, unless you have unsaved edits, when the banner appears instead. A layout file that
+it, unless you have unsaved edits, when the banner appears instead. A sheet file that
 leaves a component below its section or past its sheet's edge, as a merge or an edit by
 hand can, opens with that section or sheet grown to hold it, nothing moved: a notice
 says what grew, and the next save keeps it.
@@ -62,18 +62,21 @@ Both workbench nodes' panels have **Edit in Workbench**, which opens the view.
 ## The workbench's files
 
 The workbench keeps what it holds in the pipeline folder's `workbench/` folder, a JSON
-file for each part, so a pull request shows each change in the file of the table or
-sheet it changed. A save writes only the files that changed.
+file for each part, so a pull request shows each change in the file of the table, sheet
+or component it changed. A save writes only the files that changed: moving or resizing
+components changes only their sheet's file, and changing what a component shows or how
+it looks changes only its own.
 
 | File | What it holds |
 |---|---|
 | `workbench/form.json` | The project's name, the sheets' colours set under **Display** in the toolbar, and the order of the tables and of the sheets |
 | `workbench/schema/<table>.json` | A table: its role, its rows and its columns with their settings. `quote_details.json` holds only what the project sets on Haute's own table |
-| `workbench/sheets/<sheet>.json` | A sheet: its sections, and their components with what they show and how they look |
-| `workbench/sheets/<sheet>.layout.json` | Where the sheet's components sit: the sheet's width, each section's height, and each component's place and size |
+| `workbench/sheets/<sheet>.json` | A sheet: its width and its sections, each with its height and, by name, the components in it and where each sits |
+| `workbench/components/<component>.json` | A component: what it shows and how it looks |
 | `workbench/sample/<table>.json` | The sample's rows for an input table, while it has any |
 
-A table's files are named after the table in lower case, and a sheet's after its title
+A table's files are named after the table in lower case, a component's after its
+**Component name** in lower case, and a sheet's after its title
 (**BR Coverages** is `br_coverages.json`). Each file says only what is set: a setting left
 at its default is not written. A component names a column as `table.column`, or by the
 column's name alone where its table is already given. A table and a column are known by
@@ -301,7 +304,13 @@ light grey, dark grey and black, then eight hues) or a colour of your own from t
 square, and the sheet shows a colour as you pick it. They apply wherever the
 sheets show, Preview and the underwriter app included.
 
-Select a component to open its properties on the right: its title, when it shows (see
+Select a component to open its properties on the right. Each starts with its **Component
+name**, which names the component's file in `workbench/components/`; underwriters never
+see it. A new component is named after its kind (`table_1`, `chart_1`) and a copy after
+its original (`layers_2`), so rename one to say what it holds. A name is letters, digits
+and `_`, not starting with a digit, and no other component's, whatever its case.
+
+The rest of a component's properties are its title, when it shows (see
 [Showing sheets, sections, components and fields conditionally](#showing-sheets-sections-components-and-fields-conditionally)), its layout (the rows a
 Table starts with, whether they are **fixed**, with no rows inserted or deleted, and whether it is
 **transposed**, or a Collection's columns across), a Table's **look** (see

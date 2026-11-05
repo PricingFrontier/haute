@@ -469,8 +469,9 @@ Out of scope:
   Haute's `quote_details` table alone and no sample.
 - **The form folder.** The form is kept in the pipeline folder's `workbench/`, as files a
   reviewer reads:
-  - `form.json`, the index: `version` (1, the folder's format, which fixes what each file
-    holds and each setting's default), `name`, `theme` holding the colours set (left out
+  - `form.json`, the index: `version` (2, the folder's format, which fixes what each file
+    holds and each setting's default; 1 kept each sheet's components in its own file and
+    where they sat in a layout file beside it), `name`, `theme` holding the colours set (left out
     while none is), `schema`, the tables' names in their order, `quote_details` first, and
     `sheets`, the sheets' names in their tabs' order.
   - `schema/<table>.json` for each table the index names, named by the table's name in
@@ -484,15 +485,16 @@ Out of scope:
     column holds no rule (`required`, `min`, `max`, `options`, `options_source`), no
     `row_per_value` and no `default_value`.
   - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
-    (below): its `title`, `show_when` and `sections`, each section its `title`, `show_when`
-    and `components`, each component its `number`, its `type` (`table`, which the document
-    calls `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and its
-    settings, but not where it sits.
-  - `sheets/<sheet>.layout.json` beside it: the sheet's `width` and, by title, each
-    section's `height` and, by number, each of its components' place,
-    `{"x": 8, "y": 312, "w": 832, "h": 192}` on one line; an entry for every section and
-    component of the sheet and for nothing else. A pull request that only moves or resizes
-    things changes only layout files.
+    (below): its `title`, `width`, `show_when` and `sections`, each section its `title`,
+    `height`, `show_when` and `components`, where its components sit: each by its name
+    with its place, `{"component": "layers", "x": 8, "y": 312, "w": 832, "h": 192}` on one
+    line, in the section's order, which is the order they are drawn in where two overlap.
+  - `components/<component>.json` for each component a sheet places, named by the
+    component's name in lower case: its `type` (`table`, which the document calls
+    `tableInput`, `collection`, `chart`, `heading`, `import` or `export`) and its settings,
+    but not its name, which is its file's, nor where it sits, which is its sheet's. A pull
+    request that only moves or resizes things changes only sheet files, and one that
+    changes what a component shows or how it looks changes only that component's file.
   - `sample/<table>.json` for each input table the sample has rows in, named as its schema
     file is: the rows as they stand, an empty row kept, since a row's place numbers it and
     lines it up with the values a column gives its table; each row's values by their
@@ -504,9 +506,9 @@ Out of scope:
 
   Only what is set is written. The keys that say what a thing is are always written: the
   index's `version`, `name`, `schema` and `sheets`; a table's `role`, `rows` and
-  `columns`; a column's `name` and `type`; a sheet's and a section's `title`, with
-  their `sections` and `components`; a component's `number` and `type`; every layout
-  number. A setting with no default, such as an Import's source or an Export's
+  `columns`; a column's `name` and `type`; a sheet's `title` and `width` and a section's
+  `title` and `height`, with their `sections` and `components`; each placed component's
+  `component`, `x`, `y`, `w` and `h`; a component's `type`. A setting with no default, such as an Import's source or an Export's
   target, is always written. Any other setting is written only when it is not its default,
   and a default written out by hand reads as that setting and is left out at the next
   save. The defaults are the folder format's: a different default is a new `version`.
@@ -525,24 +527,32 @@ Out of scope:
   it where it is, as it shows a field on a column dropped, `haute app build` and `haute
   deploy` refuse the form naming it, and nothing reads it as another column. A sheet, a
   section and a component hold no id in a file or a release: a sheet is known by its
-  file's name, a section by its title, unique on its sheet, and a component by its
-  `number` in its section, one more than the highest there when it was made, so the first
-  is 1. A component moved to another section or duplicated takes the next number there; a
-  number can come back once the highest component is deleted, its box gone with it. The
-  editor gives each part an id in memory as it reads the form, for selecting and moving
-  it, and none reaches a file. A read refuses two sections of one title on a sheet or two
-  components of one number in a section, which two branches adding to one section can
-  make, naming the sheet, the section and the number.
+  file's name, a section by its title, unique on its sheet, and a component by its name,
+  unique in the form whatever its case. A component sits in one place, a section of one
+  sheet, and keeps its name wherever it is moved. The editor
+  gives each part an id in memory as it reads the form, for selecting and moving it, and
+  none reaches a file. A read refuses two sections of one title on a sheet; a component
+  placed twice, on one sheet or two, or two placed whose names differ only in case; a
+  placed component the folder holds no file for; and a component file no sheet places.
+  Two branches that each add a component under one name, or a file left behind by a hand
+  edit, can make these, and the message names the files and the component.
 
   A sheet's name is its title in lower case, each run of characters other than ASCII
   letters and digits one `_`, none at either end, at most 64 characters: "BR Coverages" is
-  `br_coverages`. Save refuses a form the folder cannot hold, naming each problem: two
-  tables of one name whatever their case, two columns of one name in a table, a table or
-  column name that is not an identifier (letters, digits and underscores, not starting
-  with a digit), a table or sheet name Windows keeps (`con`, `prn`, `aux`, `nul`, `com1` to
-  `com9`, `lpt1` to `lpt9`, whatever their case), a sheet title that gives no name or
-  another sheet's, two sections of one title on a sheet, and a file whose full path would
-  pass 240 characters. Every path a save
+  `br_coverages`. A component's name is the builder's, set in its panel and never shown to
+  an underwriter: an identifier, as a table's name is. A component added is named by its
+  kind and the first free number from 1, `table_1`, `collection_1`, `chart_1`,
+  `heading_1`, `import_1` or `export_1`; a copy, duplicated or pasted, by its original's
+  name without a final `_` and digits and the first free number from 2, so `layers`
+  copied is `layers_2` and `table_1` copied is `table_2`; a name is free while no
+  component has it whatever its case. Save refuses a form the folder cannot hold, naming
+  each problem: two tables of one name whatever their case, two columns of one name in a
+  table, two components of one name whatever their case, a table, column or component
+  name that is not an identifier (letters, digits and underscores, not starting with a
+  digit), a table, sheet or component name Windows keeps (`con`, `prn`, `aux`, `nul`,
+  `com1` to `com9`, `lpt1` to `lpt9`, whatever their case), a sheet title that gives no
+  name or another sheet's, two sections of one title on a sheet, and a file whose full
+  path would pass 240 characters. Every path a save
   writes or deletes is held to the project's write rules first, as every file Haute writes
   is: none through a link, a junction or a reserved name. Files are named in lower case, so
   a rename that changes only a name's case changes no file's name.
@@ -552,7 +562,7 @@ Out of scope:
   text or of objects one item a line, so every column, field and allowed value is a line
   of its own. Haute reads the folder whole whenever it needs the form and never keeps it,
   so an edit made outside the view reaches the next request; a read takes the files the
-  index names and refuses any other file in the folder (Failure model). A read takes each
+  index and its sheets name and refuses any other file in the folder (Failure model). A read takes each
   file's bytes once and the revision is the hash of those bytes; every reader, in the
   editor, another Haute process or the command line, holds the form folder's lock, which
   every save holds while it writes, and reads again when the folder changed while it was
@@ -974,7 +984,8 @@ Out of scope:
   filling no table and replacing a many-row table's rows, an Export 160 by 40 labelled
   "Export", of no tables, to a CSV named `{quote_reference}-{quote_option}`, headed by the
   columns' names, its values as held and its fields split by commas),
-  showing nothing yet, and selected.
+  showing nothing yet, named by its kind and the first free number (`table_1`), and
+  selected.
   A click adds nothing. Each item is a button in the tab order: Enter or Space adds its
   component, at that size, into the selected section, else the selected component's,
   else the sheet's first, at the first place free there (a grid step in from its top and
@@ -1053,7 +1064,11 @@ Out of scope:
   order and its fields, and **Display**, how it shows them, its title, its Show when, its
   layout and its look; the tabs are drawn in the component's colour, Config first,
   and the pane chosen for a component is kept for it while the editor is open. A Chart's
-  panel stays one list. A Heading's panel has its text in the title's place and its description under
+  panel stays one list. Every component's panel starts with its **Component name**, at
+  the top of its Config pane, or of its one list for a Chart and a Heading: a text field
+  committed on blur or Enter as one undo step, a name that is not an identifier or that
+  another component has, whatever its case, refused at the field saying which, the
+  component keeping its name, and Escape putting the name back. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. An Import's and an Export's panels are in the two panes too:
@@ -1161,7 +1176,7 @@ Out of scope:
   right. Each change is one undo step.
 - **The sheet's keyboard.** With a component selected: Escape
   deselects it, Delete or Backspace removes it, Ctrl/Cmd+D duplicates it (16px below and
-  to the right, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
+  to the right, named as a copy is, selected), Ctrl/Cmd+C copies it, a note saying so, and the arrow keys nudge it by a grid step, or a pixel with
   Shift, and with Ctrl/Cmd resize it from its bottom-right corner by as much, never under
   its kind's least size, its section and the sheet growing to hold it as the handle's
   resize grows them, a burst of nudges or resizes within 800ms being one undo step, kept
@@ -1172,7 +1187,8 @@ Out of scope:
   showing: into the section selected, else the selected component's, else the section it
   was copied from while it is on that sheet, else the sheet's first; where it sat, moved
   16px down and to the right while a component there sits at exactly that place, kept
-  inside the section and the sheet's width, a new component, selected and one undo step.
+  inside the section and the sheet's width, a new component named as a copy is, selected
+  and one undo step.
   The copy is held while the editor is open, neither saved nor undone. With a section's bar focused: Enter or Space
   opens its panel, Alt+Up and Alt+Down move the section, and Delete or Backspace deletes it,
   asking first when components are in it, while another section remains on the sheet; with
@@ -2358,11 +2374,11 @@ Out of scope:
   reads it from disk on every request that needs it rather than caching it, so a hand edit
   and a branch switch each reach the next fetch without a restart or a stale copy.
 - **Named files, as the pipeline's are.** The pipeline is a file of nodes and a settings
-  file per node, named by the node; the form is an index and a file per table and per
-  sheet, named by the table or the sheet, so a pull request's list of files says what
-  changed and a commit message can name it. Finer files, a section's or a component's,
-  would be named by the builder's titles ("Section 1") and components' numbers, which say
-  little; one file puts every analyst's edits in one place.
+  file per node, named by the node; the form is an index and a file per table, per sheet
+  and per component, named by the table, the sheet or the component, so a pull request's
+  list of files says what changed and a commit message can name it. A component is named
+  by the builder, as a node is, so its file says which component changed; a section is
+  not, its title being only the builder's label, so it stays in its sheet's file.
 - **Names, no ids.** A reviewer reads `br_rating.aop_deductible`, and a search finds every
   use of a column by its name. A fixed id beside each name would let a rename keep a
   column's saved values, but every file, release and quote would carry ids nobody reads,
@@ -2375,17 +2391,21 @@ Out of scope:
 - **Only what is set.** A column at its defaults is a name and a type; written out in full
   it is twenty lines nobody chose, and a reviewer skimming defaults misses the one setting
   that changed. What a file holds is what someone set.
-- **Layout apart.** Where components sit is what the editor changes most and a reviewer
-  reads least, so it has a file of its own beside each sheet's: a pull request that only
-  moves things lists only layout files, and a sheet file's history is a history of what
-  the sheet shows. How components look stays with them, read in context and changed on
-  purpose. A layout line names its section by title and its component by number, the
-  number kept on the component in the sheet file, so a hand edit to either file lines up
-  with the other and a moved box says where it is. A component's place in its section's
-  list would serve as its number too, but a hand edit that reorders one file and not the
-  other would swap two boxes without a word; a stored number cannot. Two branches that each
-  add a component to one section can give two components one number, which a read
-  refuses, naming it.
+- **Components apart from where they sit.** Where components sit is what the editor
+  changes most and a reviewer reads least, and what a component shows and how it looks is
+  what a reviewer reads most, so a sheet's file holds its sections and where each
+  component sits, by name, and a component's file what it is: a pull request that only
+  moves things lists only sheet files, and a component file's history is a history of
+  what that component shows. How a component looks stays with it, read in context and
+  changed on purpose. A component is placed by its name, which the builder gives it and
+  which stays with it as it moves, so a hand edit to a sheet file lines up with the
+  component files and a moved box says what it is. A number in its section, which
+  version 1 of the folder keyed boxes by, changed as a component moved and said nothing
+  of it. A component sits on one sheet: one shown on two would be changed on both by an
+  edit made on one, and gain the editor a way to place it a second time and a choice of
+  what deleting it does, for a need no form has shown. Two branches that each add a
+  component under one name leave git a conflict in its file or, where the two files
+  match, the component placed twice, which a read refuses, naming it.
 - **A missing folder is a loss, not a new form.** A form does not go missing in the
   ordinary course of work; when it does, version history holds it, and a blank form in its
   place would invite a save that commits the loss. A new workbench comes from
@@ -2847,17 +2867,21 @@ Out of scope:
   `GET /api/workbench/tables` and `GET /api/workbench/form` with 409 naming the file and the
   first thing wrong with it. The folder does not exist: "<folder> does not exist: restore it
   from version history (a project starts its workbench with haute init --workbench)"; it has
-  no `form.json`; a table or sheet the index names has no file, a sheet's file has no
-  layout file or a layout file no sheet; a file is in the folder that the index does not
-  name; the index names a table or sheet twice, or two whose names differ only in case, or
-  a file's name on disk is not its table's or sheet's name in lower case; a file cannot be
+  no `form.json`; `version` is not 2 ("<folder>/form.json is version 1: this Haute reads
+  version 2, which keeps each component in components/"); a table or sheet the index
+  names, or a component a sheet places, has no file; a file is in the folder that neither
+  the index nor a sheet names, a component file no sheet places among them ("<file> is
+  placed on no sheet: place it in a sheet's section or remove it"); the index names a
+  table or sheet twice, or two whose names differ only in case; a component is placed
+  twice, on one sheet or two, or two placed components' names differ only in case,
+  naming the sheet files and sections; a file's name on disk is not its table's, sheet's
+  or component's name in lower case; a file cannot be
   read, is not UTF-8 text, is not JSON, holds a key twice or does not fit its shape, the
   message naming the place; an identity column is written, a table's file names two
   columns alike, `schema/quote_details.json`
   sets something Haute's, an output column holds a rule, a default or `row_per_value`; a
   sample file is for a table the schema does not hold or for an output table ("rename it
-  after its table or remove it"), or holds no rows; a layout file places a section or
-  component its sheet does not hold, or leaves one out; `version` is not 1; the folder
+  after its table or remove it"), or holds no rows; the folder
   changed each of three times it was read ("<folder> changed while it was being read: try
   again"). A section that a component reaches below (its `y` plus its `h` above the
   section's `height`), or a sheet one reaches past (its `x` plus its `w` above the
