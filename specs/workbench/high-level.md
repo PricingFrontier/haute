@@ -364,7 +364,8 @@ Out of scope:
   table needs none: the quote's identity is its row's. A many-row input table is keyed by
   the column that gives it a row for each of its allowed values while one does (A row for
   each value, below), and otherwise by its index, which every many-row input table has, so
-  its key is filled and unique on every row by construction. A many-row table of outputs
+  its key is filled on every row and unique: the sheets number the rows, and a column's
+  allowed values must be distinct to give them (A row for each value, below). A many-row table of outputs
   alone is keyed by its outputs marked `key`, which pricing fills; no other column is a
   `key`. A table with both blocks carries its key to its outputs: the pipeline's frame of
   its outputs holds its key column, and each output row pricing gives belongs to the input
@@ -402,8 +403,9 @@ Out of scope:
   clash is named
   among the schema's problems and refused by building the app and by deploying
   (`identity_clashes`), and renaming the column gives the table the identity at the next
-  read or save. A form whose identity columns are not the first two of its tables' first
-  blocks, as Haute makes them, or that holds them in a table's other block too, is
+  read or save. The identity as Haute makes it at the head of a table's other block, where
+  an edit that gave the table its first input or took its last left it, is moved to the
+  head of its first block as the form is read or saved; a form holding it anywhere else is
   refused. A sheet has a title, its `width` in pixels, when it
   shows (`show_when`) and its sections (`sections`, at least one): strips across the sheet's
   whole width, stacked in
@@ -870,7 +872,8 @@ Out of scope:
   outputs alone needs a key, an input
   column's range must not be inverted and its allowed values must be of its type and
   read from a params file, not typed in, as an older form may hold them, True/false and
-  Date columns can have none, and a default must be a value its column
+  Date columns can have none, a column giving its table's rows must have allowed values
+  that stay distinct in its type, and a default must be a value its column
   takes: a tick for True/false, else text of its type, within its range and one of its
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name and rows, its inputs alone and its columns' names,
