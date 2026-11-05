@@ -89,7 +89,8 @@ def column(name: str, type_: str = "str") -> dict[str, Any]:
 
 
 def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
-    return {"name": name, "rows": rows, "columns": list(columns)}
+    """A schema table of inputs."""
+    return {"name": name, "rows": rows, "inputs": list(columns)}
 
 
 POLICY = table(

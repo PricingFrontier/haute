@@ -43,11 +43,11 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
     return {"name": name, "type": type_, **rest}
 
 
-POLICY = {"name": "policy", "rows": "one", "columns": [column("region")]}
+POLICY = {"name": "policy", "rows": "one", "inputs": [column("region")]}
 VEHICLES = {
     "name": "vehicles",
     "rows": "many",
-    "columns": [column("reg", key=True), column("value", "float")],
+    "inputs": [column("vehicle", "int", index=True), column("reg"), column("value", "float")],
 }
 
 
@@ -132,7 +132,7 @@ def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
         "DROP TABLE policy",
         "DROP TABLE vehicles",
         "CREATE TABLE vehicles (quote_reference VARCHAR(40) NOT NULL, quote_option BIGINT "
-        "NOT NULL, quote_row BIGINT NOT NULL, reg TEXT, value TEXT, "
+        "NOT NULL, quote_row BIGINT NOT NULL, vehicle BIGINT, reg TEXT, value TEXT, "
         "PRIMARY KEY (quote_reference, quote_option))",
     )
 

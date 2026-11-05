@@ -4872,6 +4872,8 @@ class TestBuildSignature:
             "tables": [
                 {
                     "name": "policy",
+                    "side": "input",
+                    "port": "policy_input",
                     "rows": "one",
                     "columns": [
                         {"name": "limit", "type": "int"},
@@ -4879,7 +4881,11 @@ class TestBuildSignature:
                     ],
                 },
                 {
+                    # A side the node is given without a key: what MLflow lets through is
+                    # the matter here, not the rows' keys.
                     "name": "items",
+                    "side": "input",
+                    "port": "items_input",
                     "rows": "many",
                     "columns": [
                         {"name": "item_id", "type": "str"},
@@ -4917,7 +4923,8 @@ class TestBuildSignature:
             request = _request(graph, ["request"], enforced, {}, frozenset())
             assert isinstance(request, QuoteRequest)
             frames = workbench_request_frames(config, request.records)
-            return {name: frame.to_dicts() for name, frame in frames.items()}
+            # The frames are the input sides, by port, ``<table>_input``.
+            return {port.removesuffix("_input"): frame.to_dicts() for port, frame in frames.items()}
 
         quote = {
             "policy": {"limit": 100, "start": "2026-01-02", "client_reference": "ABC"},
@@ -4927,7 +4934,8 @@ class TestBuildSignature:
             "policy": [{"limit": 100, "start": __import__("datetime").date(2026, 1, 2)}],
             "items": [{"item_id": "Z", "value": 7.0}],
         }
-        for name, frame in workbench_request_frames(config, [quote]).items():
+        for port, frame in workbench_request_frames(config, [quote]).items():
+            name = port.removesuffix("_input")
             assert_frame_equal(pl.DataFrame(served(quote)[name], schema=frame.schema), frame)
         assert served({"policy": {"limit": 100}}) == {
             "policy": [{"limit": 100, "start": None}],

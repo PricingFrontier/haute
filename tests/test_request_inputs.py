@@ -351,8 +351,10 @@ def test_request_input_kinds_match_the_node_types() -> None:
     ],
 )
 def test_a_frame_label_follows_one_rule_everywhere(label: str, allowed: bool) -> None:
-    """A Quote Input's table labels, a Workbench Input's table names and the editor's
-    source handles are held to `is_frame_label` alike."""
+    """A Quote Input's table labels, a Workbench Input's ports and the editor's source
+    handles are held to `is_frame_label` alike. A Workbench Input's port is its table's name
+    and side, ``<table>_input``, so a table a keyword names (class) gives a port that is
+    one; its name must still be an identifier, so no name gives none."""
     assert is_frame_label(label) is allowed
     quote_table = {
         "path": "$[:]",
@@ -360,7 +362,14 @@ def test_a_frame_label_follows_one_rule_everywhere(label: str, allowed: bool) ->
         "emit": True,
         "columns": [{"name": "x", "path": "$[:].x", "type": "int", "selected": True}],
     }
-    workbench_table = {"name": label, "rows": "one", "columns": [{"name": "x", "type": "int"}]}
+    port = f"{label}_input"
+    workbench_table = {
+        "name": label,
+        "side": "input",
+        "port": port,
+        "rows": "one",
+        "columns": [{"name": "x", "type": "int"}],
+    }
 
     refused: list[str] = []
     try:
@@ -368,17 +377,20 @@ def test_a_frame_label_follows_one_rule_everywhere(label: str, allowed: bool) ->
     except ApiInputSchemaError:
         refused.append("quote input")
     try:
-        parse_workbench_tables([workbench_table], owner="Workbench Input")
-    except WorkbenchTablesError:
-        refused.append("workbench input")
-    try:
         EditorIdentityRequestNode(
             node_id="n", label="n", node_type=NodeType.WORKBENCH_INPUT, source_handles=[label]
         )
     except ValidationError:
         refused.append("identity")
+    try:
+        parse_workbench_tables([workbench_table], owner="Workbench Input")
+    except WorkbenchTablesError:
+        took = False
+    else:
+        took = True
 
-    assert refused == ([] if allowed else ["quote input", "workbench input", "identity"])
+    assert refused == ([] if allowed else ["quote input", "identity"])
+    assert took is (label.isidentifier() and is_frame_label(port))
     # Recovery derives a request input's handles by its type, held to the same rule.
     expected = (label,) if allowed else ()
     assert recoverable_api_input_source_handles({"tables": [quote_table]}) == expected
@@ -400,15 +412,21 @@ def _column(name: str, kind: str) -> dict[str, Any]:
     return {"name": name, "type": kind}
 
 
-# A one-row and a many-row table, as the workbench supplies them.
+# A one-row and a many-row table's input sides, as the workbench supplies them, each its
+# port ``<table>_input``. The many-row side is given no key here, so its rows read as the
+# Quote Input reads the same quote's; a form keys it by its index (FORM_TABLES).
 _TABLES: list[dict[str, Any]] = [
     {
         "name": "policy",
+        "side": "input",
+        "port": "policy_input",
         "rows": "one",
         "columns": [_column("state", "str"), _column("limit", "int")],
     },
     {
         "name": "items",
+        "side": "input",
+        "port": "items_input",
         "rows": "many",
         "columns": [_column("item_id", "str"), _column("value", "float")],
     },
@@ -459,22 +477,35 @@ _SAMPLE = [
 ]
 #: `_TABLES` as the project's form defines them, and `_SAMPLE`'s quote as typed into it: what
 #: the pipeline file runs on, on its own, what deploy reads and what the routes give a
-#: browser's graph (specs/workbench). Each leads with the quote's identity.
+#: browser's graph (specs/workbench). Each leads with the quote's identity, and items with
+#: its index, row_number, which keys its rows.
 FORM_TABLES = [
-    form_table("policy", "input", ("state", "str"), ("limit", "int")),
-    form_table("items", "input", ("item_id", "str"), ("value", "float"), many=True),
+    form_table("policy", ("state", "str"), ("limit", "int")),
+    form_table("items", ("item_id", "str"), ("value", "float"), many=True),
 ]
 FORM_SAMPLE = {
     "policy": [{"state": "NY", "limit": "1000"}],
     "items": [{"item_id": "A", "value": "10"}, {"item_id": "B", "value": "30"}],
 }
-# Every input in one column, stacked: no join, so no materialisation to admit.
-# `score` hands seeded inputs over as data frames and the Constant's as lazy.
-_LISTED = (
-    "df = pl.concat([policy.lazy().select(pl.col('state').alias('name')), "
-    "items.lazy().select(pl.col('item_id').alias('name')), "
-    "rates.lazy().select(pl.col('loading').cast(pl.String).alias('name'))])"
-)
+
+
+def _ports(node_type: NodeType) -> tuple[str, str]:
+    """The ports a request input gives policy and items on: a Workbench Input's are its
+    tables' input sides, a Quote Input's its tables' labels."""
+    if node_type is NodeType.WORKBENCH_INPUT:
+        return ("policy_input", "items_input")
+    return ("policy", "items")
+
+
+def _listed(policy: str, items: str) -> str:
+    """Every input in one column, stacked, each table read under its port: no join, so no
+    materialisation to admit. `score` hands seeded inputs over as data frames and the
+    Constant's as lazy."""
+    return (
+        f"df = pl.concat([{policy}.lazy().select(pl.col('state').alias('name')), "
+        f"{items}.lazy().select(pl.col('item_id').alias('name')), "
+        "rates.lazy().select(pl.col('loading').cast(pl.String).alias('name'))])"
+    )
 
 
 def _node(nid: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -514,15 +545,16 @@ def _pricing(project: Path, node_type: NodeType) -> PipelineGraph:
         config["path"] = str(sample)
         build_test_api_input_snapshots(sample, config)
     name = SINGLETON_NODE_NAMES[node_type]
+    policy, items = _ports(node_type)
     return PipelineGraph(
         nodes=[
             _node(name, node_type, config),
             _node("rates", NodeType.CONSTANT, {"values": [{"name": "loading", "value": "2.0"}]}),
-            _node("listed", NodeType.POLARS, {"code": _LISTED}),
+            _node("listed", NodeType.POLARS, {"code": _listed(policy, items)}),
         ],
         edges=[
-            _edge(name, "listed", "policy"),
-            _edge(name, "listed", "items"),
+            _edge(name, "listed", policy),
+            _edge(name, "listed", items),
             _edge("rates", "listed"),
         ],
     )
@@ -600,13 +632,16 @@ def test_a_workbench_input_reads_a_request_as_a_quote_input_does(
         (node_id, kind)
         for node_id, kind, _ in snapshot_backed_inputs([name, "rates", "listed"], graph.node_map)
     ] == ([(name, "api_input")] if reads_a_file else [])
-    assert point_kind(graph, DataPoint(name, "items")) == "api_input_table"
+    policy, items = _ports(node_type)
+    assert point_kind(graph, DataPoint(name, items)) == "api_input_table"
 
-    # Two sources: only a request input recognised as one is seeded with the live frames.
+    # Two sources: only a request input recognised as one is seeded with the live frames,
+    # by its ports; the form keys a Workbench Input's items by their row_number.
+    numbered = {"row_number": [1]} if not reads_a_file else {}
     scored = _import(pipeline_file).pipeline.score(
         {
-            "policy": pl.DataFrame({"state": ["TX"], "limit": [5]}),
-            "items": pl.DataFrame({"item_id": ["Z"], "value": [7.0]}),
+            policy: pl.DataFrame({"state": ["TX"], "limit": [5]}),
+            items: pl.DataFrame({**numbered, "item_id": ["Z"], "value": [7.0]}),
         }
     )
     assert scored["name"].to_list() == ["TX", "Z", "2.0"]
@@ -616,9 +651,13 @@ def test_a_workbench_input_reads_a_request_as_a_quote_input_does(
 @REQUEST_INPUTS
 def test_deploy_scoring_seeds_the_request_input(project: Path, node_type: NodeType) -> None:
     name = SINGLETON_NODE_NAMES[node_type]
+    port = "quote"
     if node_type is NodeType.WORKBENCH_INPUT:
+        port = "quote_input"
         table = {
             "name": "quote",
+            "side": "input",
+            "port": port,
             "rows": "one",
             "columns": [_column("state", "str"), _column("limit", "int")],
         }
@@ -648,10 +687,10 @@ def test_deploy_scoring_seeds_the_request_input(project: Path, node_type: NodeTy
             _node(
                 "quote_response",
                 NodeType.OUTPUT,
-                make_output_config(["state", "limit"], source_port="quote"),
+                make_output_config(["state", "limit"], source_port=port),
             ),
         ],
-        edges=[_edge(name, "quote_response", "quote")],
+        edges=[_edge(name, "quote_response", port)],
     )
 
     inputs = find_deploy_input_nodes(graph)
@@ -670,12 +709,17 @@ def test_a_workbench_input_previews_one_null_row_per_table(project: Path) -> Non
         _node(
             "joined",
             NodeType.POLARS,
-            {"code": "df = policy.join(items, left_on='state', right_on='item_id', how='left')"},
+            {
+                "code": (
+                    "df = policy_input.join(items_input, left_on='state', right_on='item_id', "
+                    "how='left')"
+                )
+            },
         )
     )
     graph.edges += [
-        _edge("workbench_input", "joined", "policy"),
-        _edge("workbench_input", "joined", "items"),
+        _edge("workbench_input", "joined", "policy_input"),
+        _edge("workbench_input", "joined", "items_input"),
     ]
 
     joined = _preview(graph, "joined")
@@ -689,7 +733,7 @@ def test_a_workbench_input_previews_one_null_row_per_table(project: Path) -> Non
     with pytest.raises(WorkbenchInputError, match="have no columns yet"):
         workbench_table_labels({"tables": [{**_TABLES[0], "columns": []}]})
     assert workbench_table_labels({"tables": [{**_TABLES[0], "columns": []}, _TABLES[1]]}) == (
-        "items",
+        "items_input",
     )
 
 
@@ -698,7 +742,7 @@ def test_a_workbench_input_table_point_reads_directly(project: Path) -> None:
     resolver = DataPointResolver(graph, source="live", store=NodeSnapshotStore(project))
 
     resolution = resolver.resolve(
-        DataPoint("workbench_input", "items"), NodeSnapshotColumns.of({"value"})
+        DataPoint("workbench_input", "items_input"), NodeSnapshotColumns.of({"value"})
     )
     with resolver.lease_resolved(resolution) as leased:
         frame = leased.scan.collect()
@@ -726,7 +770,7 @@ def test_a_saved_workbench_input_loads_with_its_ports(project: Path) -> None:
     assert request.source_handle_input_names == {}
     assert sorted(
         edge.input_name for edge in document.edges if edge.source_authored_id == "workbench_input"
-    ) == ["items", "policy"]
+    ) == ["items_input", "policy_input"]
 
 
 def test_a_saved_workbench_input_holding_copies_opens_for_its_repair(project: Path) -> None:
@@ -787,6 +831,8 @@ def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) 
     # Deploy reads the request into the table, so the response's columns are the table's.
     table = {
         "name": "quote",
+        "side": "input",
+        "port": "quote_input",
         "rows": "one",
         "columns": [_column("state", "str"), _column("limit", "int")],
     }
@@ -796,14 +842,14 @@ def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) 
             _node(
                 "quote_response",
                 NodeType.OUTPUT,
-                make_output_config(["state", "limit"], source_port="quote"),
+                make_output_config(["state", "limit"], source_port="quote_input"),
             ),
         ],
-        edges=[_edge("workbench_input", "quote_response", "quote")],
+        edges=[_edge("workbench_input", "quote_response", "quote_input")],
     )
 
     main = _write(graph, project, "main")
-    workbench_project(project, [form_table("quote", "input", ("state", "str"), ("limit", "int"))])
+    workbench_project(project, [form_table("quote", ("state", "str"), ("limit", "int"))])
     resolved = resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
 
     # The form's tables: Haute's quote_details first, which a request names the quote in.
@@ -842,7 +888,7 @@ def test_deploy_resolves_a_workbench_input_without_a_sample_file(project: Path) 
 def test_the_cache_report_reads_a_workbench_input_directly(project: Path) -> None:
     graph = _pricing(project, NodeType.WORKBENCH_INPUT)
     graph.nodes.append(_node("explore", NodeType.EXPLORE, {"steps": []}))
-    graph.edges.append(_edge("workbench_input", "explore", "items"))
+    graph.edges.append(_edge("workbench_input", "explore", "items_input"))
 
     rows = {
         node_id: (point, reason)
@@ -866,7 +912,7 @@ def test_the_node_data_routes_read_a_workbench_table_directly(project: Path, cli
     workbench_project(project, FORM_TABLES, FORM_SAMPLE)
     graph = without_form_tables(_pricing(project, NodeType.WORKBENCH_INPUT))
     graph.nodes.append(_node("explore", NodeType.EXPLORE, {"steps": []}))
-    graph.edges.append(_edge("workbench_input", "explore", "items"))
+    graph.edges.append(_edge("workbench_input", "explore", "items_input"))
     body = {"graph": graph.model_dump(mode="json"), "node_id": "explore", "source": "live"}
 
     point = client.post("/api/node-data/point", json=body)
@@ -905,8 +951,8 @@ def _with_node(graph: PipelineGraph, nid: str, code: str, *ports: str) -> Pipeli
     return graph
 
 
-_DOUBLED = "df = items.with_columns(pl.col('value') * 2)"
-_JOINED = "df = policy.join(items, left_on='state', right_on='item_id', how='left')"
+_DOUBLED = "df = items_input.with_columns(pl.col('value') * 2)"
+_JOINED = "df = policy_input.join(items_input, left_on='state', right_on='item_id', how='left')"
 
 
 def test_a_workbench_input_previews_its_sample(project: Path) -> None:
@@ -923,13 +969,13 @@ def test_a_workbench_input_previews_its_sample(project: Path) -> None:
     assert listed["name"].to_list() == ["NY", "A", "B", "2.0"]
     # A calculation downstream runs on the sample's values.
     doubled = _preview(
-        _with_node(_sampled(project, sample), "doubled", _DOUBLED, "items"), "doubled"
+        _with_node(_sampled(project, sample), "doubled", _DOUBLED, "items_input"), "doubled"
     )
     assert doubled.to_dicts() == [{"item_id": "A", "value": 20.0}, {"item_id": "B", "value": 60.0}]
     # Leasing a table point reads the sample's rows.
     resolver = DataPointResolver(graph, source="live", store=NodeSnapshotStore(project))
     resolution = resolver.resolve(
-        DataPoint("workbench_input", "items"), NodeSnapshotColumns.of({"value"})
+        DataPoint("workbench_input", "items_input"), NodeSnapshotColumns.of({"value"})
     )
     with resolver.lease_resolved(resolution) as leased:
         assert leased.scan.collect().to_dicts() == [{"value": 10.0}, {"value": 30.0}]
@@ -939,13 +985,13 @@ def test_a_workbench_input_previews_its_sample(project: Path) -> None:
     # one-row table its one row of nulls, so the sample prices as its quote would deployed.
     partial = {"tables": _TABLES, "sample": {"policy": {"limit": 1000, "unread": "x"}}}
     frames = workbench_table_frames(partial)
-    assert frames["policy"].collect().to_dicts() == [{"state": None, "limit": 1000}]
-    assert frames["items"].collect().to_dicts() == []
+    assert frames["policy_input"].collect().to_dicts() == [{"state": None, "limit": 1000}]
+    assert frames["items_input"].collect().to_dicts() == []
     # No sample, or nothing typed in it: one row of nulls per table, the null quote.
     for sample in ({}, None):
         blank = workbench_table_frames({"tables": _TABLES, "sample": sample})
-        assert blank["policy"].collect().to_dicts() == [{"state": None, "limit": None}]
-        assert blank["items"].collect().to_dicts() == [{"item_id": None, "value": None}]
+        assert blank["policy_input"].collect().to_dicts() == [{"state": None, "limit": None}]
+        assert blank["items_input"].collect().to_dicts() == [{"item_id": None, "value": None}]
 
 
 @pytest.mark.parametrize(
@@ -972,22 +1018,26 @@ def test_a_demand_cuts_the_sample_to_the_ports_and_columns_asked_for() -> None:
     config = {"tables": _TABLES, "sample": copy.deepcopy(_SAMPLE[0])}
 
     asked = workbench_table_frames(
-        config, port_columns={"items": frozenset({"value"}), "policy": None}
+        config, port_columns={"items_input": frozenset({"value"}), "policy_input": None}
     )
 
-    assert list(asked) == ["items", "policy"]
-    assert asked["items"].collect().to_dicts() == [{"value": 10.0}, {"value": 30.0}]
-    assert asked["policy"].collect_schema().names() == ["state", "limit"]
+    assert list(asked) == ["items_input", "policy_input"]
+    assert asked["items_input"].collect().to_dicts() == [{"value": 10.0}, {"value": 30.0}]
+    assert asked["policy_input"].collect_schema().names() == ["state", "limit"]
     # A demand of no columns keeps the rows through one carrier column.
-    carried = workbench_table_frames(config, port_columns={"items": frozenset()})
-    assert carried["items"].collect_schema().names() == ["item_id"]
-    with pytest.raises(ValueError, match="requests unknown port 'nope'"):
-        workbench_table_frames(config, port_columns={"nope": None})
+    carried = workbench_table_frames(config, port_columns={"items_input": frozenset()})
+    assert carried["items_input"].collect_schema().names() == ["item_id"]
+    # A port is a side's: the table's own name is none.
+    for unknown in ("nope", "items"):
+        with pytest.raises(ValueError, match=f"requests unknown port '{unknown}'"):
+            workbench_table_frames(config, port_columns={unknown: None})
     with pytest.raises(
         ValueError,
-        match=re.escape("port_columns['items'] requests missing declared column(s): ['nope']"),
+        match=re.escape(
+            "port_columns['items_input'] requests missing declared column(s): ['nope']"
+        ),
     ):
-        workbench_table_frames(config, port_columns={"items": frozenset({"nope"})})
+        workbench_table_frames(config, port_columns={"items_input": frozenset({"nope"})})
 
 
 @pytest.mark.parametrize(
@@ -1004,10 +1054,20 @@ def test_a_demand_cuts_the_sample_to_the_ports_and_columns_asked_for() -> None:
 )
 def test_a_value_is_read_as_its_columns_type(kind: str, value: Any, read: Any) -> None:
     tables = parse_workbench_tables(
-        [{"name": "t", "rows": "one", "columns": [_column("v", kind)]}], owner="Workbench Input"
+        [
+            {
+                "name": "t",
+                "side": "input",
+                "port": "t_input",
+                "rows": "one",
+                "columns": [_column("v", kind)],
+            }
+        ],
+        owner="Workbench Input",
     )
 
-    assert read_quote(tables, {"t": {"v": value}})["t"].to_dicts() == [{"v": read}]
+    # Read from the quote's table by its name, into its port's frame.
+    assert read_quote(tables, {"t": {"v": value}})["t_input"].to_dicts() == [{"v": read}]
 
 
 @pytest.mark.parametrize(
@@ -1028,7 +1088,16 @@ def test_a_value_that_is_not_of_its_columns_type_is_refused_naming_it(
     kind: str, value: Any, shown: str
 ) -> None:
     tables = parse_workbench_tables(
-        [{"name": "t", "rows": "many", "columns": [_column("v", kind)]}], owner="Workbench Input"
+        [
+            {
+                "name": "t",
+                "side": "input",
+                "port": "t_input",
+                "rows": "many",
+                "columns": [_column("v", kind)],
+            }
+        ],
+        owner="Workbench Input",
     )
 
     with pytest.raises(WorkbenchInputError, match=re.escape(f"t[0].v is {shown}, not {kind!r}")):
@@ -1040,7 +1109,7 @@ def test_a_workbench_inputs_table_point_follows_its_sample(project: Path) -> Non
         graph = _sampled(project, sample)
         resolver = DataPointResolver(graph, source="live", store=NodeSnapshotStore(project))
         demand = NodeSnapshotColumns.of({"value"})
-        return resolver.resolve(DataPoint("workbench_input", "items"), demand).data_version
+        return resolver.resolve(DataPoint("workbench_input", "items_input"), demand).data_version
 
     versions = [version(sample) for sample in ({}, _SAMPLE[0], {"policy": {"state": "CA"}})]
 
@@ -1078,16 +1147,18 @@ def test_a_misfit_sample_fails_what_reads_its_rows(
         _preview(_sampled(project, sample), "listed")
     # The sample is read whole, so a node reading only items still finds a misfit in policy.
     with pytest.raises(WorkbenchInputError, match=re.escape(message)):
-        _preview(_with_node(_sampled(project, sample), "doubled", _DOUBLED, "items"), "doubled")
+        _preview(
+            _with_node(_sampled(project, sample), "doubled", _DOUBLED, "items_input"), "doubled"
+        )
     # Planning a join sizes both tables from the sample, and says what to correct.
-    joined = _with_node(_sampled(project, sample), "joined", _JOINED, "policy", "items")
+    joined = _with_node(_sampled(project, sample), "joined", _JOINED, "policy_input", "items_input")
     with pytest.raises(WorkbenchInputError, match=re.escape(message)):
         _preview(joined, "joined")
 
     # Resolving points reads the tables alone, so the cache report still has them.
     graph = _sampled(project, sample)
     graph.nodes.append(_node("explore", NodeType.EXPLORE, {"steps": []}))
-    graph.edges.append(_edge("workbench_input", "explore", "items"))
+    graph.edges.append(_edge("workbench_input", "explore", "items_input"))
     rows = {
         node_id: point
         for node_id, point, _reason, _digests in node_data_service().points_for_graph(
@@ -1153,8 +1224,8 @@ def test_a_request_never_reads_the_sample(project: Path, sample: dict[str, Any])
     # Scored on its own, a Workbench Input reads its project's form, never its sample.
     workbench_project(project, FORM_TABLES, {"policy": [{"state": "NY", "limit": "lots"}]})
     request = {
-        "policy": pl.DataFrame({"state": ["TX"], "limit": [5]}),
-        "items": pl.DataFrame({"item_id": ["Z"], "value": [7.0]}),
+        "policy_input": pl.DataFrame({"state": ["TX"], "limit": [5]}),
+        "items_input": pl.DataFrame({"row_number": [1], "item_id": ["Z"], "value": [7.0]}),
     }
 
     scored = _import(_write(graph, project)).pipeline.score(request)
@@ -1269,8 +1340,8 @@ def test_a_deployed_request_is_sized_per_table_for_the_memory_estimate(project: 
 
     assert listed["name"].to_list() == ["TX", "A", "B", "C", "2.0"]
     assert {port: frame.height for port, frame in sized["workbench_input"].items()} == {
-        "policy": 1,
-        "items": 3,
+        "policy_input": 1,
+        "items_input": 3,
     }
 
 
@@ -1284,6 +1355,10 @@ def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> 
     graph = _pricing(project, NodeType.WORKBENCH_INPUT)
     [request] = [node for node in graph.nodes if node.id == "workbench_input"]
     request.data.config["sample"] = {"policy": {"state": "CA", "limit": 1}}
+    # Its items keyed by their row_number, as a form's index keys them.
+    items = request.data.config["tables"][1]
+    items["columns"].insert(0, _column("row_number", "int"))
+    items.update(key="row_number", null_key=1)
     container = project / "container"
     container.mkdir()
     manifest = {
@@ -1309,8 +1384,23 @@ def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> 
                 "/quote",
                 json={
                     "policy": {"state": "TX", "limit": 5},
-                    "items": [{"item_id": "Z", "value": 7.0}],
+                    "items": [{"row_number": 1, "item_id": "Z", "value": 7.0}],
                 },
+            )
+            # Rows whose outputs could not be put back on them: one holding no key, and two
+            # holding one.
+            unkeyed, twice = (
+                client.post(
+                    "/quote",
+                    json={
+                        "policy": {"state": "TX", "limit": 5},
+                        "items": [
+                            {"row_number": 1, "item_id": "Z", "value": 7.0},
+                            {"row_number": number, "item_id": "Y", "value": 1.0},
+                        ],
+                    },
+                )
+                for number in (None, 1)
             )
             # A text where a number belongs, in a later row: Polars could not build a frame
             # from it, so it is read from the records and answered as the reader says it.
@@ -1331,6 +1421,17 @@ def test_the_containers_quote_route_reads_the_request_as_sent(project: Path) -> 
         "error_code": "workbench_input_invalid",
         "message": "The request does not fit this Workbench Input's tables: items[1].value is "
         "'x', not 'float'.",
+    }
+    assert (unkeyed.status_code, twice.status_code) == (422, 422), (unkeyed.text, twice.text)
+    assert unkeyed.json() == {
+        "error_code": "workbench_input_invalid",
+        "message": "The request does not fit this Workbench Input's tables: items's row 2 holds "
+        "no row_number.",
+    }
+    assert twice.json() == {
+        "error_code": "workbench_input_invalid",
+        "message": "The request does not fit this Workbench Input's tables: items's rows 1 and "
+        "2 hold row_number 1; each row's row_number is its own.",
     }
 
 

@@ -289,8 +289,8 @@ def test_opening_puts_values_back_by_name_onto_the_form_the_view_holds(
     # Onto an unsaved schema that dropped a column and made another true/false.
     edited = json.loads(json.dumps(held))
     policy = next(t for t in edited["schema"]["tables"] if t["name"] == "policy")
-    policy["columns"] = [
-        {**column, "type": "bool"} for column in policy["columns"] if column["name"] == "limit"
+    policy["inputs"] = [
+        {**column, "type": "bool"} for column in policy["inputs"] if column["name"] == "limit"
     ]
     reopened = http.post("/api/workbench/test-quotes/Fleet.json/open", json={"form": edited}).json()
 
@@ -330,7 +330,8 @@ def test_a_run_is_unchanged_until_the_pipeline_moves_a_price(project: Path) -> N
 
     unchanged = _run(http).json()
     _pipeline(
-        project, "df = policy.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))"
+        project,
+        "df = policy_input.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
     )
     moved = _run(http).json()
 
@@ -348,7 +349,7 @@ def test_keyed_rows_reordered_and_numbers_within_tolerance_are_unchanged(
 ) -> None:
     keyed = json.loads(json.dumps(FORM_TABLES))
     prices = next(t for t in keyed if t["name"] == "item_prices")
-    prices["columns"][0]["key"] = True
+    prices["outputs"][0]["key"] = True
     _sheets(project, keyed)
     http = client()
     assert _save(http).status_code == 200
@@ -382,7 +383,7 @@ def test_a_column_the_form_dropped_is_a_removed_field(project: Path) -> None:
 
 def test_a_key_held_twice_no_longer_compares(project: Path) -> None:
     keyed = json.loads(json.dumps(FORM_TABLES))
-    next(t for t in keyed if t["name"] == "item_prices")["columns"][0]["key"] = True
+    next(t for t in keyed if t["name"] == "item_prices")["outputs"][0]["key"] = True
     _sheets(project, keyed)
     http = client()
     assert _save(http).status_code == 200
@@ -397,7 +398,7 @@ def test_a_key_held_twice_no_longer_compares(project: Path) -> None:
 
 
 #: A pipeline that resolves, but fails on the quote's own values: a state read as a number.
-FAILS_ON_THE_QUOTE = "df = policy.with_columns(premium=pl.col('state').cast(pl.Int64))"
+FAILS_ON_THE_QUOTE = "df = policy_input.with_columns(premium=pl.col('state').cast(pl.Int64))"
 
 
 def test_a_pipeline_failing_on_the_quote_fails_it(project: Path) -> None:
@@ -466,7 +467,8 @@ def test_accepting_prices_again_and_writes_the_new_answer(project: Path) -> None
     http = client()
     assert _save(http).status_code == 200
     _pipeline(
-        project, "df = policy.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))"
+        project,
+        "df = policy_input.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
     )
     run = _run(http).json()
 
@@ -484,7 +486,8 @@ def test_accepting_is_refused_once_the_pipeline_changed_since_the_run(project: P
     before = _file(project).read_bytes()
     run = _run(http).json()
     _pipeline(
-        project, "df = policy.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))"
+        project,
+        "df = policy_input.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
     )
 
     refused = _accept(http, run)
@@ -605,7 +608,8 @@ def test_the_basis_moves_with_helper_code_outputs_and_artifact_content(project: 
 def test_the_build_passes_with_a_moved_quote_and_reports_it(project: Path) -> None:
     assert _save(client()).status_code == 200
     _pipeline(
-        project, "df = policy.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))"
+        project,
+        "df = policy_input.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
     )
 
     built = build_release(project, project / "build" / "app")
@@ -674,7 +678,7 @@ def test_a_schedule_past_the_preview_routes_rows_is_kept_and_accepted_whole(
 
     graph = _priced()
     next(node for node in graph.nodes if node.id == "item_premiums").data.config["code"] = (
-        "df = items.with_columns(premium=pl.col('value') * 3)"
+        "df = items_input.with_columns(premium=pl.col('value') * 3)"
     )
     _write(graph, project, "main")
     run = _run(http).json()
@@ -716,7 +720,7 @@ def test_haute_app_build_writes_the_report_whether_it_passes_or_fails(
         project,
         FAILS_ON_THE_QUOTE
         if fails
-        else "df = policy.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
+        else "df = policy_input.with_columns(premium=pl.col('limit') / 5, referral=pl.lit('none'))",
     )
 
     result = runner.invoke(cli, ["app", "build"])

@@ -307,8 +307,8 @@ def test_a_workbench_output_fills_its_tables_alike(project: Path) -> None:
     workbench_project(
         project,
         [
-            form_table("policy", "input", ("state", "str")),
-            form_table("pricing", "output", ("premium", "float")),
+            form_table("policy", ("state", "str")),
+            form_table("pricing", outputs=[("premium", "float")]),
         ],
     )
     # The canvas is given the form's tables as every run's graph is; the saved file's
@@ -318,15 +318,15 @@ def test_a_workbench_output_fills_its_tables_alike(project: Path) -> None:
     )
     frames = [pl.LazyFrame({"premium": [12.5], "other": ["x"]})]
     canvas = _canvas(
-        NodeType.WORKBENCH_OUTPUT, given, frames, ["priced"], target_handles=["pricing"]
+        NodeType.WORKBENCH_OUTPUT, given, frames, ["priced"], target_handles=["pricing_output"]
     )
     standalone = _standalone(
-        project, NodeType.WORKBENCH_OUTPUT, {}, frames, ["priced"], target_ports=["pricing"]
+        project, NodeType.WORKBENCH_OUTPUT, {}, frames, ["priced"], target_ports=["pricing_output"]
     )
 
     _assert_equal(canvas, standalone)
     # The table's own columns only: the frame's other column is not one of them.
-    assert _collected(canvas)["pricing"].to_dicts() == [
+    assert _collected(canvas)["pricing_output"].to_dicts() == [
         {"quote_reference": None, "quote_option": None, "premium": 12.5}
     ]
 

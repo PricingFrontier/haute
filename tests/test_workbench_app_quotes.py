@@ -433,7 +433,7 @@ def _cover_form(
     shown, and its *fields* on another shown *show_when*."""
     spec = json.loads(json.dumps(FORM))
     policy = next(t for t in spec["schema"]["tables"] if t["name"] == "policy_details")
-    policy["columns"] += [{"name": "cover", "type": "bool"}, *columns]
+    policy["inputs"] += [{"name": "cover", "type": "bool"}, *columns]
     spec["pages"][0]["sections"][0]["height"] = 240
     spec["pages"][0]["sections"][0]["widgets"] = [
         {
@@ -619,7 +619,7 @@ def test_a_new_quote_leaving_a_required_detail_empty_is_made_and_saved(
 ) -> None:
     # Required marks what Mark final needs: a creation and a save take a quote without it.
     spec = json.loads(json.dumps(FORM))
-    for column in spec["schema"]["tables"][0]["columns"]:
+    for column in spec["schema"]["tables"][0]["inputs"]:
         if column["name"] == "insured":
             column["required"] = True
     required = _write_release(tmp_path / "required", spec)

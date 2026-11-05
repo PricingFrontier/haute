@@ -55,7 +55,7 @@ def test_a_schema_file_holds_the_reference_and_reading_fills_the_values(project:
     files = _write(project, _sourced({"file": "states.csv", "column": "code"}))
 
     schema = json.loads(files["schema/policy.json"])
-    state = next(c for c in schema["columns"] if c["name"] == "state")
+    state = next(c for c in schema["inputs"] if c["name"] == "state")
     assert state["options_source"] == {"file": "states.csv", "column": "code"}
     assert "options" not in state
     assert _state_options(project) == ["CA", "NY"]
@@ -72,14 +72,16 @@ def test_a_loaded_forms_values_are_written_as_their_reference_alone(
     form = copy.deepcopy(FORM)
     sourced = {"options": ["CA", "NY"], "options_source": {"file": "states.csv", "column": "code"}}
     if table == "quote_details":
-        table_of(form, table)["columns"].append({"name": name, "type": "str", **sourced})
+        table_of(form, table)["inputs"].append({"name": name, "type": "str", **sourced})
     else:
         column_of(form, table, name).update(sourced)
 
     files = _write(project, form)
 
     written = json.loads(files[f"schema/{table}.json"])
-    entry = next(c for c in written["columns"] if c["name"] == name)
+    # quote_details' file lists its columns; any other table's its inputs.
+    block = "columns" if table == "quote_details" else "inputs"
+    entry = next(c for c in written[block] if c["name"] == name)
     assert entry["options_source"] == {"file": "states.csv", "column": "code"}
     assert "options" not in entry
     spec = read_form_document(config(project)).spec

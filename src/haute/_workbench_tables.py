@@ -227,6 +227,11 @@ def check_tables(tables: Sequence[WorkbenchTable], *, owner: str) -> None:
     by_folded_port: dict[str, str] = {}
     names_seen: set[str] = set()
     for table in tables:
+        if not table.name.isidentifier():
+            raise WorkbenchTablesError(
+                f"The {owner}'s table {table.name!r} cannot be named so: a table's name is "
+                "letters, digits and underscores, not starting with a digit."
+            )
         if not is_frame_label(table.port):
             raise WorkbenchTablesError(
                 f"The {owner}'s table {table.name!r} cannot be the port {table.port!r}: a "

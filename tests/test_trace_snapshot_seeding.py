@@ -202,8 +202,8 @@ def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api:
     workbench_project(
         project,
         [
-            form_table("a_table", "output", ("id", "int"), ("a", "int"), many=True),
-            form_table("d_table", "output", ("id", "int"), ("d", "float"), many=True),
+            form_table("a_table", outputs=[("id", "int"), ("a", "int")], many=True),
+            form_table("d_table", outputs=[("id", "int"), ("d", "float")], many=True),
         ],
         pipeline="rating/main.py",
     )
@@ -222,12 +222,16 @@ def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api:
         update={
             "edges": [
                 *graph.edges,
-                GraphEdge(id="to_a", source="first", target="response", targetHandle="a_table"),
-                GraphEdge(id="to_d", source="second", target="response", targetHandle="d_table"),
+                GraphEdge(
+                    id="to_a", source="first", target="response", targetHandle="a_table_output"
+                ),
+                GraphEdge(
+                    id="to_d", source="second", target="response", targetHandle="d_table_output"
+                ),
             ]
         }
     )
-    preview = _post_preview(api, graph, "response", port_label="a_table")
+    preview = _post_preview(api, graph, "response", port_label="a_table_output")
     listed = {entry["node_id"]: entry for entry in preview["seed_plan"]}
     assert set(listed) == {"first", "second"}
     row = preview["preview"][0]
@@ -239,7 +243,7 @@ def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api:
         _listed(preview["seed_plan"]),
         row=row,
         column="a",
-        port_label="a_table",
+        port_label="a_table_output",
     )
 
     steps = _steps(trace)

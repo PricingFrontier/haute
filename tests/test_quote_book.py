@@ -54,7 +54,7 @@ FORM = with_quote_details(
                     {
                         "name": "policy",
                         "rows": "one",
-                        "columns": [
+                        "inputs": [
                             column("region", label="Region", required=True),
                             column("drivers", "int", label="Drivers", required=True, min=1),
                             column("start", "date"),
@@ -64,8 +64,9 @@ FORM = with_quote_details(
                     {
                         "name": "vehicles",
                         "rows": "many",
-                        "columns": [
-                            column("reg", key=True),
+                        "inputs": [
+                            column("row_number", "int", index=True),
+                            column("reg"),
                             column("value", "float", label="Value", required=True),
                             column("garaged", "bool"),
                             column("mileage", "int", label="Mileage"),
@@ -73,18 +74,16 @@ FORM = with_quote_details(
                     },
                     {
                         "name": "premium",
-                        "role": "output",
                         "rows": "one",
-                        "columns": [
+                        "outputs": [
                             column("total_premium", "float", label="Total premium", required=True),
                             column("referred", "bool", label="Referred", required=True),
                         ],
                     },
                     {
                         "name": "vehicle_premium",
-                        "role": "output",
                         "rows": "many",
-                        "columns": [column("reg"), column("premium", "float")],
+                        "outputs": [column("reg"), column("premium", "float")],
                     },
                 ]
             },
@@ -631,8 +630,9 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
                             {
                                 "name": "perils",
                                 "rows": "many",
-                                "columns": [
-                                    column("peril", options=options, row_per_value=True, key=True),
+                                "inputs": [
+                                    column("row_number", "int", index=True),
+                                    column("peril", options=options, row_per_value=True),
                                     column("limit", "float"),
                                 ],
                             }
@@ -671,6 +671,245 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
 
 def _identity(quote: Any) -> tuple[str, int]:
     return quote.reference, quote.option
+
+
+# ── Tables of inputs and outputs ───────────────────────────────────────────
+
+
+#: A quote's equipment and perils as tables of inputs and outputs, each item's or peril's
+#: premium priced onto its own row: the equipment keyed by its index renamed item_number,
+#: the perils by the peril giving each row; a one-row table of both blocks; and a table of
+#: outputs alone, kept by quote_row as before.
+BLOCKS = with_quote_details(
+    FormSpec.model_validate(
+        {
+            "name": PROJECT,
+            "schema": {
+                "tables": [
+                    {
+                        "name": "equipment",
+                        "rows": "many",
+                        "inputs": [
+                            column("item_number", "int", index=True),
+                            column("item", label="Item"),
+                            column("value", "float"),
+                        ],
+                        "outputs": [column("premium", "float"), column("loading", "float")],
+                    },
+                    {
+                        "name": "perils",
+                        "rows": "many",
+                        "inputs": [
+                            column("row_number", "int", index=True),
+                            column("peril", options=["Fire", "Flood"], row_per_value=True),
+                            column("limit", "float"),
+                        ],
+                        "outputs": [column("peril_premium", "float")],
+                    },
+                    {
+                        "name": "pricing",
+                        "rows": "one",
+                        "inputs": [column("discount", "float")],
+                        "outputs": [column("charged", "float")],
+                    },
+                    {
+                        "name": "bands",
+                        "rows": "many",
+                        "outputs": [column("band"), column("rate", "float")],
+                    },
+                ]
+            },
+            "pages": FORM.model_dump(by_alias=True)["pages"],
+        }
+    )
+)
+
+
+#: The cells typed: an empty equipment row between two items, so the second is item 3.
+BLOCK_VALUES = {
+    "quote_details": [{"insured": "Acme Plant"}],
+    "equipment": [{"item": "Digger", "value": "10"}, {}, {"item": "Crane", "value": "30"}],
+    "perils": [{"peril": "Fire", "limit": "100"}, {"peril": "Flood", "limit": "50"}],
+    "pricing": [{"discount": "0.1"}],
+}
+
+
+def blocks_document(**tables: Any) -> dict[str, Any]:
+    """The pricing's typed response for :data:`BLOCK_VALUES`, its rows in another order than
+    the quote's: each input table's rows held to the quote's by key."""
+    base: dict[str, Any] = {
+        "equipment": [
+            {"item_number": 3, "premium": 30.0, "loading": 1.5},
+            {"item_number": 1, "premium": 10.0, "loading": None},
+        ],
+        "perils": [
+            {"peril": "Flood", "peril_premium": 5.0},
+            {"peril": "Fire", "peril_premium": 7.5},
+        ],
+        "pricing": {"charged": 42.0},
+        "bands": [{"band": "B", "rate": 2.0}, {"band": "A", "rate": 1.0}],
+    }
+    return {**base, **tables}
+
+
+@pytest.fixture
+def blocks(store: Target) -> Iterator[QuoteBook]:
+    store.make(BLOCKS)
+    with open_book(
+        store.url,
+        BLOCKS,
+        environment=store.environment,
+        haute_version=HAUTE,
+        clock=Clock(),
+        sign_in=store.sign_in,
+    ) as opened:
+        yield opened
+
+
+def save_blocks(book: QuoteBook, document: dict[str, Any] | None) -> Any:
+    quote = book.create(
+        operation=op(), actor=ANA, at=book.now(), reference="E-1", values=BLOCK_VALUES
+    ).quote
+    return book.save(
+        quote.reference,
+        quote.option,
+        operation=op(),
+        version=quote.version,
+        actor=ANA,
+        priced=None if document is None else PricedOutputs(RELEASE, document),
+        values=BLOCK_VALUES,
+        at=book.now(),
+    ).quote
+
+
+def test_a_priced_tables_outputs_are_written_on_its_input_rows_by_key(
+    blocks: QuoteBook, store: Target
+) -> None:
+    save_blocks(blocks, blocks_document())
+
+    # One SQL table a schema table, its inputs then its outputs: each input row holds its
+    # own outputs, found by its key whatever order the pricing gave them in.
+    assert sql(
+        store,
+        "SELECT quote_row, item_number, item, value, premium, loading FROM equipment "
+        "ORDER BY quote_row",
+    ) == [(1, 1, "Digger", 10.0, 10.0, None), (3, 3, "Crane", 30.0, 30.0, 1.5)]
+    assert sql(store, "SELECT quote_row, peril, peril_premium FROM perils ORDER BY quote_row") == [
+        (1, "Fire", 7.5),
+        (2, "Flood", 5.0),
+    ]
+    assert sql(store, "SELECT discount, charged FROM pricing") == [(0.1, 42.0)]
+    # A table of outputs alone is kept by quote_row as the pricing gave its rows.
+    assert sql(store, "SELECT quote_row, band, rate FROM bands ORDER BY quote_row") == [
+        (1, "B", 2.0),
+        (2, "A", 1.0),
+    ]
+
+
+def test_an_input_row_the_pricing_skipped_or_left_without_a_value_holds_no_outputs(
+    blocks: QuoteBook, store: Target
+) -> None:
+    # Item 1 is answered nothing; Flood is answered a row holding no output value.
+    save_blocks(
+        blocks,
+        blocks_document(
+            equipment=[{"item_number": 3, "premium": 30.0, "loading": float("inf")}],
+            perils=[
+                {"peril": "Fire", "peril_premium": 7.5},
+                {"peril": "Flood", "peril_premium": float("nan")},
+            ],
+        ),
+    )
+
+    # A value that is not finite is kept empty, as the response leaves it out.
+    assert sql(store, "SELECT quote_row, premium, loading FROM equipment ORDER BY quote_row") == [
+        (1, None, None),
+        (3, 30.0, None),
+    ]
+    assert sql(store, "SELECT peril, peril_premium FROM perils ORDER BY quote_row") == [
+        ("Fire", 7.5),
+        ("Flood", None),
+    ]
+    # Reopened, a row holding no output value is answered nothing, as a row the pricing
+    # omitted is.
+    outputs = blocks.read("E-1", 1).outputs
+    assert outputs is not None
+    assert [row["item_number"] for row in outputs["equipment"]] == [3]
+    assert [row["peril"] for row in outputs["perils"]] == ["Fire"]
+
+
+def test_an_unpriced_save_of_a_table_of_both_blocks_holds_no_outputs(
+    blocks: QuoteBook, store: Target
+) -> None:
+    save_blocks(blocks, None)
+
+    assert sql(
+        store, "SELECT quote_row, item, premium, loading FROM equipment ORDER BY quote_row"
+    ) == [(1, "Digger", None, None), (3, "Crane", None, None)]
+    assert sql(store, "SELECT discount, charged FROM pricing") == [(0.1, None)]
+    assert sql(store, "SELECT * FROM bands") == []
+    assert blocks.read("E-1", 1).outputs is None
+
+
+def test_a_reopened_quote_answers_the_outputs_and_the_cells_it_was_saved_with(
+    blocks: QuoteBook,
+) -> None:
+    save_blocks(blocks, blocks_document())
+
+    opened = blocks.read("E-1", 1)
+
+    # The cells as typed, the outputs never among them; the empty row in its place.
+    assert opened.values["equipment"] == [
+        {"item": "Digger", "value": "10"},
+        {},
+        {"item": "Crane", "value": "30"},
+    ]
+    assert opened.values["perils"] == [
+        {"peril": "Fire", "limit": "100"},
+        {"peril": "Flood", "limit": "50"},
+    ]
+    assert opened.values["pricing"] == [{"discount": "0.1"}]
+    # The outputs as the pricing answered them: an input table's output side by its rows,
+    # each with its key; a table of outputs alone in the pricing's order.
+    identity = {"quote_reference": "E-1", "quote_option": 1}
+    answered = finite_document(
+        {
+            "equipment": [
+                {**identity, "item_number": 1, "premium": 10.0, "loading": None},
+                {**identity, "item_number": 3, "premium": 30.0, "loading": 1.5},
+            ],
+            "perils": [
+                {**identity, "peril": "Fire", "peril_premium": 7.5},
+                {**identity, "peril": "Flood", "peril_premium": 5.0},
+            ],
+            "pricing": {**identity, "charged": 42.0},
+            "bands": [
+                {**identity, "band": "B", "rate": 2.0},
+                {**identity, "band": "A", "rate": 1.0},
+            ],
+        }
+    )
+    assert opened.outputs == priced_tables(answered)
+
+
+@pytest.mark.parametrize(
+    "equipment",
+    [
+        pytest.param([{"item_number": 7, "premium": 1.0}], id="a key on no row"),
+        pytest.param(
+            [{"item_number": 1, "premium": 1.0}, {"item_number": 1, "premium": 2.0}],
+            id="a key twice",
+        ),
+    ],
+)
+def test_a_pricing_that_does_not_fit_the_quotes_rows_is_not_saved(
+    blocks: QuoteBook, store: Target, equipment: list[dict[str, Any]]
+) -> None:
+    with pytest.raises(QuoteValuesError, match="so the quote was not saved"):
+        save_blocks(blocks, blocks_document(equipment=equipment))
+
+    # The quote stands as it was made, unpriced.
+    assert sql(store, "SELECT premium FROM equipment") == [(None,), (None,)]
 
 
 # ── The Quotes page, the activity and the people ────────────────────────────

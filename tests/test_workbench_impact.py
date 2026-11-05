@@ -42,21 +42,19 @@ def _compare(fields: SharedFields, before: Any, after: Any) -> Any:
 def _table(
     name: str, columns: list[str], *, rows: str = "one", keys: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    """An output table as a form document holds it."""
+    """A table of outputs alone as a form document holds it."""
     return {
         "name": name,
-        "role": "output",
         "rows": rows,
-        "columns": [{"name": column, "type": "float", "key": column in keys} for column in columns],
+        "outputs": [{"name": column, "type": "float", "key": column in keys} for column in columns],
     }
 
 
 def _form(*tables: dict[str, Any]) -> dict[str, Any]:
     policy = {
         "name": "policy_details",
-        "role": "input",
         "rows": "one",
-        "columns": [{"name": "exposure", "type": "float"}],
+        "inputs": [{"name": "exposure", "type": "float"}],
     }
     return {"version": 1, "name": "x", "schema": {"tables": [policy, *tables]}}
 

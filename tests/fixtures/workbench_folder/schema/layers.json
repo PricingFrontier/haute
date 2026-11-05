@@ -1,8 +1,7 @@
 {
-  "role": "input",
   "rows": "many",
-  "columns": [
-    {"name": "layer", "type": "int", "key": true, "index": true},
+  "inputs": [
+    {"name": "layer", "type": "int", "index": true},
     {"name": "limit", "type": "float"},
     {"name": "layer_name", "type": "str"}
   ]

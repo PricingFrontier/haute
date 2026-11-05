@@ -22,21 +22,19 @@ from haute._workbench_compare import (
 def _table(
     name: str, columns: list[str], *, rows: str = "one", keys: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    """An output table as a form document holds it."""
+    """A table of outputs alone as a form document holds it."""
     return {
         "name": name,
-        "role": "output",
         "rows": rows,
-        "columns": [{"name": column, "type": "float", "key": column in keys} for column in columns],
+        "outputs": [{"name": column, "type": "float", "key": column in keys} for column in columns],
     }
 
 
 def _form(*tables: dict[str, Any]) -> dict[str, Any]:
     policy = {
         "name": "policy_details",
-        "role": "input",
         "rows": "one",
-        "columns": [{"name": "exposure", "type": "float"}],
+        "inputs": [{"name": "exposure", "type": "float"}],
     }
     return {"version": 1, "name": "x", "schema": {"tables": [policy, *tables]}}
 
@@ -210,6 +208,62 @@ def test_one_forms_fields_are_its_output_tables_with_their_keys() -> None:
         SharedTable("schedule", True, ("item", "rate"), ("item",)),
     )
     assert (fields.added, fields.removed, fields.reshaped) == ((), (), ())
+
+
+def test_an_input_tables_fields_are_its_answers_keyed_by_its_key_column() -> None:
+    identity = [{"name": "quote_reference", "type": "str"}, {"name": "quote_option", "type": "int"}]
+    fields = form_fields(
+        _form(
+            # Keyed by its index, as written with the identity at its first block's head.
+            {
+                "name": "equipment",
+                "rows": "many",
+                "inputs": [
+                    *identity,
+                    {"name": "item_number", "type": "int", "index": True},
+                    {"name": "value", "type": "float"},
+                ],
+                "outputs": [{"name": "premium", "type": "float"}],
+            },
+            # Keyed by the column giving its rows, as a form another Haute wrote may hold it,
+            # without the identity.
+            {
+                "name": "perils",
+                "rows": "many",
+                "inputs": [
+                    {"name": "row_number", "type": "int", "index": True},
+                    {
+                        "name": "peril",
+                        "type": "str",
+                        "options": ["Fire", "Flood"],
+                        "row_per_value": True,
+                    },
+                ],
+                "outputs": [{"name": "peril_premium", "type": "float"}],
+            },
+            # A one-row table of both blocks: its one row is its row.
+            {
+                "name": "pricing",
+                "rows": "one",
+                "inputs": [{"name": "discount", "type": "float"}],
+                "outputs": [{"name": "charged", "type": "float"}],
+            },
+            # Inputs alone: nothing answered.
+            {"name": "drivers", "rows": "one", "inputs": [{"name": "age", "type": "int"}]},
+        )
+    )
+
+    # Each answers the identity it holds, its key column and its outputs, matched by that key.
+    assert fields.tables == (
+        SharedTable(
+            "equipment",
+            True,
+            ("quote_reference", "quote_option", "item_number", "premium"),
+            ("item_number",),
+        ),
+        SharedTable("perils", True, ("peril", "peril_premium"), ("peril",)),
+        SharedTable("pricing", False, ("charged",), ()),
+    )
 
 
 @pytest.mark.parametrize(

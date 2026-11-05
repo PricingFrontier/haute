@@ -80,9 +80,9 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
         "WORKBENCH_INPUT",
         "the Workbench Input's tables",
     ),
-    ("_node_apply.py", "workbench_input_ports_from_config"): (
+    ("_node_apply.py", "workbench_input_tables_from_config"): (
         "WORKBENCH_INPUT",
-        "the Workbench Input's ports",
+        "the Workbench Input's tables, as a run gives them",
     ),
     ("_node_apply.py", "load_external_object_from_config"): (
         "EXTERNAL_FILE",
@@ -115,9 +115,9 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
         "EXTERNAL_FILE",
         "the Load File's body, shared with deploy's bundled builder, which has no node",
     ),
-    ("_standalone_nodes.py", "seeded_workbench_input_ports"): (
+    ("_standalone_nodes.py", "seeded_workbench_input_tables"): (
         "WORKBENCH_INPUT",
-        "the ports score() seeds a Workbench Input with",
+        "the tables score() seeds a Workbench Input with",
     ),
     ("_standalone_nodes.py", "live_switch_routes"): (
         "LIVE_SWITCH",
@@ -323,7 +323,7 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
         1,
         "the code-extraction kind of a Transform's body",
     ),
-    # Column names, operand kinds, table roles and record keys.
+    # Column names, operand kinds and record keys.
     ("_builders.py", "_constant_columns", "constant", "set"): (1, "the Constant's default column"),
     ("_node_apply.py", "constant_frame", "constant", "dict-key"): (
         1,
@@ -357,43 +357,6 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
     ("_polars_io_registry.py", "registry_capabilities", "output", "dict-key"): (
         1,
         "a format's output capability",
-    ),
-    ("_quote_store/_rows.py", "output_rows", "output", "compare:table.role"): (
-        1,
-        "a workbench table's role",
-    ),
-    ("_quote_store/_rows.py", "rendered_outputs", "output", "compare:table.role"): (
-        1,
-        "a workbench table's role",
-    ),
-    ("_workbench_compare.py", "_output_tables", "output", "compare:table.get('role', 'input')"): (
-        1,
-        "a workbench table's role",
-    ),
-    ("_workbench_folder.py", "_table_file_model", "output", "compare:table.role"): (
-        1,
-        "a workbench table's role",
-    ),
-    (
-        "_workbench_folder_files.py",
-        "TableFile._holds_its_own_columns",
-        "output",
-        "compare:self.role",
-    ): (
-        1,
-        "a workbench table's role",
-    ),
-    ("_workbench_visibility.py", "condition_fits", "output", "compare:own.role"): (
-        1,
-        "a workbench table's role",
-    ),
-    ("_workbench_visibility.py", "_on_price", "output", "compare:table.role"): (
-        1,
-        "a workbench table's role",
-    ),
-    ("_workbench_visibility.py", "_list_fits", "output", "compare:table.role"): (
-        1,
-        "a workbench table's role",
     ),
     (
         "routes/_training_artifacts.py",
