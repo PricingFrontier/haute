@@ -1333,7 +1333,10 @@ Out of scope:
   taking no typing, and says its tables' rows do not line up. The first such column in
   a table gives its rows: ticking another unticks it, and a form holding two names the
   second among the schema's problems. While it gives them it is the table's key (The form,
-  above), each output row pricing gives belonging to the row holding its value. An output,
+  above), each output row pricing gives belonging to the row holding its value, so its
+  allowed values must be distinct in its type: two that read as one (`1` and `01` in an
+  Integer column, two spellings of one date) are a schema problem, refused by `haute app
+  build` and `haute deploy`, naming the values and the params file to correct. An output,
   a column of a one-row table, the index
   and one without allowed values give none; taking a column's allowed values away,
   retyping it to True/false or a Date, or switching its table to one row unticks it, and
@@ -1397,7 +1400,9 @@ Out of scope:
   whole pipeline even while a submodel is open, with the active source and the form as it
   stands: every Workbench Input and Workbench Output of that request, at the top level or
   inside a submodel, takes the tables and sample the form sent defines, rather than the
-  folder's, and nothing is written. One pricing runs at a time; asked again meanwhile,
+  folder's, and nothing is written. An answer longer than the preview holds (10,000 rows,
+  or fewer for a wide table) fails the pricing, naming the table, rather than being priced
+  from its first rows. One pricing runs at a time; asked again meanwhile,
   it prices once more when it finishes, on the form as it is then. A Collection's output
   column shows its table's value in the answer in its column's format, or as the data
   preview formats a value while that format is General with automatic decimal places,
@@ -2221,7 +2226,11 @@ Out of scope:
     does not fit ce_equipment's rows: 2 rows have no item_number; item_number 3 is given
     twice; item_number 7 is on no row priced." Keys compare as their column's type holds
     them, the answer's cast to it as every column is. A row of the request the answer gives no row has
-    its outputs empty, as a row typed after the price is. A one-row table's one row
+    its outputs empty, as a row typed after the price is, and an answer row holding no
+    output value is no row: the response leaves it out, since the store keeps outputs on
+    the input row and cannot tell the two apart. A request's own rows of such a table must
+    each hold their key, no two the same, which the sheets always give: a request built
+    otherwise is refused before it is priced, naming the table, the key and the rows. A one-row table's one row
     of outputs is its one row, and a table of outputs alone takes the rows pricing gives
     as they come. A node preview of the Workbench Output in the pipeline editor checks
     nothing of this, so the pipeline previews while it is being built.
@@ -3205,6 +3214,14 @@ Out of scope:
   where a one-row table's belongs, or when a many-row table's list holds anything but rows (a
   value, `null` or a list). Resolving a table point and the cache report read the tables
   alone, so a misfit sample never stops them.
+- A request whose rows of a many-row input table do not each hold its key, or hold one
+  twice, is refused before it is priced: "ce_equipment's rows 2 and 5 hold item_number 3;
+  each row's item_number is its own." A deployed `/quote` answers it as a quote that does
+  not fit (422). A Preview answer cut short by the preview's limits fails the pricing:
+  "ce_equipment_output answers more rows than Preview prices whole (10000 shown): a
+  quote's answer must fit." Allowed values that read as one value in their column's type,
+  on a column giving its table's rows, are named among the schema's problems and refused
+  by `haute app build` and `haute deploy`.
 - A deployed pipeline's request of other than one quote fails with "A Workbench Input reads
   one quote per request, and this request holds <n>.", and a quote that does not fit the
   tables with "The request does not fit this Workbench Input's tables: <reason>.", the reasons
