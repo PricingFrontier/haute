@@ -1230,10 +1230,19 @@ Out of scope:
 - **Defaults.** A new quote starts with each one-row input table's row holding its
   columns' defaults, as if typed: while building, and in the underwriter app's new quote.
   The sample keeps what was typed into it, and a quote made from another quote its
-  values. A default is not typing: a quote holding nothing else typed, the details the
-  app sets aside, is neither marked nor priced nor saved, as a blank one is not, and a value
-  typed equal to its column's default counts as the default. A many-row table's columns
-  take no default.
+  values. The quote store keeps nothing of a cell the sheets hide, so a quote the app
+  opens starts each such cell of a one-row input table at its column's default too, as a
+  new quote does: a sheet hidden as the quote is made, such as a cover's sheet before the
+  cover is ticked, shows its defaults once it shows. Only where that changes nothing that
+  shows, though: a box ticked by default can show the sheet it is on, which would show and
+  price what the quote was not saved with, so it opens as saved. A box saved unticked stays
+  unticked, and `quote_details` is kept whole, so its cells read back as saved. The store
+  cannot tell a cell left blank while it showed from one saved blank because it hid, so a
+  cell left blank and hidden since, by a change to the details the app sets or by a new
+  release, opens at its default too. A default is not typing: a quote holding nothing else typed,
+  the details the app sets aside, is neither marked nor priced nor saved, as a blank one is
+  not, and a value typed equal to its column's default counts as the default. A many-row
+  table's columns take no default.
 - **A row for each value.** A column of a many-row input table that has allowed values can
   give the table a row for each of them, in their order (`row_per_value`), such as a
   coverage table with a row for each peril: the table then has those rows, each holding
@@ -1654,8 +1663,11 @@ Out of scope:
   relative, with the time on hover. Relative times in the app read as everywhere in Haute:
   "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
   ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open, Duplicate, and Archive or Restore, each reloading,
-  once answered, the list showing then, whichever list the underwriter has moved to. The list,
+  own; on hover or focus it offers Open and a menu of what is done to the quote as a whole:
+  Duplicate, Renew, Create alternative, Archive or Restore, and Copy link, Copy link alone
+  for one who may only read quotes. Archive and Restore reload, once answered, the list
+  showing then, whichever list the underwriter has moved to. These are the list's, not the
+  quote's: a quote open is for working on it. The list,
   stage, search, assignee and order are in the page's address, so Back returns to the
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
@@ -1665,19 +1677,26 @@ Out of scope:
   `quote_details.quote_name`, typed in the bar as on the sheets and saved with the next
   Save), its stage, Draft or Final, and, when archived, Archived, who it is with (reassigned
   from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
-  Amend, which asks why, a menu of Duplicate, Renew, Create alternative, Archive or Restore
-  and Copy link, History, and why the quote has no price. Beneath are who saved it and when,
-  the release that priced it and the quote it came from. The quote is priced as it is
+  Amend, which asks why, History, and why the quote has no price. Beneath are who saved it
+  and when and the quote it came from. The quote is priced as it is
   typed, and as it opens while it may change and has no price of this release, unpriced or
   priced on an earlier one. Save waits for that pricing to settle, a value entered while it
   waits priced too, and keeps the quote priced when the values settle on a price, and
-  unpriced when they could not be priced, which its label ("Save unpriced") and title say;
+  unpriced when they could not be priced, its label Save either way;
   with nothing typed, the details the app sets and the defaults aside, there is nothing to
   save, and nothing new to save while the values are as saved and priced as saved on this
   release (a price made since, or one of an earlier release, is new). A save holding a value
   not of its column's type is refused, naming each, its values kept on the sheets unsaved.
+  A save keeps on the sheets what was typed into the cells hidden as it was written, the
+  details the app sets on it, such as who saved it, deciding as any value does, though the
+  store keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
+  the quote stays open, and a quote opened again starts those cells as Defaults says.
   Mark final is off while the quote has unsaved values or no price of this release, and is
-  refused naming each required field without a value. A save and a change name the version
+  refused naming each required field without a value. Whether a saved quote is priced is
+  for Mark final alone: neither the page nor its history says priced or unpriced, as an
+  underwriter cares whether a quote is final, and a pipeline run is not a quotation
+  (decided 2026-11-05). Mark final's reasons and refusals ask for the quote to be saved, or
+  saved again on this release, without saying priced. A save and a change name the version
   the values were opened or saved at, which a note does not move, so a save over a quote a
   colleague moved on meanwhile is refused rather than written over theirs; an answer
   arriving once another quote is open, or the quote was left, is that quote's no longer and
@@ -1692,10 +1711,10 @@ Out of scope:
   that landed and was changed since by someone else is let go as done, the page offering
   the newest. While a save or a change is being made, Save and every control that changes
   the quote are off. The cells of the columns the app sets take no typing; assigning,
-  archiving, restoring, marking final and amending each change the quote's details, its
+  restoring, marking final and amending each change the quote's details, its
   values and prices kept, which the sheets take on, what was typed kept. A new quote is
   keyed in a window before it is made. New quote opens it over the Quotes page, its list as
-  it was; Duplicate and Renew over the quote or the Quotes page they are pressed on; and
+  it was; Duplicate and Renew over the Quotes page they are pressed on; and
   Save as new, after a save conflict, over the quote, its unsaved values kept. The window
   holds the quote's reference and the other columns of `quote_details` the underwriter types
   (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date` and `is_renewal`) in
@@ -2173,6 +2192,11 @@ Out of scope:
   underwriter types do. Every column of `quote_details` is stored, and each that reaches the
   pipeline is priced, whatever the sheets hide; any other cell a Show when hides is saved
   blank, as the request leaves it out, so the input tables hold what the quote was priced on.
+  Read back, such a cell of a one-row table, null in the store, holds its column's default
+  (`cells`), as a new quote starts it, where the defaults change nothing that shows: they
+  are filled together when together they change nothing, else one at a time in the
+  schema's order, each that would change it left empty. A stored value, false included, is
+  read as stored.
 
   A save is priced first, then written in one transaction: the quote's `quote_details` row
   updated where its `quote_version` is the one the page opened or saved it at and the quote
@@ -2528,7 +2552,10 @@ Out of scope:
   quote ticked, filled and unticked again would price differently from one never ticked.
   Leaving hidden values out makes a quote what its sheets show, whatever order it was
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
-  again loses nothing. The server leaves them out where it makes the quote, the one place
+  again loses nothing: in the sample, and in the app's quote while it stays open, saved or
+  not. The store keeps only what was priced, so a quote opened again starts a hidden cell
+  at its default (decided 2026-11-05: what was typed is kept for the session, not in the
+  database). The server leaves them out where it makes the quote, the one place
   the sample priced in Preview, the Workbench Input's sample and the app's quote all come
   from, and the view, which hides and shows as each value is typed, applies the same
   rules, the two held to one set of cases both test against.

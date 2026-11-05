@@ -40,7 +40,9 @@ from haute._workbench_tables import (
     priced_tables,
     quote_request_rows,
     request_columns,
+    starting_value,
 )
+from haute._workbench_visibility import visibility
 
 #: The values typed into the sheets: by table name, rows keyed by column name, as typed.
 Values = dict[str, list[dict[str, Cell]]]
@@ -314,8 +316,9 @@ def cells(
     """The values *rows* (by table name) read back as on the sheets, and each row that no longer
     fits them: a many-row table's rows in their places by ``quote_row``, a gap a blank row;
     a preset row whose value is no longer allowed left out and named as ``table row N
-    (value)``. With *kept*, each row carries its values in the store's columns outside the
-    form in its kept field (:data:`KEPT_KEY`)."""
+    (value)``; each empty cell the sheets hide in a one-row table starting at its default
+    (:func:`_hidden_defaults`). With *kept*, each row carries its values in the store's
+    columns outside the form in its kept field (:data:`KEPT_KEY`)."""
     kept = kept or {}
     values: Values = {}
     dropped: list[str] = []
@@ -340,4 +343,53 @@ def cells(
             placed[number] = _row_cells(table, row, kept.get(table.name, ()))
         if placed:
             values[table.name] = [placed.get(number, {}) for number in range(1, max(placed) + 1)]
-    return values, dropped
+    return _hidden_defaults(form, values, rows), dropped
+
+
+def _hidden_defaults(form: FormSpec, values: Values, rows: Mapping[str, Rows]) -> Values:
+    """*values* with each cell of a one-row input table that the sheets hide for them, and
+    that the store holds null, holding the default a new quote starts its column with: the
+    store keeps nothing of a hidden cell, so a sheet hidden when the quote was saved shows its
+    defaults once it shows. A box held unticked is false, not null, and stays unticked, and
+    ``quote_details`` is stored whole, its cells read as saved. A default can show what holds
+    it, as a box ticked by default showing the sheet it is on, which would show and price what
+    the quote was not saved with: the defaults are filled together when together they change
+    nothing that shows, else one at a time in the schema's order, each that would change it
+    left out."""
+    shown = visibility(form, values)
+    starts = [
+        (table.name, column.name, start)
+        for table in form.data_schema.tables
+        if table.name != QUOTE_DETAILS_NAME
+        for column in table.columns
+        if (start := starting_value(table, column)) is not None
+        and (table.name, column.name) in shown.hidden
+        and _stored(rows, table.name, column.name) is None
+    ]
+    if not starts:
+        return values
+    every = _with_cells(values, starts)
+    if visibility(form, every) == shown:
+        return every
+    filled = values
+    for fill in starts:
+        tried = _with_cells(filled, [fill])
+        if visibility(form, tried) == shown:
+            filled = tried
+    return filled
+
+
+def _stored(rows: Mapping[str, Rows], table: str, column: str) -> Any:
+    """What the store holds in a one-row *table*'s *column*: None while it holds no row."""
+    held = rows.get(table, [])
+    return held[0].get(column) if held else None
+
+
+def _with_cells(values: Values, fills: Sequence[tuple[str, str, Cell]]) -> Values:
+    """*values* with each of *fills*, a one-row table's column and its value, set; *values*
+    left as they are."""
+    filled = dict(values)
+    for table, column, value in fills:
+        [row] = filled.get(table, [{}])
+        filled[table] = [{**row, column: value}]
+    return filled

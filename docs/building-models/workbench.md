@@ -959,8 +959,19 @@ letters are cased, the quote name, insured and broker, and `ABC-1/2` finds that 
 alone; in Team you can narrow the list to who a quote is with, and order it by when it was
 saved, by **Reference** (A to Z, each reference's options in order) or by its insured. The
 list, the search and the order are in the page's address, so a link or Back returns to the
-same list. A row opens its quote; Duplicate and Archive appear as you hover over it, and
-Archive can be undone from the message it shows. `/` jumps to the search.
+same list. A row opens its quote. Hover over it, or move to it with `Tab`, and its **⋯**
+menu holds what you do to the quote as a whole:
+
+- **Duplicate** and **Renew** open the New quote window over the list, filled from the
+  quote as it is saved, with the reference blank and, for a renewal, **is_renewal** ticked:
+  key the new reference and **Create**.
+- **Create alternative** makes a new option under the same reference at once
+  (`ABC-1/2` from `ABC-1/1`) and opens it.
+- **Archive** takes the quote out of the lists (it opens read only until restored), and can
+  be undone from the message it shows; in **Archived**, **Restore** brings it back.
+- **Copy link** copies the quote's address.
+
+A quote made from another is linked to it. `/` jumps to the search.
 
 **New quote** (or `N`) opens a window over the list asking for the quote's reference and
 the quote details your underwriters type: its name, insured, broker, inception and expiry
@@ -983,30 +994,23 @@ A quote opens at its own address, under a bar holding its reference and option
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
   when it was saved unpriced or priced on an earlier release. **Save** waits for that
-  pricing and keeps the quote with its price, or unpriced when it could not be priced (the
-  button says **Save unpriced** then, and the bar says why); the app prices it again as it
-  saves, and says so if the price it keeps moved. A save replaces what the quote held, so
-  duplicate a quote first to keep an offer as it stood. A save is refused only when a value
-  is not of its column's type, naming each one; a required value left empty, or a value
-  outside its range, saves.
+  pricing and keeps the quote with its price, or without one when it could not be priced
+  (the bar says why); the app prices it again as it saves, and says so if the results it
+  keeps changed. The app never shows underwriters whether a quote is priced: what they
+  see is whether it is final. A save replaces what the quote held, so duplicate the quote
+  from the Quotes page first to keep an offer as it stood. A save is refused only when a
+  value is not of its column's type, naming each one; a required value left empty, or a
+  value outside its range, saves.
 - **Mark final** makes the quote the final quotation, once it is saved with a price of the
   running release and every column the analyst made required, input or output, holds a
   value; otherwise the app names each one that does not. A final quote cannot be saved until
   someone **amends** it, giving a reason, which takes it back to **Draft**: its next save
   replaces the final quotation.
-- **More**: **Duplicate**, **Renew** and **Create alternative** each make a new quote from
-  this one as it is saved, linked to it, and open it. **Duplicate** and **Renew** open the new
-  quote's window over the quote, filled from it with the reference blank, a renewal with
-  **is_renewal** ticked: key the new reference and **Create**; **Cancel** leaves the quote as
-  it was. With changes to the quote not yet saved, the new quote is made and the app asks
-  before leaving them; stay, and a message names the quote made. **Create alternative** makes the quote at once under the same reference as its
-  next option (`ABC-1/2` from `ABC-1/1`);
-  **Archive** takes it out of the lists (it opens read only until restored); **Copy link**.
 - **History**: the handover note, the quotes it came from or that were made from it, and
   what was done to the quote, by whom and when, with the reasons given for amending it.
 
-Beneath the bar are who saved it and when, the release that priced it, where the quote came
-from, and who it is with, which you can change. A quote opens on the release's sheets; a row
+Beneath the bar are who saved it and when, where the quote came from, and who it is with,
+which you can change. A quote opens on the release's sheets; a row
 whose value a later release no longer allows is named as no longer fitting. If a colleague
 saves a quote while you have it open, your save is refused naming who did it, with your
 values kept: open the newest, or save yours as a new quote, keying its reference in the

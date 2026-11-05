@@ -1,10 +1,11 @@
 /**
  * The underwriter app's small pieces (specs/workbench), at Haute's density: a quote's stage
  * as a chip, a one-line notice with its actions, the notice of a page drawn for an earlier
- * release, a titled part that folds, and a menu behind a button.
+ * release, a titled part that folds, and a menu behind an icon button.
  */
 import { AlertTriangle, ChevronDown, ChevronRight, Info, X, type LucideIcon } from "lucide-react"
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import type { WorkbenchAppQuote } from "../api/types"
 import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 import { STAGE_LABEL } from "./quoteValues"
@@ -118,65 +119,104 @@ export interface MenuItem {
   title?: string
 }
 
-/** A button opening a menu of `items` below it; Escape or a press elsewhere closes it. */
+/** How far a menu keeps from its button and from the window's edges. */
+const MENU_GAP = 4
+
+/**
+ * A button showing `icon` alone, named `label`, opening a menu of `items`: drawn on the
+ * document's body below the button, flush with its right edge, or above it where the window
+ * has no room below, so a list's scrolling never clips it. A press or the focus elsewhere, a
+ * scroll or the window's resize closes it, so one menu is open at a time, and Escape, which
+ * gives the focus back to the button.
+ */
 export function Menu({ label, icon: Icon, items, testId }: { label: string; icon: LucideIcon; items: MenuItem[]; testId?: string }) {
   const [open, setOpen] = useState(false)
-  const holder = useRef<HTMLDivElement>(null)
-  const closeMenu = useCallback(() => setOpen(false), [])
+  const button = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const close = useCallback(() => setOpen(false), [])
+  const escape = useCallback(() => {
+    setOpen(false)
+    button.current?.focus()
+  }, [])
 
-  useMenuKeyboard(holder, closeMenu, open)
+  // Placed before it is painted, and before the keyboard's effect gives its first item the focus.
+  useLayoutEffect(() => {
+    if (!open || button.current === null || panel.current === null) return
+    const at = button.current.getBoundingClientRect()
+    const box = panel.current.getBoundingClientRect()
+    const below = at.bottom + MENU_GAP
+    const top = below + box.height <= window.innerHeight - MENU_GAP ? below : Math.max(MENU_GAP, at.top - MENU_GAP - box.height)
+    const left = Math.max(MENU_GAP, Math.min(at.right - box.width, window.innerWidth - MENU_GAP - box.width))
+    panel.current.style.top = `${top}px`
+    panel.current.style.left = `${left}px`
+  }, [open])
+
+  useMenuKeyboard(panel, escape, open)
 
   useEffect(() => {
     if (!open) return
-    const away = (event: PointerEvent) => {
-      if (!holder.current?.contains(event.target as Node)) setOpen(false)
+    const inside = (target: EventTarget | null) => target instanceof Node && (button.current?.contains(target) === true || panel.current?.contains(target) === true)
+    const away = (event: Event) => {
+      if (!inside(event.target)) close()
     }
     window.addEventListener("pointerdown", away)
-    return () => window.removeEventListener("pointerdown", away)
-  }, [open])
+    window.addEventListener("focusin", away)
+    window.addEventListener("scroll", away, true)
+    window.addEventListener("resize", close)
+    return () => {
+      window.removeEventListener("pointerdown", away)
+      window.removeEventListener("focusin", away)
+      window.removeEventListener("scroll", away, true)
+      window.removeEventListener("resize", close)
+    }
+  }, [open, close])
 
   return (
-    <div ref={holder} className="relative">
+    <>
       <button
+        ref={button}
         type="button"
-        className="toolbar-btn toolbar-action"
+        className={ICON_BUTTON}
+        aria-label={label}
+        title={label}
         aria-haspopup="menu"
         aria-expanded={open}
         data-testid={testId}
         onClick={() => setOpen((was) => !was)}
       >
-        <Icon size={13} aria-hidden="true" />
-        {label}
-        <ChevronDown size={11} aria-hidden="true" />
+        <Icon size={12} aria-hidden="true" />
       </button>
-      {open && (
-        <div
-          role="menu"
-          aria-label={label}
-          className="absolute right-0 z-40 mt-1 flex min-w-[190px] flex-col rounded-md py-1 shadow-xl"
-          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
-        >
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              disabled={item.disabled}
-              title={item.title}
-              onClick={() => {
-                setOpen(false)
-                item.run()
-              }}
-              className="flex h-7 items-center gap-2 px-2.5 text-left text-xs hover:bg-[var(--bg-hover)] focus-visible:bg-[var(--bg-hover)] focus-visible:outline-none disabled:opacity-40"
-              style={{ color: "var(--text-primary)" }}
-            >
-              <item.icon size={13} aria-hidden="true" style={{ color: "var(--text-secondary)" }} />
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+      {open &&
+        createPortal(
+          <div
+            ref={panel}
+            role="menu"
+            aria-label={label}
+            className="fixed z-50 flex min-w-[190px] flex-col rounded-md py-1 shadow-xl"
+            style={{ top: 0, left: 0, background: "var(--bg-elevated)", border: "1px solid var(--border-bright)" }}
+          >
+            {items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                title={item.title}
+                onClick={() => {
+                  setOpen(false)
+                  item.run()
+                }}
+                className="flex h-7 items-center gap-2 px-2.5 text-left text-xs hover:bg-[var(--bg-hover)] focus-visible:bg-[var(--bg-hover)] focus-visible:outline-none disabled:opacity-40"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <item.icon size={13} aria-hidden="true" style={{ color: "var(--text-secondary)" }} />
+                {item.label}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
   )
 }
 

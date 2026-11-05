@@ -43,6 +43,7 @@ import {
   savedPrice,
   valuesKey,
   withAppDetails,
+  withHiddenCells,
   withoutAppDetails,
   writeDraft,
   writeSuperseded,
@@ -188,9 +189,8 @@ function conflictQuote(error: unknown): WorkbenchAppQuote | null {
   return typeof quote === "object" && quote !== null && "reference" in quote && "version" in quote ? (quote as WorkbenchAppQuote) : null
 }
 
-/** What `answer` says the quote holds: its values, as a quote's key too, and its output tables. */
-function holding(answer: WorkbenchAppQuoteResponse): Pick<OpenQuoteState, "savedValues" | "baseline" | "savedTables"> {
-  const values = answer.values as Values
+/** What `answer` says the quote holds: its values, `values` when given, as a quote's key too, and its output tables. */
+function holding(answer: WorkbenchAppQuoteResponse, values: Values = answer.values as Values): Pick<OpenQuoteState, "savedValues" | "baseline" | "savedTables"> {
   return { savedValues: values, baseline: valuesKey(values), savedTables: answer.tables }
 }
 
@@ -423,7 +423,8 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     forgetSaved(openDraftKey(get()), sent)
     const { form } = useAppStore.getState()
     const preview = useWorkbenchPreviewStore.getState()
-    const values = answer.values as Values
+    // What was typed into the cells the sheets hide, which the store keeps nothing of, stays.
+    const values = form === null ? (answer.values as Values) : withHiddenCells(form, answer.values as Values, sent)
     if (form !== null && valuesKey(preview.quote) === valuesKey(sent)) {
       preview.open(values, savedPrice(form, values, answer.tables, answer.request), false)
     } else if (form !== null) {
@@ -433,7 +434,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     set({
       quote: answer.quote,
       base: answer.quote.version,
-      ...holding(answer),
+      ...holding(answer, values),
       moved: answer.moved,
       conflict: null,
       error: null,

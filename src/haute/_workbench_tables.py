@@ -510,16 +510,24 @@ def _record(
     return record
 
 
-def _starting(table: SchemaTable, column: SchemaColumn, raw: str | bool | None) -> bool:
-    """Whether *raw* is the default a new quote starts *column* with, which is not typing:
-    a one-row input table's column holding its default (``startingValue`` in the view)."""
-    return (
+def starting_value(table: SchemaTable, column: SchemaColumn) -> str | bool | None:
+    """What a new quote starts *column* with: its default, in a one-row input table, as if
+    typed; None for none, and for any other table's column, which takes none
+    (``startingValue`` in the view)."""
+    if (
         table.role == "input"
         and table.rows == "one"
         and not column.index
         and _filled(column.default_value)
-        and raw == column.default_value
-    )
+    ):
+        return column.default_value
+    return None
+
+
+def _starting(table: SchemaTable, column: SchemaColumn, raw: str | bool | None) -> bool:
+    """Whether *raw* is the default a new quote starts *column* with, which is not typing."""
+    start = starting_value(table, column)
+    return start is not None and raw == start
 
 
 def _filled(raw: str | bool | None) -> bool:

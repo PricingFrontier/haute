@@ -1183,14 +1183,12 @@ class QuoteBook:
             # A quote moved on, archived or final is refused by the swap below, saying which.
             if quote.version == version and not quote.archived and quote.stage == "draft":
                 if quote.priced_release != release:
-                    priced_on = (
-                        "is not priced"
-                        if quote.priced_release is None
-                        else f"was priced on release {quote.priced_release}, not this one, "
-                        f"{release}"
-                    )
+                    # Said as the underwriter knows it, by its saves: never priced or unpriced.
                     raise QuoteNotReadyError(
-                        f"{quote.label} {priced_on}: price it and save it before marking it final."
+                        f"Save {quote.label} without errors before marking it final."
+                        if quote.priced_release is None
+                        else f"{quote.label} was saved on release {quote.priced_release}, not "
+                        f"this one, {release}: save it again before marking it final."
                     )
                 missing = self._missing(self._rows(connection, reference, option))
                 if missing:
