@@ -243,6 +243,23 @@ describe("QuotesPage", () => {
     expect(screen.getByLabelText("Search quotes")).not.toHaveFocus()
   })
 
+  it("keeps one row's menu open at a time, closing one the focus leaves", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote(), appQuote({ reference: "Q-000002" })]))
+    show()
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for Q-000001/1" }))
+    expect(screen.getByRole("menu", { name: "Actions for Q-000001/1" })).toBeInTheDocument()
+
+    // Shift+Tab to the next row's button, and Enter on it.
+    const next = screen.getByRole("button", { name: "Actions for Q-000002/1" })
+    act(() => next.focus())
+    fireEvent.click(next)
+
+    expect(screen.getAllByRole("menu").map((menu) => menu.getAttribute("aria-label"))).toEqual(["Actions for Q-000002/1"])
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" })
+    expect(screen.queryByRole("menu")).toBeNull()
+    expect(next).toHaveFocus()
+  })
+
   it("archives a quote with Undo, which restores it", async () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
     vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })

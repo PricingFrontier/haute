@@ -125,8 +125,9 @@ const MENU_GAP = 4
 /**
  * A button showing `icon` alone, named `label`, opening a menu of `items`: drawn on the
  * document's body below the button, flush with its right edge, or above it where the window
- * has no room below, so a list's scrolling never clips it. A press elsewhere, a scroll or the
- * window's resize closes it, and Escape, which gives the focus back to the button.
+ * has no room below, so a list's scrolling never clips it. A press or the focus elsewhere, a
+ * scroll or the window's resize closes it, so one menu is open at a time, and Escape, which
+ * gives the focus back to the button.
  */
 export function Menu({ label, icon: Icon, items, testId }: { label: string; icon: LucideIcon; items: MenuItem[]; testId?: string }) {
   const [open, setOpen] = useState(false)
@@ -159,10 +160,12 @@ export function Menu({ label, icon: Icon, items, testId }: { label: string; icon
       if (!inside(event.target)) close()
     }
     window.addEventListener("pointerdown", away)
+    window.addEventListener("focusin", away)
     window.addEventListener("scroll", away, true)
     window.addEventListener("resize", close)
     return () => {
       window.removeEventListener("pointerdown", away)
+      window.removeEventListener("focusin", away)
       window.removeEventListener("scroll", away, true)
       window.removeEventListener("resize", close)
     }
