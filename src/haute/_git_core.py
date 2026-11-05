@@ -835,16 +835,13 @@ def _canonical_remote(cwd: Path | None = None) -> str | None:
 
 def _workbench_form_part(path: Path) -> str | None:
     """A workbench form folder's file as a save's message names it: ``workbench/`` and its
-    path in the folder without ``.json``, a sheet's layout as ``layout``; None for any other
-    file."""
+    path in the folder without ``.json``, such as ``workbench/components/layers``; None for
+    any other file."""
     parts = path.parts
     if "workbench" not in parts or path.suffix != ".json":
         return None
     inside = parts[len(parts) - 1 - parts[::-1].index("workbench") :]
-    name = "/".join(inside)
-    if name.endswith(".layout.json"):
-        return name.removesuffix(".layout.json") + " layout"
-    return name.removesuffix(".json")
+    return "/".join(inside).removesuffix(".json")
 
 
 def _generate_commit_message(changed_files: list[str]) -> str:

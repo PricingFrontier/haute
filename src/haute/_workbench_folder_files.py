@@ -52,10 +52,13 @@ from haute._workbench_form import (
     _condition_kind,
 )
 
-#: A table's or a column's name: an ASCII identifier.
+#: A table's, a column's or a component's name: an ASCII identifier.
 NAME_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
-#: Where a component sits, which its sheet's layout file holds, not its sheet's file.
+#: Where a component sits, which its sheet's file holds, not its own.
 PLACEMENT = frozenset({"x", "y", "w", "h"})
+#: What a component's file never holds: its id, the editor's; its name, its file's; and
+#: where it sits, its sheet's.
+NOT_IN_COMPONENT_FILE = PLACEMENT | {"id", "name"}
 #: The settings an output column cannot have: the rules of what is typed into it. Required
 #: is not among them: marking a quote final needs a value in an output column as in an input.
 INPUT_ONLY = (
@@ -266,8 +269,7 @@ else:
     TableComponentFile = _derived(
         "TableComponentFile",
         TableInputWidget,
-        drop=PLACEMENT | {"id", "column_looks"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE | {"column_looks"},
         replace={
             "type": (Literal["table"], ...),
             "fields": (list[Dotted | FieldLookFile], Field(default_factory=list)),
@@ -277,8 +279,7 @@ else:
     CollectionComponentFile = _derived(
         "CollectionComponentFile",
         CollectionWidget,
-        drop=PLACEMENT | {"id", "column_looks", "spacers"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE | {"column_looks", "spacers"},
         replace={
             "fields": (list[Dotted | FieldLookFile | None], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -287,8 +288,7 @@ else:
     ChartComponentFile = _derived(
         "ChartComponentFile",
         ChartWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={
             "fields": (list[Dotted], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -298,8 +298,7 @@ else:
     HeadingComponentFile = _derived(
         "HeadingComponentFile",
         HeadingWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={"show_when": _SHOW_WHEN},
     )
     SqlImportFile = _derived(
@@ -309,8 +308,7 @@ else:
     ImportComponentFile = _derived(
         "ImportComponentFile",
         ImportWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={
             "show_when": _SHOW_WHEN,
             "source": (
@@ -328,8 +326,7 @@ else:
     ExportComponentFile = _derived(
         "ExportComponentFile",
         ExportWidget,
-        drop=PLACEMENT | {"id"},
-        required=frozenset({"number"}),
+        drop=NOT_IN_COMPONENT_FILE,
         replace={
             "show_when": _SHOW_WHEN,
             "target": (
@@ -360,44 +357,49 @@ else:
     )
 
 
-class SectionFile(_File):
-    """A section, known by its title on its sheet (READ-24)."""
-
-    title: str
-    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
-    components: list[ComponentFile]
-
-
-class SheetFile(_File):
-    """A sheet, known by its file's name (READ-24)."""
-
-    title: str
-    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
-    sections: list[SectionFile] = Field(min_length=1)
-
+#: A component's file: one of the kinds, told apart by ``type``.
+COMPONENT: TypeAdapter[Any] = TypeAdapter(ComponentFile)
+#: The models a component's file is read as, one a kind.
+COMPONENT_FILES: tuple[type[BaseModel], ...] = (
+    TableComponentFile,
+    CollectionComponentFile,
+    ChartComponentFile,
+    HeadingComponentFile,
+    ImportComponentFile,
+    ExportComponentFile,
+)
 
 _Whole = Annotated[int, Strict()]
 
 
-class RectFile(_File):
-    """Where a component sits in its section, in pixels from its top-left corner."""
+class PlacementFile(_File):
+    """A component placed in a section: by its name, which names its file, and where it
+    sits, in pixels from the section's top-left corner."""
 
+    component: Name
     x: Annotated[_Whole, Field(ge=0)]
     y: Annotated[_Whole, Field(ge=0)]
     w: Annotated[_Whole, Field(gt=0)]
     h: Annotated[_Whole, Field(gt=0)]
 
 
-class LayoutSectionFile(_File):
+class SectionFile(_File):
+    """A section, known by its title on its sheet (READ-24), and its components in the
+    order they are drawn in where two overlap."""
+
+    title: str
     height: Annotated[_Whole, Field(gt=0)]
-    #: Each component's box, by its number in the section (READ-24).
-    components: dict[str, RectFile]
+    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
+    components: list[PlacementFile]
 
 
-class LayoutFile(_File):
+class SheetFile(_File):
+    """A sheet, known by its file's name (READ-24)."""
+
+    title: str
     width: Annotated[_Whole, Field(gt=0)]
-    #: Each section's height and boxes, by its title (READ-24).
-    sections: dict[str, LayoutSectionFile]
+    show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
+    sections: list[SectionFile] = Field(min_length=1)
 
 
 class TableFile(_File):
@@ -461,7 +463,7 @@ class QuoteDetailsFile(_File):
 class IndexFile(_File):
     model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
 
-    version: Literal[1]
+    version: Literal[2]
     name: str
     theme: Theme = Field(default_factory=Theme)
     #: ``schema`` in the file; ``BaseModel`` already has a ``schema`` attribute.

@@ -5679,7 +5679,7 @@ export interface TableInputWidget {
   header_orientation: 'horizontal' | 'up' | 'down' | 'stacked';
   header_wrap: boolean;
   id: string;
-  number: number | null;
+  name: string;
   row_numbers: boolean;
   rows: number;
   show_when: ShowWhen;
@@ -5744,7 +5744,7 @@ export interface CollectionWidget {
   id: string;
   label_width: number | null;
   labels: 'above' | 'beside';
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   spacers: number[];
   title: string;
@@ -5765,7 +5765,7 @@ export interface ChartWidget {
   h: number;
   id: string;
   legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
-  number: number | null;
+  name: string;
   orientation: 'vertical' | 'horizontal';
   show_when: ShowWhen;
   stacked: boolean;
@@ -5784,7 +5784,7 @@ export interface HeadingWidget {
   description: string;
   h: number;
   id: string;
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   size: 'large' | 'medium' | 'small';
   text: string;
@@ -5804,7 +5804,7 @@ export interface ImportWidget {
   id: string;
   label: string;
   mode: 'replace' | 'append' | 'update';
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   source: CsvImport | ExcelImport | SqlImport;
   table: string | null;
@@ -5865,7 +5865,7 @@ export interface ExportWidget {
   h: number;
   id: string;
   label: string;
-  number: number | null;
+  name: string;
   show_when: ShowWhen;
   tables: string[];
   target: CsvExport | ExcelExport | SqlExport;
