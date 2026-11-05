@@ -317,7 +317,7 @@ def test_a_table_of_outputs_alone_leads_its_outputs_with_the_identity_and_keeps_
     assert [item.name for item in table.outputs[:2]] == ["quote_reference", "quote_option"]
     assert input_tables(spec) == ()
     # Its output side keeps its own columns, the one marked key among them, and no key of
-    # the side's: its rows are kept by quote_row, as they come.
+    # the side's: its rows are kept by table_index, as they come.
     (layers,) = output_tables(spec)
     assert (layers.port, layers.key, [item.name for item in layers.columns]) == (
         "layer_premiums_output",
@@ -763,8 +763,8 @@ _REFUSED = {
         "the quote store's own.",
     ),
     "the store's row number in a many-row table": (
-        [side("a", "many", {"name": "quote_row", "type": "int"})],
-        "The Workbench Input's table 'a' has a column 'quote_row', the quote store's number "
+        [side("a", "many", {"name": "table_index", "type": "int"})],
+        "The Workbench Input's table 'a' has a column 'table_index', the quote store's number "
         "for each row of a many-row table.",
     ),
     "a table SQLite keeps": (
@@ -1182,12 +1182,12 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
 
 
 def test_a_one_row_table_may_name_a_column_quote_row() -> None:
-    # quote_row is the store's number for a many-row table's rows alone.
+    # table_index is the store's number for a many-row table's rows alone.
     [table] = parse_workbench_tables(
-        [side("a", "one", {"name": "quote_row", "type": "int"})],
+        [side("a", "one", {"name": "table_index", "type": "int"})],
         owner="Workbench Input",
     )
-    assert [column.name for column in table.columns] == ["quote_row"]
+    assert [column.name for column in table.columns] == ["table_index"]
 
 
 def test_quote_details_reaches_the_pipeline_without_the_details_the_app_changes() -> None:

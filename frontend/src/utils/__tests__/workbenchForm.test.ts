@@ -291,7 +291,7 @@ describe("problems", () => {
     spec = addSchemaTable(spec, table("haute_extras"))
     spec = addSchemaTable(spec, table("sqlite_cache"))
     spec = addSchemaTable(spec, table(`l${"x".repeat(63)}`))
-    spec = addSchemaTable(spec, table("items", { rows: "many", inputs: [column("row_number", { type: "int", index: true }), column("item"), column("quote_row", { type: "int" })] }))
+    spec = addSchemaTable(spec, table("items", { rows: "many", inputs: [column("row_number", { type: "int", index: true }), column("item"), column("table_index", { type: "int" })] }))
 
     expect(messages(spec)).toEqual([
       'Column "Limit" in Table "t" differs from "limit" only in case, so a database cannot hold both',
@@ -300,10 +300,10 @@ describe("problems", () => {
       'Table "haute_extras" starts haute_, which the quote store keeps for its own names',
       'Table "sqlite_cache" starts sqlite_, which SQLite keeps for its own tables',
       `Table "l${"x".repeat(63)}" has a name of 64 characters: a name is at most 63, the longest every database keeps whole`,
-      'Column "quote_row" in Table "items" is the quote store\'s number for each row of a many-row table',
+      'Column "table_index" in Table "items" is the quote store\'s number for each row of a many-row table',
     ])
-    // Haute's own quote_details.haute_version, and quote_row in a one-row table, are no problem.
-    expect(messages(addSchemaTable(blank(), table("policy", { inputs: [column("quote_row", { type: "int" })] })))).toEqual([])
+    // Haute's own quote_details.haute_version, and table_index in a one-row table, are no problem.
+    expect(messages(addSchemaTable(blank(), table("policy", { inputs: [column("table_index", { type: "int" })] })))).toEqual([])
   })
 
   it("names a table's own column taking the quote's quote_reference or quote_option as the server does, never a missing identity", () => {

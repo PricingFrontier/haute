@@ -888,12 +888,18 @@ Out of scope:
   `quote_option` lead its inputs, or its outputs while it has no inputs of its own, locked,
   their names on a grey lighter than the pane's: not
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
-  format; a table added has them at once, under Inputs, and an index goes after them. They are not keys,
+  format; a table added has them at once, under Inputs, and an index goes after them. A
+  table with both blocks shows them at the head of its Outputs too, on that grey, followed in
+  a many-row table by its key column (its index, or the column giving its rows), as the
+  Workbench Output's table of it carries them: rows of what the pricing returns, not columns
+  of the block, with nothing to change. They are not keys,
   and the sheets are never offered them: a component's fields, a Show when's columns and a
-  Chart's rows leave them out. Under each table's own columns are those the quote store keeps
-  in it that the form does not, quote_details' own and a many-row table's `quote_row`, each
-  with what it holds and its name on that grey, and nothing to change; a search shows none of
-  them. A column's Label and rules button and its Remove always show.
+  Chart's rows leave them out. A many-row table's `table_index`, the quote store's number for
+  each of its rows (below), shows after the identity at the head of the table, with what it
+  holds and its name on that grey; under each table's own columns are the others the quote
+  store keeps in it that the form does not, quote_details' own, shown the same. Nothing of
+  them changes, and a search shows none of them, nor the Outputs' identity and key. A
+  column's Label and rules button and its Remove always show.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas
@@ -2298,11 +2304,11 @@ Out of scope:
   a Date a date. Every column of the project's own is nullable, so a draft saves with any of
   them empty; Required is checked as a quote is marked final, never by the database. Every
   row holds the quote's identity, `quote_reference` and `quote_option`, with which every
-  table but `quote_details` leads, and a row of a many-row table holds `quote_row` too,
+  table but `quote_details` leads, and a row of a many-row table holds `table_index` too,
   Haute's number for it: in a table with inputs, its input row's place on its sheet, blank
   rows counted, so a grid opens as it was saved, which is the index's number; in a table of
   outputs alone, its place in the pricing's answer. The identity,
-  with `quote_row` in a many-row table, is each table's primary key (Text, unbounded, can
+  with `table_index` in a many-row table, is each table's primary key (Text, unbounded, can
   key no table on SQL Server, so a value giving a table its rows is a column, never its
   key), and each table's
   identity refers to its quote's `quote_details` row. A one-row table holds one row for each
@@ -2336,7 +2342,7 @@ Out of scope:
   pricing the outputs hold, null while the quote is unpriced; `source_reference`,
   `source_option` and `source_relation`, the quote this one was made from and how (a
   duplicate, a renewal or an alternative); and the note as it stands, `handover_note` with
-  `note_by` and `note_at`, so a quote's note is read whole. A many-row table's `quote_row`
+  `note_by` and `note_at`, so a quote's note is read whole. A many-row table's `table_index`
   is the store's own too.
 
   The details the app changes over a quote's life, `stage`, `assignee`, `archived`,
@@ -2407,10 +2413,10 @@ Out of scope:
   A quote opens from its rows, read together and read again when the quote moved on while
   they were read: each typed value as the cell text it reads as (an Integer its digits, a
   Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
-  none, and null a blank), a many-row table's rows in their places by `quote_row`, a gap a
+  none, and null a blank), a many-row table's rows in their places by `table_index`, a gap a
   blank row, and its outputs as the pricing answered them: a table with inputs gives a row
   of its answer, its key and its outputs, for each row holding an output value, and a table
-  of outputs alone its rows in `quote_row` order. A value comes back as its value,
+  of outputs alone its rows in `table_index` order. A value comes back as its value,
   so `£1,000` comes back as `1000`, which its column's format shows. A preset row whose
   value is no longer allowed is named as dropped. The app's lists read `quote_details`
   alone, a page at a time: the quotes assigned to the signed-in underwriter, the team's or
@@ -2524,7 +2530,7 @@ Out of scope:
   a reserved word (`order`, `group`) is a name like any other; refused wherever the form is
   saved, naming each, are two columns of one table whose names differ only in case, a name
   longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a
-  column of a many-row table named `quote_row` and a table named starting `sqlite_`. A
+  column of a many-row table named `table_index` and a table named starting `sqlite_`. A
   SQLite store keeps foreign keys on and its rollback journal, never write-ahead logging, so
   the file stands alone between writes; its DDL runs in the transaction it is part of, and
   it needs SQLite 3.35 or later.
@@ -2912,9 +2918,18 @@ Out of scope:
   go in that one row, so it fails the pricing rather than being dropped; a row the pricing
   leaves out is empty, as a row typed since the price is. A table of outputs alone keeps
   its own keys, since its rows are the pricing's, as a breakdown of a premium by peril is.
-  The store's primary key stays `quote_row`, which is the index's number for a table with
-  inputs: a value of a params file is text, and unbounded text keys no table on SQL
+  The store's primary key stays its own row number, which is the index's number for a table
+  with inputs: a value of a params file is text, and unbounded text keys no table on SQL
   Server.
+- **The store's row number is `table_index`.** Each many-row table's rows are numbered by
+  the store under a name of its own, the same in every table and never the project's, so
+  a project renames its index (`item_number`, `loc_no`) freely and a report reads every
+  table's row number alike; it was `quote_row`, which said neither that it numbers a
+  table's rows nor that it is the index's number. Haute had no users when it was renamed,
+  so a store made under the old name is not carried over: its owners rename the column.
+  The store's key, the quote's identity with `table_index`, is the one a run of many
+  quotes at once would match its rows on, so pricing a portfolio later needs no change of
+  the tables; a store holds each quote as last saved, never its earlier versions.
 - **The tables are the form's, not the history's.** Fetches can settle out of order, so only
   the newest publishes, and graph edits, undo and redo never start one. Nothing of the
   tables is in the graph, so the history never holds them and an undo never puts back

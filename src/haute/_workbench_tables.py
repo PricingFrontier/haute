@@ -58,7 +58,7 @@ _NAME_RULE = "letters, digits and underscores, not starting with a digit and not
 #: identifier, so no database shortens one and two long names never become one.
 STORE_NAME_LENGTH = 63
 #: The quote store's number for each row of a many-row table, a column of its own there.
-QUOTE_ROW = "quote_row"
+TABLE_INDEX = "table_index"
 #: What starts a name the quote store keeps for its own tables and columns.
 _STORE_PREFIX = "haute_"
 #: What starts a table name SQLite keeps for its own tables.
@@ -72,7 +72,7 @@ def store_name_problems(table: str, rows: str, columns: Sequence[str]) -> list[s
     ``table 'x' ...``: a name longer than ``STORE_NAME_LENGTH``, a name starting ``haute_``
     (Haute's own ``quote_details.haute_version`` aside), a table starting ``sqlite_``, two
     columns whose names differ only in case, which no database holds both of, and a column of
-    a many-row table named ``quote_row``."""
+    a many-row table named ``table_index``."""
     problems: list[str] = []
     if len(table) > STORE_NAME_LENGTH:
         problems.append(
@@ -105,9 +105,9 @@ def store_name_problems(table: str, rows: str, columns: Sequence[str]) -> list[s
                 f"table {table!r} has a column {name!r}, and a name starting {_STORE_PREFIX} is "
                 "the quote store's own"
             )
-        if rows == "many" and name == QUOTE_ROW:
+        if rows == "many" and name == TABLE_INDEX:
             problems.append(
-                f"table {table!r} has a column {QUOTE_ROW!r}, the quote store's number for each "
+                f"table {table!r} has a column {TABLE_INDEX!r}, the quote store's number for each "
                 "row of a many-row table"
             )
     return problems

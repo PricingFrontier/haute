@@ -204,7 +204,7 @@ def test_a_saved_quote_is_rows_of_the_forms_own_tables_read_with_plain_sql(
     # Each vehicle under its row on the sheet, the blank row between them counted; an
     # unticked box in a filled row is false, as the request priced it.
     assert sql(
-        store, "SELECT quote_row, reg, value, garaged, mileage FROM vehicles ORDER BY quote_row"
+        store, "SELECT table_index, reg, value, garaged, mileage FROM vehicles ORDER BY table_index"
     ) == [(1, "AB12 CDE", 12500.0, 1, None), (3, "XY34 ZZZ", 8000.0, 0, 9007199254740993)]
     # The priced outputs sit beside the inputs, joined on the quote's identity.
     assert sql(
@@ -212,7 +212,7 @@ def test_a_saved_quote_is_rows_of_the_forms_own_tables_read_with_plain_sql(
         "SELECT d.insured, p.total_premium FROM quote_details d JOIN premium p "
         "ON p.quote_reference = d.quote_reference AND p.quote_option = d.quote_option",
     ) == [("Acme Haulage", 512.4)]
-    assert sql(store, "SELECT quote_row, reg FROM vehicle_premium ORDER BY quote_row") == [
+    assert sql(store, "SELECT table_index, reg FROM vehicle_premium ORDER BY table_index") == [
         (1, "AB12 CDE"),
         (2, "XY34 ZZZ"),
     ]
@@ -679,7 +679,7 @@ def _identity(quote: Any) -> tuple[str, int]:
 #: A quote's equipment and perils as tables of inputs and outputs, each item's or peril's
 #: premium priced onto its own row: the equipment keyed by its index renamed item_number,
 #: the perils by the peril giving each row; a one-row table of both blocks; and a table of
-#: outputs alone, kept by quote_row as before.
+#: outputs alone, kept by table_index as before.
 BLOCKS = with_quote_details(
     FormSpec.model_validate(
         {
@@ -791,16 +791,18 @@ def test_a_priced_tables_outputs_are_written_on_its_input_rows_by_key(
     # own outputs, found by its key whatever order the pricing gave them in.
     assert sql(
         store,
-        "SELECT quote_row, item_number, item, value, premium, loading FROM equipment "
-        "ORDER BY quote_row",
+        "SELECT table_index, item_number, item, value, premium, loading FROM equipment "
+        "ORDER BY table_index",
     ) == [(1, 1, "Digger", 10.0, 10.0, None), (3, 3, "Crane", 30.0, 30.0, 1.5)]
-    assert sql(store, "SELECT quote_row, peril, peril_premium FROM perils ORDER BY quote_row") == [
+    assert sql(
+        store, "SELECT table_index, peril, peril_premium FROM perils ORDER BY table_index"
+    ) == [
         (1, "Fire", 7.5),
         (2, "Flood", 5.0),
     ]
     assert sql(store, "SELECT discount, charged FROM pricing") == [(0.1, 42.0)]
-    # A table of outputs alone is kept by quote_row as the pricing gave its rows.
-    assert sql(store, "SELECT quote_row, band, rate FROM bands ORDER BY quote_row") == [
+    # A table of outputs alone is kept by table_index as the pricing gave its rows.
+    assert sql(store, "SELECT table_index, band, rate FROM bands ORDER BY table_index") == [
         (1, "B", 2.0),
         (2, "A", 1.0),
     ]
@@ -822,11 +824,13 @@ def test_an_input_row_the_pricing_skipped_or_left_without_a_value_holds_no_outpu
     )
 
     # A value that is not finite is kept empty, as the response leaves it out.
-    assert sql(store, "SELECT quote_row, premium, loading FROM equipment ORDER BY quote_row") == [
+    assert sql(
+        store, "SELECT table_index, premium, loading FROM equipment ORDER BY table_index"
+    ) == [
         (1, None, None),
         (3, 30.0, None),
     ]
-    assert sql(store, "SELECT peril, peril_premium FROM perils ORDER BY quote_row") == [
+    assert sql(store, "SELECT peril, peril_premium FROM perils ORDER BY table_index") == [
         ("Fire", 7.5),
         ("Flood", None),
     ]
@@ -844,7 +848,7 @@ def test_an_unpriced_save_of_a_table_of_both_blocks_holds_no_outputs(
     save_blocks(blocks, None)
 
     assert sql(
-        store, "SELECT quote_row, item, premium, loading FROM equipment ORDER BY quote_row"
+        store, "SELECT table_index, item, premium, loading FROM equipment ORDER BY table_index"
     ) == [(1, "Digger", None, None), (3, "Crane", None, None)]
     assert sql(store, "SELECT discount, charged FROM pricing") == [(0.1, None)]
     assert sql(store, "SELECT * FROM bands") == []

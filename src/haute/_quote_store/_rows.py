@@ -31,7 +31,7 @@ from haute._workbench_form import (
     SchemaTable,
 )
 from haute._workbench_tables import (
-    QUOTE_ROW,
+    TABLE_INDEX,
     WorkbenchTable,
     holds_output,
     input_tables,
@@ -198,7 +198,7 @@ def input_rows(
             row["quote_reference"] = reference
             row["quote_option"] = option
             if many:
-                row[QUOTE_ROW] = sheet[place]
+                row[TABLE_INDEX] = sheet[place]
             if kept is not None and table.name != QUOTE_DETAILS_NAME:
                 # In the order the request's rows stand, a preset column's order included,
                 # so each row's kept field is its own.
@@ -255,7 +255,7 @@ def output_rows(
             else:
                 row.update(quote_reference=reference, quote_option=option)
             if table.rows == "many":
-                row[QUOTE_ROW] = place
+                row[TABLE_INDEX] = place
             written.append(row)
         rows[table.name] = written
     return rows
@@ -320,7 +320,7 @@ def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
     for table in form.data_schema.tables:
         if not table.has_outputs:
             continue
-        held = sorted(rows.get(table.name, []), key=lambda row: row.get(QUOTE_ROW, 0))
+        held = sorted(rows.get(table.name, []), key=lambda row: row.get(TABLE_INDEX, 0))
         if table.has_inputs:
             side = sides[table.name]
             names = [column.name for column in side.columns]
@@ -330,7 +330,7 @@ def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
             records = [{name: row.get(name) for name in names} for row in held]
         else:
             records = [
-                {key: value for key, value in row.items() if key != QUOTE_ROW} for row in held
+                {key: value for key, value in row.items() if key != TABLE_INDEX} for row in held
             ]
         if table.rows == "many":
             document[table.name] = records
@@ -377,7 +377,7 @@ def cells(
     form: FormSpec, rows: Mapping[str, Rows], kept: KeptColumns | None = None
 ) -> tuple[Values, list[str]]:
     """The values *rows* (by table name) read back as on the sheets, and each row that no longer
-    fits them: a many-row table's rows in their places by ``quote_row``, a gap a blank row;
+    fits them: a many-row table's rows in their places by ``table_index``, a gap a blank row;
     a preset row whose value is no longer allowed left out and named as ``table row N
     (value)``; each empty cell the sheets hide in a one-row table starting at its default
     (:func:`_hidden_defaults`). With *kept*, each row carries its values in the store's
@@ -397,7 +397,7 @@ def cells(
         given = preset_column(table)
         placed: dict[int, dict[str, Cell]] = {}
         for row in held:
-            number = int(row[QUOTE_ROW])
+            number = int(row[TABLE_INDEX])
             if given is not None:
                 value = row.get(given.name)
                 if value is not None and value not in given.options:

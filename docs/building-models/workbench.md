@@ -123,18 +123,24 @@ the Explore pivot offers them; and, for an input, its **default**, its
 rules an underwriter's value must meet: required, a range for a number, the allowed
 values. A number shows in its format wherever the sheets show it, and in its default, a
 percentage as the value times 100, so you type 0.125 for 12.5%; while you type into a cell
-or the default it shows as typed, and what is typed is what is saved and priced. Under
-each column's name, a line sums up what is set: required, its range and default, shown in
-its format, its allowed values, and a number's format and decimal places.
+or the default it shows as typed, and what is typed is what is saved and priced. To the
+right of each column's name, a line sums up what is set: required, its range and default,
+shown in its format, its allowed values, and a number's format and decimal places.
 
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
 quotes are put together, in the app's saved quotes, in exports and in joins. They come
-first, under Inputs, or under Outputs in a table with no inputs, and are locked: they
-cannot be renamed, retyped, moved or removed, take no label,
+first, under Inputs, or under Outputs in a table with no inputs, and are locked, their
+names on grey: they cannot be renamed, retyped, moved or removed, take no label,
 group, help, rules, default or format, and are not offered to the sheets, where
 `quote_details`' own stand for them. They are not a key: rows still line up by the table's
-own key. A table you add has them at once.
+own key. A table you add has them at once. A table with both headings shows them under
+Outputs too, on grey, with a many-row table's key column after them, since every row the
+pricing returns carries them.
+
+After them, on grey, a many-row table shows **table_index**, the number the saved quotes
+give each of its rows (see [Reading quotes with SQL](#reading-quotes-with-sql)); it is not
+one of your columns, and the pipeline never sees it.
 
 A many-row table's **key** says which of its rows is which, and the underwriter never types
 it. A table with inputs is keyed by its **index**, `row_number` until you rename it, which
@@ -144,7 +150,10 @@ outputs belong to the row holding the same key, so the pipeline must carry the k
 through to the rows it returns: pricing fails, saying which table and rows, when a row it
 returns has no key, repeats one, or has a key no row of the quote holds. A row the pricing
 returns nothing for shows dashes. A table of outputs alone, such as a premium broken down by
-peril, is keyed by the outputs you mark as its **key**, which the pricing fills.
+peril, is keyed by the outputs you mark as its **key**, which the pricing fills. Every
+column of a many-row table shows a key, blue on the table's key and grey on the others;
+in a table of outputs alone, click it to mark or unmark the column. A one-row table shows
+none.
 
 A column's **allowed values** come from a CSV in the pipeline's params folder
 (`rating/files/params/`, **params** in the Pipeline files panel); they are never typed in.
@@ -941,7 +950,7 @@ schema's columns under their names, its inputs and then its outputs, so an item 
 price are one row: an Integer a 64-bit integer, a Decimal a
 double-precision number, Text text, True/false a boolean and a Date a date. Every row holds
 the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
-**quote_row** too: in a table with inputs its row's place on its sheet, blank rows counted
+**table_index** too: in a table with inputs its row's place on its sheet, blank rows counted
 (the index's number), and in a table of outputs alone its place in the pricing. Read an
 item and its price from one table, and join tables on **quote_reference** and
 **quote_option**:
@@ -972,7 +981,7 @@ when.
 
 Names reach the database as the schema writes them, so the schema refuses a name the
 database could not keep: two columns of a table whose names differ only in case, a name
-longer than 63 characters, a name starting `haute_`, a column named `quote_row` in a
+longer than 63 characters, a name starting `haute_`, a column named `table_index` in a
 many-row table, and a table named starting `sqlite_`.
 
 ### The Quotes page

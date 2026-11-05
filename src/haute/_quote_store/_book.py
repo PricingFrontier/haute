@@ -76,7 +76,7 @@ from haute._workbench_form import (
     QUOTE_DETAILS_NAME,
     FormSpec,
 )
-from haute._workbench_tables import QUOTE_ROW
+from haute._workbench_tables import TABLE_INDEX
 
 #: A quote's stage: draft, which takes saves, or final.
 Stage = Literal["draft", "final"]
@@ -534,7 +534,7 @@ class QuoteBook:
                 table.c.quote_reference == reference, table.c.quote_option == option
             )
             if stored.many:
-                query = query.order_by(table.c[QUOTE_ROW])
+                query = query.order_by(table.c[TABLE_INDEX])
             rows[stored.form.name] = [dict(row._mapping) for row in connection.execute(query)]
         return rows
 
@@ -1226,7 +1226,7 @@ class QuoteBook:
                 for column in required:
                     if _blank(row.get(column.name)):
                         where = (
-                            f"{table.name} row {row[QUOTE_ROW]}"
+                            f"{table.name} row {row[TABLE_INDEX]}"
                             if table.rows == "many"
                             else table.name
                         )

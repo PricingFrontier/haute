@@ -173,7 +173,7 @@ describe("refreshTables", () => {
     const held = heldResponses()
     const store = useWorkbenchStore.getState
     const sample = { policy: { state: "NY" } }
-    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }], t_items: [{ name: "quote_row", kind: "int" }] }
+    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }], t_items: [{ name: "table_index", kind: "int" }] }
 
     const fetch = store().refreshTables()
     held.answer(0, { tables: tables("policy"), sample, response_tables: tables("pricing", "output"), store_columns: kept })

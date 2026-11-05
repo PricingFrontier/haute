@@ -1,7 +1,8 @@
 /**
  * A schema column's row in its block, the table's inputs or its outputs: its type and name, its
  * summary to their right, dragged or moved within its block or into the other, removed and opened
- * for its details; and the row of a column the quote store keeps (specs/workbench).
+ * for its details; the row of a column the quote store keeps; and the row of a column the
+ * Workbench Output's table carries ahead of a table's outputs (specs/workbench).
  */
 import { KeyRound, SlidersHorizontal, X, type LucideIcon } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
@@ -220,11 +221,11 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   )
 }
 
-/** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
-export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
-  const { label, icon: Icon, color } = KEPT_KINDS[column.kind]
+/** A row that is not one of the block's columns, its type marker and its name on grey, with nothing to change. */
+function LockedRow({ name, kind, title, testId }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string }) {
+  const { label, icon: Icon, color } = kind
   return (
-    <div className="flex items-stretch gap-1 rounded" data-testid={`schema-store-column-${column.name}`}>
+    <div className="flex items-stretch gap-1 rounded" data-testid={testId}>
       <span className="w-3 shrink-0" aria-hidden="true" />
       <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
         <Icon size={12} aria-hidden="true" />
@@ -232,10 +233,31 @@ export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
       <span
         className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
         style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
-        title="Kept by the quote store"
+        title={title}
       >
-        {column.name}
+        {name}
       </span>
     </div>
+  )
+}
+
+/** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
+export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
+  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} />
+}
+
+/**
+ * A column the Workbench Output's table carries ahead of its outputs, shown at their head:
+ * the quote's identity, or a many-row table's key column; its inputs' own, with nothing to change.
+ */
+export function CarriedColumnRow({ column, isKey }: { column: SchemaColumn; isKey: boolean }) {
+  return (
+    <LockedRow
+      name={column.name}
+      // The index is always an Integer.
+      kind={COLUMN_TYPES[column.index ? "int" : column.type]}
+      title={isKey ? "The key, on every row the pricing returns" : "Haute's column, on every row the pricing returns"}
+      testId={`schema-output-carried-${column.name}`}
+    />
   )
 }

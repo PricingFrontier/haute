@@ -756,7 +756,7 @@ describe("SchemaEditor", () => {
           { name: "saved_at", kind: "datetime" },
           { name: "priced_release", kind: "str" },
         ],
-        layers: [{ name: "quote_row", kind: "int" }],
+        layers: [{ name: "table_index", kind: "int" }],
       },
     })
     render(<SchemaEditor />)
@@ -780,12 +780,57 @@ describe("SchemaEditor", () => {
       expect(within(row).queryByRole("combobox")).toBeNull()
     }
     const layers = tableNamed("layers")
-    expect(within(layers).getByTestId("schema-store-column-quote_row")).toHaveTextContent("quote_row")
+    expect(within(layers).getByTestId("schema-store-column-table_index")).toHaveTextContent("table_index")
     expect(within(layers).getByText("2 cols")).toBeInTheDocument()
     expect(within(tableNamed("policy_details")).queryByTestId(/^schema-store-column-/)).toBeNull()
 
     // A search shows the form's columns alone.
     fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "quote" } })
+    expect(screen.queryByTestId(/^schema-store-column-/)).toBeNull()
+  })
+
+  it("shows a many-row table's table_index after the quote's identity, and heads a table's outputs with what the pricing returns them with", () => {
+    const items = table("items", {
+      rows: "many",
+      inputs: [...IDENTITY, INDEX, column("value", { type: "float" })],
+      outputs: [column("premium", { type: "float" })],
+    })
+    const policy = table("policy_details", { inputs: [...IDENTITY, column("state")], outputs: [column("rate", { type: "float" })] })
+    load(form(items, policy, LAYERS))
+    useWorkbenchStore.setState({ storeColumns: { items: [{ name: "table_index", kind: "int" }], layers: [{ name: "table_index", kind: "int" }] } })
+    render(<SchemaEditor />)
+    const rows = (group: string) =>
+      within(screen.getByRole("group", { name: group }))
+        .getAllByTestId(/^schema-(column|store-column|output-carried)-[a-z_]+$/)
+        .map((row) => row.getAttribute("data-testid"))
+
+    expect(rows("items Inputs")).toEqual([
+      "schema-column-quote_reference",
+      "schema-column-quote_option",
+      "schema-store-column-table_index",
+      "schema-column-row_number",
+      "schema-column-value",
+    ])
+    // The quote's identity and the key the Workbench Output's table carries, rows of no field, before the outputs.
+    expect(rows("items Outputs")).toEqual([
+      "schema-output-carried-quote_reference",
+      "schema-output-carried-quote_option",
+      "schema-output-carried-row_number",
+      "schema-column-premium",
+    ])
+    const key = screen.getByTestId("schema-output-carried-row_number")
+    expect(within(key).getByTitle("The key, on every row the pricing returns")).toHaveTextContent("row_number")
+    expect(within(key).getByTitle("Integer")).toBeInTheDocument()
+    expect(within(key).queryByRole("textbox")).toBeNull()
+    expect(within(key).queryByRole("button")).toBeNull()
+    expect(blockNames("items", "Outputs")).toEqual(["premium"])
+    // A one-row table carries no key, and a table of outputs alone nothing ahead of its own.
+    expect(rows("policy_details Outputs")).toEqual(["schema-output-carried-quote_reference", "schema-output-carried-quote_option", "schema-column-rate"])
+    expect(within(tableNamed("layers")).queryByTestId(/^schema-output-carried-/)).toBeNull()
+
+    // A search shows none of them.
+    fireEvent.change(screen.getByRole("textbox", { name: "Search fields" }), { target: { value: "e" } })
+    expect(screen.queryByTestId(/^schema-output-carried-/)).toBeNull()
     expect(screen.queryByTestId(/^schema-store-column-/)).toBeNull()
   })
 
