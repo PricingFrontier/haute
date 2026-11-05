@@ -2227,10 +2227,12 @@ Out of scope:
     twice; item_number 7 is on no row priced." Keys compare as their column's type holds
     them, the answer's cast to it as every column is. A row of the request the answer gives no row has
     its outputs empty, as a row typed after the price is, and an answer row holding no
-    output value is no row: the response leaves it out, since the store keeps outputs on
+    output value (each null, or a number that is not finite, which the store keeps empty)
+    is no row: the response and Preview leave it out, since the store keeps outputs on
     the input row and cannot tell the two apart. A request's own rows of such a table must
     each hold their key, no two the same, which the sheets always give: a request built
-    otherwise is refused before it is priced, naming the table, the key and the rows. A one-row table's one row
+    otherwise, or frames given to `Pipeline.score` so, are refused before anything is
+    priced, naming the table, the key and the rows. A one-row table's one row
     of outputs is its one row, and a table of outputs alone takes the rows pricing gives
     as they come. A node preview of the Workbench Output in the pipeline editor checks
     nothing of this, so the pipeline previews while it is being built.
