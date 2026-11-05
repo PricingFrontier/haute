@@ -31,6 +31,7 @@ from haute._quote_store import (
     open_book,
     store_url,
 )
+from haute._quote_store._rows import cells
 from haute._types import PipelineGraph
 from haute._workbench_app import (
     EASY_AUTH_NAME,
@@ -425,16 +426,14 @@ def test_what_the_app_sets_decides_what_shows_and_is_no_typing(
         assert refused.json()["detail"] == "Type the quote first"
 
 
-def test_a_cell_the_sheets_hide_opens_at_its_default_whatever_was_typed(
-    release_dir: Path, tmp_path: Path
-) -> None:
-    # The limit shows once the cover is ticked, and a new quote starts it at its default.
+def _cover_form(
+    *columns: dict[str, Any], fields: list[str], show_when: dict[str, Any]
+) -> dict[str, Any]:
+    """FORM with *columns* added to policy_details: its cover box on a Collection always
+    shown, and its *fields* on another shown *show_when*."""
     spec = json.loads(json.dumps(FORM))
     policy = next(t for t in spec["schema"]["tables"] if t["name"] == "policy_details")
-    policy["columns"] += [
-        {"name": "cover", "type": "bool"},
-        {"name": "cover_limit", "type": "float", "default_value": "5000"},
-    ]
+    policy["columns"] += [{"name": "cover", "type": "bool"}, *columns]
     spec["pages"][0]["sections"][0]["height"] = 240
     spec["pages"][0]["sections"][0]["widgets"] = [
         {
@@ -455,13 +454,27 @@ def test_a_cell_the_sheets_hide_opens_at_its_default_whatever_was_typed(
             "y": 120,
             "w": 400,
             "h": 100,
-            "fields": [{"table": "policy_details", "column": "cover_limit"}],
-            "show_when": {
-                "match": "all",
-                "conditions": [{"table": "policy_details", "column": "cover", "op": "ticked"}],
-            },
+            "fields": [{"table": "policy_details", "column": column} for column in fields],
+            "show_when": show_when,
         },
     ]
+    return spec
+
+
+def _ticked(column: str) -> dict[str, Any]:
+    """A condition holding while policy_details' *column* is ticked."""
+    return {"table": "policy_details", "column": column, "op": "ticked"}
+
+
+def test_a_cell_the_sheets_hide_opens_at_its_default_whatever_was_typed(
+    release_dir: Path, tmp_path: Path
+) -> None:
+    # The limit shows once the cover is ticked, and a new quote starts it at its default.
+    spec = _cover_form(
+        {"name": "cover_limit", "type": "float", "default_value": "5000"},
+        fields=["cover_limit"],
+        show_when={"match": "all", "conditions": [_ticked("cover")]},
+    )
     shown = _write_release(tmp_path / "shown", spec)
     store = tmp_path / "shown.sqlite"
 
@@ -495,6 +508,27 @@ def test_a_cell_the_sheets_hide_opens_at_its_default_whatever_was_typed(
         # A limit that shows and is cleared stays clear.
         cleared = save(hidden["quote"], {"state": "NY", "cover": True})
         assert cleared["values"]["policy_details"] == [{"state": "NY", "cover": True}]
+
+
+def test_a_hidden_cell_opens_at_its_default_only_where_that_changes_nothing_shown() -> None:
+    # The limits show while the cover or their own box is ticked, that box ticked by default;
+    # a box saved unticked is held false.
+    spec = FormSpec.model_validate(
+        _cover_form(
+            {"name": "own", "type": "bool", "default_value": True},
+            {"name": "cover_limit", "type": "float", "default_value": "5000"},
+            {"name": "unticked", "type": "bool", "default_value": True},
+            fields=["own", "cover_limit", "unticked"],
+            show_when={"match": "any", "conditions": [_ticked("cover"), _ticked("own")]},
+        )
+    )
+    held = {"state": "NY", "cover": None, "own": None, "cover_limit": None, "unticked": False}
+
+    values, _ = cells(spec, {"policy_details": [held]})
+
+    # Their own box ticked would show the limits it was saved hidden with, so it stays as
+    # saved; the limit opens at its default, and the box held unticked stays so.
+    assert values["policy_details"] == [{"state": "NY", "cover_limit": "5000"}]
 
 
 def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page) -> None:

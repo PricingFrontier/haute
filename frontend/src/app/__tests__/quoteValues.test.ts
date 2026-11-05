@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { ApiError } from "../../api/client"
 import type { WorkbenchAppQuoteActivityEntry } from "../../api/types"
-import { detailsTable, sheetForm } from "../../workbench/__tests__/fixtures"
+import { coverForm, detailsTable, fieldsWidget, sheetForm } from "../../workbench/__tests__/fixtures"
 import {
   activityText,
   appDetails,
@@ -31,6 +31,7 @@ import {
   sameQuote,
   savedPrice,
   valuesKey,
+  withHiddenCells,
   withoutAppDetails,
   writeDraft,
   writeSuperseded,
@@ -98,6 +99,22 @@ describe("a quote's identity and the details the app sets", () => {
       quote_details: [{ insured: "Acme" }],
     })
     expect(withoutAppDetails({ quote_details: [{ quote_reference: "ABC-1" }] })).toEqual({})
+  })
+
+  it("keep what was typed into the cells a save hid as the server wrote it, with the details the app set on it", () => {
+    // The Cover sheet's year shows on a quote Ana saved last.
+    const form = coverForm()
+    form.schema.tables.unshift(detailsTable())
+    fieldsWidget(form, "w_boxes").fields.push({ table: "quote_details", column: "modified_by" })
+    form.pages[1].show_when = {
+      match: "all",
+      conditions: [{ table: "quote_details", column: "modified_by", op: "equals", values: ["ana@example.com"], field: null, days: 0 }],
+    }
+    const sent = { quote_details: [{ modified_by: "ana@example.com" }], policy: [{ state: "NY", year: "1990" }] }
+    // Jo's save hid the year, which the store keeps nothing of.
+    const answered = { quote_details: [{ modified_by: "jo@example.com" }], policy: [{ state: "NY" }] }
+
+    expect(withHiddenCells(form, answered, sent)).toEqual({ ...answered, policy: [{ state: "NY", year: "1990" }] })
   })
 })
 

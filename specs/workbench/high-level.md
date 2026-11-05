@@ -1233,8 +1233,13 @@ Out of scope:
   values. The quote store keeps nothing of a cell the sheets hide, so a quote the app
   opens starts each such cell of a one-row input table at its column's default too, as a
   new quote does: a sheet hidden as the quote is made, such as a cover's sheet before the
-  cover is ticked, shows its defaults once it shows. `quote_details` is kept whole, so its
-  cells read back as saved. A default is not typing: a quote holding nothing else typed,
+  cover is ticked, shows its defaults once it shows. Only where that changes nothing that
+  shows, though: a box ticked by default can show the sheet it is on, which would show and
+  price what the quote was not saved with, so it opens as saved. A box saved unticked stays
+  unticked, and `quote_details` is kept whole, so its cells read back as saved. The store
+  cannot tell a cell left blank while it showed from one saved blank because it hid, so a
+  cell left blank and hidden since, by a change to the details the app sets or by a new
+  release, opens at its default too. A default is not typing: a quote holding nothing else typed,
   the details the app sets aside, is neither marked nor priced nor saved, as a blank one is
   not, and a value typed equal to its column's default counts as the default. A many-row
   table's columns take no default.
@@ -1680,8 +1685,9 @@ Out of scope:
   save, and nothing new to save while the values are as saved and priced as saved on this
   release (a price made since, or one of an earlier release, is new). A save holding a value
   not of its column's type is refused, naming each, its values kept on the sheets unsaved.
-  A save keeps on the sheets what was typed into the cells they hide, though the store
-  keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
+  A save keeps on the sheets what was typed into the cells hidden as it was written, the
+  details the app sets on it, such as who saved it, deciding as any value does, though the
+  store keeps nothing of them: a sheet hidden, saved and shown again shows what was typed while
   the quote stays open, and a quote opened again starts those cells as Defaults says.
   Mark final is off while the quote has unsaved values or no price of this release, and is
   refused naming each required field without a value. A save and a change name the version
@@ -2180,8 +2186,11 @@ Out of scope:
   underwriter types do. Every column of `quote_details` is stored, and each that reaches the
   pipeline is priced, whatever the sheets hide; any other cell a Show when hides is saved
   blank, as the request leaves it out, so the input tables hold what the quote was priced on.
-  Read back, such a cell of a one-row table, empty in the store, holds its column's default
-  (`cells`), as a new quote starts it; a stored value is read as stored.
+  Read back, such a cell of a one-row table, null in the store, holds its column's default
+  (`cells`), as a new quote starts it, where the defaults change nothing that shows: they
+  are filled together when together they change nothing, else one at a time in the
+  schema's order, each that would change it left empty. A stored value, false included, is
+  read as stored.
 
   A save is priced first, then written in one transaction: the quote's `quote_details` row
   updated where its `quote_version` is the one the page opened or saved it at and the quote

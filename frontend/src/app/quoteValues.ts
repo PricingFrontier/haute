@@ -100,14 +100,16 @@ export function withAppDetails(values: Values, saved: Values): Values {
 export const withoutAppDetails = (values: Values): Values => withAppDetails(values, {})
 
 /**
- * `saved`, the values a save of `sent` answered, with the cells the sheets hide for `sent`
- * taken from `sent`: the store keeps nothing of a hidden cell, so what was typed into one
- * stays on the sheets while the quote is open (specs/workbench). A many-row table's rows
- * line up as the server numbers them, as `withPresetRows` reads them. `quote_details` is
- * stored whole, so it is the answer's.
+ * `saved`, the values a save of `sent` answered, with the cells the sheets hid as it was
+ * written taken from `sent`: the store keeps nothing of a hidden cell, so what was typed into
+ * one stays on the sheets while the quote is open (specs/workbench). What hid is decided as
+ * the server decided it, on `sent` with the details the app set on the save, as who saved
+ * it, since those decide what shows as any value does. A many-row table's rows line up as
+ * the server numbers them, as `withPresetRows` reads them. `quote_details` is stored whole,
+ * so it is the answer's.
  */
 export function withHiddenCells(form: FormSpec, saved: Values, sent: Values): Values {
-  const { hidden } = sheetVisibility(form, sent)
+  const { hidden } = sheetVisibility(form, withAppDetails(sent, saved))
   if (hidden.size === 0) return saved
   const placed = withPresetRows(form.schema, sent)
   const merged: Values = { ...saved }
