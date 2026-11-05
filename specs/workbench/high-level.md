@@ -1068,7 +1068,7 @@ Out of scope:
   the top of its Config pane, or of its one list for a Chart and a Heading: a text field
   committed on blur or Enter as one undo step, a name that is not an identifier or that
   another component has, whatever its case, refused at the field saying which, the
-  component keeping its name, and Escape putting the name back. A Heading's panel has its text in the title's place and its description under
+  component keeping its name. A Heading's panel has its text in the title's place and its description under
   it, each committed on blur or Enter, its Show when, and its look: its size, Large, Medium
   or Small, and its alignment, Left, Centre or Right, one of three toggles the arrow keys
   also move between. An Import's and an Export's panels are in the two panes too:
