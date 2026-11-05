@@ -39,6 +39,7 @@ from haute._graph_utils import (
     edge_input_name,
 )
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, singleton_name_problem
 from haute._registry import NODE_REGISTRY
 from haute._source_layout import (
     INDENT,
@@ -61,17 +62,22 @@ from haute._topo import topo_sort_ids
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     GLOBAL_CONSTANTS_NAME,
-    REQUEST_INPUT_NODE_TYPES,
     GraphEdge,
     GraphNode,
-    NodeType,
     PipelineGraph,
     SubmodelDefinition,
-    singleton_name_problem,
 )
 from haute.errors import ConfigError, HauteError, ParseError
 
 logger = get_logger(component="codegen")
+
+
+def _has_occurrences(graph: PipelineGraph) -> bool:
+    """Whether *graph*'s own nodes include a submodel occurrence."""
+    return any(
+        node_spec(node.data.nodeType).structural_role == "occurrence" for node in graph.nodes
+    )
+
 
 ContractSource = Literal["builder", "offline", "declared"]
 """How generation derives a node's ``contract=`` annotation.
@@ -432,7 +438,7 @@ def check_executable_names(graph: PipelineGraph) -> None:
     each submodel graph. Save validation runs it so a graph codegen would
     refuse fails before anything is written.
     """
-    if graph.submodels or any(node.data.nodeType == NodeType.SUBMODEL for node in graph.nodes):
+    if graph.submodels or _has_occurrences(graph):
         resolve_submodel_instances(graph)
     violations = executable_name_violations(graph)
     if not violations:
@@ -515,7 +521,7 @@ def _order_edge_join_incoming_edges(
     emitted_edge_join_targets: set[str] = set()
     for edge in edges:
         target_node = node_map.get(edge.target)
-        if target_node is None or target_node.data.nodeType != NodeType.EDGE_JOIN:
+        if target_node is None or not node_spec(target_node.data.nodeType).input_roles:
             ordered.append(edge)
             continue
         if edge.target in emitted_edge_join_targets:
@@ -1042,7 +1048,7 @@ def _canonical_definition_source_metadata(
 
     for target_id, bindings in bindings_by_target.items():
         target_node = node_map[target_id]
-        if target_node.data.nodeType == NodeType.EDGE_JOIN:
+        if node_spec(target_node.data.nodeType).input_roles:
             base_index, join_index = resolve_edge_join_role_indices(
                 [binding[2] for binding in bindings]
             )
@@ -1400,8 +1406,7 @@ def graph_to_code_multi(
     if not preamble and graph.preamble:
         preamble = graph.preamble
 
-    has_occurrences = any(node.data.nodeType == NodeType.SUBMODEL for node in graph.nodes)
-    if graph.submodels or has_occurrences:
+    if graph.submodels or _has_occurrences(graph):
         return _graph_to_code_multi_instances(
             graph,
             pipeline_name=pipeline_name,

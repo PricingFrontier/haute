@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from haute._node_specs import node_type_table
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._types import NodeType
 
@@ -55,14 +56,38 @@ DEPLOY_ANSWER_PER_ROW_CONFIG_KEY = "__haute_deploy_answer_per_row"
 
 #: The private keys the deploy scorer writes on its annotated graph copy, by node type. A
 #: config a run builds may hold them (``validate_node_config(persisted=False)``); a persisted
-#: config never does.
-DEPLOY_PRIVATE_CONFIG_KEYS: Mapping[NodeType, frozenset[str]] = {
-    NodeType.MODEL_SCORE: frozenset(
-        {_DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY, _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY}
-    ),
-    NodeType.OPTIMISER_APPLY: frozenset({_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY}),
-    NodeType.OUTPUT: frozenset({DEPLOY_ANSWER_PER_ROW_CONFIG_KEY}),
-}
+#: config never does. Empty for a type the scorer annotates with none.
+DEPLOY_PRIVATE_CONFIG_KEYS: Mapping[NodeType, frozenset[str]] = node_type_table(
+    "deploy private config keys",
+    {
+        NodeType.API_INPUT: frozenset(),
+        NodeType.WORKBENCH_INPUT: frozenset(),
+        NodeType.WORKBENCH_OUTPUT: frozenset(),
+        NodeType.DATA_INPUT: frozenset(),
+        NodeType.DATA_OUTPUT: frozenset(),
+        NodeType.POLARS: frozenset(),
+        NodeType.EDGE_JOIN: frozenset(),
+        NodeType.MODEL_SCORE: frozenset(
+            {
+                _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
+                _DEPLOY_MODEL_OPTIONAL_INPUT_COLUMNS_CONFIG_KEY,
+            }
+        ),
+        NodeType.BANDING: frozenset(),
+        NodeType.RATING_STEP: frozenset(),
+        NodeType.OUTPUT: frozenset({DEPLOY_ANSWER_PER_ROW_CONFIG_KEY}),
+        NodeType.EXPLORE: frozenset(),
+        NodeType.EXTERNAL_FILE: frozenset(),
+        NodeType.LIVE_SWITCH: frozenset(),
+        NodeType.MODELLING: frozenset(),
+        NodeType.OPTIMISER: frozenset(),
+        NodeType.SCENARIO_EXPANDER: frozenset(),
+        NodeType.OPTIMISER_APPLY: frozenset({_DEPLOY_OPTIMISER_INPUT_COLUMNS_CONFIG_KEY}),
+        NodeType.CONSTANT: frozenset(),
+        NodeType.SUBMODEL: frozenset(),
+        NodeType.SUBMODEL_PORT: frozenset(),
+    },
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -2656,7 +2656,7 @@ class TestSystemPrompt:
             "Write new Polars logic as steps with a free-code card: on a Transform node" in prompt
         )
         assert (
-            "on a Data Input, Load File, Rating Step, Model Scoring, Expander or Explore node"
+            "on a Data Input, Model Scoring, Rating Step, Explore, Load File or Expander node"
             in prompt
         )
         assert "reads other inputs by their edge names only on a Transform or Load File node" in (

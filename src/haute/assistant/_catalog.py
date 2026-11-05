@@ -1,10 +1,12 @@
 """The capability manifest: the node, operation and recipe vocabulary of the assistant.
 
 Node descriptors derive their mechanical facts from the same registries that
-validate and save a pipeline.  The only hand-authored part is the short usage
-note for each node type.  That gives the model useful authoring guidance
-without creating a second source of truth for node names, config keys,
-decorators, sidecar folders, or singleton rules.
+validate and save a pipeline, and from the node specification
+(``haute._node_specs``). The only hand-authored part is each node type's
+description (``haute.assistant._node_descriptions``): its summary, usage note
+and the other prose the assistant states. That gives the model useful
+authoring guidance without creating a second source of truth for node names,
+config keys, decorators, sidecar folders, or singleton rules.
 """
 
 from __future__ import annotations
@@ -21,10 +23,21 @@ from typing import Annotated, Literal, Required, Union, cast, get_args, get_orig
 from pydantic import BaseModel
 
 from haute._cache import canonical_json
-from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
+from haute._config_io import palette_default_config
 from haute._config_validation import VALID_KEYS
-from haute._graph_shape import SINGLETON_NODE_GROUPS
 from haute._node_config_models import NODE_CONFIG_MODELS
+from haute._node_specs import (
+    NODE_TYPE_TO_DECORATOR,
+    NODE_TYPE_TO_FOLDER,
+    SINGLETON_NODE_GROUPS,
+    SINK_ONLY_NODE_TYPES,
+    SOURCE_NODE_TYPES,
+    STANDALONE_PASSTHROUGH_TYPES,
+    STEPPED_NODE_TYPES,
+    STRUCTURAL_NODE_TYPES,
+    InputCardinality,
+    node_spec,
+)
 from haute._polars_steps import (
     AGGREGATIONS,
     BINARY_OPERATORS,
@@ -36,19 +49,13 @@ from haute._polars_steps import (
     LITERAL_TYPES,
     OPERATORS,
     PIVOT_AGGREGATIONS,
-    STEPPED_NODE_TYPES,
     WINDOW_AGGREGATIONS,
     step_fields,
     stepped_surface_for,
 )
-from haute._standalone_nodes import SOURCE_NODE_TYPES, STANDALONE_PASSTHROUGH_TYPES
-from haute._types import (
-    NODE_TYPE_TO_DECORATOR,
-    REQUEST_INPUT_NODE_TYPES,
-    SINK_ONLY_NODE_TYPES,
-    NodeType,
-)
+from haute._types import NodeType
 from haute.assistant._node_cards import node_card
+from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS, INPUT_NAMING_RULE
 from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import MAX_DECLARED_POSTCONDITIONS, graph_edit_operations_schema
 from haute.schemas import (
@@ -66,185 +73,6 @@ from haute.schemas import (
 _SINGLETON_TYPES = frozenset(
     node_type for group, _label in SINGLETON_NODE_GROUPS for node_type in group
 )
-
-
-#: How an incoming edge names the input it gives, in the words of
-#: ``haute._graph_utils.executable_input_name``. The Polars descriptor, the
-#: system prompt, the authoring guide and every node card that names inputs
-#: state it verbatim, held so by test.
-INPUT_NAMING_RULE = (
-    "An input is named after its incoming edge: the upstream node's name, except that "
-    "an edge from a Quote Input or Workbench Input frame, which `add_edge`'s "
-    "`source_handle` selects, is named by that frame, and an edge from a submodel output "
-    "by its port on the owner and, on an instance, by the instance's name, or "
-    "`<instance>_<port>` when its submodel has several outputs."
-)
-
-
-# Usage notes are the manifest's intentionally hand-authored knowledge.  Every
-# current NodeType is listed explicitly so adding a NodeType without adding a
-# corresponding note leaves the manifest incomplete and fails at import time.
-_USAGE_NOTES: dict[NodeType, str] = {
-    NodeType.API_INPUT: (
-        "Declare the request contract and its input tables; use this as the "
-        "pipeline's external quote boundary."
-    ),
-    NodeType.WORKBENCH_INPUT: (
-        "Read-only to you: the live quote request, split into the tables the installed "
-        "workbench defines, which the editor copies and keeps current. Wire downstream "
-        "nodes to its frames as to a Quote Input's; never add, change, rename or delete it."
-    ),
-    NodeType.DATA_INPUT: (
-        "Read a file, database, lakehouse, Databricks table, or inline records through "
-        "an explicit provider and format; use a snapshot for remote or eager-only inputs."
-    ),
-    NodeType.DATA_OUTPUT: (
-        "Write or sink its one input frame to a file, database, lakehouse or Databricks "
-        "table when the analyst runs the output; it has no output, so it ends its branch "
-        "and stays out of the scoring path."
-    ),
-    NodeType.POLARS: (
-        "Apply a Polars transform to connected inputs; new logic is written as steps. "
-        + INPUT_NAMING_RULE
-    ),
-    NodeType.EDGE_JOIN: (
-        "Join the base input with a connected input; specify the join keys and "
-        "join type explicitly, especially when the two key names differ."
-    ),
-    NodeType.MODEL_SCORE: (
-        "Score rows with a saved model selected by run or registered-model "
-        "metadata; configure the feature contract and prediction output deliberately."
-    ),
-    NodeType.BANDING: (
-        "Band a number or date column at breakpoints, or map categorical values to "
-        "named bands. Breakpoint rules are {boundary, label} rows: each boundary is "
-        "its band's upper bound (inclusive unless right_closed is false), every "
-        "boundary is a number, a date, or a date and time of one kind, and one "
-        "final row may leave the boundary empty for the open-ended band. "
-        "Categorical rules are {value, assignment} rows. Give each factor an "
-        "output_column and an explicit default for values outside the rules."
-    ),
-    NodeType.RATING_STEP: (
-        "Rate its first input: look up rating factors from one or more tables and "
-        "combine their outputs with the chosen operation; make table factors and "
-        "miss policy explicit."
-    ),
-    NodeType.OUTPUT: (
-        "Assemble the top-level JSON response from selected upstream columns "
-        "with an explicit output_mapping whose source_port names the incoming "
-        "frame; it has no output edge."
-    ),
-    NodeType.WORKBENCH_OUTPUT: (
-        "Read-only to you: the pipeline's response, the tables the workbench "
-        "defines, each filled from the frame connected to its port, column by column "
-        "through its mapping. Wire one upstream node to each table; never add, change, "
-        "rename or delete it."
-    ),
-    NodeType.EXPLORE: (
-        "Summarise, pivot and chart its one input frame for analysis; it has no "
-        "output, so it ends an analysis branch and is never a pricing stage."
-    ),
-    NodeType.EXTERNAL_FILE: (
-        "Load a pickle, JSON or joblib file and expose the loaded object as `obj`; "
-        "the first input is `df` and further inputs are named by their edges. "
-        "Without steps or code the node returns its first input unchanged. Set "
-        "file_type. A model Haute trains is scored with Model Scoring, not loaded here."
-    ),
-    NodeType.LIVE_SWITCH: (
-        "Route one of several connected frames by scenario; use at most one "
-        "switch per pipeline and name the scenario map unambiguously."
-    ),
-    NodeType.MODELLING: (
-        "Train a model from its one input frame; configure target, algorithm, "
-        "task, features, and evaluation settings. It has no output, so nothing is "
-        "wired downstream of it and training stays outside the live quote path."
-    ),
-    NodeType.OPTIMISER: (
-        "Optimise prices under an objective and constraints: choose mode online or "
-        "ratebook, map the quote_id, scenario_index, scenario_value and objective "
-        "columns, and name the frame to optimise with data_input when several "
-        "inputs are connected (and the Banding input with banding_source in "
-        "ratebook mode). The solve runs from the editor and saves a result that "
-        "Apply Optimisation reads; the node has no output."
-    ),
-    NodeType.SCENARIO_EXPANDER: (
-        "Repeat each row once per scenario step: step_count (required, at least 1) "
-        "sets how many; step_column names the 0-based index column (default "
-        "scenario_index); column_name, when set, adds a value column spaced evenly "
-        "from min_value to max_value; quote_id names the column identifying each quote."
-    ),
-    NodeType.OPTIMISER_APPLY: (
-        "Apply a saved optimisation result from a file, run or registered model; a "
-        "ratebook result applies to the input named by ratebook_input and any other "
-        "to the first input. Keep the version and optimised-value column conventions."
-    ),
-    NodeType.CONSTANT: (
-        "Create a one-row frame of named literal values for defaults or lookup "
-        "inputs; use values entries with stable names rather than hidden literals in code."
-    ),
-    NodeType.SUBMODEL: (
-        "Reference a separate pipeline module as a top-level graph boundary; "
-        "connect only its declared input and output ports, never its internal nodes."
-    ),
-    NodeType.SUBMODEL_PORT: (
-        "Use only for the structural ports of a submodel boundary; it has no "
-        "user config or decorator and must not be edited as an ordinary transform."
-    ),
-}
-
-
-# The palette's display names (``NODE_TYPE_META`` in
-# ``frontend/src/utils/nodeTypes.ts``), held equal to the editor by test, so
-# the model and the analyst call each node by the same name.
-_DISPLAY_NAMES: dict[NodeType, str] = {
-    NodeType.API_INPUT: "Quote Input",
-    NodeType.WORKBENCH_INPUT: "Workbench Input",
-    NodeType.DATA_INPUT: "Data Input",
-    NodeType.DATA_OUTPUT: "Data Output",
-    NodeType.POLARS: "Transform",
-    NodeType.EDGE_JOIN: "Edge Join",
-    NodeType.MODEL_SCORE: "Model Scoring",
-    NodeType.BANDING: "Banding",
-    NodeType.RATING_STEP: "Rating Step",
-    NodeType.OUTPUT: "Quote Response",
-    NodeType.WORKBENCH_OUTPUT: "Workbench Output",
-    NodeType.EXPLORE: "Explore",
-    NodeType.EXTERNAL_FILE: "Load File",
-    NodeType.LIVE_SWITCH: "Source Switch",
-    NodeType.MODELLING: "Model Training",
-    NodeType.OPTIMISER: "Optimisation",
-    NodeType.SCENARIO_EXPANDER: "Expander",
-    NodeType.OPTIMISER_APPLY: "Apply Optimisation",
-    NodeType.CONSTANT: "Constant",
-    NodeType.SUBMODEL: "Submodel",
-    NodeType.SUBMODEL_PORT: "Port",
-}
-
-
-# One-line purposes shown beside each palette name in the prompt's node index.
-_SUMMARIES: dict[NodeType, str] = {
-    NodeType.API_INPUT: "The live quote request, one frame per declared request table.",
-    NodeType.WORKBENCH_INPUT: "The live quote request, one frame per table the workbench defines.",
-    NodeType.DATA_INPUT: "Read a file, database, lakehouse, Databricks table or inline records.",
-    NodeType.DATA_OUTPUT: "Write a frame to a file, database, lakehouse or Databricks table.",
-    NodeType.POLARS: "Transform one or more frames with Polars steps.",
-    NodeType.EDGE_JOIN: "Join a base frame with a lookup frame on keys.",
-    NodeType.MODEL_SCORE: "Score rows with a saved model.",
-    NodeType.BANDING: "Group number, date or categorical values into named bands.",
-    NodeType.RATING_STEP: "Look up rating factors from tables and combine them.",
-    NodeType.OUTPUT: "Assemble the quote's JSON response from upstream columns.",
-    NodeType.WORKBENCH_OUTPUT: "The quote's response: the tables the workbench defines, filled.",
-    NodeType.EXPLORE: "Analyse an upstream frame with summaries, pivots and charts.",
-    NodeType.EXTERNAL_FILE: "Load a pickle, JSON, joblib or CatBoost file for use in steps.",
-    NodeType.LIVE_SWITCH: "Route the live request or a batch source by scenario.",
-    NodeType.MODELLING: "Train a gradient boosting, t-boost, EBM or GLM model.",
-    NodeType.OPTIMISER: "Optimise prices under an objective and constraints.",
-    NodeType.SCENARIO_EXPANDER: "Repeat each row across a grid of scenario values.",
-    NodeType.OPTIMISER_APPLY: "Apply a saved optimisation result to price rows.",
-    NodeType.CONSTANT: "A one-row frame of named constant values.",
-    NodeType.SUBMODEL: "An occurrence of a reusable sub-pipeline.",
-    NodeType.SUBMODEL_PORT: "A submodel's structural input or output port.",
-}
 
 
 # ASSIST-A04 capability manifest -------------------------------------------------
@@ -367,17 +195,21 @@ def _merge_branch_schemas(schemas: list[Mapping[str, object]]) -> Mapping[str, o
     return distinct[0] if len(distinct) == 1 else {"anyOf": distinct}
 
 
+def _config_branches(shape: object) -> tuple[type, ...]:
+    """The branches of a config shape that is a union of them (a Data Input's or a Data
+    Output's, discriminated by its input or output type); empty for any other shape."""
+    if get_origin(shape) is Annotated:
+        shape = get_args(shape)[0]
+    if get_origin(shape) in (Union, UnionType):
+        return cast(tuple[type, ...], get_args(shape))
+    return ()
+
+
 def _config_schema(node_type: NodeType) -> dict[str, object]:
     """Closed top-level schema matching VALID_KEYS, with I/O branch detail."""
     allowed = set(VALID_KEYS.get(node_type, ()))
-    if node_type in (NodeType.DATA_INPUT, NodeType.DATA_OUTPUT):
-        from haute._node_config_models import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES
-
-        branches = (
-            DATA_INPUT_CONFIG_TYPES
-            if node_type is NodeType.DATA_INPUT
-            else DATA_OUTPUT_CONFIG_TYPES
-        )
+    shape = NODE_CONFIG_MODELS[node_type].shape
+    if branches := _config_branches(shape):
         branch_schemas = [_schema_for_typeddict(branch, keys=allowed) for branch in branches]
         declared: dict[str, list[Mapping[str, object]]] = {}
         branch_required: list[set[str]] = []
@@ -403,7 +235,7 @@ def _config_schema(node_type: NodeType) -> dict[str, object]:
         if required_everywhere := set.intersection(*branch_required):
             schema["required"] = sorted(required_everywhere)
         return schema
-    schema = _schema_for_typeddict(NODE_CONFIG_MODELS[node_type].shape, keys=allowed)
+    schema = _schema_for_typeddict(shape, keys=allowed)
     raw_properties = schema["properties"]
     if not isinstance(raw_properties, dict):
         raise TypeError("Derived config schema properties must be a dictionary")
@@ -550,140 +382,50 @@ def _haute_version() -> str:
         return "0.0.0-dev"
 
 
-_TRAINING_NODE_TYPES = frozenset({NodeType.MODELLING, NodeType.OPTIMISER})
-# Each non-source node type's input cardinality is declared in exactly one of
-# these sets or special-cased below; a type in none fails loudly at import.
-# The single-input set is held equal to the palette's ``maxInputs: 1`` entries
-# (``frontend/src/utils/nodeTypes.ts``) by test.
-_SINGLE_INPUT_TYPES = frozenset(
+#: Each input cardinality in words. The cardinality is the node specification's
+#: (``haute._node_specs.NodeSpec.inputs``), whose ``exactly_one`` types are the
+#: palette's ``maxInputs: 1`` entries (``frontend/src/utils/nodeTypes.ts``), held
+#: equal by test.
+_INPUT_CARDINALITY_TEXT: Mapping[InputCardinality, str] = MappingProxyType(
     {
-        NodeType.DATA_OUTPUT,
-        NodeType.EXPLORE,
-        NodeType.BANDING,
-        NodeType.SCENARIO_EXPANDER,
-        NodeType.RATING_STEP,
-        NodeType.MODELLING,
-        NodeType.MODEL_SCORE,
+        "none": "zero",
+        "exactly_one": "exactly one",
+        "exactly_two": "exactly two",
+        "zero_or_more": "zero or more",
+        "one_or_more": "one or more, subject to the descriptor configuration",
+        "structural": "structural boundary; not directly wireable",
     }
 )
-_MULTI_INPUT_NODE_TYPES = frozenset(
-    {
-        NodeType.POLARS,
-        NodeType.OUTPUT,
-        NodeType.WORKBENCH_OUTPUT,
-        NodeType.LIVE_SWITCH,
-        NodeType.OPTIMISER,
-        NodeType.OPTIMISER_APPLY,
-        NodeType.SUBMODEL,
-    }
-)
-_EXAMPLE_IDS: dict[NodeType, tuple[str, ...]] = {
-    NodeType.API_INPUT: ("minimal_live_quote",),
-    # The assistant authors no Workbench Input or Output, so no example shows one.
-    NodeType.WORKBENCH_INPUT: (),
-    NodeType.WORKBENCH_OUTPUT: (),
-    NodeType.DATA_INPUT: ("minimal_batch",),
-    NodeType.BANDING: ("discrete_banding",),
-    NodeType.EDGE_JOIN: ("reference_join",),
-    NodeType.RATING_STEP: ("rating_step",),
-}
-_RECIPE_IDS: dict[NodeType, tuple[str, ...]] = {
-    NodeType.BANDING: ("categorical_banding",),
-    NodeType.EDGE_JOIN: ("reference_join",),
-    NodeType.OUTPUT: ("response_output",),
-    NodeType.RATING_STEP: ("rating_step",),
-}
-
-
-_MULTI_INPUT_PORTS: dict[NodeType, str] = {
-    NodeType.POLARS: "one or more frames, each named by its edge",
-    NodeType.OUTPUT: "one or more frames, each addressed by a mapping row's source_port",
-    NodeType.WORKBENCH_OUTPUT: "one frame per table the workbench defines, on that table's port",
-    NodeType.OPTIMISER: (
-        "one or more frames; data_input names the frame to optimise when several are connected"
-    ),
-    NodeType.OPTIMISER_APPLY: (
-        "one or more frames; a ratebook result applies to the input named by "
-        "ratebook_input, any other result to the first input"
-    ),
-}
+if set(_INPUT_CARDINALITY_TEXT) != set(get_args(InputCardinality)):
+    raise RuntimeError("Every input cardinality needs its words in the capability manifest.")
 
 
 def _node_ports(node_type: NodeType) -> dict[str, object]:
-    outputs: object = [] if node_type in SINK_ONLY_NODE_TYPES else ["frame"]
-    if node_type in REQUEST_INPUT_NODE_TYPES:
+    spec = node_spec(node_type)
+    description = ASSISTANT_NODE_DESCRIPTIONS[node_type]
+    outputs: object = [] if spec.sink_only else ["frame"]
+    if spec.request_input:
         return {
             "inputs": [],
             "outputs": "one named output per declared request table",
         }
-    if node_type is NodeType.LIVE_SWITCH:
-        return {"inputs": "one per configured scenario", "outputs": outputs}
-    if node_type is NodeType.SUBMODEL:
-        return {
-            "inputs": "declared submodel input ports",
-            "outputs": "declared submodel output ports",
-        }
-    if node_type is NodeType.SUBMODEL_PORT:
-        return {"inputs": "structural only", "outputs": "structural only"}
-    if node_type is NodeType.EDGE_JOIN:
-        return {"inputs": ["base", "join"], "outputs": outputs}
-    if node_type is NodeType.EXTERNAL_FILE:
-        return {
-            "inputs": "optional; the first input is `df`, further inputs are named by their edges",
-            "outputs": outputs,
-        }
-    if node_type in SOURCE_NODE_TYPES:
+    if description.output_ports is not None:
+        outputs = description.output_ports
+    if description.input_ports is not None:
+        return {"inputs": description.input_ports, "outputs": outputs}
+    if spec.input_roles:
+        return {"inputs": list(spec.input_roles), "outputs": outputs}
+    if spec.source:
         return {"inputs": [], "outputs": outputs}
-    if node_type in _MULTI_INPUT_PORTS:
-        return {"inputs": _MULTI_INPUT_PORTS[node_type], "outputs": outputs}
     return {"inputs": ["frame"], "outputs": outputs}
 
 
 def _input_cardinality(node_type: NodeType) -> str:
-    if node_type in SOURCE_NODE_TYPES:
-        return "zero"
-    if node_type is NodeType.EDGE_JOIN:
-        return "exactly two"
-    if node_type is NodeType.EXTERNAL_FILE:
-        return "zero or more"
-    if node_type is NodeType.SUBMODEL_PORT:
-        return "structural boundary; not directly wireable"
-    if node_type in _SINGLE_INPUT_TYPES:
-        return "exactly one"
-    if node_type in _MULTI_INPUT_NODE_TYPES:
-        return "one or more, subject to the descriptor configuration"
-    raise RuntimeError(f"No input cardinality is declared for node type {node_type.value!r}.")
+    return _INPUT_CARDINALITY_TEXT[node_spec(node_type).inputs]
 
 
 def _schema_effect(node_type: NodeType) -> str:
-    effects = {
-        NodeType.API_INPUT: "emits the declared request-table schemas",
-        NodeType.WORKBENCH_INPUT: "emits the request-table schemas the workbench defines",
-        NodeType.DATA_INPUT: "emits the selected source schema",
-        NodeType.DATA_OUTPUT: "writes its input schema to the destination",
-        NodeType.POLARS: "derives the schema from validated Polars expressions",
-        NodeType.EDGE_JOIN: "combines base and reference columns under join suffix/coalesce rules",
-        NodeType.MODEL_SCORE: "adds the configured prediction output and optional post-processing",
-        NodeType.BANDING: "adds each configured factor output column",
-        NodeType.RATING_STEP: "adds table-factor and combined-output columns to its first input",
-        NodeType.OUTPUT: "projects mapped columns into the declared JSON response",
-        NodeType.WORKBENCH_OUTPUT: "fills the response's tables with their declared columns",
-        NodeType.EXPLORE: "reads its input for summaries, pivots and charts",
-        NodeType.EXTERNAL_FILE: "the steps or code see the loaded object as `obj`",
-        NodeType.LIVE_SWITCH: "requires compatible schemas across selected scenarios",
-        NodeType.MODELLING: "reads its input to train; model artifacts are written out of band",
-        NodeType.OPTIMISER: (
-            "reads its inputs to solve; the optimisation result is saved for Apply Optimisation"
-        ),
-        NodeType.SCENARIO_EXPANDER: (
-            "repeats rows step_count times, adding the step index and optional value columns"
-        ),
-        NodeType.OPTIMISER_APPLY: "adds the configured version and optimised-value columns",
-        NodeType.CONSTANT: "emits one row with the configured literal columns",
-        NodeType.SUBMODEL: "exposes the declared schemas of its output ports",
-        NodeType.SUBMODEL_PORT: "carries its enclosing submodel port schema",
-    }
-    effect = effects[node_type]
+    effect = ASSISTANT_NODE_DESCRIPTIONS[node_type].schema_effect
     if node_type in SINK_ONLY_NODE_TYPES:
         return f"no downstream frame; {effect}"
     if node_type in STANDALONE_PASSTHROUGH_TYPES:
@@ -692,63 +434,32 @@ def _schema_effect(node_type: NodeType) -> str:
 
 
 def _execution_class(node_type: NodeType) -> tuple[str, str]:
-    if node_type in _TRAINING_NODE_TYPES:
-        return (
-            "explicit long-running local computation; unavailable to ordinary assistant tools",
-            "creates model or optimisation artifacts only through owning services",
-        )
-    if node_type is NodeType.DATA_OUTPUT:
-        return (
-            "explicit output execution; unavailable to ordinary assistant tools",
-            "writes to the configured destination",
-        )
+    execution = ASSISTANT_NODE_DESCRIPTIONS[node_type].execution
+    if execution is not None:
+        return execution
     if node_type in SOURCE_NODE_TYPES:
         return ("lazy/local source resolution", "reads declared project or artifact state")
-    if node_type is NodeType.EXTERNAL_FILE:
-        return ("lazy pipeline execution; the file loads when the node runs", "reads the file")
-    if node_type in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}:
+    if node_type in STRUCTURAL_NODE_TYPES:
         return ("structural graph expansion", "none")
     return ("lazy pipeline execution", "none until an owning execution surface materialises it")
 
 
-_WIRING_EXTRAS: dict[NodeType, str] = {
-    NodeType.OPTIMISER: (
-        "With several inputs, data_input names the frame to optimise and, in ratebook "
-        "mode, banding_source names the Banding input."
-    ),
-    NodeType.OPTIMISER_APPLY: (
-        "A ratebook result applies to the input named by ratebook_input; any other "
-        "result applies to the first input."
-    ),
-    NodeType.OUTPUT: "Each output_mapping row's source_port names one incoming frame.",
-    NodeType.WORKBENCH_OUTPUT: (
-        "Connect each table's frame with target_handle set to the table's name; a table "
-        "takes one edge and a node fills one table."
-    ),
-}
-
-
 def _wiring_rules(node_type: NodeType) -> str:
-    if node_type is NodeType.EDGE_JOIN:
-        return (
-            'Connect the primary input with target_handle="base" and the lookup '
-            'input with target_handle="join"; exactly one incoming edge of each '
-            "role is required."
-        )
+    description = ASSISTANT_NODE_DESCRIPTIONS[node_type]
+    if description.wiring_rules is not None:
+        return description.wiring_rules
+    spec = node_spec(node_type)
     rules: list[str] = []
     if node_type in SOURCE_NODE_TYPES:
         rules.append("Takes no incoming edges.")
-    elif node_type is NodeType.EXTERNAL_FILE:
-        rules.append(
-            "Incoming edges are optional: the first input is `df` and further inputs "
-            "are named by their edges."
-        )
-    elif node_type in _SINGLE_INPUT_TYPES:
+    elif description.incoming_edges is not None:
+        rules.append(description.incoming_edges)
+    elif spec.inputs == "exactly_one":
         rules.append("Takes exactly one incoming edge.")
     if node_type in SINK_ONLY_NODE_TYPES:
         rules.append("It has no output: never wire an edge out of it; it ends its branch.")
-    if node_type in _WIRING_EXTRAS:
-        rules.append(_WIRING_EXTRAS[node_type])
+    if description.wiring_extra is not None:
+        rules.append(description.wiring_extra)
     rules.append("Use only declared ports and preserve top-level submodel boundaries.")
     return " ".join(rules)
 
@@ -835,7 +546,7 @@ def step_grammar() -> dict[str, object]:
 
 def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
     config_folder = NODE_TYPE_TO_FOLDER.get(node_type)
-    usage = _USAGE_NOTES[node_type]
+    description = ASSISTANT_NODE_DESCRIPTIONS[node_type]
     schema = _config_schema(node_type)
     raw_required = schema.get("required", ())
     if not isinstance(raw_required, list | tuple):
@@ -862,28 +573,11 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
     anti_patterns = [
         "Do not invent config keys or bypass graph wiring.",
         "Do not add disconnected decorative nodes; every new node must be wired.",
+        *description.anti_patterns,
     ]
-    if node_type == NodeType.POLARS:
-        anti_patterns.append("Do not discard immutable Polars results; assign them to df.")
-        anti_patterns.append(
-            "Do not write new logic as code: start the steps with a source step naming "
-            "the input edge, which binds df, then transform df in a free_code step."
-        )
-        anti_patterns.append(
-            "When editing the code of a node already in code mode (it has no steps), do "
-            "not read df before assigning it: there df is only the output, so start from "
-            "an input by name (df = claims.filter(...))."
-        )
-    if node_type == NodeType.EDGE_JOIN:
-        anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
-    if node_type == NodeType.EXPLORE:
-        anti_patterns.append(
-            "An analyst's pivot table is a pivots entry on the Explore node, never a step; "
-            "Explore steps only shape the frame before it is explored."
-        )
     return NodeCapabilityDescriptor(
         node_type.value,
-        _DISPLAY_NAMES[node_type],
+        node_spec(node_type).display_name,
         NODE_TYPE_TO_DECORATOR.get(node_type),
         cast(Mapping[str, object], _freeze(schema)),
         required,
@@ -899,17 +593,17 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
             if config_folder
             else "Inline graph configuration."
         ),
-        _SUMMARIES[node_type],
+        description.summary,
         cast(Mapping[str, object], _freeze(_node_ports(node_type))),
         _input_cardinality(node_type),
         _wiring_rules(node_type),
         _schema_effect(node_type),
         execution,
         side_effects,
-        usage,
+        description.usage,
         tuple(anti_patterns),
-        _EXAMPLE_IDS.get(node_type, ()),
-        _RECIPE_IDS.get(node_type, ()),
+        description.examples,
+        description.recipes,
         (
             _freeze(
                 {
@@ -1698,19 +1392,6 @@ def _clear_manifest_cache() -> None:
 
 def validate_manifest_complete() -> None:
     """Fail loudly if an exported descriptor becomes incomplete or open."""
-    for label, table in (
-        ("usage note", _USAGE_NOTES),
-        ("palette name", _DISPLAY_NAMES),
-        ("one-line summary", _SUMMARIES),
-    ):
-        missing = [node_type.value for node_type in NodeType if node_type not in table]
-        unexpected = [str(key) for key in table if not isinstance(key, NodeType)]
-        if missing or unexpected:
-            raise RuntimeError(
-                f"Every NodeType needs exactly one assistant {label}.\n"
-                f"  Missing: {missing}\n"
-                f"  Unexpected: {unexpected}"
-            )
     if contradictory := SOURCE_NODE_TYPES & (SINK_ONLY_NODE_TYPES | STANDALONE_PASSTHROUGH_TYPES):
         raise RuntimeError(
             "A source node type cannot also be sink-only or pass through its first input: "

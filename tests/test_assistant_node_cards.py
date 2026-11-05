@@ -22,10 +22,11 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import build_input_snapshot
+from haute._node_specs import SINGLETON_NODE_NAMES
 from haute._polars_io_registry import data_input_is_direct
 from haute._polars_steps_lift import canonical_steps
 from haute._source_cache import SourceCacheStore
-from haute._types import SINGLETON_NODE_NAMES, NodeType, PipelineGraph
+from haute._types import NodeType, PipelineGraph
 from haute.assistant._node_cards import CARD_CONFIG_NAMES, node_card, node_card_fixture
 from haute.assistant._tools import dry_run_graph_edits
 from haute.assistant._wire_ops import OpValidationError

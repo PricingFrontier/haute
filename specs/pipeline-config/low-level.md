@@ -6,23 +6,25 @@
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
 | `src/haute/_node_bindings.py` | The one rule binding a node's parameters to its inputs (READ-01): `input_parameters` gives the parameters that name inputs and whether the decorator takes the first (a frame hook's `df`; a Data Input hook's `df` names none); `bind_node_inputs` returns the inputs in the order the parameters read them, or raises naming the node and the parameter. The parser (`src/haute/_parser_bindings.py`) and the standalone run (`src/haute/pipeline.py::_bind_edges`) both call it. |
-| `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
-| `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join or a transform, from the decorator kwargs and function body (`_build_node_config`); sidecar resolution, an Explore node's included (READ-43), the steps rebuilt from a stepped node's body (`_with_lifted_steps`, READ-44) and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
+| `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through `_STANDALONE_WORK`, a `node_type_table` with one handler per node type calling the shared helper canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `selected_input_index`, `load_external_object_from_config`; a structural type or the Transform has no standalone behaviour); `is_configured` says whether a registered node's decorator acts on its settings (`_ALWAYS_CONFIGURED`: an Edge Join, and an Explore, which a run refuses without its sidecar; any other configured type once it names `config=`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
+| `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join or a transform, from the decorator kwargs and function body (`_build_node_config`, reading `_DECORATOR_CONFIG`); sidecar resolution, an Explore node's included (READ-43), the steps rebuilt from a stepped node's body (`_with_lifted_steps`, READ-44) and the parse-time `contract=` cross-check (`_resolve_node_config`; `_PARSE_TIME_CONTRACT` derives a Model Scoring's outputs alone, and `_AFTER_PARSE` holds a type's last parse step: a Source Switch's inputs, an Edge Join's required order). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs (`_SIDECAR_CODECS`, each type's sidecar form: how it is read back, checked and written, the settings it leaves out at their default, and its records written one to a line: a Banding's bands, a Rating Step's grids, a Constant's map, a Quote Input's columns, an Explore node's settings), and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
 | `src/haute/_constant_config.py` | A Constant node's sidecar as a map from each constant's name to its value (READ-28): `constants_for_sidecar` writes the editor's list of `{name, value}` entries as that map, a whole number kept as written, and `constants_from_sidecar` reads it back, refusing the list form an earlier Haute wrote with a message naming the map form. Called by the node config module, `src/haute/_config_io.py`, on every Constant sidecar written and read. |
 | `src/haute/_json_files.py` | The one printer of every JSON file Haute writes (READ-10): `render_json(value, one_line=, vertical=)` indents two spaces, keeps keys in the order given and text as typed (`ensure_ascii=False`), writes a list or mapping of numbers alone on one line unless `vertical` names it, and puts on one line whatever `one_line` names; `at(*patterns)` names places by key path, `ANY` (`*`) matching any key or index; `render_json_bytes` gives the UTF-8 bytes with a final newline. Node sidecars, global constants, the editor's sidecar, the workbench form folder and test quotes are written through it. |
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_node_config_models.py` | Each node type's config model: its config `TypedDict` (Quote Input, Workbench Input and Output, the Data Input and Data Output provider branches, Transform, Edge Join, Model Score, Banding, Rating Step, Quote Response, Explore, Load File, Source Switch, Model Training, Optimiser, Optimiser Apply, Scenario Expander, Constant, Submodel, Submodel Port) and the nested shapes it holds, each closed (`extra="forbid"`) and strict under Pydantic, with each key's description as its attribute docstring; `NodeConfigModel` (the node type, its shape, its `TypeAdapter`, its declared keys, and its `check`, `check_inputs` and `completeness` hooks into the engine's value rules); and `NODE_CONFIG_MODELS`, one per `NodeType`, complete at import. |
 | `scripts/generate_node_config_reference.py` | Writes each node reference page's config-keys table (`docs/building-models/nodes/*.md`, between `<!-- config-keys:start -->` and `<!-- config-keys:end -->` inside its "In the pipeline file" note) from the node type's config model: one row per key, a nested key under its parent's path (`factors[].banding`), its type in words and its attribute docstring, a provider branch's own key naming its branches, the universal keys last and a workbench node's form-given keys left out; `--check` fails when a page's table is stale. `NODE_REFERENCE_PAGES` is the one map from node type to page. |
-| `src/haute/_config_validation.py` | `validate_node_config`, the one validation boundary over `NODE_CONFIG_MODELS`, and `CONFIG_REFUSALS`, every error it raises for a refused config, which each boundary answers as the request's refusal; `VALID_KEYS` (each node type's declared keys, from its model), `unrecognized_config_keys` and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf`, and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
+| `src/haute/_config_validation.py` | `validate_node_config`, the one validation boundary over `NODE_CONFIG_MODELS`; `selected_input_index` (the input a `selected` pass-through returns, resolved by `resolve_optimiser_data_input`); and `CONFIG_REFUSALS`, every error it raises for a refused config, which each boundary answers as the request's refusal; `VALID_KEYS` (each node type's declared keys, from its model), `unrecognized_config_keys` and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf` and each type's retired fields (`REMOVED_CONFIG_KEYS`), `reject_form_given_keys` a workbench node's `FORM_GIVEN_KEYS`, `validate_optimiser_input_selectors` checks a type's exact-edge selectors (`_INPUT_SELECTORS`), and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
 | `src/haute/_keyword_parameters.py` | A code transform's keyword-only parameters: `keyword_parameters_from_signature` (the parse's record and located refusal), `validate_keyword_parameters` (a submitted config's contract), `reject_input_named_keyword_parameters` (codegen and the builder) and `keyword_parameter_values` (the values a run binds). |
-| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index; a structured step's optional `comment`, its comment and blank lines verbatim with each line ending in a newline, printed above its statement and outside the step's line range, each line empty or a comment with no whitespace at its end; a free-code step holding only comments accepted, one holding nothing refused; `MAX_EXPR_DEPTH` counting a chain of one operator as one level, where a binary's left operand is a binary of the same operator among `+ - * / // %`, never regrouped; and a variable step refused when a free-code step above it binds its name, read by `_code_bound_names`), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index; a structured step's optional `comment`, its comment and blank lines verbatim with each line ending in a newline, printed above its statement and outside the step's line range, each line empty or a comment with no whitespace at its end; a free-code step holding only comments accepted, one holding nothing refused; `MAX_EXPR_DEPTH` counting a chain of one operator as one level, where a binary's left operand is a binary of the same operator among `+ - * / // %`, never regrouped; and a variable step refused when a free-code step above it binds its name, read by `_code_bound_names`), `stepped_surface_for` (each stepped node type's `src/haute/_node_specs.py::SteppedSurface` from `src/haute/_node_specs.py::STEPPED_NODE_TYPES`: start mode plus input eligibility `edges`/`none`; a message about a node's steps names it by its specification's display name), `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_lift.py` | The step renderer's inverse (READ-21), with which READ-22 rebuilds a stepped node's steps on load. `lift_steps` rebuilds the steps from a body: a statement becomes a step only when the renderer, placing that step after the steps rebuilt before it, prints exactly the statement's text, the comment and blank lines above it becoming the step's `comment`; each run of other statements, with the comments and blank lines among them, becomes one free-code step; comment lines after the last statement become a comment-only free-code step; the result must render back byte for byte, trailing newlines apart, or `StepLiftError` is raised. `canonical_steps` gives the canonical form a step list rebuilds as (`specs/codegen/structured-syntax-boundary.md`, Rebuilding steps from code). |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
-| `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen. |
+| `src/haute/_node_type.py` | `NodeType`, the node-type enum, alone in a standard-library-only leaf so the specification below can import it without the cycle through `haute._types` (which imports `haute._graph_utils` before it would define the enum); `haute._types` re-exports it. |
+| `src/haute/_node_specs.py` | The node specification: `NodeSpec`, `NODE_SPECS` (one entry per `NodeType`, validated at import), `node_spec` and `known_node_spec` (no entry for a value that is not a node type, which only recovery and unset string arguments meet), the derived category views (`REQUEST_INPUT_NODE_TYPES`, `RESPONSE_NODE_TYPES`, `SINK_ONLY_NODE_TYPES`, `SOURCE_NODE_TYPES`, `CODE_NODE_TYPES`, `STEPPED_NODE_TYPES`, `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`, `SINGLETON_NODE_GROUPS`, `SINGLETON_NODE_NAMES`, `REQUEST_INPUT_KINDS`, the decorator and sidecar-folder maps, `DEFAULT_NODE_TYPE`), `singleton_name_problem`, and `node_type_table` (a concern's exhaustive per-type table). Imports only `haute._node_type` and the standard library. |
+| `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen: each node type's callables (exec builder, code template, column contract). |
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
@@ -99,21 +101,228 @@
   a full policy term; an additive offset stays a required input). The tuple form folds them into the referenced side, so projection keeps them
   where they exist; `Contract.inputs`, which the boundary check enforces, excludes them. A
   registered callback returns the tuple, or a `Contract` when it has optional inputs.
+- **`NodeSpec` / `NODE_SPECS`** (`src/haute/_node_specs.py`) — the node specification, the index
+  of a node type: one frozen, slotted `NodeSpec` per `NodeType` holding every fact about the type
+  that more than one module reads, in one literal table (`NODE_SPECS`, a `MappingProxyType`).
+  `node_spec(node_type)` returns an entry and raises `KeyError` for an unknown type;
+  `known_node_spec(value)` returns `None` instead, for the places that legitimately meet a value that
+  is not a node type (a recovered file's node of a type this install does not know, an unset `str`
+  argument). A validated node's type is read with `node_spec`. A field with
+  a default is defaulted only where the default means the type has none of it. The fields:
+  - `node_type`.
+  - `display_name`: the editor's name ("Quote Input", "Transform", "Model Scoring", "Load File",
+    "Expander", ...), held equal to `frontend/src/utils/nodeTypes.ts`'s `NODE_TYPE_META[...].name`
+    by test. It replaces the assistant's display-name table and the stepped-surface labels, so the
+    assistant and the messages about a node's steps name a type as the editor does ("Load File" for
+    "External File", "Model Scoring" for "Model Score", "Expander" for "Scenario Expander"). Other
+    messages keep their wording.
+  - `decorator`: the `pipeline.<decorator>` name, `None` for the Submodel and its Port.
+  - `sidecar` and `config_folder`: where the settings live. `required` with a `config/<folder>/`
+    for the 17 sidecar types, Explore's included (READ-43); `decorator` for the Edge Join, whose
+    settings are decorator keywords, and the Transform, whose steps are its code (READ-22) and whose
+    column settings are decorator keywords; `none` for the Submodel and Port.
+  - Graph role (booleans):
+    - `request_input`: Quote Input, Workbench Input.
+    - `response`: Quote Response, Workbench Output.
+    - `source`: the configured sources, a source whatever their function's signature (the request
+      inputs, Data Input, Constant).
+    - `sink_only`: nothing may be wired downstream (Quote Response, Workbench Output, Data Output,
+      Explore, Model Training, Optimisation).
+    - `structural`: Submodel, Port.
+    - `workbench`: Workbench Input and Output, given their tables from the form.
+  - `inputs`: how many inputs the type takes, descriptively (no backend validation follows from it).
+    - `none`: the sources.
+    - `exactly_one`: Data Output, Explore, Banding, Expander, Rating Step, Model Training, Model
+      Scoring.
+    - `exactly_two`: Edge Join.
+    - `zero_or_more`: Load File.
+    - `one_or_more`: Transform, Quote Response, Workbench Output, Source Switch, Optimisation, Apply
+      Optimisation, Submodel.
+    - `structural`: Port.
+    - The editor's `maxInputs` is `1` exactly for `exactly_one` and `2` exactly for `exactly_two`,
+      held by test.
+  - `input_count_enforced`: Explore alone. The saved graph must give it exactly its one input,
+    which its function binds as `df` (`_graph_shape`'s check).
+  - `input_roles`: the target ports a two-input type's edges carry (Edge Join `("base", "join")`).
+  - `input_selectors`: the config fields that name an input (Optimisation `data_input`,
+    `banding_source`, `analysis_input`; Apply Optimisation `ratebook_input`).
+  - `pass_through_selector`: the field naming the input a `selected` pass-through returns
+    (Optimisation `data_input`).
+  - `scenario_router`: Source Switch. `runs_unconnected`: Workbench Output.
+  - `singleton_group`: `request_input` (Quote Input, Workbench Input) or `response` (Quote Response,
+    Workbench Output). A pipeline holds at most one node of a group.
+  - `singleton_name`: the one name a singleton group's type has, since a pipeline holds one
+    (READ-46): `quote_input`, `workbench_input`, `quote_response`, `workbench_output`.
+    `singleton_name_problem` gives the refusal of any other name, naming the type by its
+    `display_name`.
+  - `code`: where the user's code lives.
+    - `transform`: the Transform, whose function is the code.
+    - `frame_hook`: Data Input, Rating Step, Model Scoring, Expander, Explore, whose hook
+      post-processes `df`.
+    - `object_hook`: Load File, whose hook receives the loaded object as `obj`.
+    - `none` otherwise.
+  - `stepped`: the `SteppedSurface` (`start`, `inputs`) of a type authored with structured steps
+    (Transform, Data Input, Load File, Rating Step, Model Scoring, Expander, Explore), `None` otherwise.
+  - Runtime:
+    - `behavioural`: a stateful transform whose standalone run must route through the executor's
+      shared helper.
+    - `recompute_cost`: `cheap`, `costly`, `code` or `source`.
+    - `slice_transparent`: false only for the Expander.
+    - `pass_through`: the builder returns an input unchanged. `first` for Data Output and Model
+      Training; `selected` for Optimisation; `none` otherwise.
+    - `standalone_passthrough`: a standalone run returns an input (Data Output, Explore, Load File,
+      Model Training, Optimisation).
+    - `batch_scored`: Model Scoring, whose scorer scores its input a batch at a time and drains its
+      whole output into a capture of its own (the seed plan, the walker and the lazy executor read
+      it).
+  - `structural_role`: the part of a submodel a structural type is: `occurrence` for the Submodel
+    (named by its alias, an `instance_of` another occurrence, its outputs on `out__<port>` handles,
+    expanded into its definition's nodes), `port` for the Port (a definition's public input, named
+    by its handle); `None` for every executed type.
+  - Other facts several modules read join as fields when they are moved, each with its membership
+    stated here.
+
+  Import-time invariants, each a `RuntimeError` naming the type:
+  - each entry is keyed under its own `node_type`;
+  - non-null decorators are unique, and non-null config folders are unique;
+  - `request_input` implies `source`, and `response` implies `sink_only`;
+  - `decorator is None` iff `structural`;
+  - `sidecar` is `required` iff `config_folder` is set;
+  - `singleton_name` is set iff `singleton_group` is;
+  - `exactly_two` iff `input_roles` holds two distinct roles;
+  - `pass_through == "selected"` iff `pass_through_selector` is set, and that selector is one of the
+    type's `input_selectors`;
+  - a `stepped` type has a `code` surface (`code != "none"`);
+  - a `pass_through` type is `standalone_passthrough`;
+  - a `behavioural` type is never `standalone_passthrough`;
+  - exactly the `structural` types have a `structural_role`.
+
+  The config model is not a field. It is `NODE_CONFIG_MODELS[node_type]` (`_node_config_models.py`),
+  the specification's config column: keyed by every type and validated alike, read by node type, so
+  `_node_specs` stays a standard-library leaf.
+- **Derived category views** (`_node_specs.py`) — each computed once from the fields, under the name
+  callers already import, and pinned membership-equal to its pre-specification set by test:
+  - `REQUEST_INPUT_NODE_TYPES` (`request_input`), `RESPONSE_NODE_TYPES` (`response`),
+    `SINK_ONLY_NODE_TYPES` (`sink_only`), `SOURCE_NODE_TYPES` (`source`);
+  - `CODE_NODE_TYPES` (`code` is a hook: the configured hook-bearing types, without the Transform);
+  - `STEPPED_NODE_TYPES` (`stepped`, as a mapping to the surface);
+  - `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`,
+    `STRUCTURAL_NODE_TYPES`;
+  - `DECORATOR_TO_NODE_TYPE` / `NODE_TYPE_TO_DECORATOR`, `NODE_TYPE_TO_FOLDER` /
+    `FOLDER_TO_NODE_TYPE` (sidecar folders);
+  - `REQUEST_INPUT_KINDS` (the request inputs' values);
+  - `SINGLETON_NODE_GROUPS` (each group with its message label, its display names joined by "or"
+    with the workbench type last: "Quote Input or Workbench Input", "Quote Response or Workbench
+    Output");
+  - `SINGLETON_NODE_NAMES` (`singleton_name`, each singleton type's one name; the editor's
+    `SINGLETON_NODE_NAMES` in `frontend/src/utils/nodeTypes.ts` is the twin);
+  - `DEFAULT_NODE_TYPE` (the Transform: a node declared without a type).
+
+  A set whose membership deliberately differs from every field stays its concern's table (for
+  example projection's user-code types, which include the request inputs and Apply Optimisation and
+  exclude Explore).
+- **`node_type_table(name, entries)`** (`_node_specs.py`) — the one form of a concern's per-type
+  behaviour or data. `entries` must hold every `NodeType` and nothing else; a missing or extra key is a
+  `RuntimeError` at import naming the table and the types. It returns a `MappingProxyType`. A type
+  the concern does not apply to is listed explicitly, with `None` or a named not-applicable entry,
+  so a new type cannot fall through. Duplicate keys are rejected by the ratchet's AST check, since a
+  dict has dropped them before the call. The concern tables:
+  - the standalone runtime's work per type (`src/haute/_standalone_nodes.py::_STANDALONE_WORK`);
+  - the decorator-held config readers, the parse-time contract and the last parse step
+    (`src/haute/_config_builder.py::_DECORATOR_CONFIG`, `_PARSE_TIME_CONTRACT`, `_AFTER_PARSE`);
+  - the sidecar codecs (`src/haute/_config_io.py::_SIDECAR_CODECS`);
+  - the retired config keys, the form-given keys and the input-selector checks
+    (`src/haute/_config_validation.py::REMOVED_CONFIG_KEYS`, `FORM_GIVEN_KEYS`,
+    `_INPUT_SELECTORS`), and the deploy scorer's private keys
+    (`src/haute/_contracts.py::DEPLOY_PRIVATE_CONFIG_KEYS`);
+  - execution planning's per-type facts: runtime inputs (`execution`), the write recipe and
+    projectable scans (`_execute_lazy`), separate-query reads (`_graph_walker`), source costs
+    (`_seed_plans`), data points (`_data_points`), input snapshots (`_input_preparation`),
+    preview rendering (`executor`), scenario fanout (`_builders`) and presentation fields
+    (`_cache`);
+  - recovery, naming, the workbench form and submodel instances (`_node_config_recovery`,
+    `_pipeline_recovery`, `_executable_names`, `_workbench_nodes`, `_submodel_instances`,
+    `routes/_submodel_ops`);
+  - projection's rule coverage (`projection`);
+  - the RAM estimate's row cardinality (`_ram_estimate`);
+  - trace edge alignment, carried values, enrichment and row lineage (the `_trace_*` modules);
+  - deploy request rows, deploy interception and artifact collection (`deploy/`);
+  - the assistant's node descriptions (`assistant/_node_descriptions.py`).
+  - Each is named in its owning component's specification.
 - **`NODE_REGISTRY`** (`src/haute/_registry.py`, populated on the execution side via
-  `haute._builders._register`) — the single
-  source of truth mapping `NodeType → (exec builder callable, column_contract callback,
-  is_behavioural flag)`. Each entry also carries the `recompute_cost` field (`cheap`,
-  `costly`, `code`, `source`) and `slice_transparent` flag (default true, false only for
-  `scenarioExpander`), set on the execution side through `register_exec(...,
-  recompute_cost=..., slice_transparent=...)`, required for every type and enforced at import
-  by `validate_registry_complete`. Both `_config_builder.py`'s parse-time contract check and
-  (out of scope here) the executor/codegen read this registry; a `NodeType` with no exec entry
-  is treated as a registration bug (`KeyError`), never silently skipped.
-- **`SharedNodeSemantics` / `MODELLING_NODE_SEMANTICS`** (`src/haute/_registry.py`) —
-  the closed first-connected-input passthrough policy and decorator config keys
-  shared by the modelling runtime/codegen pair. Both builders consume this one
-  declaration; no other node type inherits the policy without a cross-path
-  result contract.
+  `haute._builders._register` and on the codegen side via `haute._codegen_builders._register_codegen`)
+  — each `NodeType`'s callables: the exec builder, the code template and the column-contract
+  callback, each required for every type and enforced at import by `validate_registry_complete`.
+  The flags it used to carry (`is_behavioural`, `recompute_cost`, `slice_transparent`) are
+  `NodeSpec` fields. Both `_config_builder.py`'s parse-time contract check and (out of scope here)
+  the executor/codegen read this registry; a `NodeType` with no exec entry is treated as a
+  registration bug (`KeyError`), never silently skipped.
+- **One interpretation per behavioural type** — a saved file's standalone runtime and the canvas
+  builder share the function that interprets the config. Each keeps what genuinely differs.
+  - **Model Scoring**: `_model_scorer.model_scorer(config, model_source, *, base_dir, source,
+    **options)` maps a config to its `ModelScorer` (task, output column, feature-contract path,
+    base directory). Both callers use it and keep their own rules:
+    - the canvas: projection-required columns, fanout, row limit and preamble; the incomplete-steps
+      check first; a config with no source chosen passes through; post-code runs inside the scorer.
+    - the standalone `score_from_config`: a config with no source is refused
+      (`require_model_source`); its hook runs once after the configured work.
+    - Deploy scores a bundled model under its packaged contract (`deploy/_scorer.py`) and is not
+      part of this.
+  - **Apply Optimisation**: `src/haute/_node_apply.py::optimiser_apply_source` classifies the
+    source (none chosen, an MLflow run or registered model with an optional artifact path, or a
+    file) as an `OptimiserApplySource`, `complete` once its identifying field is set, for the
+    builder, its column contract, `load_configured_optimiser_artifact` and the deploy bundler. The
+    runtime callers refuse an `artifact_path` without a `source_type` first, and pass the first
+    frame through for a source that is not complete.
+    - The bundler keeps its refusal of a non-empty `artifact_path` unless `source_type` is `file`.
+    - The runtime tolerates an MLflow source's `artifact_path` but ignores it: it downloads the run's
+      fixed `optimiser_result.json` (`_optimiser_io`).
+    - That disagreement is recorded, not resolved here; classification does not start honouring the
+      field.
+  - **Optimisation's returned input**: `_config_validation.selected_input_index(node_type, config,
+    input_names, *, node_label)` reads `pass_through_selector` and resolves it with
+    `resolve_optimiser_data_input`, its zero, one, many, missing and stale rules unchanged. The
+    builder, the standalone runtime and `pass_through_selected_edge` call it.
+  - **Data Input**: the builder keeps calling `resolve_data_input` with its in-memory config from
+    the project's pipeline directory; the standalone `resolve_data_input_from_config` anchors the
+    sidecar's path first, from the saved file's own directory. Both resolve a relative path by
+    `resolve_node_input_path` (the project root's file first, then the pipeline directory's), so
+    they read one file when the saved file sits in the project's pipeline directory; a file
+    elsewhere anchors at its own directory standalone.
+- **The ratchet** (`tests/test_node_spec_ratchet.py`) — outside `_node_type.py` and `_node_specs.py`,
+  a module may name a node type only in a permitted form. The scanner reads every `src/haute` module.
+  - It flags:
+    - an enum member through any alias the module binds to `NodeType`;
+    - `NodeType("<value>")` with a literal;
+    - a camelCase node-type string (`ratingStep`, `dataInput`, ...) anywhere outside a docstring;
+    - a single-word node-type string (`output`, `banding`, `constant`, `explore`, `polars`,
+      `modelling`, `optimiser`, `submodel`) in a comparison, a dict-literal key, a set literal, a
+      `match` case, or a node-type argument position. That position is any parameter of a
+      `src/haute` function annotated `NodeType`, `NodeType | str` or `str | NodeType`, matched by
+      callee name and by positional index or keyword. So `validate_node_config("banding", cfg)` is
+      flagged, while `config.get("banding")` (a config key) is not.
+  - It permits:
+    - the keys of a dict literal passed directly to `node_type_table` (every key `NodeType.<MEMBER>`,
+      no `**` unpacking, no repeated key). A table passed any other way (a comprehension,
+      `dict.fromkeys`, a variable) is itself flagged, since it would fill in a new type silently;
+    - the node-type argument of a registration call (the first positional argument of `_register`,
+      `register_exec`, `_register_codegen`, `register_codegen`, `set_codegen` and `NodeConfigModel`,
+      and `Pipeline._register_node`'s `_node_type=` keyword);
+    - a single-type endpoint listed in `SINGLE_TYPE_ENDPOINTS` with its one member and a reason.
+      Inside it (not in a nested function) only `==`, `!=`, `is` or `is not` against that member, or
+      that member as a call argument, is permitted.
+  - A string use that is not about node types is listed in `NOT_NODE_TYPES`.
+    - Each entry is bound to its function, its literal and its exact syntactic site: the other
+      operand of the comparison, the dict, the set, or the callee.
+    - It also holds a count, so the exemption for `column == "output"` covers neither a new
+      `node_type == "output"` nor a second identical occurrence.
+  - A listed entry that no longer holds its reference fails as stale.
+  - `_node_type.py` and `_node_specs.py` are exempt from these rules but not from duplicate keys: the
+    test checks the `NODE_SPECS` literal for a repeated key, as it checks every `node_type_table`
+    literal. Coverage and identity are checked at import; duplicate keys by the test.
+- **Adding a node type** — the type's `NodeSpec` entry, its config model, its builder and code
+  template registrations, a row in each concern table (each fails at import, naming itself, until
+  the type is listed) and the frontend editor.
 - **Config shapes** (`_node_config_models.py`) — one config `TypedDict` per node type (the
   Data Input and Data Output types a union of provider branches tagged by `input_type` /
   `output_type`), every one inheriting `NodeConfigBase`, which declares the universal keys any
@@ -185,14 +394,16 @@
   node's materialised input schema, and an absent `algorithm` trains CatBoost, as before.
   **`NODE_CONFIG_MODELS`**
   (`dict[NodeType, NodeConfigModel]`) holds one per `NodeType`; a type with none is an import
-  error. The node specification (`PCFG-R09`) reads its config model from this mapping.
+  error. It is the node specification's config column: `NodeSpec` does not hold the model, which is
+  read as `NODE_CONFIG_MODELS[node_type]`.
 - **`VALID_KEYS`** (`_config_validation.py`) — `dict[NodeType, frozenset[str]]`, each node
   type's `NodeConfigModel.keys`, including the universal keys.
-- **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (`_config_io.py`) — the bidirectional
+- **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (derived in `_node_specs.py` from each
+  `NodeSpec`'s `config_folder`; `_config_io.py` reads them) — the bidirectional
   map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
-  node types store external config (all except `edgeJoin`, `polars`, `submodel`, and
-  `submodelPort`: a transform's steps live in its code, READ-22), and
-  `node_emits_sidecar(node)` is `has_config_folder` of its type:
+  node types store external config (`sidecar == "required"`: all except `edgeJoin`,
+  `polars`, `submodel`, and `submodelPort`; a transform's steps live in its code, READ-22),
+  and `node_emits_sidecar(node)` is `has_config_folder` of its type:
 
   | Node type | Sidecar folder |
   |---|---|
@@ -503,8 +714,8 @@ underscore-prefixed one included, or a malformed value never reaches a file — 
 only go stale, then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}` through `node_config_json`: the config record's own keys
 sorted, a setting at the default its loader reads for an absent key left out
-(`_SIDECAR_DEFAULTS`: a Rating Step's empty `combined_outputs`, a Data Input's or Data
-Output's empty `arguments`), a rating table's keys in their order (`name`, `factors`,
+(its `_SIDECAR_CODECS` row's `defaults`: a Rating Step's empty `combined_outputs`, a Data
+Input's or Data Output's empty `arguments`), a rating table's keys in their order (`name`, `factors`,
 `factor_dtypes`, `output_column`, `on_missing`, `default_value`, `entries`, then any other as
 given) and each entry's factors in the table's order then `value`, each entry on one line,
 written by the one printer every committed JSON file goes through
@@ -533,8 +744,8 @@ node types; inline decorators and JSON sidecars preserve the same authored value
 Any validation error is raised while collecting/staging content, before an existing sidecar is
 replaced.
 
-**Registry-driven contract lookup.** `haute._builders._register(node_type, columns=..., opaque=...,
-is_behavioural=...)` decorates roughly twenty per-type builder functions, registering both the
+**Registry-driven contract lookup.** `haute._builders._register(node_type, columns=..., opaque=...)`
+decorates roughly twenty per-type builder functions, registering both the
 exec builder and — mutually exclusive — either a column-contract callback or the `opaque=True`
 sentinel into `NODE_REGISTRY`. `haute._contracts.get_node_contract(node_type, config)`, called from
 `_config_builder._derive_parse_time_contract` during the parse-time contract cross-check (and by
@@ -1100,6 +1311,57 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `pipeline.submodel(<module>.submodel, ...)` names a module that defines no `submodel`.
 
 ## Testing
+
+- `tests/test_node_specs.py` verifies the node specification:
+  - `NODE_SPECS` holds every `NodeType` once, keyed under its own type;
+  - each import-time invariant refuses a planted violation;
+  - each derived view equals a literal of its members before the specification, so moving a set
+    changed no membership;
+  - `SINGLETON_NODE_GROUPS`' labels;
+  - `node_type_table` refuses a missing, an extra and a non-`NodeType` key, and returns a read-only
+    mapping;
+  - `selected_input_index` keeps `resolve_optimiser_data_input`'s rules (none, one, several, a
+    missing, a stale and an ambiguous selector) and node label;
+  - in a fresh interpreter, `haute._node_type` and `haute._node_specs` alone import neither Polars nor
+    Pydantic;
+  - separately, `haute._node_specs`, `haute._graph_utils`, `haute._types` and `haute` initialise in
+    each order without an import cycle.
+- `tests/test_node_spec_ratchet.py` holds every `src/haute` module to the ratchet:
+  - no unlisted per-type reference;
+  - no stale `SINGLE_TYPE_ENDPOINTS` or `NOT_NODE_TYPES` entry;
+  - meta-tests that plant each escape and require the scanner to flag it:
+    - a comparison;
+    - a set literal;
+    - an aliased enum;
+    - `NodeType("ratingStep")`;
+    - a raw `== "banding"`;
+    - a string-keyed dispatch dict;
+    - a `match` case;
+    - a comprehension-built or `**`-filled table;
+    - a repeated table key, and a repeated `NODE_SPECS` key;
+    - a camelCase literal as a direct call argument;
+    - a single-word literal in a node-type argument position (`validate_node_config("banding", ...)`);
+    - a new dispatch comparison beside an already-exempt literal;
+    - an endpoint comparing a second type;
+    - a nested function inside an endpoint.
+  - It also requires the scanner to accept each permitted form.
+- `tests/test_behavioural_equivalence.py` runs one config and frame through the canvas builder and
+  through `run_configured_node` and requires equal frames, for each behavioural type, and a Data
+  Input's relative path read alike from a root and a nested pipeline. It also pins each caller's
+  own rule.
+  - Model Scoring:
+    - with no source it passes through on the canvas and is refused standalone;
+    - an incomplete chosen source is refused alike;
+    - incomplete steps are reported before the source is read;
+    - a non-idempotent hook runs exactly once.
+  - Apply Optimisation:
+    - with no source both pass the first frame through;
+    - the incomplete selections tolerated today stay tolerated;
+    - an `artifact_path` without a `source_type` is refused;
+    - an MLflow source with a non-default `artifact_path` is accepted at runtime (and still loads the
+      run's `optimiser_result.json`) and refused by the deploy bundler, today's recorded
+      disagreement.
+  - The bundled deploy scorer is unchanged, held by its existing tests.
 
 - `tests/test_project_context.py` verifies the project context: `resolve_project` walking up
   to the first `haute.toml` inside git and its `ConfigError` outside one, the pipeline folder

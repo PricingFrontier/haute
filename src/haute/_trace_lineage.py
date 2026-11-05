@@ -24,7 +24,8 @@ from haute._expression_parser import (
     parse_expression,
     wrap_node_code,
 )
-from haute._trace_correlation import _edge_join_key_pairs
+from haute._node_specs import node_type_table
+from haute._trace_correlation import _edge_join_key_pairs, joins_by_role
 from haute._trace_enrichment import _effective_node_code
 from haute._types import NodeType
 
@@ -55,10 +56,71 @@ class _Unreadable:
 
 _UNREADABLE: Final = _Unreadable()
 
-# Nodes that compute nothing: every output column is a parent's, even one the
-# step's schema diff shows as added because the parent holding it was not
-# correlated.
-_ROUTER_TYPES: Final = frozenset({NodeType.EDGE_JOIN, NodeType.LIVE_SWITCH, NodeType.DATA_OUTPUT})
+#: Whether a node type computes nothing: every output column is a parent's,
+#: even one the step's schema diff shows as added because the parent holding it
+#: was not correlated.
+_COMPUTES_NOTHING: Final = node_type_table(
+    "trace lineage router",
+    {
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: False,
+        NodeType.DATA_OUTPUT: True,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: True,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: False,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: True,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: False,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
+)
+
+
+def _expander_generated_columns(config: Mapping[str, Any]) -> set[object]:
+    """The columns a Scenario Expander writes from its settings: the scenario
+    value column and the step column."""
+    return {config.get("column_name"), config.get("step_column", "scenario_index")}
+
+
+#: The columns a node type generates from its settings alone, reading none of
+#: its inputs; ``None`` for a node type that generates none.
+_GENERATED_COLUMNS: Final = node_type_table(
+    "trace generated columns",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: _expander_generated_columns,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
 
 # Joins whose output key columns hold the base row's key values.
 _BASE_KEY_JOINS: Final = frozenset({"inner", "left", "semi", "anti"})
@@ -163,7 +225,7 @@ def trace_value_lineage(
         """The parents *needed* columns come from, each with its own names for them."""
         parents = lineage_parents(node_id)
         roles = join_inputs.get(node_id)
-        if node_map[node_id].data.nodeType == NodeType.EDGE_JOIN and roles is not None:
+        if joins_by_role(node_map[node_id].data.nodeType) and roles is not None:
             return _route_edge_join(node_map[node_id], needed, parents, output_columns, roles)
         routed: dict[str, _Demand] = {}
         for parent_id in parents:
@@ -281,7 +343,7 @@ def _step_demand(
 ) -> tuple[set[str], _Demand, _LocalReads]:
     """The columns *step* computes for the value, what it needs from its inputs,
     and what each computed column read."""
-    if node.data.nodeType in _ROUTER_TYPES:
+    if _COMPUTES_NOTHING[node.data.nodeType]:
         return set(), wanted, {}
     diff = step.schema_diff
     changed = set(diff.columns_added) | set(diff.columns_modified)
@@ -496,11 +558,8 @@ class _Derivation:
 
     def _rule_references(self, column: str) -> tuple[str, ...] | _Unreadable | None:
         """What a generated or detail-explained column reads; ``None`` when no rule explains it."""
-        node_type = self.node.data.nodeType
-        if node_type == NodeType.SCENARIO_EXPANDER and column in {
-            self.config.get("column_name"),
-            self.config.get("step_column", "scenario_index"),
-        }:
+        generated = _GENERATED_COLUMNS[self.node.data.nodeType]
+        if generated is not None and column in generated(self.config):
             return ()
         detail = self.step.node_detail
         if not isinstance(detail, dict):

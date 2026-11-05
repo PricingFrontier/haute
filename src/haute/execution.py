@@ -36,6 +36,7 @@ from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_type_table
 from haute._path_resolution import resolve_node_input_path
 from haute._polars_selectors import preamble_selector_aliases
 from haute._project_context import current_project, graph_pipeline_dir
@@ -46,14 +47,7 @@ from haute._ram_estimate import (
     RuntimeSourceFrames,
     estimate_materialisation_boundaries,
 )
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-    _Frame,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.projection import (
     AllExceptColumns,
@@ -117,11 +111,6 @@ LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], 
 
 _AUTO_MATERIALISATION_ESTIMATE = object()
 _DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
-_SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
-    NodeType.API_INPUT: "path",
-    NodeType.DATA_INPUT: "path",
-    NodeType.EXTERNAL_FILE: "path",
-}
 # Beside its source file's field, the config fields that say which external
 # data or model a node reads: its runtime-input entry signs them beside the
 # state they name. Every other field reaches the identity through the
@@ -135,48 +124,114 @@ _MLFLOW_SOURCE_CONFIG_FIELDS = (
     "source_type",
     "version",
 )
-_RUNTIME_INPUT_CONFIG_FIELDS: dict[NodeType, tuple[str, ...]] = {
-    NodeType.DATA_INPUT: (
-        "code",
-        "connection",
-        "format",
-        "http_path",
-        "input_type",
-        "mode",
-        "query",
-        "table",
-        "uri",
-    ),
-    NodeType.EXTERNAL_FILE: ("code",),
-    NodeType.MODEL_SCORE: (
-        *_MLFLOW_SOURCE_CONFIG_FIELDS,
-        "code",
-        "feature_contract_path",
-        "model_path",
-    ),
-    NodeType.OPTIMISER_APPLY: (*_MLFLOW_SOURCE_CONFIG_FIELDS, "ratebook_input"),
-}
+
+
+@dataclass(frozen=True)
+class _RuntimeInputs:
+    """What a node type reads from outside the graph, which an execution identity signs."""
+
+    #: The config fields its runtime-input entry signs: its source file's field
+    #: first, when it reads one.
+    config_fields: tuple[str, ...]
+    #: The config fields naming a local file it reads, given its config.
+    local_paths: Callable[[Mapping[str, Any]], tuple[str, ...]]
+    #: Path-shaped fields a request's boundary validates though execution never
+    #: resolves them as local files (an MLflow ``artifact_path`` identifier).
+    identifier_paths: tuple[str, ...] = ()
+    #: Its files are its Data Input source's: direct files, or a snapshot pointer.
+    data_source: bool = False
+    #: A ``run`` or ``registered`` source resolves through an MLflow backend,
+    #: whose resolved identity is signed too.
+    mlflow_sourced: bool = False
+
+
+def _path_field(config: Mapping[str, Any]) -> tuple[str, ...]:
+    return ("path",)
+
+
+def _data_input_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
+    return ("path",) if config.get("input_type") in {"file", "lakehouse"} else ()
+
+
+def _model_score_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
+    # ``artifact_path`` is an MLflow artifact identifier (for example
+    # ``model/model.cbm``), not a path on the Haute project filesystem.
+    model_file = ("model_path",) if config.get("source_type") == "file" else ()
+    return ("feature_contract_path", *model_file)
+
+
+def _optimiser_apply_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
+    return ("artifact_path",) if config.get("source_type") == "file" else ()
+
+
+#: The runtime inputs of each node type that reads any; ``None`` for a type whose
+#: whole identity is its structure and lineage (a Workbench Input reads no file).
+_RUNTIME_INPUTS: Mapping[NodeType, _RuntimeInputs | None] = node_type_table(
+    "runtime inputs",
+    {
+        NodeType.API_INPUT: _RuntimeInputs(config_fields=("path",), local_paths=_path_field),
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: _RuntimeInputs(
+            config_fields=(
+                "path",
+                "code",
+                "connection",
+                "format",
+                "http_path",
+                "input_type",
+                "mode",
+                "query",
+                "table",
+                "uri",
+            ),
+            local_paths=_data_input_paths,
+            data_source=True,
+        ),
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: _RuntimeInputs(
+            config_fields=(
+                *_MLFLOW_SOURCE_CONFIG_FIELDS,
+                "code",
+                "feature_contract_path",
+                "model_path",
+            ),
+            local_paths=_model_score_paths,
+            identifier_paths=("artifact_path",),
+            mlflow_sourced=True,
+        ),
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: _RuntimeInputs(
+            config_fields=("path", "code"), local_paths=_path_field
+        ),
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: _RuntimeInputs(
+            config_fields=(*_MLFLOW_SOURCE_CONFIG_FIELDS, "ratebook_input"),
+            local_paths=_optimiser_apply_paths,
+            mlflow_sourced=True,
+        ),
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
 # The node types whose runtime inputs an execution identity signs.
 _RUNTIME_INPUT_NODE_TYPES = frozenset(
-    {*_SOURCE_PATH_CONFIG_BY_NODE_TYPE, NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY}
+    node_type for node_type, inputs in _RUNTIME_INPUTS.items() if inputs is not None
 )
 
 
 def _runtime_input_config_fields(node_type: NodeType) -> tuple[str, ...]:
-    source_path = _SOURCE_PATH_CONFIG_BY_NODE_TYPE.get(node_type)
-    return (
-        *((source_path,) if source_path is not None else ()),
-        *_RUNTIME_INPUT_CONFIG_FIELDS.get(node_type, ()),
-    )
-
-
-_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
-    NodeType.API_INPUT: ("path",),
-    NodeType.EXTERNAL_FILE: ("path",),
-    # ``artifact_path`` is an MLflow artifact identifier (for example
-    # ``model/model.cbm``), not a path on the Haute project filesystem.
-    NodeType.MODEL_SCORE: ("feature_contract_path",),
-}
+    inputs = _RUNTIME_INPUTS[node_type]
+    return () if inputs is None else inputs.config_fields
 
 
 def canonical_dataframe_execution_graph(
@@ -865,20 +920,8 @@ def _config_subset(config: Mapping[str, Any], keys: Iterable[str]) -> Mapping[st
 
 def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     """Return config fields that cause reads from the local filesystem."""
-    fields = list(_LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE.get(node.data.nodeType, ()))
-    if node.data.nodeType == NodeType.DATA_INPUT and node.data.config.get("input_type") in {
-        "file",
-        "lakehouse",
-    }:
-        fields.append("path")
-    if (
-        node.data.nodeType == NodeType.OPTIMISER_APPLY
-        and node.data.config.get("source_type") == "file"
-    ):
-        fields.append("artifact_path")
-    if node.data.nodeType == NodeType.MODEL_SCORE and node.data.config.get("source_type") == "file":
-        fields.append("model_path")
-    return tuple(fields)
+    inputs = _RUNTIME_INPUTS[node.data.nodeType]
+    return () if inputs is None else inputs.local_paths(node.data.config)
 
 
 def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
@@ -888,10 +931,9 @@ def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     validation continues to reject traversal-shaped values, even though that
     identifier must never be resolved as a local project file by execution.
     """
-    fields = list(_local_runtime_input_path_fields(node))
-    if node.data.nodeType == NodeType.MODEL_SCORE:
-        fields.append("artifact_path")
-    return tuple(fields)
+    inputs = _RUNTIME_INPUTS[node.data.nodeType]
+    identifiers = () if inputs is None else inputs.identifier_paths
+    return (*_local_runtime_input_path_fields(node), *identifiers)
 
 
 def _snapshot_source_signature(
@@ -1002,10 +1044,12 @@ def _runtime_input_fingerprint_entry(
         # and reaches automatic preparation instead of serving a stale
         # generation from a warm entry.
         files["source_signature"] = _snapshot_source_signature(graph, config)
-    if node.data.nodeType in (
-        NodeType.MODEL_SCORE,
-        NodeType.OPTIMISER_APPLY,
-    ) and config.get("source_type") in ("run", "registered"):
+    inputs = _RUNTIME_INPUTS[node.data.nodeType]
+    if (
+        inputs is not None
+        and inputs.mlflow_sourced
+        and config.get("source_type") in ("run", "registered")
+    ):
         files["mlflow_backend"] = mlflow_backend_signature(config)
         if config.get("source_type") == "registered":
             files["registered_version"] = _mlflow_registered_version_signature(config)
@@ -1215,7 +1259,8 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
             path = _runtime_path_from_graph_config(graph, raw_path)
             return {"path": path, **_api_input_table_pointer_paths(config, path)}
         return {}
-    if node_type == NodeType.DATA_INPUT:
+    inputs = _RUNTIME_INPUTS[node_type]
+    if inputs is not None and inputs.data_source:
         from haute._polars_io_registry import data_input_is_direct
 
         if data_input_is_direct(config):

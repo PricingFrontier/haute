@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 from haute._code_extraction import normalise_user_code
 from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
-from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
+from haute._config_io import palette_default_config
 from haute._config_validation import VALID_KEYS
 from haute._executable_names import function_name_problem
 from haute._graph_utils import (
@@ -44,11 +44,18 @@ from haute._graph_utils import (
 )
 from haute._lru_cache import LRUCache
 from haute._node_config_models import NODE_CONFIG_MODELS
+from haute._node_specs import (
+    NODE_TYPE_TO_FOLDER,
+    REQUEST_INPUT_NODE_TYPES,
+    SINGLETON_NODE_NAMES,
+    STEPPED_NODE_TYPES,
+    STRUCTURAL_NODE_TYPES,
+    node_spec,
+    singleton_name_problem,
+)
 from haute._output_assembler import is_active_mapping_entry
 from haute._polars_steps import (
     STEP_KINDS,
-    STEPPED_NODE_TYPES,
-    STEPPED_SURFACE_LABELS,
     STEPS_FROM_CODE,
     PolarsStepError,
     is_stepped_config,
@@ -64,17 +71,15 @@ from haute._polars_steps import (
 from haute._polars_steps_lift import canonical_steps
 from haute._sandbox import _bound_names
 from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    SINGLETON_NODE_NAMES,
     GraphEdge,
     GraphNode,
     NodeData,
     NodeType,
     PipelineGraph,
     SubmodelDefinition,
-    singleton_name_problem,
 )
 from haute.assistant._catalog import INPUT_NAMING_RULE, capability_manifest, new_logic_steps
+from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS
 from haute.assistant._wire_ops import (
     MAX_DECLARED_POSTCONDITIONS,
     MAX_PLAN_OPERATIONS,
@@ -95,7 +100,6 @@ from haute.assistant._wire_ops import (
 )
 from haute.schemas import ASSISTANT_MAX_ASSUMPTIONS, ASSISTANT_RECEIPT_TEXT_LIMIT
 
-_SUBMODEL_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 #: The error a read or an edit of a submodel or a node inside one returns. No
 #: correction clears it, so the model reports a blocker instead of retrying.
 SUBMODEL_BOUNDARY_CODE = "submodel_boundary"
@@ -221,7 +225,7 @@ def _resolve_node_id(
         )
 
     node_type = graph.nodes[index].data.nodeType
-    if node_type in _SUBMODEL_TYPES:
+    if node_type in STRUCTURAL_NODE_TYPES:
         raise AssistantOperationError(
             SUBMODEL_BOUNDARY_CODE,
             f"{role} {raw_id!r} is a submodel boundary: {SUBMODEL_BOUNDARY_TEXT}",
@@ -287,7 +291,7 @@ def _check_stepped_write(
 
     if node_type not in STEPPED_NODE_TYPES:
         return
-    label = STEPPED_SURFACE_LABELS[node_type]
+    label = node_spec(node_type).display_name
     fix = f"Write new logic as steps with a free-code card: {_free_code_form(node_type)}."
     if before is None or is_stepped_config(node_type, before):
         if "code" in written:
@@ -368,14 +372,6 @@ def _step_id_at(steps: Sequence[object], index: int | None) -> str | None:
     return step_id if isinstance(step_id, str) and step_id else None
 
 
-#: Where an analyst's pivot table goes when a pivot step on an Explore does not render.
-_EXPLORE_PIVOT_FIX = (
-    "An analyst's pivot table is a pivots entry in the Explore's config, not a step; a "
-    'pivot step only reshapes the frame. Call read_reference with "node:explore" for the '
-    "entry's shape and add it with update_node."
-)
-
-
 def _unrendered_steps(
     node_type: NodeType, steps: Sequence[object], exc: PolarsStepError
 ) -> tuple[str, str]:
@@ -405,13 +401,14 @@ def _unrendered_steps(
         form = _free_code_form(node_type)
         return (
             f"its steps cannot be rendered ({exc}). New logic on a "
-            f"{STEPPED_SURFACE_LABELS[node_type]} is written as {form}.",
+            f"{node_spec(node_type).display_name} is written as {form}.",
             f"Write the steps as {form}.",
         )
     step_id = _step_id_at(steps, index)
     name = f"{kind} step {step_id!r}" if step_id else f"{kind} step {index + 1}"
-    if kind == "pivot" and node_type == NodeType.EXPLORE:
-        fix = _EXPLORE_PIVOT_FIX
+    pivot_fix = ASSISTANT_NODE_DESCRIPTIONS[node_type].pivot_step_fix
+    if kind == "pivot" and pivot_fix is not None:
+        fix = pivot_fix
     else:
         verb = "Correct" if kind == "free_code" else "Complete"
         fix = f"{verb} the {name}: {exc.message}"
@@ -444,7 +441,7 @@ def _resolve_output_rows(
     """
 
     rows = config.get("output_mapping")
-    if node_type != NodeType.OUTPUT or not isinstance(rows, list):
+    if not ASSISTANT_NODE_DESCRIPTIONS[node_type].output_mapping or not isinstance(rows, list):
         return config
     resolved: list[object] = []
     for row in rows:
@@ -478,12 +475,12 @@ def _resolve_output_rows(
     return {**config, "output_mapping": resolved}
 
 
-#: The node types whose tables are the workbench's: the assistant reads them
-#: and wires to their tables, but never authors one.
-_WORKBENCH_NODE_TYPES = {
-    NodeType.WORKBENCH_INPUT: ("Workbench Input", "Wire nodes to its frames instead."),
-    NodeType.WORKBENCH_OUTPUT: ("Workbench Output", "Wire nodes to its tables instead."),
-}
+def _workbench_node(node_type: NodeType) -> tuple[str, str] | None:
+    """A workbench node type's name and its hint to wire to its tables instead; None
+    for any other type. Its tables are the workbench's: the assistant reads it and
+    wires to its tables, but never authors one."""
+    wire = ASSISTANT_NODE_DESCRIPTIONS[node_type].read_only_wiring
+    return None if wire is None else (node_spec(node_type).display_name, wire)
 
 
 def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) -> None:
@@ -491,7 +488,7 @@ def _refuse_workbench_input(graph: PipelineGraph, node_id: str, operation: str) 
     index = _node_index(graph, node_id)
     if index is None:
         return
-    workbench = _WORKBENCH_NODE_TYPES.get(graph.nodes[index].data.nodeType)
+    workbench = _workbench_node(graph.nodes[index].data.nodeType)
     if workbench is not None:
         name, wire = workbench
         _invalid(
@@ -508,14 +505,14 @@ def _apply_add_node(
     refs: dict[str, str],
     new_node_ids: list[str],
 ) -> None:
-    if op.node_type in _SUBMODEL_TYPES:
+    if op.node_type in STRUCTURAL_NODE_TYPES:
         _invalid(
             f"Cannot add node type {op.node_type.value!r}: "
             "assistant operations cannot create submodel boundaries",
             fix="Add ordinary nodes instead; submodels are created by the analyst.",
         )
-    if op.node_type in _WORKBENCH_NODE_TYPES:
-        name, _wire = _WORKBENCH_NODE_TYPES[op.node_type]
+    if (workbench := _workbench_node(op.node_type)) is not None:
+        name, _wire = workbench
         _invalid(
             f"Cannot add node type {op.node_type.value!r}: a {name}'s tables are the workbench's",
             fix=f"The analyst adds a {name} from the palette; wire nodes to the "
@@ -570,20 +567,6 @@ def _apply_add_node(
         refs[op.ref] = node_id
 
 
-#: The field that names each entry of a config list, where that name is pipeline
-#: metadata (an output column, an output path, a pivot id): what a refused blind
-#: rewrite may say it would change. ``steps`` entries are named by their ids on
-#: every stepped node type.
-_LIST_ENTRY_NAMES: Mapping[tuple[NodeType, str], str] = MappingProxyType(
-    {
-        (NodeType.BANDING, "factors"): "output_column",
-        (NodeType.RATING_STEP, "tables"): "output_column",
-        (NodeType.RATING_STEP, "combined_outputs"): "output_column",
-        (NodeType.OUTPUT, "output_mapping"): "output_path",
-        (NodeType.EXPLORE, "pivots"): "id",
-        (NodeType.CONSTANT, "values"): "name",
-    }
-)
 #: Config lists whose entries are themselves input or column names.
 _NAME_LISTS = frozenset({"inputs", "selected_columns"})
 #: Config maps keyed by input or column names; any other map's keys can be
@@ -647,9 +630,10 @@ def _saved_entries_changed(
 
     An entry is kept when *written* holds it unchanged: a list entry equal to
     it, or the same map key with an equal value. The changed entries are named
-    by metadata only (see ``_LIST_ENTRY_NAMES``) and otherwise described by
-    position or count. None when *saved* is not a non-empty list or map, or
-    every entry is kept.
+    by metadata only (the type's ``AssistantNodeDescription.list_entry_names``;
+    ``steps`` entries by their ids on every stepped node type) and otherwise
+    described by position or count. None when *saved* is not a non-empty list or
+    map, or every entry is kept.
     """
 
     if isinstance(saved, list) and saved:
@@ -657,7 +641,11 @@ def _saved_entries_changed(
         lost = [position for position, entry in enumerate(saved, start=1) if entry not in kept]
         if not lost:
             return None
-        field = "id" if key == "steps" else _LIST_ENTRY_NAMES.get((node_type, key))
+        field = (
+            "id"
+            if key == "steps"
+            else dict(ASSISTANT_NODE_DESCRIPTIONS[node_type].list_entry_names).get(key)
+        )
 
         def name(position: int) -> str:
             entry = saved[position - 1]
@@ -812,7 +800,7 @@ def _apply_edit_steps(
             where={"node": node_id},
             fix=f"Change {node_id!r} with update_node.",
         )
-    label = STEPPED_SURFACE_LABELS[node_type]
+    label = node_spec(node_type).display_name
     config = node.data.config
     steps = config.get("steps")
     if not isinstance(steps, list):
@@ -889,7 +877,7 @@ def _apply_edit_steps(
 
 
 #: Source types whose outgoing input names come from a handle, not the node's label.
-_HANDLE_NAMED_SOURCES = REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+_HANDLE_NAMED_SOURCES = REQUEST_INPUT_NODE_TYPES | STRUCTURAL_NODE_TYPES
 #: Config fields that hold one incoming edge's input name.
 _INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
 #: The consumer config fields a rename rewrites when they name the renamed input:
@@ -1426,7 +1414,9 @@ def _explain_unknown_reference(
         f"{node_id!r} (${ref_of[node_id]})" if node_id in ref_of else repr(node_id)
         for node_id in new_node_ids
     )
-    candidates = [node.id for node in graph.nodes if node.data.nodeType not in _SUBMODEL_TYPES]
+    candidates = [
+        node.id for node in graph.nodes if node.data.nodeType not in STRUCTURAL_NODE_TYPES
+    ]
     close = difflib.get_close_matches(reference, candidates, n=3, cutoff=0.6)
     add = (
         f"add {reference!r} with add_node before operation {position(index)}: each dry run "
@@ -3062,7 +3052,7 @@ def _validate_assistant_authored_steps(
     input_names = _incoming_input_names(result, node.id, nodes_by_id)
     steps = node.data.config["steps"]
     form = _free_code_form(node_type)
-    label = STEPPED_SURFACE_LABELS[node_type]
+    label = node_spec(node_type).display_name
     try:
         rendered = render_polars_steps(
             steps, step_input_names(node_type, input_names), start=surface.start
@@ -3231,7 +3221,7 @@ def _validate_assistant_authored_graph(
         node = nodes_by_id.get(node_id)
         if (
             node is not None
-            and node.data.nodeType == NodeType.POLARS
+            and node_spec(node.data.nodeType).code == "transform"
             and "code" in node.data.config
         ):
             _validate_polars_result_retained(node.data.config["code"], node_id)
@@ -3248,7 +3238,7 @@ def _validate_assistant_authored_graph(
     }
     for node_id in sorted(set(authored_added) | mapping_changed):
         node = nodes_by_id.get(node_id)
-        if node is not None and node.data.nodeType == NodeType.OUTPUT:
+        if node is not None and ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].output_mapping:
             _validate_output_rows_read_inputs(result, node, nodes_by_id)
 
     incident_nodes = {node_id for edge in result.edges for node_id in (edge.source, edge.target)}

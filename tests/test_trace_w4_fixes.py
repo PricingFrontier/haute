@@ -200,7 +200,7 @@ class TestPositionalFastPath:
         }
         # No code at all → conservatively "may reorder", but a single row
         # is unambiguous.
-        node_map = {"p": _node("p", "source"), "c": _node("c", "generic")}
+        node_map = {"p": _node("p", "dataInput"), "c": _node("c", "constant")}
 
         result = _correlate_rows_posthoc(
             eager,
@@ -222,7 +222,7 @@ class TestPositionalFastPath:
             "p": pl.DataFrame({"k": [1, 1], "extra": [5, 6]}),
             "c": pl.DataFrame({"k": [1, 1], "other": [9, 9]}),
         }
-        node_map = {"p": _node("p", "source"), "c": _node("c", "generic")}
+        node_map = {"p": _node("p", "dataInput"), "c": _node("c", "constant")}
         diagnostics: list[dict] = []
 
         result = _correlate_rows_posthoc(
@@ -269,7 +269,7 @@ class TestPositionalFastPath:
             "p": pl.DataFrame({"k": [1, 2], "extra": [5, 6]}),
             "c": pl.DataFrame({"k": [1, 2], "other": [9, 8]}),
         }
-        node_map = {"p": _node("p", "source"), "c": _node("c", "generic")}
+        node_map = {"p": _node("p", "dataInput"), "c": _node("c", "constant")}
 
         result = _correlate_rows_posthoc(
             eager,

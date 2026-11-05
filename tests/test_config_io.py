@@ -11,8 +11,6 @@ from typing import Any
 import pytest
 
 from haute._config_io import (
-    FOLDER_TO_NODE_TYPE,
-    NODE_TYPE_TO_FOLDER,
     collect_node_configs,
     config_path_for_node,
     find_config_by_func_name,
@@ -22,6 +20,7 @@ from haute._config_io import (
     node_config_json,
     remove_config_file,
 )
+from haute._node_specs import FOLDER_TO_NODE_TYPE, NODE_TYPE_TO_FOLDER
 from haute._types import NodeType
 from haute._validation_error import ConfigSettingError
 from haute.errors import NodeConfigError

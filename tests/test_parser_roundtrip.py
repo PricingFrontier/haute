@@ -31,8 +31,8 @@ from hypothesis import HealthCheck, assume, given, settings
 
 from haute._config_io import collect_node_configs
 from haute._graph_utils import _sanitize_func_name
+from haute._node_specs import SINGLETON_NODE_NAMES
 from haute._types import (
-    SINGLETON_NODE_NAMES,
     GraphEdge,
     GraphNode,
     NodeData,

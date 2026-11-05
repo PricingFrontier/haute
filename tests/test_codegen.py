@@ -21,10 +21,11 @@ from haute._codegen_builders import (
     _sanitize_description,
     render_node_source,
 )
-from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder
+from haute._config_io import has_config_folder
 from haute._mlflow_io import ScoringModel
+from haute._node_specs import NODE_TYPE_TO_DECORATOR, NODE_TYPE_TO_FOLDER
 from haute._topo import UnknownEdgeEndpointError
-from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
+from haute._types import NodeType
 from haute.codegen import (
     _generate_node_code,
     _node_to_code,
@@ -2423,7 +2424,7 @@ class TestPassthroughAndBehaviouralCodegen:
     _PASSTHROUGH_TYPES = {"optimiser", "modelling"}
 
     def _assert_standalone_role(self, node_type: str) -> None:
-        from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
+        from haute._node_specs import STANDALONE_PASSTHROUGH_TYPES
 
         passthrough = NodeType(node_type) in STANDALONE_PASSTHROUGH_TYPES
         assert passthrough == (node_type in self._PASSTHROUGH_TYPES)

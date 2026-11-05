@@ -36,18 +36,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from haute._graph_utils import _sanitize_func_name
+from haute._node_specs import known_node_spec
 from haute._types import NodeType
 from haute.errors import HauteError, ParseError
 
 __all__ = ["NodeInput", "bind_node_inputs", "input_parameters"]
-
-#: Node types whose ``df``-first function is a hook on the decorator's frame.
-_FRAME_HOOK_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.RATING_STEP, NodeType.MODEL_SCORE, NodeType.SCENARIO_EXPANDER, NodeType.EXPLORE}
-)
-
-#: Node types whose code reads each input under its parameter's name.
-_CODE_READS_PARAMETERS: frozenset[NodeType] = frozenset({NodeType.POLARS, NodeType.EXTERNAL_FILE})
 
 _REMEDIATION = (
     "Name each parameter after the node or table connected to it, in the order of the "
@@ -80,11 +73,19 @@ def input_parameters(
     params = list(positional)
     if params[:1] != ["df"]:
         return params, False
-    if node_type == NodeType.DATA_INPUT:
-        return params[1:], False
-    if node_type in _FRAME_HOOK_TYPES:
-        return params[1:], True
-    return params, False
+    spec = known_node_spec(node_type)
+    if spec is None or spec.code != "frame_hook":
+        return params, False
+    # A source's hook (the Data Input's) is given the frame it loads; any other frame
+    # hook's decorator makes df from its first input.
+    return params[1:], not spec.source
+
+
+def _code_reads_parameters(node_type: NodeType | str) -> bool:
+    """Whether *node_type*'s code reads each input under its parameter's name: a
+    Transform's function is its code, and a Load File's object hook names its inputs."""
+    spec = known_node_spec(node_type)
+    return spec is not None and spec.code in ("transform", "object_hook")
 
 
 def _listed(noun: str, names: Sequence[str]) -> str:
@@ -120,7 +121,7 @@ def bind_node_inputs(
     claimed: dict[int, str] = {}
     read: list[int] = []
     unbound: list[str] = []
-    exact = node_type in _CODE_READS_PARAMETERS
+    exact = _code_reads_parameters(node_type)
     for param in naming:
         name = _resolve(param, input_mapping)
         names = {name} if exact else {name, _sanitize_func_name(name)}

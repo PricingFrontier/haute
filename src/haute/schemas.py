@@ -48,16 +48,17 @@ from haute._execution_schemas import (
     _validate_diagnostic_collection,
 )
 from haute._graph_utils import is_frame_label
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, STRUCTURAL_NODE_TYPES, node_spec
 from haute._pipeline_settings import (
     MAX_SIZE_GB,
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
-from haute._types import REQUEST_INPUT_NODE_TYPES, NodeEditorState, NodeType
 from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
+from haute._types import NodeEditorState, NodeType
 from haute._types import PipelineGraph as Graph  # noqa: F401
 from haute._workbench_form import Cell, FormSpec
 from haute._workbench_tables import WorkbenchTable
@@ -1539,14 +1540,15 @@ class EditorIdentityRequestNode(BaseModel):
 
     @model_validator(mode="after")
     def _identity_inputs_match_node_type(self) -> EditorIdentityRequestNode:
-        if self.instance_of is not None and self.node_type != NodeType.SUBMODEL:
+        role = node_spec(self.node_type).structural_role
+        if self.instance_of is not None and role != "occurrence":
             raise ValueError("instance_of is only valid for a submodel identity.")
-        if self.node_type == NodeType.SUBMODEL:
+        if role == "occurrence":
             for handle in self.source_handles:
                 port_name = handle[len("out__") :] if handle.startswith("out__") else ""
                 if not port_name or not port_name.isascii() or not port_name.isidentifier():
                     raise ValueError("submodel source handles must use out__<name>.")
-        if self.node_type == NodeType.SUBMODEL_PORT:
+        if role == "port":
             for handle in self.source_handles:
                 if not handle or not handle.isascii() or not handle.isidentifier():
                     raise ValueError("submodelPort source handles must be ASCII identifiers.")
@@ -1557,8 +1559,7 @@ class EditorIdentityRequestNode(BaseModel):
                 f"{self.node_type.value} source handles must be non-keyword ASCII identifiers."
             )
         if (
-            self.node_type
-            not in REQUEST_INPUT_NODE_TYPES | {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+            self.node_type not in REQUEST_INPUT_NODE_TYPES | STRUCTURAL_NODE_TYPES
             and self.source_handles
         ):
             raise ValueError("source_handles are not valid for this node type.")

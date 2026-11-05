@@ -64,8 +64,6 @@ from haute._topo import CycleError as CycleError
 from haute._topo import UnknownEdgeEndpointError as UnknownEdgeEndpointError
 from haute._topo import ancestors as ancestors
 from haute._topo import topo_sort_ids as topo_sort_ids
-from haute._types import DECORATOR_TO_NODE_TYPE as DECORATOR_TO_NODE_TYPE
-from haute._types import NODE_TYPE_TO_DECORATOR as NODE_TYPE_TO_DECORATOR
 from haute._types import GraphEdge as GraphEdge
 from haute._types import GraphNode as GraphNode
 from haute._types import NodeData as NodeData

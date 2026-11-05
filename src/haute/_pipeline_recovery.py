@@ -51,10 +51,18 @@ from haute._graph_builders import (
     _resolve_node_skeleton,
 )
 from haute._graph_shape import definition_boundary_topology
-from haute._graph_utils import REQUEST_INPUT_KINDS, edge_input_name, executable_input_name
+from haute._graph_utils import edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import decode_user_source, read_user_source
 from haute._logging import get_logger
+from haute._node_specs import (
+    NODE_TYPE_TO_DECORATOR,
+    REQUEST_INPUT_KINDS,
+    REQUEST_INPUT_NODE_TYPES,
+    STRUCTURAL_NODE_TYPES,
+    node_spec,
+    node_type_table,
+)
 from haute._parser_submodels import (
     SubmodelRegistration,
     _extract_definition_contract,
@@ -78,8 +86,6 @@ from haute._submodel_paths import resolve_submodel_reference, submodel_source_ke
 from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
-    NODE_TYPE_TO_DECORATOR,
-    REQUEST_INPUT_NODE_TYPES,
     GlobalConstant,
     GraphNode,
     NodeData,
@@ -112,6 +118,12 @@ from haute.schemas import (
     RecoverySubmodelDefinition,
     RecoveryUnresolvedConnection,
 )
+
+
+def _is_occurrence(node_type: NodeType | None) -> bool:
+    """Whether *node_type* is a submodel occurrence (a recovered candidate may have none)."""
+    return node_type is not None and node_spec(node_type).structural_role == "occurrence"
+
 
 logger = get_logger(component="pipeline.recovery")
 
@@ -837,7 +849,7 @@ def _build_recovery_graph(
         target_candidate = targets[0]
         source_handle = connection.source_port
         target_handle = connection.target_port
-        if source_candidate.node_type == NodeType.SUBMODEL:
+        if _is_occurrence(source_candidate.node_type):
             if connection.source_port not in source_candidate.submodel_output_ports:
                 unresolved.append(
                     _unresolved_connection(
@@ -869,7 +881,7 @@ def _build_recovery_graph(
                 )
             )
             continue
-        if target_candidate.node_type == NodeType.SUBMODEL:
+        if _is_occurrence(target_candidate.node_type):
             if connection.target_port not in target_candidate.submodel_input_ports:
                 unresolved.append(
                     _unresolved_connection(
@@ -987,7 +999,11 @@ def _build_recovery_graph(
     # node and continue validating independent siblings.
     # In a submodel, its public ports add edges of their own (*boundary_*).
     for candidate in candidates:
-        if candidate.availability != "ready" or candidate.node_type != NodeType.EXPLORE:
+        if (
+            candidate.availability != "ready"
+            or candidate.node_type is None
+            or not node_spec(candidate.node_type).input_count_enforced
+        ):
             continue
         incoming_count = sum(1 for edge in edge_specs if edge.target is candidate) + len(
             (boundary_incoming or {}).get(candidate.authored_id, ())
@@ -1066,7 +1082,7 @@ def _build_recovery_graph(
                             candidate.node_type, candidate.config
                         )
                     )
-                elif candidate.node_type == NodeType.SUBMODEL:
+                elif _is_occurrence(candidate.node_type):
                     source_handles = [
                         f"out__{port_name}" for port_name in candidate.submodel_output_ports
                     ]
@@ -1077,7 +1093,7 @@ def _build_recovery_graph(
                     config_reference_override=candidate.config_reference,
                     alias=(candidate.config or {}).get("alias") if candidate.config else None,
                     instance_of=(candidate.config or {}).get("instance_of")
-                    if candidate.node_type == NodeType.SUBMODEL
+                    if _is_occurrence(candidate.node_type)
                     else None,
                 )
             except (HauteError, ValueError):
@@ -1127,7 +1143,7 @@ def _build_recovery_graph(
                     label=source_candidate.authored_id,
                     source_handle=edge.source_handle,
                     instance_of=(source_candidate.config or {}).get("instance_of")
-                    if source_candidate.node_type == NodeType.SUBMODEL
+                    if _is_occurrence(source_candidate.node_type)
                     else None,
                     source_handles=[
                         f"out__{name}" for name in source_candidate.submodel_output_ports
@@ -1237,7 +1253,8 @@ def _canonical_snapshot(
             return list(
                 recoverable_request_input_source_handles(node.data.nodeType, node.data.config)
             )
-        if node.data.nodeType == NodeType.SUBMODEL:
+        role = node_spec(node.data.nodeType).structural_role
+        if role == "occurrence":
             definition_id = node.data.config.get("definition_id")
             definition = (
                 (graph.submodels or {}).get(definition_id)
@@ -1247,7 +1264,7 @@ def _canonical_snapshot(
             if definition is None:
                 raise ValueError(f"Submodel node {node.id!r} references a missing definition.")
             return [f"out__{port.name}" for port in definition.output_ports]
-        if node.data.nodeType == NodeType.SUBMODEL_PORT:
+        if role == "port":
             return connected_handles_by_source.get(node.id, [])
         return []
 
@@ -1259,11 +1276,11 @@ def _canonical_snapshot(
             label=node.data.label,
             source_handles=source_handles,
             instance_of=node.data.config.get("instance_of")
-            if node.data.nodeType == NodeType.SUBMODEL
+            if _is_occurrence(node.data.nodeType)
             else None,
             alias=(
                 (node.data.config or {}).get("alias")
-                if node.data.nodeType == NodeType.SUBMODEL
+                if _is_occurrence(node.data.nodeType)
                 else None
             ),
         )
@@ -1431,7 +1448,7 @@ def _attribute_instance_failure(
     )
     for candidate in candidates:
         if (
-            candidate.node_type != NodeType.SUBMODEL
+            not _is_occurrence(candidate.node_type)
             or candidate.authored_id not in named
             or candidate.availability != "ready"
         ):
@@ -2298,9 +2315,7 @@ def _capabilities(
     )
 
 
-_SCOPED_EDITABLE_TYPES = {
-    kind.value for kind in NodeType if kind not in {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
-}
+_SCOPED_EDITABLE_TYPES = {kind.value for kind in NodeType if kind not in STRUCTURAL_NODE_TYPES}
 
 
 def _iter_snapshot_nodes(
@@ -2336,6 +2351,50 @@ def _mark_scoped_editable(
         )
 
 
+def _data_input_gaps(config: Mapping[str, Any]) -> list[Any]:
+    from haute._polars_io_registry import data_input_completeness
+
+    return list(data_input_completeness(config))
+
+
+def _data_output_gaps(config: Mapping[str, Any]) -> list[Any]:
+    from haute._polars_io_registry import data_output_completeness
+
+    return list(data_output_completeness(config))
+
+
+#: The io layer's required-value reporter of each node type it reads or writes
+#: through (Data Input, Data Output); ``None`` for every other type.
+_REQUIRED_VALUE_GAPS: Mapping[NodeType, Callable[[Mapping[str, Any]], list[Any]] | None] = (
+    node_type_table(
+        "required-value gaps",
+        {
+            NodeType.API_INPUT: None,
+            NodeType.WORKBENCH_INPUT: None,
+            NodeType.WORKBENCH_OUTPUT: None,
+            NodeType.DATA_INPUT: _data_input_gaps,
+            NodeType.DATA_OUTPUT: _data_output_gaps,
+            NodeType.POLARS: None,
+            NodeType.EDGE_JOIN: None,
+            NodeType.MODEL_SCORE: None,
+            NodeType.BANDING: None,
+            NodeType.RATING_STEP: None,
+            NodeType.OUTPUT: None,
+            NodeType.EXPLORE: None,
+            NodeType.EXTERNAL_FILE: None,
+            NodeType.LIVE_SWITCH: None,
+            NodeType.MODELLING: None,
+            NodeType.OPTIMISER: None,
+            NodeType.SCENARIO_EXPANDER: None,
+            NodeType.OPTIMISER_APPLY: None,
+            NodeType.CONSTANT: None,
+            NodeType.SUBMODEL: None,
+            NodeType.SUBMODEL_PORT: None,
+        },
+    )
+)
+
+
 def _node_completeness(
     nodes: list[RecoveryPipelineNode],
     submodels: dict[str, RecoverySubmodelDefinition] | None,
@@ -2347,8 +2406,6 @@ def _node_completeness(
     ``diagnostics``. A ready node's config already passed the same structural
     validation at parse, so the reporters cannot raise here.
     """
-    from haute._polars_io_registry import data_input_completeness, data_output_completeness
-
     entries: list[PipelineNodeCompleteness] = []
 
     def visit(
@@ -2356,14 +2413,15 @@ def _node_completeness(
         graph_submodels: dict[str, RecoverySubmodelDefinition] | None,
     ) -> None:
         for node in graph_nodes:
-            if node.availability == "unavailable" or node.config is None:
+            if node.availability == "unavailable" or node.config is None or node.node_type is None:
                 continue
-            if node.node_type == NodeType.DATA_INPUT.value:
-                gaps = data_input_completeness(node.config)
-            elif node.node_type == NodeType.DATA_OUTPUT.value:
-                gaps = data_output_completeness(node.config)
-            else:
+            try:
+                reporter = _REQUIRED_VALUE_GAPS[NodeType(node.node_type)]
+            except ValueError:
+                continue  # a node type this install does not know reports nothing
+            if reporter is None:
                 continue
+            gaps = reporter(node.config)
             entries.extend(
                 PipelineNodeCompleteness(
                     element_id=node.recovery_id,

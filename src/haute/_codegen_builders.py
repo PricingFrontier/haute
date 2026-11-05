@@ -57,6 +57,7 @@ from haute._keyword_parameters import (
     validate_keyword_parameters,
 )
 from haute._node_config_models import COLUMN_CONFIG_KEYS
+from haute._node_specs import CODE_NODE_TYPES, NODE_TYPE_TO_DECORATOR, node_spec
 from haute._polars_steps import (
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
@@ -65,12 +66,9 @@ from haute._polars_steps import (
 )
 from haute._rating import normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
-from haute._registry import CodegenFn
+from haute._registry import CodegenFn, set_codegen
 from haute._registry import (
     register_codegen as _register_codegen_in_registry,
-)
-from haute._registry import (
-    set_codegen as _set_codegen_in_registry,
 )
 from haute._source_layout import (
     INDENT,
@@ -81,8 +79,7 @@ from haute._source_layout import (
     print_doc,
     python_lines,
 )
-from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType
+from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, HauteError, ParseError
 
 #: The annotation every frame parameter and code-carrying function returns.
@@ -360,7 +357,7 @@ def _configured_node(
     if not code and not incomplete:
         return NodeSource(decorator, keywords, _params(source_names), description=description)
     tail = _unindented(_INCOMPLETE_STEPS) if incomplete else f"{code}\nreturn df"
-    if node_type == NodeType.EXTERNAL_FILE:
+    if node_spec(node_type).code == "object_hook":
         binding = f"df = {source_names[0]}\n" if source_names else ""
         return NodeSource(
             decorator,
@@ -658,8 +655,8 @@ def _gen_submodel_placeholder_unreachable(
     )
 
 
-_set_codegen_in_registry(NodeType.SUBMODEL, _gen_submodel_placeholder_unreachable)
-_set_codegen_in_registry(NodeType.SUBMODEL_PORT, _gen_submodel_placeholder_unreachable)
+set_codegen(NodeType.SUBMODEL, _gen_submodel_placeholder_unreachable)
+set_codegen(NodeType.SUBMODEL_PORT, _gen_submodel_placeholder_unreachable)
 
 
 # ---------------------------------------------------------------------------

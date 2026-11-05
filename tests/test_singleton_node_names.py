@@ -16,7 +16,8 @@ import pytest
 
 import haute
 from haute._graph_shape import validate_singleton_groups
-from haute._types import SINGLETON_NODE_NAMES, NodeType, singleton_name_problem
+from haute._node_specs import SINGLETON_NODE_NAMES, singleton_name_problem
+from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_source

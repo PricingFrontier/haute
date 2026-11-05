@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from haute._logging import get_logger
+from haute._node_specs import node_spec
 from haute._polars_steps import STEPS_FROM_CODE
 from haute._types import GraphNode, NodeType
 from haute.errors import ParseError
@@ -135,7 +136,7 @@ def missing_unfinished_steps(node_type: NodeType | str, held: bool) -> bool:
     is in the file's ``.haute.json``), must be refused: one whose code runs on a frame it
     was given (any stepped node but a Transform) would, with no code and no steps, pass
     that frame on with its steps skipped. A Transform with no code fails when run."""
-    return not held and node_type != NodeType.POLARS
+    return not held and node_spec(node_type).code != "transform"
 
 
 def missing_unfinished_steps_message(node_id: str, py_path: Path) -> str:

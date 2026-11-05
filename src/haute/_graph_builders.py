@@ -24,6 +24,7 @@ from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
 from haute._node_bindings import input_parameters
+from haute._node_specs import DEFAULT_NODE_TYPE
 from haute._polars_steps import STEPS_FROM_CODE, stepped_surface_allows_input_references
 from haute._source_layout import python_lines
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
@@ -266,7 +267,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     """
     logical_params = list(node_info["edge_param_names"])
     node_type = node_info.get("node_type")
-    naming, _takes_first = input_parameters(node_type or NodeType.POLARS, logical_params)
+    naming, _takes_first = input_parameters(node_type or DEFAULT_NODE_TYPE, logical_params)
     if naming != logical_params:
         # A hook's df is the frame its decorator produced, not an input named df.
         return naming

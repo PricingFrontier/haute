@@ -74,6 +74,7 @@ from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
+from haute._node_specs import node_spec, node_type_table
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, streaming_collect
@@ -1108,7 +1109,7 @@ class _Walk:
             model_score_whole_output()
             if self.decision is not None
             and node_id in self.decision.captures
-            and self.node_map[node_id].data.nodeType == NodeType.MODEL_SCORE
+            and node_spec(self.node_map[node_id].data.nodeType).batch_scored
             else contextlib.nullcontext()
         )
         if scored is None:
@@ -1209,7 +1210,7 @@ class _Walk:
             )
         collected_below: dict[str, frozenset[str]] = {}
         for node_id in reversed(self.run_order):
-            if self.node_map[node_id].data.nodeType in _SEPARATE_QUERY_NODE_TYPES:
+            if _READS_INPUT_IN_SEPARATE_QUERY[self.node_map[node_id].data.nodeType]:
                 # Its builder reads its input in a query of its own (a Python scan), so
                 # no path through it meets another in a collected query.
                 collected_below[node_id] = frozenset()
@@ -1256,7 +1257,7 @@ class _Walk:
         for node_id, edges in inputs.items():
             node = self.node_map[node_id]
             node_facts = facts.get(node_id)
-            if node.data.nodeType is NodeType.EDGE_JOIN:
+            if node_spec(node.data.nodeType).input_roles:
                 how = node.data.config.get("how") or EDGE_JOIN_DEFAULT_HOW
                 probe = _EDGE_JOIN_PROBE_ROLE.get(how)
                 reached[node_id] = tuple(e.source for e in edges if e.targetHandle == probe)
@@ -2198,18 +2199,34 @@ _DISPLAY_COLLECT_OPTIMIZATIONS = pl.QueryOptFlags(comm_subplan_elim=False)
 # The Edge Join input a row limit on its output reaches: the side whose rows it keeps.
 _EDGE_JOIN_PROBE_ROLE = {"left": "base", "semi": "base", "anti": "base", "right": "join"}
 
-# Node types whose builders read their input through a Python scan (eager scoring, the
+# Whether a node type's builder reads its input through a Python scan (eager scoring, the
 # rating miss guard, online optimiser apply, scenario expansion, OUTPUT assembly, the
 # Workbench Output's tables), which collects it in a query of its own.
-_SEPARATE_QUERY_NODE_TYPES = frozenset(
+_READS_INPUT_IN_SEPARATE_QUERY: Mapping[NodeType, bool] = node_type_table(
+    "reads its input in a separate query",
     {
-        NodeType.MODEL_SCORE,
-        NodeType.RATING_STEP,
-        NodeType.OPTIMISER_APPLY,
-        NodeType.SCENARIO_EXPANDER,
-        NodeType.OUTPUT,
-        NodeType.WORKBENCH_OUTPUT,
-    }
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: True,
+        NodeType.DATA_INPUT: False,
+        NodeType.DATA_OUTPUT: False,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: True,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: True,
+        NodeType.OUTPUT: True,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: False,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: True,
+        NodeType.OPTIMISER_APPLY: True,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
 )
 
 

@@ -34,6 +34,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._flatten import flatten_graph
 from haute._graph_utils import _sanitize_func_name as _sanitize_label
+from haute._node_specs import SteppedSurface
 from haute._polars_io_registry import validate_data_input_config
 from haute._polars_steps import (
     CAST_DTYPES,
@@ -42,7 +43,6 @@ from haute._polars_steps import (
     MAX_EXPR_DEPTH,
     PolarsStepError,
     RenderedSteps,
-    SteppedSurface,
     cast_family,
     is_stepped_config,
     rename_step_inputs,

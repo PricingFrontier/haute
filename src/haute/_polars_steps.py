@@ -33,10 +33,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any
 
 import polars as pl
 
+from haute._node_specs import STEPPED_NODE_TYPES, SteppedSurface, StepStart
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
 from haute._source_layout import float_literal, lines_inside_literals, python_lines
@@ -45,12 +46,8 @@ from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
 
 __all__ = [
-    "STEPPED_NODE_TYPES",
-    "STEPPED_SURFACE_LABELS",
     "STEPS_FROM_CODE",
     "STEP_STARTS",
-    "StepStart",
-    "SteppedSurface",
     "is_stepped_config",
     "step_input_names",
     "stepped_surface_allows_input_references",
@@ -100,62 +97,14 @@ STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE = (
     "A stepped transform addresses its inputs by their edge names and cannot carry input_mapping."
 )
 
-#: Where ``df`` comes from when a step list starts: ``input`` means the first
-#: step chooses an input and renders ``df = <input>`` (a transform); ``frame``
-#: means the surface hands the steps a frame already bound to ``df`` (a Data
-#: Input's opened snapshot), so no start step exists and an empty list is
-#: simply no code.
-StepStart = Literal["input", "frame"]
+#: The two step-list start modes (:data:`haute._node_specs.StepStart`).
 STEP_STARTS: tuple[StepStart, ...] = ("input", "frame")
 
-
-@dataclass(frozen=True)
-class SteppedSurface:
-    """How one node type authors steps.
-
-    ``start`` is the render mode. ``inputs`` is what ``join``/``concat`` steps
-    may reference: ``edges`` for a surface whose code sees its incoming edges
-    by name, ``none`` for one whose code sees only ``df``. Every path that
-    renders a node's steps takes its eligible names from this table through
-    :func:`step_input_names`, so the editor, the parser, codegen and execution
-    agree on what a step may name.
-    """
-
-    start: StepStart
-    inputs: Literal["edges", "none"]
-
-
-STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
-    {
-        NodeType.POLARS: SteppedSurface(start="input", inputs="edges"),
-        NodeType.DATA_INPUT: SteppedSurface(start="frame", inputs="none"),
-        # The first input is already `df`; the other edges stay addressable.
-        NodeType.EXTERNAL_FILE: SteppedSurface(start="frame", inputs="edges"),
-        NodeType.RATING_STEP: SteppedSurface(start="frame", inputs="none"),
-        NodeType.MODEL_SCORE: SteppedSurface(start="frame", inputs="none"),
-        NodeType.SCENARIO_EXPANDER: SteppedSurface(start="frame", inputs="none"),
-        # The single input is bound as df by codegen; steps live in the decorator.
-        NodeType.EXPLORE: SteppedSurface(start="frame", inputs="none"),
-    }
-)
 
 #: The stepped node types whose code is the only copy of their steps: every one (READ-22,
 #: READ-43, READ-44). The load rebuilds them from the function body, and an unfinished
 #: list waits in the pipeline's ``.haute.json``.
 STEPS_FROM_CODE: frozenset[NodeType] = frozenset(STEPPED_NODE_TYPES)
-
-#: The name an analyst knows each stepped surface by, for messages about its steps.
-STEPPED_SURFACE_LABELS: Mapping[NodeType, str] = MappingProxyType(
-    {
-        NodeType.POLARS: "Transform",
-        NodeType.DATA_INPUT: "Data Input",
-        NodeType.EXTERNAL_FILE: "External File",
-        NodeType.RATING_STEP: "Rating Step",
-        NodeType.MODEL_SCORE: "Model Score",
-        NodeType.SCENARIO_EXPANDER: "Scenario Expander",
-        NodeType.EXPLORE: "Explore",
-    }
-)
 
 
 def stepped_surface_for(node_type: NodeType) -> SteppedSurface:

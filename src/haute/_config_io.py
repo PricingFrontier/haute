@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
+from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
@@ -37,7 +38,13 @@ from haute._graph_utils import _sanitize_func_name
 from haute._io import utf8_decode_failure
 from haute._json_files import ANY, OneLine, at, render_json
 from haute._logging import get_logger
-from haute._polars_steps import STEPPED_NODE_TYPES
+from haute._node_specs import (
+    FOLDER_TO_NODE_TYPE,
+    NODE_TYPE_TO_FOLDER,
+    STEPPED_NODE_TYPES,
+    node_spec,
+    node_type_table,
+)
 from haute._rating_step_config import (
     compact_rating_config_for_sidecar,
     expand_rating_config_from_sidecar,
@@ -60,27 +67,7 @@ logger = get_logger(component="config_io")
 # Folder ↔ NodeType mappings
 # ---------------------------------------------------------------------------
 
-NODE_TYPE_TO_FOLDER: dict[NodeType, str] = {
-    NodeType.API_INPUT: "quote_input",
-    NodeType.WORKBENCH_INPUT: "workbench_input",
-    NodeType.WORKBENCH_OUTPUT: "workbench_output",
-    NodeType.DATA_INPUT: "data_input",
-    NodeType.DATA_OUTPUT: "data_output",
-    NodeType.LIVE_SWITCH: "source_switch",
-    NodeType.MODEL_SCORE: "model_scoring",
-    NodeType.BANDING: "banding",
-    NodeType.RATING_STEP: "rating_step",
-    NodeType.OUTPUT: "quote_response",
-    NodeType.EXTERNAL_FILE: "load_file",
-    NodeType.MODELLING: "model_training",
-    NodeType.OPTIMISER: "optimisation",
-    NodeType.OPTIMISER_APPLY: "apply_optimisation",
-    NodeType.SCENARIO_EXPANDER: "expander",
-    NodeType.CONSTANT: "constant",
-    NodeType.EXPLORE: "explore",
-}
-
-FOLDER_TO_NODE_TYPE: dict[str, NodeType] = {v: k for k, v in NODE_TYPE_TO_FOLDER.items()}
+# The folders are each node type's ``NodeSpec.config_folder`` (``haute._node_specs``).
 
 # Keys that live in the .py function body, NOT in the JSON config file.
 
@@ -188,10 +175,7 @@ def _normalise_loaded_config(config: dict[str, Any], node_type: NodeType | None)
 
     reject_removed_config_keys(node_type, config)
     reject_form_given_keys(node_type, config)
-    if node_type == NodeType.EXPLORE:
-        # Its overview, pivots and charts are checked as the editor's are (READ-43).
-        config = explore_settings(config, context="explore sidecar")
-    return config_from_sidecar(node_type, config)
+    return config_from_sidecar(node_type, _SIDECAR_CODECS[node_type].check(config))
 
 
 def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
@@ -200,24 +184,13 @@ def config_from_sidecar(node_type: NodeType, config: dict[str, Any]) -> dict[str
     left out at its default given it again (READ-10, 26, 27, 28, 42). A file in a form before
     one of those is refused. Nothing else is checked, so Recover can read a sidecar whose
     keys the contract no longer takes."""
+    codec = _SIDECAR_CODECS[node_type]
     # A setting a sidecar leaves out at its default reads as that default (READ-10), so
     # the config is the one the node had before it was written.
-    for key, default in _SIDECAR_DEFAULTS.get(node_type, {}).items():
+    for key, default in codec.defaults.items():
         if key not in config:
             config = {**config, key: deepcopy(default)}
-    if node_type == NodeType.BANDING:
-        # A sidecar writes breakpoints as a list of bands (READ-27).
-        return expand_banding_config_from_sidecar(bands_read_from_sidecar(config))
-    if node_type == NodeType.CONSTANT:
-        # A sidecar writes the constants as a map from name to value (READ-28).
-        return constants_from_sidecar(config)
-    if node_type == NodeType.RATING_STEP:
-        # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
-        return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
-    if node_type == NodeType.API_INPUT:  # the Quote Input alone
-        # A column leaves out the settings inference gives it (READ-42).
-        return columns_from_sidecar(config)
-    return config
+    return codec.load(config)
 
 
 def _prepare_config_for_sidecar(
@@ -240,28 +213,8 @@ def _prepare_config_for_sidecar(
     in_code = CODE_CONFIG_KEYS | ({"steps"} if node_type in STEPPED_NODE_TYPES else set())
     filtered = {k: deepcopy(v) for k, v in config.items() if k not in in_code and k != "contract"}
 
-    if node_type == NodeType.BANDING:
-        return compact_banding_config_for_sidecar(filtered)
-    if node_type == NodeType.CONSTANT:
-        return constants_for_sidecar(filtered)
-    if node_type == NodeType.RATING_STEP:
-        normalised = normalise_rating_step_config(filtered)
-        refuse_levels_equal_under_factor_dtypes(normalised)
-        return compact_rating_config_for_sidecar(normalised)
-    if node_type == NodeType.API_INPUT:  # the Quote Input alone
-        return columns_for_sidecar(filtered)
-    if node_type == NodeType.EXPLORE:
-        return explore_settings(filtered, context="explore node config")
-    return filtered
+    return _SIDECAR_CODECS[node_type].dump(filtered)
 
-
-#: Each node type's settings a sidecar leaves out at their default: the loader reads the
-#: key's absence as that value (READ-10).
-_SIDECAR_DEFAULTS: dict[NodeType, dict[str, Any]] = {
-    NodeType.RATING_STEP: {"combined_outputs": []},
-    NodeType.DATA_INPUT: {"arguments": {}},
-    NodeType.DATA_OUTPUT: {"arguments": {}},
-}
 
 #: A rating table's keys in the order its sidecar writes them; others follow as given.
 _RATING_TABLE_KEYS = (
@@ -279,38 +232,6 @@ _RATING_TABLE_KEYS = (
 _NO_PLACE: OneLine = at()
 
 
-#: Each node type's records written on one line each: a rating table's factors, its columns
-#: and each row of its grid (READ-26), a banding factor's bands (READ-27), an API Input
-#: column and a Quote Response mapping row (READ-42), and an Explore node's placements,
-#: formulas and chart series (READ-43). Keyed by the node type, so another
-#: type's ``tables`` or ``factors`` keeps one item a line.
-_SIDECAR_ONE_LINE: dict[NodeType, OneLine] = {
-    NodeType.RATING_STEP: at(
-        ("tables", ANY, "factors"),
-        ("tables", ANY, "columns"),
-        ("tables", ANY, "rows", ANY),
-    ),
-    NodeType.BANDING: at(("factors", ANY, "rules", ANY)),
-    NodeType.API_INPUT: at(("tables", ANY, "columns", ANY)),  # the Quote Input alone
-    NodeType.OUTPUT: at(("output_mapping", ANY)),
-    # An Explore pivot's placements and the shared formulas, and a chart's value encodings
-    # and series overrides (READ-43).
-    NodeType.EXPLORE: at(
-        ("pivots", ANY, "filters", ANY),
-        ("pivots", ANY, "columns", ANY),
-        ("pivots", ANY, "rows", ANY),
-        ("pivots", ANY, "values", ANY),
-        ("pivot_formulas", ANY),
-        ("charts", ANY, "value_encodings", ANY),
-        ("charts", ANY, "series_overrides", ANY),
-    ),
-}
-
-
-#: Each node type's maps of numbers written one item a line: a Constant's values (READ-28).
-_SIDECAR_VERTICAL: dict[NodeType, OneLine] = {NodeType.CONSTANT: at(("values",))}
-
-
 def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
     """*record* with the keys *order* names first, in that order, the rest as given."""
     first = {key: record[key] for key in order if key in record}
@@ -320,6 +241,130 @@ def _ordered(record: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
 def _rating_table_record(table: Any) -> Any:
     """A rating table in its sidecar's key order, its grid last."""
     return _ordered(table, _RATING_TABLE_KEYS) if isinstance(table, dict) else table
+
+
+def _held_as_is(config: dict[str, Any]) -> dict[str, Any]:
+    return config
+
+
+def _banding_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    # A sidecar writes breakpoints as a list of bands (READ-27).
+    return expand_banding_config_from_sidecar(bands_read_from_sidecar(config))
+
+
+def _rating_step_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    # A sidecar writes each table as a grid (READ-26); the editor and the engine read rows.
+    return normalise_rating_step_config(expand_rating_config_from_sidecar(config))
+
+
+def _rating_step_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    normalised = normalise_rating_step_config(config)
+    refuse_levels_equal_under_factor_dtypes(normalised)
+    compacted = compact_rating_config_for_sidecar(normalised)
+    if isinstance(compacted.get("tables"), list):
+        compacted["tables"] = [_rating_table_record(table) for table in compacted["tables"]]
+    return compacted
+
+
+def _check_explore_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    # Its overview, pivots and charts are checked as the editor's are (READ-43).
+    return explore_settings(config, context="explore sidecar")
+
+
+def _explore_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    return explore_settings(config, context="explore node config")
+
+
+@dataclass(frozen=True)
+class _SidecarCodec:
+    """How a node type's config is held in its sidecar: read back, written and laid out."""
+
+    #: The file's settings as the editor and the engine hold them. Nothing is checked, so
+    #: Recover can read a sidecar whose keys the contract no longer takes.
+    load: Callable[[dict[str, Any]], dict[str, Any]] = _held_as_is
+    #: What a load checks before decoding, which Recover's read skips.
+    check: Callable[[dict[str, Any]], dict[str, Any]] = _held_as_is
+    dump: Callable[[dict[str, Any]], dict[str, Any]] = _held_as_is
+    #: The settings a sidecar leaves out at their default: the loader reads the key's
+    #: absence as that value (READ-10).
+    defaults: Mapping[str, Any] = field(default_factory=dict)
+    #: The records written on one line each, so another type's ``tables`` or
+    #: ``factors`` keeps one item a line.
+    one_line: OneLine = _NO_PLACE
+    #: The maps of numbers written one item a line.
+    vertical: OneLine = _NO_PLACE
+
+
+#: A sidecar that holds its config as it is, or a type without a sidecar.
+_AS_HELD = _SidecarCodec()
+
+#: Each node type's sidecar form.
+_SIDECAR_CODECS: Mapping[NodeType, _SidecarCodec] = node_type_table(
+    "sidecar codec",
+    {
+        # A column leaves out the settings inference gives it, and takes one line (READ-42).
+        NodeType.API_INPUT: _SidecarCodec(
+            load=columns_from_sidecar,
+            dump=columns_for_sidecar,
+            one_line=at(("tables", ANY, "columns", ANY)),
+        ),
+        NodeType.WORKBENCH_INPUT: _AS_HELD,
+        NodeType.WORKBENCH_OUTPUT: _AS_HELD,
+        NodeType.DATA_INPUT: _SidecarCodec(defaults={"arguments": {}}),
+        NodeType.DATA_OUTPUT: _SidecarCodec(defaults={"arguments": {}}),
+        NodeType.POLARS: _AS_HELD,
+        NodeType.EDGE_JOIN: _AS_HELD,
+        NodeType.MODEL_SCORE: _AS_HELD,
+        # A factor's bands, a band a line (READ-27).
+        NodeType.BANDING: _SidecarCodec(
+            load=_banding_from_sidecar,
+            dump=compact_banding_config_for_sidecar,
+            one_line=at(("factors", ANY, "rules", ANY)),
+        ),
+        # A table's factors, its columns and each row of its grid on a line (READ-26).
+        NodeType.RATING_STEP: _SidecarCodec(
+            load=_rating_step_from_sidecar,
+            dump=_rating_step_for_sidecar,
+            defaults={"combined_outputs": []},
+            one_line=at(
+                ("tables", ANY, "factors"),
+                ("tables", ANY, "columns"),
+                ("tables", ANY, "rows", ANY),
+            ),
+        ),
+        # A mapping row a line (READ-42).
+        NodeType.OUTPUT: _SidecarCodec(one_line=at(("output_mapping", ANY))),
+        # A pivot's placements and the shared formulas, and a chart's value encodings and
+        # series overrides, each on a line (READ-43).
+        NodeType.EXPLORE: _SidecarCodec(
+            check=_check_explore_sidecar,
+            dump=_explore_for_sidecar,
+            one_line=at(
+                ("pivots", ANY, "filters", ANY),
+                ("pivots", ANY, "columns", ANY),
+                ("pivots", ANY, "rows", ANY),
+                ("pivots", ANY, "values", ANY),
+                ("pivot_formulas", ANY),
+                ("charts", ANY, "value_encodings", ANY),
+                ("charts", ANY, "series_overrides", ANY),
+            ),
+        ),
+        NodeType.EXTERNAL_FILE: _AS_HELD,
+        NodeType.LIVE_SWITCH: _AS_HELD,
+        NodeType.MODELLING: _AS_HELD,
+        NodeType.OPTIMISER: _AS_HELD,
+        NodeType.SCENARIO_EXPANDER: _AS_HELD,
+        NodeType.OPTIMISER_APPLY: _AS_HELD,
+        # The constants are a map from name to value, a value a line (READ-28).
+        NodeType.CONSTANT: _SidecarCodec(
+            load=constants_from_sidecar,
+            dump=constants_for_sidecar,
+            vertical=at(("values",)),
+        ),
+        NodeType.SUBMODEL: _AS_HELD,
+        NodeType.SUBMODEL_PORT: _AS_HELD,
+    },
+)
 
 
 def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label: str) -> str:
@@ -332,19 +377,13 @@ def node_config_json(node_type: NodeType, config: dict[str, Any], *, node_label:
     since they are data (:mod:`haute._json_files`).
     """
     prepared = _prepare_config_for_sidecar(node_type, config, node_label=node_label)
-    defaults = _SIDECAR_DEFAULTS.get(node_type, {})
+    codec = _SIDECAR_CODECS[node_type]
     canonical = {
         key: prepared[key]
         for key in sorted(prepared)
-        if not (key in defaults and prepared[key] == defaults[key])
+        if not (key in codec.defaults and prepared[key] == codec.defaults[key])
     }
-    if node_type == NodeType.RATING_STEP and isinstance(canonical.get("tables"), list):
-        canonical["tables"] = [_rating_table_record(table) for table in canonical["tables"]]
-    return render_json(
-        canonical,
-        one_line=_SIDECAR_ONE_LINE.get(node_type, _NO_PLACE),
-        vertical=_SIDECAR_VERTICAL.get(node_type, _NO_PLACE),
-    )
+    return render_json(canonical, one_line=codec.one_line, vertical=codec.vertical)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +443,7 @@ def palette_default_config(node_type: NodeType) -> dict[str, Any]:
 
 def has_config_folder(node_type: NodeType) -> bool:
     """Whether this node type requires an external JSON config file."""
-    return node_type in NODE_TYPE_TO_FOLDER
+    return node_spec(node_type).sidecar == "required"
 
 
 def node_emits_sidecar(node: GraphNode) -> bool:

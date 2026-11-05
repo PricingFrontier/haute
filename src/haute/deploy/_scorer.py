@@ -34,16 +34,12 @@ from haute._logging import get_logger
 from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
 from haute._model_source import model_score_output_column, model_score_task
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_utils import streaming_collect
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-    _Frame,
-)
+from haute._types import GraphNode, PipelineGraph, _Frame
 from haute._workbench_input import workbench_request_frames
 from haute._workbench_output import as_response, quote_identity
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_quote_input, is_workbench_input
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
     execute_lazy_graph,
@@ -54,11 +50,10 @@ if TYPE_CHECKING:
     from haute.deploy._request_rows import RequestRows
     from haute.modelling._feature_contract import FeatureContract
 
+#: The node types whose configured ``path`` scoring reads from disk: a request input's
+#: sample, a Data Input's dataset and a Load File's file.
 _RUNTIME_PATH_NODE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset(
-    {
-        NodeType.DATA_INPUT,
-        NodeType.EXTERNAL_FILE,
-    }
+    node_type for node_type, artifact in DEPLOY_ARTIFACTS.items() if artifact in ("dataset", "file")
 )
 logger = get_logger(component="deploy_scorer")
 
@@ -127,15 +122,12 @@ DeployInput = pl.DataFrame | QuoteRequest
 def reads_one_quote_per_request(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
     """Whether the request input reads one quote per request: a Workbench Input does."""
     inputs = set(input_node_ids)
-    return any(
-        node.data.nodeType is NodeType.WORKBENCH_INPUT for node in graph.nodes if node.id in inputs
-    )
+    return any(is_workbench_input(node.data.nodeType) for node in graph.nodes if node.id in inputs)
 
 
 def quote_input_with_tables(node: GraphNode) -> bool:
     """Whether *node* is a Quote Input that reads its quotes into tables."""
-    quote_input = node.data.nodeType is NodeType.API_INPUT  # the Quote Input alone
-    return quote_input and quote_input_reads_tables(node.data.config)
+    return is_quote_input(node.data.nodeType) and quote_input_reads_tables(node.data.config)
 
 
 def reads_records(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
@@ -145,7 +137,7 @@ def reads_records(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
     """
     inputs = set(input_node_ids)
     return any(
-        node.data.nodeType is NodeType.WORKBENCH_INPUT or quote_input_with_tables(node)
+        is_workbench_input(node.data.nodeType) or quote_input_with_tables(node)
         for node in graph.nodes
         if node.id in inputs
     )
@@ -280,9 +272,10 @@ def _bundled_input_artifact(node: GraphNode, remap: Mapping[str, str]) -> str | 
     if not remap:
         return None
     config = node.data.config
-    if node.data.nodeType is NodeType.EXTERNAL_FILE:
+    artifact = DEPLOY_ARTIFACTS[node.data.nodeType]
+    if artifact == "file":
         return _remap_artifact(node.id, config, remap, "path")
-    if node.data.nodeType is not NodeType.DATA_INPUT:
+    if artifact != "dataset":
         return None
     from haute._polars_io_registry import data_input_is_direct
 
@@ -345,7 +338,7 @@ def _attach_bundled_feature_contracts(
     nodes: list[GraphNode] = []
     changed = False
     for node in graph.nodes:
-        if node.data.nodeType != NodeType.MODEL_SCORE:
+        if DEPLOY_ARTIFACTS[node.data.nodeType] != "model":
             nodes.append(node)
             continue
         contract_path = _bundled_contract_path(node.id, remap)
@@ -376,7 +369,7 @@ def omittable_request_columns(
     columns: set[str] = set()
     for node in graph.nodes:
         config = node.data.config
-        if node.data.nodeType != NodeType.MODEL_SCORE:
+        if DEPLOY_ARTIFACTS[node.data.nodeType] != "model":
             continue
         model_path = _remap_artifact(node.id, config, remap, model_artifact_field(config))
         if model_path is None:
@@ -415,7 +408,7 @@ def _attach_bundled_model_contract_inputs(
         config = node.data.config
         if (
             node.id not in relevant_node_ids
-            or node.data.nodeType != NodeType.MODEL_SCORE
+            or DEPLOY_ARTIFACTS[node.data.nodeType] != "model"
             or config.get("feature_contract_path")
         ):
             nodes.append(node)
@@ -506,7 +499,7 @@ def _attach_bundled_optimiser_artifacts(
         config = node.data.config
         bundled = (
             _remap_artifact(node.id, config, remap, "artifact_path")
-            if node.data.nodeType == NodeType.OPTIMISER_APPLY
+            if DEPLOY_ARTIFACTS[node.data.nodeType] == "optimiser_result"
             and config.get("source_type") == "file"
             else None
         )
@@ -565,7 +558,7 @@ def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
 
 def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) -> None:
     """Reject a deploy modelScore that would become an identity passthrough."""
-    if node.data.nodeType != NodeType.MODEL_SCORE:
+    if DEPLOY_ARTIFACTS[node.data.nodeType] != "model":
         return
     config = node.data.config
     if (
@@ -839,7 +832,7 @@ def _score_graph_lazy(
     for node in graph.nodes:
         if node.id not in input_set:
             continue
-        if node.data.nodeType is NodeType.WORKBENCH_INPUT:
+        if is_workbench_input(node.data.nodeType):
             quote_tables[node.id] = workbench_request_frames(
                 node.data.config, request_records(input_df)
             )
@@ -871,6 +864,8 @@ def _score_graph_lazy(
     ) -> NodeFnResult | None:
         nid = node.id
         node_type = node.data.nodeType
+        # What the node reads that the bundle carries: the intercepts below serve it.
+        artifact = DEPLOY_ARTIFACTS[node_type]
         config = node.data.config
         func_name = node_fn_name(node)
         # The preamble's names (the run's global constants among them), which
@@ -896,7 +891,7 @@ def _score_graph_lazy(
             return func_name, inject_input, True
 
         # Intercept: dataInput source → inject live DataFrame through apply_source_scan
-        if node_type == NodeType.DATA_INPUT and nid in input_set:
+        if artifact == "dataset" and nid in input_set:
             _code = str(config.get("code") or "").strip()
             _preamble = build_kwargs.get("preamble_ns")
             _profile = build_kwargs.get("execution_profile")
@@ -928,7 +923,7 @@ def _score_graph_lazy(
         # source. The graph config remains canonical; only this deploy-only
         # execution path reads the matching bundled artifact.
         bundled_data_source = (
-            _bundled_input_artifact(node, remap) if node_type == NodeType.DATA_INPUT else None
+            _bundled_input_artifact(node, remap) if artifact == "dataset" else None
         )
         if bundled_data_source is not None:
             _bundled_data_source = bundled_data_source
@@ -963,7 +958,7 @@ def _score_graph_lazy(
         # Intercept: an External File served from its bundled copy runs the body every
         # Load File runs (its steps or code, its input names), reading that copy by the
         # node's file_type.
-        if node_type == NodeType.EXTERNAL_FILE and remap:
+        if artifact == "file" and remap:
             remapped_path = _remap_artifact(nid, config, remap, "path")
             if remapped_path is not None:
                 from haute._builders import external_file_node_fn
@@ -983,7 +978,7 @@ def _score_graph_lazy(
         # Intercept: a file-sourced Optimiser Apply loads its bundled copy, then applies it
         # through the body every Optimiser Apply runs. One sourced from MLflow loads at
         # request time from its own destination, exactly as the builder does.
-        if node_type == NodeType.OPTIMISER_APPLY and config.get("source_type") == "file" and remap:
+        if artifact == "optimiser_result" and config.get("source_type") == "file" and remap:
             remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
             if remapped_path is not None:
                 _opt_remapped: str = remapped_path
@@ -1012,7 +1007,7 @@ def _score_graph_lazy(
         # model loading.  This catches drift even when the model itself
         # wasn't pre-bundled into artifact_paths.
         # This branch also covers configured non-bundled modelScore nodes.
-        if node_type == NodeType.MODEL_SCORE:
+        if artifact == "model":
             bundled_contract_path = _bundled_contract_path(nid, remap) if remap else None
             remapped_path = (
                 _remap_artifact(nid, config, remap, model_artifact_field(config)) if remap else None
@@ -1167,7 +1162,7 @@ def _score_graph_lazy(
             (
                 quote_tables[node.id]
                 for node in graph.nodes
-                if node.id in quote_tables and node.data.nodeType is NodeType.WORKBENCH_INPUT
+                if node.id in quote_tables and is_workbench_input(node.data.nodeType)
             ),
             None,
         )

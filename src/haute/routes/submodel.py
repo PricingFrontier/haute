@@ -9,13 +9,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
+from haute._node_specs import node_spec
 from haute._project_context import current_project
 from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     validate_submodel_definition_id,
 )
-from haute._types import NodeType, PipelineGraph, SubmodelInstanceConfig
+from haute._types import PipelineGraph, SubmodelInstanceConfig
 from haute.errors import ConfigError, ParseError
 from haute.routes._helpers import (
     load_pipeline_editor_document,
@@ -404,7 +405,7 @@ def _definition_id_for_instance(
     instance_id: str,
 ) -> str:
     node = graph.node_map.get(instance_id)
-    if node is None or node.data.nodeType != NodeType.SUBMODEL:
+    if node is None or node_spec(node.data.nodeType).structural_role != "occurrence":
         raise HTTPException(
             status_code=404,
             detail=f"Submodel instance {instance_id!r} not found in graph.",

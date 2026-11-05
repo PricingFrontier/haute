@@ -15,9 +15,7 @@ import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cached_property
-from types import MappingProxyType
 from typing import (
     Any,
     ClassVar,
@@ -48,133 +46,13 @@ from pydantic_core import CoreSchema
 
 from haute._graph_utils import _sanitize_func_name, build_parents_of
 
+# ``NodeType`` lives in a standard-library leaf so the node specification can import it
+# without a cycle through this module; it is re-exported here as the usual import.
+from haute._node_specs import DEFAULT_NODE_TYPE
+from haute._node_type import NodeType as NodeType
+
 # Type alias - nodes pass lazy frames between each other
 _Frame = pl.LazyFrame
-
-
-class NodeType(StrEnum):
-    """Canonical node-type identifiers shared with the React Flow frontend.
-
-    Inherits from ``StrEnum`` so ``NodeType.API_INPUT == "apiInput"`` is ``True``
-    and JSON serialization produces the plain string value.
-    """
-
-    API_INPUT = "apiInput"
-    WORKBENCH_INPUT = "workbenchInput"
-    WORKBENCH_OUTPUT = "workbenchOutput"
-    DATA_INPUT = "dataInput"
-    DATA_OUTPUT = "dataOutput"
-    POLARS = "polars"
-    EDGE_JOIN = "edgeJoin"
-    MODEL_SCORE = "modelScore"
-    BANDING = "banding"
-    RATING_STEP = "ratingStep"
-    OUTPUT = "output"
-    EXPLORE = "explore"
-    EXTERNAL_FILE = "externalFile"
-    LIVE_SWITCH = "liveSwitch"
-    MODELLING = "modelling"
-    OPTIMISER = "optimiser"
-    SCENARIO_EXPANDER = "scenarioExpander"
-    OPTIMISER_APPLY = "optimiserApply"
-    CONSTANT = "constant"
-    SUBMODEL = "submodel"
-    SUBMODEL_PORT = "submodelPort"
-
-
-DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
-    "data_input": NodeType.DATA_INPUT,
-    "data_output": NodeType.DATA_OUTPUT,
-    "api_input": NodeType.API_INPUT,
-    "workbench_input": NodeType.WORKBENCH_INPUT,
-    "workbench_output": NodeType.WORKBENCH_OUTPUT,
-    "polars": NodeType.POLARS,
-    "edge_join": NodeType.EDGE_JOIN,
-    "model_score": NodeType.MODEL_SCORE,
-    "banding": NodeType.BANDING,
-    "rating_step": NodeType.RATING_STEP,
-    "output": NodeType.OUTPUT,
-    "explore": NodeType.EXPLORE,
-    "external_file": NodeType.EXTERNAL_FILE,
-    "live_switch": NodeType.LIVE_SWITCH,
-    "modelling": NodeType.MODELLING,
-    "optimiser": NodeType.OPTIMISER,
-    "scenario_expander": NodeType.SCENARIO_EXPANDER,
-    "optimiser_apply": NodeType.OPTIMISER_APPLY,
-    "constant": NodeType.CONSTANT,
-}
-
-NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {v: k for k, v in DECORATOR_TO_NODE_TYPE.items()}
-
-#: Node types with no output: nothing may be wired downstream of them. The
-#: editor's ``SINK_ONLY_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is held
-#: equal to this set by test.
-SINK_ONLY_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {
-        NodeType.OUTPUT,
-        NodeType.WORKBENCH_OUTPUT,
-        NodeType.DATA_OUTPUT,
-        NodeType.EXPLORE,
-        NodeType.MODELLING,
-        NodeType.OPTIMISER,
-    }
-)
-
-#: The request inputs: the node types that read the quote request. The Quote
-#: Input's tables are built in its panel and the Workbench Input's are copied
-#: from the project's workbench (specs/workbench), but every
-#: context reads a request through either exactly alike, so code that means "the
-#: request input" tests membership here rather than naming one type, which
-#: ``tests/test_request_inputs.py`` enforces. The editor's ``REQUEST_INPUT_TYPES``
-#: (``frontend/src/utils/nodeTypes.ts``) is held equal to this set by test.
-REQUEST_INPUT_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.API_INPUT, NodeType.WORKBENCH_INPUT}
-)
-
-#: The response nodes: the node types whose result is the pipeline's response. The
-#: Quote Response maps columns to paths in its panel and the Workbench Output fills
-#: the tables the project's workbench supplies (specs/workbench), but run(),
-#: score() and deploy answer with either alike, and a pipeline holds one. The
-#: editor's ``RESPONSE_TYPES`` (``frontend/src/utils/nodeTypes.ts``) is the twin.
-RESPONSE_NODE_TYPES: frozenset[NodeType] = frozenset({NodeType.OUTPUT, NodeType.WORKBENCH_OUTPUT})
-
-#: The one name each request input and response node has (READ-46): a pipeline holds one
-#: of each, so its type names it, never numbered. The editor's ``SINGLETON_NODE_NAMES``
-#: (``frontend/src/utils/nodeTypes.ts``) is the twin.
-SINGLETON_NODE_NAMES: Mapping[NodeType, str] = MappingProxyType(
-    {
-        NodeType.API_INPUT: "quote_input",
-        NodeType.OUTPUT: "quote_response",
-        NodeType.WORKBENCH_INPUT: "workbench_input",
-        NodeType.WORKBENCH_OUTPUT: "workbench_output",
-    }
-)
-
-#: How an analyst knows each of them, for messages.
-_SINGLETON_LABELS: Mapping[NodeType, str] = MappingProxyType(
-    {
-        NodeType.API_INPUT: "Quote Input",
-        NodeType.OUTPUT: "Quote Response",
-        NodeType.WORKBENCH_INPUT: "Workbench Input",
-        NodeType.WORKBENCH_OUTPUT: "Workbench Output",
-    }
-)
-
-
-def singleton_name_problem(node_type: NodeType | str, name: str) -> str | None:
-    """Why a node of *node_type* cannot be called *name*, or ``None`` when it can: a request
-    input or response node has its type's one name (READ-46)."""
-    try:
-        kind = NodeType(node_type)
-    except ValueError:
-        return None
-    fixed = SINGLETON_NODE_NAMES.get(kind)
-    if fixed is None or name == fixed:
-        return None
-    return (
-        f"A {_SINGLETON_LABELS[kind]} is always named {fixed!r}, since a pipeline holds one; "
-        f"rename {name!r} to {fixed!r}, and each connect() that names it."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +182,7 @@ class NodeData(BaseModel):
 
     label: str = "Unnamed"
     description: str = ""
-    nodeType: NodeType = NodeType.POLARS  # noqa: N815 — matches React Flow frontend convention
+    nodeType: NodeType = DEFAULT_NODE_TYPE  # noqa: N815 — matches React Flow frontend convention
     config: dict[str, Any] = Field(default_factory=dict)
     editor: NodeEditorState = Field(default_factory=NodeEditorState)
 
@@ -336,11 +214,8 @@ class NodeData(BaseModel):
         In-process config replacement must go through ``GraphNode.with_config``
         so this validator runs; ``model_copy`` does not validate.
         """
-        from haute._polars_steps import (
-            STEPPED_NODE_TYPES,
-            PolarsStepError,
-            render_node_steps,
-        )
+        from haute._node_specs import STEPPED_NODE_TYPES
+        from haute._polars_steps import PolarsStepError, render_node_steps
 
         steps_error: str | None = None
         if "steps" in self.config and self.nodeType in STEPPED_NODE_TYPES:

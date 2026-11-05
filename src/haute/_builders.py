@@ -24,7 +24,7 @@ import haute.projection as projection
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE, INCOMPLETE_TRANSFORM_MESSAGE
 from haute._config_validation import (
     resolve_exact_input_index,
-    resolve_optimiser_data_input,
+    selected_input_index,
     validate_node_config,
 )
 from haute._contracts import (
@@ -68,18 +68,20 @@ from haute._node_apply import (
     expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
+    optimiser_apply_source,
     optimiser_apply_version_column,
+    require_optimiser_apply_source_type,
     resolve_api_input_from_config,
     resolve_workbench_input_from_config,
     scenario_step_count,
     select_live_switch_input,
 )
+from haute._node_specs import STEPPED_NODE_TYPES, node_spec, node_type_table
 from haute._output_assembler import (
     OutputMappingSchemaError,
     is_active_mapping_entry,
 )
 from haute._polars_steps import (
-    STEPPED_NODE_TYPES,
     STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE,
     PolarsStepError,
     RenderedSteps,
@@ -102,12 +104,7 @@ from haute._rating import (
     rating_dtype_descriptor,
 )
 from haute._rating_step_config import normalise_rating_tables
-from haute._registry import (
-    MODELLING_NODE_SEMANTICS,
-    NODE_REGISTRY,
-    NodeInputPolicy,
-    RecomputeCost,
-)
+from haute._registry import NODE_REGISTRY
 from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
@@ -305,11 +302,8 @@ NodeBuilder = Callable[[NodeBuildContext], tuple[str, Callable, bool]]
 def _register(
     node_type: NodeType,
     *,
-    recompute_cost: RecomputeCost,
     columns: _ColumnContractFn | None = None,
     opaque: bool = False,
-    is_behavioural: bool = False,
-    slice_transparent: bool = True,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
 
@@ -342,13 +336,7 @@ def _register(
     else:
         contract_fn = columns
 
-    registrar = _register_exec_in_registry(
-        node_type,
-        column_contract=contract_fn,
-        is_behavioural=is_behavioural,
-        recompute_cost=recompute_cost,
-        slice_transparent=slice_transparent,
-    )
+    registrar = _register_exec_in_registry(node_type, column_contract=contract_fn)
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
         registrar(fn)
@@ -378,28 +366,6 @@ def _passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
     return dfs_positional[0] if dfs_positional else pl.LazyFrame()
 
 
-def _modelling_passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-    """Apply the modelling node's declared input-selection policy."""
-    if MODELLING_NODE_SEMANTICS.input_policy is NodeInputPolicy.FIRST_CONNECTED:
-        return _passthrough_fn(*dfs_positional, **dfs_by_name)
-    raise RuntimeError(
-        f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
-    )
-
-
-# Node types whose builder always returns one of the node's inputs unchanged:
-# their output *is* that input's data. A stubbed Model Score or Optimiser Apply
-# that happens to pass its input through is not listed: that is a configuration
-# state, not what the node type is.
-PASS_THROUGH_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {
-        NodeType.DATA_OUTPUT,
-        MODELLING_NODE_SEMANTICS.node_type,
-        NodeType.OPTIMISER,
-    }
-)
-
-
 def pass_through_selected_edge(
     node: GraphNode,
     incoming_edges: list[GraphEdge] | tuple[GraphEdge, ...],
@@ -415,28 +381,22 @@ def pass_through_selected_edge(
     the node is not a pass-through or has nothing connected. An Optimiser that
     must name its data input and does not raises the builder's own error.
     """
-    node_type = node.data.nodeType
-    if node_type not in PASS_THROUGH_NODE_TYPES or not incoming_edges:
+    pass_through = node_spec(node.data.nodeType).pass_through
+    if pass_through == "none" or not incoming_edges:
         return None
-    if node_type == MODELLING_NODE_SEMANTICS.node_type and (
-        MODELLING_NODE_SEMANTICS.input_policy is not NodeInputPolicy.FIRST_CONNECTED
-    ):
-        raise RuntimeError(
-            f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
-        )
-    if node_type == NodeType.OPTIMISER:
-        names = [
-            edge_input_name(edge, node_map[edge.source], submodels=submodels)
-            for edge in incoming_edges
-        ]
-        data_input = resolve_optimiser_data_input(
-            node.data.config,
-            names,
-            node_label=_sanitize_func_name(node.data.label),
-        )
-        if data_input is not None:
-            return incoming_edges[names.index(data_input)]
-    return incoming_edges[0]
+    if pass_through == "first":
+        return incoming_edges[0]
+    names = [
+        edge_input_name(edge, node_map[edge.source], submodels=submodels) for edge in incoming_edges
+    ]
+    index = selected_input_index(
+        node.data.nodeType,
+        node.data.config,
+        names,
+        node_label=_sanitize_func_name(node.data.label),
+    )
+    assert index is not None  # edges are connected
+    return incoming_edges[index]
 
 
 def _explore_fn(df: _Frame) -> _Frame:
@@ -522,11 +482,11 @@ def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, A
     return {**config, "path": resolved}
 
 
-@_register(NodeType.WORKBENCH_INPUT, recompute_cost="source", opaque=True)
-@_register(NodeType.API_INPUT, recompute_cost="source", opaque=True)
+@_register(NodeType.WORKBENCH_INPUT, opaque=True)
+@_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    if ctx.node.data.nodeType is NodeType.WORKBENCH_INPUT:
+    if node_spec(ctx.node.data.nodeType).workbench:
         # A Workbench Input reads no file: its tables are one row of nulls each,
         # typed as declared, until the workbench supplies values.
         def workbench_source_fn(
@@ -570,12 +530,10 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, api_source_fn, True
 
 
-@_register(NodeType.DATA_INPUT, recompute_cost="source", opaque=True)
+@_register(NodeType.DATA_INPUT, opaque=True)
 def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    problem = stepped_code_problem(
-        config, NodeType.DATA_INPUT, step_input_names(NodeType.DATA_INPUT, [])
-    )
+    problem = _stepped_problem(ctx)
     if problem is not None:
         # Incomplete post-load steps must not read the source unchanged.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), True
@@ -619,7 +577,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, data_input_fn, True
 
 
-@_register(NodeType.DATA_OUTPUT, recompute_cost="cheap", columns=_passthrough_columns)
+@_register(NodeType.DATA_OUTPUT, columns=_passthrough_columns)
 def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # During normal run/preview, dataOutput is a pass-through.
     # The actual write happens via write_data_output() on explicit user action.
@@ -632,7 +590,7 @@ def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
     return produced or {"constant"}, set()
 
 
-@_register(NodeType.CONSTANT, recompute_cost="source", columns=_constant_columns)
+@_register(NodeType.CONSTANT, columns=_constant_columns)
 def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     raw_values = ctx.config.get("values", []) or []
 
@@ -644,9 +602,7 @@ def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 @_register(
     NodeType.LIVE_SWITCH,
-    recompute_cost="cheap",
     columns=_passthrough_columns,
-    is_behavioural=True,
 )
 def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -675,11 +631,9 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, switch_fn, False
 
 
-@_register(NodeType.EXPLORE, recompute_cost="cheap", columns=_explore_columns)
+@_register(NodeType.EXPLORE, columns=_explore_columns)
 def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    problem = stepped_code_problem(
-        ctx.config, NodeType.EXPLORE, step_input_names(NodeType.EXPLORE, [])
-    )
+    problem = _stepped_problem(ctx)
     if problem is not None:
         # Incomplete steps must not explore the frame unchanged.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
@@ -703,7 +657,7 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, explore_with_code, False
 
 
-@_register(NodeType.EXTERNAL_FILE, recompute_cost="code", opaque=True)
+@_register(NodeType.EXTERNAL_FILE, opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     # Anchor a relative object path to the pipeline dir before the load (same fix as the
@@ -799,9 +753,7 @@ def _output_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(
     NodeType.OUTPUT,
-    recompute_cost="cheap",
     columns=_output_columns,
-    is_behavioural=True,
 )
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -841,7 +793,10 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 # Opaque: it reads its frames whole, so a frame lacking a declared column reaches the node,
 # which names the table and the column, rather than failing a projection contract upstream.
-@_register(NodeType.WORKBENCH_OUTPUT, recompute_cost="cheap", opaque=True, is_behavioural=True)
+@_register(
+    NodeType.WORKBENCH_OUTPUT,
+    opaque=True,
+)
 def _build_workbench_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     # Each incoming edge's target handle names the table its frame fills.
@@ -866,9 +821,7 @@ def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(
     NodeType.BANDING,
-    recompute_cost="cheap",
     columns=_banding_columns,
-    is_behavioural=True,
 )
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -908,9 +861,7 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(
     NodeType.RATING_STEP,
-    recompute_cost="costly",
     columns=_rating_step_columns,
-    is_behavioural=True,
 )
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -918,9 +869,7 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # (``NodeConfigModel.builder_checks``) rather than normalise the tables twice.
     tables = normalise_rating_tables(config)
     combined_outputs = normalise_combined_outputs(config)
-    problem = stepped_code_problem(
-        config, NodeType.RATING_STEP, step_input_names(NodeType.RATING_STEP, [])
-    )
+    problem = _stepped_problem(ctx)
     if problem is not None:
         # Incomplete post-rating steps must not rate the frame and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
@@ -965,19 +914,14 @@ def _scenario_expander_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(
     NodeType.SCENARIO_EXPANDER,
-    recompute_cost="cheap",
-    slice_transparent=False,
     columns=_scenario_expander_columns,
-    is_behavioural=True,
 )
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     # Fail loud at build time on a missing or misconfigured grid size (the
     # shared helper re-validates at call time for the standalone path).
     scenario_step_count(config)
-    problem = stepped_code_problem(
-        config, NodeType.SCENARIO_EXPANDER, step_input_names(NodeType.SCENARIO_EXPANDER, [])
-    )
+    problem = _stepped_problem(ctx)
     if problem is not None:
         # Incomplete post-expansion steps must not expand the grid and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
@@ -1035,18 +979,19 @@ def _frames_in_declared_order(
         ) from exc
 
 
-@_register(NodeType.OPTIMISER, recompute_cost="cheap", columns=_passthrough_columns)
+@_register(NodeType.OPTIMISER, columns=_passthrough_columns)
 def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Solving happens via /api/optimiser/solve.
     # When data_input is configured, select that specific input so the
     # preview shows scenario-expanded data rather than a banding source.
-    data_input = resolve_optimiser_data_input(
+    index = selected_input_index(
+        ctx.node.data.nodeType,
         ctx.config,
         ctx.source_names,
         node_label=ctx.func_name,
     )
-    if data_input is not None:
-        _i_captured = ctx.source_names.index(data_input)
+    if index is not None:
+        _i_captured = index
         _src_names_captured = list(ctx.source_names)
 
         def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1067,22 +1012,14 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
-    # Mirror the "do we have a source configured?" check in
-    # _build_optimiser_apply: without an artifact path or a valid
-    # MLflow source the builder returns _passthrough_fn, meaning the
-    # node reads nothing from its input and produces no new columns.
-    # Only once a source is configured do the referenced columns become
-    # artifact-driven and therefore opaque.
-    from haute._node_apply import require_optimiser_apply_source_type
-
+    # The builder's "is a source configured?" check, read through the same
+    # classification: without an artifact path or a valid MLflow source the
+    # builder returns _passthrough_fn, meaning the node reads nothing from its
+    # input and produces no new columns. Only once a source is configured do
+    # the referenced columns become artifact-driven and therefore opaque.
     require_optimiser_apply_source_type(config)
-    source_type = config.get("source_type", "")
-    has_file = bool(config.get("artifact_path", "")) and source_type == "file"
-    has_mlflow = source_type in ("run", "registered") and (
-        (source_type == "run" and config.get("run_id"))
-        or (source_type == "registered" and config.get("registered_model"))
-    )
-    if not has_file and not has_mlflow:
+    source = optimiser_apply_source(config)
+    if source is None or not source.complete:
         return set(), set()
 
     # Produced: configured apply sources append a version column and can
@@ -1097,31 +1034,18 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(
     NodeType.OPTIMISER_APPLY,
-    recompute_cost="costly",
     columns=_optimiser_apply_columns,
-    is_behavioural=True,
 )
 def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    _artifact_path = config.get("artifact_path", "")
-    _ratebook_input = config.get("ratebook_input", "")
     _source_names = list(ctx.source_names)
-    _source_type = config.get("source_type", "")
-    _run_id = config.get("run_id", "")
-    _registered_model = config.get("registered_model", "")
     _config_captured = dict(config)
     _schema_only = ctx.schema_only
 
-    # Determine if we have a valid source configured
-    from haute._node_apply import require_optimiser_apply_source_type
-
+    # Without a configured source the node passes its first input through.
     require_optimiser_apply_source_type(config)
-    _has_file = bool(_artifact_path) and _source_type == "file"
-    _has_mlflow = _source_type in ("run", "registered") and (
-        (_source_type == "run" and _run_id) or (_source_type == "registered" and _registered_model)
-    )
-
-    if not _has_file and not _has_mlflow:
+    source = optimiser_apply_source(config)
+    if source is None or not source.complete:
         return ctx.func_name, _passthrough_fn, False
 
     def optimiser_apply_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
@@ -1144,13 +1068,12 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 @_register(
-    MODELLING_NODE_SEMANTICS.node_type,
-    recompute_cost="cheap",
+    NodeType.MODELLING,
     columns=_passthrough_columns,
 )
 def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # Pass-through in preview mode. Training happens via /api/modelling/train.
-    return ctx.func_name, _modelling_passthrough_fn, False
+    return ctx.func_name, _passthrough_fn, False
 
 
 def _model_score_inputs(
@@ -1304,15 +1227,11 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract | Contract:
 
 @_register(
     NodeType.MODEL_SCORE,
-    recompute_cost="costly",
     columns=_model_score_columns,
-    is_behavioural=True,
 )
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    problem = stepped_code_problem(
-        config, NodeType.MODEL_SCORE, step_input_names(NodeType.MODEL_SCORE, [])
-    )
+    problem = _stepped_problem(ctx)
     if problem is not None:
         # Incomplete post-scoring steps must not score the frame and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
@@ -1326,8 +1245,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if model_source is None:
         return ctx.func_name, _passthrough_fn, False
 
-    from haute._model_scorer import ModelScorer
-    from haute._model_source import scoring_contract_path
+    from haute._model_scorer import model_scorer
 
     base_dir = current_project().pipeline_dir
     required_output_columns = projection.model_score_required_output_columns(
@@ -1335,21 +1253,19 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         ctx.required_output_columns,
         post_processing_code=code,
     )
-    scorer = ModelScorer(
-        model_source=model_source,
-        task=model_score_task(config),
-        output_col=model_score_output_column(config),
+    scorer = model_scorer(
+        config,
+        model_source,
+        base_dir=base_dir,
+        source=ctx.source or "live",
         code=code,
         source_names=list(ctx.source_names),
-        source=ctx.source or "live",
         row_limit=ctx.row_limit,
         schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
-        feature_contract_path=scoring_contract_path(model_source, config, base_dir),
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
         full_term_tally=_full_term_tally(ctx),
-        base_dir=base_dir,
         preamble_ns=dict(ctx.preamble_ns) if ctx.preamble_ns else None,
     )
 
@@ -1362,6 +1278,36 @@ def _full_term_tally(ctx: NodeBuildContext) -> FullTermTally | None:
     return None if context is None else context.provenance.full_term_tally(ctx.node.id)
 
 
+#: The rows a node type writes per input row by expanding scenarios (its step
+#: count), for the types that expand them; ``None`` for every other type.
+_SCENARIO_FANOUT: Mapping[NodeType, Callable[[Mapping[str, Any]], int] | None] = node_type_table(
+    "scenario fanout",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: scenario_step_count,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 def _upstream_scenario_fanout(
     upstream_ids: list[str] | None,
     node_map: dict[str, GraphNode] | None,
@@ -1372,22 +1318,22 @@ def _upstream_scenario_fanout(
     expanders on separate branches multiply too. A config the expander itself
     would refuse counts as 1.
     """
-    from haute._node_apply import scenario_step_count
     from haute.errors import ConfigError
 
     fanout = 1
     for node_id in upstream_ids or ():
         node = (node_map or {}).get(node_id)
-        if node is None or node.data.nodeType != NodeType.SCENARIO_EXPANDER:
+        step_count = None if node is None else _SCENARIO_FANOUT[node.data.nodeType]
+        if node is None or step_count is None:
             continue
         try:
-            fanout *= scenario_step_count(node.data.config)
+            fanout *= step_count(node.data.config)
         except (ConfigError, TypeError, ValueError, OverflowError):
             continue
     return fanout
 
 
-@_register(NodeType.POLARS, recompute_cost="code", opaque=True)
+@_register(NodeType.POLARS, opaque=True)
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _src_names = list(ctx.source_names)
@@ -1418,9 +1364,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         if _in_map is not None:
             raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=ctx.node.id)
         names = set(_src_names)
-        problem = stepped_code_problem(
-            config, NodeType.POLARS, step_input_names(NodeType.POLARS, sorted(names))
-        )
+        problem = _stepped_problem(ctx, sorted(names))
         if problem is not None:
             return (
                 ctx.func_name,
@@ -1558,6 +1502,18 @@ def stepped_code_problem(
     return None
 
 
+def _stepped_problem(ctx: NodeBuildContext, edge_names: Sequence[str] = ()) -> str | None:
+    """Why the node *ctx* builds cannot run its steps, or None when it can.
+
+    The node's own type names its stepped surface; *edge_names* are its
+    incoming edge names, which only an ``edges`` surface's steps may reference.
+    """
+    node_type = ctx.node.data.nodeType
+    return stepped_code_problem(
+        ctx.config, node_type, step_input_names(node_type, list(edge_names))
+    )
+
+
 def _incomplete_transform(message: str) -> Callable[..., _Frame]:
     """Build the function a transform without a runnable program executes."""
 
@@ -1570,7 +1526,7 @@ def _incomplete_transform(message: str) -> Callable[..., _Frame]:
     return incomplete_transform_fn
 
 
-@_register(NodeType.EDGE_JOIN, recompute_cost="costly", opaque=True)
+@_register(NodeType.EDGE_JOIN, opaque=True)
 def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     build_edge_join_kwargs(ctx.config)
     base_index, join_index = resolve_edge_join_role_indices(
@@ -1604,7 +1560,7 @@ def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 # its input through would skip the submodel's nodes and answer without them, with no
 # error. Codegen is as strict (``_codegen_builders._gen_submodel``). Their column
 # rules stay, for the views that read an unexpanded graph's columns.
-@_register(NodeType.SUBMODEL, recompute_cost="cheap", columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL, columns=_passthrough_columns)
 def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.node.data.config
     raise ExecutionError(
@@ -1616,7 +1572,7 @@ def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     )
 
 
-@_register(NodeType.SUBMODEL_PORT, recompute_cost="cheap", columns=_passthrough_columns)
+@_register(NodeType.SUBMODEL_PORT, columns=_passthrough_columns)
 def _build_submodel_port(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     raise ExecutionError(
         f"Submodel port {ctx.node.data.label!r} reached execution: a port exists only in "

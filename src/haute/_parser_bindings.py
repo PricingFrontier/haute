@@ -15,8 +15,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from haute._graph_utils import REQUEST_INPUT_KINDS, incoming_edge_bindings
+from haute._graph_utils import incoming_edge_bindings
 from haute._node_bindings import NodeInput, bind_node_inputs
+from haute._node_specs import REQUEST_INPUT_KINDS
 from haute._types import GraphEdge, PipelineGraph, SubmodelInputPort
 from haute.errors import ParseError
 

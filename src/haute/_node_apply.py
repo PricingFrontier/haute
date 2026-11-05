@@ -22,9 +22,10 @@ function so this module never forms an import cycle with ``_builders``.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import polars as pl
 
@@ -220,10 +221,11 @@ def _workbench_node_config(
     config = _resolve_node_config(config_or_path, base_dir, node_type)
     if isinstance(config_or_path, Mapping):
         return config
+    from haute._node_specs import node_spec
     from haute._project_context import current_project
     from haute._workbench_nodes import given_config, project_form_tables
 
-    owner = "Workbench Input" if node_type is NodeType.WORKBENCH_INPUT else "Workbench Output"
+    owner = node_spec(node_type).display_name
     return given_config(node_type, config, project_form_tables(current_project().root, owner=owner))
 
 
@@ -477,6 +479,48 @@ def require_optimiser_apply_source_type(config: Mapping[str, Any]) -> None:
         )
 
 
+@dataclass(frozen=True)
+class OptimiserApplySource:
+    """The source an Optimiser Apply config chooses for its artifact.
+
+    *source_type* is ``file``, ``run`` or ``registered``. *identifier* is the
+    chosen source's identifying field (the artifact file, the run id, the
+    registered model), empty while the editor has not filled it in.
+    *artifact_path* is the configured ``artifact_path``: a file source's file, and
+    on an MLflow source a field the runtime tolerates but ignores, since it
+    downloads the run's fixed ``optimiser_result.json``.
+    """
+
+    source_type: Literal["file", "run", "registered"]
+    identifier: Any
+    artifact_path: Any
+
+    @property
+    def complete(self) -> bool:
+        """Whether the chosen source names its artifact: one the runtime loads."""
+        return bool(self.identifier)
+
+
+def optimiser_apply_source(config: Mapping[str, Any]) -> OptimiserApplySource | None:
+    """Classify an Optimiser Apply config's source once; ``None`` when none is chosen.
+
+    The builder, its column contract, :func:`load_configured_optimiser_artifact`
+    and the deploy bundler read the source through here. Each keeps its own
+    handling of an incomplete one: a run passes the first frame through, and the
+    runtime callers refuse an ``artifact_path`` without a ``source_type`` first
+    (:func:`require_optimiser_apply_source_type`).
+    """
+    source_type = config.get("source_type", "")
+    artifact_path = config.get("artifact_path", "")
+    if source_type == "file":
+        return OptimiserApplySource("file", artifact_path, artifact_path)
+    if source_type == "run":
+        return OptimiserApplySource("run", config.get("run_id", ""), artifact_path)
+    if source_type == "registered":
+        return OptimiserApplySource("registered", config.get("registered_model", ""), artifact_path)
+    return None
+
+
 def load_configured_optimiser_artifact(
     config: Mapping[str, Any],
     base_dir: str | Path | None = None,
@@ -488,30 +532,23 @@ def load_configured_optimiser_artifact(
     (absent = auto).
     """
     require_optimiser_apply_source_type(config)
-    source_type = config.get("source_type", "")
-    artifact_path = config.get("artifact_path", "")
-    run_id = config.get("run_id", "")
-    registered_model = config.get("registered_model", "")
-    has_file = bool(artifact_path) and source_type == "file"
-    has_mlflow = source_type in ("run", "registered") and (
-        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
-    )
-    if not has_file and not has_mlflow:
+    source = optimiser_apply_source(config)
+    if source is None or not source.complete:
         return None
-    if source_type in ("run", "registered"):
+    if source.source_type in ("run", "registered"):
         from haute._optimiser_io import load_mlflow_optimiser_artifact
 
         return load_mlflow_optimiser_artifact(
-            source_type=source_type,
-            run_id=run_id,
-            registered_model=registered_model,
+            source_type=source.source_type,
+            run_id=config.get("run_id", ""),
+            registered_model=config.get("registered_model", ""),
             version=config.get("version", "latest"),
             alias=str(config.get("alias", "") or ""),
             destination=str(config.get("mlflow_destination", "") or ""),
         )
     from haute._optimiser_io import load_optimiser_artifact
 
-    return load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
+    return load_optimiser_artifact(_resolve_artifact_path(source.identifier, base_dir))
 
 
 def apply_optimiser_apply_from_config(

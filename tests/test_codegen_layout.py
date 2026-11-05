@@ -23,16 +23,8 @@ import pytest
 
 from haute._graph_utils import _sanitize_func_name
 from haute._mlflow_io import ScoringModel
-from haute._standalone_nodes import CODE_NODE_TYPES
-from haute._types import (
-    DECORATOR_TO_NODE_TYPE,
-    SINGLETON_NODE_NAMES,
-    GraphEdge,
-    GraphNode,
-    NodeData,
-    NodeType,
-    PipelineGraph,
-)
+from haute._node_specs import CODE_NODE_TYPES, DECORATOR_TO_NODE_TYPE, SINGLETON_NODE_NAMES
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError
 

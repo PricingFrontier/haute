@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from haute._env import int_env
 from haute._logging import get_logger
-from haute._polars_steps import STEPPED_NODE_TYPES
+from haute._node_specs import STEPPED_NODE_TYPES, node_spec
 from haute._types import NodeType
 from haute.assistant._assets import example_index
 from haute.assistant._catalog import (
@@ -258,7 +258,7 @@ def _steps_first_rule() -> str:
 
     Each form is the descriptor's own ``new_logic`` list, so the prompt and the
     descriptors advertise the same shape; the surfaces are named by their
-    palette names, in the order of the step builder's surface table.
+    palette names, in the node specification's order.
     """
 
     by_id = {node.id: node for node in capability_manifest().nodes}
@@ -281,7 +281,8 @@ def _steps_first_rule() -> str:
             raise RuntimeError(f"Stepped surfaces starting from {start!r} disagree on new logic.")
         return forms.pop()
 
-    load_file = next(node for node in stepped if node.id == NodeType.EXTERNAL_FILE.value)
+    # The surface whose hook receives a loaded object as `obj`: Load File.
+    load_file = next(node for node in stepped if node_spec(node.id).code == "object_hook")
     return (
         "Write new Polars logic as steps with a free-code card: on a "
         f"{_or_list(names('start', 'input'))} node `{form('input')}`, with "

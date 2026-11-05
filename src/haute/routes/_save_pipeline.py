@@ -40,6 +40,12 @@ from haute._global_constants import (
 )
 from haute._graph_shape import validate_singleton_groups
 from haute._logging import get_logger
+from haute._node_specs import (
+    REQUEST_INPUT_NODE_TYPES,
+    SINK_ONLY_NODE_TYPES,
+    STRUCTURAL_NODE_TYPES,
+    node_spec,
+)
 from haute._pipeline_recovery import (
     load_pipeline_editor_document,
     pipeline_document_fingerprint,
@@ -51,13 +57,7 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute._types import (
-    GLOBAL_CONSTANTS_FILE,
-    GLOBAL_CONSTANTS_NAME,
-    REQUEST_INPUT_NODE_TYPES,
-    SINK_ONLY_NODE_TYPES,
-    SubmodelDefinition,
-)
+from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME, SubmodelDefinition
 from haute.errors import (
     ConfigError,
     ConflictError,
@@ -71,7 +71,6 @@ from haute.errors import (
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
-    NodeType,
     PipelineGraph,
     _sanitize_func_name,
     flatten_graph,
@@ -966,7 +965,7 @@ class SavePipelineService:
             incoming_by_target[edge.target].append(edge)
 
         for node in flattened.nodes:
-            if node.data.nodeType != NodeType.EDGE_JOIN:
+            if not node_spec(node.data.nodeType).input_roles:
                 continue
             incoming = incoming_by_target[node.id]
             resolve_edge_join_role_indices(
@@ -1205,19 +1204,19 @@ class SavePipelineService:
             graph,
             *(g for _, g in SavePipelineService._iter_named_embedded_submodel_graphs(graph)),
         ]
-        structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
         labels_by_name = {
             _sanitize_func_name(node.data.label): node.data.label
             for scoped_graph in scoped
             for node in scoped_graph.nodes
-            if node.data.nodeType not in structural_types
+            if node.data.nodeType not in STRUCTURAL_NODE_TYPES
         }
         for scoped_graph in scoped:
             for node in scoped_graph.nodes:
                 if node.data.nodeType not in REQUEST_INPUT_NODE_TYPES:
                     continue
-                if node.data.nodeType is NodeType.WORKBENCH_INPUT:
-                    kind = "Workbench Input"
+                spec = node_spec(node.data.nodeType)
+                kind = spec.display_name
+                if spec.workbench:
                     labels = [
                         edge.sourceHandle for edge in scoped_graph.edges if edge.source == node.id
                     ]
@@ -1225,7 +1224,6 @@ class SavePipelineService:
                     tables = node.data.config.get("tables")
                     if not isinstance(tables, list):
                         continue
-                    kind = "Quote Input"
                     labels = [
                         table.get("label") if isinstance(table, dict) else None for table in tables
                     ]
@@ -1672,11 +1670,8 @@ class SavePipelineService:
         """
         from haute._builders import stepped_code_problem
         from haute._graph_utils import edge_input_name
-        from haute._polars_steps import (
-            STEPPED_SURFACE_LABELS,
-            is_stepped_config,
-            step_input_names,
-        )
+        from haute._node_specs import node_spec
+        from haute._polars_steps import is_stepped_config, step_input_names
 
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
@@ -1702,12 +1697,12 @@ class SavePipelineService:
                     if problem is not None:
                         label = node.data.label or node.id
                         warnings.append(
-                            f"{STEPPED_SURFACE_LABELS[node_type]} node {label!r} has an incomplete "
+                            f"{node_spec(node_type).display_name} node {label!r} has an incomplete "
                             f"step list ({problem}). It will save, but running the pipeline "
                             "will fail until the step is completed."
                         )
                     continue
-                if node_type != NodeType.POLARS:
+                if node_spec(node_type).code != "transform":
                     continue
                 if str(config.get("code") or "").strip():
                     continue

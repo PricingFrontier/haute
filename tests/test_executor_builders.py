@@ -12,7 +12,6 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-import haute._builders as builders
 from haute._builders import NodeBuildContext, _build_node_fn
 from haute._execute_lazy import _apply_selected_columns
 from haute._execution_context import ExecutionProfile
@@ -1029,16 +1028,6 @@ class TestBuildNodeFnFallback:
         input_df = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(NotImplementedError):
             fn(input_df).collect()
-
-
-def test_modelling_passthrough_rejects_unsupported_input_policy(monkeypatch) -> None:
-    class UnsupportedSemantics:
-        input_policy = "unsupported"
-
-    monkeypatch.setattr(builders, "MODELLING_NODE_SEMANTICS", UnsupportedSemantics())
-
-    with pytest.raises(RuntimeError, match="unsupported"):
-        builders._modelling_passthrough_fn(pl.DataFrame({"x": [1]}).lazy())
 
 
 # ---------------------------------------------------------------------------

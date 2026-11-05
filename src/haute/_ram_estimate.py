@@ -26,7 +26,7 @@ the workload needs and compares the two.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -50,23 +50,15 @@ from haute._graph_utils import (
 )
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
+from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata, streaming_collect
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute.errors import ConfigError
 from haute.projection import ProjectionEdgeKey
 
 logger = get_logger(component="ram_estimate")
-
-#: Sources whose size the estimate reads from their metadata.
-_SIZED_SOURCE_TYPES = REQUEST_INPUT_NODE_TYPES | frozenset({NodeType.DATA_INPUT})
 
 #: Request-local source frames, by node: the frame a source node was given, or for a
 #: multi-frame source (a Workbench Input reading its quote) a frame per port, keyed by it.
@@ -473,7 +465,7 @@ class _EstimateGraphIndex:
         if key not in self.port_metadata:
             self.port_metadata[key] = (
                 _workbench_input_port_metadata(node, port)
-                if node.data.nodeType is NodeType.WORKBENCH_INPUT
+                if node_spec(node.data.nodeType).workbench
                 else _json_api_input_port_metadata(node, port)
             )
         return self.port_metadata[key]
@@ -785,38 +777,76 @@ def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSource
     return None
 
 
+def _request_input_source_metadata(node: GraphNode) -> _DetailedSourceMetadata | None:
+    path = node.data.config.get("path", "")
+    if not path:
+        return None
+    if isinstance(path, str) and is_json_api_input_path(path):
+        # v2 per-frame caches are one parquet per emit-true table,
+        # so there's no single (row_count, column_count) summary
+        # to return. Conservative None lets the caller fall back
+        # to its "unknown source size" branch.
+        return None
+    if Path(path).exists():
+        return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
+    return None
+
+
+def _data_input_source_metadata(node: GraphNode) -> _DetailedSourceMetadata | None:
+    _, snapshot_paths = _data_input_parquet_artifact(node.data.config)
+    return _source_scoped_metadata(
+        _detailed_parquet_metadata(snapshot_paths),
+        node.id,
+    )
+
+
+#: How the estimate reads each source's size from its stored metadata; ``None``
+#: for a node type it does not size from metadata.
+_SOURCE_METADATA_READERS: Mapping[
+    NodeType, Callable[[GraphNode], _DetailedSourceMetadata | None] | None
+] = node_type_table(
+    "RAM estimate source metadata",
+    {
+        NodeType.API_INPUT: _request_input_source_metadata,
+        NodeType.WORKBENCH_INPUT: _request_input_source_metadata,
+        NodeType.DATA_INPUT: _data_input_source_metadata,
+        NodeType.CONSTANT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+#: Sources whose size the estimate reads from their metadata.
+_SIZED_SOURCE_TYPES: frozenset[NodeType] = frozenset(
+    node_type for node_type, reader in _SOURCE_METADATA_READERS.items() if reader is not None
+)
+
+
 def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetadata | None:
     """Return detailed parquet source metadata for a source node, or None."""
-    config = node.data.config
-    node_type = node.data.nodeType
-
+    reader = _SOURCE_METADATA_READERS[node.data.nodeType]
+    if reader is None:
+        return None
     try:
-        path = config.get("path", "")
-
-        if node_type in REQUEST_INPUT_NODE_TYPES:
-            if not path:
-                return None
-            if isinstance(path, str) and is_json_api_input_path(path):
-                # v2 per-frame caches are one parquet per emit-true table,
-                # so there's no single (row_count, column_count) summary
-                # to return. Conservative None lets the caller fall back
-                # to its "unknown source size" branch.
-                return None
-            if Path(path).exists():
-                return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
-            return None
-
-        if node_type == NodeType.DATA_INPUT:
-            _, snapshot_paths = _data_input_parquet_artifact(config)
-            return _source_scoped_metadata(
-                _detailed_parquet_metadata(snapshot_paths),
-                node.id,
-            )
+        return reader(node)
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("source_metadata_failed", node_id=node.id, error=str(exc))
         return None
-
-    return None
 
 
 def _detailed_ancestor_source_metadata(
@@ -1037,13 +1067,6 @@ def _safe_edge_input_name(edge: GraphEdge, index: _EstimateGraphIndex) -> str | 
         return None
 
 
-# Nodes whose optional code bounds their rows, with the reason a node with no input is unbounded.
-_NO_INPUT_REASON_BY_CODE_TYPE = {
-    NodeType.MODEL_SCORE: "input_cardinality_unavailable",
-    NodeType.EXTERNAL_FILE: "external_object_row_cardinality_unknown",
-}
-
-
 def _code_cardinality(
     index: _EstimateGraphIndex,
     node: GraphNode,
@@ -1070,6 +1093,383 @@ def _code_cardinality(
     return _cardinality_from_analysis(node.id, analysis, parents)
 
 
+_EdgeRows = tuple[tuple[GraphEdge, _ResolvedRowCardinality], ...]
+
+#: Proves one node's rows from the node, the port it is reached through, and the
+#: preamble's selector aliases.
+_RowCardinalityHandler = Callable[
+    [_EstimateGraphIndex, GraphNode, str | None, frozenset[str]], _ResolvedRowCardinality
+]
+
+#: Proves one node's rows from its incoming edges' proven rows (and the parents'
+#: results in edge order).
+_ParentRowsHandler = Callable[
+    [
+        _EstimateGraphIndex,
+        GraphNode,
+        _EdgeRows,
+        tuple[_ResolvedRowCardinality, ...],
+        frozenset[str],
+    ],
+    _ResolvedRowCardinality,
+]
+
+
+def _from_parents(handler: _ParentRowsHandler) -> _RowCardinalityHandler:
+    """A handler that first proves every incoming edge, returning the first unproven one."""
+
+    def resolve(
+        index: _EstimateGraphIndex,
+        node: GraphNode,
+        port: str | None,
+        selector_aliases: frozenset[str],
+    ) -> _ResolvedRowCardinality:
+        incoming_edges = tuple(
+            edge
+            for edge in index.pruned_edges
+            if edge.target == node.id and edge.source in index.node_map
+        )
+        edge_results = tuple(
+            (edge, index.resolve_cardinality(edge.source, edge.sourceHandle))
+            for edge in incoming_edges
+        )
+        for _edge, result in edge_results:
+            if not result.available:
+                return result
+        parents = tuple(result for _edge, result in edge_results)
+        return handler(index, node, edge_results, parents, selector_aliases)
+
+    return resolve
+
+
+def _source_row_count(
+    node_id: str, metadata: _DetailedSourceMetadata | None
+) -> _ResolvedRowCardinality:
+    if metadata is None:
+        return _ResolvedRowCardinality.unavailable(node_id, "source_row_count_unavailable")
+    return _ResolvedRowCardinality.proven(
+        metadata.row_count,
+        metadata.row_count,
+        (f"source={node_id}:row_count={metadata.row_count}",),
+    )
+
+
+def _request_input_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    port: str | None,
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    metadata = index.source_metadata(node)
+    if metadata is None and port is not None:
+        metadata = index.api_input_port_metadata(node, port)
+    return _source_row_count(node.id, metadata)
+
+
+def _data_input_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    port: str | None,
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    metadata = index.source_metadata(node)
+    base = _source_row_count(node.id, metadata)
+    if metadata is None:
+        return base
+    code = node.data.config.get("code")
+    if isinstance(code, str) and code.strip():
+        analysis = analyze_polars_cardinality(
+            code, {"df": metadata.row_count}, selector_aliases=selector_aliases
+        )
+        return _cardinality_from_analysis(node.id, analysis, (base,))
+    return base
+
+
+def _constant_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    port: str | None,
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    return _ResolvedRowCardinality.proven(
+        1,
+        1,
+        (f"source={node.id}:constant_row_count=1",),
+    )
+
+
+def _edge_join_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    if len(edge_results) != 2:
+        return _ResolvedRowCardinality.unavailable(node.id, "invalid_join_arity")
+    target_handles = [edge.targetHandle for edge, _result in edge_results]
+    try:
+        left_index, right_index = resolve_edge_join_role_indices(target_handles)
+        kwargs = build_edge_join_kwargs(node.data.config)
+        left = parents[left_index]
+        right = parents[right_index]
+        assert left.output_rows is not None and right.output_rows is not None
+        validate = cast(str | None, kwargs.get("validate"))
+        bound = join_cardinality_upper_bound(
+            left.output_rows,
+            right.output_rows,
+            how=str(kwargs["how"]),
+            validate=validate,
+        )
+        # An Edge Join without a bounding contract carries the row product
+        # exactly as an undeclared Polars join does.
+        many_to_many = normalise_join_validation(validate) == "m:m"
+    except (ConfigError, TypeError, ValueError):
+        return _ResolvedRowCardinality.unavailable(node.id, "invalid_join_config")
+    return _ResolvedRowCardinality.proven(
+        bound.max_rows,
+        max(*(result.peak_rows or 0 for result in parents), bound.max_rows),
+        (
+            *(item for result in parents for item in result.evidence),
+            *(f"node={node.id}:{item}" for item in bound.evidence),
+        ),
+        many_to_many_join_node_ids=_inherited_many_to_many(
+            parents, *((node.id,) if many_to_many else ())
+        ),
+    )
+
+
+def _transform_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    return _code_cardinality(index, node, edge_results, parents, selector_aliases=selector_aliases)
+
+
+def _expander_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    if len(parents) != 1:
+        return _ResolvedRowCardinality.unavailable(
+            node.id,
+            "invalid_input_cardinality",
+        )
+    from haute._node_apply import scenario_step_count
+
+    try:
+        steps = scenario_step_count(node.data.config)
+    except (TypeError, ValueError, OverflowError):
+        return _ResolvedRowCardinality.unavailable(node.id, "invalid_scenario_steps")
+    parent = parents[0]
+    assert parent.output_rows is not None and parent.peak_rows is not None
+    expanded_rows = parent.output_rows * steps
+    expanded = _ResolvedRowCardinality.proven(
+        expanded_rows,
+        max(parent.peak_rows, expanded_rows),
+        (
+            *parent.evidence,
+            f"node={node.id}:scenario_steps={steps}",
+            f"node={node.id}:cardinality_output_upper_bound={expanded_rows}",
+        ),
+        many_to_many_join_node_ids=parent.many_to_many_join_node_ids,
+    )
+    code = node.data.config.get("code")
+    if isinstance(code, str) and code.strip():
+        analysis = analyze_polars_cardinality(
+            code, {"df": expanded_rows}, selector_aliases=selector_aliases
+        )
+        return _cardinality_from_analysis(node.id, analysis, (expanded,))
+    return expanded
+
+
+def _single_input_code_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    if len(parents) != 1:
+        return _ResolvedRowCardinality.unavailable(
+            node.id,
+            "invalid_input_cardinality",
+        )
+    code = node.data.config.get("code")
+    if isinstance(code, str) and code.strip():
+        assert parents[0].output_rows is not None
+        analysis = analyze_polars_cardinality(
+            code, {"df": parents[0].output_rows}, selector_aliases=selector_aliases
+        )
+        return _cardinality_from_analysis(node.id, analysis, parents)
+    return _passthrough_cardinality(node.id, parents)
+
+
+def _code_bounded_rows(no_input_reason: str) -> _ParentRowsHandler:
+    """Rows of a node whose optional code bounds them, *no_input_reason* when it has no input."""
+
+    def resolve(
+        index: _EstimateGraphIndex,
+        node: GraphNode,
+        edge_results: _EdgeRows,
+        parents: tuple[_ResolvedRowCardinality, ...],
+        selector_aliases: frozenset[str],
+    ) -> _ResolvedRowCardinality:
+        if not parents:
+            return _ResolvedRowCardinality.unavailable(node.id, no_input_reason)
+        code = node.data.config.get("code")
+        if isinstance(code, str) and code.strip():
+            return _code_cardinality(
+                index,
+                node,
+                edge_results,
+                parents,
+                selector_aliases=selector_aliases,
+                alias_first_as_df=True,
+            )
+        return _passthrough_cardinality(node.id, parents)
+
+    return resolve
+
+
+def _optimiser_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    if not parents:
+        return _ResolvedRowCardinality.unavailable(
+            node.id,
+            "input_cardinality_unavailable",
+        )
+    selected_index = 0
+    data_input = node.data.config.get("data_input")
+    if data_input not in (None, ""):
+        matched = _edge_index_for_input_name(edge_results, index, data_input)
+        if matched is None:
+            return _ResolvedRowCardinality.unavailable(
+                node.id,
+                "invalid_optimiser_input",
+            )
+        selected_index = matched
+    elif len(edge_results) > 1:
+        return _ResolvedRowCardinality.unavailable(
+            node.id,
+            "invalid_optimiser_input",
+        )
+    return _passthrough_cardinality(node.id, parents, selected_index)
+
+
+def _optimiser_apply_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    if not parents:
+        return _ResolvedRowCardinality.unavailable(
+            node.id,
+            "input_cardinality_unavailable",
+        )
+    if node.data.config.get("optimiser_mode") == "ratebook":
+        matched = _edge_index_for_input_name(
+            edge_results,
+            index,
+            node.data.config.get("ratebook_input"),
+        )
+        if matched is None:
+            return _ResolvedRowCardinality.unavailable(
+                node.id,
+                "invalid_optimiser_apply_input",
+            )
+        return _passthrough_cardinality(node.id, parents, matched)
+    output_rows = max(cast(int, result.output_rows) for result in parents)
+    return _ResolvedRowCardinality.proven(
+        output_rows,
+        max(cast(int, result.peak_rows) for result in parents),
+        (
+            *(item for result in parents for item in result.evidence),
+            f"node={node.id}:one_connected_input_selected",
+            f"node={node.id}:cardinality_output_upper_bound={output_rows}",
+        ),
+        many_to_many_join_node_ids=_inherited_many_to_many(parents),
+    )
+
+
+def _single_input_passthrough_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    if len(parents) != 1:
+        return _ResolvedRowCardinality.unavailable(
+            node.id,
+            "invalid_input_cardinality",
+        )
+    return _passthrough_cardinality(node.id, parents)
+
+
+def _unsupported_rows(
+    index: _EstimateGraphIndex,
+    node: GraphNode,
+    edge_results: _EdgeRows,
+    parents: tuple[_ResolvedRowCardinality, ...],
+    selector_aliases: frozenset[str],
+) -> _ResolvedRowCardinality:
+    return _ResolvedRowCardinality.unavailable(
+        node.id,
+        "row_semantics_unsupported",
+    )
+
+
+_SINGLE_INPUT_PASSTHROUGH_ROWS = _from_parents(_single_input_passthrough_rows)
+_SINGLE_INPUT_CODE_ROWS = _from_parents(_single_input_code_rows)
+_UNSUPPORTED_ROWS = _from_parents(_unsupported_rows)
+
+#: How the estimate proves each node type's output and peak rows. A source is
+#: proven from its own metadata; every other type first proves its incoming
+#: edges, so an unproven parent blocks it before its own rule runs.
+_ROW_CARDINALITY: Mapping[NodeType, _RowCardinalityHandler] = node_type_table(
+    "RAM estimate row cardinality",
+    {
+        NodeType.API_INPUT: _request_input_rows,
+        NodeType.WORKBENCH_INPUT: _request_input_rows,
+        NodeType.DATA_INPUT: _data_input_rows,
+        NodeType.CONSTANT: _constant_rows,
+        NodeType.EDGE_JOIN: _from_parents(_edge_join_rows),
+        NodeType.POLARS: _from_parents(_transform_rows),
+        NodeType.SCENARIO_EXPANDER: _from_parents(_expander_rows),
+        NodeType.RATING_STEP: _SINGLE_INPUT_CODE_ROWS,
+        NodeType.EXPLORE: _SINGLE_INPUT_CODE_ROWS,
+        NodeType.MODEL_SCORE: _from_parents(_code_bounded_rows("input_cardinality_unavailable")),
+        NodeType.EXTERNAL_FILE: _from_parents(
+            _code_bounded_rows("external_object_row_cardinality_unknown")
+        ),
+        NodeType.OPTIMISER: _from_parents(_optimiser_rows),
+        NodeType.OPTIMISER_APPLY: _from_parents(_optimiser_apply_rows),
+        NodeType.BANDING: _SINGLE_INPUT_PASSTHROUGH_ROWS,
+        NodeType.DATA_OUTPUT: _SINGLE_INPUT_PASSTHROUGH_ROWS,
+        NodeType.LIVE_SWITCH: _SINGLE_INPUT_PASSTHROUGH_ROWS,
+        NodeType.MODELLING: _SINGLE_INPUT_PASSTHROUGH_ROWS,
+        NodeType.SUBMODEL: _SINGLE_INPUT_PASSTHROUGH_ROWS,
+        NodeType.SUBMODEL_PORT: _SINGLE_INPUT_PASSTHROUGH_ROWS,
+        NodeType.OUTPUT: _UNSUPPORTED_ROWS,
+        NodeType.WORKBENCH_OUTPUT: _UNSUPPORTED_ROWS,
+    },
+)
+
+
 def _resolve_row_cardinality_from_index(
     index: _EstimateGraphIndex,
     target_node_id: str,
@@ -1081,227 +1481,7 @@ def _resolve_row_cardinality_from_index(
     node = index.node_map.get(target_node_id)
     if node is None:
         return _ResolvedRowCardinality.unavailable(target_node_id, "node_missing")
-    node_type = node.data.nodeType
-
-    if node_type in _SIZED_SOURCE_TYPES:
-        metadata = index.source_metadata(node)
-        if metadata is None and node_type in REQUEST_INPUT_NODE_TYPES and port is not None:
-            metadata = index.api_input_port_metadata(node, port)
-        if metadata is None:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "source_row_count_unavailable",
-            )
-        base = _ResolvedRowCardinality.proven(
-            metadata.row_count,
-            metadata.row_count,
-            (f"source={target_node_id}:row_count={metadata.row_count}",),
-        )
-        code = node.data.config.get("code")
-        if node_type is NodeType.DATA_INPUT and isinstance(code, str) and code.strip():
-            analysis = analyze_polars_cardinality(
-                code, {"df": metadata.row_count}, selector_aliases=selector_aliases
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, (base,))
-        return base
-
-    if node_type is NodeType.CONSTANT:
-        return _ResolvedRowCardinality.proven(
-            1,
-            1,
-            (f"source={target_node_id}:constant_row_count=1",),
-        )
-
-    incoming_edges = tuple(
-        edge
-        for edge in index.pruned_edges
-        if edge.target == target_node_id and edge.source in index.node_map
-    )
-    edge_results = tuple(
-        (edge, index.resolve_cardinality(edge.source, edge.sourceHandle)) for edge in incoming_edges
-    )
-    for _edge, result in edge_results:
-        if not result.available:
-            return result
-    parents = tuple(result for _edge, result in edge_results)
-
-    if node_type is NodeType.EDGE_JOIN:
-        if len(edge_results) != 2:
-            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_join_arity")
-        target_handles = [edge.targetHandle for edge, _result in edge_results]
-        try:
-            left_index, right_index = resolve_edge_join_role_indices(target_handles)
-            kwargs = build_edge_join_kwargs(node.data.config)
-            left = parents[left_index]
-            right = parents[right_index]
-            assert left.output_rows is not None and right.output_rows is not None
-            validate = cast(str | None, kwargs.get("validate"))
-            bound = join_cardinality_upper_bound(
-                left.output_rows,
-                right.output_rows,
-                how=str(kwargs["how"]),
-                validate=validate,
-            )
-            # An Edge Join without a bounding contract carries the row product
-            # exactly as an undeclared Polars join does.
-            many_to_many = normalise_join_validation(validate) == "m:m"
-        except (ConfigError, TypeError, ValueError):
-            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_join_config")
-        return _ResolvedRowCardinality.proven(
-            bound.max_rows,
-            max(*(result.peak_rows or 0 for result in parents), bound.max_rows),
-            (
-                *(item for result in parents for item in result.evidence),
-                *(f"node={target_node_id}:{item}" for item in bound.evidence),
-            ),
-            many_to_many_join_node_ids=_inherited_many_to_many(
-                parents, *((target_node_id,) if many_to_many else ())
-            ),
-        )
-
-    if node_type is NodeType.POLARS:
-        return _code_cardinality(
-            index, node, edge_results, parents, selector_aliases=selector_aliases
-        )
-
-    if node_type is NodeType.SCENARIO_EXPANDER:
-        if len(parents) != 1:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "invalid_input_cardinality",
-            )
-        from haute._node_apply import scenario_step_count
-
-        try:
-            steps = scenario_step_count(node.data.config)
-        except (TypeError, ValueError, OverflowError):
-            return _ResolvedRowCardinality.unavailable(target_node_id, "invalid_scenario_steps")
-        parent = parents[0]
-        assert parent.output_rows is not None and parent.peak_rows is not None
-        expanded_rows = parent.output_rows * steps
-        expanded = _ResolvedRowCardinality.proven(
-            expanded_rows,
-            max(parent.peak_rows, expanded_rows),
-            (
-                *parent.evidence,
-                f"node={target_node_id}:scenario_steps={steps}",
-                f"node={target_node_id}:cardinality_output_upper_bound={expanded_rows}",
-            ),
-            many_to_many_join_node_ids=parent.many_to_many_join_node_ids,
-        )
-        code = node.data.config.get("code")
-        if isinstance(code, str) and code.strip():
-            analysis = analyze_polars_cardinality(
-                code, {"df": expanded_rows}, selector_aliases=selector_aliases
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, (expanded,))
-        return expanded
-
-    if node_type in {NodeType.RATING_STEP, NodeType.EXPLORE}:
-        if len(parents) != 1:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "invalid_input_cardinality",
-            )
-        code = node.data.config.get("code")
-        if isinstance(code, str) and code.strip():
-            assert parents[0].output_rows is not None
-            analysis = analyze_polars_cardinality(
-                code, {"df": parents[0].output_rows}, selector_aliases=selector_aliases
-            )
-            return _cardinality_from_analysis(target_node_id, analysis, parents)
-        return _passthrough_cardinality(target_node_id, parents)
-
-    if node_type in _NO_INPUT_REASON_BY_CODE_TYPE:
-        if not parents:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                _NO_INPUT_REASON_BY_CODE_TYPE[node_type],
-            )
-        code = node.data.config.get("code")
-        if isinstance(code, str) and code.strip():
-            return _code_cardinality(
-                index,
-                node,
-                edge_results,
-                parents,
-                selector_aliases=selector_aliases,
-                alias_first_as_df=True,
-            )
-        return _passthrough_cardinality(target_node_id, parents)
-
-    if node_type is NodeType.OPTIMISER:
-        if not parents:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "input_cardinality_unavailable",
-            )
-        selected_index = 0
-        data_input = node.data.config.get("data_input")
-        if data_input not in (None, ""):
-            matched = _edge_index_for_input_name(edge_results, index, data_input)
-            if matched is None:
-                return _ResolvedRowCardinality.unavailable(
-                    target_node_id,
-                    "invalid_optimiser_input",
-                )
-            selected_index = matched
-        elif len(edge_results) > 1:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "invalid_optimiser_input",
-            )
-        return _passthrough_cardinality(target_node_id, parents, selected_index)
-
-    if node_type is NodeType.OPTIMISER_APPLY:
-        if not parents:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "input_cardinality_unavailable",
-            )
-        if node.data.config.get("optimiser_mode") == "ratebook":
-            matched = _edge_index_for_input_name(
-                edge_results,
-                index,
-                node.data.config.get("ratebook_input"),
-            )
-            if matched is None:
-                return _ResolvedRowCardinality.unavailable(
-                    target_node_id,
-                    "invalid_optimiser_apply_input",
-                )
-            return _passthrough_cardinality(target_node_id, parents, matched)
-        output_rows = max(cast(int, result.output_rows) for result in parents)
-        return _ResolvedRowCardinality.proven(
-            output_rows,
-            max(cast(int, result.peak_rows) for result in parents),
-            (
-                *(item for result in parents for item in result.evidence),
-                f"node={target_node_id}:one_connected_input_selected",
-                f"node={target_node_id}:cardinality_output_upper_bound={output_rows}",
-            ),
-            many_to_many_join_node_ids=_inherited_many_to_many(parents),
-        )
-
-    if node_type in {
-        NodeType.BANDING,
-        NodeType.DATA_OUTPUT,
-        NodeType.LIVE_SWITCH,
-        NodeType.MODELLING,
-        NodeType.SUBMODEL,
-        NodeType.SUBMODEL_PORT,
-    }:
-        if len(parents) != 1:
-            return _ResolvedRowCardinality.unavailable(
-                target_node_id,
-                "invalid_input_cardinality",
-            )
-        return _passthrough_cardinality(target_node_id, parents)
-
-    return _ResolvedRowCardinality.unavailable(
-        target_node_id,
-        "row_semantics_unsupported",
-    )
+    return _ROW_CARDINALITY[node.data.nodeType](index, node, port, selector_aliases)
 
 
 # ---------------------------------------------------------------------------
@@ -1662,14 +1842,14 @@ def _resolve_target_columns_from_index(
         if _has_selected_columns(node.data.config) and selected_columns is None:
             return None
 
-        if node.data.nodeType == NodeType.POLARS and _node_code(node):
+        if node_spec(node.data.nodeType).code == "transform" and _node_code(node):
             code_columns = _resolve_code_node_columns(index, node)
             if code_columns is not None:
                 if selected_columns is not None:
                     return _filter_resolved_columns(code_columns, selected_columns)
                 return code_columns
 
-        if node.data.nodeType == NodeType.EDGE_JOIN:
+        if node_spec(node.data.nodeType).input_roles:
             edge_join_columns = _resolve_edge_join_columns_from_index(node, index)
             if edge_join_columns is not None:
                 if selected_columns is not None:
@@ -1827,7 +2007,7 @@ def _edge_join_key_columns_on_path(
     join_keys: set[str] = set()
     for nid in sorted(path_ids):
         node = index.node_map.get(nid)
-        if node is None or node.data.nodeType != NodeType.EDGE_JOIN:
+        if node is None or not node_spec(node.data.nodeType).input_roles:
             continue
         base_keys, joined_keys = edge_join_key_columns_by_role(node.data.config)
         join_keys.update(base_keys)

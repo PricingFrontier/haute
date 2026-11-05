@@ -83,6 +83,7 @@ from haute._json_shred._snapshots import (
 from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
+from haute._node_specs import SINK_ONLY_NODE_TYPES, STRUCTURAL_NODE_TYPES
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import (
     RatingTableMissError,
@@ -98,10 +99,11 @@ from haute._rating_step_config import normalise_rating_tables
 from haute._source_cache import SourceCacheStore
 from haute._submodel_instances import runtime_instance_id
 from haute._topo import canonical_topological_order
-from haute._types import SINK_ONLY_NODE_TYPES, GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import GraphEdge, GraphNode, PipelineGraph
 from haute._worker_isolation import WorkerTerminalReason, resolve_worker_memory_enforcement
 from haute.assistant._application import diff_seed_nodes
 from haute.assistant._config import EgressPolicy
+from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS
 from haute.assistant._ops import SemanticDiff
 from haute.assistant._tools import _MAX_PROFILE_ROWS, _json_size, execution_error_record
 from haute.errors import MlflowConfigError, PreambleError
@@ -148,9 +150,6 @@ _ROW_BOUND = _MAX_PROFILE_ROWS
 # The aggregate that counts a followed column's nulls in one measured frame.
 _COLUMN_NULLS = "__column_nulls__"
 _SHARE_DIGITS = 4
-_OPAQUE_LOAD_FILE_TYPES = frozenset({"pickle", "joblib"})
-# The node types whose builders bind the preamble, as a preview injects its failure.
-_PREAMBLE_NODE_TYPES = frozenset({NodeType.POLARS, NodeType.LIVE_SWITCH})
 
 NotRunReason = Literal[
     "worker_mode_unsupported",
@@ -1042,7 +1041,7 @@ def server_exclusions(
     base_dir = preparation_base_dir(flat)
     for node_id in changed:
         node_type = graph.node_map[node_id].data.nodeType
-        if node_type in (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT):
+        if node_type in STRUCTURAL_NODE_TYPES:
             exclusions[node_id] = _Exclusion("submodel")
         elif node_type in SINK_ONLY_NODE_TYPES:
             exclusions[node_id] = _Exclusion("sink_only")
@@ -1070,20 +1069,19 @@ def _lineage_exclusion(lineage: PipelineGraph, base_dir: Path | None) -> _Exclus
 
 
 def _opaque_load_file(node: GraphNode) -> bool:
-    return (
-        node.data.nodeType == NodeType.EXTERNAL_FILE
-        and str(node.data.config.get("file_type") or "") in _OPAQUE_LOAD_FILE_TYPES
-    )
+    opaque = ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].opaque_file_types
+    return str(node.data.config.get("file_type") or "") in opaque
 
 
 def _artifact_exclusion(node: GraphNode) -> _Exclusion | None:
     """``artifact_not_local`` for a model or optimiser artifact a preview would fetch."""
     config = node.data.config
-    if node.data.nodeType == NodeType.OPTIMISER_APPLY:
+    artifact = ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].preview_artifact
+    if artifact == "optimisation_result":
         if config.get("source_type") == "file":
             return None
         return _Exclusion("artifact_not_local", node.id)
-    if node.data.nodeType != NodeType.MODEL_SCORE or not config.get("source_type"):
+    if artifact != "scoring_model" or not config.get("source_type"):
         # An unconfigured Model Score passes its input through and loads nothing.
         return None
     cached = _cached_run_model(config)
@@ -1345,7 +1343,8 @@ def _measure(
 
 
 def _preamble_failing_build(failure: PreambleError, node: GraphNode, **kwargs: Any) -> Any:
-    if node.data.nodeType in _PREAMBLE_NODE_TYPES:
+    # The node types whose builders bind the preamble, as a preview injects its failure.
+    if ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].binds_preamble:
         # One failure per node, so each is attributed to its own node.
         raise PreambleError(str(failure), source_line=failure.source_line) from failure
     return _build_node_fn(node, **kwargs)
@@ -1359,7 +1358,7 @@ def _preamble_failing_build(failure: PreambleError, node: GraphNode, **kwargs: A
 def _cached_models(lineage: PipelineGraph) -> dict[str, DiskCachedRunModel]:
     models: dict[str, DiskCachedRunModel] = {}
     for node in lineage.nodes:
-        if node.data.nodeType != NodeType.MODEL_SCORE:
+        if ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].preview_artifact != "scoring_model":
             continue
         cached = _cached_run_model(node.data.config)
         if cached is not None:
@@ -1381,7 +1380,7 @@ def identity_components(lineage: PipelineGraph) -> dict[str, Any]:
     backends = {
         node.id: mlflow_backend_signature(node.data.config)
         for node in sorted(lineage.nodes, key=lambda item: item.id)
-        if node.data.nodeType == NodeType.MODEL_SCORE
+        if ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].preview_artifact == "scoring_model"
         and node.data.config.get("source_type") == "run"
     }
     return {"paths": sorted(paths), "backends": backends}
@@ -1539,12 +1538,12 @@ class _DataCheckQueries:
         return pl.concat([counted, *parts], how="horizontal")
 
     def _structured_parts(self, node: GraphNode, measured: MeasuredInput) -> list[pl.LazyFrame]:
-        node_type = node.data.nodeType
-        if node_type == NodeType.BANDING and measured.position == 0:
+        structured = ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].structured_config
+        if structured == "factors" and measured.position == 0:
             return self._banding_parts(node, measured.frame)
-        if node_type == NodeType.RATING_STEP and measured.position == 0:
+        if structured == "tables" and measured.position == 0:
             return self._rating_parts(node, measured.frame)
-        if node_type == NodeType.EDGE_JOIN:
+        if structured == "join":
             return self._join_side_parts(node, measured)
         return []
 
@@ -1671,7 +1670,7 @@ class _DataCheckQueries:
         refused = self.plan(node.id).refused
         if refused is not None:
             raise refused
-        if node.data.nodeType != NodeType.EDGE_JOIN:
+        if ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].structured_config != "join":
             return None
         join = self._join_keys(node)
         roles = {item.role: item for item in inputs}
@@ -1739,14 +1738,14 @@ def _every_column(schema: pl.Schema) -> list[pl.Expr]:
 def _written_columns(node: GraphNode) -> frozenset[str]:
     """The columns a node's structured configuration writes (which are changed even when kept)."""
     config = node.data.config
-    node_type = node.data.nodeType
-    if node_type == NodeType.BANDING:
+    structured = ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].structured_config
+    if structured == "factors":
         return frozenset(
             str(factor["output_column"])
             for factor in normalise_banding_factors(config)
             if banding_factor_is_active(factor)
         )
-    if node_type == NodeType.RATING_STEP:
+    if structured == "tables":
         outputs = {
             str(table.get("output_column"))
             for table in normalise_rating_tables(config)
@@ -2011,11 +2010,11 @@ class _NodeDetail:
             for port_plan, (_port, row) in zip(plan.ports, measurement.outputs, strict=False)
         ]
         first = rows[0] if rows else None
-        node_type = node.data.nodeType
+        structured = ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].structured_config
         banding, unclaimed = (
-            _banding_records(plan, first, bound) if node_type == NodeType.BANDING else (None, {})
+            _banding_records(plan, first, bound) if structured == "factors" else (None, {})
         )
-        rating = _rating_records(plan, first, bound) if node_type == NodeType.RATING_STEP else None
+        rating = _rating_records(plan, first, bound) if structured == "tables" else None
         return cls(
             node=node,
             bound=bound,
@@ -2026,9 +2025,7 @@ class _NodeDetail:
             factors_omitted=max(0, plan.factors_total - DATA_CHECK_MAX_FACTORS),
             rating=rating,
             tables_omitted=max(0, plan.tables_total - DATA_CHECK_MAX_TABLES),
-            join=(
-                _join_record(plan, measurement, bound) if node_type == NodeType.EDGE_JOIN else None
-            ),
+            join=(_join_record(plan, measurement, bound) if structured == "join" else None),
             guarded=frozenset(table.index for table in plan.tables if table.guarded),
             unclaimed_positions=unclaimed,
         )

@@ -44,7 +44,8 @@ from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
 from haute._config_builder import _copy_config_keys, _resolve_node_config
 from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
-from haute._types import SINGLETON_NODE_NAMES, NodeEditorState, NodeType
+from haute._node_specs import SINGLETON_NODE_NAMES
+from haute._types import NodeEditorState, NodeType
 from haute.errors import ParseError
 
 # ===========================================================================
@@ -778,11 +779,11 @@ class TestResolveNodeConfig:
         the file."""
         from haute._config_builder import _build_node_config
         from haute._config_io import (
-            NODE_TYPE_TO_FOLDER,
             _normalise_loaded_config,
             node_config_json,
             palette_default_config,
         )
+        from haute._node_specs import NODE_TYPE_TO_FOLDER
         from haute._polars_steps import STEPS_FROM_CODE
 
         folder = NODE_TYPE_TO_FOLDER[node_type]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import re
 import threading
 import time
 from pathlib import Path
@@ -832,9 +831,32 @@ def test_ratebook_factor_source_sinks_without_final_collect_under_low_memory_lim
 
 @pytest.mark.meta
 def test_optimiser_projection_rule_is_not_hard_coded_in_lazy_executor() -> None:
-    source = (ROOT / "src/haute/_execute_lazy.py").read_text(encoding="utf-8")
+    """The lazy executor names the optimiser only as a row of a per-type table that gives
+    it no rule (every ``node_type_table`` lists every type, PCFG-R09)."""
+    tree = ast.parse((ROOT / "src/haute/_execute_lazy.py").read_text(encoding="utf-8"))
+    rows = {
+        id(key): value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "node_type_table"
+        and len(node.args) > 1
+        and isinstance(node.args[1], ast.Dict)
+        for key, value in zip(node.args[1].keys, node.args[1].values, strict=True)
+    }
+    references = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "OPTIMISER"
+        and getattr(node.value, "id", None) == "NodeType"
+    ]
 
-    assert re.search(r"NodeType\.OPTIMISER(?!_)", source) is None
+    assert references, "each per-type table lists the optimiser"
+    for reference in references:
+        value = rows.get(id(reference))
+        assert isinstance(value, ast.Constant) and value.value in (False, None), (
+            f"line {reference.lineno}: an optimiser rule in the lazy executor"
+        )
 
 
 def test_validate_and_project_keeps_only_price_contour_columns() -> None:

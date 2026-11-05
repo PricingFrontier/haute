@@ -39,10 +39,7 @@ import polars as pl
 
 import haute.projection as projection_planner
 from haute._api_input_schema import is_json_api_input_path
-from haute._builders import (
-    PASS_THROUGH_NODE_TYPES,
-    pass_through_selected_edge,
-)
+from haute._builders import pass_through_selected_edge
 from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._data_points import DataPoint, DataPointResolver, point_kind
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -57,9 +54,14 @@ from haute._node_snapshots import (
     snapshot_read_classes,
     snapshot_write_class,
 )
+from haute._node_specs import (
+    PASS_THROUGH_NODE_TYPES,
+    REQUEST_INPUT_NODE_TYPES,
+    node_spec,
+    node_type_table,
+)
 from haute._pipeline_settings import read_pipeline_settings
 from haute._project_context import current_project
-from haute._registry import NODE_REGISTRY
 from haute._source_cache import (
     SourceCacheCorruptError,
     SourceCacheGeneration,
@@ -67,13 +69,7 @@ from haute._source_cache import (
     SourceCacheIdentity,
     new_staging_token,
 )
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    GraphEdge,
-    GraphNode,
-    NodeType,
-    PipelineGraph,
-)
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 
 if TYPE_CHECKING:
     from haute._execute_lazy import PreparedExecution
@@ -356,6 +352,38 @@ class _Round:
     needed: Mapping[str, Demand]
 
 
+#: What a source node type's own read costs a seed plan: ``cheap`` (a Data Input's
+#: scan, a Constant's row, a Workbench Input's quote) or ``request_file`` (the Quote
+#: Input reads its request file, cheap only when that is a JSON request); ``None``
+#: for a type that is not a source, which the recompute facts answer for.
+_SOURCE_COST: Mapping[NodeType, Literal["cheap", "request_file"] | None] = node_type_table(
+    "seed source cost",
+    {
+        NodeType.API_INPUT: "request_file",
+        NodeType.WORKBENCH_INPUT: "cheap",
+        NodeType.WORKBENCH_OUTPUT: None,
+        NodeType.DATA_INPUT: "cheap",
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: "cheap",
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 class _Resolver:
     """One resolution of one request against one store."""
 
@@ -457,7 +485,8 @@ class _Resolver:
         multi-port bundle is not one frame. A Workbench Output's tables are such a
         bundle too.
         """
-        if self.node_map[node_id].data.nodeType is NodeType.WORKBENCH_OUTPUT:
+        spec = node_spec(self.node_map[node_id].data.nodeType)
+        if spec.workbench and spec.response:
             return False
         kind = self._kinds.get(node_id)
         if kind is None:
@@ -512,7 +541,7 @@ class _Resolver:
 
     def batch_model_score(self, node_id: str) -> bool:
         node = self.node_map[node_id]
-        if node.data.nodeType != NodeType.MODEL_SCORE:
+        if not node_spec(node.data.nodeType).batch_scored:
             return False
         scenario = (self.request.source_by_node or {}).get(node_id, self.request.source or "live")
         return scenario != "live"
@@ -595,7 +624,7 @@ class _Resolver:
     def is_join_point(self, node_id: str) -> bool:
         """Whether the node is an Edge Join or has more than one distinct input."""
         return (
-            self.node_map[node_id].data.nodeType == NodeType.EDGE_JOIN
+            bool(node_spec(self.node_map[node_id].data.nodeType).input_roles)
             or self.distinct_inputs(node_id) > 1
         )
 
@@ -607,9 +636,10 @@ class _Resolver:
         if node_id in self.recompute:
             facts = self.recompute[node_id]
             return facts.cost == "cheap", facts.slice_transparent
-        if node_type in (NodeType.DATA_INPUT, NodeType.CONSTANT, NodeType.WORKBENCH_INPUT):
+        source_cost = _SOURCE_COST[node_type]
+        if source_cost == "cheap":
             return True, True
-        if node_type in REQUEST_INPUT_NODE_TYPES:
+        if source_cost == "request_file":
             cfg = self.effective_node_map[node_id].data.config
             path = cfg.get("path") if isinstance(cfg, dict) else None
             if isinstance(path, str) and is_json_api_input_path(path):
@@ -695,8 +725,7 @@ class _Resolver:
 
             node_type = self.node_map[node_id].data.nodeType
             recompute_fact = self.recompute.get(node_id)
-            reg_entry = NODE_REGISTRY.get(node_type)
-            reg_cost = reg_entry.recompute_cost if reg_entry is not None else None
+            reg_cost = node_spec(node_type).recompute_cost
 
             if self.batch_model_score(node_id):
                 captures[node_id] = CaptureKind.MODEL_SCORE
@@ -1112,9 +1141,9 @@ class SeedPlan:
             GraphNode(
                 id=node.id,
                 data=node.data.model_copy(
-                    update={
-                        "nodeType": NodeType.DATA_INPUT,
-                        "config": {
+                    update=dict(
+                        nodeType=NodeType.DATA_INPUT,
+                        config={
                             "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
@@ -1125,7 +1154,7 @@ class SeedPlan:
                                 / "part-*.parquet"
                             ),
                         },
-                    }
+                    )
                 ),
             )
             if node.id in seeds
@@ -1480,7 +1509,7 @@ def preview_lineage_admitted(graph: PipelineGraph, target_node_id: str, *, sourc
     return all(
         _flat_file_api_input_is_bounded(node_map[node_id].data.config)
         for node_id in prepared.graph_plan.order
-        if node_map[node_id].data.nodeType == NodeType.API_INPUT  # the Quote Input alone
+        if _SOURCE_COST[node_map[node_id].data.nodeType] == "request_file"
     )
 
 

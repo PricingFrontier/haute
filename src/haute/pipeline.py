@@ -30,9 +30,16 @@ from haute._global_constants import (
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
+from haute._node_specs import (
+    DEFAULT_NODE_TYPE,
+    REQUEST_INPUT_NODE_TYPES,
+    RESPONSE_NODE_TYPES,
+    SOURCE_NODE_TYPES,
+    node_spec,
+    singleton_name_problem,
+)
 from haute._project_context import standalone_project_scope
 from haute._standalone_nodes import (
-    SOURCE_NODE_TYPES,
     FunctionKind,
     function_kind,
     is_configured,
@@ -43,21 +50,24 @@ from haute._standalone_nodes import (
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
     GLOBAL_CONSTANTS_FILE,
-    REQUEST_INPUT_NODE_TYPES,
-    RESPONSE_NODE_TYPES,
     GraphEdge,
     NodeEditorState,
     NodeType,
     SubmodelEndpoint,
     SubmodelInputPort,
     SubmodelOutputPort,
-    singleton_name_problem,
 )
 from haute._workbench_output import as_response, quote_identity
 from haute.errors import ConfigError, ExecutionError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
+
+
+def _is_workbench_input(node_type: NodeType) -> bool:
+    """Whether *node_type* is the request input given its tables by the workbench's form."""
+    spec = node_spec(node_type)
+    return spec.request_input and spec.workbench
 
 
 @dataclass
@@ -92,7 +102,7 @@ class Node:
     @property
     def node_type(self) -> NodeType:
         """The node's type, from its decorator (``polars`` when it has none)."""
-        return NodeType(self.config.get("_node_type", NodeType.POLARS))
+        return NodeType(self.config.get("_node_type", DEFAULT_NODE_TYPE))
 
     @property
     def is_deploy_input(self) -> bool:
@@ -112,7 +122,7 @@ class Node:
     def runs_unconnected(self) -> bool:
         """Whether the node runs with nothing connected to it: a Workbench Output, whose
         tables nothing fills are nulls (specs/workbench)."""
-        return self.node_type is NodeType.WORKBENCH_OUTPUT
+        return node_spec(self.node_type).runs_unconnected
 
     @property
     def is_live_switch(self) -> bool:
@@ -419,24 +429,13 @@ class NodeRegistry:
 
         reject_removed_node_reuse_kwargs(config)
         reject_camel_case_decorator_kwargs(config)
-        declared_type = NodeType(config.get("_node_type", NodeType.POLARS))
-        if declared_type == NodeType.EXPLORE:
-            # Its settings are in its sidecar alone (READ-43); a keyword beside config= is
-            # refused by name, as the parse refuses it. Its declared column contract is the
-            # decorator's, as every node's is, and the sidecar never holds one.
-            keywords = sorted(set(config) - {"_node_type", "config", "contract"})
-            if keywords:
-                raise ConfigError(
-                    "An Explore node takes its settings from its config= sidecar, so its "
-                    f"decorator keywords {', '.join(repr(key) for key in keywords)} would be "
-                    "ignored: move them into that file, or remove them.",
-                    node_type=declared_type.value,
-                    keywords=keywords,
-                )
-        if declared_type == NodeType.EDGE_JOIN:
-            # Its settings are the decorator's keywords, held to the config model's keys
-            # and shape as the parse holds the same keywords in a file. An Explore node's
-            # are in its sidecar (READ-43).
+        declared_type = NodeType(config.get("_node_type", DEFAULT_NODE_TYPE))
+        _refuse_explore_decorator_settings(declared_type, config)
+        spec = node_spec(declared_type)
+        if spec.sidecar == "decorator" and spec.code != "transform":
+            # A configured type whose settings are the decorator's keywords (the Edge
+            # Join), held to the config model's keys and shape as the parse holds the
+            # same keywords in a file. A Transform's keywords are its column settings.
             from haute._contracts import declared_contract_json
 
             declared = {key: value for key, value in config.items() if key != "_node_type"}
@@ -450,7 +449,7 @@ class NodeRegistry:
             )
 
         def _register(f: Callable) -> Callable:
-            node_type = NodeType(config.get("_node_type", NodeType.POLARS))
+            node_type = NodeType(config.get("_node_type", DEFAULT_NODE_TYPE))
             named = singleton_name_problem(node_type, f.__name__)
             if named is not None:
                 raise ConfigError(named, func_name=f.__name__, node_type=node_type.value)
@@ -707,7 +706,7 @@ class Pipeline(NodeRegistry):
         """Get inbound edges in the runtime argument order for *node_name*."""
         incoming = [edge for edge in self._edges if edge.target == node_name]
         node = self._node_map.get(node_name)
-        if node is None or node.config.get("_node_type") != NodeType.EDGE_JOIN or not incoming:
+        if node is None or not node_spec(node.node_type).input_roles or not incoming:
             return incoming
         target_handles = [edge.target_port for edge in incoming]
         base_index, join_index = resolve_edge_join_role_indices(target_handles)
@@ -722,7 +721,7 @@ class Pipeline(NodeRegistry):
         """
         inactive: set[RegisteredEdge] = set()
         for node in self._nodes:
-            if node.node_type is not NodeType.LIVE_SWITCH or not is_configured(
+            if not node_spec(node.node_type).scenario_router or not is_configured(
                 node.node_type, node.config
             ):
                 continue
@@ -753,11 +752,7 @@ class Pipeline(NodeRegistry):
     def _workbench_quote(order: list[Node], outputs: Mapping[str, Any]) -> Any:
         """The Workbench Input's frames by table as the run holds them, or None without one."""
         return next(
-            (
-                outputs.get(n.name)
-                for n in order
-                if n.config.get("_node_type") == NodeType.WORKBENCH_INPUT
-            ),
+            (outputs.get(n.name) for n in order if _is_workbench_input(n.node_type)),
             None,
         )
 
@@ -1106,7 +1101,7 @@ class Pipeline(NodeRegistry):
                 seed_nodes = deploy_inputs or sources
                 seed_names = {n.name for n in seed_nodes}
                 for n in seed_nodes:
-                    if n.node_type is NodeType.WORKBENCH_INPUT:
+                    if _is_workbench_input(n.node_type):
                         self._check_seeded_workbench_input(n)
                 connected_ports = list(
                     dict.fromkeys(
@@ -1399,6 +1394,23 @@ class _WiredEdge:
     stated: bool
 
 
+def _refuse_explore_decorator_settings(declared_type: NodeType, config: Mapping[str, Any]) -> None:
+    """An Explore node's settings are in its sidecar alone (READ-43): a keyword beside
+    ``config=`` is refused by name, as the parse refuses it. Its declared column contract
+    is the decorator's, as every node's is, and the sidecar never holds one."""
+    if declared_type != NodeType.EXPLORE:
+        return
+    keywords = sorted(set(config) - {"_node_type", "config", "contract"})
+    if keywords:
+        raise ConfigError(
+            "An Explore node takes its settings from its config= sidecar, so its "
+            f"decorator keywords {', '.join(repr(key) for key in keywords)} would be "
+            "ignored: move them into that file, or remove them.",
+            node_type=declared_type.value,
+            keywords=keywords,
+        )
+
+
 def _raw_node(node: Node) -> dict[str, Any]:
     """A live node as the static graph builders read a parsed one: its ``input_mapping``
     resolved, an External File's from its sidecar, as a parse reads it, so inferring its
@@ -1432,11 +1444,12 @@ def _input_name(source: Node | None, edge: RegisteredEdge) -> str:
 
 
 def _input_mapping(node: Node) -> Mapping[str, str] | None:
-    """*node*'s declared ``input_mapping``: on its decorator, or, for an External File, in
-    its ``config=`` sidecar, read as its run reads it."""
+    """*node*'s declared ``input_mapping``: on its decorator, or, for an External File (the
+    object hook), in its ``config=`` sidecar, read as its run reads it."""
     mapping = node.config.get("input_mapping")
     path = node.config.get("config")
-    if mapping is None and node.node_type == NodeType.EXTERNAL_FILE and isinstance(path, str):
+    object_hook = node_spec(node.node_type).code == "object_hook"
+    if mapping is None and object_hook and isinstance(path, str):
         from haute._config_io import load_node_config
         from haute._standalone_nodes import pipeline_directory
 

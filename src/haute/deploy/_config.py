@@ -22,6 +22,7 @@ from haute._workbench_form import FormDocument
 from haute._workbench_nodes import connection_errors, form_owner, read_project_form, with_tables
 from haute._workbench_tables import workbench_tables
 from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
     find_deploy_input_nodes,
@@ -30,7 +31,7 @@ from haute.deploy._pruner import (
     prune_for_deploy,
 )
 from haute.errors import DeployError
-from haute.graph_utils import NodeType, PipelineGraph
+from haute.graph_utils import PipelineGraph
 
 if TYPE_CHECKING:
     from haute.deploy._request_rows import RequestRows
@@ -873,7 +874,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
             if len(all_sources) == 1:
                 source_id = all_sources[0]
                 source = next(node for node in pruned_graph.nodes if node.id == source_id)
-                if source.data.nodeType != NodeType.DATA_INPUT:
+                if DEPLOY_ARTIFACTS[source.data.nodeType] != "dataset":
                     raise ValueError(
                         f"Sole source node {source_id!r} is {source.data.nodeType.value!r}, "
                         "not a dataInput. Add a Quote Input (@pipeline.api_input(...)) or a "

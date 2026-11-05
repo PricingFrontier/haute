@@ -6,13 +6,14 @@ import pytest
 
 import haute
 from haute._config_validation import reject_unrecognized_config_keys, validate_node_config
+from haute._node_specs import NODE_TYPE_TO_DECORATOR
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._pipeline_repair import (
     PipelineRepairError,
     apply_remove_unavailable_node_plan,
     build_recover_unavailable_node_plan,
 )
-from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
+from haute._types import NodeType
 from haute.errors import InvalidRequestError, ParseError
 from haute.parser import parse_pipeline_source
 from haute.routes._save_pipeline import SavePipelineService

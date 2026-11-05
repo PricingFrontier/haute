@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._edge_join import _ALLOWED_HOW
+from haute._node_specs import NODE_TYPE_TO_FOLDER
 from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
 from haute.assistant._config import (
@@ -154,7 +154,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "modelling",
     "optimiser-validation",
-    "pipeline-config",
     "polars-2",
     "polars-node-clarity",
     "readable-output",

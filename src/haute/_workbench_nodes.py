@@ -15,21 +15,17 @@ form.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from haute._node_specs import WORKBENCH_NODE_TYPES, node_spec, node_type_table
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute._workbench_config import WorkbenchConfigError, read_workbench_config
 from haute._workbench_tables import WorkbenchTables, workbench_tables
 
 if TYPE_CHECKING:
     from haute._workbench_form import FormDocument, FormSpec
-
-#: The node types given their tables from the form.
-WORKBENCH_NODE_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.WORKBENCH_INPUT, NodeType.WORKBENCH_OUTPUT}
-)
 
 
 def read_project_form(project_root: Path, *, owner: str) -> FormDocument:
@@ -58,25 +54,63 @@ def project_form_tables(project_root: Path, *, owner: str) -> WorkbenchTables:
     return workbench_tables(read_project_form(project_root, owner=owner).spec)
 
 
+def _given_input(config: Mapping[str, Any], tables: WorkbenchTables) -> dict[str, Any]:
+    return {
+        **config,
+        "tables": [table.model_dump(mode="json") for table in tables.tables],
+        "sample": tables.sample,
+    }
+
+
+def _given_output(config: Mapping[str, Any], tables: WorkbenchTables) -> dict[str, Any]:
+    return {
+        **config,
+        "tables": [table.model_dump(mode="json") for table in tables.response_tables],
+    }
+
+
+#: What a node of each type is given from the form, over its config: a Workbench Input
+#: its tables and sample, a Workbench Output its response tables; ``None`` for a type
+#: given nothing.
+_GIVEN_FROM_FORM: Mapping[
+    NodeType, Callable[[Mapping[str, Any], WorkbenchTables], dict[str, Any]] | None
+] = node_type_table(
+    "given from the form",
+    {
+        NodeType.API_INPUT: None,
+        NodeType.WORKBENCH_INPUT: _given_input,
+        NodeType.WORKBENCH_OUTPUT: _given_output,
+        NodeType.DATA_INPUT: None,
+        NodeType.DATA_OUTPUT: None,
+        NodeType.POLARS: None,
+        NodeType.EDGE_JOIN: None,
+        NodeType.MODEL_SCORE: None,
+        NodeType.BANDING: None,
+        NodeType.RATING_STEP: None,
+        NodeType.OUTPUT: None,
+        NodeType.EXPLORE: None,
+        NodeType.EXTERNAL_FILE: None,
+        NodeType.LIVE_SWITCH: None,
+        NodeType.MODELLING: None,
+        NodeType.OPTIMISER: None,
+        NodeType.SCENARIO_EXPANDER: None,
+        NodeType.OPTIMISER_APPLY: None,
+        NodeType.CONSTANT: None,
+        NodeType.SUBMODEL: None,
+        NodeType.SUBMODEL_PORT: None,
+    },
+)
+
+
 def given_config(
     node_type: NodeType, config: Mapping[str, Any], tables: WorkbenchTables
 ) -> dict[str, Any]:
     """*config* with what a node of *node_type* is given from the form: a Workbench Input
     its tables and sample, a Workbench Output its tables, each as
     ``GET /api/workbench/tables`` answers them, over anything it held; any other node's as
-    it is."""
-    if node_type is NodeType.WORKBENCH_INPUT:
-        return {
-            **config,
-            "tables": [table.model_dump(mode="json") for table in tables.tables],
-            "sample": tables.sample,
-        }
-    if node_type is NodeType.WORKBENCH_OUTPUT:
-        return {
-            **config,
-            "tables": [table.model_dump(mode="json") for table in tables.response_tables],
-        }
-    return dict(config)
+    it is (:data:`_GIVEN_FROM_FORM`)."""
+    give = _GIVEN_FROM_FORM[node_type]
+    return dict(config) if give is None else give(config, tables)
 
 
 def _workbench_nodes(graph: PipelineGraph) -> Iterator[GraphNode]:
@@ -91,10 +125,9 @@ def _workbench_nodes(graph: PipelineGraph) -> Iterator[GraphNode]:
 def form_owner(graph: PipelineGraph) -> str | None:
     """The node a form is read for in *graph*, as a refusal names it: its Workbench Input,
     else its Workbench Output; None when it has neither, and needs no form."""
-    kinds = {node.data.nodeType for node in _workbench_nodes(graph)}
-    if NodeType.WORKBENCH_INPUT in kinds:
-        return "Workbench Input"
-    return "Workbench Output" if kinds else None
+    specs = [node_spec(kind) for kind in {node.data.nodeType for node in _workbench_nodes(graph)}]
+    owners = [spec for spec in specs if spec.request_input] or specs
+    return owners[0].display_name if owners else None
 
 
 def with_tables(graph: PipelineGraph, tables: WorkbenchTables) -> PipelineGraph:

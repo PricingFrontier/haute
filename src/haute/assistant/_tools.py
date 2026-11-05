@@ -56,6 +56,7 @@ from haute._interactive_workers import (
     run_in_interactive_worker,
 )
 from haute._logging import get_logger
+from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_spec
 from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._project_context import current_project, graph_pipeline_dir
@@ -68,11 +69,10 @@ from haute._submodel_instances import (
     qualified_runtime_node_id,
     resolve_submodel_instances,
 )
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._types import GraphNode, PipelineGraph
 from haute._user_exec import user_code_line
 from haute._validation_error import HauteValidationError
 from haute._workbench_config import WorkbenchError
-from haute._workbench_nodes import WORKBENCH_NODE_TYPES
 from haute._workbench_tables import WorkbenchTablesError
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.assistant._application import (
@@ -167,7 +167,6 @@ _DENIED_DATASET_NAMES = frozenset(
     }
 )
 _DENIED_DATASET_DIRECTORIES = frozenset({"credentials", "secrets"})
-_BOUNDARY_NODE_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 _PLAN_STORE = PlanStore()
 _MAX_TOOL_PAYLOAD_BYTES = 1_000_000
 _MAX_TOOL_CONTEXT_BYTES = 256_000
@@ -729,7 +728,7 @@ def _validate_top_level_target(
     top_level = {candidate.id: candidate for candidate in graph.nodes}
     candidate = top_level.get(node)
     if candidate is not None:
-        if candidate.data.nodeType == NodeType.SUBMODEL:
+        if node_spec(candidate.data.nodeType).structural_role == "occurrence":
             if occurrence_schema:
                 return None
             return _error(
@@ -738,7 +737,7 @@ def _validate_top_level_target(
                 "nodes inside it cannot be read or edited by the assistant.",
                 fix=_OCCURRENCE_BOUNDARY_FIX,
             )
-        if candidate.data.nodeType in _BOUNDARY_NODE_TYPES:
+        if candidate.data.nodeType in STRUCTURAL_NODE_TYPES:
             return _error(
                 SUBMODEL_BOUNDARY_CODE,
                 f"Node {node!r} is a submodel boundary: {SUBMODEL_BOUNDARY_TEXT}",
@@ -1236,7 +1235,7 @@ def _brief_port(
             label=node.data.label,
             source_handle=source_handle,
             instance_of=node.data.config.get("instance_of")
-            if node.data.nodeType == NodeType.SUBMODEL
+            if node_spec(node.data.nodeType).structural_role == "occurrence"
             else None,
             source_handles=source_handles,
         ),
@@ -1339,7 +1338,7 @@ def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, 
                 )
             )
             continue
-        if node_type in _BOUNDARY_NODE_TYPES or node.id not in flat_ids:
+        if node_type in STRUCTURAL_NODE_TYPES or node.id not in flat_ids:
             nodes.append(BriefNode(node.id, node_type.value, node.data.label, None, (), None))
             continue
         inputs = brief_inputs(node.id)
@@ -1366,7 +1365,7 @@ def _brief_nodes(graph: PipelineGraph, flat: PipelineGraph) -> tuple[BriefNode, 
 def _switch_scenarios(node: GraphNode) -> tuple[str, ...]:
     """The source scenarios a Source Switch routes, sorted: names, never its routing."""
 
-    if node.data.nodeType != NodeType.LIVE_SWITCH:
+    if not node_spec(node.data.nodeType).scenario_router:
         return ()
     routing = node.data.config.get("input_scenario_map")
     if not isinstance(routing, Mapping):
@@ -1459,7 +1458,7 @@ def build_turn_context(
             )
     if preview_error_node_id is not None and (
         preview_error_node_id not in top_level
-        or top_level[preview_error_node_id].data.nodeType in _BOUNDARY_NODE_TYPES
+        or top_level[preview_error_node_id].data.nodeType in STRUCTURAL_NODE_TYPES
     ):
         raise TurnContextError(
             f"Node '{preview_error_node_id}' has no preview error the assistant can "

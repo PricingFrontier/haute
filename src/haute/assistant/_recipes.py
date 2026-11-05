@@ -12,7 +12,8 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from haute._graph_utils import _sanitize_func_name
-from haute._types import SINGLETON_NODE_NAMES, NodeType
+from haute._node_specs import SINGLETON_NODE_NAMES
+from haute.assistant._node_descriptions import recipe_node_type
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -390,7 +391,7 @@ def _output_operations(
             "output_name must be a non-empty string.",
             argument="output_name",
         )
-    fixed = SINGLETON_NODE_NAMES[NodeType.OUTPUT]
+    fixed = SINGLETON_NODE_NAMES[recipe_node_type("response_output")]
     if _sanitize_func_name(output_name) != fixed:
         # A pipeline holds one response node, named by its type alone (READ-46).
         raise RecipeError(
@@ -424,7 +425,8 @@ def _output_operations(
     return [
         {
             "op": "add_node",
-            "node_type": "output",
+            # The response output every recipe adds is the node `response_output` creates.
+            "node_type": recipe_node_type("response_output").value,
             "name": output_name,
             "ref": ref,
             "config": {"output_mapping": mappings},
@@ -632,7 +634,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
         operations = [
             {
                 "op": "add_node",
-                "node_type": "banding",
+                "node_type": recipe_node_type(recipe_id).value,
                 "name": values["name"],
                 "ref": ref,
                 "config": {
@@ -672,7 +674,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
         operations = [
             {
                 "op": "add_node",
-                "node_type": "edgeJoin",
+                "node_type": recipe_node_type(recipe_id).value,
                 "name": values["name"],
                 "ref": ref,
                 "config": {
@@ -698,7 +700,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
         operations = [
             {
                 "op": "add_node",
-                "node_type": "ratingStep",
+                "node_type": recipe_node_type(recipe_id).value,
                 "name": values["name"],
                 "ref": ref,
                 "config": _rating_config(values),

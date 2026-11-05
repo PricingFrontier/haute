@@ -11,13 +11,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from haute._node_specs import REQUEST_INPUT_KINDS, known_node_spec
+
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode, PipelineGraph
-
-#: The request inputs' node types as plain values: ``haute._types`` imports this
-#: module, so its ``REQUEST_INPUT_NODE_TYPES`` cannot be imported here. Held
-#: equal to it by ``tests/test_request_inputs.py``.
-REQUEST_INPUT_KINDS: frozenset[str] = frozenset({"apiInput", "workbenchInput"})
 
 
 def build_parents_of(
@@ -175,6 +172,13 @@ def _sanitize_identifier_characters(label: str) -> str:
     return "".join(out_chars)
 
 
+def _structural_role(node_type: object) -> str | None:
+    """The submodel part a node type is (``occurrence`` or ``port``); ``None`` for any
+    other type, an unknown one included."""
+    spec = known_node_spec(node_type)
+    return None if spec is None else spec.structural_role
+
+
 def edge_input_name(
     edge: GraphEdge,
     source_node: GraphNode,
@@ -192,7 +196,11 @@ def edge_input_name(
     node_type = str(source_node.data.nodeType)
     if node_type in REQUEST_INPUT_KINDS and edge.sourceHandle is None:
         raise ValueError(f"{node_type} edge {edge.id!r} has no sourceHandle/frame label")
-    instance_of = source_node.data.config.get("instance_of") if node_type == "submodel" else None
+    instance_of = (
+        source_node.data.config.get("instance_of")
+        if _structural_role(node_type) == "occurrence"
+        else None
+    )
     source_handles: list[str] | None = None
     if instance_of is not None:
         definition_id = source_node.data.config.get("definition_id")
@@ -309,7 +317,8 @@ def executable_input_name(
         if source_handle is None:
             raise ValueError("Request input handles are required for executable identities.")
         return source_handle
-    if kind == "submodel":
+    role = _structural_role(kind)
+    if role == "occurrence":
         prefix = "out__"
         if (
             source_handle is None
@@ -327,7 +336,7 @@ def executable_input_name(
             )
         instance_name = _sanitize_func_name(label)
         return instance_name if len(source_handles) == 1 else f"{instance_name}_{port_name}"
-    if kind == "submodelPort":
+    if role == "port":
         if source_handle is None or not isinstance(source_handle, str) or not source_handle:
             raise ValueError("Submodel input identities require a source handle.")
         return _sanitize_func_name(source_handle)

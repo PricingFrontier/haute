@@ -26,6 +26,7 @@ from haute._input_providers import (
     RecordedSchemaTiers,
     recording_schema_tiers,
 )
+from haute._node_specs import node_spec
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._polars_steps import (
     STEPS_FROM_CODE,
@@ -35,8 +36,6 @@ from haute._polars_steps import (
 )
 from haute._polars_steps_lift import canonical_steps
 from haute._project_context import current_project, graph_pipeline_dir
-from haute._rating import normalise_combined_outputs, validate_banding_config
-from haute._rating_step_config import normalise_rating_step_config
 from haute._sandbox import contained_path
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
@@ -48,6 +47,7 @@ from haute.assistant._change_record import (
     evidence_summary,
     graph_changes,
 )
+from haute.assistant._node_descriptions import ASSISTANT_NODE_DESCRIPTIONS
 from haute.assistant._ops import (
     AssistantOperationError,
     ConfigVisibility,
@@ -650,7 +650,7 @@ def _mapped_scenarios(graph: PipelineGraph) -> frozenset[str]:
     return frozenset(
         scenario
         for node in graph.nodes
-        if node.data.nodeType == NodeType.LIVE_SWITCH
+        if node_spec(node.data.nodeType).scenario_router
         for scenario in (node.data.config.get("input_scenario_map") or {}).values()
         if isinstance(scenario, str)
     )
@@ -691,7 +691,7 @@ def _prove_switches_route_their_scenarios(graph: PipelineGraph, node_ids: Collec
     nodes = {node.id: node for node in graph.nodes}
     for node_id in sorted(node_ids):
         node = nodes.get(node_id)
-        if node is None or node.data.nodeType != NodeType.LIVE_SWITCH:
+        if node is None or not node_spec(node.data.nodeType).scenario_router:
             continue
         routing = node.data.config.get("input_scenario_map")
         if not isinstance(routing, Mapping):
@@ -765,18 +765,6 @@ def _unrouted_scenario(
     )
 
 
-def _parse_rating_step_config(config: dict[str, Any]) -> None:
-    normalise_rating_step_config(config)
-    normalise_combined_outputs(config)
-
-
-#: Each node type's config parser, which a node this plan writes must pass.
-_CONFIG_PARSERS: Mapping[NodeType, Callable[[dict[str, Any]], object]] = {
-    NodeType.BANDING: validate_banding_config,
-    NodeType.RATING_STEP: _parse_rating_step_config,
-}
-
-
 def _prove_written_configs_parse(
     graph: PipelineGraph,
     node_ids: Collection[str],
@@ -790,7 +778,8 @@ def _prove_written_configs_parse(
     """
 
     for node in graph.nodes:
-        parse = _CONFIG_PARSERS.get(node.data.nodeType)
+        # Each node type's config parser, which a node this plan writes must pass.
+        parse = ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].config_parser
         if parse is None or node.id not in node_ids:
             continue
         try:
@@ -817,7 +806,10 @@ def _prove_categorical_factors_band_text(
     saved = {node.id: node.data.config.get("factors") or [] for node in baseline.nodes}
     prepared: _PreparedGraph | None = None
     for node in graph.nodes:
-        if node.data.nodeType != NodeType.BANDING or node.id not in node_ids:
+        if (
+            ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].structured_config != "factors"
+            or node.id not in node_ids
+        ):
             continue
         written = [
             factor
@@ -995,17 +987,17 @@ def _prove_nodes_ready(
     """
 
     nodes = {node.id: node for node in graph.nodes}
-    ready_types = {NodeType.MODELLING, NodeType.EXTERNAL_FILE}
     written = sorted(
         node_id
         for node_id in node_ids
-        if (node := nodes.get(node_id)) is not None and node.data.nodeType in ready_types
+        if (node := nodes.get(node_id)) is not None
+        and ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].ready_check is not None
     )
     prepared: _PreparedGraph | None = None
     for node_id in written:
         node = nodes[node_id]
         config = node.data.config
-        if node.data.nodeType == NodeType.EXTERNAL_FILE:
+        if ASSISTANT_NODE_DESCRIPTIONS[node.data.nodeType].ready_check == "file_load":
             _prove_load_file_loads(node_id, config)
             continue
         target = config.get("target")

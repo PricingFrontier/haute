@@ -66,6 +66,7 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._native_memory_limit import NativeMemoryLimitUnsupportedError
 from haute._node_snapshots import NodeSnapshotStore
+from haute._node_specs import known_node_spec
 from haute._output_assembler import OutputMappingSchemaError
 from haute._path_resolution import (
     RuntimePathError,
@@ -261,6 +262,13 @@ from haute.trace import execute_trace, trace_result_to_dict
 
 logger = get_logger(component="server.pipeline")
 
+
+def _is_occurrence(node_type: NodeType | str) -> bool:
+    """Whether *node_type* is a submodel occurrence; an unknown type is not."""
+    spec = known_node_spec(node_type)
+    return spec is not None and spec.structural_role == "occurrence"
+
+
 _PUBLIC_REMOTE_ERROR_CODES = {
     (error_type.__module__, error_type.__name__): error_type.error_code
     for error_type in PUBLIC_CONTRACT_ERROR_TYPES
@@ -328,7 +336,7 @@ async def resolve_pipeline_editor_identities(
         occurrence_definitions: dict[str, str] = {}
         if body.graph is not None:
             for node in body.nodes:
-                if node.node_type != NodeType.SUBMODEL:
+                if not _is_occurrence(node.node_type):
                     continue
                 if node.submodel is not None and node.submodel not in (body.graph.submodels or {}):
                     raise ValueError(f"Submodel {node.submodel!r} is not in the naming context.")
@@ -346,7 +354,7 @@ async def resolve_pipeline_editor_identities(
                     owner = scoped.node_map.get(node.instance_of)
                     if (
                         owner is None
-                        or owner.data.nodeType != NodeType.SUBMODEL
+                        or not _is_occurrence(owner.data.nodeType)
                         or owner.data.config.get("instance_of") is not None
                     ):
                         raise ValueError(
@@ -2057,7 +2065,7 @@ def _canonical_snapshot_graph(
                 f"Node {node.authored_id!r} is not available for preview.",
                 target_recovery_id=node.recovery_id,
             )
-        if node.node_type == NodeType.SUBMODEL:
+        if _is_occurrence(node.node_type):
             definition_id = node.config.get("definition_id")
             if isinstance(definition_id, str):
                 referenced_definitions.add(definition_id)

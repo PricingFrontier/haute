@@ -5,25 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 from haute._graph_utils import _sanitize_func_name
+from haute._node_specs import SINGLETON_NODE_GROUPS, node_spec, singleton_name_problem
 from haute._submodel_instances import resolve_submodel_instances
-from haute._types import (
-    REQUEST_INPUT_NODE_TYPES,
-    RESPONSE_NODE_TYPES,
-    NodeType,
-    PipelineGraph,
-    SubmodelInputPort,
-    SubmodelOutputPort,
-    singleton_name_problem,
-)
+from haute._types import PipelineGraph, SubmodelInputPort, SubmodelOutputPort
 from haute.errors import ParseError
 
 #: Node-type groups a pipeline holds at most one node of: it reads one quote
 #: request, through either request input, and answers through one response node.
 #: Save and deploy both enforce them (``validate_singleton_groups``).
-SINGLETON_NODE_GROUPS: tuple[tuple[frozenset[NodeType], str], ...] = (
-    (REQUEST_INPUT_NODE_TYPES, "Quote Input or Workbench Input"),
-    (RESPONSE_NODE_TYPES, "Quote Response or Workbench Output"),
-)
 
 
 def validate_singleton_groups(graph: PipelineGraph) -> None:
@@ -73,13 +62,14 @@ def validate_graph_shape_contracts(
     for node in graph.nodes:
         if validate_node_ids is not None and node.id not in validate_node_ids:
             continue
-        if node.data.nodeType != NodeType.EXPLORE:
+        spec = node_spec(node.data.nodeType)
+        if not spec.input_count_enforced:
             continue
 
         incoming_sources = incoming.get(node.id, [])
         if len(incoming_sources) != 1:
             raise ParseError(
-                "Explore nodes must have exactly one incoming edge.",
+                f"{spec.display_name} nodes must have exactly one incoming edge.",
                 graph=graph_label,
                 node_id=node.id,
                 node_label=node.data.label,

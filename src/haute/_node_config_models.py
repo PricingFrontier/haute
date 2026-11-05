@@ -40,6 +40,7 @@ from typing_extensions import TypedDict
 
 from haute._api_input_schema import TableV2
 from haute._explore_chart_contracts import ExploreChartConfig
+from haute._node_specs import STEPPED_NODE_TYPES
 from haute._types import NodeType
 
 _CLOSED = ConfigDict(extra="forbid", strict=True, use_attribute_docstrings=True)
@@ -240,13 +241,6 @@ class DataInputInlineConfig(_DataInputPolarsCommon, total=False):
     """The rows, each an object from column name to value."""
 
 
-DATA_INPUT_CONFIG_TYPES = (
-    DataInputFileConfig,
-    DataInputDatabaseConfig,
-    DataInputLakehouseConfig,
-    DataInputDatabricksConfig,
-    DataInputInlineConfig,
-)
 DataInputConfig = Annotated[
     DataInputFileConfig
     | DataInputDatabaseConfig
@@ -324,12 +318,6 @@ class DataOutputDatabricksConfig(_DataOutputCommon, total=False):
     """Whether a load replaces the table's rows or adds to them."""
 
 
-DATA_OUTPUT_CONFIG_TYPES = (
-    DataOutputFileConfig,
-    DataOutputDatabaseConfig,
-    DataOutputLakehouseConfig,
-    DataOutputDatabricksConfig,
-)
 DataOutputConfig = Annotated[
     DataOutputFileConfig
     | DataOutputDatabaseConfig
@@ -1101,6 +1089,8 @@ class NodeConfigModel:
     shape: Any
     check: CheckHook | None = None
     check_inputs: InputsHook | None = None
+    #: What an unfinished config lacks. A stepped type's reports its steps that do not
+    #: render yet first, then this hook's gaps (``__post_init__``).
     completeness: CompletenessHook | None = None
     #: The key that selects the config's branch (a Data Input's ``input_type``, a Model
     #: Score's ``source_type``), whose values are its ``Literal``'s, ``""`` aside.
@@ -1114,6 +1104,8 @@ class NodeConfigModel:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "keys", frozenset(_shape_keys(self.shape)))
+        if self.node_type in STEPPED_NODE_TYPES:
+            object.__setattr__(self, "completeness", _stepped(self.node_type, self.completeness))
 
     @property
     def adapter(self) -> TypeAdapter[Any]:
@@ -1590,7 +1582,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         DataInputConfig,
         check=_check_data_input,
         discriminant="input_type",
-        completeness=_stepped(NodeType.DATA_INPUT, _data_input_gaps),
+        completeness=_data_input_gaps,
     ),
     NodeConfigModel(
         NodeType.DATA_OUTPUT,
@@ -1603,7 +1595,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         NodeType.POLARS,
         TransformConfig,
         check=_check_transform,
-        completeness=_stepped(NodeType.POLARS, _transform_gaps),
+        completeness=_transform_gaps,
     ),
     NodeConfigModel(NodeType.EDGE_JOIN, EdgeJoinConfig, check=_check_edge_join),
     NodeConfigModel(
@@ -1611,7 +1603,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         ModelScoreConfig,
         check=_check_model_score,
         discriminant="source_type",
-        completeness=_stepped(NodeType.MODEL_SCORE, _model_score_gaps),
+        completeness=_model_score_gaps,
     ),
     NodeConfigModel(NodeType.BANDING, BandingConfig, check=_check_banding),
     NodeConfigModel(
@@ -1619,19 +1611,17 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         RatingStepConfig,
         check=_check_rating_step,
         builder_checks=True,
-        completeness=_stepped(NodeType.RATING_STEP),
     ),
     NodeConfigModel(NodeType.OUTPUT, OutputConfig, check=_check_output, completeness=_output_gaps),
     NodeConfigModel(
         NodeType.EXPLORE,
         ExploreConfig,
         check=_check_explore,
-        completeness=_stepped(NodeType.EXPLORE),
     ),
     NodeConfigModel(
         NodeType.EXTERNAL_FILE,
         ExternalFileConfig,
-        completeness=_stepped(NodeType.EXTERNAL_FILE, _external_file_gaps),
+        completeness=_external_file_gaps,
     ),
     NodeConfigModel(
         NodeType.LIVE_SWITCH,
@@ -1659,7 +1649,6 @@ _MODELS: tuple[NodeConfigModel, ...] = (
         NodeType.SCENARIO_EXPANDER,
         ScenarioExpanderConfig,
         check=_check_scenario_expander,
-        completeness=_stepped(NodeType.SCENARIO_EXPANDER),
     ),
     NodeConfigModel(
         NodeType.OPTIMISER_APPLY,
@@ -1677,7 +1666,7 @@ _MODELS: tuple[NodeConfigModel, ...] = (
 NODE_CONFIG_MODELS: Mapping[NodeType, NodeConfigModel] = {
     model.node_type: model for model in _MODELS
 }
-"""Each node type's config model; the node specification (PCFG-R09) reads it from here."""
+"""Each node type's config model, the node specification's config column read by node type."""
 
 _missing = set(NodeType) - set(NODE_CONFIG_MODELS)
 if _missing:

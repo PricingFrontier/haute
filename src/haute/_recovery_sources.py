@@ -20,11 +20,10 @@ from haute._config_io import (
     reject_duplicate_keys_hook,
 )
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
-from haute._polars_steps import STEPPED_NODE_TYPES
+from haute._node_specs import CODE_NODE_TYPES, STEPPED_NODE_TYPES, node_spec
 from haute._recovery_schemas import RecoveryFieldChange
 from haute._sidecar import read_sidecar_state
 from haute._source_layout import python_lines
-from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import NodeType
 from haute.errors import ParseError
 from haute.schemas import PipelineEditorDocument, RecoveryPipelineNode
@@ -136,7 +135,7 @@ def read_raw_node_settings(
         )
         body = ""
     raw = _attach_code_from_body(raw, node_type, body, params)
-    if node_type in STEPPED_NODE_TYPES and node_type != NodeType.POLARS:
+    if node_type in STEPPED_NODE_TYPES and node_spec(node_type).code != "transform":
         if "steps" in raw:
             # An Explore decorator's steps, the form before READ-43.
             del raw["steps"]
@@ -193,7 +192,9 @@ def _uncalled_reason(node_type: NodeType) -> str:
     )
     if node_type not in CODE_NODE_TYPES:
         return f"This node type ({node_type.value}) carries no code, {replaced}"
-    marker = "keyword-only obj" if node_type == NodeType.EXTERNAL_FILE else "first parameter df"
+    marker = (
+        "keyword-only obj" if node_spec(node_type).code == "object_hook" else "first parameter df"
+    )
     return (
         f"The function is not a hook ({marker}), {replaced} "
         "Add any custom code back in the node's editor."

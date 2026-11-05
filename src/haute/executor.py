@@ -43,12 +43,12 @@ from haute._execute_lazy import (
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import REQUEST_INPUT_KINDS
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._input_providers import recording_schema_tiers
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._node_specs import REQUEST_INPUT_KINDS, node_spec, node_type_table
 from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
@@ -550,12 +550,44 @@ def _frame_preview(
     )
     preview_row_limit = _preview_row_limit_for_width(max_preview_rows, len(preview_columns))
     preview_frame = df.select(preview_columns).head(preview_row_limit)
-    if node_data.nodeType == NodeType.OUTPUT:
-        # The OUTPUT node carries the assembled response document
-        # (struct columns, ragged → null-filled). Render it as the
-        # pruned JSON so the canvas preview shows the real shape.
-        return render_output_document(preview_frame), preview_columns, preview_row_limit
-    return preview_frame.to_dicts(), preview_columns, preview_row_limit
+    render = _PREVIEW_ROWS[node_data.nodeType]
+    return render(preview_frame), preview_columns, preview_row_limit
+
+
+def _frame_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    return frame.to_dicts()
+
+
+#: How each node type's preview frame becomes its preview rows. The OUTPUT node
+#: carries the assembled response document (struct columns, ragged → null-filled),
+#: rendered as the pruned JSON so the canvas preview shows the real shape; every
+#: other type's rows are its frame's.
+_PREVIEW_ROWS: Mapping[NodeType, Callable[[pl.DataFrame], list[dict[str, Any]]]] = node_type_table(
+    "preview rows",
+    {
+        NodeType.API_INPUT: _frame_rows,
+        NodeType.WORKBENCH_INPUT: _frame_rows,
+        NodeType.WORKBENCH_OUTPUT: _frame_rows,
+        NodeType.DATA_INPUT: _frame_rows,
+        NodeType.DATA_OUTPUT: _frame_rows,
+        NodeType.POLARS: _frame_rows,
+        NodeType.EDGE_JOIN: _frame_rows,
+        NodeType.MODEL_SCORE: _frame_rows,
+        NodeType.BANDING: _frame_rows,
+        NodeType.RATING_STEP: _frame_rows,
+        NodeType.OUTPUT: render_output_document,
+        NodeType.EXPLORE: _frame_rows,
+        NodeType.EXTERNAL_FILE: _frame_rows,
+        NodeType.LIVE_SWITCH: _frame_rows,
+        NodeType.MODELLING: _frame_rows,
+        NodeType.OPTIMISER: _frame_rows,
+        NodeType.SCENARIO_EXPANDER: _frame_rows,
+        NodeType.OPTIMISER_APPLY: _frame_rows,
+        NodeType.CONSTANT: _frame_rows,
+        NodeType.SUBMODEL: _frame_rows,
+        NodeType.SUBMODEL_PORT: _frame_rows,
+    },
+)
 
 
 def _preview_projection_columns(
@@ -587,6 +619,35 @@ def _preview_projection_columns(
 
 _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS = frozenset({"optimal_scenario_value", "optimised_factor"})
 
+#: Whether a preview request may name a node type's value column by its default name
+#: when its config renames it (an Optimiser Apply's ``optimised_value_column``).
+_ALIASES_PREVIEW_VALUE_COLUMN: Mapping[NodeType, bool] = node_type_table(
+    "preview value-column aliases",
+    {
+        NodeType.API_INPUT: False,
+        NodeType.WORKBENCH_INPUT: False,
+        NodeType.WORKBENCH_OUTPUT: False,
+        NodeType.DATA_INPUT: False,
+        NodeType.DATA_OUTPUT: False,
+        NodeType.POLARS: False,
+        NodeType.EDGE_JOIN: False,
+        NodeType.MODEL_SCORE: False,
+        NodeType.BANDING: False,
+        NodeType.RATING_STEP: False,
+        NodeType.OUTPUT: False,
+        NodeType.EXPLORE: False,
+        NodeType.EXTERNAL_FILE: False,
+        NodeType.LIVE_SWITCH: False,
+        NodeType.MODELLING: False,
+        NodeType.OPTIMISER: False,
+        NodeType.SCENARIO_EXPANDER: False,
+        NodeType.OPTIMISER_APPLY: True,
+        NodeType.CONSTANT: False,
+        NodeType.SUBMODEL: False,
+        NodeType.SUBMODEL_PORT: False,
+    },
+)
+
 
 def _normalise_requested_preview_columns(
     node_data: NodeData,
@@ -595,7 +656,7 @@ def _normalise_requested_preview_columns(
 ) -> list[str] | None:  # pragma: no mutate
     if requested_preview_columns is None:
         return None
-    if node_data.nodeType != NodeType.OPTIMISER_APPLY:
+    if not _ALIASES_PREVIEW_VALUE_COLUMN[node_data.nodeType]:
         return requested_preview_columns
 
     configured_column = node_data.config.get("optimised_value_column", "")
@@ -626,7 +687,7 @@ def _normalise_requested_preview_columns_for_execution(
     """
     if requested_preview_columns is None:
         return None
-    if node_data.nodeType != NodeType.OPTIMISER_APPLY:
+    if not _ALIASES_PREVIEW_VALUE_COLUMN[node_data.nodeType]:
         return requested_preview_columns
 
     configured_column = node_data.config.get("optimised_value_column", "")
@@ -1712,7 +1773,8 @@ def _refusing_code_without_preamble(
 
     def build(node: GraphNode, **kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
         name, fn, is_source = _build_node_fn(node, **kwargs)
-        if node.data.nodeType != NodeType.POLARS and not str(node.data.config.get("code") or ""):
+        runs_code = node_spec(node.data.nodeType).code == "transform"
+        if not runs_code and not str(node.data.config.get("code") or ""):
             return name, fn, is_source
         refused.add(node.id)
 
@@ -1735,7 +1797,7 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no m
     """
     batch_scenario: str | None = None  # pragma: no mutate
     for node in graph.nodes:
-        if node.data.nodeType != NodeType.LIVE_SWITCH:
+        if not node_spec(node.data.nodeType).scenario_router:
             continue
         ism: dict[str, str] = node.data.config.get("input_scenario_map", {})
         for scn in ism.values():

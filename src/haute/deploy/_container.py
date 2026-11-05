@@ -20,10 +20,10 @@ from haute._model_flavors import XGBOOST_DISTRIBUTION, family_for_suffix
 from haute._polars_environment import polars_process_environment, polars_spill_root
 from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
-from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._lock import DOCKER_PLATFORM, TARGET_PLATFORM, lock_requirements
 from haute.deploy._mlflow import DeployResult
+from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
@@ -1191,7 +1191,7 @@ def _pinned_graph_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
     nodes = [
         node.id
         for node in resolved.pruned_graph.nodes
-        if node.data.nodeType == NodeType.OPTIMISER_APPLY
+        if DEPLOY_ARTIFACTS[node.data.nodeType] == "optimiser_result"
         and node.data.config.get("source_type") in {"run", "registered"}
     ]
     if not nodes:

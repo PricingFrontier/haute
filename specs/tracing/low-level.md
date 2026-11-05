@@ -4,11 +4,11 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), the `_TABLE_TRACE_TARGETS` node-type table (a Workbench Output target is traced through one of its tables), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), the `_TRACE_ROW_RULES` node-type table (each type's edge alignment, carried values, unique-row transfer and chosen-row rule), `joins_by_role` (an Edge Join: a type whose specification declares input roles), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
-| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
-| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). |
+| `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type through the `_ROW_LINEAGE_BY_NODE_TYPE` table and operation alone), the per-step dispatch walk (`enrich_steps`, whose node-type enrichment is the `_STEP_ENRICHMENT` table) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
+| `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). Its per-type rules are the `_COMPUTES_NOTHING` (pure routers) and `_GENERATED_COLUMNS` (columns a type writes from its settings) node-type tables. |
 | `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
@@ -140,7 +140,8 @@
 
 ### `execute_trace()` (`trace.py`)
 
-**A Workbench Output's table.** A target that is a Workbench Output is first replaced by
+**A Workbench Output's table.** A target that is a Workbench Output (its row in
+`src/haute/trace.py::_TABLE_TRACE_TARGETS`) is first replaced by
 `_workbench_output_trace_target` with the node connected to the table `port_label` names
 (the only table when it names none), and the port it is connected from, which
 `_execute_trace_core` takes as `target_port` to trace that frame of a node emitting several,
@@ -330,7 +331,10 @@ A preview limits the previewed node's output, not its sources, so trace follows 
 the limited preview shows rather than independent source samples.
 
 1. **Edge classification.** `trace_edge_alignment` classifies each physical edge —
-   parent, child, source handle, and target role — separately into a `TraceEdgeAlignment`.
+   parent, child, source handle, and target role — separately into a `TraceEdgeAlignment`,
+   through the child type's `alignment` rule in
+   `src/haute/_trace_correlation.py::_TRACE_ROW_RULES` (a node-type table: a new type
+   fails at import until it has a row; a stand-in node of no node type is never aligned).
    An edge is order-aligned when its child emits at least one row per input row in input
    order: the base edge of a left edge join whose `maintain_order` is `left` or
    `left_right`; model scoring, banding, rating steps, and scenario expansion without
@@ -394,7 +398,8 @@ the limited preview shows rather than independent source samples.
    A child that already proves its parent's row skips the parent's lookup (row transfer).
    The child's row must be unique in the child's uncapped plan — a lookup, or the clicked
    row's lookup (`_lookup_clicked_row`), that returned exactly one row, or itself a transfer
-   — and the child must derive its rows from each parent row's values alone: a pass-through
+   — and the child must derive its rows from each parent row's values alone (the
+   child type's `transfer` rule in `src/haute/_trace_correlation.py::_TRACE_ROW_RULES`): a pass-through
    node type whose only traced lineage input is this parent (a pass-through node with several
    inputs returns just one of them, so its row proves nothing about the others), or an Edge
    Join's `base` port with `how` of `left`, `inner`, `semi`, `anti`, or `cross`. The child must configure no `column_renames`, the parent must have a
@@ -430,7 +435,9 @@ the limited preview shows rather than independent source samples.
    `identical_row_match` rule. A group of one row resolves to that row.
    `_correlate_rows_posthoc` does not correlate a parent through a child that reads none of
    its ports.
-4. **Carried columns (`_carried_values`).** Join-role parents use the edge-join
+4. **Carried columns (`_carried_values`).** Each child type's `carried` rule in
+   `src/haute/_trace_correlation.py::_TRACE_ROW_RULES` decides, after its `chosen_row`
+   rule (the online optimiser apply's) when it has one. Join-role parents use the edge-join
    right-provenance mapping; base-role parents use the child columns present in the base;
    pass-through node types (including OUTPUT documents and the optimiser) use every shared
    column; node types with column contracts use the shared columns minus the builder's
@@ -690,9 +697,11 @@ its public facade.
    an assignment of `column` that copies another column unchanged (`copied_from`:
    `pl.col(old)` as a keyword or an alias), and builds a rename chain by walking backward
    through prior steps' copies.
-5. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,
-   `modelScore`, `scenarioExpander`, `liveSwitch`, `optimiserApply`) into
-   `step.node_detail`; for `banding`, additionally attaches lineage
+5. Dispatches node-type enrichment by `node_type` through
+   `src/haute/_trace_enrichment.py::_STEP_ENRICHMENT`, a node-type table whose `detail`
+   is set for `ratingStep`, `banding`, `modelScore`, `scenarioExpander`, `liveSwitch` and
+   `optimiserApply` (a value that is not a node type has none), into
+   `step.node_detail`; for `banding` (`banding_factors`), additionally attaches lineage
    (`_attach_banding_lineage`) directly into `step.expression`/`step.calculation`
    using the matched factor. Building `factor_input_dtypes` for
    `enrich_rating_step` and `enrich_banding` walks each parent's materialized
@@ -719,7 +728,8 @@ its public facade.
    (`_coerce_pair_through_dtype`). Nothing is caught there: a failure reaches
    `enrich_banding`'s error boundary as an `error` with its `error_type`.
 6. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
-   node type first (source nodes and constants → `"created"`, `liveSwitch` →
+   node type first (`src/haute/_trace_enrichment.py::_ROW_LINEAGE_BY_NODE_TYPE`: source
+   nodes and constants → `"created"`, `liveSwitch` →
    `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,
    `optimiserApply` → `"aggregated"` — checked before any code-sniffing because
    config-driven nodes carry no literal operation), then a code-sniffed
@@ -898,11 +908,11 @@ snapshot deterministically.
   parents. A step computes a column its row shows added or modified, its effective code
   assigns (`assigns_column`; even to the value the column already held, or to a helper
   column it later drops), or one of its rules generates. A pure router (`edgeJoin`, `liveSwitch`,
-  `dataOutput`) computes nothing: every column is carried, including one its schema
+  `dataOutput`; `src/haute/_trace_lineage.py::_COMPUTES_NOTHING`) computes nothing: every column is carried, including one its schema
   diff shows as added because the parent holding it was not correlated. A source
   computes its columns from nothing.
   Rules run before the node's code: a scenario expander's `column_name`/`step_column`
-  (reading nothing), and from `node_detail` a model score's `prediction_column`
+  (reading nothing; `src/haute/_trace_lineage.py::_GENERATED_COLUMNS`), and from `node_detail` a model score's `prediction_column`
   (`feature_columns`), an online optimiser apply's `output_column` (the objective, the
   quote id, scenario index and value columns, and each constraint's column — a ratio
   constraint's numerator and denominator too), a ratebook apply's `output_column`
