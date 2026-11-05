@@ -1,6 +1,7 @@
 /**
- * A schema column's row: its type and name, its summary under them, dragged or moved, removed
- * and opened for its details; and the row of a column the quote store keeps (specs/workbench).
+ * A schema column's row in its block, the table's inputs or its outputs: its type and name, its
+ * summary under them, dragged or moved within its block or into the other, removed and opened
+ * for its details; and the row of a column the quote store keeps (specs/workbench).
  */
 import { KeyRound, Lock, SlidersHorizontal, X, type LucideIcon } from "lucide-react"
 import { useRef, type KeyboardEvent } from "react"
@@ -12,17 +13,16 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { isIdentityColumn } from "../../utils/quoteIdentity"
+import { type Block, hasInputs, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import { buttonUses, changeSchemaColumnType, conditionUses, fieldUses, moveSchemaColumn, nameTaken, QUOTE_DETAILS_MANAGED, sampleHolds, removeSchemaColumn, updateSchemaColumn } from "../../utils/workbenchForm"
+import { keyTable } from "../../utils/workbenchTables"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
 import { DatabaseMark } from "../StoreCompare"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { columnSummary, type Fresh, HOVER_ONLY, usedBy } from "./schemaText"
-
-/** The box a column's type marker sits in. */
-const MARKER_STYLE = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
+import { IndexMarker, KeyMark } from "./IndexControl"
+import { columnSummary, type Fresh, HOVER_ONLY, MARKER_STYLE, usedBy } from "./schemaText"
 
 /** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
 const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: LucideIcon; color: string }> = {
@@ -35,6 +35,9 @@ interface ColumnRowProps {
   form: FormSpec
   table: SchemaTable
   column: SchemaColumn
+  /** The block holding it, the table's inputs or its outputs. */
+  block: Block
+  /** Its place in its block. */
   index: number
   /** The table's columns' name fields, one focused again after Alt+arrows moves it. */
   refocus: RefocusAfterMove<HTMLInputElement>
@@ -52,7 +55,7 @@ interface ColumnRowProps {
   drag: RowDrag | undefined
 }
 
-export function ColumnRow({ form, table, column, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
+export function ColumnRow({ form, table, column, block, index, refocus, fresh, open, onToggleDetails, onInsertAfter, locked, readOnly, filtering, drag }: ColumnRowProps) {
   const change = useWorkbenchFormStore((s) => s.change)
   const addToast = useToastStore((s) => s.addToast)
   const schemaColumnRenamed = useWorkbenchViewStore((s) => s.schemaColumnRenamed)
@@ -75,22 +78,26 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
   // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
   const fixed = locked || readOnly || identity
   const summary = columnSummary(table, column)
+  const length = table[block].length
+  // A many-row table of outputs alone is keyed by the outputs marked so; a table with inputs by a column no one types.
+  const keyable = table.rows === "many" && block === "outputs" && !hasInputs(table) && !identity
+  const keying = hasInputs(table) && keyTable(table).some((key) => key.name === column.name)
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.name, column.name, patch))
 
-  // Enter in the last column's name adds the next column, and in any other only commits it;
-  // Alt+Up and Alt+Down move this one.
+  // Enter in the last column's name of its block adds the next column there, and in any other
+  // only commits it; Alt+Up and Alt+Down move this one within its block.
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (fixed || filtering) return
     if (e.key === "Enter") {
       e.preventDefault()
-      if (index === table.columns.length - 1) onInsertAfter()
+      if (index === length - 1) onInsertAfter()
       return
     }
-    const to = altArrowMove(e, "vertical", index, table.columns.length)
+    const to = altArrowMove(e, "vertical", index, length)
     if (to === null) return
     // Its name field takes the focus again in its new place.
     refocus.moved(column.name)
-    change((f) => moveSchemaColumn(f, table.name, column.name, to))
+    change((f) => moveSchemaColumn(f, table.name, column.name, block, to))
   }
 
   return (
@@ -105,13 +112,12 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
     >
       <div className="group flex items-stretch gap-1 rounded">
         <DragGrip drag={drag} image={row} />
-        {column.index || fixed ? (
-          // The index is always an Integer; Haute's columns keep their types.
-          <span
-            className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`}
-            style={MARKER_STYLE}
-            title={column.index ? "Integer: each row's number, from 1" : label}
-          >
+        {column.index ? (
+          // The index is always an Integer.
+          <IndexMarker />
+        ) : fixed ? (
+          // Haute's columns keep their types.
+          <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title={label}>
             <Icon size={12} aria-hidden="true" />
           </span>
         ) : (
@@ -133,7 +139,7 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           value={column.name}
           onCommit={(name) => {
             if (name === column.name) return
-            if (nameTaken(table.columns.map((other) => other.name), name, column.name)) {
+            if (nameTaken(tableColumns(table).map((other) => other.name), name, column.name)) {
               addToast("error", `${table.name} already has a column named ${name}`)
               return
             }
@@ -151,7 +157,8 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
           style={INPUT_STYLE}
         />
         <DatabaseMark table={table.name} column={column.name} />
-        {table.rows === "many" && !identity && (
+        {keying && <KeyMark column={column} />}
+        {keyable && (
           <IconButton
             icon={KeyRound}
             onClick={() => set({ key: !column.key })}
@@ -176,7 +183,8 @@ export function ColumnRow({ form, table, column, index, refocus, fresh, open, on
             style={{ color: open ? "var(--text-primary)" : "var(--text-muted)" }}
           />
         )}
-        {fixed ? (
+        {fixed || column.index ? (
+          // The index has no remove: the operations give it and take it away.
           <span className="size-5 shrink-0" aria-hidden="true" />
         ) : (
           <IconButton

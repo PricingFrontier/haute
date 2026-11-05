@@ -1,3 +1,4 @@
+import { KeyRound } from "lucide-react"
 import type { WorkbenchColumn, WorkbenchTable } from "../../api/types"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { NODE_TYPES } from "../../utils/nodeTypes"
@@ -22,11 +23,12 @@ function fillTitle(fill: ColumnFill): string | undefined {
 
 /**
  * The Workbench Output's panel (specs/workbench): the response's tables the newest fetch
- * of the project's workbench gave, each with the node connected to its port, and each of
- * its columns, which the connected frame's column of exactly its name fills, bordered red
- * while it is missing and orange while that column is of a type that does not fit; the
- * quote's reference and option, which the response gives, are neither. The tables are
- * read-only, and nothing of them is in the node.
+ * of the project's workbench gave, each table's outputs by its port's name, with the node
+ * connected to that port, and each of its columns, which the connected frame's column of
+ * exactly its name fills, bordered red while it is missing and orange while that column is
+ * of a type that does not fit; the quote's reference and option, which the response gives,
+ * are neither. A table with inputs carries its key column first after the identity, marked
+ * as its key. The tables are read-only, and nothing of them is in the node.
  */
 export default function WorkbenchOutputEditor({
   inputSources,
@@ -34,12 +36,12 @@ export default function WorkbenchOutputEditor({
 }: {
   /** The node's inputs, each with the table port its edge lands on. */
   inputSources: readonly InputSource[]
-  /** The document's reserved labels, which a table's name is held against as the schema editor holds it. */
+  /** The document's reserved labels, which a table's port is held against as the schema editor holds it. */
   reservedFrameLabels: ReadonlySet<string>
 }) {
   const workbench = useWorkbenchStore((state) => state.tables)
   const tables = workbenchNodeTables(NODE_TYPES.WORKBENCH_OUTPUT, workbench)
-  const names = tables.map((table) => table.name)
+  const ports = tables.map((table) => table.port)
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="workbench-output-editor">
@@ -47,10 +49,10 @@ export default function WorkbenchOutputEditor({
         <WorkbenchTablesHeader empty={tables.length === 0} />
         {tables.map((table, index) => (
           <OutputTable
-            key={`${index}:${table.name}`}
+            key={`${index}:${table.port}`}
             table={table}
-            issue={tableLabelIssue(names, index, reservedFrameLabels)}
-            source={inputSources.find((input) => input.targetHandle === table.name) ?? null}
+            issue={tableLabelIssue(ports, index, reservedFrameLabels)}
+            source={inputSources.find((input) => input.targetHandle === table.port) ?? null}
           />
         ))}
       </section>
@@ -70,7 +72,7 @@ function OutputTable({
   return (
     <WorkbenchTableCard table={table} issue={issue}>
       <p
-        data-testid={`workbench-table-connection-${table.name}`}
+        data-testid={`workbench-table-connection-${table.port}`}
         className="mt-0.5 text-[11px]"
         style={{ color: source === null ? "var(--danger-text)" : "var(--text-muted)" }}
       >
@@ -80,8 +82,9 @@ function OutputTable({
         {table.columns.map((column, at) => (
           <OutputColumn
             key={column.name}
-            table={table.name}
+            table={table.port}
             column={column}
+            isKey={column.name === table.key}
             fill={columnFill(table, at, source !== null, source?.columns)}
           />
         ))}
@@ -90,7 +93,7 @@ function OutputTable({
   )
 }
 
-function OutputColumn({ table, column, fill }: { table: string; column: WorkbenchColumn; fill: ColumnFill }) {
+function OutputColumn({ table, column, isKey, fill }: { table: string; column: WorkbenchColumn; isKey: boolean; fill: ColumnFill }) {
   return (
     <li
       data-testid={`workbench-column-${table}-${column.name}`}
@@ -99,6 +102,7 @@ function OutputColumn({ table, column, fill }: { table: string; column: Workbenc
       style={{ borderColor: FILL_BORDERS[fill.kind] }}
     >
       <span className="min-w-0 flex-1 font-mono truncate">{column.name}</span>
+      {isKey && <KeyRound size={11} role="img" aria-label="Key" className="shrink-0" style={{ color: "var(--accent)" }} />}
       <span className="shrink-0 font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
         {column.type}
       </span>

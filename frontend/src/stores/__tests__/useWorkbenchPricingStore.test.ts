@@ -1,8 +1,9 @@
 /**
  * The sample priced live in Preview (specs/workbench): priced as the form stands, once
  * typing pauses, one pricing at a time with one more for changes made meanwhile, the last
- * values kept and dimmed until the next answer, the reason when pricing fails, and a
- * sample with nothing typed in the cells the sheets show not priced at all.
+ * values kept and dimmed until the next answer, the reason when pricing fails, an answer
+ * held to the rows it priced as the server holds a quote's, and a sample with nothing typed
+ * in the cells the sheets show not priced at all.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -11,7 +12,7 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
   fetchWorkbenchFormTables: vi.fn(),
 }))
 
-import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTablesResponse } from "../../api/types"
+import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
 import { BLANK_THEME, COLLECTION_OPTIONS, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
@@ -43,8 +44,8 @@ const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   options_source: null,
   row_per_value: false,
 })
-const policy: SchemaTable = { name: "policy_details", role: "input", rows: "one", columns: [column("exposure", "float")] }
-const pricing: SchemaTable = { name: "pricing_output", role: "output", rows: "one", columns: [column("model_premium", "float")] }
+const policy: SchemaTable = { name: "policy_details", rows: "one", inputs: [column("exposure", "float")], outputs: [] }
+const pricing: SchemaTable = { name: "pricing_output", rows: "one", inputs: [], outputs: [column("model_premium", "float")] }
 const form: FormSpec = {
   version: 1,
   name: "t",
@@ -299,5 +300,72 @@ describe("useWorkbenchPricingStore", () => {
 
     expect(useWorkbenchPricingStore.getState().price).toBeNull()
     expect(pricer).toHaveBeenCalledTimes(1)
+  })
+  describe("an answer held to the rows it priced", () => {
+    const identity: WorkbenchTable["columns"] = [{ name: "quote_reference", type: "str" }, { name: "quote_option", type: "int" }]
+    // A schedule's output side, keyed by its index, which its answer carries.
+    const equipment: WorkbenchTable = {
+      name: "ce_equipment",
+      side: "output",
+      port: "ce_equipment_output",
+      rows: "many",
+      columns: [...identity, { name: "item_number", type: "int" }, { name: "final_premium", type: "float" }, { name: "referral", type: "str" }],
+      key: "item_number",
+      null_key: null,
+    }
+    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null }
+    /** What the server makes of the form: the schedule's typed rows, numbered by its index, and both output sides. */
+    const keyedOf = (spec: FormSpec): WorkbenchTablesResponse => ({
+      ...workbenchOf(spec),
+      sample: { ...workbenchOf(spec).sample, ce_equipment: [{ item_number: 1, limit: 10 }, { item_number: 2, limit: 20 }] },
+      response_tables: [equipment, unkeyed],
+    })
+    const answered = (rows: Record<string, unknown>[]): PricedSample => ({ tables: { ce_equipment: rows, pricing_output: [{ model_premium: null }] } })
+    const NAN = { __haute_type__: "non_finite_float", value: "nan" }
+    const row = (item: unknown, premium: unknown, referral: unknown = null) =>
+      ({ quote_reference: "PREVIEW", quote_option: 1, item_number: item, final_premium: premium, referral })
+
+    beforeEach(() => vi.mocked(fetchWorkbenchFormTables).mockImplementation((spec) => Promise.resolve(keyedOf(spec))))
+
+    it("keeps an answer fitting the rows priced, in its own order, a row priced nothing left out", async () => {
+      useWorkbenchPricingStore.getState().setPricer(vi.fn(() => Promise.resolve(answered([row(2, 7.5)]))))
+      await useWorkbenchPricingStore.getState().priceNow()
+
+      const { price, error } = useWorkbenchPricingStore.getState()
+      expect(error).toBeNull()
+      expect(price?.tables.ce_equipment).toEqual([row(2, 7.5)])
+      expect(price?.sample.ce_equipment).toEqual([{ item_number: 1, limit: 10 }, { item_number: 2, limit: 20 }])
+    })
+
+    it("fails the pricing with the server's words when the answer's rows do not fit the rows priced", async () => {
+      const pricer = vi.fn(() => Promise.resolve(answered([row(1, 5), row(null, 6), row(2, 1), row(2, 2), row(7, 3)])))
+      useWorkbenchPricingStore.getState().setPricer(pricer)
+      await useWorkbenchPricingStore.getState().priceNow()
+
+      expect(useWorkbenchPricingStore.getState().price).toBeNull()
+      expect(useWorkbenchPricingStore.getState().error).toBe(
+        "ce_equipment_output does not fit ce_equipment's rows: 1 row has no item_number; item_number 2 is given twice; item_number 7 is on no row priced.",
+      )
+    })
+
+    it("leaves out an answer row holding no output value, each null or a number that is not finite, the identity and the key aside", async () => {
+      const pricer = vi.fn(() => Promise.resolve(answered([row(1, null), row(2, NAN)])))
+      useWorkbenchPricingStore.getState().setPricer(pricer)
+      await useWorkbenchPricingStore.getState().priceNow()
+
+      const { price, error } = useWorkbenchPricingStore.getState()
+      expect(error).toBeNull()
+      expect(price?.tables.ce_equipment).toEqual([])
+      // A one-row table, which no key holds, keeps its row of nulls.
+      expect(price?.tables.pricing_output).toEqual([{ model_premium: null }])
+    })
+
+    it("keeps an answer row holding any output value, text or zero included", async () => {
+      const pricer = vi.fn(() => Promise.resolve(answered([row(1, NAN, "Over limit"), row(2, 0)])))
+      useWorkbenchPricingStore.getState().setPricer(pricer)
+      await useWorkbenchPricingStore.getState().priceNow()
+
+      expect(useWorkbenchPricingStore.getState().price?.tables.ce_equipment).toEqual([row(1, NAN, "Over limit"), row(2, 0)])
+    })
   })
 })

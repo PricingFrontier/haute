@@ -184,7 +184,7 @@ test.describe("the underwriter app's quotes", () => {
 
     const restarted = await test.step("a column added to the form closes dev's quotes as the app starts again, its table left as it was", async () => {
       const policy = readFormFile("schema/policy.json")
-      writeFormFiles({ "schema/policy.json": { ...policy, columns: [...policy.columns, { name: "excess", type: "int" }] } })
+      writeFormFiles({ "schema/policy.json": { ...policy, inputs: [...policy.inputs, { name: "excess", type: "int" }] } })
       await app.stop()
       const again = await serve(staticDir)
 

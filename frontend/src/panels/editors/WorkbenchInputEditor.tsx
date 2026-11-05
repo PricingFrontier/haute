@@ -11,7 +11,8 @@ const SECTION_LABEL = "text-[11px] font-bold uppercase tracking-[0.08em]"
 
 /**
  * The Workbench Input's panel (specs/workbench): the tables the newest fetch of the
- * project's workbench gave, read-only, with whatever stops a table's name being a port.
+ * project's workbench gave, each table's inputs by its port's name, read-only, with
+ * whatever stops that name being a port.
  * It reads no file: previews run on the workbench's sample quote, a table it gives no
  * rows being one row of nulls. Nothing of the tables is in the node, and nothing here
  * edits them.
@@ -25,7 +26,7 @@ export default function WorkbenchInputEditor({
 }) {
   const workbench = useWorkbenchStore((state) => state.tables)
   const tables = workbenchNodeTables(NODE_TYPES.WORKBENCH_INPUT, workbench)
-  const names = tables.map((table) => table.name)
+  const ports = tables.map((table) => table.port)
   const hasSample = workbench !== null && Object.keys(workbench.sample).length > 0
 
   return (
@@ -52,9 +53,9 @@ export default function WorkbenchInputEditor({
         <WorkbenchTablesHeader empty={tables.length === 0} />
         {tables.map((table, index) => (
           <WorkbenchTableCard
-            key={`${index}:${table.name}`}
+            key={`${index}:${table.port}`}
             table={table}
-            issue={tableLabelIssue(names, index, reservedFrameLabels)}
+            issue={tableLabelIssue(ports, index, reservedFrameLabels)}
           />
         ))}
       </section>
@@ -62,7 +63,7 @@ export default function WorkbenchInputEditor({
   )
 }
 
-/** What stops `names[index]`, a table's name, being a port, or null. */
+/** What stops `names[index]`, a table's port's name, being a port, or null. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function tableLabelIssue(
   names: readonly string[],
@@ -111,7 +112,7 @@ export function WorkbenchTablesHeader({ empty }: { empty: boolean }) {
 }
 
 /**
- * One of a workbench node's tables, read-only: its name, its rows per quote and its
+ * One of a workbench node's tables, read-only: its port's name, its rows per quote and its
  * columns, which `children` shows in place of the plain list where a node says more of
  * them (the Workbench Output, each column's fill). A table without columns has no frame,
  * so no port, and says so.
@@ -127,12 +128,12 @@ export function WorkbenchTableCard({
 }) {
   return (
     <div
-      data-testid={`workbench-table-${table.name}`}
+      data-testid={`workbench-table-${table.port}`}
       className="rounded-md border px-2 py-1.5 text-xs"
       style={{ borderColor: issue ? "var(--warning)" : "var(--border)", background: "var(--bg-elevated)" }}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono font-semibold truncate">{table.name}</span>
+        <span className="font-mono font-semibold truncate">{table.port}</span>
         <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
           {table.rows === "one" ? "one per quote" : "many per quote"}
         </span>

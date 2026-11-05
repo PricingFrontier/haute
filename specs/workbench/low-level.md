@@ -669,8 +669,9 @@ no longer has; and `InputSource` in
   (`preset_column`) while it has one, else its index; for a table of outputs alone its
   outputs marked `key`, in order. `keyTable` (`frontend/src/utils/workbenchTables.ts`) is
   the view's twin. **`key_collisions(table)`**: the preset column's allowed values that
-  read as one value in its type (`1` and `01` in an Integer column, through `_typed`; two
-  spellings of one Date), each group in the values' order, which deploy's form check, and
+  read as one number in its type (`1` and `01` in an Integer column, `1.5` and `1.50` in a
+  Decimal one, through `_typed`; a Text column's values are distinct as the params reader
+  gives them, and a Date column gives no rows), each group in the values' order, which deploy's form check, and
   so `haute app build`, refuses as it refuses `identity_clashes` ("<table>.<column>'s
   allowed values 1 and 01 are one Integer, so they cannot key its rows: correct the
   params file"), and the schema editor names as a problem (`keyCollisions`, its twin).

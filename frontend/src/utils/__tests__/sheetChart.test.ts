@@ -34,7 +34,7 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
   ...overrides,
 })
 
-const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({ name, role: "input", rows: "one", columns: [], ...overrides })
+const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({ name, rows: "one", outputs: [], inputs: [], ...overrides })
 
 const pounds = { type: "float", number_format: "currency_gbp" } as const
 
@@ -44,11 +44,12 @@ const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "policy", c
 const field = (table: string, column: string): FieldRef => ({ table, column })
 
 /**
- * A motor form: the policy (one row) and its quote (an output, one row); equipment (many
- * rows, keyed by item) priced into premiums and fees (outputs keyed alike); vehicles (many
- * rows keyed by reg, out of line with equipment). Its components are in the one section of
- * one sheet, and the policy's excess and the equipment's notes are typed only into those
- * shown while cover is ticked.
+ * A motor form: the policy (one row) and its quote (outputs, one row); equipment (many rows,
+ * keyed by its index), its items typed and each one's premium priced in the one table, and
+ * charges (outputs alone keyed alike, by row_number); premiums and fees (outputs alone, keyed
+ * by item); vehicles (many rows keyed by their own index, out of line with equipment). Its
+ * components are in the one section of one sheet, and the policy's excess and the
+ * equipment's notes are typed only into those shown while cover is ticked.
  */
 const motorForm = (): FormSpec => ({
   version: 1,
@@ -57,7 +58,7 @@ const motorForm = (): FormSpec => ({
   schema: {
     tables: [
       table("policy", {
-        columns: [
+        inputs: [
           column("state"),
           column("sum_insured", pounds),
           column("excess", { ...pounds, label: "Excess" }),
@@ -65,33 +66,37 @@ const motorForm = (): FormSpec => ({
         ],
       }),
       table("quote", {
-        role: "output",
-        columns: [column("premium", pounds), column("tax", { type: "float" })],
+        outputs: [column("premium", pounds), column("tax", { type: "float" })],
       }),
       table("equipment", {
         rows: "many",
-        columns: [
+        inputs: [
           column("row_number", { type: "int", index: true }),
-          column("item", { key: true }),
+          column("item"),
           column("value", pounds),
           column("count", { type: "int" }),
           column("new", { type: "bool" }),
           column("note"),
         ],
+        outputs: [column("premium", pounds)],
+      }),
+      table("charges", {
+        rows: "many",
+        outputs: [column("row_number", { type: "int", key: true }), column("charge", pounds)],
       }),
       table("premiums", {
-        role: "output",
         rows: "many",
-        columns: [column("item", { key: true }), column("premium", pounds)],
+        inputs: [],
+        outputs: [column("item", { key: true }), column("premium", pounds)],
       }),
       table("fees", {
-        role: "output",
         rows: "many",
-        columns: [column("item", { key: true }), column("fee", pounds)],
+        inputs: [],
+        outputs: [column("item", { key: true }), column("fee", pounds)],
       }),
       table("vehicles", {
         rows: "many",
-        columns: [column("reg", { key: true }), column("value", pounds)],
+        inputs: [column("vehicle", { type: "int", index: true }), column("reg"), column("value", pounds)],
       }),
     ],
   },
@@ -186,9 +191,9 @@ describe("a Chart of many-row tables", () => {
   // Row 1 holds only a note, which the quote leaves out while cover is not ticked; row 3 nothing at all.
   const equipment: SampleRow[] = [{ item: "Crane", value: "5,000", new: true }, { note: "spare" }, { item: "Drill", value: "lots" }, {}, { item: "Lathe", value: "200" }]
   const typed = [
-    { item: "Crane", value: 5000 },
-    { item: "Drill", value: "lots" },
-    { item: "Lathe", value: 200 },
+    { row_number: 1, item: "Crane", value: 5000 },
+    { row_number: 3, item: "Drill", value: "lots" },
+    { row_number: 5, item: "Lathe", value: 200 },
   ]
 
   it("plots a series per field over the rows typed into its input tables, a row with nothing the quote takes left out, numbered as the grid numbers them", () => {
@@ -201,7 +206,7 @@ describe("a Chart of many-row tables", () => {
 
   it("counts a row typed into any of its input tables keyed alike, the others' values gaps on it", () => {
     const form = motorForm()
-    form.schema.tables.push(table("cover", { rows: "many", columns: [column("item", { key: true }), column("excess", pounds)] }))
+    form.schema.tables.push(table("cover", { rows: "many", inputs: [column("row_number", { type: "int", index: true }), column("item"), column("excess", pounds)] }))
     const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }, motorForm()) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
     const spec = addWidget(form, "s1", widget)
     // Row 1 is typed into equipment alone, row 2 into cover alone, side by side as a Table's grid has them.
@@ -213,13 +218,14 @@ describe("a Chart of many-row tables", () => {
     ])
   })
 
-  it("lines its output tables' rows up with the typed rows by key", () => {
-    const { spec, widget } = charted([field("equipment", "value"), field("premiums", "premium")])
-    const price = priced({ premiums: [{ item: "Lathe", premium: 20 }, { item: "Crane", premium: 500 }] }, { equipment: typed })
+  it("lines its outputs' rows up with the typed rows by key: a table's own, and another's keyed alike", () => {
+    const { spec, widget } = charted([field("equipment", "value"), field("equipment", "premium"), field("charges", "charge")])
+    const price = priced({ equipment: [{ row_number: 5, premium: 20 }, { row_number: 1, premium: 500 }], charges: [{ row_number: 1, charge: 7 }] }, { equipment: typed })
     const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }, price))
     expect(valuesOfSeries(data)).toEqual([
       { key: "equipment:value", values: [5000, null, 200] },
-      { key: "premiums:premium", values: [500, null, 20] },
+      { key: "equipment:premium", values: [500, null, 20] },
+      { key: "charges:charge", values: [7, null, null] },
     ])
   })
 
@@ -252,8 +258,8 @@ describe("a Chart of many-row tables", () => {
   })
 
   it("names its rows by an output column as an output cell shows it, a dash where the price has none", () => {
-    const { spec, widget } = charted([field("equipment", "value")], { category: field("premiums", "premium") })
-    const price = priced({ premiums: [{ item: "Crane", premium: 1500 }] }, { equipment: typed })
+    const { spec, widget } = charted([field("equipment", "value")], { category: field("equipment", "premium") })
+    const price = priced({ equipment: [{ row_number: 1, premium: 1500 }] }, { equipment: typed })
     expect(sheetChartData(spec.schema, widget, valuesOf(spec, { equipment }, price)).categories).toEqual(["£1,500.00", "—", "—"])
   })
 
@@ -287,7 +293,7 @@ describe("a Chart's axis and freshness", () => {
   it("is stale only while it plots an output, or names its rows by one, priced for other values", () => {
     const outputs = charted([field("policy", "sum_insured"), field("quote", "premium")])
     const inputs = charted([field("policy", "sum_insured")])
-    const namedByPrice = charted([field("equipment", "value")], { category: field("premiums", "premium") })
+    const namedByPrice = charted([field("equipment", "value")], { category: field("equipment", "premium") })
     const stale = (chart: { spec: FormSpec; widget: ChartWidget }, price: Price | null) =>
       sheetChartData(chart.spec.schema, chart.widget, valuesOf(chart.spec, {}, price, "now")).stale
     expect(stale(outputs, priced({}, {}, "before"))).toBe(true)

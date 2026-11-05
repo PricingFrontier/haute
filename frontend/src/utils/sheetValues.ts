@@ -3,12 +3,13 @@
  * underwriter app's quote: which rows count as filled, as the server counts them; the rows
  * a column gives a table, as the server reads them; what breaks a column's rules; how a
  * number column shows a value; what pricing the values depends on; and the rows of a
- * priced output table lined up with a grid's input rows by key.
+ * pricing's answer lined up with a grid's input rows by key.
  */
 import type { FormSchema, SchemaColumn, SchemaTable } from "../api/types"
 import { formatPivotNumber } from "../panels/explore/pivotNumberFormat"
 import type { SampleRow, SampleValue } from "./workbenchForm"
 import { isDay } from "./isoDate"
+import { hasInputs, isOutputColumn } from "./quoteIdentity"
 
 /** Rows by table id, as the sample and a quote hold them. */
 export type RowsByTable = Readonly<Record<string, readonly SampleRow[]>>
@@ -21,12 +22,12 @@ export const filled = (value: SampleValue | undefined): boolean =>
   value === true || (typeof value === "string" && value.trim() !== "")
 
 /**
- * Whether a row has a value typed in any column but the index, as the server counts a
+ * Whether a row has a value typed in any input but the index, as the server counts a
  * row: it leaves the others out of what it types, so a grid's filled rows are its typed
  * rows, in order.
  */
 export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boolean =>
-  row !== undefined && table.columns.some((column) => !column.index && filled(row[column.name]))
+  row !== undefined && table.inputs.some((column) => !column.index && filled(row[column.name]))
 
 /**
  * The column giving a table a row for each of its allowed values: in a many-row input
@@ -34,8 +35,8 @@ export const rowFilled = (table: SchemaTable, row: SampleRow | undefined): boole
  * none (`preset_column` on the server).
  */
 export const presetColumn = (table: SchemaTable): SchemaColumn | null =>
-  table.role === "input" && table.rows === "many"
-    ? (table.columns.find((column) => column.row_per_value && !column.index && column.options.length > 0) ?? null)
+  hasInputs(table) && table.rows === "many"
+    ? (table.inputs.find((column) => column.row_per_value && !column.index && column.options.length > 0) ?? null)
     : null
 
 /**
@@ -76,10 +77,10 @@ export function withPresetRows(schema: FormSchema, values: RowsByTable): RowsByT
   return read
 }
 
-/** A table's columns whose values are typing: all but the index and the column giving the table its rows. */
+/** A table's columns whose values are typing: its inputs but the index and the column giving the table its rows. */
 const typingColumns = (table: SchemaTable): SchemaColumn[] => {
   const given = presetColumn(table)
-  return table.columns.filter((column) => !column.index && column !== given)
+  return table.inputs.filter((column) => !column.index && column !== given)
 }
 
 /**
@@ -94,18 +95,18 @@ const quotedRows = (table: SchemaTable, rows: RowsByTable): readonly SampleRow[]
 }
 
 /**
- * What a new quote starts a column with: its default, in a one-row input table, as if
- * typed; null for none, and for any other table's column, which takes none.
+ * What a new quote starts a column with: its default, for an input of a one-row table, as
+ * if typed; null for none, and for any other column, which takes none (`starting_value`).
  */
 export const startingValue = (table: SchemaTable, column: SchemaColumn): SampleValue | null =>
-  table.role === "input" && table.rows === "one" && !column.index && filled(column.default_value) ? column.default_value : null
+  !isOutputColumn(table, column) && table.rows === "one" && !column.index && filled(column.default_value) ? column.default_value : null
 
 const startingValues = new WeakMap<FormSchema, RowsByTable>()
 
 /**
- * What a new quote starts with: each one-row input table's row holding its columns'
- * defaults, a table with none left out; the same for the same schema, so what reads it
- * once reads it again unchanged.
+ * What a new quote starts with: each one-row table's row holding its inputs' defaults, a
+ * table with none left out; the same for the same schema, so what reads it once reads it
+ * again unchanged.
  */
 export function newQuoteValues(schema: FormSchema): RowsByTable {
   let values = startingValues.get(schema)
@@ -113,7 +114,7 @@ export function newQuoteValues(schema: FormSchema): RowsByTable {
     const started: Record<string, SampleRow[]> = {}
     for (const table of schema.tables) {
       const row: SampleRow = {}
-      for (const column of table.columns) {
+      for (const column of table.inputs) {
         const value = startingValue(table, column)
         if (value !== null) row[column.name] = value
       }
@@ -136,7 +137,7 @@ export function newQuoteValues(schema: FormSchema): RowsByTable {
  */
 export const quoteTyped = (schema: FormSchema, rows: RowsByTable): boolean =>
   schema.tables.some((table) => {
-    if (table.role !== "input") return false
+    if (!hasInputs(table)) return false
     const columns = typingColumns(table)
     return quotedRows(table, rows).some((row) =>
       columns.some((column) => filled(row[column.name]) && row[column.name] !== startingValue(table, column)),
@@ -212,20 +213,20 @@ export function cellProblem(column: SchemaColumn, value: SampleValue | undefined
 }
 
 /**
- * What breaks the columns' rules in the values typed, by cell: each input table's columns
+ * What breaks the columns' rules in the values typed, by cell: each input table's inputs
  * over its rows, a one-row table's one row always (a quote has one) and a many-row
- * table's filled rows only, as the server leaves its empty rows out. Output tables have
- * no rules, and a value typed for a column no longer in the schema is nobody's.
+ * table's filled rows only, as the server leaves its empty rows out. Outputs have no rules
+ * a value typed breaks, and a value typed for a column no longer in the schema is nobody's.
  */
 export function quoteProblems(schema: FormSchema, rows: RowsByTable): Record<string, string> {
   const problems: Record<string, string> = {}
   for (const table of schema.tables) {
-    if (table.role !== "input") continue
+    if (!hasInputs(table)) continue
     const typed = rows[table.name] ?? []
     const checked = table.rows === "one" ? [typed[0] ?? {}] : typed
     checked.forEach((row, index) => {
       if (table.rows === "many" && !rowFilled(table, row)) return
-      for (const column of table.columns) {
+      for (const column of table.inputs) {
         const problem = cellProblem(column, row[column.name])
         if (problem !== null) problems[cellKey(table.name, index, column.name)] = problem
       }
@@ -250,19 +251,21 @@ export type PricedRows = readonly Record<string, unknown>[]
 const keyed = (row: Record<string, unknown>, name: string): boolean => row[name] !== undefined && row[name] !== null
 
 /**
- * The rows of a priced output table lined up with a grid's rows of an input table keyed
- * alike: for each grid row, the output row whose key columns hold what the server typed
- * for the grid row's (an index column numbered as the grid numbers it); undefined for a
- * grid row with nothing typed, or none keyed like it. `typedRows` are the input table's
- * rows as the server typed them, the filled rows in order.
+ * The rows of a priced table lined up with a grid's rows of an input table by its key, the
+ * names of `keys` (`keyTable`'s): for each grid row, the answer's row whose key columns
+ * hold what the server typed for the grid row's (the index numbered as the grid numbers
+ * it, or the value giving the row), never by place; undefined for a grid row with nothing
+ * typed, or none keyed like it. `typedRows` are the input table's rows as the server typed
+ * them, the filled rows in order, and `outputRows` the answer: the input table's own, or
+ * that of a table of outputs alone keyed alike.
  */
 export function pricedRows(
   input: SchemaTable,
+  keys: readonly string[],
   gridRows: readonly (SampleRow | undefined)[],
   typedRows: PricedRows,
   outputRows: PricedRows,
 ): (Record<string, unknown> | undefined)[] {
-  const keys = input.columns.filter((column) => column.key).map((column) => column.name)
   let next = 0
   return gridRows.map((row) => {
     if (!rowFilled(input, row)) return undefined

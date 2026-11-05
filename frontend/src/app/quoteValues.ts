@@ -12,6 +12,7 @@ import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { operationKey } from "../utils/operationKey"
+import { hasInputs } from "../utils/quoteIdentity"
 import { formattedNumber, withPresetRows } from "../utils/sheetValues"
 import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
@@ -40,15 +41,15 @@ export function normalisedValues(values: Readonly<Record<string, readonly Sample
 export const valuesKey = (values: Readonly<Record<string, readonly SampleRow[]>>): string => canonicalJson(normalisedValues(values))
 
 /**
- * `values` on `form`'s sheets: the cells of its input tables' columns alone, by name, and each
+ * `values` on `form`'s sheets: the cells of its tables' inputs alone, by name, and each
  * row's kept field, as values typed into other sheets, a draft kept before a release, are put back.
  */
 export function onSheets(form: FormSpec, values: Values): Values {
   const kept: Values = {}
   for (const table of form.schema.tables) {
     const rows = values[table.name]
-    if (table.role !== "input" || rows === undefined) continue
-    const columns = new Set(table.columns.map((column) => column.name))
+    if (!hasInputs(table) || rows === undefined) continue
+    const columns = new Set(table.inputs.map((column) => column.name))
     kept[table.name] = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([id]) => id === KEPT_KEY || columns.has(id))))
   }
   return kept
@@ -60,7 +61,7 @@ export function cellPlaces(form: FormSpec, values: Values): Record<string, strin
   for (const table of form.schema.tables) {
     for (const row of values[table.name] ?? []) {
       for (const columnId of Object.keys(row)) {
-        const column = table.columns.find((candidate) => candidate.name === columnId)
+        const column = table.inputs.find((candidate) => candidate.name === columnId)
         if (column !== undefined) places[columnKey(table.name, columnId)] = `${table.name}.${column.name}`
       }
     }
@@ -114,8 +115,8 @@ export function withHiddenCells(form: FormSpec, saved: Values, sent: Values): Va
   const placed = withPresetRows(form.schema, sent)
   const merged: Values = { ...saved }
   for (const table of form.schema.tables) {
-    if (table.role !== "input" || table.name === QUOTE_DETAILS_NAME) continue
-    const kept = new Set(table.columns.filter((column) => hidden.has(columnKey(table.name, column.name))).map((column) => column.name))
+    if (!hasInputs(table) || table.name === QUOTE_DETAILS_NAME) continue
+    const kept = new Set(table.inputs.filter((column) => hidden.has(columnKey(table.name, column.name))).map((column) => column.name))
     if (kept.size === 0) continue
     const answered = saved[table.name] ?? []
     const typed = (placed[table.name] ?? []).slice(0, table.rows === "one" ? 1 : undefined)
@@ -242,7 +243,7 @@ const LISTED = ["insured", "broker", "inception_date"] as const satisfies readon
 export function listColumns(form: FormSpec | null): ListColumn[] {
   const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
   return LISTED.map((key) => {
-    const column = table?.columns.find((candidate) => candidate.name === key) ?? null
+    const column = table?.inputs.find((candidate) => candidate.name === key) ?? null
     return { key, label: column?.label || readableName(key), column }
   })
 }

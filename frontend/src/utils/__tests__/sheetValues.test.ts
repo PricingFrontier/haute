@@ -24,7 +24,7 @@ import {
   withPresetRows,
 } from "../sheetValues"
 import { columnKey, quotedSchema } from "../sheetVisibility"
-import { BLANK_THEME, pricingBasis, type SampleRow } from "../workbenchForm"
+import { BLANK_THEME, linedUpOutputs, pricingBasis, type SampleRow } from "../workbenchForm"
 import presetCases from "./fixtures/presetRows.json"
 import typedCases from "./fixtures/typedText.json"
 
@@ -52,25 +52,25 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
 
 const equipment: SchemaTable = {
   name: "equipment",
-  role: "input",
   rows: "many",
-  columns: [
-    column("row_number", { type: "int", index: true, key: true }),
+  outputs: [],
+  inputs: [
+    column("row_number", { type: "int", index: true }),
     column("item", { required: true }),
     column("value", { type: "float", min: 0, max: 1_000_000 }),
   ],
 }
 const policy: SchemaTable = {
   name: "policy",
-  role: "input",
   rows: "one",
-  columns: [column("state", { options: ["CA", "NY"], required: true }), column("years", { type: "int", min: 1, max: 200 })],
+  outputs: [],
+  inputs: [column("state", { options: ["CA", "NY"], required: true }), column("years", { type: "int", min: 1, max: 200 })],
 }
 const premiums: SchemaTable = {
   name: "premiums",
-  role: "output",
   rows: "many",
-  columns: [column("row_number", { type: "int", key: true }), column("premium", { type: "float", required: true })],
+  inputs: [],
+  outputs: [column("row_number", { type: "int", key: true }), column("premium", { type: "float", required: true })],
 }
 
 describe("filled rows", () => {
@@ -88,10 +88,10 @@ describe("a new quote", () => {
   // whose defaults a new quote never takes.
   const detailed: SchemaTable = {
     ...policy,
-    columns: [column("state", { options: ["CA", "NY"], default_value: "NY" }), column("years", { type: "int" }), column("vat", { type: "bool", default_value: true })],
+    inputs: [column("state", { options: ["CA", "NY"], default_value: "NY" }), column("years", { type: "int" }), column("vat", { type: "bool", default_value: true })],
   }
-  const listed: SchemaTable = { ...equipment, columns: equipment.columns.map((c) => (c.name === "item" ? { ...c, default_value: "Crane" } : c)) }
-  const priced: SchemaTable = { ...premiums, rows: "one", columns: [column("premium", { type: "float", default_value: "100" })] }
+  const listed: SchemaTable = { ...equipment, inputs: equipment.inputs.map((c) => (c.name === "item" ? { ...c, default_value: "Crane" } : c)) }
+  const priced: SchemaTable = { ...premiums, rows: "one", outputs: [column("premium", { type: "float", default_value: "100" })] }
   const schema = { tables: [detailed, listed, priced] }
 
   it("starts with each one-row input table's row holding its columns' defaults, and nothing else", () => {
@@ -118,16 +118,16 @@ describe("a row for each value", () => {
   // The cases the server's preset_rows holds itself to as well.
   type Case = {
     name: string
-    table: { role: SchemaTable["role"]; rows: SchemaTable["rows"]; columns: (Partial<SchemaColumn> & { name: string })[] }
+    table: { rows: SchemaTable["rows"]; inputs: (Partial<SchemaColumn> & { name: string })[]; outputs: (Partial<SchemaColumn> & { name: string })[] }
     rows: SampleRow[]
     read: SampleRow[]
   }
   const cases = presetCases.cases as unknown as Case[]
   const tableOf = ({ table }: Case): SchemaTable => ({
     name: "coverage",
-    role: table.role,
     rows: table.rows,
-    columns: table.columns.map(({ name, ...rest }) => column(name, rest)),
+    inputs: table.inputs.map(({ name, ...rest }) => column(name, rest)),
+    outputs: table.outputs.map(({ name, ...rest }) => column(name, rest)),
   })
 
   it.each(cases.map((one) => [one.name, one] as const))("%s", (_, one) => {
@@ -136,9 +136,9 @@ describe("a row for each value", () => {
 
   const coverage: SchemaTable = {
     name: "coverage",
-    role: "input",
     rows: "many",
-    columns: [column("peril", { options: ["AOP", "EQ"], row_per_value: true, key: true }), column("limit", { type: "float" })],
+    outputs: [],
+    inputs: [column("row_number", { type: "int", index: true }), column("peril", { options: ["AOP", "EQ"], row_per_value: true }), column("limit", { type: "float" })],
   }
 
   it("names the column giving a table its rows, the first that may", () => {
@@ -206,18 +206,18 @@ describe("typed text, as the server reads it", () => {
 describe("cellProblem", () => {
 
   it("requires a value, a number of the column's type within its range, and one of the allowed values", () => {
-    const value = equipment.columns[2]
-    expect(cellProblem(equipment.columns[1], "")).toBe("Required")
-    expect(cellProblem(equipment.columns[1], "  ")).toBe("Required")
+    const value = equipment.inputs[2]
+    expect(cellProblem(equipment.inputs[1], "")).toBe("Required")
+    expect(cellProblem(equipment.inputs[1], "  ")).toBe("Required")
     expect(cellProblem(value, "")).toBeNull()
     expect(cellProblem(value, "lots")).toBe("Not a number")
     expect(cellProblem(value, "-1")).toBe("At least 0")
     expect(cellProblem(value, "$1,000,001")).toBe("At most 1,000,000")
     expect(cellProblem(value, "$999,999")).toBeNull()
-    expect(cellProblem(policy.columns[1], "1.5")).toBe("Not a whole number")
-    expect(cellProblem(policy.columns[1], "2.0")).toBeNull()
-    expect(cellProblem(policy.columns[0], "TX")).toBe("Not one of the allowed values")
-    expect(cellProblem(policy.columns[0], "NY")).toBeNull()
+    expect(cellProblem(policy.inputs[1], "1.5")).toBe("Not a whole number")
+    expect(cellProblem(policy.inputs[1], "2.0")).toBeNull()
+    expect(cellProblem(policy.inputs[0], "TX")).toBe("Not one of the allowed values")
+    expect(cellProblem(policy.inputs[0], "NY")).toBeNull()
   })
 
   it("takes a Date as a real day written YYYY-MM-DD, as the server reads one", () => {
@@ -232,7 +232,7 @@ describe("cellProblem", () => {
 
   it("never faults a tick box or the index", () => {
     expect(cellProblem(column("c", { type: "bool", required: true }), undefined)).toBeNull()
-    expect(cellProblem(equipment.columns[0], "x")).toBeNull()
+    expect(cellProblem(equipment.inputs[0], "x")).toBeNull()
   })
 
   it("marks a value of another type left in a column since retyped, which the server refuses", () => {
@@ -292,23 +292,80 @@ describe("pricedRows", () => {
   ]
 
   it("lines a priced table's rows up with the grid's by key, skipping rows with nothing typed and rows no output matches", () => {
-    expect(pricedRows(equipment, grid, typed, output)).toEqual([
+    expect(pricedRows(equipment, ["row_number"], grid, typed, output)).toEqual([
       { row_number: 1, premium: 10 },
       undefined,
       { row_number: 3, premium: null },
       { row_number: 4, premium: 40 },
     ])
-    expect(pricedRows(equipment, grid, typed, output.slice(0, 1))).toEqual([undefined, undefined, undefined, { row_number: 4, premium: 40 }])
+    expect(pricedRows(equipment, ["row_number"], grid, typed, output.slice(0, 1))).toEqual([undefined, undefined, undefined, { row_number: 4, premium: 40 }])
   })
 
   it("matches on every key column, as the server typed it, and nothing without keys or typed rows", () => {
-    const keyedByItem: SchemaTable = { ...equipment, columns: [column("item", { key: true }), column("value", { type: "float", key: true })] }
     const byValue = [{ item: "Crane", value: 100, premium: 1 }, { item: "Crane", value: 200, premium: 2 }]
-    expect(pricedRows(keyedByItem, [{ item: "Crane", value: "$200" }], [{ item: "Crane", value: 200 }], byValue)).toEqual([{ item: "Crane", value: 200, premium: 2 }])
+    expect(pricedRows(equipment, ["item", "value"], [{ item: "Crane", value: "$200" }], [{ item: "Crane", value: 200 }], byValue)).toEqual([{ item: "Crane", value: 200, premium: 2 }])
     // A key the output row lacks, or holds null, matches nothing.
-    expect(pricedRows(keyedByItem, [{ item: "Crane", value: "1" }], [{ item: "Crane", value: 1 }], [{ item: "Crane", premium: 3 }, { item: "Crane", value: null, premium: 4 }])).toEqual([undefined])
-    expect(pricedRows({ ...equipment, columns: [column("item")] }, grid, typed, output)).toEqual([undefined, undefined, undefined, undefined])
-    expect(pricedRows(equipment, grid, [], output)).toEqual([undefined, undefined, undefined, undefined])
+    expect(pricedRows(equipment, ["item", "value"], [{ item: "Crane", value: "1" }], [{ item: "Crane", value: 1 }], [{ item: "Crane", premium: 3 }, { item: "Crane", value: null, premium: 4 }])).toEqual([undefined])
+    expect(pricedRows(equipment, [], grid, typed, output)).toEqual([undefined, undefined, undefined, undefined])
+    expect(pricedRows(equipment, ["row_number"], grid, [], output)).toEqual([undefined, undefined, undefined, undefined])
+  })
+})
+
+describe("a table of both blocks lined up by its key", () => {
+  // An equipment schedule's items and each item's premium: one table, keyed by its index.
+  const schedule: SchemaTable = { ...equipment, outputs: [column("premium", { type: "float" })] }
+  const form = (tables: SchemaTable[], sample: Record<string, SampleRow[]> = {}) => ({
+    version: 1 as const,
+    name: "lined",
+    theme: BLANK_THEME,
+    schema: { tables },
+    pages: [],
+    sample,
+  })
+
+  it("lines its own answer up by the key value of each typed row, whatever order the answer comes in", () => {
+    const grid: SampleRow[] = [{ item: "Crane" }, {}, { item: "Paver" }]
+    const price = {
+      sample: { equipment: [{ row_number: 1, item: "Crane" }, { row_number: 3, item: "Paver" }] },
+      tables: { equipment: [{ row_number: 3, premium: 30 }, { row_number: 1, premium: 10 }] },
+    }
+    const lined = linedUpOutputs([schedule], [schedule], { equipment: grid }, 3, price, { tables: [schedule] })
+    expect(lined.get("equipment")).toEqual([{ row_number: 1, premium: 10 }, undefined, { row_number: 3, premium: 30 }])
+    // A typed row the answer gives no row has no outputs.
+    const partial = linedUpOutputs([schedule], [schedule], { equipment: grid }, 3, { ...price, tables: { equipment: [{ row_number: 3, premium: 30 }] } }, { tables: [schedule] })
+    expect(partial.get("equipment")).toEqual([undefined, undefined, { row_number: 3, premium: 30 }])
+  })
+
+  it("lines a table keyed by its row for each value up by that value, a preset row holding its value alone and one typed lining up as the server's rows do", () => {
+    const perils: SchemaTable = {
+      name: "perils",
+      rows: "many",
+      inputs: [column("row_number", { type: "int", index: true }), column("peril", { options: ["AOP", "EQ", "NW"], row_per_value: true }), column("limit", { type: "float" })],
+      outputs: [column("rate", { type: "float" })],
+    }
+    // The grid shows the rows the column gives; the server sends each, its value alone included.
+    const grid = presetRows(perils, [{ peril: "EQ", limit: "5" }])
+    expect(grid).toEqual([{ peril: "AOP" }, { peril: "EQ", limit: "5" }, { peril: "NW" }])
+    const price = {
+      sample: { perils: [{ row_number: 1, peril: "AOP" }, { row_number: 2, peril: "EQ", limit: 5 }, { row_number: 3, peril: "NW" }] },
+      tables: { perils: [{ peril: "NW", rate: 0.3 }, { peril: "AOP", rate: 0.1 }, { peril: "EQ", rate: 0.2 }] },
+    }
+    const lined = linedUpOutputs([perils], [perils], { perils: grid }, 3, price, { tables: [perils] })
+    expect(lined.get("perils")).toEqual([{ peril: "AOP", rate: 0.1 }, { peril: "EQ", rate: 0.2 }, { peril: "NW", rate: 0.3 }])
+  })
+
+  it("keeps a hidden column giving a table its rows in the quoted schema, as it keys the table", () => {
+    const perils: SchemaTable = {
+      name: "perils",
+      rows: "many",
+      inputs: [column("row_number", { type: "int", index: true }), column("peril", { options: ["AOP", "EQ"], row_per_value: true }), column("limit", { type: "float" })],
+      outputs: [column("rate", { type: "float" })],
+    }
+    const quoted = quotedSchema({ tables: [perils] }, new Set([columnKey("perils", "peril"), columnKey("perils", "limit")]))
+    expect(quoted.tables[0].inputs.map((each) => each.name)).toEqual(["row_number", "peril"])
+    expect(presetColumn(quoted.tables[0])?.name).toBe("peril")
+    // The schema's basis, which a pricing is for, still holds the column.
+    expect(pricingBasis(form([perils]))).toContain("peril")
   })
 })
 
@@ -327,7 +384,7 @@ describe("reading through a quoted schema", () => {
 
   it("does not line up a grid row filled only in a hidden column", () => {
     const input = quoted.tables[1]
-    expect(pricedRows(input, [{ value: "100" }, { item: "Crane" }], [{ row_number: 2, item: "Crane" }], [{ row_number: 2, premium: 20 }])).toEqual([
+    expect(pricedRows(input, ["row_number"], [{ value: "100" }, { item: "Crane" }], [{ row_number: 2, item: "Crane" }], [{ row_number: 2, premium: 20 }])).toEqual([
       undefined,
       { row_number: 2, premium: 20 },
     ])

@@ -14,15 +14,19 @@ import useGraphStore from "../../stores/useGraphStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { makeNode } from "../../test-utils/factories"
 
-const port = (name: string) => ({ name, rows: "one" as const, columns: [{ name: "c", type: "int" as const }] })
+/** A table's side as a fetch gives it: its port is the table's name and its side. */
+const side = (which: "input" | "output") => (name: string) =>
+  ({ name, side: which, port: `${name}_${which}`, rows: "one" as const, columns: [{ name: "c", type: "int" as const }], key: null, null_key: null })
+const inputSide = side("input")
+const outputSide = side("output")
 const edge = (id: string, source: string, sourceHandle: string | null, target: string, targetHandle: string | null = null): Edge =>
   ({ id, source, sourceHandle, target, targetHandle })
 
 const input = makeNode("wb_in", "workbenchInput", { data: { label: "wb_in", nodeType: "workbenchInput", config: {} } })
 const priced = makeNode("priced")
 const output = makeNode("wb_out", "workbenchOutput", { data: { label: "wb_out", nodeType: "workbenchOutput", config: {} } })
-const policy = edge("e_policy", "wb_in", "policy", "priced")
-const account = edge("e_account", "wb_in", "account", "priced")
+const policy = edge("e_policy", "wb_in", "policy_input", "priced")
+const account = edge("e_account", "wb_in", "account_input", "priced")
 const filled = edge("e_filled", "priced", null, "wb_out", "pricing_output")
 
 describe("useWorkbenchConnections", () => {
@@ -32,11 +36,11 @@ describe("useWorkbenchConnections", () => {
   const commitEdges = (edges: Edge[]) => useGraphStore.getState().setEdgesRaw(edges)
   const edgeIds = () => useGraphStore.getState().edges.map((each) => each.id)
 
-  /** Publishes a fetch's tables, as the store does when one settles. */
-  const publish = (fetch: number, inputs: string[], outputs: string[] = ["pricing_output"]) =>
+  /** Publishes a fetch's tables, by name, as the store does when one settles: each input table's input side and each output table's output side. */
+  const publish = (fetch: number, inputs: string[], outputs: string[] = ["pricing"]) =>
     act(() =>
       useWorkbenchStore.setState({
-        tables: { tables: inputs.map(port), sample: {}, responseTables: outputs.map(port), fetch },
+        tables: { tables: inputs.map(inputSide), sample: {}, responseTables: outputs.map(outputSide), fetch },
       }))
   const adopt = (generation: number) => act(() => useDocumentStatusStore.setState({ executionGeneration: generation }))
   const show = (nodes: Node[], edges: Edge[]) =>
@@ -130,7 +134,7 @@ describe("useWorkbenchConnections", () => {
     // Another branch's document, whose form has a table the earlier one's had not; its
     // own fetch has not landed, or failed, so the tables are still the earlier form's.
     adopt(2)
-    show([input, priced], [edge("e_extra", "wb_in", "extra", "priced")])
+    show([input, priced], [edge("e_extra", "wb_in", "extra_input", "priced")])
     expect(edgeIds()).toEqual(["e_extra"])
     act(() => useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("later")]))
     expect(edgeIds()).toEqual(["e_extra"])
@@ -157,7 +161,7 @@ describe("useWorkbenchConnections", () => {
     act(() => {
       const fetch = useWorkbenchStore.getState().refreshTables()!
       useWorkbenchStore.setState({
-        tables: { tables: [port("account")], sample: {}, responseTables: [port("pricing_output")], fetch },
+        tables: { tables: [inputSide("account")], sample: {}, responseTables: [outputSide("pricing")], fetch },
       })
       expect(hook.result.current.holdConnections()).toBe(true)
       expect(graphRef.current.edges.map((each) => each.id)).toEqual(["e_account", "e_filled"])
@@ -173,7 +177,7 @@ describe("useWorkbenchConnections", () => {
       data: { label: "OUTPUT", nodeType: "submodelPort", portDirection: "output", ports: [] },
     })
     const throughBoundary: Edge = {
-      ...edge("e_boundary", "wb_in", "policy", "boundary_out"),
+      ...edge("e_boundary", "wb_in", "policy_input", "boundary_out"),
       data: { submodelBoundary: { direction: "output", parentConsumerEdges: [], name: "policy" } },
     }
     show([input, priced, outputCard], [policy, account, throughBoundary])

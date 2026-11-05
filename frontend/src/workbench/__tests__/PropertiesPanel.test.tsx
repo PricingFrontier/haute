@@ -37,10 +37,9 @@ function sectionOf(id: string): Section {
   return found.section
 }
 
-/** `sheetForm` with a row-number index on equipment and a Chart, w_chart, plotting `fields`. */
+/** `sheetForm`, its equipment numbered by its index, with a Chart, w_chart, plotting `fields`. */
 function chartForm(fields: FieldRef[]): FormSpec {
   const form = sheetForm()
-  form.schema.tables[1].columns.unshift(column("row", { type: "int", index: true }))
   addTo(form, chartWidget("w_chart", fields))
   return form
 }
@@ -603,7 +602,8 @@ describe("PropertiesPanel", () => {
     const rows = within(settings).getByRole("combobox", { name: "Label rows by" })
     expect(rows).toHaveValue("")
     expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment", "premiums"])
-    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value", "Item", "Premium"])
+    // premiums' row_number is its key, an output, not an index, so it can label the rows.
+    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value", "Row number", "Premium"])
     fireEvent.change(rows, { target: { value: JSON.stringify(["equipment", "item"]) } })
     expect(chart()).toMatchObject({ category: { table: "equipment", column: "item" } })
     expect(undoSteps()).toBe(1)
@@ -646,7 +646,7 @@ describe("PropertiesPanel", () => {
     const state = within(fields).getByRole("checkbox", { name: "Show policy state" })
     expect(state).toBeDisabled()
     expect(state.closest("label")).toHaveAttribute("title", cannotPlot)
-    const index = within(fields).getByRole("checkbox", { name: "Show equipment row" })
+    const index = within(fields).getByRole("checkbox", { name: "Show equipment row_number" })
     expect(index).toBeDisabled()
     expect(index.closest("label")).toHaveAttribute("title", cannotPlot)
     expect(within(fields).getByRole("checkbox", { name: "Show premiums premium" })).toBeEnabled()
@@ -670,7 +670,7 @@ describe("PropertiesPanel", () => {
 
     // A Table shows many-row tables: equipment and premiums, not policy.
     expect(within(fields).queryByTestId("fields-table-policy")).not.toBeInTheDocument()
-    expect(within(fields).getByText("2/2")).toBeInTheDocument()
+    expect(within(fields).getByText("2/3")).toBeInTheDocument()
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show premiums premium" }))
     expect(grid().fields.map((field) => field.column)).toEqual(["item", "value", "premium"])
     fireEvent.click(within(fields).getByRole("checkbox", { name: "Show equipment item" }))
@@ -681,7 +681,7 @@ describe("PropertiesPanel", () => {
   it("never offers the quote's reference and option among a component's fields", () => {
     const form = sheetForm()
     const [equipment] = form.schema.tables.filter((candidate) => candidate.name === "equipment")
-    equipment.columns.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
+    equipment.inputs.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -690,14 +690,15 @@ describe("PropertiesPanel", () => {
     expect(within(fields).queryByRole("checkbox", { name: "Show equipment quote_reference" })).toBeNull()
     expect(within(fields).queryByRole("checkbox", { name: "Show equipment quote_option" })).toBeNull()
     // Counted out of what can be shown, and not found by a search.
-    expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/2")).toBeInTheDocument()
+    expect(within(screen.getByTestId("fields-table-equipment")).getByText("2/3")).toBeInTheDocument()
     fireEvent.change(within(fields).getByRole("textbox", { name: "Search fields" }), { target: { value: "option" } })
     expect(within(fields).getByText("No fields match")).toBeInTheDocument()
   })
 
   it("greys out a table whose rows do not line up with the fields already chosen", () => {
     const form = sheetForm()
-    form.schema.tables.push(table("claims", { rows: "many", columns: [column("id", { key: true })] }))
+    // Outputs alone keyed by id: not by equipment's row_number, so out of line.
+    form.schema.tables.push(table("claims", { rows: "many", outputs: [column("id", { key: true })] }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -711,8 +712,8 @@ describe("PropertiesPanel", () => {
 
   it("searches the fields as the schema is searched: only the columns matching, by name, label or readable name, each table open, kept as the panes change", () => {
     const form = sheetForm()
-    form.schema.tables[1].columns.push(column("sum_insured", { type: "float", label: "" }))
-    form.schema.tables[2].columns[1].label = "Annual cost"
+    form.schema.tables[1].inputs.push(column("sum_insured", { type: "float", label: "" }))
+    form.schema.tables[2].outputs[1].label = "Annual cost"
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -722,9 +723,9 @@ describe("PropertiesPanel", () => {
     fireEvent.click(within(fields).getByRole("button", { name: "Collapse equipment" }))
     expect(within(fields).queryByRole("checkbox", { name: "Show equipment item" })).not.toBeInTheDocument()
 
-    // A name, whatever its case: both tables hold an item, the collapsed one shown open.
-    fireEvent.change(search, { target: { value: "ITEM" } })
-    expect(checkboxes()).toEqual(["Show equipment item", "Show premiums item"])
+    // A name, whatever its case: both tables hold a row_number, the collapsed one shown open.
+    fireEvent.change(search, { target: { value: "ROW_NUMBER" } })
+    expect(checkboxes()).toEqual(["Show equipment row_number", "Show premiums row_number"])
     const toggle = within(screen.getByTestId("fields-table-equipment")).getByRole("button", { name: "Collapse equipment" })
     expect(toggle).toBeDisabled()
     expect(toggle).toHaveAttribute("aria-expanded", "true")
@@ -750,7 +751,7 @@ describe("PropertiesPanel", () => {
     fireEvent.keyDown(again, { key: "Escape" })
     expect(again).toHaveValue("")
     expect(within(screen.getByRole("region", { name: "Fields" })).getByRole("button", { name: "Expand equipment" })).toBeEnabled()
-    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show premiums item", "Show premiums premium"])
+    expect(within(screen.getByRole("region", { name: "Fields" })).queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"))).toEqual(["Show premiums row_number", "Show premiums premium"])
   })
 
   it("orders the fields: Alt+Down moves one, and a cross stops showing it", () => {

@@ -23,6 +23,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import { tableColumns } from "../utils/quoteIdentity"
 import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, schemaProblems } from "../utils/workbenchForm"
 import { columnMatches } from "./schema/schemaText"
 import { TableBlock } from "./schema/TableBlock"
@@ -62,7 +63,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   const filtering = query !== ""
   // While searched, the columns of a table the search matches, by name; null while it is not.
   const matched = (table: SchemaTable): ReadonlySet<string> | null =>
-    filtering ? new Set(table.columns.filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
+    filtering ? new Set(tableColumns(table).filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
   const shownTables = tables.map((table, index) => ({ table, index, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const addTable = () => {

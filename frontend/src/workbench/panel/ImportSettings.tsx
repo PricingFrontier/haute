@@ -3,6 +3,7 @@ import { X } from "lucide-react"
 import type { FormSpec, ImportWidget, SchemaColumn, SchemaTable, SqlImport } from "../../api/types"
 import { CommittedTextArea, CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { hasInputs, tableColumns } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
 import {
   bindParameter,
@@ -48,7 +49,7 @@ const REMOVE_CLASS = "icon-danger-btn focus-ring shrink-0 rounded p-0.5"
 export function ImportSettings({ form, widget }: { form: FormSpec; widget: ImportWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const { source } = widget
-  const inputs = form.schema.tables.filter((table) => table.role === "input")
+  const inputs = form.schema.tables.filter(hasInputs)
   const table = form.schema.tables.find((candidate) => candidate.name === widget.table)
   const offered = inputs.some((candidate) => candidate.name === widget.table)
   return (
@@ -111,7 +112,7 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
           ))}
         </select>
       </Section>
-      {table?.role === "input" && table.rows === "many" && (
+      {table !== undefined && hasInputs(table) && table.rows === "many" && (
         <Section title="Rows">
           <select
             aria-label="Rows"
@@ -128,7 +129,7 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
           </select>
         </Section>
       )}
-      {table?.role === "input" && <ColumnNames widget={widget} table={table} />}
+      {table !== undefined && hasInputs(table) && <ColumnNames widget={widget} table={table} />}
     </ButtonPanes>
   )
 }
@@ -270,7 +271,7 @@ function ColumnNames({ widget, table }: { widget: ImportWidget; table: SchemaTab
         )
       })}
       {strays.map((named) => {
-        const column = table.columns.find((candidate) => candidate.name === named.column)
+        const column = tableColumns(table).find((candidate) => candidate.name === named.column)
         const label = column === undefined ? "Missing column" : columnLabel(column)
         return (
           <div key={named.column} className="flex items-center gap-1.5">

@@ -7,6 +7,7 @@ import { fetchParamFile } from "../../api/workbench"
 import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
 import { useParamsFiles } from "../../hooks/useParamsFiles"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { tableColumns } from "../../utils/quoteIdentity"
 import { latest } from "../../utils/latest"
 import { IconButton } from "./IconButton"
 
@@ -44,11 +45,10 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
 
   // The column as the form holds it now, which an undo, a redo or a sync may have changed
   // while a read was under way.
-  const columnNow = () =>
-    useWorkbenchFormStore
-      .getState()
-      .form?.schema.tables.find((other) => other.name === tableId)
-      ?.columns.find((other) => other.name === column.name)
+  const columnNow = () => {
+    const table = useWorkbenchFormStore.getState().form?.schema.tables.find((other) => other.name === tableId)
+    return table === undefined ? undefined : tableColumns(table).find((other) => other.name === column.name)
+  }
   const sourceNow = () => JSON.stringify(columnNow()?.options_source ?? null)
   const readValues = (from: string, name: string, then: (values: string[]) => void) => {
     const ticket = reads.take()

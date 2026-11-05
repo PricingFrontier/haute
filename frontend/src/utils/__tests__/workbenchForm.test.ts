@@ -115,11 +115,14 @@ import {
   withCell,
   withSampleCell,
   withSampleRows,
+  tablePorts,
+  withIndexAsNeeded,
   type FieldsWidget,
   type Widget,
 } from "../workbenchForm"
 import { identityCount, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED } from "../quoteIdentity"
 import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
+import { keyTable } from "../workbenchTables"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
 const section = (id: string, title: string, height: number, widgets: Widget[] = [], showWhen: ShowWhen = { match: "all", conditions: [] }): Section => ({
@@ -167,18 +170,24 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
 
 const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
   name,
-  role: "input",
   rows: "one",
-  columns: [],
+  outputs: [],
+  inputs: [],
   ...overrides,
 })
 
 /** A blank form with one schema table, `t`, holding the given columns. */
 const withTable = (...columns: SchemaColumn[]): FormSpec =>
-  addSchemaTable(blank(), table("t", { columns }))
+  addSchemaTable(blank(), table("t", { inputs: columns }))
 
 const messages = (spec: FormSpec, reserved: ReadonlySet<string> = new Set()) =>
   schemaProblems(spec, reserved).map((problem) => problem.message)
+
+/** `spec` with each table's columns but its index moved to its outputs, where an input's rules and default count for nothing. */
+const asOutputs = (spec: FormSpec): FormSpec => ({
+  ...spec,
+  schema: { tables: spec.schema.tables.map((each) => ({ ...each, inputs: [], outputs: each.inputs.filter((c) => !c.index) })) },
+})
 
 describe("Haute's own table", () => {
   it("names each of its columns by the column's name, so a name it no longer has does not compile", () => {
@@ -202,60 +211,69 @@ describe("names", () => {
     const first = createSchemaTable(spec)
     spec = addSchemaTable(spec, first)
     spec = addSchemaTable(spec, createSchemaTable(spec))
-    spec = addSchemaColumn(spec, first.name, createSchemaColumn(spec, first.name))
-    spec = addSchemaColumn(spec, first.name, createSchemaColumn(spec, first.name))
+    spec = addSchemaColumn(spec, first.name, "inputs", createSchemaColumn(spec, first.name, "inputs"))
+    spec = addSchemaColumn(spec, first.name, "outputs", createSchemaColumn(spec, first.name, "outputs"))
 
     expect(spec.schema.tables.map((t) => t.name)).toEqual(["table", "table_2"])
-    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.type, c.index, c.group, c.default_value])).toEqual([
+    expect(spec.schema.tables[0].inputs.map((c) => [c.name, c.type, c.index, c.group, c.default_value])).toEqual([
       ["quote_reference", "str", false, "", ""],
       ["quote_option", "int", false, "", ""],
       ["column", "str", false, "", ""],
-      ["column_2", "str", false, "", ""],
     ])
-    expect(spec.schema.tables[1].columns.map((c) => c.name)).toEqual(["quote_reference", "quote_option"])
+    // Named apart from every column of its table, whichever block holds it.
+    expect(spec.schema.tables[0].outputs.map((c) => c.name)).toEqual(["column_2"])
+    // A table added holds the identity under its inputs and no column of its own.
+    expect(spec.schema.tables[1]).toEqual({ name: "table_2", rows: "one", inputs: [column("quote_reference"), column("quote_option", { type: "int" })], outputs: [] })
     // A table and a column are known by their names: neither is given an id.
-    expect(spec.schema.tables.some((t) => "id" in t || t.columns.some((c) => "id" in c))).toBe(false)
+    expect(spec.schema.tables.some((t) => "id" in t || [...t.inputs, ...t.outputs].some((c) => "id" in c))).toBe(false)
     expect(messages(spec)).toEqual([])
   })
 
   it("names a table or a column apart from the others whatever their case", () => {
     expect(uniqueName("table", ["Table"])).toBe("table_2")
     expect(uniqueName("column", ["column", "COLUMN_2"])).toBe("column_3")
-    const spec = addSchemaTable(blank(), table("Table", { columns: [column("Column")] }))
+    const spec = addSchemaTable(blank(), table("Table", { inputs: [column("Column")] }))
     expect(createSchemaTable(spec).name).toBe("table_2")
-    expect(createSchemaColumn(spec, "Table").name).toBe("column_2")
+    expect(createSchemaColumn(spec, "Table", "outputs").name).toBe("column_2")
   })
 
-  it("gives a new column the type of the column above it, Text first, under the quote's identity or under the index", () => {
+  it("gives a new column the type of the column above it in its block, Text first, under the quote's identity or under the index", () => {
     let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
     // Under the quote's option, an Integer, it is Text.
-    expect(createSchemaColumn(spec, "t").type).toBe("str")
-    expect(createSchemaColumn(spec, "t", 0).type).toBe("str")
-    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 2)
-    expect(createSchemaColumn(spec, "t").type).toBe("str")
+    expect(createSchemaColumn(spec, "t", "inputs").type).toBe("str")
+    expect(createSchemaColumn(spec, "t", "inputs", 0).type).toBe("str")
 
-    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), name: "a", type: "float", min: 0, number_format: "percent" })
-    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), name: "b", type: "date" })
+    // A many-row table's first input brings its index, after the identity.
+    spec = addSchemaColumn(spec, "t", "inputs", { ...createSchemaColumn(spec, "t", "inputs"), name: "a", type: "float", min: 0, number_format: "percent" })
+    expect(spec.schema.tables[0].inputs.map((c) => c.name)).toEqual(["quote_reference", "quote_option", "row_number", "a"])
+    expect(createSchemaColumn(spec, "t", "inputs", 3).type).toBe("str")
+    spec = addSchemaColumn(spec, "t", "inputs", { ...createSchemaColumn(spec, "t", "inputs"), name: "b", type: "date" })
     // At the end by default, or under the column at the place before the one given; the type alone, none of its rules or format.
-    expect(createSchemaColumn(spec, "t")).toMatchObject({ type: "date" })
-    expect(createSchemaColumn(spec, "t", 4)).toMatchObject({ type: "float", min: null, number_format: "general" })
-    expect(createSchemaColumn(spec, "t", 3).type).toBe("str")
+    expect(createSchemaColumn(spec, "t", "inputs")).toMatchObject({ type: "date" })
+    expect(createSchemaColumn(spec, "t", "inputs", 4)).toMatchObject({ type: "float", min: null, number_format: "general" })
+    // The other block takes Text first, whatever the inputs hold.
+    expect(createSchemaColumn(spec, "t", "outputs").type).toBe("str")
   })
 })
 
 describe("problems", () => {
-  it("holds a table's name to the port rules, with the document's reserved labels", () => {
-    let spec = addSchemaTable(blank(), table("sum insured"))
-    spec = addSchemaTable(spec, table("class"))
+  it("holds a table's name to an identifier, unique whatever its case, and its ports to the port rules, with the document's reserved labels", () => {
+    let spec = addSchemaTable(blank(), table("sum insured", { inputs: [column("limit")] }))
+    spec = addSchemaTable(spec, table("cover", { inputs: [column("limit")], outputs: [column("rate")] }))
     spec = addSchemaTable(spec, table("Policy"))
     spec = addSchemaTable(spec, table("policy"))
 
-    expect(messages(spec, new Set(["class"]))).toEqual([
+    expect(messages(spec, new Set(["cover_input", "cover_output"]))).toEqual([
       'Table "sum insured": A frame label must be an ASCII identifier (letters, digits, and underscores only).',
-      'Table "class": A frame label cannot be a Python hard keyword or a name node code binds itself (such as pl or pipeline).',
+      'Table "cover"\'s port cover_input: A frame label cannot be a Python hard keyword or a name node code binds itself (such as pl or pipeline).',
+      'Table "cover"\'s port cover_output: A frame label cannot be a Python hard keyword or a name node code binds itself (such as pl or pipeline).',
       'Table "Policy": Label collides with "policy": both become "Policy" on disk (case-insensitive - macOS/Windows treat case-variant filenames as one file).',
       'Table "policy": Label collides with "Policy": both become "policy" on disk (case-insensitive - macOS/Windows treat case-variant filenames as one file).',
     ])
+    // A table's name is no port: a reserved label names a table, whose ports are its name with _input and _output.
+    expect(messages(addSchemaTable(blank(), table("pl", { inputs: [column("limit")] })), new Set(["pl"]))).toEqual([])
+    expect(tablePorts(spec.schema.tables[1])).toEqual(["cover_input", "cover_output"])
+    expect(tablePorts(spec.schema.tables[2])).toEqual([])
   })
 
   it("catches invalid, keyword and repeated column names, as the server refuses them", () => {
@@ -273,7 +291,7 @@ describe("problems", () => {
     spec = addSchemaTable(spec, table("haute_extras"))
     spec = addSchemaTable(spec, table("sqlite_cache"))
     spec = addSchemaTable(spec, table(`l${"x".repeat(63)}`))
-    spec = addSchemaTable(spec, table("items", { rows: "many", columns: [column("item", { key: true }), column("quote_row", { type: "int" })] }))
+    spec = addSchemaTable(spec, table("items", { rows: "many", inputs: [column("row_number", { type: "int", index: true }), column("item"), column("quote_row", { type: "int" })] }))
 
     expect(messages(spec)).toEqual([
       'Column "Limit" in Table "t" differs from "limit" only in case, so a database cannot hold both',
@@ -285,7 +303,7 @@ describe("problems", () => {
       'Column "quote_row" in Table "items" is the quote store\'s number for each row of a many-row table',
     ])
     // Haute's own quote_details.haute_version, and quote_row in a one-row table, are no problem.
-    expect(messages(addSchemaTable(blank(), table("policy", { columns: [column("quote_row", { type: "int" })] })))).toEqual([])
+    expect(messages(addSchemaTable(blank(), table("policy", { inputs: [column("quote_row", { type: "int" })] })))).toEqual([])
   })
 
   it("names a table's own column taking the quote's quote_reference or quote_option as the server does, never a missing identity", () => {
@@ -300,10 +318,13 @@ describe("problems", () => {
     // At its head but changed, they are its own still; exactly as Haute makes them, they are the identity.
     expect(messages(withTable(column("quote_reference", { label: "Reference" }), column("quote_option", { type: "int" }), column("limit")))).toEqual(clashes)
     expect(messages(withTable(column("quote_reference"), column("quote_option", { type: "int" }), column("limit")))).toEqual([])
-    // A table leading with the identity: a second column of either name repeats it.
+    // A column of either name given a table leading with the identity takes it away, as the server reads the form.
     let held = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "u" })
-    held = addSchemaColumn(held, "u", column("quote_option"))
-    expect(messages(held)).toEqual(['Column "quote_option" in Table "u" repeats the name quote_option'])
+    held = addSchemaColumn(held, "u", "outputs", column("quote_option", { type: "int" }))
+    expect(held.schema.tables[0]).toMatchObject({ inputs: [], outputs: [{ name: "quote_option" }] })
+    expect(messages(held)).toEqual([
+      "u.quote_option has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save",
+    ])
     // A table without it and without such a column is no problem.
     expect(messages(withTable(column("limit")))).toEqual([])
   })
@@ -317,47 +338,55 @@ describe("problems", () => {
     ])
   })
 
-  it("needs a key in a many-row table, and drops keys and the index when a table goes back to one row", () => {
+  it("gives a many-row input table its index, keyed by it, and drops the index and keys when a table goes back to one row", () => {
     let spec = setSchemaTableRows(withTable(column("item", { default_value: "Laptop" }), column("value", { group: "Cover" })), "t", "many")
-    expect(messages(spec)).toEqual(['Table "t" has many rows, so it needs a key column'])
+    // Its key is its index, which no one types, so it needs none marked; the edit gives it the quote's identity too.
+    expect(messages(spec)).toEqual([])
+    expect(spec.schema.tables[0].inputs.map((c) => c.name)).toEqual(["quote_reference", "quote_option", "row_number", "item", "value"])
+    expect(keyTable(spec.schema.tables[0]).map((c) => c.name)).toEqual(["row_number"])
     // A many-row table's columns take no default; a group stays.
-    expect(spec.schema.tables[0].columns.map((c) => [c.default_value, c.group])).toEqual([
+    expect(spec.schema.tables[0].inputs.slice(2).map((c) => [c.default_value, c.group])).toEqual([
+      ["", ""],
       ["", ""],
       ["", "Cover"],
     ])
 
-    spec = updateSchemaColumn(spec, "t", "item", { key: true })
-    expect(messages(spec)).toEqual([])
-    const index = createIndexColumn(spec, "t")
-    spec = addSchemaColumn(spec, "t", index, 0)
     spec = withSampleCell(spec, "t", 0, "item", "x")
-    spec = addWidget(spec, "s", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }, spec), fields: [{ table: "t", column: index.name }] })
+    spec = addWidget(spec, "s", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }, spec), fields: [{ table: "t", column: "row_number" }] })
 
     spec = setSchemaTableRows(spec, "t", "one")
-    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.key])).toEqual([["item", false], ["value", false]])
+    // The index goes with what shows it.
+    expect(spec.schema.tables[0].inputs.map((c) => c.name)).toEqual(["quote_reference", "quote_option", "item", "value"])
     expect(widgetsOf(spec)[0]).toMatchObject({ fields: [] })
     expect(spec.sample).toEqual({ t: [{ item: "x" }] })
   })
 
-  it("drops a table's sample rows when it is made an output, which only typing fills", () => {
-    let spec = addSchemaTable(withTable(column("value")), table("u", { columns: [column("other")] }))
-    spec = withSampleCell(spec, "t", 0, "value", "x")
-    spec = withSampleCell(spec, "u", 0, "other", "y")
+  it("needs a key in a many-row table of outputs alone, and clears the keys as it gains an input or goes to one row", () => {
+    let spec = addSchemaTable(blank(), table("breakdown", { rows: "many", outputs: [column("peril"), column("share", { type: "float" })] }))
+    expect(messages(spec)).toEqual(['Table "breakdown" has many rows of outputs alone, so it needs a key column'])
+    spec = updateSchemaColumn(spec, "breakdown", "peril", { key: true })
+    expect(messages(spec)).toEqual([])
+    expect(keyTable(spec.schema.tables[0]).map((c) => c.name)).toEqual(["peril"])
 
-    const output = updateSchemaTable(spec, "t", { role: "output" })
-
-    // The form folder writes no sample for an output table, so a save would refuse them.
-    expect(output.sample).toEqual({ u: [{ other: "y" }] })
-    // An edit as any other: the form before it, which undo goes back to, keeps them.
-    expect(spec.sample).toEqual({ t: [{ value: "x" }], u: [{ other: "y" }] })
-  })
-
-  it("keeps whether a column is required when its table is made an output, which marking a quote final checks there too", () => {
-    const spec = withTable(column("value", { type: "float", required: true, min: 1, default_value: "2" }))
-
-    const output = updateSchemaTable(spec, "t", { role: "output" })
-
-    expect(output.schema.tables[0].columns[0]).toMatchObject({ required: true, min: null, default_value: "" })
+    // Its first input makes it an input table: keyed by its index from then on, its outputs lose their keys.
+    const typed = addSchemaColumn(spec, "breakdown", "inputs", column("item"))
+    expect(typed.schema.tables[0].inputs.map((c) => [c.name, c.index])).toEqual([
+      ["quote_reference", false],
+      ["quote_option", false],
+      ["row_number", true],
+      ["item", false],
+    ])
+    expect(typed.schema.tables[0].outputs.map((c) => c.key)).toEqual([false, false])
+    // No key is typed into a table with inputs: neither an input nor an output of it takes one.
+    expect(updateSchemaColumn(typed, "breakdown", "item", { key: true })).toBe(typed)
+    expect(updateSchemaColumn(typed, "breakdown", "peril", { key: true })).toBe(typed)
+    // One row: the keys go, and the identity heads its outputs, its first block.
+    expect(setSchemaTableRows(spec, "breakdown", "one").schema.tables[0].outputs.map((c) => [c.name, c.key])).toEqual([
+      ["quote_reference", false],
+      ["quote_option", false],
+      ["peril", false],
+      ["share", false],
+    ])
   })
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {
@@ -377,7 +406,7 @@ describe("problems", () => {
     // Between Decimal and Integer, a number keeps its range, its allowed values, the file
     // they came from, and its format.
     spec = changeSchemaColumnType(spec, "t", "value", "int")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({
+    expect(spec.schema.tables[0].inputs[0]).toMatchObject({
       type: "int",
       min: 1,
       max: 5,
@@ -388,7 +417,7 @@ describe("problems", () => {
       use_grouping: false,
     })
     spec = changeSchemaColumnType(spec, "t", "value", "str")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({
+    expect(spec.schema.tables[0].inputs[0]).toMatchObject({
       type: "str",
       min: null,
       max: null,
@@ -398,28 +427,28 @@ describe("problems", () => {
       use_grouping: true,
     })
     spec = changeSchemaColumnType(spec, "t", "value", "date")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [], options_source: null })
+    expect(spec.schema.tables[0].inputs[0]).toMatchObject({ type: "date", options: [], options_source: null })
     spec = changeSchemaColumnType(spec, "t", "value", "int")
-    expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
+    expect(spec.schema.tables[0].inputs[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
 
     // A default is text, kept between the types that take text, or a tick, kept while a
     // tick box stays one.
     spec = updateSchemaColumn(spec, "t", "value", { default_value: "5" })
     spec = changeSchemaColumnType(spec, "t", "value", "str")
-    expect(spec.schema.tables[0].columns[0].default_value).toBe("5")
+    expect(spec.schema.tables[0].inputs[0].default_value).toBe("5")
     spec = changeSchemaColumnType(spec, "t", "value", "bool")
-    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    expect(spec.schema.tables[0].inputs[0].default_value).toBe("")
     spec = updateSchemaColumn(spec, "t", "value", { default_value: true })
     spec = changeSchemaColumnType(spec, "t", "value", "date")
-    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    expect(spec.schema.tables[0].inputs[0].default_value).toBe("")
     // A date's box shows a day alone: text that is not one goes as the column becomes a
     // Date, and a day stays.
     spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "value", "str"), "t", "value", { default_value: "not-a-date" })
     spec = changeSchemaColumnType(spec, "t", "value", "date")
-    expect(spec.schema.tables[0].columns[0].default_value).toBe("")
+    expect(spec.schema.tables[0].inputs[0].default_value).toBe("")
     spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "value", "str"), "t", "value", { default_value: "2026-01-01" })
     spec = changeSchemaColumnType(spec, "t", "value", "date")
-    expect(spec.schema.tables[0].columns[0].default_value).toBe("2026-01-01")
+    expect(spec.schema.tables[0].inputs[0].default_value).toBe("2026-01-01")
   })
 
   it("checks an input column's rules, which an output table ignores", () => {
@@ -438,7 +467,8 @@ describe("problems", () => {
       `Column "deductible" in Table "t" allows "lots", which isn't a number`,
       'Column "state" in Table "t" has allowed values typed in, not read from a params file',
     ])
-    expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
+    // Outputs take no rules but Required: the same columns among a table's outputs are no problem.
+    expect(messages(asOutputs(spec))).toEqual([])
   })
 
   it("reads a number column's allowed values as its cells and the server read them", () => {
@@ -477,51 +507,101 @@ describe("problems", () => {
       'Column "name" in Table "t" has a default its rules refuse: Not text',
       'Column "inception" in Table "t" has a default its rules refuse: Not a date',
     ])
-    // An output table takes no default to check, as it takes no rules.
-    expect(messages(updateSchemaTable(spec, "t", { role: "output" }))).toEqual([])
+    // An output takes no default to check, as it takes no rules.
+    expect(messages(asOutputs(spec))).toEqual([])
   })
 })
 
 describe("columns", () => {
-  it("inserts and moves columns", () => {
-    let spec = withTable(column("a"), column("b"), column("c"))
-    const names = () => spec.schema.tables[0].columns.map((c) => c.name)
+  it("inserts and moves columns within a block", () => {
+    let spec = withTable(...createSchemaTable(blank()).inputs, column("a"), column("b"), column("c"))
+    const names = () => spec.schema.tables[0].inputs.slice(2).map((c) => c.name)
 
-    spec = addSchemaColumn(spec, "t", column("x"), 1)
+    spec = addSchemaColumn(spec, "t", "inputs", column("x"), 3)
     expect(names()).toEqual(["a", "x", "b", "c"])
-    spec = moveSchemaColumn(spec, "t", "a", 3)
+    spec = moveSchemaColumn(spec, "t", "a", "inputs", 5)
     expect(names()).toEqual(["x", "b", "c", "a"])
 
-    // The index stays first: it is not moved, and nothing is moved above it.
+    // A many-row table's index stays first after the identity: it is not moved, and nothing is moved above it.
     spec = setSchemaTableRows(spec, "t", "many")
-    spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 0)
-    expect(moveSchemaColumn(spec, "t", spec.schema.tables[0].columns[0].name, 2)).toBe(spec)
-    expect(moveSchemaColumn(spec, "t", "b", 0)).toBe(spec)
-    spec = moveSchemaColumn(spec, "t", "b", 1)
+    expect(names()).toEqual(["row_number", "x", "b", "c", "a"])
+    expect(moveSchemaColumn(spec, "t", "row_number", "inputs", 4)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "b", "inputs", 2)).toBe(spec)
+    spec = moveSchemaColumn(spec, "t", "b", "inputs", 3)
     expect(names()).toEqual(["row_number", "b", "x", "c", "a"])
   })
 
   it("keeps the quote's identity first and locked, the index after it", () => {
     let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
-    spec = addSchemaColumn(spec, "t", column("a"))
-    spec = addSchemaColumn(spec, "t", column("b"))
-    const names = () => spec.schema.tables[0].columns.map((c) => c.name)
+    spec = addSchemaColumn(spec, "t", "inputs", column("a"))
+    spec = addSchemaColumn(spec, "t", "inputs", column("b"))
+    const names = () => spec.schema.tables[0].inputs.map((c) => c.name)
 
-    // Nothing moves, retypes, renames, marks or removes it, and nothing goes above it.
-    expect(moveSchemaColumn(spec, "t", "quote_option", 3)).toBe(spec)
-    expect(moveSchemaColumn(spec, "t", "a", 0)).toBe(spec)
-    expect(moveSchemaColumn(spec, "t", "b", 1)).toBe(spec)
+    // The index came with the first input, after the identity.
+    expect(names()).toEqual(["quote_reference", "quote_option", "row_number", "a", "b"])
+    expect(identityCount(spec.schema.tables[0])).toBe(2)
+    // Nothing moves, retypes, renames, marks or removes the identity, and nothing goes above it or the index.
+    expect(moveSchemaColumn(spec, "t", "quote_option", "inputs", 3)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "quote_option", "outputs", 0)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "a", "inputs", 0)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "b", "inputs", 2)).toBe(spec)
     expect(changeSchemaColumnType(spec, "t", "quote_option", "float")).toBe(spec)
     expect(updateSchemaColumn(spec, "t", "quote_reference", { name: "ref", label: "Ref", key: true })).toBe(spec)
     expect(removeSchemaColumn(spec, "t", "quote_reference")).toBe(spec)
-    // The index goes after it, and stays there.
-    const index = createIndexColumn(spec, "t")
-    spec = addSchemaColumn(spec, "t", index, identityCount(spec.schema.tables[0]))
-    expect(names()).toEqual(["quote_reference", "quote_option", index.name, "a", "b"])
-    expect(moveSchemaColumn(spec, "t", "b", 2)).toBe(spec)
-    expect(moveSchemaColumn(spec, "t", index.name, 4)).toBe(spec)
-    spec = moveSchemaColumn(spec, "t", "b", 3)
-    expect(names()).toEqual(["quote_reference", "quote_option", index.name, "b", "a"])
+    // The index never moves, nor leaves the inputs.
+    expect(moveSchemaColumn(spec, "t", "row_number", "inputs", 4)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", "row_number", "outputs", 0)).toBe(spec)
+    spec = moveSchemaColumn(spec, "t", "b", "inputs", 3)
+    expect(names()).toEqual(["quote_reference", "quote_option", "row_number", "b", "a"])
+  })
+
+  it("moves a column to the other block: to the outputs losing what only an input takes and its sample values, to the inputs its key", () => {
+    const values = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } }
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
+    spec = addSchemaColumn(spec, "t", "inputs", column("peril", { ...values, row_per_value: true }))
+    spec = addSchemaColumn(spec, "t", "inputs", column("limit", { type: "float", required: true, min: 1, max: 9 }))
+    spec = addSchemaColumn(spec, "t", "outputs", column("premium", { type: "float" }))
+    spec = withSampleCell(spec, "t", 0, "limit", "5")
+    const blocks = () => [spec.schema.tables[0].inputs.map((c) => c.name), spec.schema.tables[0].outputs.map((c) => c.name)]
+
+    spec = moveSchemaColumn(spec, "t", "limit", "outputs", 0)
+    expect(blocks()).toEqual([["quote_reference", "quote_option", "row_number", "peril"], ["limit", "premium"]])
+    // Required stays, which marking a quote final checks in an output too.
+    expect(spec.schema.tables[0].outputs[0]).toMatchObject({ required: true, min: null, max: null, default_value: "" })
+    expect(spec.sample).toEqual({ t: [{}] })
+    spec = moveSchemaColumn(spec, "t", "peril", "outputs", 2)
+    expect(spec.schema.tables[0].outputs.find((c) => c.name === "peril")).toMatchObject({ options: [], options_source: null, row_per_value: false })
+
+    // The last typed input gone to the outputs: no index, no input side, the identity heading the outputs, its keys offered.
+    expect(blocks()).toEqual([[], ["quote_reference", "quote_option", "limit", "premium", "peril"]])
+    expect(tablePorts(spec.schema.tables[0])).toEqual(["t_output"])
+    expect(messages(spec)).toEqual(['Table "t" has many rows of outputs alone, so it needs a key column'])
+    spec = updateSchemaColumn(spec, "t", "peril", { key: true })
+    expect(messages(spec)).toEqual([])
+
+    // Back to the inputs it loses its key, the table its outputs' keys, and the index and identity come back to the inputs' head.
+    spec = moveSchemaColumn(spec, "t", "peril", "inputs", 0)
+    expect(blocks()).toEqual([["quote_reference", "quote_option", "row_number", "peril"], ["limit", "premium"]])
+    expect([...spec.schema.tables[0].inputs, ...spec.schema.tables[0].outputs].some((c) => c.key)).toBe(false)
+    // A place past the end of the block it goes to is none.
+    expect(moveSchemaColumn(spec, "t", "limit", "inputs", 9)).toBe(spec)
+  })
+
+  it("gives the index and takes it, as a table gains its first input, loses its last or changes rows", () => {
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t" })
+    spec = addSchemaColumn(spec, "t", "inputs", column("item"))
+    const names = () => spec.schema.tables[0].inputs.map((c) => c.name)
+    expect(names()).toEqual(["quote_reference", "quote_option", "item"])
+    spec = setSchemaTableRows(spec, "t", "many")
+    expect(names()).toEqual(["quote_reference", "quote_option", "row_number", "item"])
+    spec = removeSchemaColumn(spec, "t", "item")
+    expect(names()).toEqual(["quote_reference", "quote_option"])
+    // A table of no column of its own takes none; its outputs alone take none either.
+    spec = addSchemaColumn(spec, "t", "outputs", column("premium"))
+    expect(spec.schema.tables[0]).toMatchObject({ inputs: [], outputs: [{ name: "quote_reference" }, { name: "quote_option" }, { name: "premium" }] })
+    // The operation on its own, as the editor's edits end with it.
+    const bare = { ...spec, schema: { tables: [{ ...spec.schema.tables[0], inputs: [column("item")], outputs: [] }] } }
+    expect(withIndexAsNeeded(bare, "t").schema.tables[0].inputs.map((c) => c.name)).toEqual(["row_number", "item"])
   })
 
   it("moves a table, Haute's quote_details table staying first", () => {
@@ -541,37 +621,34 @@ describe("columns", () => {
     expect(names()).toEqual(["quote_details", "a", "b", "c"])
   })
 
-  it("gives a table an index column, an Integer named row_number, that can be its key", () => {
-    let spec = setSchemaTableRows(withTable(column("item", { key: true })), "t", "many")
-    const index = createIndexColumn(spec, "t")
-
+  it("makes an index an Integer named row_number, named apart from the table's other columns", () => {
+    const index = createIndexColumn(withTable(column("item")), "t")
     expect([index.name, index.type, index.index]).toEqual(["row_number", "int", true])
-    spec = addSchemaColumn(spec, "t", index, 0)
-    spec = updateSchemaColumn(spec, "t", "item", { key: false })
-    expect(messages(spec)).toContain('Table "t" has many rows, so it needs a key column')
-    spec = updateSchemaColumn(spec, "t", index.name, { key: true })
-    expect(messages(spec)).toEqual([])
-    expect(createIndexColumn(spec, "t").name).toBe("row_number_2")
+    expect(createIndexColumn(setSchemaTableRows(withTable(column("item")), "t", "many"), "t").name).toBe("row_number_2")
   })
 
   it("gives a table a row for each of one column's allowed values, until the table has one row or the column's type takes none", () => {
     const values = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } }
-    let spec = setSchemaTableRows(withTable(column("peril", { key: true, ...values }), column("zone", values)), "t", "many")
-    const given = () => spec.schema.tables[0].columns.map((c) => c.row_per_value)
+    let spec = setSchemaTableRows(withTable(column("peril", values), column("zone", values)), "t", "many")
+    // The index, first after the quote's identity, gives none.
+    const given = () => spec.schema.tables[0].inputs.slice(3).map((c) => c.row_per_value)
 
     spec = setRowPerValue(spec, "t", "peril", true)
     expect(given()).toEqual([true, false])
+    // Keyed by it while it gives the rows, by the index otherwise.
+    expect(keyTable(spec.schema.tables[0]).map((c) => c.name)).toEqual(["peril"])
     // Ticking another unticks the first, as one column gives a table its rows.
     spec = setRowPerValue(spec, "t", "zone", true)
     expect(given()).toEqual([false, true])
     spec = setRowPerValue(spec, "t", "zone", false)
     expect(given()).toEqual([false, false])
+    expect(keyTable(spec.schema.tables[0]).map((c) => c.name)).toEqual(["row_number"])
 
     spec = setRowPerValue(spec, "t", "peril", true)
     expect(given()).toEqual([true, false])
-    expect(setSchemaTableRows(spec, "t", "one").schema.tables[0].columns.map((c) => c.row_per_value)).toEqual([false, false])
-    expect(changeSchemaColumnType(spec, "t", "peril", "date").schema.tables[0].columns[0]).toMatchObject({ options: [], row_per_value: false })
-    expect(changeSchemaColumnType(spec, "t", "peril", "int").schema.tables[0].columns[0].row_per_value).toBe(true)
+    expect(setSchemaTableRows(spec, "t", "one").schema.tables[0].inputs.slice(2).map((c) => c.row_per_value)).toEqual([false, false])
+    expect(changeSchemaColumnType(spec, "t", "peril", "date").schema.tables[0].inputs[3]).toMatchObject({ options: [], row_per_value: false })
+    expect(changeSchemaColumnType(spec, "t", "peril", "int").schema.tables[0].inputs[3].row_per_value).toBe(true)
   })
 
   it("refuses to edit a table or column that is not in the schema", () => {
@@ -583,12 +660,12 @@ describe("columns", () => {
 describe("what the sheets show", () => {
   /** Policy details (one row) shown by a Collection, equipment (many rows) by a Table, in the sheet's one section, with a sample. */
   const sheet = (): FormSpec => {
-    let spec = addSchemaTable(blank(), table("policy", { columns: [column("state")] }))
+    let spec = addSchemaTable(blank(), table("policy", { inputs: [column("state")] }))
     spec = addSchemaTable(
       spec,
       table("equipment", {
         rows: "many",
-        columns: [column("item", { key: true }), column("value", { type: "float" })],
+        inputs: [column("row_number", { type: "int", index: true }), column("item"), column("value", { type: "float" })],
       }),
     )
     spec = {
@@ -631,11 +708,11 @@ describe("what the sheets show", () => {
 
   it("never offers the quote's identity to the sheets: no condition tests it and no Chart plots it", () => {
     let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
-    spec = addSchemaColumn(spec, "t", column("value", { type: "float" }))
+    spec = addSchemaColumn(spec, "t", "outputs", column("value", { type: "float" }))
     const [t] = spec.schema.tables
 
     expect(testableColumns(t).map((c) => c.name)).toEqual(["value"])
-    expect(t.columns.filter((c) => plottable(t, c)).map((c) => c.name)).toEqual(["value"])
+    expect([...t.inputs, ...t.outputs].filter((c) => plottable(t, c)).map((c) => c.name)).toEqual(["value"])
   })
 
   it("finds the widgets showing a table or a column, and the column a field names", () => {
@@ -1048,7 +1125,7 @@ describe("what the sheets show", () => {
 
   it("puts spacers among a Collection's fields, moves and removes them, and keeps their places as fields come and go", () => {
     // The policy's boxes showing its state, year and region.
-    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("year", { type: "int" })), "policy", column("region"))
+    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", "inputs", column("year", { type: "int" })), "policy", "inputs", column("region"))
     spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "year" }), "w_boxes", { table: "policy", column: "region" })
     const boxes = (form: FormSpec) => widgetsOf(form)[0] as CollectionWidget
     const order = (form: FormSpec) => orderItems(boxes(form)).map((item) => (item.kind === "field" ? item.field.column : "spacer"))
@@ -1093,7 +1170,7 @@ describe("what the sheets show", () => {
   it("leaves out of a copy pasted what it shows or tests of a column the schema has lost since, as removing the column does", () => {
     // The policy's boxes showing its state, year and region, a spacer before the region,
     // shown while the year and the state are as said.
-    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("year", { type: "int" })), "policy", column("region"))
+    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", "inputs", column("year", { type: "int" })), "policy", "inputs", column("region"))
     spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "year" }), "w_boxes", { table: "policy", column: "region" })
     spec = moveInOrder(addSpacer(spec, "w_boxes"), "w_boxes", 3, 2)
     const onYear: Condition = { table: "policy", column: "year", op: "equals", values: ["2024"], field: null, days: 0 }
@@ -1214,7 +1291,10 @@ describe("what the sheets show", () => {
     expect(widgetName(widgetsOf(spec)[0])).toBe('Collection "Policy"')
     expect(widgetName(widgetsOf(updateWidget(spec, "w_grid", { title: "" }))[1])).toBe("A Table")
     expect([rowsShown({ type: "collection" }), rowsShown({ type: "tableInput" })]).toEqual(["one", "many"])
-    expect(spec.schema.tables.map(tableGrain)).toEqual(["one", "many:item"])
+    // Equipment is keyed by its index, an Integer whatever the form holds for it.
+    expect(spec.schema.tables.map(tableGrain)).toEqual(["one", "many:row_number=int"])
+    expect(tableGrain(table("breakdown", { rows: "many", outputs: [column("peril", { key: true })] }))).toBe("many:peril=str")
+    expect(tableGrain(table("loose", { rows: "many", outputs: [column("peril")] }))).toBe("many:table=loose")
 
     const empty = updateWidget(spec, "w_boxes", { fields: [] })
     expect(widgetProblems(empty).map((p) => p.message)).toEqual(['Collection "Policy" shows no fields'])
@@ -1237,20 +1317,25 @@ describe("what the sheets show", () => {
       'Table "Equipment" shows a one-row table; a Collection shows those',
     ])
 
-    // Two many-row tables line up only by their keys' names.
-    spec = addSchemaTable(spec, table("premiums", { role: "output", rows: "many", columns: [column("item", { key: true }), column("premium", { type: "float" })] }))
+    // Two many-row tables line up only by their keys' names and types; a table's inputs and outputs always do.
+    spec = addSchemaTable(spec, table("premiums", { rows: "many", inputs: [], outputs: [column("row_number", { type: "int", key: true }), column("premium", { type: "float" })] }))
     spec = toggleField(spec, "w_grid", { table: "premiums", column: "premium" })
     expect(widgetProblems(spec)).toEqual([])
-    expect(widgetProblems(updateSchemaColumn(spec, "premiums", "item", { key: false })).map((p) => p.message)).toEqual([
+    expect(widgetProblems(updateSchemaColumn(spec, "premiums", "row_number", { key: false })).map((p) => p.message)).toEqual([
       'Table "Equipment" shows tables whose rows do not line up',
     ])
+    expect(widgetProblems(changeSchemaColumnType(spec, "premiums", "row_number", "str")).map((p) => p.message)).toEqual([
+      'Table "Equipment" shows tables whose rows do not line up',
+    ])
+    spec = addSchemaColumn(spec, "equipment", "outputs", column("rate", { type: "float" }))
+    expect(widgetProblems(toggleField(spec, "w_grid", { table: "equipment", column: "rate" }))).toEqual([])
   })
 
   it("says a Table's tables do not line up when a column gives one its rows and another has rows of its own, or other values", () => {
     const values = (options: string[]) => ({ options, options_source: { file: "plant.csv", column: "item" }, row_per_value: true })
     let spec = updateSchemaColumn(sheet(), "equipment", "item", values(["Crane", "Lift"]))
     // An input table keyed alike, shown beside it, its rows its own.
-    spec = addSchemaTable(spec, table("hire", { rows: "many", columns: [column("item", { key: true }), column("days", { type: "int" })] }))
+    spec = addSchemaTable(spec, table("hire", { rows: "many", inputs: [column("item", { key: true }), column("days", { type: "int" })] }))
     spec = toggleField(spec, "w_grid", { table: "hire", column: "days" })
     const apart = ['Table "Equipment" shows tables whose rows do not line up']
 
@@ -1867,14 +1952,14 @@ describe("when sheets and components show", () => {
     schema: {
       tables: [
         table("policy", {
-          columns: [
+          inputs: [
             column("bi", { type: "bool", label: "BI cover" }),
             column("class", { options: ["Motor", "Fleet"] }),
             column("start", { type: "date" }),
             column("extra"),
           ],
         }),
-        table("bi", { columns: [column("limit", { type: "float" })] }),
+        table("bi", { inputs: [column("limit", { type: "float" })] }),
       ],
     },
     pages: [
@@ -2036,7 +2121,7 @@ describe("when sheets and components show", () => {
 
   it("names a condition on the price on what takes values typed, and never on what takes nothing typed", () => {
     const base = covered()
-    const premium = table("premium", { role: "output", columns: [column("referral_count", { type: "int" })] })
+    const premium = table("premium", { outputs: [column("referral_count", { type: "int" })] })
     const spec = { ...base, schema: { tables: [...base.schema.tables, premium] } }
     const referred: Condition = { table: "premium", column: "referral_count", op: "above", values: ["0"], field: null, days: 0 }
     const never = "tests referral_count, a part of the price, which hides only what takes nothing typed: here it is never applied"
@@ -2092,7 +2177,7 @@ describe("when sheets and components show", () => {
   const listed = (sectionId = "s_main"): FormSpec => {
     const spec = covered()
     const columns = [column("age", { type: "int", label: "Age" }), column("cover", { options: ["Full", "Partial"] })]
-    spec.schema.tables.push(table("drivers", { rows: "many", columns }))
+    spec.schema.tables.push(table("drivers", { rows: "many", inputs: columns }))
     return addWidget(spec, sectionId, { name: "w_drivers",
       id: "w_drivers",
       type: "tableInput",
@@ -2237,13 +2322,14 @@ describe("when sheets and components show", () => {
 
 describe("charts", () => {
   /**
-   * A one-row policy, equipment typed in many rows numbered by an index and keyed by item,
-   * premiums priced for each item, and claims keyed otherwise.
+   * A one-row policy; equipment typed in many rows keyed by its index, each item's rate priced
+   * in the same table; premiums priced for each row, a table of outputs alone keyed alike; and
+   * claims keyed by an index of another name.
    */
   const schema = (): FormSchema => ({
     tables: [
       table("policy", {
-        columns: [
+        inputs: [
           column("sum_insured", { type: "float" }),
           column("excess", { type: "int" }),
           column("state"),
@@ -2251,20 +2337,21 @@ describe("charts", () => {
       }),
       table("equipment", {
         rows: "many",
-        columns: [
+        inputs: [
           column("row_number", { type: "int", index: true }),
-          column("item", { key: true, label: "Item" }),
+          column("item", { label: "Item" }),
           column("value", { type: "float" }),
         ],
+        outputs: [column("rate", { type: "float" })],
       }),
       table("premiums", {
-        role: "output",
         rows: "many",
-        columns: [column("item", { key: true }), column("premium", { type: "float" })],
+        inputs: [],
+        outputs: [column("row_number", { type: "int", key: true }), column("premium", { type: "float" })],
       }),
       table("claims", {
         rows: "many",
-        columns: [column("claim", { key: true }), column("paid", { type: "float" })],
+        inputs: [column("claim", { type: "int", index: true }), column("paid", { type: "float" })],
       }),
     ],
   })
@@ -2311,10 +2398,12 @@ describe("charts", () => {
   it("takes a Chart's rows from its first field's table, else from the column labelling them", () => {
     const spec = charted(chart([]))
 
-    expect(chartGrain(spec.schema, chart([ref("equipment", "value")]))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("equipment", "value")]))).toBe("many:row_number=int")
+    // A table's inputs and outputs are one grain: its outputs' rows are its own.
+    expect(chartGrain(spec.schema, chart([ref("equipment", "rate")]))).toBe("many:row_number=int")
     expect(chartGrain(spec.schema, chart([ref("policy", "sum_insured")], { category: ref("equipment", "item") }))).toBe("one")
-    expect(chartGrain(spec.schema, chart([], { category: ref("premiums", "item") }))).toBe("many:item")
-    expect(chartGrain(spec.schema, chart([ref("gone", "x"), ref("claims", "paid")]))).toBe("many:claim")
+    expect(chartGrain(spec.schema, chart([], { category: ref("premiums", "row_number") }))).toBe("many:row_number=int")
+    expect(chartGrain(spec.schema, chart([ref("gone", "x"), ref("claims", "paid")]))).toBe("many:claim=int")
     expect(chartGrain(spec.schema, chart([]))).toBeNull()
   })
 
@@ -2325,7 +2414,7 @@ describe("charts", () => {
     expect(plottable(t, column("row_number", { type: "int", index: true }))).toBe(false)
     // Nor the quote's option, an Integer at the head of a table holding the identity.
     const held = createSchemaTable(blank())
-    expect(plottable(held, held.columns[1])).toBe(false)
+    expect(plottable(held, held.inputs[1])).toBe(false)
   })
 
   it("labels a many-row Chart's rows by the columns of the tables keyed alike, an output's included, but never the index", () => {
@@ -2334,8 +2423,8 @@ describe("charts", () => {
       labelColumns(spec, widget).map(({ table: shown, columns }) => [shown.name, columns.map((c) => c.name)])
 
     expect(labels(chart([ref("equipment", "value")]))).toEqual([
-      ["equipment", ["item", "value"]],
-      ["premiums", ["item", "premium"]],
+      ["equipment", ["item", "value", "rate"]],
+      ["premiums", ["row_number", "premium"]],
     ])
     expect(labels(chart([ref("policy", "sum_insured")]))).toEqual([])
     expect(labels(chart([]))).toEqual([])
@@ -2356,7 +2445,7 @@ describe("charts", () => {
     expect(problems(chart([ref("equipment", "value"), ref("claims", "paid")]))).toEqual([
       'Chart "Premiums" shows tables whose rows do not line up',
     ])
-    expect(problems(chart([ref("equipment", "value")], { category: ref("claims", "claim") }))).toEqual([
+    expect(problems(chart([ref("equipment", "value")], { category: ref("claims", "paid") }))).toEqual([
       'Chart "Premiums" shows tables whose rows do not line up',
     ])
     expect(problems(chart([ref("equipment", "value"), ref("premiums", "premium")], { chart_type: "pie" }))).toEqual([
@@ -2368,81 +2457,94 @@ describe("charts", () => {
     expect(problems(chart([ref("policy", "sum_insured"), ref("policy", "excess")]))).toEqual([])
     expect(problems(chart([ref("policy", "sum_insured"), ref("policy", "excess")], { chart_type: "pie" }))).toEqual([])
     expect(
-      problems(chart([ref("equipment", "value"), ref("premiums", "premium")], { category: ref("premiums", "item") })),
+      problems(chart([ref("equipment", "value"), ref("equipment", "rate"), ref("premiums", "premium")], { category: ref("premiums", "row_number") })),
     ).toEqual([])
   })
 })
 
-describe("output tables lined up with a grid's rows", () => {
+describe("outputs lined up with a grid's rows", () => {
   // The grid holds rows by column name, as the pricing answers them.
-  const claims = table("claims", { rows: "many", columns: [column("claim", { key: true })] })
+  const claims = table("claims", { rows: "many", inputs: [column("claim_number", { type: "int", index: true }), column("claim")] })
+  // Equipment's items typed and each one's premium priced: one table, keyed by its index.
   const equipment = table("equipment", {
     rows: "many",
-    columns: [column("item", { key: true }), column("value", { type: "float" })],
+    inputs: [column("row_number", { type: "int", index: true }), column("item"), column("value", { type: "float" })],
+    outputs: [column("premium", { type: "float" })],
   })
-  const premiums = table("premiums", { role: "output", rows: "many", columns: [column("item", { key: true })] })
-  const fees = table("fees", { role: "output", rows: "many", columns: [column("fee", { key: true })] })
-  const schema: FormSchema = { tables: [claims, equipment, premiums, fees] }
+  // Outputs alone keyed alike, and keyed otherwise.
+  const charges = table("charges", { rows: "many", inputs: [], outputs: [column("row_number", { type: "int", key: true }), column("charge", { type: "float" })] })
+  const fees = table("fees", { rows: "many", inputs: [], outputs: [column("fee", { key: true })] })
+  const schema: FormSchema = { tables: [claims, equipment, charges, fees] }
   const price = (typed: Record<string, unknown>[]) => ({
     sample: { equipment: typed },
     tables: {
-      premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }],
+      equipment: [{ row_number: 3, premium: 20 }, { row_number: 1, premium: 10 }],
+      charges: [{ row_number: 1, charge: 5 }],
       fees: [{ fee: "x" }],
     },
   })
+  const typed = [{ row_number: 1, item: "A", value: 1 }, { row_number: 3, item: "B" }]
 
-  it("lines each many-row output up with the grid's rows through the first input table keyed alike", () => {
+  it("lines a table's own outputs up with its typed rows by key, and another's through the first input table keyed alike", () => {
     const held: Record<string, Record<string, string>[]> = { equipment: [{ item: "A", value: "1" }, {}, { item: "B" }] }
-    const lined = linedUpOutputs([claims, equipment], [premiums, fees], held, 4, price([{ item: "A", value: 1 }, { item: "B", value: null }]), schema)
+    const lined = linedUpOutputs([claims, equipment], [equipment, charges, fees], held, 4, price(typed), schema)
 
-    expect([...lined.keys()]).toEqual(["premiums"])
-    expect(lined.get("premiums")).toEqual([{ item: "A", premium: 10 }, undefined, { item: "B", premium: 20 }, undefined])
-    expect(linedUpOutputs([claims, equipment], [premiums], held, 4, null, schema)).toEqual(new Map())
+    expect([...lined.keys()]).toEqual(["equipment", "charges"])
+    // The answer came in another order: each row by its key value, never its place.
+    expect(lined.get("equipment")).toEqual([{ row_number: 1, premium: 10 }, undefined, { row_number: 3, premium: 20 }, undefined])
+    expect(lined.get("charges")).toEqual([{ row_number: 1, charge: 5 }, undefined, undefined, undefined])
+    expect(linedUpOutputs([claims, equipment], [equipment], held, 4, null, schema)).toEqual(new Map())
   })
 
-  it("lines output tables alone up with the first one's answer, the others by its keys, nothing before a price", () => {
+  it("lines outputs alone up with the first one's answer, the others by its keys, nothing before a price", () => {
     // Premiums keyed by item; a second output keyed alike, answered in another order and short a row.
-    const charges = table("charges", { role: "output", rows: "many", columns: [column("item", { key: true })] })
-    const answered = answeredOutputs([premiums, charges], {
+    const premiums = table("premiums", { rows: "many", inputs: [], outputs: [column("item", { key: true })] })
+    const byItem = table("by_item", { rows: "many", inputs: [], outputs: [column("item", { key: true })] })
+    const answered = answeredOutputs([premiums, byItem], {
       sample: {},
-      tables: { premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }], charges: [{ item: "A", charge: 1 }] },
+      tables: { premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }], by_item: [{ item: "A", charge: 1 }] },
     })
 
-    expect([...answered.keys()]).toEqual(["premiums", "charges"])
+    expect([...answered.keys()]).toEqual(["premiums", "by_item"])
     expect(answered.get("premiums")).toEqual([{ item: "B", premium: 20 }, { item: "A", premium: 10 }])
-    expect(answered.get("charges")).toEqual([undefined, { item: "A", charge: 1 }])
+    expect(answered.get("by_item")).toEqual([undefined, { item: "A", charge: 1 }])
     // The first without keys: the others have nothing to match it by.
-    const unkeyed = { ...premiums, columns: premiums.columns.map((c) => ({ ...c, key: false })) }
-    expect(answeredOutputs([unkeyed, charges], price([])).get("charges")).toEqual([undefined, undefined])
+    const unkeyed = { ...premiums, outputs: premiums.outputs.map((c) => ({ ...c, key: false })) }
+    expect(answeredOutputs([unkeyed, byItem], { sample: {}, tables: { premiums: [{ item: "B" }, { item: "A" }], by_item: [{ item: "A" }] } }).get("by_item")).toEqual([undefined, undefined])
     expect(answeredOutputs([premiums], null)).toEqual(new Map())
     expect(answeredOutputs([], price([]))).toEqual(new Map())
+    // A table with inputs shown by its outputs alone: its answer's rows, another matched by its key, carried in the answer.
+    const own = answeredOutputs([equipment, charges], price(typed))
+    expect(own.get("equipment")).toEqual([{ row_number: 3, premium: 20 }, { row_number: 1, premium: 10 }])
+    expect(own.get("charges")).toEqual([undefined, { row_number: 1, charge: 5 }])
   })
 
   it("reads the grid's rows as the quote does: a value in a column it leaves out fills no row", () => {
-    const quoted: FormSchema = { tables: [{ ...equipment, columns: equipment.columns.filter((c) => c.name !== "value") }, premiums] }
+    const quoted: FormSchema = { tables: [{ ...equipment, inputs: equipment.inputs.filter((c) => c.name !== "value") }, charges] }
     const held: Record<string, Record<string, string>[]> = { equipment: [{ value: "5" }, { item: "A" }] }
-    const lined = linedUpOutputs([equipment], [premiums], held, 2, price([{ item: "A" }]), quoted)
+    const lined = linedUpOutputs([equipment], [equipment], held, 2, { sample: { equipment: [{ row_number: 2, item: "A" }] }, tables: { equipment: [{ row_number: 2, premium: 10 }] } }, quoted)
 
-    expect(lined.get("premiums")).toEqual([undefined, { item: "A", premium: 10 }])
+    expect(lined.get("equipment")).toEqual([undefined, { row_number: 2, premium: 10 }])
   })
 })
 
 describe("Imports and Exports", () => {
   const rect = { x: 16, y: 16, w: 160, h: 40 }
   const details = table(QUOTE_DETAILS_NAME, {
-    columns: [column("quote_reference"), column("quote_option", { type: "int" }), column("insured"), column("stage")],
+    inputs: [column("quote_reference"), column("quote_option", { type: "int" }), column("insured"), column("stage")],
   })
   const layers = table("layers", {
     rows: "many",
-    columns: [
+    inputs: [
       column("quote_reference"),
       column("quote_option", { type: "int" }),
       column("row_number", { type: "int", index: true }),
-      column("limit", { type: "float", key: true }),
+      column("limit", { type: "float" }),
       column("excess", { type: "float" }),
     ],
+    outputs: [column("layer_premium", { type: "float" })],
   })
-  const premiums = table("premiums", { role: "output", columns: [column("total", { type: "float" })] })
+  const premiums = table("premiums", { outputs: [column("total", { type: "float" })] })
   /** A form with quote_details, a many-row input table and an output table, and an Import and an Export on its sheet. */
   const buttons = (): FormSpec => {
     let spec = blank()
@@ -2553,7 +2655,7 @@ describe("Imports and Exports", () => {
 
   it("says what stops an Import filling its table", () => {
     const spec = buttons()
-    expect(problems(setImportTable(spec, "w_in", "premiums"), "w_in")).toEqual(['Import "Import" fills an output table, which pricing fills'])
+    expect(problems(setImportTable(spec, "w_in", "premiums"), "w_in")).toEqual(['Import "Import" fills a table with no inputs, which pricing fills'])
     expect(problems(setImportTable(spec, "w_in", "missing"), "w_in")).toEqual(['Import "Import" fills a table that is no longer in the schema'])
     const index = structuredClone(setImportTable(spec, "w_in", "layers"))
     imported(index).column_names = [

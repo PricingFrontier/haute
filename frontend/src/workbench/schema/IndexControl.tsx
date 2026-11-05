@@ -1,41 +1,29 @@
-/** A many-row table's index, added and removed (specs/workbench). */
-import type { FormSpec, SchemaTable } from "../../api/types"
-import { ConfigCheckbox } from "../../components/form"
-import { confirmed } from "../../stores/useQuestionStore"
-import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
-import { identityCount } from "../../utils/quoteIdentity"
-import { addSchemaColumn, createIndexColumn, fieldUses, removeSchemaColumn } from "../../utils/workbenchForm"
-import { components, currentForm } from "./schemaText"
-
 /**
- * A many-row table's index: ticked, a column first in the table after the quote's reference
- * and option, holding each row's number, from 1 (`row_number` until renamed in its row, where it can also be made the
- * key). Unticked, it goes, asking first when a widget shows it.
+ * A many-row input table's index and key as the schema editor marks them (specs/workbench).
+ * Neither is a control: the operations give a table its index and take it away
+ * (`withIndexAsNeeded`), and a table with inputs is keyed by the column giving its rows or by
+ * its index (`keyTable`), which no underwriter types.
  */
-export function IndexControl({ form, table, onAdded }: { form: FormSpec; table: SchemaTable; onAdded: (name: string) => void }) {
-  const change = useWorkbenchFormStore((s) => s.change)
-  const index = table.columns.find((column) => column.index)
-  const uses = index ? fieldUses(form, table.name, index.name).length : 0
-  // An index a sheet shows is removed once the question is answered yes.
-  const remove = async () => {
-    if (index === undefined) return
-    const text = `The index is shown in ${components(uses)}; removing it takes it out of ${uses === 1 ? "that" : "them"} too.`
-    if (uses > 0 && !(await confirmed({ title: `Remove the index of ${table.name}?`, text, confirm: "Remove", danger: true }))) return
-    change((f) => removeSchemaColumn(f, table.name, index.name))
-  }
+import { KeyRound } from "lucide-react"
+import type { SchemaColumn } from "../../api/types"
+import { COLUMN_TYPES } from "../columnTypes"
+import { MARKER_STYLE } from "./schemaText"
+
+/** The index's type marker, a fixed Integer: each row's number, from 1. */
+export function IndexMarker() {
+  const { icon: Icon, color } = COLUMN_TYPES.int
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1">
-      <ConfigCheckbox
-        label={`Add index to ${table.name}`}
-        checked={index !== undefined}
-        onChange={(checked) => {
-          if (checked) {
-            const column = createIndexColumn(currentForm(), table.name)
-            change((f) => addSchemaColumn(f, table.name, column, identityCount(table)))
-            onAdded(column.name)
-          } else void remove()
-        }}
-      />
-    </div>
+    <span className={`relative flex w-6 shrink-0 items-center justify-center rounded-md ${color}`} style={MARKER_STYLE} title="Integer: each row's number, from 1">
+      <Icon size={12} aria-hidden="true" />
+    </span>
+  )
+}
+
+/** The mark on the column keying a table with inputs: its index, or the column giving its rows. */
+export function KeyMark({ column }: { column: SchemaColumn }) {
+  return (
+    <span className="flex size-5 shrink-0 items-center justify-center self-center" title={column.index ? "The key: each row's number" : "The key: a row for each value"}>
+      <KeyRound size={12} role="img" aria-label={`${column.name} is the key`} style={{ color: "var(--accent)" }} />
+    </span>
   )
 }

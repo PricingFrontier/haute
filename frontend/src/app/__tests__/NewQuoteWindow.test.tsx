@@ -36,7 +36,7 @@ const made = (overrides: Parameters<typeof answer>[0] = {}) => answer({ referenc
 function formWith(set: Record<string, Partial<SchemaColumn>> = {}): FormSpec {
   const sheets = sheetForm()
   const details = detailsTable()
-  details.columns = details.columns.map((column) => ({ ...column, ...set[column.name] }))
+  details.inputs = details.inputs.map((column) => ({ ...column, ...set[column.name] }))
   return { ...sheets, schema: { tables: [details, ...sheets.schema.tables] } }
 }
 
@@ -153,7 +153,7 @@ describe("NewQuoteWindow", () => {
 
   it("makes the quote with its reference and details over a new quote's defaults, and takes it to its own address", async () => {
     form = formWith({ quote_name: { default_value: "Fleet" } })
-    form.schema.tables[1].columns[0].default_value = "NY"
+    form.schema.tables[1].inputs[0].default_value = "NY"
     useAppStore.setState({ form })
     vi.mocked(createAppQuote).mockResolvedValue(made())
     shown()
@@ -450,7 +450,7 @@ describe("NewQuoteWindow", () => {
     expect(windowFields(sheetForm())).toEqual([])
 
     const details = detailsTable()
-    details.columns = details.columns.filter((column) => column.name !== "quote_reference")
+    details.inputs = details.inputs.filter((column) => column.name !== "quote_reference")
     const fields = windowFields({ ...sheetForm(), schema: { tables: [details] } })
     expect(fields.map((field) => field.found?.column.name)).not.toContain("quote_reference")
     expect(windowProblems([{ key: "gone", found: null }, ...fields], "", {})).toEqual({})

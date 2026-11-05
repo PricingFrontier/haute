@@ -2,6 +2,7 @@
 import { type FocusEvent } from "react"
 import type { FormSpec, SchemaColumn, SchemaTable } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { isOutputColumn } from "../../utils/quoteIdentity"
 import { formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { isNumeric } from "../columnTypes"
 
@@ -16,6 +17,9 @@ const FORMAT_NAMES: Readonly<Record<SchemaColumn["number_format"], string>> = {
 }
 
 export const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+
+/** The box a column's type marker sits in. */
+export const MARKER_STYLE = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
 
 export const HOVER_ONLY = "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
 
@@ -75,12 +79,11 @@ function rulesParts(table: SchemaTable, column: SchemaColumn): string[] {
 }
 
 /**
- * A column in a few words, shown under its name, "" when there is nothing to say: an input
- * column's rules, or whether an output column is required, then, in any table, a number
- * column's format.
+ * A column in a few words, shown under its name, "" when there is nothing to say: an input's
+ * rules, or whether an output is required, then, for any column, a number column's format.
  */
 export function columnSummary(table: SchemaTable, column: SchemaColumn): string {
-  const parts = table.role === "input" ? rulesParts(table, column) : column.required ? ["required"] : []
+  const parts = isOutputColumn(table, column) ? (column.required ? ["required"] : []) : rulesParts(table, column)
   const format = formatSummary(column)
   if (format !== "") parts.push(format)
   return parts.join(" · ")

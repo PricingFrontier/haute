@@ -252,8 +252,8 @@ describe("a Workbench Output's tables", () => {
     tables: [],
     sample: {},
     responseTables: [
-      { name: "pricing_output", rows: "one" as const, columns: [{ name: "premium", type: "float" as const }] },
-      { name: "layers", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }] },
+      { name: "pricing", side: "output" as const, port: "pricing_output", rows: "one" as const, columns: [{ name: "premium", type: "float" as const }], key: null, null_key: null },
+      { name: "layers", side: "output" as const, port: "layers_output", rows: "many" as const, columns: [{ name: "layer", type: "int" as const }], key: null, null_key: null },
     ],
     fetch: 1,
   }
@@ -279,7 +279,9 @@ describe("a Workbench Output's tables", () => {
 
   it("takes a connection on a table's port", () => {
     expect(connect(priced.id, "pricing_output")).toEqual({ ok: true })
-    expect(connect(layered.id, "layers", filled)).toEqual({ ok: true })
+    expect(connect(layered.id, "layers_output", filled)).toEqual({ ok: true })
+    // A port is the table's side, never its bare name.
+    expect(connect(layered.id, "layers", filled)).toEqual(refused("Connect to one of response's tables"))
   })
 
   it("refuses a connection on no table, on a filled table, or from a node that fills another", () => {
@@ -290,7 +292,7 @@ describe("a Workbench Output's tables", () => {
     expect(connect(layered.id, "pricing_output", filled)).toEqual(
       refused("pricing_output is already filled by priced"),
     )
-    expect(connect(priced.id, "layers", filled)).toEqual(
+    expect(connect(priced.id, "layers_output", filled)).toEqual(
       refused("priced already fills pricing_output; a node fills one table"),
     )
   })

@@ -1337,8 +1337,8 @@ Out of scope:
   a table gives its rows: ticking another unticks it, and a form holding two names the
   second among the schema's problems. While it gives them it is the table's key (The form,
   above), each output row pricing gives belonging to the row holding its value, so its
-  allowed values must be distinct in its type: two that read as one (`1` and `01` in an
-  Integer column, two spellings of one date) are a schema problem, refused by `haute app
+  allowed values must be distinct in its type: two that read as one number (`1` and `01`
+  in an Integer column, `1.5` and `1.50` in a Decimal one) are a schema problem, refused by `haute app
   build` and `haute deploy`, naming the values and the params file to correct. An output,
   a column of a one-row table, the index
   and one without allowed values give none; taking a column's allowed values away,

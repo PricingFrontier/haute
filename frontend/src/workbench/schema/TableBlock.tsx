@@ -1,9 +1,11 @@
 /**
- * A schema table's block: its name, role and rows, its problems, its columns, dragged or
- * moved, and under them those the quote store keeps in it, locked (specs/workbench).
+ * A schema table's block: its name and rows, its problems, its columns under two headings,
+ * Inputs and Outputs, each with its own Add column, a column dragged within its block or into
+ * the other, or moved within its block, and under them those the quote store keeps in it,
+ * locked (specs/workbench).
  */
 import { ChevronDown, ChevronRight, Lock, Trash2 } from "lucide-react"
-import { useRef, type KeyboardEvent } from "react"
+import { useRef, useState, type DragEvent, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
 import { CommittedTextField, INPUT_STYLE, QuietAction } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
@@ -12,28 +14,28 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { isIdentityColumn } from "../../utils/quoteIdentity"
+import { type Block, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
 import { ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { IndexControl } from "./IndexControl"
 import { CHIP_CLASS, DETAILS_TITLE, type Fresh, HOVER_ONLY, currentForm, selectAll, usedBy } from "./schemaText"
 
 /** The quote_details columns the app sets, by name, in order: "a, b and c". */
 const appSetNames = QUOTE_DETAILS_COLUMNS.map(([name]) => name).filter((name) => QUOTE_DETAILS_MANAGED.has(name))
 const APP_SET = `${appSetNames.slice(0, -1).join(", ")} and ${appSetNames[appSetNames.length - 1]}`
 
-const ROLES: ReadonlyArray<{ value: SchemaTable["role"]; label: string; title: string }> = [
-  { value: "input", label: "Input", title: "Sent to the pricing engine" },
-  { value: "output", label: "Output", title: "Returned by the pricing engine" },
-]
-
 const ROWS: ReadonlyArray<{ value: SchemaTable["rows"]; label: string; title: string }> = [
   { value: "one", label: "One row", title: "One row per quote, such as policy details" },
   { value: "many", label: "Many rows", title: "Many rows per quote, such as an equipment schedule" },
+]
+
+/** A table's two blocks under their headings: what an underwriter types, sent to the pricing engine, and what it returns. */
+const BLOCKS: ReadonlyArray<{ block: Block; title: string; color: string }> = [
+  { block: "inputs", title: "Inputs", color: "var(--accent)" },
+  { block: "outputs", title: "Outputs", color: "var(--success)" },
 ]
 
 interface TableBlockProps {
@@ -79,21 +81,63 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
     change((f) => removeSchemaTable(f, table.name))
   }
   const refocus = useRefocusAfterMove<HTMLInputElement>()
-  const dragColumn = useListReorder((from, to) => change((f) => moveSchemaColumn(f, table.name, table.columns[from].name, to)))
+  // Each block's columns dragged into a new order within it; a column carried into the other
+  // block is moved there (`carried`), at the row it is dropped on or, on its heading, at its end.
+  const reorderInputs = useListReorder((from, to) => change((f) => moveSchemaColumn(f, table.name, table.inputs[from].name, "inputs", to)))
+  const reorderOutputs = useListReorder((from, to) => change((f) => moveSchemaColumn(f, table.name, table.outputs[from].name, "outputs", to)))
+  const reorder: Record<Block, (at: number) => RowDrag> = { inputs: reorderInputs, outputs: reorderOutputs }
+  const [carried, setCarried] = useState<{ block: Block; name: string } | null>(null)
+  const [landing, setLanding] = useState<{ block: Block; at: number } | null>(null)
+  const crossing = (into: Block) => carried !== null && carried.block !== into
+  const carryOver = (into: Block, at: number) => (event: DragEvent<HTMLElement>) => {
+    if (!crossing(into)) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move"
+    if (landing?.block !== into || landing.at !== at) setLanding({ block: into, at })
+  }
+  const carryIn = (into: Block, at: number) => (event: DragEvent<HTMLElement>) => {
+    if (carried === null || !crossing(into)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const { block: from, name } = carried
+    change((f) => moveSchemaColumn(f, table.name, name, into, at))
+    // The row it was carried from may be gone, and with it the end of its drag.
+    reorder[from](0).onEnd()
+    setCarried(null)
+    setLanding(null)
+  }
+  const dragColumn = (own: Block, at: number): RowDrag => {
+    const within = reorder[own](at)
+    return {
+      ...within,
+      onStart: (event) => {
+        within.onStart(event)
+        setCarried({ block: own, name: table[own][at].name })
+      },
+      onOver: (event) => (crossing(own) ? carryOver(own, at)(event) : within.onOver(event)),
+      onDrop: (event) => (crossing(own) ? carryIn(own, at)(event) : within.onDrop(event)),
+      onEnd: () => {
+        within.onEnd()
+        setCarried(null)
+        setLanding(null)
+      },
+      target: within.target || (crossing(own) && landing?.block === own && landing.at === at),
+    }
+  }
   const fresh = (id: string): Fresh => ({
     autoFocus: added === id,
     onFocus: added === id ? selectAll : undefined,
     onBlur: () => setAdded(null),
   })
-  const count = table.columns.length
+  const count = tableColumns(table).length
   // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
   const fixed = locked || readOnly
   const filtering = matched !== null
 
-  const insertAt = (at: number) => {
-    const column = createSchemaColumn(currentForm(), table.name, at)
-    change((f) => addSchemaColumn(f, table.name, column, at))
+  const insertAt = (into: Block, at: number) => {
+    const column = createSchemaColumn(currentForm(), table.name, into, at)
+    change((f) => addSchemaColumn(f, table.name, into, column, at))
     setAdded(columnKey(table.name, column.name))
   }
 
@@ -157,21 +201,6 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
         />
         {locked && <Lock size={11} aria-label="Haute's table" className="shrink-0" style={{ color: "var(--text-muted)" }} />}
         <select
-          aria-label={`Role of ${table.name}`}
-          disabled={fixed}
-          value={table.role}
-          onChange={(e) => change((f) => updateSchemaTable(f, table.name, { role: e.target.value as SchemaTable["role"] }))}
-          title={ROLES.find((role) => role.value === table.role)?.title}
-          className={CHIP_CLASS}
-          style={{ ...INPUT_STYLE, color: table.role === "input" ? "var(--accent)" : "var(--success)" }}
-        >
-          {ROLES.map((role) => (
-            <option key={role.value} value={role.value}>
-              {role.label}
-            </option>
-          ))}
-        </select>
-        <select
           aria-label={`Rows of ${table.name}`}
           disabled={fixed}
           value={table.rows}
@@ -207,34 +236,55 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
       </div>
       {!collapsed && (
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          {table.columns.map((column, at) => matched !== null && !matched.has(column.name) ? null : (
-            <ColumnRow
-              key={column.name}
-              form={form}
-              table={table}
-              column={column}
-              index={at}
-              refocus={refocus}
-              fresh={fresh(columnKey(table.name, column.name))}
-              open={details === columnKey(table.name, column.name)}
-              onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
-              onInsertAfter={() => insertAt(at + 1)}
-              locked={locked}
-              readOnly={readOnly}
-              filtering={filtering}
-              drag={fixed || filtering || column.index || isIdentityColumn(table, column) ? undefined : dragColumn(at)}
-            />
-          ))}
+          {BLOCKS.map(({ block: own, title, color }) => {
+            const columns = table[own].map((column, at) => ({ column, at })).filter(({ column }) => matched === null || matched.has(column.name))
+            // quote_details holds inputs alone and is given no column; in Preview or while searched nothing is added.
+            const adding = !fixed && !filtering
+            if (columns.length === 0 && !adding) return null
+            const landed = crossing(own) && landing?.block === own && landing.at === table[own].length
+            return (
+              <div key={own} role="group" aria-label={`${table.name} ${title}`} className="flex flex-col gap-1">
+                <p
+                  className="px-1 text-[11px] font-semibold"
+                  style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
+                  onDragOver={carryOver(own, table[own].length)}
+                  onDrop={carryIn(own, table[own].length)}
+                  data-drop-target={landed ? "true" : undefined}
+                >
+                  {title}
+                </p>
+                {columns.map(({ column, at }) => (
+                  <ColumnRow
+                    key={column.name}
+                    form={form}
+                    table={table}
+                    column={column}
+                    block={own}
+                    index={at}
+                    refocus={refocus}
+                    fresh={fresh(columnKey(table.name, column.name))}
+                    open={details === columnKey(table.name, column.name)}
+                    onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
+                    onInsertAfter={() => insertAt(own, at + 1)}
+                    locked={locked}
+                    readOnly={readOnly}
+                    filtering={filtering}
+                    drag={fixed || filtering || column.index || isIdentityColumn(table, column) ? undefined : dragColumn(own, at)}
+                  />
+                ))}
+                {adding && (
+                  <QuietAction onClick={() => insertAt(own, table[own].length)} className="justify-self-start">
+                    Add column
+                  </QuietAction>
+                )}
+              </div>
+            )
+          })}
           {!filtering && kept.map((column) => <StoreColumnRow key={column.name} column={column} />)}
-          {locked ? (
+          {locked && (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.
             </p>
-          ) : readOnly || filtering ? null : (
-            <div className="flex items-center gap-3">
-              <QuietAction onClick={() => insertAt(count)} className="justify-self-start">Add column</QuietAction>
-              {table.rows === "many" && <IndexControl form={form} table={table} onAdded={(name) => setAdded(columnKey(table.name, name))} />}
-            </div>
           )}
           {problems.map((message) => (
             <p key={message} className="px-1 text-[11px]" style={{ color: "var(--warning)" }}>
