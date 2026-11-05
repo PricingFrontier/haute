@@ -828,7 +828,8 @@ Out of scope:
   stops a file or a column giving them shows under them. Changing a
   column's type drops the rules and the format the new type cannot have, and its default
   when it becomes or stops being True/false, or becomes a Date while it is not a day.
-  Under a column's name, a line sums it up whenever there is something to say: for any
+  To the right of a column's name and its buttons, a line sums it up whenever there is
+  something to say, cut short as the pane narrows and whole on hover: for any
   column, required; for an input, its range in its own format, its default (in its format, or
   "ticked" for True/false), its allowed values counted with the file they came from and
   "a row each" for the column giving its table's rows; and, for any column, the format of

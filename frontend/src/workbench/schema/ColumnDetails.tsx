@@ -50,7 +50,7 @@ export function ColumnDetails({
   return (
     <fieldset
       disabled={readOnly}
-      className="mr-12 ml-7 grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
+      className="mr-12 ml-7 grid max-w-[32rem] min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
       style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}
     >
       <span style={{ color: "var(--text-muted)" }}>Label</span>

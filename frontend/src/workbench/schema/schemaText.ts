@@ -18,6 +18,9 @@ const FORMAT_NAMES: Readonly<Record<SchemaColumn["number_format"], string>> = {
 
 export const CHIP_CLASS = "focus-ring shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
 
+/** A column's name box: a set width, its summary to its right, shrinking only as the pane narrows. */
+export const COLUMN_NAME_WIDTH = "w-64 min-w-0"
+
 /** The box a column's type marker sits in. */
 export const MARKER_STYLE = { background: "var(--chrome-hover)", border: "1px solid var(--border)" }
 

@@ -83,7 +83,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
         className="min-h-0 flex-1 overflow-auto"
         data-testid="schema-tables"
       >
-        <div className="flex max-w-[640px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
+        <div className="flex max-w-[1280px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
           {tables.length === 0 && (
             <p className="px-1" style={{ color: "var(--text-muted)" }}>
               No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.

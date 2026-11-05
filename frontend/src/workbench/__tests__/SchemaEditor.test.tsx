@@ -1105,10 +1105,13 @@ describe("SchemaEditor", () => {
     expect(summary("row_number")).toBeNull()
     expect(summary("value")).toBeNull()
 
-    // On its own line under the name, not beside it.
-    const row = screen.getByTestId("schema-column-sum_insured")
-    expect(within(summary("sum_insured")!).queryByRole("textbox")).toBeNull()
-    expect(summary("sum_insured")!.previousElementSibling).toContainElement(within(row).getByRole("textbox", { name: "Column name" }))
+    // Beside the name, to its right on the name's own line, and whole in its title where the pane cuts it short.
+    const name = within(screen.getByTestId("schema-column-sum_insured")).getByRole("textbox", { name: "Column name" })
+    const line = summary("sum_insured")!
+    expect(within(line).queryByRole("textbox")).toBeNull()
+    expect(line.parentElement).toBe(name.parentElement)
+    expect(name.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(line).toHaveAttribute("title", line.textContent)
   })
 
   it("opens again as it was left: its tables collapsed, a column's label and rules open, and scrolled where it was", () => {

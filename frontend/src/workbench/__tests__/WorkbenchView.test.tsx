@@ -112,7 +112,7 @@ describe("WorkbenchView", () => {
         useWorkbenchViewStore.getState().setSchemaOpen(true)
       })
       const pane = screen.getByTestId("schema-pane")
-      expect(SCHEMA_FULL_WIDTH).toBe(640 + 10 + 4)
+      expect(SCHEMA_FULL_WIDTH).toBe(1280 + 10 + 4)
       expect(pane.firstElementChild).toHaveStyle({ width: `${SCHEMA_FULL_WIDTH}px` })
 
       const handle = within(pane).getByTestId("panel-resize-handle")
