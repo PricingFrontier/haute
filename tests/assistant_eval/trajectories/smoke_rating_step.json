@@ -63,7 +63,7 @@
                           "base_value": 100
                         }
                       ],
-                      "output_name": "age_price_response",
+                      "output_name": "quote_response",
                       "output_columns": [
                         "quote_id",
                         "age_factor",

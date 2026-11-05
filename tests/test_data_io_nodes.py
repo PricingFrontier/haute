@@ -634,11 +634,11 @@ class TestExecuteSinkDataOutput:
             nodes=[
                 _ready_data_input_node(
                     "din",
-                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                    {"input_type": "file", "format": "parquet", "path": str(source)},
                 ),
                 _data_output_node(
                     "dout",
-                    {"outputType": "file", "format": "parquet", "path": str(destination)},
+                    {"output_type": "file", "format": "parquet", "path": str(destination)},
                 ),
             ],
             edges=[_edge("din", "dout")],
@@ -674,7 +674,7 @@ class TestExecuteSinkDataOutput:
             nodes=[
                 _ready_data_input_node(
                     "claims",
-                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                    {"input_type": "file", "format": "parquet", "path": str(source)},
                 ),
                 GraphNode(
                     id="claims_agg",
@@ -693,7 +693,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "batch_output",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(destination),
                     },
@@ -765,7 +765,7 @@ class TestExecuteSinkDataOutput:
             nodes=[
                 _ready_data_input_node(
                     "claims",
-                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                    {"input_type": "file", "format": "parquet", "path": str(source)},
                 ),
                 GraphNode(
                     id="claims_agg",
@@ -785,7 +785,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "batch_output",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(destination),
                     },
@@ -888,11 +888,11 @@ class TestExecuteSinkDataOutput:
             nodes=[
                 _ready_data_input_node(
                     "din",
-                    {"inputType": "file", "format": "parquet", "path": str(source)},
+                    {"input_type": "file", "format": "parquet", "path": str(source)},
                 ),
                 _data_output_node(
                     "dout",
-                    {"outputType": "file", "format": "parquet", "path": str(destination)},
+                    {"output_type": "file", "format": "parquet", "path": str(destination)},
                 ),
             ],
             edges=[_edge("din", "dout")],
@@ -954,7 +954,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -962,7 +962,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "ndjson",
                         "path": str(out_path),
                     },
@@ -991,7 +991,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -999,7 +999,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "json",
                         "path": str(out_path),
                         "mode": "write",
@@ -1022,14 +1022,14 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
                 ),
                 _data_output_node(
                     "dout",
-                    {"outputType": "file", "format": "parquet"},
+                    {"output_type": "file", "format": "parquet"},
                 ),
             ],
             edges=[_edge("din", "dout")],
@@ -1045,14 +1045,14 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
                 ),
                 _data_output_node(
                     "dout",
-                    {"outputType": "file", "format": "sas", "path": "x"},
+                    {"output_type": "file", "format": "sas", "path": "x"},
                 ),
             ],
             edges=[_edge("din", "dout")],
@@ -1068,7 +1068,7 @@ class TestExecuteSinkDataOutput:
         graph = PipelineGraph(
             nodes=[
                 _ready_data_input_node(
-                    "din", {"inputType": "file", "format": "parquet", "path": str(src_path)}
+                    "din", {"input_type": "file", "format": "parquet", "path": str(src_path)}
                 ),
                 GraphNode(
                     id="cast",
@@ -1084,7 +1084,7 @@ class TestExecuteSinkDataOutput:
                         label="Monthly extract",
                         nodeType=NodeType.DATA_OUTPUT,
                         config={
-                            "outputType": "file",
+                            "output_type": "file",
                             "format": "parquet",
                             "path": str(haute_scratch / "out.parquet"),
                         },
@@ -1126,7 +1126,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(haute_scratch / "out.parquet"),
                         "arguments": {},
@@ -1156,7 +1156,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1164,7 +1164,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1203,7 +1203,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1211,7 +1211,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "ndjson",
                         "path": str(out_path),
                     },
@@ -1246,7 +1246,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1254,7 +1254,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1306,7 +1306,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1314,7 +1314,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1346,7 +1346,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1354,7 +1354,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1381,7 +1381,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1389,7 +1389,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1626,7 +1626,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1634,7 +1634,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1677,7 +1677,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1685,7 +1685,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "csv",
                         "path": str(out_path),
                         "arguments": arguments,
@@ -1709,7 +1709,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1717,7 +1717,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "csv",
                         "path": str(out_path),
                     },
@@ -1742,7 +1742,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1750,7 +1750,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "csv",
                         "path": str(out_path),
                         "arguments": {
@@ -1828,7 +1828,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1836,7 +1836,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "csv",
                         "path": str(out_path),
                         "arguments": {"include_header": include_header},
@@ -1864,7 +1864,7 @@ class TestExecuteSinkDataOutput:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1872,7 +1872,7 @@ class TestExecuteSinkDataOutput:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path),
                     },
@@ -1925,7 +1925,7 @@ class TestPreviewNeverWrites:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1933,7 +1933,7 @@ class TestPreviewNeverWrites:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path_new),
                     },
@@ -1969,7 +1969,7 @@ class TestPreviewNeverWrites:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "path": str(src_path),
                     },
@@ -1977,7 +1977,7 @@ class TestPreviewNeverWrites:
                 _data_output_node(
                     "dout",
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "path": str(out_path_existing),
                     },
@@ -2013,10 +2013,10 @@ class TestResolveDataOutputPath:
             source_file=str(haute_scratch / "rating" / "main.py"),
             nodes=[
                 _ready_data_input_node(
-                    "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+                    "din", {"input_type": "file", "format": "parquet", "path": str(source)}
                 ),
                 _data_output_node(
-                    "dout", {"outputType": "file", "format": "parquet", "path": "output"}
+                    "dout", {"output_type": "file", "format": "parquet", "path": "output"}
                 ),
             ],
             edges=[_edge("din", "dout")],
@@ -2048,7 +2048,7 @@ class TestResolveDataOutputPath:
 
         resolved, display = resolve_data_output_path(
             graph,
-            {"outputType": "file", "format": "parquet", "path": path},
+            {"output_type": "file", "format": "parquet", "path": path},
             project_root=haute_scratch,
         )
 
@@ -2060,7 +2060,7 @@ class TestResolveDataOutputPath:
         graph = PipelineGraph(nodes=[], edges=[])
         resolved, display = resolve_data_output_path(
             graph,
-            {"outputType": "file", "format": "ndjson", "path": "result"},
+            {"output_type": "file", "format": "ndjson", "path": "result"},
         )
         assert display == "outputs/result.jsonl"
         assert resolved is not None and resolved.name == "result.jsonl"
@@ -2069,7 +2069,7 @@ class TestResolveDataOutputPath:
         graph = PipelineGraph(nodes=[], edges=[])
         _resolved, display = resolve_data_output_path(
             graph,
-            {"outputType": "file", "format": "ndjson", "path": "out/result.ndjson"},
+            {"output_type": "file", "format": "ndjson", "path": "out/result.ndjson"},
         )
         assert display == "out/result.ndjson"
 
@@ -2078,7 +2078,7 @@ class TestResolveDataOutputPath:
         resolved, display = resolve_data_output_path(
             graph,
             {
-                "outputType": "database",
+                "output_type": "database",
                 "format": "database",
                 "table": "prices",
                 "uri": "sqlite:///x.db",
@@ -2097,7 +2097,7 @@ class TestResolveDataOutputPath:
             resolve_data_output_path(
                 graph,
                 {
-                    "outputType": "database",
+                    "output_type": "database",
                     "format": "database",
                     "table": "prices",
                     "uri": "sqlite:///../outside.sqlite",
@@ -2112,7 +2112,7 @@ class TestResolveDataOutputPath:
             resolve_data_output_path(
                 graph,
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "parquet",
                     "path": path,
                 },
@@ -2125,7 +2125,7 @@ class TestResolveDataOutputPath:
         with pytest.raises(ValueError, match="no output path configured"):
             resolve_data_output_path(
                 graph,
-                {"outputType": "file", "format": "parquet", "path": ""},
+                {"output_type": "file", "format": "parquet", "path": ""},
             )
 
     def test_staging_path_must_be_a_contained_sibling(
@@ -2235,12 +2235,12 @@ class TestDataInputBuilder:
         return fn
 
     def test_a_config_without_a_provider_is_refused_when_built(self) -> None:
-        """The palette gives every Data Input its ``inputType``: a config without one is
+        """The palette gives every Data Input its ``input_type``: a config without one is
         refused when the node is built, naming the setting."""
         from haute.errors import NodeConfigError
         from haute.executor import _build_node_fn
 
-        with pytest.raises(NodeConfigError, match="setting 'inputType'"):
+        with pytest.raises(NodeConfigError, match="setting 'input_type'"):
             _build_node_fn(_data_input_node("din", {}), source_names=[])
 
     def test_configured_node_reads_through_registry(self, haute_scratch, struct_frame) -> None:
@@ -2248,7 +2248,7 @@ class TestDataInputBuilder:
         struct_frame.write_parquet(path)
         fn = self._build(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "path": str(path),
             }
@@ -2262,7 +2262,7 @@ class TestDataInputBuilder:
         struct_frame.write_parquet(path)
         fn = self._build(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "path": str(path),
                 "code": "df = df.filter(pl.col('id') > 1).select('id')",
@@ -2278,7 +2278,7 @@ class TestDataInputBuilder:
         pl.DataFrame({"present": [1]}).write_parquet(path)
         fn = self._build(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": str(path),
@@ -2330,7 +2330,7 @@ class TestDataInputSelectedColumnsAcrossProfiles:
                 _ready_data_input_node(
                     "din",
                     {
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "parquet",
                         "mode": "scan",
                         "path": str(source),
@@ -2396,7 +2396,7 @@ class TestCodegenAndParseRoundTrip:
         node = _data_input_node(
             "quotes_in",
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "path": "data/q.csv",
                 "code": "df = df.filter(pl.col('id') > 0)",
@@ -2418,7 +2418,7 @@ class TestCodegenAndParseRoundTrip:
 
         node = _data_output_node(
             "prices_out",
-            {"outputType": "file", "format": "ndjson", "path": "out.jsonl"},
+            {"output_type": "file", "format": "ndjson", "path": "out.jsonl"},
         )
         code = _node_to_code(node, ["scored"])
         assert code == (
@@ -2432,13 +2432,13 @@ class TestCodegenAndParseRoundTrip:
         from haute.parser import parse_pipeline_source
 
         din_config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "path": "data/q.csv",
             "arguments": {"separator": ";", "schema_overrides": {"id": "int64"}},
         }
         dout_config = {
-            "outputType": "file",
+            "output_type": "file",
             "format": "parquet",
             "path": "outputs/result.parquet",
         }
@@ -2492,7 +2492,7 @@ class TestSidecarPersistence:
         from haute.errors import ConfigError
 
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "data/q.csv",
@@ -2510,7 +2510,7 @@ class TestSidecarPersistence:
 
     def test_sidecar_save_load_exact_shape(self, haute_scratch) -> None:
         config = {
-            "inputType": "inline",
+            "input_type": "inline",
             "format": "records",
             "records": [{"a": 1, "s": {"k": "v"}}],
             "arguments": {
@@ -2544,7 +2544,7 @@ def test_generated_data_input_resolves_project_relative_dataset_from_nested_pipe
     (config_dir / "quotes.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "data/quotes.parquet",
@@ -2577,7 +2577,7 @@ def test_standalone_data_input_declaration_reads_from_the_discovered_project_roo
     (project_root / "haute.toml").write_text('[project]\nname = "nested"\n', encoding="utf-8")
     pl.DataFrame({"quote_id": [1, 2]}).write_parquet(data_dir / "quotes.parquet")
     (config_dir / "quotes.json").write_text(
-        json.dumps({"inputType": "file", "format": "parquet", "path": "data/quotes.parquet"}),
+        json.dumps({"input_type": "file", "format": "parquet", "path": "data/quotes.parquet"}),
         encoding="utf-8",
     )
     source = (
@@ -2770,10 +2770,10 @@ def test_prepare_rejects_preexisting_parent_staging_path(haute_scratch: Path) ->
     graph = PipelineGraph(
         nodes=[
             _ready_data_input_node(
-                "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+                "din", {"input_type": "file", "format": "parquet", "path": str(source)}
             ),
             _data_output_node(
-                "dout", {"outputType": "file", "format": "parquet", "path": str(destination)}
+                "dout", {"output_type": "file", "format": "parquet", "path": str(destination)}
             ),
         ],
         edges=[_edge("din", "dout")],
@@ -2789,7 +2789,7 @@ def test_prepare_rejects_a_staging_path_for_non_atomic_lakehouse_output(tmp_path
             _data_output_node(
                 "dout",
                 {
-                    "outputType": "lakehouse",
+                    "output_type": "lakehouse",
                     "format": "iceberg",
                     "mode": "sink",
                     "path": "lake/results",
@@ -2812,12 +2812,12 @@ def test_prepare_database_output_without_staging_path_is_transactional(
     graph = PipelineGraph(
         nodes=[
             _ready_data_input_node(
-                "din", {"inputType": "file", "format": "parquet", "path": str(source)}
+                "din", {"input_type": "file", "format": "parquet", "path": str(source)}
             ),
             _data_output_node(
                 "dout",
                 {
-                    "outputType": "database",
+                    "output_type": "database",
                     "format": "database",
                     "table": "results",
                     "uri": f"sqlite:///{database}",
@@ -2845,7 +2845,7 @@ def _sink_route_graph() -> PipelineGraph:
                     label="sink",
                     nodeType=NodeType.DATA_OUTPUT,
                     config={
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "parquet",
                         "mode": "sink",
                         "path": "sink_failure.parquet",

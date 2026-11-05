@@ -90,7 +90,7 @@ Grouping the scoring steps:
     | **Submodel name** | the definition module's name (`modules/<name>.py`, imported as `from modules import <name>`), and the occurrence's first name |
     | Renaming the node | `alias`: the occurrence's name, used in connections and in its instance output names; the second argument of `pipeline.submodel(...)` |
     | **INPUTS**, **OUTPUTS** | the `input_ports` and `output_ports` of the definition file's `haute.Submodel(...)` header |
-    | **Create Instance** | `instanceOf`: the owning occurrence's name, written as `instance_of="…"` in the instance's `pipeline.submodel(...)` |
+    | **Create Instance** | `instance_of`: the owning occurrence's name, written as `instance_of="…"` in the instance's `pipeline.submodel(...)` |
 
     `definitionId`, the definition's stable identity, has no editor control: Haute sets it when
     you create the submodel and writes it as `definition_id` in the definition file.
@@ -101,10 +101,10 @@ Grouping the scoring steps:
 
     | Key | Type | Description |
     |---|---|---|
-    | `definitionId` | text | The submodel definition this occurrence runs. |
+    | `definition_id` | text | The submodel definition this occurrence runs. |
     | `alias` | text | The occurrence's name in the pipeline. |
-    | `instanceOf` | text | For an instance, the occurrence whose definition it shares. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `instance_of` | text | For an instance, the occurrence whose definition it shares. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

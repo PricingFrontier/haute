@@ -383,7 +383,7 @@ def snapshot_backed_inputs(
         if kind != "data_input":
             continue
         config = node.data.config
-        if not config.get("inputType"):
+        if not config.get("input_type"):
             # A config that names no provider is not a resolvable Data Input;
             # the node builder owns that rejection, not preparation.
             continue

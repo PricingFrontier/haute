@@ -60,15 +60,15 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   const { tables } = form.schema
   const query = search.trim()
   const filtering = query !== ""
-  // While searched, the columns of a table the search matches, by id; null while it is not.
+  // While searched, the columns of a table the search matches, by name; null while it is not.
   const matched = (table: SchemaTable): ReadonlySet<string> | null =>
-    filtering ? new Set(table.columns.filter((column) => columnMatches(column, query)).map((column) => column.id)) : null
+    filtering ? new Set(table.columns.filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
   const shownTables = tables.map((table, index) => ({ table, index, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const addTable = () => {
     const table = createSchemaTable(form)
     change((f) => addSchemaTable(f, table))
-    setAdded(table.id)
+    setAdded(table.name)
   }
 
   return (
@@ -95,7 +95,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
           )}
           {shownTables.map(({ table, index, shown }) => (
             <TableBlock
-              key={table.id}
+              key={table.name}
               form={form}
               table={table}
               index={index}
@@ -103,14 +103,14 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
               drag={readOnly || filtering || isQuoteDetails(table) ? undefined : dragTable(index)}
               readOnly={readOnly}
               matched={shown}
-              kept={storeColumns[table.id] ?? NOTHING_KEPT}
+              kept={storeColumns[table.name] ?? NOTHING_KEPT}
               added={added}
               setAdded={setAdded}
               details={details}
               setDetails={setDetails}
-              collapsed={!filtering && collapsed.has(table.id)}
-              onToggleCollapsed={() => toggleCollapsed(table.id)}
-              problems={problems.filter((p) => p.tableId === table.id).map((p) => p.message)}
+              collapsed={!filtering && collapsed.has(table.name)}
+              onToggleCollapsed={() => toggleCollapsed(table.name)}
+              problems={problems.filter((p) => p.tableId === table.name).map((p) => p.message)}
             />
           ))}
           {!readOnly && !filtering && <QuietAction onClick={addTable} className="justify-self-start">Add table</QuietAction>}

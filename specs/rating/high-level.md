@@ -23,9 +23,17 @@ In scope:
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs with a required fixed finite numeric
   base value using `multiply` / `add` / `min` / `max`.
-- Config normalisation: rating-table entries persist only in one canonical
-  ordered row-array shape. Categorical and breakpoints banding rules retain
-  their compact key/value-map sidecar shape.
+- Config normalisation: in memory a rating table's entries are one canonical
+  ordered row array; its sidecar writes them as a grid (below). A breakpoint
+  banding factor's sidecar writes its bands as a list, one `{"upper", "label"}`
+  a band in order, the open-ended band with no `upper` last (READ-27): an edge is a
+  number where the number reads back to the text it was typed as (`4`, `6.5`),
+  otherwise its text, a date or a date with a time among them; whether a band
+  includes its upper edge stays the factor's `right_closed`, and a `default` of
+  null is left out. A sidecar still writing breakpoints as a map from edge to
+  label is refused, naming the list form. Categorical banding keeps its
+  value-to-group map, identity entries included, since an unlisted value falls to
+  the default.
 - The dtype-faithful canonical string form of a rating-table factor key
   (`normalise_rating_key(value, dtype)`) and its Polars-expression twin, shared
   with trace enrichment and the optimiser's ratebook save/apply path so every
@@ -61,7 +69,7 @@ Out of scope (owned by neighbouring components):
   is rejected; there is no default type. (An operator/threshold `continuous`
   type existed and is removed: the editor never offered it.)
 - `breakpoints` rules are an ordered list of boundaries with labels, closed on
-  the right by default (`(lower, upper]`) or on the left when `rightClosed:
+  the right by default (`(lower, upper]`) or on the left when `right_closed:
   false`. At most one boundary may be open-ended (empty), and it anchors the
   final unbounded range. A boundary is a number, a date (`YYYY-MM-DD`), or a
   date and time (`YYYY-MM-DD HH:MM`, optionally `:SS` and a fraction, `T` or a
@@ -91,7 +99,7 @@ Out of scope (owned by neighbouring components):
   assignment; an all-unusable rule set is rejected rather than silently
   omitting the configured output column.
 - Active factors write distinct output columns. Two active factors naming one
-  `outputColumn` are refused, naming the column and both factors (by position
+  `output_column` are refused, naming the column and both factors (by position
   and input column), when the config is validated and again when the node
   runs, in the executor and a standalone run alike, rather than the later band
   silently replacing the earlier. A draft factor sharing an active factor's
@@ -100,7 +108,7 @@ Out of scope (owned by neighbouring components):
 **Rating** (`apply_rating_step_from_config` / `_apply_rating_step_outputs`):
 
 - Each table declares one to three `factors` (input column names), an
-  `outputColumn`, and `entries` (rows of factor values plus a numeric `value`).
+  `output_column`, and `entries` (rows of factor values plus a numeric `value`).
   A row keeps each factor's level under the factor's name and its rate under
   `value`, so no factor may be named `value`: the config codec refuses such a
   table wherever it comes from (an editor save, a sidecar read, the assistant),
@@ -110,20 +118,20 @@ Out of scope (owned by neighbouring components):
   A left join matches input rows to table entries on the canonicalised factor
   key (see below).
 - A **miss** — an input row whose factor combination has no matching entry —
-  is resolved by, in order of precedence: (1) a usable numeric `defaultValue`
-  fills every miss silently; (2) `onMissing: "neutral"` leaves the output
+  is resolved by, in order of precedence: (1) a usable numeric `default_value`
+  fills every miss silently; (2) `on_missing: "neutral"` leaves the output
   null and logs each materialised batch containing misses at WARNING
   (`multiply`/`add` replace that null with their neutral element during a
   multi-column combine; `min`/`max` skip it when another value exists);
-  (3) the default policy, `onMissing: "error"`, raises
+  (3) the default policy, `on_missing: "error"`, raises
   `RatingTableMissError` naming the table, the missing key(s), and the
   affected row count.
 - A table the editor creates (the Rating Step node default and **Add table**)
-  has no `defaultValue`, so its misses stop the run until the analyst types a
-  default or sets **On miss** (`onMissing`) to **Leave empty** (`"neutral"`).
+  has no `default_value`, so its misses stop the run until the analyst types a
+  default or sets **On miss** (`on_missing`) to **Leave empty** (`"neutral"`).
   The editor shows **On miss** beside **Default** and disables it while
-  Default holds a value; clearing Default removes `defaultValue`. Every edit
-  keeps a table's `onMissing` and leaves an absent `defaultValue` absent.
+  Default holds a value; clearing Default removes `default_value`. Every edit
+  keeps a table's `on_missing` and leaves an absent `default_value` absent.
 - Table lookup keys are compared as strings through the factor column's
   originating Polars dtype. Table-entry values are first coerced through that
   dtype, then both the entry and input values use the same Polars expression:
@@ -139,15 +147,14 @@ Out of scope (owned by neighbouring components):
 - Lookup keys are materialised into collision-free temporary columns for the
   join. The source factor columns are never overwritten and therefore never
   need a lossy string-to-original-dtype revert.
-- Multiple entries sharing the same factor key keep the *last* one (matches
-  the intent of "later edits win" in the entry list).
-- After the table stage, `combinedOutputs` combine every materialised table
-  output column of the step with a required fixed finite numeric `baseValue`
+- Multiple entries sharing the same factor key are refused (below).
+- After the table stage, `combined_outputs` combine every materialised table
+  output column of the step with a required fixed finite numeric `base_value`
   using `multiply`, `add`, `min`, or `max`. A table that never materialised its
   output column (because it was incomplete — see Failure model) is omitted from
   combining, not silently referenced as null.
 - Every table output column and combined-output column is unique across the
-  rating step. Duplicate `tables[].outputColumn` values are rejected with the
+  rating step. Duplicate `tables[].output_column` values are rejected with the
   later table index and duplicated column named; the runtime combine boundary
   independently rejects duplicate participant columns so a bypassed
   normaliser cannot square or double-count a surviving factor.
@@ -178,7 +185,7 @@ Out of scope (owned by neighbouring components):
   corrupting downstream pricing arithmetic; more than one open-ended
   breakpoint raises rather than silently keeping only the last; duplicate
   breakpoint boundaries raise rather than producing an empty interval.
-  `onMissing: "neutral"` is the explicit rating-miss opt-out, and it logs
+  `on_missing: "neutral"` is the explicit rating-miss opt-out, and it logs
   each materialised batch containing misses. Banding rejects unknown operators
   and any non-list top-level `factors` value. Rating rejects non-list factor or
   entry containers and any populated entry list without declared factors at
@@ -195,17 +202,35 @@ Out of scope (owned by neighbouring components):
   a save/apply dtype mismatch before constructing a lookup. This prevents a
   dtype boundary from becoming an accepted neutral miss. Agreement is pinned by
   one real-Polars fixture matrix shared by runtime, trace, and optimiser tests.
-- **Lossless canonical rating sidecars.** Rating-table entries persist as
-  ordered row arrays rather than JSON object-key maps. JSON object keys erase
-  the distinction between values such as numeric `25.0` and the string label
-  `"25.0"`, so nested maps are not a lossless canonical format. Table order,
-  factor order, entry order,
-  scalar identity, outputs, defaults, miss policy, and optional
-  `factorDtypes` metadata survive a canonical save/load round trip.
-- **Deduplicate before joining, not after.** A rating table's factor keys are
-  deduplicated (`keep="last"`) before the join, so a left join can never fan
-  out rows even if the config accidentally has two entries for the same
-  factor combination.
+- **A rating sidecar writes each table as a grid (READ-26).** `factors` lists
+  the table's factors in order (up to three); with one factor there is no
+  `columns` and each line of `rows` is a level and its rate; with more,
+  `columns` lists the last factor's levels and each line of `rows` holds one
+  combination of the other factors, its levels first, then one rate per
+  column. A cell with no entry is `null`, and a lookup there misses and follows
+  the table's miss policy; a rate of 0 is a rate. Levels keep their JSON type,
+  so `25` and `"25"` stay distinct (JSON object keys would erase that, so the
+  grid uses arrays). `default_value` is written as the editor holds it, text,
+  next to `on_missing`, which the engine reads as the number it is; an entry
+  holding a key other than its levels and its rate is refused at save, naming
+  it, since the grid has no place for it,
+  and `factor_dtypes`, the outputs and the other settings stay beside the grid,
+  each line of which is one line of the file, so changing one rate changes one
+  line. `_rating_step_config.compact_rating_config_for_sidecar` writes the grid
+  and `expand_rating_config_from_sidecar` reads it back into the entries the
+  editor and the engine work with; a sidecar still in the row-array form is
+  refused, naming the grid. Table order, factor order, scalar
+  identity, outputs, defaults, miss policy and `factor_dtypes` survive a save and
+  load; entries come back in the grid's row-major order.
+- **Two entries for the same levels are refused, never resolved.** A rating
+  table holding two entries whose levels are equal once converted to the factor
+  columns' types is refused by the shared lookup every run path uses, naming the
+  table and the levels (`RatingDuplicateEntriesError`): no path keeps one of
+  them, a config built in code included, and a duplicate that appears only after
+  an upstream type change is refused at that run. Without duplicates the left
+  join cannot fan out rows. The save refuses entries whose levels are identical
+  as written and, where the table records `factor_dtypes` for every factor,
+  entries equal under those types; the editor shows the save's refusal.
 - **One banding node holds many factors, rather than one node per factor or
   separate numeric/categorical node types.** A single pipeline step often
   bands several columns at once (age, vehicle age, property type, ...);
@@ -262,12 +287,12 @@ Out of scope (owned by neighbouring components):
 
 ## Failure model
 
-- **Rating-table miss, no usable default, `onMissing: "error"` (default):**
+- **Rating-table miss, no usable default, `on_missing: "error"` (default):**
   raises `RatingTableMissError` at frame materialisation (not at config-build
   time — it is wired into the lazy plan via `map_batches` so it fires exactly
   when the plan runs, batch by batch under streaming). The message names the
   table, up to 10 distinct missing keys, and that batch's row/miss counts.
-- **Rating-table miss, `onMissing: "neutral"`:** no exception; each batch with
+- **Rating-table miss, `on_missing: "neutral"`:** no exception; each batch with
   misses is logged at WARNING with table, output column, miss count, and missing keys.
   The output stays null for those rows (multiply/add fold it to the operation's
   neutral element downstream).
@@ -277,7 +302,7 @@ Out of scope (owned by neighbouring components):
   that names no exact duration of the column's time unit, more than one open-ended breakpoint, an
   open-ended breakpoint with no bounded anchor, a duplicate breakpoint
   boundary, an unsupported combine operation, a non-finite/missing
-  `combinedOutputs[].baseValue`, a duplicate table/combined output column, or
+  `combined_outputs[].base_value`, a duplicate table/combined output column, or
   two active banding factors with one output column):
   raise `ValueError` eagerly, before the frame is touched.
 - **All-null `min`/`max` participants:** raises
@@ -306,7 +331,7 @@ Out of scope (owned by neighbouring components):
   unchanged for that table/factor. An entry list may omit factors only while it
   is empty; a populated entry list with no declared factors is malformed and
   raises `ValueError`. When a rating table has an
-  `outputColumn` configured but is otherwise incomplete, the skip is logged at
+  `output_column` configured but is otherwise incomplete, the skip is logged at
   WARNING (`rating_table_skipped_incomplete`) so the gap is observable instead
   of a silently-missing column reaching a combined output.
   A non-empty banding rule list whose rules are all unusable is malformed and

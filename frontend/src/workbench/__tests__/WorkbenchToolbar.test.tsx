@@ -41,17 +41,16 @@ const blank: FormSpec = {
   sample: {},
 }
 
-/** The blank form with one input table, `t1`, holding one column, `c1`: what a quote can be typed into. */
+/** The blank form with one input table, `policy`, holding one column, `limit`: what a quote can be typed into. */
 const form: FormSpec = {
   ...blank,
   schema: {
     tables: [
       {
-        id: "t1",
         name: "policy",
         role: "input",
         rows: "one",
-        columns: [{ id: "c1", name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], options_source: null, row_per_value: false, index: false, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
+        columns: [{ name: "limit", type: "str", label: "", key: false, required: false, min: null, max: null, options: [], options_source: null, row_per_value: false, index: false, help: "", placeholder: "", group: "", default_value: "", number_format: "general", decimal_places: null, use_grouping: true }],
       },
     ],
   },
@@ -162,7 +161,7 @@ describe("WorkbenchToolbar", () => {
   })
 
   it("has Schema and Reset off until the form is read", () => {
-    useWorkbenchFormStore.setState({ form: { ...form, sample: { t1: [{ c1: "250000" }] } }, status: "loading" })
+    useWorkbenchFormStore.setState({ form: { ...form, sample: { policy: [{ limit: "250000" }] } }, status: "loading" })
     useWorkbenchViewStore.setState({ mode: "preview" })
     renderToolbar()
     expect(screen.getByRole("button", { name: "Schema" })).toBeDisabled()
@@ -172,14 +171,14 @@ describe("WorkbenchToolbar", () => {
   it("has Reset, disabled while building and on a new quote, starting the sample again in Preview at its defaults as one undo step", () => {
     const [policy] = form.schema.tables
     const defaulted: FormSpec = { ...form, schema: { tables: [{ ...policy, columns: [{ ...policy.columns[0], default_value: "100000" }] }] } }
-    const typed = { ...defaulted, sample: { t1: [{ c1: "250000" }] } }
+    const typed = { ...defaulted, sample: { policy: [{ limit: "250000" }] } }
     useWorkbenchFormStore.setState({ form: typed })
     renderToolbar()
     expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled()
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }))
     fireEvent.click(screen.getByRole("button", { name: "Reset" }))
-    expect(useWorkbenchFormStore.getState()).toMatchObject({ form: { sample: { t1: [{ c1: "100000" }] } }, undoStack: [typed] })
+    expect(useWorkbenchFormStore.getState()).toMatchObject({ form: { sample: { policy: [{ limit: "100000" }] } }, undoStack: [typed] })
     expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled()
   })
 

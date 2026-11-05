@@ -60,12 +60,12 @@ Out of scope (owned elsewhere):
 - Generic job-store, job-lifecycle, and cancellation-registry mechanics shared with other
   long-running routes (modelling, optimiser) — see
   [background-jobs](../background-jobs/high-level.md).
-- Parsing and code-generation of the `@pipeline.explore()` decorator and its
-  `overview=`/`pivots=`/`charts=` kwargs into/out of pipeline source files — see
-  [codegen](../codegen/high-level.md) and
-  [expression-parsing](../expression-parsing/high-level.md) (the parser/codegen call sites live
-  in `_codegen_builders.py` and `_config_builder.py`, which import the validators from
-  `haute._explore_overview`, `haute._explore_pivots`, and `haute._explore_charts`).
+- Writing and reading an Explore node's `config/explore/<node>.json` sidecar, which holds its
+  overview, pivot formulas, pivots and charts, while its decorator carries only `config=`
+  and its steps live in its body (READ-43) — see [pipeline-config](../pipeline-config/high-level.md)
+  and [codegen](../codegen/high-level.md) (the call site lives in `_config_io.py`, whose
+  `explore_settings` imports the validators from `haute._explore_overview`,
+  `haute._explore_pivots`, and `haute._explore_charts`).
 - Rendering Explore views in the UI — see
   [frontend-preview-explore](../frontend-preview-explore/high-level.md).
 
@@ -370,9 +370,8 @@ Out of scope (owned elsewhere):
   reported, cleared, and profiled through; supplies shared route helpers (`find_typed_node`,
   `_ensure_source_file`, `_validate_runtime_input_paths`, `flatten_graph`); and mounts the Explore
   pivot router in the application shell.
-- [codegen](../codegen/high-level.md) / [expression-parsing](../expression-parsing/high-level.md):
-  call the Explore display-config validators when emitting or parsing the `overview=`, `pivots=`,
-  and `charts=` kwargs on `@pipeline.explore()`.
+- [pipeline-config](../pipeline-config/high-level.md): calls the Explore display-config
+  validators when it writes or reads an Explore node's sidecar (READ-43).
 - [frontend-preview-explore](../frontend-preview-explore/high-level.md): the consumer of
   `NodeDataProfile` — renders the current Explore result panes from the fields this component
   computes.

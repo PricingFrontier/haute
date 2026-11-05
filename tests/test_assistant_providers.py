@@ -1912,7 +1912,7 @@ class TestDatabricksProvider:
             "node_type": "dataInput",
             "name": "demo",
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "path": "data/demo.parquet",
                 "mode": "scan",

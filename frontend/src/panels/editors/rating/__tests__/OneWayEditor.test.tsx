@@ -6,8 +6,8 @@ import type { RatingTable } from "../ratingTableUtils"
 function makeTable(overrides: Partial<RatingTable> = {}): RatingTable {
   return {
     factors: ["age_band"],
-    outputColumn: "age_factor",
-    defaultValue: "1.0",
+    output_column: "age_factor",
+    default_value: "1.0",
     entries: [
       { age_band: "young", value: 1.2 },
       { age_band: "mid", value: 1.0 },
@@ -102,7 +102,7 @@ describe("OneWayEditor", () => {
   it("commits a typed number exactly and a cleared cell as the table default", () => {
     const onUpdateEntries = vi.fn()
     render(
-      <OneWayEditor table={makeTable({ defaultValue: "1.0" })} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
+      <OneWayEditor table={makeTable({ default_value: "1.0" })} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
     )
     const young = screen.getByLabelText("Relativity for age_band young")
     fireEvent.change(young, { target: { value: " 1.5 " } })

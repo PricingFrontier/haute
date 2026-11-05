@@ -186,7 +186,7 @@ def test_the_trace_reconstructs_a_contract_bound_external_prediction(project: Pa
     prediction = float(native_reference(model_path, frame, offset=True)[0])
 
     explanation = explain_model_score_from_config(
-        {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+        {"source_type": "file", "model_path": model_path.name, "task": "regression"},
         frame.row(0, named=True),
         {"pred": prediction},
         prediction_column="pred",
@@ -266,7 +266,7 @@ def test_a_missing_or_empty_additive_offset_is_refused_and_the_trace_too(project
         score(source, frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("exposure")).head(1))
     with pytest.raises(ModelExplanationError, match="exposure"):
         explain_model_score_from_config(
-            {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+            {"source_type": "file", "model_path": model_path.name, "task": "regression"},
             frame.drop("exposure").row(0, named=True),
             {"pred": 1.0},
             prediction_column="pred",
@@ -388,7 +388,7 @@ def test_the_trace_explains_a_row_priced_without_its_exposure(
     prediction = float(score(FileModelSource(model_path=model_path.name), row)[0])
 
     explanation = explain_model_score_from_config(
-        {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+        {"source_type": "file", "model_path": model_path.name, "task": "regression"},
         row.row(0, named=True),
         {"pred": prediction},
         prediction_column="pred",
@@ -418,7 +418,7 @@ def test_the_trace_explains_a_file_sourced_prediction(
     prediction = float(score(FileModelSource(model_path=model_path.name), frame)[0])
 
     explanation = explain_model_score_from_config(
-        {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+        {"source_type": "file", "model_path": model_path.name, "task": "regression"},
         frame.row(0, named=True),
         {"pred": prediction},
         prediction_column="pred",
@@ -584,7 +584,7 @@ class TestBundling:
 
         model_path = external_catboost(project, offset=True)
         contract = write_contract(model_path, offset="exposure", link="log")
-        graph = _model_score_graph({"sourceType": "file", "model_path": model_path.name})
+        graph = _model_score_graph({"source_type": "file", "model_path": model_path.name})
 
         artifacts = collect_artifacts(graph, ["src"], project, project_root=project)
 
@@ -601,7 +601,7 @@ class TestBundling:
         explicit = write_contract(project / "other.cbm", offset="exposure", link="log")
         graph = _model_score_graph(
             {
-                "sourceType": "file",
+                "source_type": "file",
                 "model_path": model_path.name,
                 "feature_contract_path": explicit.name,
             }
@@ -614,7 +614,7 @@ class TestBundling:
     def test_a_missing_model_file_fails_the_bundle(self, project: Path) -> None:
         from haute.deploy._bundler import collect_artifacts
 
-        graph = _model_score_graph({"sourceType": "file", "model_path": "gone.cbm"})
+        graph = _model_score_graph({"source_type": "file", "model_path": "gone.cbm"})
 
         with pytest.raises(FileNotFoundError, match="gone.cbm"):
             collect_artifacts(graph, ["src"], project, project_root=project)
@@ -629,7 +629,7 @@ class TestBundling:
         source = source_for("run", model_path, contract)
         assert isinstance(source, RunModelSource)
         graph = _model_score_graph(
-            {"sourceType": "run", "run_id": source.run_id, "artifact_path": model_path.name}
+            {"source_type": "run", "run_id": source.run_id, "artifact_path": model_path.name}
         )
 
         artifacts = collect_artifacts(graph, ["src"], project, project_root=project)
@@ -742,7 +742,7 @@ def test_scoring_and_bundling_pick_the_project_file_over_the_pipeline_directorys
     (project / "models").mkdir()
     in_project = external_catboost(project / "models", offset=False, stamp="")
     external_catboost(pipeline_dir / "models", offset=False, stamp="")
-    graph = _model_score_graph({"sourceType": "file", "model_path": "models/ext.cbm"})
+    graph = _model_score_graph({"source_type": "file", "model_path": "models/ext.cbm"})
 
     scored = resolve_model_file("models/ext.cbm", pipeline_dir)
     bundled = collect_artifacts(graph, ["src"], pipeline_dir, project_root=project)["ms__ext.cbm"]
@@ -841,7 +841,7 @@ def test_a_sibling_contract_outside_the_project_is_refused(project: Path) -> Non
 
     with pytest.raises(RuntimePathOutsideProjectError):
         score(FileModelSource(model_path="ext.cbm"), data())
-    graph = _model_score_graph({"sourceType": "file", "model_path": "ext.cbm"})
+    graph = _model_score_graph({"source_type": "file", "model_path": "ext.cbm"})
     with pytest.raises(DeployError, match="outside the project"):
         collect_artifacts(graph, ["src"], inner, project_root=inner)
 
@@ -853,7 +853,7 @@ def test_a_backslash_model_path_bundles_and_serves_under_one_key(project: Path) 
 
     (project / "models").mkdir()
     model = external_catboost(project / "models", offset=False, stamp="")
-    config = {"sourceType": "file", "model_path": "models\\ext.cbm"}
+    config = {"source_type": "file", "model_path": "models\\ext.cbm"}
 
     artifacts = collect_artifacts(
         _model_score_graph(config), ["src"], project, project_root=project
@@ -973,7 +973,7 @@ def test_a_model_trained_outside_haute_scores_as_its_library_predicts(
     if kind == "file":
         row = frame.head(1)
         explanation = explain_model_score_from_config(
-            {"sourceType": "file", "model_path": model_path.name, "task": "regression"},
+            {"source_type": "file", "model_path": model_path.name, "task": "regression"},
             row.row(0, named=True),
             {"pred": float(scored[0])},
             prediction_column="pred",
@@ -1242,7 +1242,7 @@ def test_a_lightgbm_model_trained_outside_haute_keeps_its_response_transform(
 
     with pytest.raises(ModelExplanationError, match="inverse link does not reproduce"):
         explain_model_score_from_config(
-            {"sourceType": "file", "model_path": "transform.lgbm", "task": task},
+            {"source_type": "file", "model_path": "transform.lgbm", "task": task},
             frame.row(0, named=True),
             {"pred": float(scored["pred"][0])},
             prediction_column="pred",
@@ -1271,7 +1271,7 @@ def test_the_preview_notes_an_exposure_it_priced_as_a_full_policy_term(
                                 "label": "ms",
                                 "nodeType": "modelScore",
                                 "config": {
-                                    "sourceType": "file",
+                                    "source_type": "file",
                                     "model_path": model_path.name,
                                     "task": "regression",
                                     "output_column": "pred",
@@ -1327,12 +1327,12 @@ def test_a_preview_seeded_from_a_scored_snapshot_keeps_its_note(
         exposure=pl.when(pl.int_range(pl.len()) < 4).then(None).otherwise(pl.col("exposure"))
     ).write_parquet(project / "quotes.parquet")
     score = {
-        "sourceType": "file",
+        "source_type": "file",
         "model_path": model_path.name,
         "task": "regression",
         "output_column": "pred",
     }
-    source = {"inputType": "file", "format": "parquet", "mode": "scan", "path": "quotes.parquet"}
+    source = {"input_type": "file", "format": "parquet", "mode": "scan", "path": "quotes.parquet"}
     graph = PipelineGraph(
         nodes=[
             GraphNode(id=node_id, data=NodeData(label=node_id, nodeType=kind, config=config))
@@ -1442,7 +1442,7 @@ def test_the_note_reads_a_model_score_fed_by_one_table_of_several(project: Path)
                     label="ms",
                     nodeType=NodeType.MODEL_SCORE,
                     config={
-                        "sourceType": "file",
+                        "source_type": "file",
                         "model_path": model_path.name,
                         "task": "regression",
                         "output_column": "pred",

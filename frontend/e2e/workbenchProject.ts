@@ -20,17 +20,16 @@ export const FORM_FILES: Record<string, unknown> = {
   "form.json": { version: 1, name: "haute-e2e", schema: ["quote_details", "policy", "pricing"], sheets: ["sheet_1"] },
   "schema/quote_details.json": { columns: [] },
   "schema/policy.json": {
-    id: "t_policy",
     role: "input",
     rows: "one",
     columns: [
-      { id: "c_limit", name: "limit", type: "int", required: true },
-      { id: "c_region", name: "region", type: "str", options: ["north", "south"] },
+      { name: "limit", type: "int", required: true },
+      { name: "region", type: "str", options: ["north", "south"] },
     ],
   },
-  "schema/pricing.json": { id: "t_pricing", role: "output", rows: "one", columns: [{ id: "c_premium", name: "premium", type: "float" }] },
-  "sheets/sheet_1.json": { id: "page_1", title: "Sheet 1", sections: [{ id: "section_1", title: "Section 1", components: [] }] },
-  "sheets/sheet_1.layout.json": { width: 1280, sections: { section_1: { height: 560, components: {} } } },
+  "schema/pricing.json": { role: "output", rows: "one", columns: [{ name: "premium", type: "float" }] },
+  "sheets/sheet_1.json": { title: "Sheet 1", sections: [{ title: "Section 1", components: [] }] },
+  "sheets/sheet_1.layout.json": { width: 1280, sections: { "Section 1": { height: 560, components: {} } } },
 }
 
 export const readFormFile = (path: string) => JSON.parse(readFileSync(resolve(FORM_FOLDER, path), "utf8"))
@@ -79,7 +78,7 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
         source_handle: string | null
         target_handle: string | null
       }
-      const replaced = new Set(["quotes", "priced"])
+      const replaced = new Set(["quote_input", "quote_response"])
       const nodes = (document.nodes as DocumentNode[])
         .filter((node) => !replaced.has(node.label))
         .map((node) => ({
@@ -105,10 +104,10 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
         }))
       nodes.push(
         {
-          id: "quote",
+          id: "workbench_input",
           type: "custom",
           position: { x: 60, y: 720 },
-          data: { label: "quote", description: "", nodeType: "workbenchInput", config: {} },
+          data: { label: "workbench_input", description: "", nodeType: "workbenchInput", config: {} },
         },
         {
           id: "premium",
@@ -122,15 +121,15 @@ export async function buildWorkbenchPipeline(page: Page): Promise<void> {
           },
         },
         {
-          id: "response",
+          id: "workbench_output",
           type: "custom",
           position: { x: 700, y: 720 },
-          data: { label: "response", description: "", nodeType: "workbenchOutput", config: {} },
+          data: { label: "workbench_output", description: "", nodeType: "workbenchOutput", config: {} },
         },
       )
       edges.push(
-        { id: "e_quote_premium", source: "quote", target: "premium", sourceHandle: "policy", targetHandle: null },
-        { id: "e_premium_response", source: "premium", target: "response", sourceHandle: null, targetHandle: "pricing" },
+        { id: "e_workbench_input_premium", source: "workbench_input", target: "premium", sourceHandle: "policy", targetHandle: null },
+        { id: "e_premium_workbench_output", source: "premium", target: "workbench_output", sourceHandle: null, targetHandle: "pricing" },
       )
       const saved = await fetch("/api/pipeline/save", {
         method: "POST",

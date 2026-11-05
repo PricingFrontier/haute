@@ -37,10 +37,10 @@
     {
       "how": "inner",
       "keys": "same",
-      "leftOn": [
+      "left_on": [
         "quote_id"
       ],
-      "rightOn": [
+      "right_on": [
         "quote_id"
       ],
       "output": [
@@ -55,10 +55,10 @@
     {
       "how": "inner",
       "keys": "different",
-      "leftOn": [
+      "left_on": [
         "x"
       ],
-      "rightOn": [
+      "right_on": [
         "rid"
       ],
       "output": [
@@ -73,10 +73,10 @@
     {
       "how": "left",
       "keys": "same",
-      "leftOn": [
+      "left_on": [
         "quote_id"
       ],
-      "rightOn": [
+      "right_on": [
         "quote_id"
       ],
       "output": [
@@ -91,10 +91,10 @@
     {
       "how": "left",
       "keys": "different",
-      "leftOn": [
+      "left_on": [
         "x"
       ],
-      "rightOn": [
+      "right_on": [
         "rid"
       ],
       "output": [
@@ -109,10 +109,10 @@
     {
       "how": "right",
       "keys": "same",
-      "leftOn": [
+      "left_on": [
         "quote_id"
       ],
-      "rightOn": [
+      "right_on": [
         "quote_id"
       ],
       "output": [
@@ -127,10 +127,10 @@
     {
       "how": "right",
       "keys": "different",
-      "leftOn": [
+      "left_on": [
         "x"
       ],
-      "rightOn": [
+      "right_on": [
         "rid"
       ],
       "output": [
@@ -145,10 +145,10 @@
     {
       "how": "full",
       "keys": "same",
-      "leftOn": [
+      "left_on": [
         "quote_id"
       ],
-      "rightOn": [
+      "right_on": [
         "quote_id"
       ],
       "output": [
@@ -164,10 +164,10 @@
     {
       "how": "full",
       "keys": "different",
-      "leftOn": [
+      "left_on": [
         "x"
       ],
-      "rightOn": [
+      "right_on": [
         "rid"
       ],
       "output": [
@@ -183,10 +183,10 @@
     {
       "how": "semi",
       "keys": "same",
-      "leftOn": [
+      "left_on": [
         "quote_id"
       ],
-      "rightOn": [
+      "right_on": [
         "quote_id"
       ],
       "output": [
@@ -198,10 +198,10 @@
     {
       "how": "semi",
       "keys": "different",
-      "leftOn": [
+      "left_on": [
         "x"
       ],
-      "rightOn": [
+      "right_on": [
         "rid"
       ],
       "output": [
@@ -213,10 +213,10 @@
     {
       "how": "anti",
       "keys": "same",
-      "leftOn": [
+      "left_on": [
         "quote_id"
       ],
-      "rightOn": [
+      "right_on": [
         "quote_id"
       ],
       "output": [
@@ -228,10 +228,10 @@
     {
       "how": "anti",
       "keys": "different",
-      "leftOn": [
+      "left_on": [
         "x"
       ],
-      "rightOn": [
+      "right_on": [
         "rid"
       ],
       "output": [
@@ -243,8 +243,8 @@
     {
       "how": "cross",
       "keys": "none",
-      "leftOn": [],
-      "rightOn": [],
+      "left_on": [],
+      "right_on": [],
       "output": [
         "quote_id",
         "x",

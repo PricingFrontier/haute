@@ -64,7 +64,6 @@ export type LoadAvailability = "ready" | "unavailable" | "blocked"
 export interface NodeEditorState {
   steps_error: string | null
   steps_discarded: string | null
-  discarded_sidecar: string | null
 }
 
 export interface HauteNodeData extends Record<string, unknown> {
@@ -239,30 +238,30 @@ export function isSubmodelDefinition(
 export function isSubmodelInstanceConfig(value: unknown): value is SubmodelInstanceConfig {
   if (typeof value !== "object" || value === null) return false
   const config = value as Partial<SubmodelInstanceConfig>
-  return isNonBlankText(config.definitionId)
+  return isNonBlankText(config.definition_id)
     && isNonBlankText(config.alias)
-    && (config.instanceOf === undefined || isNonBlankText(config.instanceOf))
+    && (config.instance_of === undefined || isNonBlankText(config.instance_of))
 }
 
 /**
  * True for a submodel occurrence that anchors its shared definition — the
  * owner — or whose identity is malformed. Such nodes are dissolved, never
- * raw-deleted; instance copies (valid `instanceOf`) delete like any node.
+ * raw-deleted; instance copies (valid `instance_of`) delete like any node.
  */
 export function isProtectedSubmodelNodeData(
   data: { nodeType?: unknown; config?: unknown },
 ): boolean {
   if (data.nodeType !== "submodel") return false
   const config = data.config
-  return !isSubmodelInstanceConfig(config) || config.instanceOf === undefined
+  return !isSubmodelInstanceConfig(config) || config.instance_of === undefined
 }
 
 /** Per-node occurrence data. Definitions live in the graph registry, not here. */
 export interface SubmodelInstanceConfig extends Record<string, unknown> {
-  definitionId: string
+  definition_id: string
   alias: string
   /** Present only on a read-only occurrence; points directly to the editable owner. */
-  instanceOf?: string
+  instance_of?: string
 }
 
 export interface SubmodelNodeData extends HauteNodeData {

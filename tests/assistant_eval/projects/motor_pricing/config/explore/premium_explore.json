@@ -1,0 +1,9 @@
+{
+  "overview": {
+    "dataset_snapshot": true,
+    "data_quality": true,
+    "numeric_summary": true,
+    "categorical_summary": true,
+    "schema": true
+  }
+}

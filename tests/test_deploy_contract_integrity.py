@@ -144,7 +144,7 @@ class TestStaticDataSourceSchemaDrift:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": str(bad_csv),
@@ -198,7 +198,7 @@ class TestStaticDataSourceSchemaDrift:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": str(source_path),
@@ -238,7 +238,7 @@ class TestStaticDataSourceSchemaDrift:
                             "label": "static_ds",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "json",
                                 "mode": "read",
                                 "path": str(source_path),
@@ -270,7 +270,7 @@ class TestStaticDataSourceSchemaDrift:
         source_path = tmp_path / "static.json"
         source_path.write_text(json.dumps([{"quote_id": "001"}]), encoding="utf-8")
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "json",
             "mode": "read",
             "path": str(source_path),
@@ -289,8 +289,8 @@ class TestStaticDataSourceSchemaDrift:
         ):
             collect_artifacts(graph(config), [], tmp_path, resources=stack)
 
-        with pytest.raises(DeployError, match="invalid Data Input configuration: .*inputType"):
-            collect_artifacts(graph({**config, "inputType": "carrier-pigeon"}), [], tmp_path)
+        with pytest.raises(DeployError, match="invalid Data Input configuration: .*input_type"):
+            collect_artifacts(graph({**config, "input_type": "carrier-pigeon"}), [], tmp_path)
 
 
 # ===========================================================================
@@ -458,7 +458,7 @@ class TestFeatureContractBundled:
                             "label": "ms_contract",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_contract",
                                 "artifact_path": "model.cbm",
                             },
@@ -516,7 +516,7 @@ class TestFeatureContractBundled:
                             "label": "ms_contract",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_contract",
                                 "artifact_path": "model.cbm",
                                 "feature_contract_path": str(contract_path),
@@ -567,7 +567,7 @@ class TestFeatureContractBundled:
         use_project(tmp_path)
         self._seed_xgboost_run(tmp_path, "run_xgb")
         graph = _api_score_graph(
-            {"sourceType": "run", "run_id": "run_xgb", "artifact_path": "xgb.ubj"}
+            {"source_type": "run", "run_id": "run_xgb", "artifact_path": "xgb.ubj"}
         )
 
         artifacts = collect_artifacts(graph, ["api_in"], tmp_path)
@@ -599,7 +599,7 @@ class TestFeatureContractBundled:
         use_project(tmp_path)
         self._seed_xgboost_run(tmp_path, "run_bare", with_contract=False)
         graph = _api_score_graph(
-            {"sourceType": "run", "run_id": "run_bare", "artifact_path": "xgb.ubj"}
+            {"source_type": "run", "run_id": "run_bare", "artifact_path": "xgb.ubj"}
         )
 
         # The run's listing completes and names no contract. The client is handed

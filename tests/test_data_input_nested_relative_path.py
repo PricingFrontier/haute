@@ -87,7 +87,7 @@ def _data_input_graph(path: str) -> PipelineGraph:
                     label="src",
                     nodeType=NodeType.DATA_INPUT,
                     config={
-                        "inputType": "file",
+                        "input_type": "file",
                         "format": "csv",
                         "mode": "scan",
                         "path": path,

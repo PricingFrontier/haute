@@ -46,13 +46,13 @@ submodel = haute.Submodel(
     input_ports=[
         {
             "name": "records",
-            "targets": [{"nodeId": "base_rate", "handleId": None}],
+            "targets": [{"node_id": "base_rate"}],
         }
     ],
     output_ports=[
         {
             "name": "priced",
-            "source": {"nodeId": "adjust", "handleId": None},
+            "source": {"node_id": "adjust"},
         }
     ],
 )
@@ -490,7 +490,9 @@ class TestParseSubmodelSource:
         """The file's own parse checks its bindings, so the failure names the file."""
         source = _VALID_SUBMODEL.replace("def base_rate(records:", "def base_rate(df:")
 
-        with pytest.raises(ParseError, match="parameters do not match") as exc_info:
+        with pytest.raises(
+            ParseError, match="parameters of node 'base_rate' do not match its inputs"
+        ) as exc_info:
             parse_submodel_source(source, "modules/pricing.py")
 
         assert exc_info.value.context["node_id"] == "base_rate"
@@ -501,7 +503,10 @@ class TestParseSubmodelSource:
         ("old", "new", "message"),
         [
             pytest.param(
-                '"nodeId": "adjust"', '"nodeId": "ghost"', "missing child nodes", id="missing-node"
+                '"node_id": "adjust"',
+                '"node_id": "ghost"',
+                "missing child nodes",
+                id="missing-node",
             ),
             pytest.param(
                 '"name": "priced"',
@@ -572,7 +577,7 @@ class TestMergeSubmodels:
         occurrence = result.node_map["pricing"]
         assert occurrence.data.nodeType == NodeType.SUBMODEL
         assert occurrence.data.config == {
-            "definitionId": "definition_pricing",
+            "definition_id": "definition_pricing",
             "alias": "pricing",
         }
 
@@ -587,8 +592,8 @@ class TestMergeSubmodels:
         assert set(result.submodels or {}) == {"definition_pricing"}
         assert result.node_map["pricing"].data.label == "pricing"
         assert result.node_map["pricing_2"].data.label == "pricing_2"
-        assert result.node_map["pricing_2"].data.config["definitionId"] == ("definition_pricing")
-        assert result.node_map["pricing_2"].data.config["instanceOf"] == "pricing"
+        assert result.node_map["pricing_2"].data.config["definition_id"] == ("definition_pricing")
+        assert result.node_map["pricing_2"].data.config["instance_of"] == "pricing"
 
     def test_rewrites_alias_edges_to_public_port_handles(self) -> None:
         result = _merge(

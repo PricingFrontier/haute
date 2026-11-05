@@ -165,18 +165,16 @@ class NodeEditorState(BaseModel):
 
     None of it is a setting: it is never persisted, hashed or validated as config.
     ``steps_error`` is derived from the node's ``steps`` whenever its data is
-    built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
-    ``discarded_sidecar`` (the transform sidecar those steps came from, which the
-    next save retires) are the parse's findings. A request may carry the field
-    back, as a transform of the graph echoes it, but a save reads neither
-    finding from it: it reparses the file on disk.
+    built; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is
+    the parse's finding. A request may carry the field back, as a transform of the
+    graph echoes it, but a save never reads the finding from it: it reparses the
+    file on disk.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     steps_error: str | None = None
     steps_discarded: str | None = None
-    discarded_sidecar: str | None = None
 
 
 class NodeData(BaseModel):
@@ -358,11 +356,10 @@ class SubmodelInstanceConfig(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    definition_id: str = Field(alias="definitionId")
+    definition_id: str
     alias: str
     instance_of: str | None = Field(
         default=None,
-        alias="instanceOf",
         exclude_if=lambda value: value is None,
     )
 

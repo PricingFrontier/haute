@@ -676,9 +676,9 @@ class TestLimitedPreviewTrace:
         pl.DataFrame(
             {"id": list(range(100)), "premium": [float(i) * 10 for i in range(100)]}
         ).write_parquet(lookup_path)
-        config: dict[str, object] = {"how": "left", "maintainOrder": "left_right", "on": ["id"]}
+        config: dict[str, object] = {"how": "left", "maintain_order": "left_right", "on": ["id"]}
         if maintain_order is not None:
-            config["maintainOrder"] = maintain_order
+            config["maintain_order"] = maintain_order
         return _g(
             {
                 "nodes": [
@@ -931,7 +931,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+                            config={"how": "left", "maintain_order": "left_right", "on": ["id"]},
                         ),
                     ),
                     _transform_node("after", code),
@@ -1002,18 +1002,18 @@ class TestLimitedPreviewTrace:
         ("join_config", "transfers"),
         [
             pytest.param(
-                {"how": "left", "maintainOrder": "left_right", "on": ["id"]}, True, id="left"
+                {"how": "left", "maintain_order": "left_right", "on": ["id"]}, True, id="left"
             ),
             pytest.param(
-                {"how": "inner", "maintainOrder": "left_right", "on": ["id"]}, True, id="inner"
+                {"how": "inner", "maintain_order": "left_right", "on": ["id"]}, True, id="inner"
             ),
             pytest.param(
-                {"how": "right", "maintainOrder": "right_left", "on": ["id"]}, False, id="right"
+                {"how": "right", "maintain_order": "right_left", "on": ["id"]}, False, id="right"
             ),
             pytest.param(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["id"],
                     "column_renames": {"premium": "cost"},
                 },
@@ -1122,7 +1122,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+                            config={"how": "left", "maintain_order": "left_right", "on": ["id"]},
                         ),
                     ),
                     _transform_node("after", "df = join.sort('id')"),
@@ -1232,7 +1232,7 @@ class TestLimitedPreviewTrace:
                     data=NodeData(
                         label=join_id,
                         nodeType=NodeType.EDGE_JOIN,
-                        config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+                        config={"how": "left", "maintain_order": "left_right", "on": ["id"]},
                     ),
                 )
             )
@@ -1240,13 +1240,13 @@ class TestLimitedPreviewTrace:
             "enriched",
             "df = raw_rows\ndf = df.with_columns((pl.col('value') * 2).alias('value_doubled'))",
         )
-        enriched.data.config["inputMapping"] = {"raw_rows": "Edge_Join_3"}
+        enriched.data.config["input_mapping"] = {"raw_rows": "Edge_Join_3"}
         if node_type == "externalFile":
             # Load File code names its inputs by edge name as a Transform's does.
             lookup = tmp_path / "lookup.json"
             lookup.write_text("{}")
             enriched.data.nodeType = NodeType.EXTERNAL_FILE
-            enriched.data.config.update({"path": str(lookup), "fileType": "json"})
+            enriched.data.config.update({"path": str(lookup), "file_type": "json"})
         nodes.append(enriched)
         graph = _g(
             {
@@ -1307,7 +1307,7 @@ class TestLimitedPreviewTrace:
                                 "tables": [
                                     {
                                         "factors": ["region"],
-                                        "outputColumn": "factor",
+                                        "output_column": "factor",
                                         "entries": [{"region": "north", "value": 2.0}],
                                     }
                                 ]
@@ -1343,7 +1343,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+                            config={"how": "left", "maintain_order": "left_right", "on": ["id"]},
                         ),
                     ),
                 ],
@@ -1520,7 +1520,7 @@ class TestLimitedPreviewTrace:
         # The right-only row keeps a null base key, and its own key is dropped.
         config = {
             "how": "full",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
             "on": ["id"],
             "coalesce": False,
             "selected_columns": ["id", "premium"],
@@ -1567,7 +1567,7 @@ class TestLimitedPreviewTrace:
                         data=NodeData(
                             label="join",
                             nodeType=NodeType.EDGE_JOIN,
-                            config={"how": "left", "on": ["id"], "maintainOrder": "left"},
+                            config={"how": "left", "on": ["id"], "maintain_order": "left"},
                         ),
                     ),
                 ],

@@ -336,7 +336,7 @@ the limited preview shows rather than independent source samples.
    `src/haute/_trace_correlation.py::_TRACE_ROW_RULES` (a node-type table: a new type
    fails at import until it has a row; a stand-in node of no node type is never aligned).
    An edge is order-aligned when its child emits at least one row per input row in input
-   order: the base edge of a left edge join whose `maintainOrder` is `left` or
+   order: the base edge of a left edge join whose `maintain_order` is `left` or
    `left_right`; model scoring, banding, rating steps, and scenario expansion without
    post-code; the selected live-switch input; Explore and external-file nodes without
    code, data output, and modelling; the selected data input of an optimiser; the selected
@@ -351,7 +351,7 @@ the limited preview shows rather than independent source samples.
    `ratebook_input` when its resolved `optimiser_mode` is `ratebook`, its first input when
    it is `online`, and both while the mode is unknown. Input names are keyed by physical
    edge, so two ports of one source keep their own executable names. A Transform's or Load
-   File's `inputMapping` (`logical name -> current edge name`) lets its code address an input by
+   File's `input_mapping` (`logical name -> current edge name`) lets its code address an input by
    a stable logical name; the executor binds both names, so `_trace_lineage_alignments`
    returns each child's logical-name aliases and both edge alignment and the carried-column
    proof read the code under both names.
@@ -455,7 +455,7 @@ the limited preview shows rather than independent source samples.
    Code (Polars, Explore, external file, and builder post-code) must pass
    `carried_column_proof` in `src/haute/_column_lineage.py`, given each port plan's column
    names and dtypes (builder post-code, which runs on the builder's own output, gets none),
-   the preamble's selector aliases, and the child's `inputMapping` aliases, which the proof
+   the preamble's selector aliases, and the child's `input_mapping` aliases, which the proof
    resolves to the edge input names it reports (`input_aliases`). The proof is closed and syntactic over
    `df = <chain>` statements rooted at one input:
    - a statement that only binds a name to a value no frame flows into (`factor = 2`, plain,
@@ -1073,7 +1073,7 @@ integration/regression suites:
   target-node values exactly match `preview[row_index]` for the same graph and
   `row_limit`, including the shared-cache-fingerprint requirement between preview
   and trace calls. `TestLimitedPreviewTrace` traces rows of a target-only limited
-  preview: a joined value to its lookup row with and without `maintainOrder`, a filtered
+  preview: a joined value to its lookup row with and without `maintain_order`, a filtered
   row past the source prefix, a grouped row's source rows reported as `aggregated_rows`
   with their count (a group of one resolved to its row) but left ambiguous when a filter
   or a rewritten key means they need not all be in its group, a full join's right-only
@@ -1086,7 +1086,7 @@ integration/regression suites:
   computed and positional selectors below an unordered join, a row-local `polars.selectors`
   program traced from head frames, a selector renamed mid-expression reported
   `row_scope_unproven` instead of attributed to an unrelated row, and Transform and Load
-  File code that addresses its input through an `inputMapping` alias traced through both
+  File code that addresses its input through an `input_mapping` alias traced through both
   upstream Edge Joins, a
   node its nearest child cannot prove traced through another child, and a left join's
   unmatched and null keys reported as `join_no_match`.
@@ -1099,7 +1099,7 @@ integration/regression suites:
   `tests/test_trace_multi_frame.py::test_row_scope_names_each_port_of_one_source_by_its_own_frame`
   pins per-edge input names for both edge orders.
 - **`tests/test_trace_row_scope_lookup.py`** — `RowScopeResolver.lookup` probes by Edge
-  Join key (either role, `on` or `leftOn`/`rightOn`) with bare comparisons and matches the
+  Join key (either role, `on` or `left_on`/`right_on`) with bare comparisons and matches the
   other carried values in memory; keeps two rows sharing every value; falls back to the full
   filter when the probe reaches its limit or no non-null join key is carried (no Edge Join,
   a cross join, the key not carried, a null key); and returns exactly the full filter's rows

@@ -36,7 +36,7 @@ function dataInput(id: string): Node {
     data: {
       nodeType: NODE_TYPES.DATA_INPUT,
       config: {
-        inputType: "file",
+        input_type: "file",
         format: "csv",
         mode: "scan",
         path: `${id}.csv`,
@@ -431,7 +431,7 @@ describe("ensureInputSnapshots", () => {
   it("skips canonical direct Parquet inputs", async () => {
     const direct = dataInput("direct")
     direct.data.config = {
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       path: "direct.parquet",
@@ -446,7 +446,7 @@ describe("ensureInputSnapshots", () => {
   it("skips direct Parquet with a blank mode", async () => {
     const direct = dataInput("blank-mode")
     direct.data.config = {
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "",
       path: "blank-mode.parquet",
@@ -461,7 +461,7 @@ describe("ensureInputSnapshots", () => {
   it("treats Parquet in read mode as snapshot-backed", async () => {
     const readMode = dataInput("read-mode")
     readMode.data.config = {
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "read",
       path: "read-mode.parquet",

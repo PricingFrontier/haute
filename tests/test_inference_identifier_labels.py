@@ -33,7 +33,7 @@ def _assert_inferred_identity(
 ) -> None:
     assert table["label"] == label
     assert table["path"] == path
-    assert table["displayPath"] == path
+    assert table["display_path"] == path
 
 
 @pytest.mark.parametrize(

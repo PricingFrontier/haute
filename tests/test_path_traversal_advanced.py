@@ -187,7 +187,7 @@ class TestModelScorerConfigTraversal:
         secret.write_text(
             json.dumps(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "abc123",
                     "artifact_path": "model",
                     "task": "regression",
@@ -207,7 +207,7 @@ class TestModelScorerConfigTraversal:
         config_file.write_text(
             json.dumps(
                 {
-                    "sourceType": "registered",
+                    "source_type": "registered",
                     "registered_model": "evil_model",
                     "version": "1",
                     "task": "classification",

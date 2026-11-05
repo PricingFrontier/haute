@@ -39,7 +39,7 @@ const inputNode = {
   data: {
     label: "Source",
     nodeType: "dataInput",
-    config: { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" },
+    config: { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv" },
   },
 } as Node
 

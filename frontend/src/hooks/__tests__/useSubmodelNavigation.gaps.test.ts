@@ -46,7 +46,7 @@ function occurrence() {
     data: {
       label: "pricing",
       nodeType: "submodel",
-      config: { definitionId: DEFINITION_ID, alias: "pricing" },
+      config: { definition_id: DEFINITION_ID, alias: "pricing" },
     },
   })
 }

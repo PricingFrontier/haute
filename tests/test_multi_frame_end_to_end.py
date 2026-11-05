@@ -10,7 +10,7 @@ The canonical multi-port witness is the data-model example
 (``tests/fixtures/output_assembler/data_model_example.json``): a single nested
 document shredded by a v2 apiInput into four ports (policies / drivers / licenses
 / vehicles, with W1 ancestor keys distributed into the child tables), then
-reassembled by the OUTPUT node's ``outputMapping`` back into the *same* nested
+reassembled by the OUTPUT node's ``output_mapping`` back into the *same* nested
 document. Under that identity round-trip the input document IS the expected
 output, so the fixture is a copy of ``data_model_example.json``. The test reuses
 the apiInput/OUTPUT config + expected-document helpers already imported by
@@ -57,7 +57,7 @@ token, ``$D`` the data path under the project root):
     #    emitting table's input snapshot before assembling the document.
     curl -sX POST localhost:8000/api/pipeline/preview -H "X-Haute-Session: $T" \
       -H 'content-type: application/json' \
-      -d '{"graph":<GRAPH>,"node_id":"out"}'
+      -d '{"graph":<GRAPH>,"node_id":"quote_response"}'
 """
 
 from __future__ import annotations
@@ -93,30 +93,31 @@ def _graph_json(api_config: dict[str, Any]) -> dict[str, Any]:
     """React-Flow ``Graph`` shape: a four-port apiInput → OUTPUT.
 
     Unlike the dry-run route (which supplies a *volatile* mapping), this graph
-    carries the real ``outputMapping`` on the OUTPUT node so the SAME graph dict
+    carries the real ``output_mapping`` on the OUTPUT node so the SAME graph dict
     drives both ``/save`` and ``/preview`` — the end-to-end chain the plan wants.
     """
     return {
         "nodes": [
             {
-                "id": "api",
+                "id": "quote_input",
                 "data": {
-                    "label": "api",
+                    "label": "quote_input",
                     "nodeType": NodeType.API_INPUT.value,
                     "config": api_config,
                 },
             },
             {
-                "id": "out",
+                "id": "quote_response",
                 "data": {
-                    "label": "out",
+                    "label": "quote_response",
                     "nodeType": NodeType.OUTPUT.value,
-                    "config": {"outputMapping": _output_mapping()},
+                    "config": {"output_mapping": _output_mapping()},
                 },
             },
         ],
         "edges": [
-            {"id": f"e_{p}", "source": "api", "target": "out", "sourceHandle": p} for p in _PORTS
+            {"id": f"e_{p}", "source": "quote_input", "target": "quote_response", "sourceHandle": p}
+            for p in _PORTS
         ],
     }
 
@@ -196,7 +197,7 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
     # document (proven by test_output_nested_roundtrip.py).
     preview = client.post(
         "/api/pipeline/preview",
-        json={"graph": graph, "node_id": "out"},
+        json={"graph": graph, "node_id": "quote_response"},
     )
     assert preview.status_code == 200, (
         f"STAGE 3 PREVIEW failed (commit 7 OUTPUT wiring): {preview.text}"

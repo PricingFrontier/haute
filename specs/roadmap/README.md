@@ -29,6 +29,7 @@ records corrections to that audit's claims and proposed remedies.
 | [Modelling](modelling.md) | Adaptive low-memory fitting: exact chunked GLM (deferred until RustyStats fits out of core), XGBoost through external memory when a job will not fit; evaluation planning that holds its memberships compactly | `MOD-R11` |
 | [Optimiser validation](optimiser-validation.md) | Per-point convergence traces from price_contour's frontier sweep; the optimiser result workspace's open robustness and CSV questions | `OPT-PC04` |
 | [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
+| [Readable output](readable-output.md) | What Haute writes into a project, read as a diff: workflows that repeat nothing; renames against the default branch keeping saved values (deferred) | `READ-40` |
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision); `_report_table` relativity overflow guard | `TBOOST-11` |
 | [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's CI/CD: a merge to `main` takes form, pipeline and app, tested together, to staging and production; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from the app (awaiting a decision on formats); test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); actions that fill the sheets from databases and APIs (awaiting decisions on auth and sources); the app's sign-in (a decision); typed-in allowed values (a decision); `useQuoteListStore` pagination fencing and submodel `WORKBENCH_OUTPUT` resolution in `priceSample` | `WB-08` |
@@ -40,8 +41,8 @@ delivered one PR at a time from a single checkout, with each round's
 dependencies, its size and the user-visible changes it makes. It owns only
 the order; the packages above own the work. The packages the
 [25 October 2026 codebase review](codebase-review-2026-10-25.md) added, and the
-documentation packages from that day's check of the deployment guides, are not
-yet placed in its rounds.
+documentation packages from that day's check of the deployment guides, and the
+[readable output](readable-output.md) packages are not yet placed in its rounds.
 
 ## Codebase review — 23 September 2026
 

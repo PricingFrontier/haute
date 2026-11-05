@@ -288,13 +288,13 @@ def _scoring_model_with_features(features: list[str]) -> ScoringModel:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
                         "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
-            lambda config: config["factors"][0].update(outputColumn="age_group"),
+            lambda config: config["factors"][0].update(output_column="age_group"),
             None,
             {"inputs": ["age"], "outputs": ["age_group"]},
             id="banding-output-column",
@@ -302,7 +302,7 @@ def _scoring_model_with_features(features: list[str]) -> ScoringModel:
         pytest.param(
             "modelScore",
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run123",
                 "artifact_path": "model.cbm",
                 "task": "regression",
@@ -361,7 +361,7 @@ def test_contract_keyword_keeps_declared_model_inputs_when_mlflow_is_unreachable
                 "label": "score",
                 "nodeType": "modelScore",
                 "config": {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run123",
                     "artifact_path": "model.cbm",
                     "task": "regression",
@@ -393,7 +393,7 @@ def test_offline_contract_derivation_never_loads_a_model() -> None:
                 "label": "score",
                 "nodeType": "modelScore",
                 "config": {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run123",
                     "artifact_path": "model.cbm",
                     "task": "regression",
@@ -666,7 +666,7 @@ def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
                     "data": {
                         "label": "sm",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "sm", "alias": "sm"},
+                        "config": {"definition_id": "sm", "alias": "sm"},
                     },
                 }
             ],
@@ -734,7 +734,7 @@ def test_graph_to_code_multi_refuses_parent_binding_to_unrouted_input_port() -> 
                     "data": {
                         "label": "sm",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "sm", "alias": "sm"},
+                        "config": {"definition_id": "sm", "alias": "sm"},
                     },
                 },
             ],
@@ -799,7 +799,7 @@ def test_check_executable_names_raises_for_root_and_submodel_labels() -> None:
                     "data": {
                         "label": "pricing",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "pricing", "alias": "pricing"},
+                        "config": {"definition_id": "pricing", "alias": "pricing"},
                     },
                 },
             ],

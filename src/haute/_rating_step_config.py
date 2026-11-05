@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from collections import Counter
 from copy import deepcopy
 from typing import Any
 
@@ -65,12 +67,12 @@ def _validate_factor_dtypes(
     table_index: int,
 ) -> None:
     """Validate optional backend-authored dtype metadata without inventing it."""
-    if "factorDtypes" not in table:
+    if "factor_dtypes" not in table:
         return
-    raw = table["factorDtypes"]
+    raw = table["factor_dtypes"]
     if not isinstance(raw, dict):
         raise ConfigSettingError(
-            f"{_table_context(table_index)}.factorDtypes must be an object", setting="tables"
+            f"{_table_context(table_index)}.factor_dtypes must be an object", setting="tables"
         )
 
     # Late import avoids the module cycle: _rating imports this codec.
@@ -79,13 +81,21 @@ def _validate_factor_dtypes(
     for factor, descriptor in raw.items():
         if not isinstance(factor, str) or factor not in factors:
             raise ConfigSettingError(
-                f"{_table_context(table_index)}.factorDtypes key {factor!r} "
+                f"{_table_context(table_index)}.factor_dtypes key {factor!r} "
                 "must name a selected factor",
                 setting="tables",
             )
         if not is_rating_dtype_descriptor(descriptor):
+            from haute._config_validation import camel_case_key_message
+
+            camel_case = camel_case_key_message(
+                f"{_table_context(table_index)}.factor_dtypes[{factor!r}]",
+                list(descriptor) if isinstance(descriptor, dict) else [],
+            )
+            if camel_case is not None:
+                raise ConfigSettingError(camel_case, setting="tables")
             raise ConfigSettingError(
-                f"{_table_context(table_index)}.factorDtypes[{factor!r}] "
+                f"{_table_context(table_index)}.factor_dtypes[{factor!r}] "
                 "is not a valid rating dtype descriptor",
                 setting="tables",
             )
@@ -160,7 +170,7 @@ def _normalise_entry_rows(
 def _normalise_entries_for_table(table: dict[str, Any], table_index: int) -> dict[str, Any]:
     result = deepcopy(table)
     if "entries" not in result:
-        if "factors" in result or "factorDtypes" in result:
+        if "factors" in result or "factor_dtypes" in result:
             factors = _validate_factors(result, table_index)
             _validate_factor_dtypes(result, factors, table_index)
         return result
@@ -176,21 +186,222 @@ def _normalise_entries_for_table(table: dict[str, Any], table_index: int) -> dic
             f"{_table_context(table_index)}.factors must be a non-empty list", setting="tables"
         )
     result["entries"] = _normalise_entry_rows(entries, factors, table_index)
+    _refuse_levels_written_twice(result, factors)
     return result
+
+
+def _refuse_levels_written_twice(table: dict[str, Any], factors: list[str]) -> None:
+    """Refuse two entries whose levels are identical as written (READ-06)."""
+    keys = [
+        tuple(json.dumps(row[factor], sort_keys=True) for factor in factors)
+        for row in table["entries"]
+    ]
+    counts = Counter(keys)
+    if all(count == 1 for count in counts.values()):
+        return
+    from haute._rating import RatingDuplicateEntriesError  # cycle: _rating imports this codec
+
+    raise RatingDuplicateEntriesError(
+        table,
+        [
+            {factor: row[factor] for factor in factors}
+            for row, key in zip(table["entries"], keys, strict=True)
+            if counts[key] > 1
+        ],
+    )
+
+
+def refuse_levels_equal_under_factor_dtypes(config: dict[str, Any]) -> None:
+    """Refuse a table whose entries' levels match once converted to its ``factor_dtypes``.
+
+    The save's check (READ-06): a table that records a type for each factor is
+    held to the run's own conversion, so ``"25.0"`` and ``"25.00"`` for a
+    numeric factor are refused before a run meets them. A table without
+    ``factor_dtypes`` for every factor is checked when it runs, against the
+    frame's types. Any other failure of the conversion is the run's to report.
+    """
+    import polars as pl
+
+    from haute._rating import (  # cycle: _rating imports this codec
+        RatingDuplicateEntriesError,
+        rating_dtype_from_descriptor,
+        rating_table_lookup,
+    )
+    from haute.errors import HauteError
+
+    for table in config.get("tables") or []:
+        dtypes = table.get("factor_dtypes") if isinstance(table, dict) else None
+        factors = table.get("factors") if isinstance(table, dict) else None
+        if not isinstance(dtypes, dict) or not isinstance(factors, list):
+            continue
+        if not factors or any(factor not in dtypes for factor in factors):
+            continue
+        try:
+            schema = {factor: rating_dtype_from_descriptor(dtypes[factor]) for factor in factors}
+            rating_table_lookup(table, schema)
+        except RatingDuplicateEntriesError:
+            raise
+        except (ValueError, TypeError, HauteError, pl.exceptions.PolarsError):
+            continue
+
+
+# ---------------------------------------------------------------------------
+# The sidecar's grid (READ-26)
+# ---------------------------------------------------------------------------
+
+
+def _level_key(level: Any) -> str:
+    """A level's identity as written: ``25`` and ``"25"`` stay distinct."""
+    return json.dumps(level, sort_keys=True)
+
+
+def grid_from_entries(table: dict[str, Any]) -> dict[str, Any]:
+    """*table* as its sidecar writes it: ``rows`` (and ``columns``) in place of ``entries``.
+
+    With one factor each row is a level and its rate. With more, ``columns`` lists the
+    last factor's levels in the order the entries first give them, and each row holds one
+    combination of the other factors, in that order, then one rate per column, ``null``
+    where no entry is. A rate of 0 is a rate. Levels keep their JSON type.
+    """
+    # ``default_value`` is written as the editor holds it, text, which the engine reads.
+    result = {key: value for key, value in table.items() if key != "entries"}
+    entries = table.get("entries")
+    factors = table.get("factors") or []
+    if not isinstance(entries, list) or not factors:
+        return result
+    # A grid holds each entry's levels and rate alone: another key an entry holds would be
+    # lost, so it is refused.
+    known = {*factors, "value"}
+    for entry in entries:
+        extra = sorted(str(key) for key in entry if key not in known)
+        if extra:
+            raise ConfigSettingError(
+                f"Rating table {table.get('name') or table.get('output_column')!r} has an entry "
+                f"holding {extra[0]!r}, which a rating table's grid of levels and rates cannot "
+                "keep: remove it from the entry.",
+                setting="tables",
+            )
+    if len(factors) == 1:
+        (factor,) = factors
+        result["rows"] = [[entry[factor], entry["value"]] for entry in entries]
+        return result
+    *leading, last = factors
+    columns: dict[str, Any] = {}
+    rows: dict[str, list[Any]] = {}
+    cells: dict[tuple[str, str], Any] = {}
+    for entry in entries:
+        column = _level_key(entry[last])
+        columns.setdefault(column, entry[last])
+        row = _level_key([entry[factor] for factor in leading])
+        rows.setdefault(row, [entry[factor] for factor in leading])
+        cells[(row, column)] = entry["value"]
+    result["columns"] = list(columns.values())
+    result["rows"] = [
+        [*levels, *(cells.get((row, column)) for column in columns)] for row, levels in rows.items()
+    ]
+    return result
+
+
+def entries_from_grid(table: dict[str, Any], table_index: int) -> dict[str, Any]:
+    """*table* as its sidecar holds it, its grid read back into ``entries``: a ``null`` cell
+    no entry. A table in the old row-array form is refused."""
+    context = _table_context(table_index)
+    if "entries" in table:
+        raise ConfigSettingError(
+            f"{context} is in the row-array form rating tables had before they were written as "
+            'a grid. Write its "entries" as the grid\'s "rows", with "columns" for the last '
+            "factor's levels when it has more than one factor.",
+            setting="tables",
+        )
+    result = {key: value for key, value in table.items() if key not in ("columns", "rows")}
+    rows = table.get("rows")
+    if rows is None:
+        if "columns" in table:
+            raise ConfigSettingError(f"{context} has columns but no rows", setting="tables")
+        return result
+    factors = table.get("factors")
+    if not isinstance(factors, list) or not factors:
+        raise ConfigSettingError(f"{context}.factors must be a non-empty list", setting="tables")
+    if not isinstance(rows, list):
+        raise ConfigSettingError(f"{context}.rows must be a list", setting="tables")
+    entries: list[dict[str, Any]] = []
+    if len(factors) == 1:
+        (factor,) = factors
+        if "columns" in table:
+            raise ConfigSettingError(
+                f"{context} has one factor, so its rows are a level and a rate, with no columns",
+                setting="tables",
+            )
+        for row_index, row in enumerate(rows):
+            if not isinstance(row, list) or len(row) != 2:
+                raise ConfigSettingError(
+                    f"{context}.rows[{row_index}] must be a level and its rate", setting="tables"
+                )
+            if row[1] is not None:
+                entries.append({factor: row[0], RATE_KEY: row[1]})
+        result["entries"] = entries
+        return result
+    columns = table.get("columns")
+    if not isinstance(columns, list):
+        raise ConfigSettingError(
+            f"{context}.columns must list the levels of its last factor", setting="tables"
+        )
+    *leading, last = factors
+    width = len(leading) + len(columns)
+    for row_index, row in enumerate(rows):
+        if not isinstance(row, list) or len(row) != width:
+            raise ConfigSettingError(
+                f"{context}.rows[{row_index}] must hold {len(leading)} level(s) and "
+                f"{len(columns)} rate(s)",
+                setting="tables",
+            )
+        levels = dict(zip(leading, row[: len(leading)], strict=True))
+        for column, rate in zip(columns, row[len(leading) :], strict=True):
+            if rate is not None:
+                entries.append({**levels, last: column, RATE_KEY: rate})
+    result["entries"] = entries
+    return result
+
+
+def compact_rating_config_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """A validated rating-step config with each table written as its grid."""
+    tables = config.get("tables")
+    if not isinstance(tables, list):
+        return config
+    return {
+        **config,
+        "tables": [
+            grid_from_entries(table) if isinstance(table, dict) else table for table in tables
+        ],
+    }
+
+
+def expand_rating_config_from_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """A rating-step sidecar with each table's grid read back into its entries."""
+    tables = config.get("tables")
+    if not isinstance(tables, list):
+        return config
+    return {
+        **config,
+        "tables": [
+            entries_from_grid(table, index) if isinstance(table, dict) else table
+            for index, table in enumerate(tables)
+        ],
+    }
 
 
 def validate_unique_rating_table_outputs(tables: list[dict[str, Any]]) -> None:
     """Reject table outputs that would overwrite and then be combined twice."""
     first_index_by_output: dict[str, int] = {}
     for table_index, table in enumerate(tables):
-        output_column = str(table.get("outputColumn", "") or "").strip()
+        output_column = str(table.get("output_column", "") or "").strip()
         if not output_column:
             continue
         first_index = first_index_by_output.get(output_column)
         if first_index is not None:
             raise ConfigSettingError(
-                f"ratingStep tables[{table_index}].outputColumn {output_column!r} "
-                f"duplicates ratingStep tables[{first_index}].outputColumn",
+                f"ratingStep tables[{table_index}].output_column {output_column!r} "
+                f"duplicates ratingStep tables[{first_index}].output_column",
                 setting="tables",
             )
         first_index_by_output[output_column] = table_index

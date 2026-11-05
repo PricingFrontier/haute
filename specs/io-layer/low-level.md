@@ -521,7 +521,7 @@ generations to their owners when readable. Inventory takes no lock and mutates n
 
   Row order, however, belongs to the *query*, not to the profile or the seam. A query that
   defines its order keeps it through every seam: on Polars 2 a join states its order
-  (`maintainOrder` is required on the Join step and the Edge Join) and a Sort rows step is
+  (`maintain_order` is required on the Join step and the Edge Join) and a Sort rows step is
   stable, and a collect, `bounded_sink`, `bounded_collect_batches` and `write_parts`' chunked
   join (whose parts read back as the native join row for row) all return such a query's rows
   in its order. A query that leaves its order undefined (a join stated `none`, an unpivot, a
@@ -700,7 +700,7 @@ full read), so a schema-only read without a node to record under cannot be expre
 
 **Inferred schema tier.** `resolve_data_input(..., schema_tier_node=<node id>)` called
 while `recording_schema_tiers()` is active does not raise for a missing generation
-when the input can be scanned. Eligibility is `inputType == "file"`, a format with a
+when the input can be scanned. Eligibility is `input_type == "file"`, a format with a
 scanner, and an empty `scanner_rejected_arguments(fmt, config)`: the registry's one check
 of which configured arguments the scanner does not accept by name
 (`allowed_arguments` of the scanner) or by value (`_SCANNER_VALUE_DOMAINS`, for example a

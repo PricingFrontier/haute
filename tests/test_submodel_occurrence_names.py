@@ -41,10 +41,10 @@ submodel = haute.Submodel(
     "pricing",
     definition_id="def_pricing",
     input_ports=[
-        {"name": "policy", "targets": [{"nodeId": "step_a", "handleId": None}]},
+        {"name": "policy", "targets": [{"node_id": "step_a"}]},
     ],
     output_ports=[
-        {"name": "premium", "source": {"nodeId": "step_a", "handleId": None}},
+        {"name": "premium", "source": {"node_id": "step_a"}},
     ],
     pipeline_dir="..",
 )
@@ -301,7 +301,7 @@ def test_validate_submodel_instances_invariant_label_differs_from_alias() -> Non
                 data=NodeData(
                     label="Different Label",
                     nodeType=NodeType.SUBMODEL,
-                    config={"definitionId": "def_pricing", "alias": "pricing"},
+                    config={"definition_id": "def_pricing", "alias": "pricing"},
                 ),
             ),
         ],
@@ -338,7 +338,7 @@ def test_alias_colliding_with_root_node_function_name_fails_codegen() -> None:
                 data=NodeData(
                     label="pricing",
                     nodeType=NodeType.SUBMODEL,
-                    config={"definitionId": "def_pricing", "alias": "pricing"},
+                    config={"definition_id": "def_pricing", "alias": "pricing"},
                 ),
             ),
         ],

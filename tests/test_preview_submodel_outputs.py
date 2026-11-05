@@ -43,7 +43,7 @@ def _graph() -> PipelineGraph:
             ),
         ],
     )
-    occurrence = _node("Inputs", NodeType.SUBMODEL, definitionId="inputs", alias="Inputs")
+    occurrence = _node("Inputs", NodeType.SUBMODEL, definition_id="inputs", alias="Inputs")
     consumer = _node("t", code="df = output_1")
     return PipelineGraph(
         nodes=[occurrence, consumer],

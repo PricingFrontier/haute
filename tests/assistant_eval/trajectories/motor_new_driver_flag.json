@@ -19,7 +19,7 @@
                     "node": "rating_features",
                     "edits": [
                       {
-                        "insert_after": "logic",
+                        "insert_after": "free_code-2",
                         "step": {
                           "kind": "free_code",
                           "code": "# Flag new drivers\ndf = df.with_columns(new_driver=pl.col('licence_years') < 3)"

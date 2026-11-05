@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. `load_declared_global_constants` loads the global constants file a constructor declares, through an injected byte reader when editor recovery supplies its capture, and returns the reason instead of failing when the file is missing, unreadable, invalid or outside the pipeline folder; the parser records it as `global_constants_error` and in the graph warning. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
-| `src/haute/_parser_bindings.py` | Strict parameter binding gate: every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files (`assert_polars_parameters_bound`, after the merge) and definition files (`assert_definition_parameters_bound`, which the submodel parse runs on its own file, public input ports binding the sanitised port ID); any other shape is a `ParseError` with `node_id`, `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation`, plus `source_file` for a definition file (F13). |
+| `src/haute/_parser_bindings.py` | Strict parameter binding gate: every parsed node's positional parameters must bind its connected executable input names by the rule of `_node_bindings.py::bind_node_inputs` (READ-01), in parent files (`bind_parameters`, after the merge) and definition files (`bind_definition_parameters`, which the submodel parse runs on its own file, public input ports binding the sanitised port ID); each returns the graph with every node's incoming edges in the order its parameters read them, stated inputs taken in the order of their connect calls. Any other shape is the `ParseError` that `bind_node_inputs` raises, naming the node, its parameters and inputs, plus `source_file` for a definition file (F13). |
 | `src/haute/_parser_submodels.py` | `submodel_imports` / `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: reads a pipeline file's submodel imports (`submodel_imports`: each name of `from modules import a, b` bound to its file `modules/<name>.py`; any other spelling of an import from `modules`, a module imported twice and a name `submodel_module_name` refuses raise `ParseError`), extracts each explicit registration through that table (`extract_submodel_registrations`: the first argument `<module>.submodel` for an imported module, giving a `SubmodelRegistration` whose `path` is the module's file and `binding` its imported name; the removed file-path form is refused with the import form as remediation, an unimported module is refused, and reading a whole file refuses an import no registration uses, while a caller passing `imports=` reads one statement at a time), parses each referenced submodel file into its own `PipelineGraph` (`_validate_pipeline_dir` checks the constructor's way back to the pipeline against where the file sits; a registration in it is nested, refused with `nested_lines`), and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`), and Polars evaluation of the located expression on the traced row (`_locate_defining_expression`, `_row_value`, `_branch_selection`). `evaluate_expression` shows each scalar global constant the formula reads (a date as `pl.date(...)`) as its value, never touching quoted text, and inlines it before evaluation (`_global_constant_values`, `_inline_global_constants`); `parse_expression` never counts `global_constants.<name>` as a referenced column. |
 
@@ -78,7 +78,7 @@ component) → log `pipeline_parsed`.
 child file has literal structured input/output ports present and extract its
 declared `definition_id`. Build one `SubmodelDefinition` per definition id and
 one `SUBMODEL` occurrence per registration; each occurrence uses its name as
-node id (`node.id == label == alias == name`), config `{definitionId, alias}`, and
+node id (`node.id == label == alias == name`), config `{definition_id, alias}`, and
 derives its node label directly from the name (registrations accept `(<module>.submodel, name, *, instance_of=None)`
 and reject `definition_id=`, `instance_id=`, `alias=`, and `label=`).
 Parent connect endpoints use names and declared
@@ -357,7 +357,7 @@ no alias or migration shim; direct test callers use the same current contract.
   dedicated diagnostic; every other difference raises `ParseError` before
   graph-shape validation or return.
 - **Polars parameter binding is strictly conserved**: every Polars node's
-  positional parameter set (after applying `inputMapping`) must equal the set
+  positional parameter set (after applying `input_mapping`) must equal the set
   of executable input names contributed by incoming edges (or public input port
   sanitised IDs for submodel definition nodes). Mismatches fail immediately
   with `ParseError("Pipeline function parameters do not match the node's connected inputs.")`
@@ -437,7 +437,7 @@ Tests live under `tests/`, split by concern:
   output name their parameter after the output's name (the sanitised public output
   port name from an owner; from an instance, the instance's name, or
   `<instance>_<port>` when the definition has several outputs), as codegen emits; any other parameter name is rejected
-  unless explicitly bound through `inputMapping`.
+  unless explicitly bound through `input_mapping`.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node
   function shape, alias awareness, implicit-edge dedup, exact node/edge/handle/submodel identity,
@@ -446,7 +446,7 @@ Tests live under `tests/`, split by concern:
 - **`TestPolarsParameterBinding`** (`tests/test_parser_conservation.py`) -- tests
   the strict parameter binding acceptance gate for Polars nodes: rejects unbound
   positional parameters and unconsumed incoming edges with exact diagnostic
-  context; verifies that `inputMapping` correctly maps parameters, executes, and
+  context; verifies that `input_mapping` correctly maps parameters, executes, and
   roundtrips through codegen; confirms consumers of submodel occurrence outputs
   bind the public port name; validates that parameter-mismatched pipelines
   load in degraded mode for editor recovery while rejecting saves with HTTP 409;

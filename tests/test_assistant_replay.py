@@ -173,7 +173,11 @@ def _expect_one_error_at_the_failing_step(data: dict[str, Any]) -> None:
         "vehicle_bands",
     ]
     failed = statuses["rating_features"]
-    assert (failed["status"], failed["error"]["step"]) == ("failed", {"id": "logic", "number": 2})
+    # The transform's steps come from its code, each id its kind and place (READ-22).
+    assert (failed["status"], failed["error"]["step"]) == (
+        "failed",
+        {"id": "free_code-2", "number": 2},
+    )
     assert failed["error"]["columns"] == ["vehicle_year"]
     assert statuses["vehicle_bands"] == {
         "node": "vehicle_bands",
@@ -724,11 +728,11 @@ async def test_an_apply_that_saves_part_of_a_stage_leaves_it_open_with_its_chang
                                 "op": "update_node",
                                 "node": "region_rating",
                                 "config": {
-                                    "combinedOutputs": [
+                                    "combined_outputs": [
                                         {
-                                            "outputColumn": output["output_column"],
+                                            "output_column": output["output_column"],
                                             "operation": output["operation"],
-                                            "baseValue": float(output["base_value"]),
+                                            "base_value": float(output["base_value"]),
                                         }
                                     ]
                                 },

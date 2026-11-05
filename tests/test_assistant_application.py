@@ -162,7 +162,7 @@ class TestDryRun:
                 {
                     "joinInput": "lookup",
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["x"],
                 },
                 "unknown config key",
@@ -172,10 +172,10 @@ class TestDryRun:
                     "baseInput": "quotes",
                     "joinInput": "lookup",
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["x"],
-                    "leftOn": ["x"],
-                    "rightOn": ["x"],
+                    "left_on": ["x"],
+                    "right_on": ["x"],
                 },
                 "unknown config key",
             ),
@@ -713,7 +713,7 @@ _FOUR_NODE_BATCH: list[dict[str, object]] = [
                 {
                     "banding": "breakpoints",
                     "column": "driver_age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "24", "label": "17-24"},
                         {"boundary": "", "label": "25+"},
@@ -732,15 +732,15 @@ _FOUR_NODE_BATCH: list[dict[str, object]] = [
             "tables": [
                 {
                     "factors": ["age_band"],
-                    "outputColumn": "age_relativity",
+                    "output_column": "age_relativity",
                     "entries": [
                         {"age_band": "17-24", "value": 1.8},
                         {"age_band": "25+", "value": 1.05},
                     ],
-                    "defaultValue": 1.0,
+                    "default_value": 1.0,
                 }
             ],
-            "combinedOutputs": [],
+            "combined_outputs": [],
             "steps": [],
         },
     },
@@ -872,7 +872,9 @@ class TestChangeCard:
                     "node": "features",
                     "edits": [
                         {
-                            "insert_after": "logic",
+                            # The apply's reload named the code step by kind and place
+                            # (READ-22).
+                            "insert_after": "free_code-2",
                             "step": {
                                 "kind": "free_code",
                                 "code": "# Flag young\ndf = df.with_columns(young=pl.col('x') < 2)",
@@ -889,7 +891,7 @@ class TestChangeCard:
                             {
                                 "banding": "breakpoints",
                                 "column": "driver_age",
-                                "outputColumn": "age_band",
+                                "output_column": "age_band",
                                 "rules": [
                                     {"boundary": "21", "label": "17-21"},
                                     {"boundary": "", "label": "22+"},
@@ -907,7 +909,9 @@ class TestChangeCard:
 
         chips = {node.id: node for node in result.change.changes.nodes}
         assert chips["features"].change == "changed"
-        assert chips["features"].steps == ["source", "free_code", "free_code"]
+        # The chip shows the steps the save holds: rebuilt from the code, the inserted code
+        # step and the code step above it are one run of code, so one code step (READ-22).
+        assert chips["features"].steps == ["source", "free_code"]
         assert chips["features"].steps_changed == 1
         assert chips["premium"].change == "renamed"
         assert chips["premium"].renamed_from == "priced"
@@ -1059,7 +1063,7 @@ def test_dry_run_rejects_invalid_banding_semantics_before_storing(
                             {
                                 "banding": "age",
                                 "column": "x",
-                                "outputColumn": "age_band",
+                                "output_column": "age_band",
                                 "rules": [{"key": "0-10", "value": 10}],
                             }
                         ],
@@ -1145,8 +1149,8 @@ _STEPPED_BASES: dict[str, tuple[str, dict]] = {
             "tables": [
                 {
                     "factors": ["region"],
-                    "outputColumn": "rate",
-                    "defaultValue": "1.0",
+                    "output_column": "rate",
+                    "default_value": "1.0",
                     "entries": [{"region": "north", "value": "1.25"}],
                 }
             ]
@@ -1159,16 +1163,16 @@ _STEPPED_BASES: dict[str, tuple[str, dict]] = {
             "column_name": "scenario_value",
             "min_value": 0.9,
             "max_value": 1.1,
-            "stepCount": 3,
+            "step_count": 3,
             "step_column": "scenario_index",
         },
     ),
     "explored": ("explore", {}),
-    "loaded": ("externalFile", {"path": "lookup.json", "fileType": "json"}),
+    "loaded": ("externalFile", {"path": "lookup.json", "file_type": "json"}),
     "scored": (
         "modelScore",
         {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -1185,7 +1189,7 @@ def _palette_config(node_type: str, base: dict) -> dict:
     from haute._types import NodeType
 
     defaults = palette_default_config(NodeType(node_type))
-    if base.get("sourceType") == "run":
+    if base.get("source_type") == "run":
         defaults = {"steps": defaults["steps"]}
     return {**defaults, **base}
 
@@ -1285,6 +1289,14 @@ def _reparsed_config(root: Path, node_id: str) -> dict:
     return _reparsed_data(root, node_id).config
 
 
+def _as_reloaded(node: str, steps: list[dict]) -> list[dict]:
+    """*steps* as a reload holds them: a stepped node's steps live only in its code and come
+    back with ids from kind and place (READ-22, READ-43, READ-44). It holds for steps that
+    each rebuild as themselves: a free-code statement a structured step renders exactly
+    comes back as that step, and two adjacent code steps as one."""
+    return [{**step, "id": f"{step['kind']}-{place}"} for place, step in enumerate(steps, 1)]
+
+
 @pytest.mark.usefixtures("scorable_model")
 class TestSteppedWrites:
     @pytest.mark.parametrize("node", list(_STEPPED_BASES))
@@ -1356,7 +1368,7 @@ class TestSteppedWrites:
         saved_source = (stepped_project / "main.py").read_text(encoding="utf-8")
         assert "df = df.with_columns(flag=pl.lit(1))" in saved_source
         saved = _reparsed_data(stepped_project, node)
-        assert saved.config["steps"] == steps
+        assert saved.config["steps"] == _as_reloaded(node, steps)
         assert saved.editor.steps_discarded is None and saved.editor.steps_error is None
 
     @pytest.mark.parametrize("node", list(_STEPPED_BASES))
@@ -1364,7 +1376,8 @@ class TestSteppedWrites:
         self, stepped_project: Path, node: str
     ):
         """The step list a stepped descriptor advertises, spelled the same way
-        in the system prompt, applies unchanged but for its edge placeholder."""
+        in the system prompt, applies unchanged but for its edge placeholder and, on a
+        transform, the ids its reload gives the steps (READ-22)."""
 
         import json
 
@@ -1387,7 +1400,7 @@ class TestSteppedWrites:
         await service.apply("main.py", plan.plan_hash)
 
         saved = _reparsed_data(stepped_project, node)
-        assert saved.config["steps"] == steps
+        assert saved.config["steps"] == _as_reloaded(node, steps)
         assert saved.editor.steps_discarded is None and saved.editor.steps_error is None
 
     async def test_a_data_input_added_with_a_path_saves_the_palette_input_type(
@@ -1413,7 +1426,7 @@ class TestSteppedWrites:
         await service.apply("main.py", plan.plan_hash)
 
         saved = _reparsed_config(stepped_project, "claims")
-        assert saved["inputType"] == "file"
+        assert saved["input_type"] == "file"
         assert saved["steps"] == []
 
     async def test_a_saved_config_that_misses_its_digest_is_a_verification_failure(
@@ -1673,7 +1686,7 @@ class TestWrittenNodesAreReady:
                         "node_type": "externalFile",
                         "name": "lookup",
                         "ref": "l",
-                        "config": {"path": "missing.json", "fileType": "json"},
+                        "config": {"path": "missing.json", "file_type": "json"},
                     },
                     {"op": "add_edge", "source": "policies", "target": "$l"},
                 ],
@@ -1699,7 +1712,7 @@ class TestWrittenNodesAreReady:
                         "node_type": "externalFile",
                         "name": "lookup",
                         "ref": "l",
-                        "config": {"path": "lookup.json", "fileType": "json"},
+                        "config": {"path": "lookup.json", "file_type": "json"},
                     },
                     {"op": "add_edge", "source": "policies", "target": "$l"},
                 ],
@@ -1785,7 +1798,7 @@ class TestInferredInputSchemas:
     """A new local file input resolves its schema from the file at dry-run."""
 
     _CSV = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": "claims.csv",
         "arguments": {"separator": ";", "schema_overrides": {"id": "str"}},
@@ -1873,7 +1886,13 @@ _QUOTE_INPUT = {
 
 def _add_quote_input_and_transform(config: dict[str, object]) -> list[dict[str, object]]:
     return [
-        {"op": "add_node", "node_type": "apiInput", "name": "quote", "ref": "q", "config": config},
+        {
+            "op": "add_node",
+            "node_type": "apiInput",
+            "name": "quote_input",
+            "ref": "q",
+            "config": config,
+        },
         {
             "op": "add_node",
             "node_type": "polars",
@@ -1912,7 +1931,7 @@ class TestDeclaredQuoteInputSchemas:
         assert declared == [
             {
                 "kind": "input_schema_declared",
-                "node": "quote",
+                "node": "quote_input",
                 "table": "policy",
                 "tier": "declared",
                 "column_count": 2,
@@ -1970,7 +1989,7 @@ class TestDeclaredQuoteInputSchemas:
         assert raised.value.status_code == 400
         detail = str(raised.value.detail)
         assert "table 'quotes'" in detail
-        assert "Quote Input 'quote'" in detail
+        assert "Quote Input 'quote_input'" in detail
         assert "node 'quotes'" in detail
         assert source.read_text(encoding="utf-8") == PIPELINE_SOURCE
         assert len(service.plan_store) == 0

@@ -53,7 +53,7 @@
                     "node": "rating_features",
                     "edits": [
                       {
-                        "replace": "logic",
+                        "replace": "free_code-2",
                         "step": {
                           "kind": "free_code",
                           "code": "# Derive the vehicle's age from its year of manufacture\ndf = df.with_columns(vehicle_age=2025 - pl.col('year_of_manufacture'))"

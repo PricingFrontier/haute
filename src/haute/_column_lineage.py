@@ -3645,7 +3645,7 @@ def carried_column_proof(
     computation rooted at one writes its expansion over the program's proven
     column superset (``input_columns`` plus every column the program assigned or
     a join suffixed), which ``input_columns`` must be supplied to resolve.
-    ``input_aliases`` maps a logical name the code uses (an ``inputMapping``
+    ``input_aliases`` maps a logical name the code uses (an ``input_mapping``
     entry) to the input name it stands for; the proof reports input names.
     """
     aliases = dict(input_aliases or {})

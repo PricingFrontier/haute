@@ -1003,7 +1003,7 @@ class TestHandleLintCallable:
                     data=NodeData(
                         label="a",
                         nodeType="dataInput",
-                        config={"inputType": "file", "format": "parquet", "path": "d.parquet"},
+                        config={"input_type": "file", "format": "parquet", "path": "d.parquet"},
                     ),
                 ),
                 GraphNode(
@@ -1097,7 +1097,7 @@ class TestHandleRunCallable:
         output_config = write_node_config(
             tmp_path,
             NodeType.OUTPUT,
-            "premium",
+            "quote_response",
             make_output_config(["x", "y"], source_port="doubled"),
         )
         pipeline = tmp_path / "lazy.py"
@@ -1112,9 +1112,9 @@ class TestHandleRunCallable:
             "def doubled(source: pl.LazyFrame) -> pl.LazyFrame:\n"
             '    return source.with_columns(y=pl.col("x") * 2)\n\n\n'
             f'@pipeline.output(config="{output_config}")\n'
-            "def premium(doubled: pl.LazyFrame) -> pl.LazyFrame: ...\n\n\n"
+            "def quote_response(doubled: pl.LazyFrame) -> pl.LazyFrame: ...\n\n\n"
             'pipeline.connect("source", "doubled")\n'
-            'pipeline.connect("doubled", "premium")\n',
+            'pipeline.connect("doubled", "quote_response")\n',
             encoding="utf-8",
         )
         return pipeline
@@ -1156,8 +1156,8 @@ class TestHandleRunCallable:
         handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path)))
 
         out = capsys.readouterr().out
-        assert "✓ premium: 2 cols" in out
-        assert "Output - premium (3 rows):" in out
+        assert "✓ quote_response: 2 cols" in out
+        assert "Output - quote_response (3 rows):" in out
 
     def test_rows_collects_only_the_first_rows_of_the_output(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1168,7 +1168,7 @@ class TestHandleRunCallable:
 
         out = capsys.readouterr().out
         assert "Output - doubled (2 rows, first 2):" in out
-        assert "premium" not in out
+        assert "quote_response" not in out
 
     def test_the_source_reaches_the_walk(self, tmp_path: Path) -> None:
         from haute.cli._run import RunConfig, handle_run
@@ -1178,7 +1178,7 @@ class TestHandleRunCallable:
             handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path), source="batch"))
 
         assert walk.call_args.kwargs["source"] == "batch"
-        assert walk.call_args.kwargs["target_node_id"] == "premium"
+        assert walk.call_args.kwargs["target_node_id"] == "quote_response"
 
     def test_a_defect_inside_the_walk_keeps_its_traceback(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1661,7 +1661,7 @@ class TestCliAutoDiscoveryEndToEnd:
                     data=NodeData(
                         label="a",
                         nodeType="dataInput",
-                        config={"inputType": "file", "format": "parquet", "path": "d.parquet"},
+                        config={"input_type": "file", "format": "parquet", "path": "d.parquet"},
                     ),
                 ),
                 GraphNode(

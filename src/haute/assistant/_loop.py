@@ -241,8 +241,9 @@ _PROMPT_INTENT_AND_RECIPE_ROUTING = (
     '"arguments": {...}}`. It expands into the recipe\'s nodes and edges inside the '
     "same plan, beside any primitive operations the request also needs; give it a "
     "`ref` to address the node it creates from later operations. If the request "
-    "also asks for a response output, pass `output_name` and `output_columns` together "
-    "in its arguments; a name without explicit selected columns is material ambiguity. "
+    "also asks for a response output, pass `output_name`, always `quote_response`, and "
+    "`output_columns` together in its arguments; a response without explicit selected "
+    "columns is material ambiguity. "
     "Never substitute a generic node for a recipe's node. Join a file onto a flow with an "
     "`edgeJoin` node or the `reference_join` recipe, never with Polars code. "
 )
@@ -492,8 +493,9 @@ def build_system_prompt(*, source_file: str) -> str:
                 "When a request matches one of these summaries, write it as a recipe "
                 "operation in `dry_run_graph_edits`, naming the recipe explicitly; "
                 "`recipe:<recipe id>` in `read_reference` gives its full argument schema. "
-                "If a response output is requested, pass `output_name` and "
-                "`output_columns` together. Number and date ranges have no recipe: band "
+                "If a response output is requested, pass `output_name` (always "
+                "`quote_response`) and `output_columns` together. Number and date ranges "
+                "have no recipe: band "
                 "them with a `banding` node whose factor uses `banding: breakpoints`."
             ),
             "### Installed I/O availability",

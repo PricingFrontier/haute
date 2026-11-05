@@ -134,7 +134,7 @@ def _graph(root: Path) -> PipelineGraph:
     """``src → n``, and ``n`` joined to a lookup: under a seed plan ``n`` feeds a join."""
     _source_frame().write_parquet(root / "quotes.parquet")
     pl.DataFrame({"id": list(range(6)), "w": [10] * 6}).write_parquet(root / "weights.parquet")
-    parquet = {"inputType": "file", "format": "parquet", "mode": "scan"}
+    parquet = {"input_type": "file", "format": "parquet", "mode": "scan"}
     return PipelineGraph(
         nodes=[
             _node("src", NodeType.DATA_INPUT, {**parquet, "path": str(root / "quotes.parquet")}),

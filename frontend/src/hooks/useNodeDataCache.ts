@@ -53,6 +53,12 @@ export interface NodeDataCache {
   dataVersion: string | null
   columns: NodeDataColumns | null
   demand: NodeDataColumns | null
+  /**
+   * Why the node has no data to read as the pipeline stands, such as a node
+   * still waiting for its input. It holds for the current identity only, so
+   * connecting the input clears it.
+   */
+  unreadable: string | null
   /** True when this consumer has no build action: the point is read directly. */
   readsDirectly: boolean
   canBuild: boolean
@@ -180,6 +186,10 @@ export default function useNodeDataCache({
     fence: DocumentExecutionFence
     point: NodeDataPointResponse
   } | null>(null)
+  // The backend's refusal to name a point for this identity: the graph as it
+  // stands has nothing for the node to read. It is the node's state, not an
+  // event, so it is shown with the node rather than raised as a toast.
+  const [refused, setRefused] = useState<{ configHash: string; message: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
   // Set by a Stop that arrives before the build's job id; the build honours it
   // as soon as the id arrives, instead of Stop finding nothing to cancel.
@@ -276,6 +286,11 @@ export default function useNodeDataCache({
           !isDocumentExecutionFenceCurrent(fence) ||
           (err instanceof Error && err.name === "AbortError")
         ) {
+          return
+        }
+        // A 400 is the backend refusing to name a point for this graph.
+        if ((err as { status?: unknown } | null)?.status === 400) {
+          setRefused({ configHash, message: apiErrorMessage(err) })
           return
         }
         addToast(
@@ -596,6 +611,7 @@ export default function useNodeDataCache({
     dataVersion: point?.data_version ?? null,
     columns: point?.generation?.columns ?? null,
     demand: point?.demand ?? null,
+    unreadable: !point && refused && refused.configHash === configHash ? refused.message : null,
     readsDirectly: point?.reads_directly ?? false,
     canBuild,
     run,

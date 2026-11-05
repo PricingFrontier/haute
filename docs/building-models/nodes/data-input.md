@@ -121,11 +121,11 @@ A Databricks table:
     A **CREDENTIAL-FREE URI** must not contain a user name, password or secret query parameter. Put a URI with credentials in an environment variable and give that variable's name as the **CONNECTION ENVIRONMENT REFERENCE**.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; code the other steps cannot hold goes in a **Free code** step.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **PROVIDER** | `inputType`: `"file"`, `"database"`, `"lakehouse"`, `"databricks"` or `"inline"` |
+    | **PROVIDER** | `input_type`: `"file"`, `"database"`, `"lakehouse"`, `"databricks"` or `"inline"` |
     | **FORMAT** | `format` (none for Databricks): see the table below |
     | **PATH** / **TABLE LOCATOR** | `path`, relative to your project folder |
     | **CONNECTION ENVIRONMENT REFERENCE** | `connection` |
@@ -136,12 +136,12 @@ A Databricks table:
     | **SELECT CLAUSE** | `query` (absent when empty) |
     | **RECORDS** | `records`: a list of row objects |
     | **ARGUMENTS** | `arguments`: an object of argument names and values |
-    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | the function body, which Haute reads the steps back from |
     | **COLUMNS** tab | `selected_columns` |
 
     The formats each provider accepts:
 
-    | `inputType` | `format` |
+    | `input_type` | `format` |
     |---|---|
     | `"file"` | `"parquet"`, `"csv"`, `"ndjson"` (`.jsonl`/`.ndjson`), `"json"`, `"ipc"` (Arrow/Feather), `"ipc_stream"`, `"avro"`, `"excel"`, `"ods"`, `"lines"` (one text line per row) |
     | `"lakehouse"` | `"delta"`, `"iceberg"` |
@@ -157,19 +157,19 @@ A Databricks table:
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `arguments` | map of text to any JSON value | Arguments passed to the Polars read or scan call, by parameter name. |
-    | `mode` | `""` or `"read"` or `"scan"` | Whether the file is read eagerly or scanned lazily; empty or absent takes the format's default. With `inputType` `"file"`, `"lakehouse"`, `"inline"`. |
-    | `inputType` | `"file"` | The provider: a file. |
-    | `format` | text | The file format, such as `parquet`, `csv` or `ndjson`. With `inputType` `"file"`, `"database"`, `"lakehouse"`, `"inline"`. |
-    | `path` | text | The file, relative to the project root or absolute. With `inputType` `"file"`, `"lakehouse"`. |
-    | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `inputType` `"database"`. |
-    | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `inputType` `"database"`. |
-    | `query` | text | The SQL query whose rows the node reads. With `inputType` `"database"`, `"databricks"`. |
-    | `http_path` | text | The SQL warehouse's HTTP path. With `inputType` `"databricks"`. |
-    | `table` | text | The table, as `catalog.schema.table`. With `inputType` `"databricks"`. |
-    | `records` | list of map of text to any JSON value | The rows, each an object from column name to value. With `inputType` `"inline"`. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `mode` | `""` or `"read"` or `"scan"` | Whether the file is read eagerly or scanned lazily; empty or absent takes the format's default. With `input_type` `"file"`, `"lakehouse"`, `"inline"`. |
+    | `input_type` | `"file"` | The provider: a file. |
+    | `format` | text | The file format, such as `parquet`, `csv` or `ndjson`. With `input_type` `"file"`, `"database"`, `"lakehouse"`, `"inline"`. |
+    | `path` | text | The file, relative to the project root or absolute. With `input_type` `"file"`, `"lakehouse"`. |
+    | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `input_type` `"database"`. |
+    | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `input_type` `"database"`. |
+    | `query` | text | The SQL query whose rows the node reads. With `input_type` `"database"`, `"databricks"`. |
+    | `http_path` | text | The SQL warehouse's HTTP path. With `input_type` `"databricks"`. |
+    | `table` | text | The table, as `catalog.schema.table`. With `input_type` `"databricks"`. |
+    | `records` | list of map of text to any JSON value | The rows, each an object from column name to value. With `input_type` `"inline"`. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

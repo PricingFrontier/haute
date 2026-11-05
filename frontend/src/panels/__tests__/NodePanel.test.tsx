@@ -551,7 +551,7 @@ describe("NodePanel", () => {
         label: "data_inputs",
         description: "",
         nodeType: "submodel",
-        config: { definitionId: "modules/data_inputs.py", alias: "data_inputs" },
+        config: { definition_id: "modules/data_inputs.py", alias: "data_inputs" },
         _loadAvailability: "unavailable",
         _sourceFile: "rating/main.py",
         _recoveryId: "data_inputs",
@@ -1163,7 +1163,8 @@ describe("NodePanel", () => {
     expect(paneProps.inputNames).toEqual([])
     expect(paneProps.inputSources).toEqual([])
     expect(paneProps.runError).toBe("boom")
-    expect(typeof paneProps.onReplaceConfig).toBe("function")
+    // There is no switch to code: a Free code step holds hand-written code.
+    expect(paneProps.onReplaceConfig).toBeUndefined()
     expect(paneProps.config).toEqual({ steps: [] })
   })
 
@@ -1533,7 +1534,7 @@ describe("NodePanel", () => {
     const onUpdateNode = vi.fn(() => ({ ok: true as const }))
     const applyNode = makeNode({
       id: "apply_1",
-      data: { label: "Apply", description: "", nodeType: "optimiserApply", config: { sourceType: "run", version_column: "v" } },
+      data: { label: "Apply", description: "", nodeType: "optimiserApply", config: { source_type: "run", version_column: "v" } },
     })
     const optimiser = makeNode({
       id: "opt_1",
@@ -1543,10 +1544,10 @@ describe("NodePanel", () => {
     const update = optimiserConfigProps.at(-1)?.onUpdateNodeConfig as
       (nodeId: string, patch: Record<string, unknown>) => { ok: boolean }
 
-    expect(update("apply_1", { sourceType: "file", artifact_path: "output/q3.json" })).toEqual({ ok: true })
+    expect(update("apply_1", { source_type: "file", artifact_path: "output/q3.json" })).toEqual({ ok: true })
     expect(onUpdateNode).toHaveBeenCalledWith("apply_1", expect.objectContaining({
       label: "Apply",
-      config: { sourceType: "file", version_column: "v", artifact_path: "output/q3.json" },
+      config: { source_type: "file", version_column: "v", artifact_path: "output/q3.json" },
     }))
     expect(update("missing", {})).toEqual({ ok: false, error: 'Cannot update missing node "missing".' })
   })
@@ -2430,7 +2431,7 @@ describe("NodePanel", () => {
           label: "Inputs display",
           description: "",
           nodeType: "submodel",
-          config: { definitionId: "child_definition", alias: "Inputs_alias" },
+          config: { definition_id: "child_definition", alias: "Inputs_alias" },
           _defaultInputName: null,
           _sourceHandleInputNames: Object.fromEntries(
             frames.map((frame) => [`out__${frame}`, frame]),
@@ -2487,7 +2488,7 @@ describe("NodePanel", () => {
         data: {
           ...occurrence.data,
           label: "Renamed display",
-          config: { definitionId: "child_definition", alias: "Renamed_alias" },
+          config: { definition_id: "child_definition", alias: "Renamed_alias" },
         },
       })
       rerender(
@@ -2523,7 +2524,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("ConstantEditor")).toBeInTheDocument()
   })
 
-  it.each([{}, { instanceOf: "owner" }])("renders SubmodelEditor for submodel nodes", (config) => {
+  it.each([{}, { instance_of: "owner" }])("renders SubmodelEditor for submodel nodes", (config) => {
     renderPanel({ node: makeNode({ data: { label: "SM", description: "", nodeType: "submodel", config } }) })
     expect(screen.getByTestId("SubmodelEditor")).toBeInTheDocument()
   })
@@ -2640,14 +2641,14 @@ describe("NodePanel", () => {
         label: "Unknown",
         description: "",
         nodeType: "unknownType",
-        config: { instanceOf: "orig_1", inputMapping: { a: "b" } },
+        config: { instance_of: "orig_1", input_mapping: { a: "b" } },
       },
     })
 
     renderPanel({ node: unknownInstanceNode, allNodes: [origNode, unknownInstanceNode] })
 
     expect(screen.getByRole("alert")).toHaveTextContent("Unknown node type")
-    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent('"instanceOf": "orig_1"')
+    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent('"instance_of": "orig_1"')
     expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
   })
@@ -2663,7 +2664,7 @@ describe("NodePanel", () => {
         label: "Unknown",
         description: "",
         nodeType: "toString",
-        config: { instanceOf: "orig_1", inputMapping: { a: "b" } },
+        config: { instance_of: "orig_1", input_mapping: { a: "b" } },
       },
     })
 
@@ -2671,7 +2672,7 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Unknown node type")
     expect(screen.getByRole("alert")).toHaveTextContent("toString")
-    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent('"instanceOf": "orig_1"')
+    expect(screen.getByTestId("unknown-node-config-diagnostic")).toHaveTextContent('"instance_of": "orig_1"')
     expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
   })
@@ -3312,7 +3313,7 @@ describe("scoped editing in degraded documents", () => {
       recoveryId: "scoped@1",
       fieldChanges: [{ path: "/steps", outcome: "defaulted", reason: "Invalid value replaced." }],
       completeness: [
-        { element_id: "scoped@1", path: "/", code: "incomplete_range", message: "Scenario range and stepCount are required." },
+        { element_id: "scoped@1", path: "/", code: "incomplete_range", message: "Scenario range and step_count are required." },
         { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
       ],
       previousConfig: null,
@@ -3324,7 +3325,7 @@ describe("scoped editing in degraded documents", () => {
     renderPanel({ node })
     const status = screen.getByTestId("node-recovery-status")
     expect(status).toHaveTextContent("Still to complete:")
-    expect(status).toHaveTextContent("Scenario range and stepCount are required.")
+    expect(status).toHaveTextContent("Scenario range and step_count are required.")
     expect(screen.getAllByText(/requires a non-empty 'path'/)).toHaveLength(1)
   })
 
@@ -3393,7 +3394,7 @@ describe("scoped editing in degraded documents", () => {
           source_span: null,
           diagnostic_ids: ["diag_unknown_decorator"],
           blocking_path: [],
-          editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
+          editor: { steps_error: null, steps_discarded: null },
           scoped_editable: false,
         },
         {
@@ -3414,7 +3415,7 @@ describe("scoped editing in degraded documents", () => {
           source_span: null,
           diagnostic_ids: ["diag_unknown_decorator"],
           blocking_path: ["source_a", "downstream"],
-          editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null },
+          editor: { steps_error: null, steps_discarded: null },
           scoped_editable: true,
         },
       ],

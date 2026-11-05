@@ -23,7 +23,6 @@ from pydantic import (
 )
 
 from haute._workbench_form import (
-    IDENTITY_IDS,
     PARAMETER_NAME,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
@@ -78,8 +77,7 @@ DETAILS_ANY = (
     "use_grouping",
 )
 DETAILS_TYPED = ("required", "min", "max", "options", "options_source", "default_value")
-DETAILS_NAMES = tuple(name for _, name, _ in QUOTE_DETAILS_COLUMNS)
-DETAILS_IDS = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
+DETAILS_NAMES = tuple(name for name, _ in QUOTE_DETAILS_COLUMNS)
 
 
 class _File(BaseModel):
@@ -170,9 +168,31 @@ _ONE_CONDITION_FILE = (
 SingleConditionFile = Annotated[_ONE_CONDITION_FILE, Discriminator(_condition_kind)]
 
 
+#: How many of a rule's conditions must hold, as a file writes it (READ-31): ``match`` says
+#: all or any, and ``at_least`` a number of them in its place.
+_AtLeast = Annotated[int, Strict(), Field(ge=1)]
+
+
+def _one_match(match: object, at_least: object, where: str) -> None:
+    if at_least is not None and match is not None:
+        raise ValueError(f"{where} gives both match and at_least: give one of them")
+
+
 class ConditionGroupFile(_File):
-    match: Match
+    match: Literal["all", "any"] | None = None
+    at_least: _AtLeast | None = None
     conditions: list[SingleConditionFile] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _match_or_at_least(self) -> ConditionGroupFile:
+        _one_match(self.match, self.at_least, "a group")
+        if self.match is None and self.at_least is None:
+            raise ValueError("a group needs match (all or any) or at_least")
+        return self
+
+    @property
+    def counted(self) -> Match:
+        return self.at_least if self.at_least is not None else self.match or "all"
 
 
 ShowWhenEntryFile = Annotated[
@@ -182,8 +202,20 @@ ShowWhenEntryFile = Annotated[
 
 
 class ShowWhenFile(_File):
-    match: Match = "all"
+    match: Literal["all", "any"] = "all"
+    at_least: _AtLeast | None = None
     conditions: list[ShowWhenEntryFile] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _match_or_at_least(self) -> ShowWhenFile:
+        # A match the file leaves out is all; one it writes, all included, is given.
+        given = self.match if "match" in self.model_fields_set else None
+        _one_match(given, self.at_least, "a show_when")
+        return self
+
+    @property
+    def counted(self) -> Match:
+        return self.at_least if self.at_least is not None else self.match
 
 
 _SHOW_WHEN = (ShowWhenFile, Field(default_factory=ShowWhenFile))
@@ -199,6 +231,7 @@ if TYPE_CHECKING:
     # mypy cannot follow: to it each is ``Any``, while pydantic and every reader at run time
     # see the model itself.
     ColumnLookFile = Any
+    FieldLookFile = Any
     TableComponentFile = Any
     CollectionComponentFile = Any
     ChartComponentFile = Any
@@ -219,24 +252,43 @@ else:
         drop=frozenset({"table"}),
         replace={"column": (Dotted, ...), "show_when": _SHOW_WHEN},
     )
-    _COMPONENT_LOOKS = {
-        "fields": (list[Dotted], Field(default_factory=list)),
-        "show_when": _SHOW_WHEN,
-        "column_looks": (list[ColumnLookFile], Field(default_factory=list)),
-    }
+    FieldLookFile = create_model(
+        "FieldLookFile",
+        __base__=_File,
+        field=(Dotted, ...),
+        **{
+            name: (info.annotation, info)
+            for name, info in ColumnLook.model_fields.items()
+            if name not in ("table", "column", "show_when")
+        },
+        show_when=_SHOW_WHEN,
+    )
     TableComponentFile = _derived(
         "TableComponentFile",
         TableInputWidget,
-        drop=PLACEMENT,
-        replace={"type": (Literal["table"], ...), **_COMPONENT_LOOKS},
+        drop=PLACEMENT | {"id", "column_looks"},
+        required=frozenset({"number"}),
+        replace={
+            "type": (Literal["table"], ...),
+            "fields": (list[Dotted | FieldLookFile], Field(default_factory=list)),
+            "show_when": _SHOW_WHEN,
+        },
     )
     CollectionComponentFile = _derived(
-        "CollectionComponentFile", CollectionWidget, drop=PLACEMENT, replace=_COMPONENT_LOOKS
+        "CollectionComponentFile",
+        CollectionWidget,
+        drop=PLACEMENT | {"id", "column_looks", "spacers"},
+        required=frozenset({"number"}),
+        replace={
+            "fields": (list[Dotted | FieldLookFile | None], Field(default_factory=list)),
+            "show_when": _SHOW_WHEN,
+        },
     )
     ChartComponentFile = _derived(
         "ChartComponentFile",
         ChartWidget,
-        drop=PLACEMENT,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
         replace={
             "fields": (list[Dotted], Field(default_factory=list)),
             "show_when": _SHOW_WHEN,
@@ -244,7 +296,11 @@ else:
         },
     )
     HeadingComponentFile = _derived(
-        "HeadingComponentFile", HeadingWidget, drop=PLACEMENT, replace={"show_when": _SHOW_WHEN}
+        "HeadingComponentFile",
+        HeadingWidget,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
+        replace={"show_when": _SHOW_WHEN},
     )
     SqlImportFile = _derived(
         "SqlImportFile", SqlImport, replace={"parameters": (list[QueryParameterFile], ...)}
@@ -253,7 +309,8 @@ else:
     ImportComponentFile = _derived(
         "ImportComponentFile",
         ImportWidget,
-        drop=PLACEMENT,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
         replace={
             "show_when": _SHOW_WHEN,
             "source": (
@@ -271,7 +328,8 @@ else:
     ExportComponentFile = _derived(
         "ExportComponentFile",
         ExportWidget,
-        drop=PLACEMENT,
+        drop=PLACEMENT | {"id"},
+        required=frozenset({"number"}),
         replace={
             "show_when": _SHOW_WHEN,
             "target": (
@@ -303,14 +361,16 @@ else:
 
 
 class SectionFile(_File):
-    id: str
+    """A section, known by its title on its sheet (READ-24)."""
+
     title: str
     show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
     components: list[ComponentFile]
 
 
 class SheetFile(_File):
-    id: str
+    """A sheet, known by its file's name (READ-24)."""
+
     title: str
     show_when: ShowWhenFile = Field(default_factory=ShowWhenFile)
     sections: list[SectionFile] = Field(min_length=1)
@@ -330,40 +390,40 @@ class RectFile(_File):
 
 class LayoutSectionFile(_File):
     height: Annotated[_Whole, Field(gt=0)]
+    #: Each component's box, by its number in the section (READ-24).
     components: dict[str, RectFile]
 
 
 class LayoutFile(_File):
     width: Annotated[_Whole, Field(gt=0)]
+    #: Each section's height and boxes, by its title (READ-24).
     sections: dict[str, LayoutSectionFile]
 
 
 class TableFile(_File):
-    """A table but its name, which is its index entry: each column named once, an output's
-    columns holding no rule, and none the quote's identity, which Haute gives every table."""
+    """A table but its name, which is its index entry: each column named once whatever its
+    case, and an output's columns holding no rule. The quote's identity, which Haute gives
+    every table, is written in none; a column of either name is the project's own, a clash
+    the schema's problems name (``haute._workbench_form.identity_clashes``)."""
 
-    id: str
     role: Literal["input", "output"]
     rows: Literal["one", "many"]
     columns: list[ColumnFile]
 
     @model_validator(mode="after")
     def _holds_its_own_columns(self) -> TableFile:
-        # A reference names a column by its name: two of one name, as a merge can leave
-        # them, would give the sheets one of them and silently not the other.
-        names: set[str] = set()
+        # A column is known by its name (READ-23): two of one name whatever their case, as a
+        # merge can leave them, would give the sheets one of them and not the other, and a
+        # database that ignores case one column for both.
+        names: dict[str, str] = {}
         for column in self.columns:
-            if column.name in names:
+            folded = column.name.casefold()
+            if folded in names:
                 raise ValueError(
-                    f"two columns are named {column.name}: each column of a table needs a "
-                    "name of its own"
+                    f"two columns are named {names[folded]} and {column.name}: each column of "
+                    "a table needs a name of its own, whatever its case"
                 )
-            names.add(column.name)
-            if column.id in IDENTITY_IDS:
-                raise ValueError(
-                    f"{column.name} is the quote's identity, which Haute holds in every "
-                    "table: remove it"
-                )
+            names[folded] = column.name
             if self.role == "output":
                 rules = [key for key in INPUT_ONLY if key in column.model_fields_set]
                 if rules:
@@ -388,7 +448,7 @@ class QuoteDetailsFile(_File):
         if names != [name for name in DETAILS_NAMES if name in names]:
             raise ValueError("the columns must be in Haute's order")
         for column in self.columns:
-            if DETAILS_IDS[column.name] in QUOTE_DETAILS_MANAGED:
+            if column.name in QUOTE_DETAILS_MANAGED:
                 given = [key for key in DETAILS_TYPED if key in column.model_fields_set]
                 if given:
                     raise ValueError(

@@ -321,18 +321,18 @@ function ConditionRow({
 }) {
   const tables = testable(form, priced)
   const list = isListCondition(condition)
-  const table = form.schema.tables.find((candidate) => candidate.id === condition.table)
+  const table = form.schema.tables.find((candidate) => candidate.name === condition.table)
   const found = list ? null : fieldColumn(form, condition)
   const key = list ? rowsKey(condition.table) : columnKey(condition.table, condition.column)
   // What each place in the column select makes of the condition: a one-row table's column, or a many-row table's rows.
   const choices = new Map<string, () => SingleCondition>()
   for (const candidate of tables) {
     if (candidate.rows === "many") {
-      choices.set(rowsKey(candidate.id), () => withConditionRowsOf(form, condition, candidate.id))
+      choices.set(rowsKey(candidate.name), () => withConditionRowsOf(form, condition, candidate.name))
       continue
     }
     for (const column of testableColumns(candidate)) {
-      choices.set(columnKey(candidate.id, column.id), () => withConditionColumn(form, condition, candidate.id, column.id))
+      choices.set(columnKey(candidate.name, column.name), () => withConditionColumn(form, condition, candidate.name, column.name))
     }
   }
   const offered = choices.has(key)
@@ -368,12 +368,12 @@ function ConditionRow({
             </option>
           )}
           {tables.map((candidate) => (
-            <optgroup key={candidate.id} label={candidate.name}>
+            <optgroup key={candidate.name} label={candidate.name}>
               {candidate.rows === "many" ? (
-                <option value={rowsKey(candidate.id)}>Rows of {candidate.name}</option>
+                <option value={rowsKey(candidate.name)}>Rows of {candidate.name}</option>
               ) : (
                 testableColumns(candidate).map((column) => (
-                  <option key={column.id} value={columnKey(candidate.id, column.id)}>
+                  <option key={column.name} value={columnKey(candidate.name, column.name)}>
                     {label(column)}
                   </option>
                 ))
@@ -460,13 +460,13 @@ function ListFields({
               className={`${FIELD_CLASS} min-w-0 flex-1`}
               style={INPUT_STYLE}
             >
-              {!numbers.some((column) => column.id === condition.column) && (
+              {!numbers.some((column) => column.name === condition.column) && (
                 <option value={condition.column} disabled>
-                  {table?.columns.find((column) => column.id === condition.column)?.name ?? "Missing column"}
+                  {table?.columns.find((column) => column.name === condition.column)?.name ?? "Missing column"}
                 </option>
               )}
               {numbers.map((column) => (
-                <option key={column.id} value={column.id}>
+                <option key={column.name} value={column.name}>
                   {label(column)}
                 </option>
               ))}
@@ -561,7 +561,7 @@ function RowTestFields({
   onRemove: () => void
 }) {
   const columns = table === undefined ? [] : testableColumns(table)
-  const column = table?.columns.find((candidate) => candidate.id === test.column) ?? null
+  const column = table?.columns.find((candidate) => candidate.name === test.column) ?? null
   return (
     <div role="group" aria-label={name} className="flex flex-col gap-1 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
       <div className="flex items-center gap-1.5">
@@ -570,18 +570,18 @@ function RowTestFields({
           value={test.column}
           onChange={(event) => {
             // A test is only offered the columns of a table the schema has.
-            if (table !== undefined) onChange(withTestColumn(form, table.id, test, event.target.value))
+            if (table !== undefined) onChange(withTestColumn(form, table.name, test, event.target.value))
           }}
           className={`${FIELD_CLASS} min-w-0 flex-1`}
           style={INPUT_STYLE}
         >
-          {!columns.some((candidate) => candidate.id === test.column) && (
+          {!columns.some((candidate) => candidate.name === test.column) && (
             <option value={test.column} disabled>
               {column === null ? "Missing column" : label(column)}
             </option>
           )}
           {columns.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
+            <option key={candidate.name} value={candidate.name}>
               {label(candidate)}
             </option>
           ))}
@@ -593,7 +593,7 @@ function RowTestFields({
         )}
       </div>
       <div className="flex flex-wrap items-start gap-1.5">
-        <ColumnFields form={form} tableId={table?.id ?? null} column={column} test={test} name={name} onChange={onChange} />
+        <ColumnFields form={form} tableId={table?.name ?? null} column={column} test={test} name={name} onChange={onChange} />
       </div>
     </div>
   )
@@ -689,11 +689,11 @@ function Against<T extends ColumnTest>({
   const { field } = test
   // A one-row table's condition names its field by table and column, a test of a row by its column in the same row.
   const rowTest = !("table" in test)
-  const keyOf = (choice: TestField): string => (rowTest ? choice.column.id : columnKey(choice.table.id, choice.column.id))
+  const keyOf = (choice: TestField): string => (rowTest ? choice.column.name : columnKey(choice.table.name, choice.column.name))
   const current = field === null ? VALUE : typeof field === "string" ? field : columnKey(field.table, field.column)
   const ref = field === null ? null : typeof field === "string" ? (tableId === null ? null : { table: tableId, column: field }) : field
   const named = ref === null ? null : fieldColumn(form, ref)
-  const tables = [...new Map(fields.map((choice) => [choice.table.id, choice.table])).values()]
+  const tables = [...new Map(fields.map((choice) => [choice.table.name, choice.table])).values()]
   return (
     <select
       aria-label={`${name} against`}
@@ -702,7 +702,7 @@ function Against<T extends ColumnTest>({
         if (event.target.value === VALUE) return onChange(null as T["field"])
         const chosen = fields.find((choice) => keyOf(choice) === event.target.value)
         if (chosen === undefined) throw new Error(`"${event.target.value}" is not a field this test can be tested against`)
-        onChange((rowTest ? chosen.column.id : { table: chosen.table.id, column: chosen.column.id }) as T["field"])
+        onChange((rowTest ? chosen.column.name : { table: chosen.table.name, column: chosen.column.name }) as T["field"])
       }}
       className={`${FIELD_CLASS} w-32 shrink-0`}
       style={INPUT_STYLE}
@@ -714,11 +714,11 @@ function Against<T extends ColumnTest>({
         </option>
       )}
       {tables.map((table) => (
-        <optgroup key={table.id} label={table.name}>
+        <optgroup key={table.name} label={table.name}>
           {fields
-            .filter((choice) => choice.table.id === table.id)
+            .filter((choice) => choice.table.name === table.name)
             .map((choice) => (
-              <option key={choice.column.id} value={keyOf(choice)}>
+              <option key={choice.column.name} value={keyOf(choice)}>
                 {label(choice.column)}
               </option>
             ))}

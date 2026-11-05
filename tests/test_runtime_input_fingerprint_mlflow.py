@@ -28,7 +28,7 @@ from tests.conftest import make_graph
 _BASE_TOML = '[project]\nname = "main"\npipeline = "rating/main.py"\n'
 
 _MODEL_SCORE_RUN_CONFIG: dict[str, object] = {
-    "sourceType": "run",
+    "source_type": "run",
     "run_id": "run-1",
     "artifact_path": "model/model.cbm",
     "task": "regression",
@@ -36,7 +36,7 @@ _MODEL_SCORE_RUN_CONFIG: dict[str, object] = {
 }
 
 _OPTIMISER_APPLY_RUN_CONFIG: dict[str, object] = {
-    "sourceType": "run",
+    "source_type": "run",
     "run_id": "run-1",
     "artifact_path": "optimiser/artifact.json",
     "optimised_value_column": "optimised",
@@ -171,7 +171,7 @@ def test_file_backed_optimiser_apply_fingerprint_has_no_backend_entry(workspace:
     file_graph = _graph(
         "optimiserApply",
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact.as_posix(),
             "optimised_value_column": "optimised",
         },

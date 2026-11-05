@@ -33,6 +33,7 @@ from haute._pipeline_repair import (
     _resolve_project_file,
     _wire_path,
 )
+from haute._polars_steps import STEPS_FROM_CODE
 from haute._python_syntax import (
     SourceNodeReplacement,
     insert_import_after,
@@ -130,6 +131,49 @@ def _edit(
         before=before,
         after=after,
         description=description,
+    )
+
+
+def _unfinished_steps_edit(
+    path: Path, root: Path, node: GraphNode, source_names: list[str]
+) -> RepairArtifactEdit | None:
+    """The edit to *path*'s canvas sidecar that keeps the stepped *node*'s step list while
+    one of its steps is unfinished against its inputs, *source_names*, or drops it once
+    none is (READ-22, READ-44; :func:`haute._sidecar.unfinished_step_list`, the rule every
+    save keeps): its body is then the raising placeholder, so the sidecar holds the steps'
+    only copy. None when it holds them as they should be. The sidecar is read as the editor
+    reads it and written as a save writes it, so a sidecar the editor would refuse refuses
+    the save, nothing written."""
+    from haute._json_files import render_json
+    from haute._sidecar import SidecarModel, read_sidecar_state, unfinished_step_list
+
+    sidecar = path.with_suffix(".haute.json")
+    read = read_sidecar_state(path)
+    if read.state in ("corrupt", "unreadable"):
+        raise _unsupported(
+            f"{sidecar.name} cannot be read, so this node's unfinished steps could not be kept; "
+            "repair it first."
+        )
+    held = read.data if read.data is not None else SidecarModel()
+    unfinished = dict(held.unfinished_steps)
+    steps = unfinished_step_list(node, source_names)
+    if steps is not None:
+        if unfinished.get(node.id) == steps:
+            return None
+        unfinished[node.id] = steps
+    elif node.id in unfinished:
+        del unfinished[node.id]
+    else:
+        return None
+    updated = held.model_copy(update={"unfinished_steps": dict(sorted(unfinished.items()))})
+    return _edit(
+        sidecar,
+        root,
+        sidecar.read_bytes() if read.state == "valid" else None,
+        render_json(updated.model_dump(mode="json", exclude_defaults=True)).encode("utf-8"),
+        f"Keep {node.id!r}'s steps while one is unfinished."
+        if node.id in unfinished
+        else f"Drop {node.id!r}'s unfinished steps, now in its code.",
     )
 
 
@@ -259,7 +303,7 @@ def _reset_node(
         source_handles = None
         if _is_occurrence(source.node_type):
             source_config = source.config or {}
-            definition_id = source_config.get("definitionId")
+            definition_id = source_config.get("definition_id")
             definitions = graph.submodels or {}
             if not isinstance(definition_id, str) or definition_id not in definitions:
                 raise _unsupported(
@@ -267,7 +311,7 @@ def _reset_node(
                     "repair it before changing this node."
                 )
             definition = definitions[definition_id]
-            instance_of = source_config.get("instanceOf")
+            instance_of = source_config.get("instance_of")
             source_handles = [f"out__{port['name']}" for port in definition.output_ports]
         named_inputs.append(
             (
@@ -360,7 +404,7 @@ def _reset_node(
             _config_sharers(document, target, config_path, root_path=root_path, project_root=root)
         )
 
-    # A stepped transform owns an optional sidecar; a code-only one owns none.
+    # A node of a type with a config folder owns its sidecar; a transform owns none.
     if node_emits_sidecar(node):
         reference = (
             authored_reference or config_path_for_node(node_type, target.authored_id).as_posix()
@@ -394,8 +438,9 @@ def _reset_node(
             )
         )
     elif authored_reference is not None:
-        # A transform that leaves step mode no longer names its sidecar: the file
-        # it named goes with the rewrite unless another node still reads it.
+        # A transform written in the form before READ-22 names a sidecar it no
+        # longer needs: the file goes with the rewrite unless another node still
+        # reads it.
         config_path = config_file(authored_reference)
         if config_path.is_file() and not shared(config_path):
             edits.append(
@@ -408,6 +453,10 @@ def _reset_node(
                     f"{target.authored_id!r} no longer names.",
                 )
             )
+    if node_type in STEPS_FROM_CODE:
+        sidecar_edit = _unfinished_steps_edit(path, root, node, source_names)
+        if sidecar_edit is not None:
+            edits.append(sidecar_edit)
     # LibCST matches the function's definition span and replaces its decorators too.
     updated = _with_polars_import(_replace_spans(before, [(function, generated.rstrip("\n"))]))
     edits.insert(

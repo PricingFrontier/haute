@@ -50,7 +50,7 @@ def test_validate_runtime_input_paths_rejects_project_escape_for_file_backed_nod
     if node_type == NodeType.DATA_INPUT:
         config.update(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "arguments": {},
@@ -210,7 +210,7 @@ def test_prepare_runtime_graph_validates_paths_inside_submodels() -> None:
                 data=NodeData(
                     label="nested",
                     nodeType=NodeType.SUBMODEL,
-                    config={"definitionId": "nested", "alias": "nested"},
+                    config={"definition_id": "nested", "alias": "nested"},
                 ),
             )
         ],
@@ -288,7 +288,7 @@ def _config_node(node_id: str, label: str) -> GraphNode:
             label=label,
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "mode": "scan",
                 "path": f"{node_id}.csv",
@@ -547,7 +547,7 @@ def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() ->
                 data=NodeData(
                     label="apply",
                     nodeType=NodeType.OPTIMISER_APPLY,
-                    config={"sourceType": "file", "artifact_path": "../escape.json"},
+                    config={"source_type": "file", "artifact_path": "../escape.json"},
                 ),
             )
         ],
@@ -560,7 +560,7 @@ def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() ->
                 data=NodeData(
                     label="apply",
                     nodeType=NodeType.OPTIMISER_APPLY,
-                    config={"sourceType": "job", "artifact_path": "../escape.json"},
+                    config={"source_type": "job", "artifact_path": "../escape.json"},
                 ),
             )
         ],

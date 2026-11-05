@@ -111,7 +111,7 @@ export default function EdgeJoinEditor({
   useEffect(() => {
     if (!canSeed || seedColumnName === null || seededNodesRef.current.has(nodeId)) return
     seededNodesRef.current.add(nodeId)
-    onUpdate({ on: [seedColumnName], leftOn: [], rightOn: [] })
+    onUpdate({ on: [seedColumnName], left_on: [], right_on: [] })
   }, [canSeed, nodeId, onUpdate, seedColumnName])
 
   const hasSameConfig = onKeys.length > 0
@@ -128,37 +128,37 @@ export default function EdgeJoinEditor({
 
   const updateSameKey = (index: number, value: string) => {
     const next = replaceAt(sameRows, index, value)
-    onUpdate({ on: normalizeKeyRows(next), leftOn: [], rightOn: [] })
+    onUpdate({ on: normalizeKeyRows(next), left_on: [], right_on: [] })
   }
 
   const addSameKey = () => {
-    onUpdate({ on: [...sameRows, ""], leftOn: [], rightOn: [] })
+    onUpdate({ on: [...sameRows, ""], left_on: [], right_on: [] })
   }
 
   const removeSameKey = (index: number) => {
     const next = sameRows.filter((_, rowIndex) => rowIndex !== index)
-    onUpdate({ on: normalizeKeyRows(next), leftOn: [], rightOn: [] })
+    onUpdate({ on: normalizeKeyRows(next), left_on: [], right_on: [] })
   }
 
   const updatePairedKey = (index: number, side: "left" | "right", value: string) => {
     const nextLeft = replaceAt(pairedRows.map((row) => row.left), index, side === "left" ? value : pairedRows[index]?.left ?? "")
     const nextRight = replaceAt(pairedRows.map((row) => row.right), index, side === "right" ? value : pairedRows[index]?.right ?? "")
-    onUpdate({ on: [], leftOn: normalizeKeyRows(nextLeft), rightOn: normalizeKeyRows(nextRight) })
+    onUpdate({ on: [], left_on: normalizeKeyRows(nextLeft), right_on: normalizeKeyRows(nextRight) })
   }
 
   const addPairedKey = () => {
     onUpdate({
       on: [],
-      leftOn: [...pairedRows.map((row) => row.left), ""],
-      rightOn: [...pairedRows.map((row) => row.right), ""],
+      left_on: [...pairedRows.map((row) => row.left), ""],
+      right_on: [...pairedRows.map((row) => row.right), ""],
     })
   }
 
   const removePairedKey = (index: number) => {
     onUpdate({
       on: [],
-      leftOn: normalizeKeyRows(pairedRows.map((row) => row.left).filter((_, rowIndex) => rowIndex !== index)),
-      rightOn: normalizeKeyRows(pairedRows.map((row) => row.right).filter((_, rowIndex) => rowIndex !== index)),
+      left_on: normalizeKeyRows(pairedRows.map((row) => row.left).filter((_, rowIndex) => rowIndex !== index)),
+      right_on: normalizeKeyRows(pairedRows.map((row) => row.right).filter((_, rowIndex) => rowIndex !== index)),
     })
   }
 
@@ -237,9 +237,9 @@ export default function EdgeJoinEditor({
               const nextHow = event.target.value as JoinHow
               const nextOrder = joinOrderAfterHowChange(maintainOrder, how, nextHow)
               if (nextHow === "cross") {
-                onUpdate({ how: nextHow, maintainOrder: nextOrder, on: [], leftOn: [], rightOn: [] })
+                onUpdate({ how: nextHow, maintain_order: nextOrder, on: [], left_on: [], right_on: [] })
               } else {
-                onUpdate({ how: nextHow, maintainOrder: nextOrder })
+                onUpdate({ how: nextHow, maintain_order: nextOrder })
               }
             }}
             className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
@@ -261,10 +261,10 @@ export default function EdgeJoinEditor({
               onChange={(mode) => {
                 if (mode === "paired") {
                   const seed = sameRows.length > 0 ? sameRows : [""]
-                  onUpdate({ on: [], leftOn: seed, rightOn: seed })
+                  onUpdate({ on: [], left_on: seed, right_on: seed })
                 } else {
                   const seed = pairedRows.map((row) => row.left === row.right ? row.left : "")
-                  onUpdate({ on: normalizeKeyRows(seed.length > 0 ? seed : [""]), leftOn: [], rightOn: [] })
+                  onUpdate({ on: normalizeKeyRows(seed.length > 0 ? seed : [""]), left_on: [], right_on: [] })
                 }
               }}
               options={[
@@ -385,7 +385,7 @@ export default function EdgeJoinEditor({
               id="edge-join-maintain-order"
               aria-label="Maintain Order"
               value={maintainOrder}
-              onChange={(event) => onUpdate("maintainOrder", event.target.value)}
+              onChange={(event) => onUpdate("maintain_order", event.target.value)}
               className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
               style={{ ...SELECT_STYLE, ...focusVars }}
             >

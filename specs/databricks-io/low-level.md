@@ -49,7 +49,7 @@
 
 ### Table write
 
-A Data Output with `outputType: "databricks"` has no `format`;
+A Data Output with `output_type: "databricks"` has no `format`;
 `write_polars_output()` dispatches it to `write_databricks_output()` before any
 format lookup.
 

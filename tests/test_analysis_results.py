@@ -320,7 +320,7 @@ def _graph(project: Path, *, source_config: dict[str, Any] | None = None) -> dic
                         "nodeType": "dataInput",
                         "config": source_config
                         or {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(project / "quotes.parquet"),
@@ -739,7 +739,7 @@ def test_a_direct_file_profile_becomes_unavailable_after_the_selection_changes(
     renamed = _graph(
         project,
         source_config={
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": str(project / "quotes.parquet"),
@@ -1020,7 +1020,7 @@ def _profiled_columns(
     graph = _graph(
         project,
         source_config={
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": str(path),

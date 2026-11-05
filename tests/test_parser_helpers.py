@@ -44,6 +44,7 @@ from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
 from haute._config_builder import _copy_config_keys, _resolve_node_config
 from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
+from haute._node_specs import SINGLETON_NODE_NAMES
 from haute._types import NodeEditorState, NodeType
 from haute.errors import ParseError
 
@@ -755,7 +756,7 @@ class TestResolveNodeConfig:
         with pytest.raises(ConfigError):
             _resolve_node_config(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -777,26 +778,39 @@ class TestResolveNodeConfig:
         writes it, and the inline builder refuses it: no decorator form stands in for
         the file."""
         from haute._config_builder import _build_node_config
-        from haute._config_io import _normalise_loaded_config, palette_default_config
+        from haute._config_io import (
+            _normalise_loaded_config,
+            node_config_json,
+            palette_default_config,
+        )
         from haute._node_specs import NODE_TYPE_TO_FOLDER
+        from haute._polars_steps import STEPS_FROM_CODE
 
         folder = NODE_TYPE_TO_FOLDER[node_type]
+        # A request input or response node takes its type's fixed name (READ-46).
+        name = SINGLETON_NODE_NAMES.get(node_type, "node")
         settings = palette_default_config(node_type)
-        sidecar = tmp_path / "config" / folder / "node.json"
+        sidecar = tmp_path / "config" / folder / f"{name}.json"
         sidecar.parent.mkdir(parents=True)
-        sidecar.write_text(json.dumps(settings), encoding="utf-8")
+        # The sidecar as a save writes it: rating tables as grids, constants as a map.
+        sidecar.write_bytes(node_config_json(node_type, settings, node_label=name).encode("utf-8"))
 
         resolved_type, config, _editor = _resolve_node_config(
-            {"config": f"config/{folder}/node.json"},
+            {"config": f"config/{folder}/{name}.json"},
             "...",
             [],
             tmp_path,
-            func_name="node",
+            func_name=name,
             explicit_node_type=node_type,
         )
 
         assert resolved_type == node_type
-        expected = _normalise_loaded_config(dict(settings), node_type)
+        expected = _normalise_loaded_config(json.loads(sidecar.read_bytes()), node_type)
+        if node_type in STEPS_FROM_CODE:
+            # Its sidecar holds no steps; a declaration has none yet, as a new node has
+            # (READ-44).
+            assert "steps" not in expected
+            expected = {**expected, "steps": []}
         assert {key: value for key, value in config.items() if key not in {"code", "inputs"}} == {
             key: value for key, value in expected.items() if key not in {"code", "inputs"}
         }
@@ -814,7 +828,7 @@ class TestResolveNodeConfig:
         with pytest.raises(ConfigError) as excinfo:
             _resolve_node_config(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -840,7 +854,7 @@ class TestResolveNodeConfig:
 
         cfg_dir = tmp_path / "config" / "constant"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+        (cfg_dir / "rates.json").write_text('{"values": {"base": "1"}}')
 
         with pytest.raises(ConfigError) as excinfo:
             _resolve_node_config(
@@ -865,7 +879,7 @@ class TestResolveNodeConfig:
     def test_a_sidecar_backed_node_keeps_its_contract_keyword(self, tmp_path):
         cfg_dir = tmp_path / "config" / "constant"
         cfg_dir.mkdir(parents=True)
-        (cfg_dir / "rates.json").write_text('{"values": [{"name": "base", "value": "1"}]}')
+        (cfg_dir / "rates.json").write_text('{"values": {"base": "1"}}')
 
         node_type, config, _editor = _resolve_node_config(
             {"config": "config/constant/rates.json", "contract": "opaque"},
@@ -944,7 +958,7 @@ class TestResolveNodeConfig:
     def test_external_config_file(self, tmp_path):
         """With config= key, loads JSON from file."""
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "data.csv",
@@ -968,7 +982,7 @@ class TestResolveNodeConfig:
     def test_data_input_hook_extracts_its_code(self, tmp_path):
         """A Data Input ``df`` hook's post-load code becomes the node's code."""
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -993,7 +1007,7 @@ class TestResolveNodeConfig:
     def test_data_input_without_post_code_gives_empty_code(self, tmp_path):
         """A Data Input declaration (its docstring alone) has empty code."""
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -1055,15 +1069,22 @@ class TestResolveNodeConfig:
         """_resolve_node_config must not modify the caller's dict (B21)."""
         kwargs: dict[str, Any] = {"config": "config/data_input/x.json", "contract": "opaque"}
         original = dict(kwargs)
-        with patch("haute._config_builder.load_node_config", return_value={}):
-            _resolve_node_config(kwargs, "", [], None)
+        settings = {
+            "input_type": "file",
+            "format": "parquet",
+            "mode": "scan",
+            "path": "data.parquet",
+            "arguments": {},
+        }
+        with patch("haute._config_builder.load_node_config", return_value=settings):
+            _resolve_node_config(kwargs, "", [], None, explicit_node_type=NodeType.DATA_INPUT)
         # The original dict must be untouched — "config" and "contract" keys stay.
         assert kwargs == original
 
     def test_no_mutation_polars_path(self):
         """The no-sidecar path must not mutate the input dict (B21)."""
         kwargs: dict[str, Any] = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "data.parquet",
@@ -1088,7 +1109,7 @@ class TestResolveNodeConfig:
             patch("haute._config_builder.load_node_config", return_value={}),
             pytest.raises(ConfigError, match="'format', 'sink' would be ignored"),
         ):
-            _resolve_node_config(kwargs, "", [], None)
+            _resolve_node_config(kwargs, "", [], None, explicit_node_type=NodeType.BANDING)
         assert kwargs == original
 
     def test_mangled_config_path_raises_config_error(self, tmp_path):
@@ -1266,7 +1287,7 @@ class TestExtractDecoratedNodes:
         (cfg_dir / "source.json").write_text(
             json.dumps(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": "data.parquet",
@@ -1629,7 +1650,7 @@ class TestFunctionBodySource:
             NodeType.DATA_OUTPUT,
             "sortie",
             {
-                "outputType": "file",
+                "output_type": "file",
                 "format": "parquet",
                 "mode": "sink",
                 "path": "out.parquet",

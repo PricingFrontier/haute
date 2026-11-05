@@ -1,1 +1,1 @@
-{"target":"priced","required_columns":["vehicle_age","driver_band"]}
+{"target":"quote_response","required_columns":["vehicle_age","driver_band"]}

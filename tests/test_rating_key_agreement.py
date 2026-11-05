@@ -39,6 +39,7 @@ import pytest
 
 from haute._polars_utils import streaming_collect
 from haute._rating import (
+    RatingDuplicateEntriesError,
     RatingTableMissError,
     _apply_rating_table,
     _rating_key_expr,
@@ -65,7 +66,7 @@ class TestEngineKeyNormalisation:
             "tables": [
                 {
                     "factors": ["age"],
-                    "outputColumn": "f",
+                    "output_column": "f",
                     "entries": [
                         {"age": "25", "value": 2.0},
                         {"age": "30.5", "value": 3.0},
@@ -83,7 +84,7 @@ class TestEngineKeyNormalisation:
         """Numeric entry keys (JSON floats) must match an integer column."""
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"age": 25.0, "value": 2.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"age": [25]}).lazy(), table).collect()
@@ -92,7 +93,7 @@ class TestEngineKeyNormalisation:
     def test_float_entry_keys_match_float_frame_column(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"age": 25.0, "value": 2.0}, {"age": 30.5, "value": 3.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"age": [25.0, 30.5]}).lazy(), table).collect()
@@ -101,7 +102,7 @@ class TestEngineKeyNormalisation:
     def test_int_column_still_matches_string_keys(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"age": "25", "value": 2.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"age": [25]}).lazy(), table).collect()
@@ -111,7 +112,7 @@ class TestEngineKeyNormalisation:
         """HEAD already matched these; the fix must not regress them."""
         table = {
             "factors": ["score"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"score": "1.5", "value": 10.0}, {"score": "0.1", "value": 20.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"score": [1.5, 0.1]}).lazy(), table).collect()
@@ -120,7 +121,7 @@ class TestEngineKeyNormalisation:
     def test_negative_zero_collapses_to_zero(self) -> None:
         table = {
             "factors": ["z"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"z": "0", "value": 5.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"z": [-0.0]}).lazy(), table).collect()
@@ -129,7 +130,7 @@ class TestEngineKeyNormalisation:
     def test_negative_int_like_float_matches(self) -> None:
         table = {
             "factors": ["t"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"t": "-3", "value": 7.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"t": [-3.0]}).lazy(), table).collect()
@@ -139,7 +140,7 @@ class TestEngineKeyNormalisation:
         """1e16 is integral and Int64-representable: collapses to digits."""
         table = {
             "factors": ["b"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"b": "10000000000000000", "value": 1.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"b": [1e16]}).lazy(), table).collect()
@@ -149,7 +150,7 @@ class TestEngineKeyNormalisation:
         """Beyond the Int64 range, keys keep the engine's float formatting."""
         table = {
             "factors": ["h"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"h": "1e+300", "value": 1.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"h": [1e300]}).lazy(), table).collect()
@@ -159,7 +160,7 @@ class TestEngineKeyNormalisation:
         """An entry scalar is interpreted in the originating factor dtype."""
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"age": "25.0", "value": 2.0}],
         }
         out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
@@ -168,7 +169,7 @@ class TestEngineKeyNormalisation:
     def test_float32_int_like_column_matches_string_keys(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"age": "25", "value": 2.0}],
         }
         lf = pl.DataFrame({"age": pl.Series("age", [25.0], dtype=pl.Float32)}).lazy()
@@ -183,7 +184,7 @@ class TestEngineKeyNormalisation:
         assert promoted == "0.10000000149011612"
         table = {
             "factors": ["score"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"score": promoted, "value": 9.0}],
         }
         lf = pl.DataFrame({"score": pl.Series("score", [0.1], dtype=pl.Float32)}).lazy()
@@ -194,7 +195,7 @@ class TestEngineKeyNormalisation:
         """Entry strings are cast to Float32 before native-width formatting."""
         table = {
             "factors": ["score"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"score": "0.1", "value": 9.0}],
         }
         lf = pl.DataFrame({"score": pl.Series("score", [0.1], dtype=pl.Float32)}).lazy()
@@ -204,7 +205,7 @@ class TestEngineKeyNormalisation:
     def test_boolean_factor_column_matches_and_is_preserved(self) -> None:
         table = {
             "factors": ["b"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"b": "true", "value": 2.0}],
         }
         lf = pl.DataFrame({"b": [True]}).lazy()
@@ -333,7 +334,7 @@ class TestFloat32AndCrossDtypeAgreement:
         entry_key = normalise_rating_key(save_series.item(), save_dtype)
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"age": entry_key, "value": 2.0}],
         }
         lf = pl.DataFrame({"age": pl.Series("age", [25], dtype=apply_dtype)}).lazy()
@@ -358,7 +359,7 @@ class TestFloat32AndCrossDtypeAgreement:
         )
         table = {
             "factors": ["s"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"s": entry_key, "value": 2.0}],
         }
         lf = pl.DataFrame({"s": pl.Series("s", [value], dtype=apply_dtype)}).lazy()
@@ -369,72 +370,81 @@ class TestFloat32AndCrossDtypeAgreement:
         assert out["f"].to_list() == [2.0]
 
 
-class TestDedupOnCanonicalKeys:
-    """B14/F084: deduplicate final typed keys and keep the last authored row."""
+class TestDuplicateCanonicalKeysRefused:
+    """READ-06/F084: entries whose final typed keys repeat are refused, never resolved."""
 
-    def test_mixed_float_string_entries_coerce_to_one_key_keep_last(self) -> None:
-        """Mixed source scalars still deduplicate on the final Float64 key."""
+    def test_mixed_float_string_entries_coerce_to_one_key_and_are_refused(self) -> None:
+        """Mixed source scalars meet on the final Float64 key, so the table is refused."""
         entries = [
             {"age": 25.0, "value": 1.0},
             {"age": "25", "value": 2.0},
         ]
-        # Polars first constructs one lookup column; target-dtype coercion and
-        # canonical-key deduplication then preserve the same last-wins result.
+        # Polars first constructs one lookup column; target-dtype coercion then
+        # gives both entries the same canonical key.
         coerced = pl.DataFrame(entries)
         assert coerced.schema["age"] == pl.String
         assert coerced["age"].to_list() == ["25", "25"]
-        table = {"factors": ["age"], "outputColumn": "f", "entries": entries}
-        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
-        assert out.height == 1  # no fan-out
-        assert out["f"].to_list() == [2.0]  # last-authored entry wins
+        table = {"factors": ["age"], "output_column": "f", "entries": entries}
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
-    def test_target_dtype_aliases_dedup_after_coercion_keep_last(self) -> None:
+    def test_target_dtype_aliases_meet_after_coercion_and_are_refused(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [
                 {"age": "25.0", "value": 1.0},
                 {"age": "25.00", "value": 2.0},
             ],
         }
 
-        out = _apply_rating_table(
-            pl.DataFrame({"age": pl.Series("age", [25.0], dtype=pl.Float64)}).lazy(),
-            table,
-        ).collect()
+        with pytest.raises(RatingDuplicateEntriesError, match="age='25.0'; age='25.00'"):
+            _apply_rating_table(
+                pl.DataFrame({"age": pl.Series("age", [25.0], dtype=pl.Float64)}).lazy(),
+                table,
+            )
 
-        assert out.height == 1
-        assert out["f"].to_list() == [2.0]
-
-    def test_exact_duplicate_keys_dedup_keep_last(self) -> None:
-        """The reachable dedup case: two entries with the identical key "25"
-        form a duplicate group.  unique(keep="last") keeps the last-authored
-        entry — this pins keep="last"; keep="first" would return 1.0."""
+    def test_a_duplicate_only_a_new_upstream_type_creates_is_refused_at_that_run(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
+            "output_column": "f",
+            "entries": [
+                {"age": "25.0", "value": 1.0},
+                {"age": "25.00", "value": 2.0},
+            ],
+        }
+        # As text the two levels differ, so the table prices.
+        out = _apply_rating_table(pl.DataFrame({"age": ["25.0"]}).lazy(), table).collect()
+        assert out["f"].to_list() == [1.0]
+        # The upstream column becomes a number: the same table is refused.
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
+
+    def test_exact_duplicate_keys_are_refused(self) -> None:
+        """Two entries with the identical key "25": no entry wins over the other."""
+        table = {
+            "factors": ["age"],
+            "output_column": "f",
             "entries": [
                 {"age": "25", "value": 1.0},
                 {"age": "25", "value": 2.0},
             ],
         }
-        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
-        assert out.height == 1
-        assert out["f"].to_list() == [2.0]
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
-    def test_canonical_collision_agrees_with_trace_enrichment(self) -> None:
+    def test_canonical_collision_is_refused_before_trace_enrichment(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [
                 {"age": 25.0, "value": 1.0},
                 {"age": "25", "value": 2.0},
             ],
         }
-        frame = pl.DataFrame({"age": [25.0]})
-        details = assert_engine_and_enrichment_agree(frame, table)
-        assert details[0]["status"] == "matched"
+        with pytest.raises(RatingDuplicateEntriesError):
+            _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table)
 
 
 class TestDecimalFactorScale:
@@ -445,7 +455,7 @@ class TestDecimalFactorScale:
 
         table = {
             "factors": ["amount"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"amount": "25.50", "value": 3.0}],
         }
         series = pl.Series("amount", [Decimal("25.50")], dtype=pl.Decimal(scale=2))
@@ -457,7 +467,7 @@ class TestDecimalFactorScale:
 
         table = {
             "factors": ["amount"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"amount": "25.5", "value": 3.0}],
         }
         series = pl.Series("amount", [Decimal("25.50")], dtype=pl.Decimal(scale=2))
@@ -476,7 +486,7 @@ class TestSidecarKeyCanonicalisation:
             "tables": [
                 {
                     "factors": ["age"],
-                    "outputColumn": "f",
+                    "output_column": "f",
                     "entries": [{"age": 25.0, "value": 2.0}],
                 }
             ]
@@ -490,7 +500,7 @@ class TestSidecarKeyCanonicalisation:
             "tables": [
                 {
                     "factors": ["age"],
-                    "outputColumn": "f",
+                    "output_column": "f",
                     "entries": [{"age": 25.0, "value": 2.0}],
                 }
             ]
@@ -526,7 +536,7 @@ class TestTemporalFactorColumns:
     ) -> None:
         table = {
             "factors": ["inception"],
-            "outputColumn": "f",
+            "output_column": "f",
             "entries": [{"inception": entry_value, "value": 2.0}],
         }
         lf = pl.DataFrame({"inception": series}).lazy()
@@ -646,17 +656,17 @@ class TestRatebookSchemaCollection:
         tables = [
             {
                 "factors": ["age"],
-                "outputColumn": "af",
+                "output_column": "af",
                 "entries": [{"age": "25", "value": 1.1}],
             },
             {
                 "factors": ["region"],
-                "outputColumn": "rf",
+                "output_column": "rf",
                 "entries": [{"region": "North", "value": 1.2}],
             },
             {
                 "factors": ["channel"],
-                "outputColumn": "cf",
+                "output_column": "cf",
                 "entries": [{"channel": "online", "value": 1.3}],
             },
         ]
@@ -685,10 +695,10 @@ def _engine_truth(frame: pl.DataFrame, table: dict[str, Any]) -> list[bool]:
     so nulls mark true misses — independent of the enrichment code under
     test.
     """
-    probe = {key: value for key, value in table.items() if key != "defaultValue"}
-    probe["onMissing"] = "neutral"
+    probe = {key: value for key, value in table.items() if key != "default_value"}
+    probe["on_missing"] = "neutral"
     out = _apply_rating_table(frame.lazy(), probe).collect()
-    return [value is not None for value in out[table["outputColumn"]].to_list()]
+    return [value is not None for value in out[table["output_column"]].to_list()]
 
 
 def assert_engine_and_enrichment_agree(
@@ -700,7 +710,7 @@ def assert_engine_and_enrichment_agree(
     out = _apply_rating_table(frame.lazy(), table).collect()
 
     has_usable_default = False
-    default_raw = table.get("defaultValue")
+    default_raw = table.get("default_value")
     if default_raw is not None and str(default_raw).strip():
         try:
             has_usable_default = math.isfinite(float(str(default_raw)))
@@ -739,8 +749,8 @@ class TestEnrichmentAgreesWithEngine:
     def test_int_like_floats_true_floats_and_miss(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [
                 {"age": "25", "value": 2.0},
                 {"age": "30.5", "value": 3.0},
@@ -760,8 +770,8 @@ class TestEnrichmentAgreesWithEngine:
         str()-based enrichment would report no_match."""
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [{"age": 25.0, "value": 2.0}],
         }
         frame = pl.DataFrame({"age": [25, 26]})
@@ -772,8 +782,8 @@ class TestEnrichmentAgreesWithEngine:
     def test_string_keys_regression_guard(self) -> None:
         table = {
             "factors": ["region"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [
                 {"region": "North", "value": 1.2},
                 {"region": "South", "value": 0.9},
@@ -785,8 +795,8 @@ class TestEnrichmentAgreesWithEngine:
     def test_default_fill_reported_as_default(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
-            "defaultValue": "1.0",
+            "output_column": "f",
+            "default_value": "1.0",
             "entries": [{"age": "25", "value": 2.0}],
         }
         frame = pl.DataFrame({"age": [25.0, 99.0]})
@@ -794,13 +804,13 @@ class TestEnrichmentAgreesWithEngine:
         assert [detail["status"] for detail in details] == ["matched", "default"]
 
     def test_entry_value_equal_to_default_is_matched_not_default(self) -> None:
-        """Value collision: a real entry hit whose value equals defaultValue
+        """Value collision: a real entry hit whose value equals default_value
         must be reported as matched — possible only if key comparison uses
         the engine's canonical form."""
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
-            "defaultValue": "1.0",
+            "output_column": "f",
+            "default_value": "1.0",
             "entries": [{"age": 25.0, "value": 1.0}],
         }
         frame = pl.DataFrame({"age": [25.0]})
@@ -812,8 +822,8 @@ class TestEnrichmentAgreesWithEngine:
         "True" — the old enrichment disagreed with an engine match here."""
         table = {
             "factors": ["flag"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [{"flag": True, "value": 2.0}, {"flag": False, "value": 3.0}],
         }
         frame = pl.DataFrame({"flag": ["true", "false", "TRUE"]})
@@ -827,8 +837,8 @@ class TestEnrichmentAgreesWithEngine:
     def test_multi_factor_mixed_numeric_and_string(self) -> None:
         table = {
             "factors": ["age", "region"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [
                 {"age": "25", "region": "North", "value": 1.5},
                 {"age": "30.5", "region": "South", "value": 0.9},
@@ -845,8 +855,8 @@ class TestEnrichmentAgreesWithEngine:
     def test_null_factor_value_never_matches(self) -> None:
         table = {
             "factors": ["age"],
-            "outputColumn": "f",
-            "onMissing": "neutral",
+            "output_column": "f",
+            "on_missing": "neutral",
             "entries": [{"age": "25", "value": 2.0}],
         }
         frame = pl.DataFrame({"age": [25.0, None]})
@@ -875,14 +885,14 @@ class TestTraceEndToEndAgreement:
         pl.DataFrame({"age": [25.0, 30.5, 99.0]}).write_parquet(data)
         table: dict[str, Any] = {
             "factors": ["age"],
-            "outputColumn": "age_factor",
+            "output_column": "age_factor",
             "entries": [
                 {"age": "25", "value": 2.0},
                 {"age": "30.5", "value": 3.0},
             ],
         }
         if on_missing:
-            table["onMissing"] = on_missing
+            table["on_missing"] = on_missing
         rating = GraphNode(
             id="rate",
             data=NodeData(label="rate", nodeType="ratingStep", config={"tables": [table]}),

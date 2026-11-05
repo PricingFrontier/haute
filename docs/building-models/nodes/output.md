@@ -58,21 +58,23 @@ The API response then holds only the quote ID, the final premium, and the area f
     A Quote Response or Workbench Output node is required for live pricing deployments. If your pipeline is batch-only (using Data Output), you don't need one.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/quote_response/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.output(config="config/quote_response/<node name>.json")`.
+    A pipeline holds one Quote Response, so the node is always named `quote_response`, and it has no rename.
+
+    The node's settings are stored in a JSON sidecar, `config/quote_response/quote_response.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.output(config="config/quote_response/quote_response.json")`.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | Mapping rows | `outputMapping`: one entry per row |
-    | Row's frame | `outputMapping[].source_port`: the incoming frame's name |
-    | Row's column | `outputMapping[].source_column` |
-    | Row's output path | `outputMapping[].output_path` |
-    | Row's tick box, frame's **enabled** box | `outputMapping[].enabled` (`true` or `false`) |
+    | Mapping rows | `output_mapping`: one entry per row |
+    | Row's frame | `output_mapping[].source_port`: the incoming frame's name |
+    | Row's column | `output_mapping[].source_column` |
+    | Row's output path | `output_mapping[].output_path` |
+    | Row's tick box, frame's **enabled** box | `output_mapping[].enabled` (`true` or `false`) |
 
     The example above is stored as:
 
     ```json
     {
-      "outputMapping": [
+      "output_mapping": [
         { "source_port": "priced", "source_column": "quote_id", "output_path": "$[:].quote_id", "enabled": true },
         { "source_port": "priced", "source_column": "final_premium", "output_path": "$[:].final_premium", "enabled": true },
         { "source_port": "priced", "source_column": "area_factor", "output_path": "$[:].area_factor", "enabled": true }
@@ -86,12 +88,12 @@ The API response then holds only the quote ID, the final premium, and the area f
 
     | Key | Type | Description |
     |---|---|---|
-    | `outputMapping` | list of object | The mapping rows, each a column of an incoming frame and the response path it fills. |
-    | `outputMapping[].source_port` | text | The incoming frame the column comes from, by its input name. |
-    | `outputMapping[].source_column` | text | The column whose values fill the path. |
-    | `outputMapping[].output_path` | text | The JSONPath in the response document the column fills, such as `$[:].premium`. |
-    | `outputMapping[].enabled` | `true` or `false` | Whether the row is part of the response. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `output_mapping` | list of object | The mapping rows, each a column of an incoming frame and the response path it fills. |
+    | `output_mapping[].source_port` | text | The incoming frame the column comes from, by its input name. |
+    | `output_mapping[].source_column` | text | The column whose values fill the path. |
+    | `output_mapping[].output_path` | text | The JSONPath in the response document the column fills, such as `$[:].premium`. |
+    | `output_mapping[].enabled` | `true` or `false` | Whether the row is part of the response. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

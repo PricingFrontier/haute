@@ -1,70 +1,65 @@
 {
-  "about": "Whether a quote has anything typed to price or save: a value in a column the sheets show, or in any column of quote_details but those the quote store keeps alone (its stage, who it is with, whether it is archived, when and by whom it was last changed and its Haute version), which no request holds, as a request holds the rest of quote_details whatever the sheets hide, other than a column the app sets (locked), whose value decides what the sheets show as any value does, the index, the column giving a table its rows, and a one-row table's column holding the default a new quote starts it with. Each case gives the values (rows by table id, cells by column id), the locked columns as [table, column], and whether the quote is typed. The form spells each column with what it sets, the rest as a new column's. frontend/src/utils/__tests__/sheetVisibility.test.ts holds quoteEligible to every case, and tests/test_workbench_tables.py holds the server's rule to them, the locked columns' values left out first as the app's routes leave out the details they set: one rule in two languages.",
+  "about": "Whether a quote has anything typed to price or save: a value in a column the sheets show, or in any column of quote_details but those the quote store keeps alone (its stage, who it is with, whether it is archived, when and by whom it was last changed and its Haute version), which no request holds, as a request holds the rest of quote_details whatever the sheets hide, other than a column the app sets (locked), whose value decides what the sheets show as any value does, the index, the column giving a table its rows, and a one-row table's column holding the default a new quote starts it with. Each case gives the values (rows by table name, cells by column name), the locked columns as [table, column], and whether the quote is typed. The form spells each column with what it sets, the rest as a new column's. frontend/src/utils/__tests__/sheetVisibility.test.ts holds quoteEligible to every case, and tests/test_workbench_tables.py holds the server's rule to them, the locked columns' values left out first as the app's routes leave out the details they set: one rule in two languages.",
   "form": {
     "version": 1,
     "name": "typed",
     "schema": {
       "tables": [
         {
-          "id": "quote_details",
           "name": "quote_details",
           "role": "input",
           "rows": "one",
           "columns": [
-            { "id": "qd_reference", "name": "quote_reference" },
-            { "id": "qd_option", "name": "quote_option", "type": "int" },
-            { "id": "qd_quote_name", "name": "quote_name" },
-            { "id": "qd_insured", "name": "insured" },
-            { "id": "qd_broker", "name": "broker" },
-            { "id": "qd_inception_date", "name": "inception_date", "type": "date" },
-            { "id": "qd_expiry_date", "name": "expiry_date", "type": "date" },
-            { "id": "qd_is_renewal", "name": "is_renewal", "type": "bool" },
-            { "id": "qd_stage", "name": "stage" },
-            { "id": "qd_assignee", "name": "assignee" },
-            { "id": "qd_archived", "name": "archived", "type": "bool" },
-            { "id": "qd_created_date", "name": "created_date", "type": "date" },
-            { "id": "qd_created_by", "name": "created_by" },
-            { "id": "qd_modified_date", "name": "modified_date", "type": "date" },
-            { "id": "qd_modified_by", "name": "modified_by" },
-            { "id": "qd_haute_version", "name": "haute_version" }
+            { "name": "quote_reference" },
+            { "name": "quote_option", "type": "int" },
+            { "name": "quote_name" },
+            { "name": "insured" },
+            { "name": "broker" },
+            { "name": "inception_date", "type": "date" },
+            { "name": "expiry_date", "type": "date" },
+            { "name": "is_renewal", "type": "bool" },
+            { "name": "stage" },
+            { "name": "assignee" },
+            { "name": "archived", "type": "bool" },
+            { "name": "created_date", "type": "date" },
+            { "name": "created_by" },
+            { "name": "modified_date", "type": "date" },
+            { "name": "modified_by" },
+            { "name": "haute_version" }
           ]
         },
         {
-          "id": "t_policy",
           "name": "policy",
           "role": "input",
           "rows": "one",
           "columns": [
-            { "id": "c_state", "name": "state" },
-            { "id": "c_limit", "name": "limit", "type": "int", "default_value": "1000" },
-            { "id": "c_flood", "name": "flood_cover", "type": "bool" },
-            { "id": "c_reference", "name": "reference" }
+            { "name": "state" },
+            { "name": "limit", "type": "int", "default_value": "1000" },
+            { "name": "flood_cover", "type": "bool" },
+            { "name": "reference" }
           ]
         },
         {
-          "id": "t_flood",
           "name": "flood",
           "role": "input",
           "rows": "one",
-          "columns": [{ "id": "c_flood_si", "name": "flood_si", "type": "float" }]
+          "columns": [{ "name": "flood_si", "type": "float" }]
         },
         {
-          "id": "t_perils",
           "name": "perils",
           "role": "input",
           "rows": "many",
           "columns": [
-            { "id": "c_line", "name": "line", "type": "int", "index": true },
-            { "id": "c_peril", "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
-            { "id": "c_peril_limit", "name": "peril_limit", "type": "float" }
+            { "name": "line", "type": "int", "index": true },
+            { "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
+            { "name": "peril_limit", "type": "float" }
           ]
         },
         {
-          "id": "t_out",
           "name": "pricing",
           "role": "output",
           "rows": "one",
-          "columns": [{ "id": "c_premium", "name": "premium", "type": "float" }]
+          "columns": [{ "name": "premium", "type": "float" }]
         }
       ]
     },
@@ -87,11 +82,11 @@
                 "h": 120,
                 "type": "collection",
                 "fields": [
-                  { "table": "t_policy", "column": "c_state" },
-                  { "table": "t_policy", "column": "c_limit" },
-                  { "table": "t_policy", "column": "c_flood" },
-                  { "table": "t_policy", "column": "c_reference" },
-                  { "table": "quote_details", "column": "qd_created_by" }
+                  { "table": "policy", "column": "state" },
+                  { "table": "policy", "column": "limit" },
+                  { "table": "policy", "column": "flood_cover" },
+                  { "table": "policy", "column": "reference" },
+                  { "table": "quote_details", "column": "created_by" }
                 ]
               },
               {
@@ -102,12 +97,12 @@
                 "h": 120,
                 "type": "collection",
                 "fields": [
-                  { "table": "t_flood", "column": "c_flood_si" },
-                  { "table": "quote_details", "column": "qd_stage" }
+                  { "table": "flood", "column": "flood_si" },
+                  { "table": "quote_details", "column": "stage" }
                 ],
                 "show_when": {
                   "match": "all",
-                  "conditions": [{ "table": "t_policy", "column": "c_flood", "op": "ticked", "values": [], "field": null, "days": 0 }]
+                  "conditions": [{ "table": "policy", "column": "flood_cover", "op": "ticked", "values": [], "field": null, "days": 0 }]
                 }
               },
               {
@@ -118,9 +113,9 @@
                 "h": 200,
                 "type": "tableInput",
                 "fields": [
-                  { "table": "t_perils", "column": "c_line" },
-                  { "table": "t_perils", "column": "c_peril" },
-                  { "table": "t_perils", "column": "c_peril_limit" }
+                  { "table": "perils", "column": "line" },
+                  { "table": "perils", "column": "peril" },
+                  { "table": "perils", "column": "peril_limit" }
                 ]
               },
               {
@@ -130,10 +125,10 @@
                 "w": 720,
                 "h": 80,
                 "type": "collection",
-                "fields": [{ "table": "t_flood", "column": "c_flood_si" }],
+                "fields": [{ "table": "flood", "column": "flood_si" }],
                 "show_when": {
                   "match": "all",
-                  "conditions": [{ "table": "quote_details", "column": "qd_created_by", "op": "equals", "values": ["ana@example.com"], "field": null, "days": 0 }]
+                  "conditions": [{ "table": "quote_details", "column": "created_by", "op": "equals", "values": ["ana@example.com"], "field": null, "days": 0 }]
                 }
               }
             ]
@@ -144,25 +139,25 @@
   },
   "cases": [
     { "name": "nothing", "values": {}, "locked": [], "typed": false },
-    { "name": "a value", "values": { "t_policy": [{ "c_state": "NY" }] }, "locked": [], "typed": true },
-    { "name": "blank text", "values": { "t_policy": [{ "c_state": "  " }] }, "locked": [], "typed": false },
-    { "name": "a tick", "values": { "t_policy": [{ "c_flood": true }] }, "locked": [], "typed": true },
-    { "name": "the default alone", "values": { "t_policy": [{ "c_limit": "1000" }] }, "locked": [], "typed": false },
-    { "name": "a value other than the default", "values": { "t_policy": [{ "c_limit": "2000" }] }, "locked": [], "typed": true },
-    { "name": "the default beside a value", "values": { "t_policy": [{ "c_limit": "1000", "c_state": "NY" }] }, "locked": [], "typed": true },
-    { "name": "a value the sheets hide", "values": { "t_flood": [{ "c_flood_si": "5000" }] }, "locked": [], "typed": false },
-    { "name": "a value the sheets show once its condition holds", "values": { "t_policy": [{ "c_flood": true }], "t_flood": [{ "c_flood_si": "5000" }] }, "locked": [], "typed": true },
-    { "name": "a value the app sets", "values": { "t_policy": [{ "c_reference": "Q-000001" }] }, "locked": [["t_policy", "c_reference"]], "typed": false },
-    { "name": "a value the app sets beside one typed", "values": { "t_policy": [{ "c_reference": "Q-000001", "c_state": "NY" }] }, "locked": [["t_policy", "c_reference"]], "typed": true },
-    { "name": "the rows a column gives alone", "values": { "t_perils": [{ "c_peril": "AOP" }, { "c_peril": "EQ" }] }, "locked": [], "typed": false },
-    { "name": "a value in a row a column gives", "values": { "t_perils": [{ "c_peril": "EQ", "c_peril_limit": "250" }] }, "locked": [], "typed": true },
-    { "name": "a value in a row no allowed value gives", "values": { "t_perils": [{ "c_peril": "AOP" }, { "c_peril": "EQ" }, { "c_peril": "XX", "c_peril_limit": "9" }] }, "locked": [], "typed": false },
-    { "name": "a second row of a one-row table", "values": { "t_policy": [{}, { "c_state": "NY" }] }, "locked": [], "typed": false },
-    { "name": "a table the form no longer has", "values": { "t_gone": [{ "c_state": "NY" }] }, "locked": [], "typed": false },
-    { "name": "a stage alone, which no request holds", "values": { "quote_details": [{ "qd_stage": "draft" }] }, "locked": [], "typed": false },
-    { "name": "a quote name, which a request holds whatever the sheets hide", "values": { "quote_details": [{ "qd_quote_name": "Fleet" }] }, "locked": [], "typed": true },
-    { "name": "a stage the sheets hide, set by the app", "values": { "quote_details": [{ "qd_stage": "draft" }] }, "locked": [["quote_details", "qd_stage"]], "typed": false },
-    { "name": "a value shown by a detail the app sets", "values": { "quote_details": [{ "qd_created_by": "ana@example.com" }], "t_flood": [{ "c_flood_si": "5000" }] }, "locked": [["quote_details", "qd_created_by"]], "typed": true },
-    { "name": "a value a detail the app sets leaves hidden", "values": { "quote_details": [{ "qd_created_by": "jo@example.com" }], "t_flood": [{ "c_flood_si": "5000" }] }, "locked": [["quote_details", "qd_created_by"]], "typed": false }
+    { "name": "a value", "values": { "policy": [{ "state": "NY" }] }, "locked": [], "typed": true },
+    { "name": "blank text", "values": { "policy": [{ "state": "  " }] }, "locked": [], "typed": false },
+    { "name": "a tick", "values": { "policy": [{ "flood_cover": true }] }, "locked": [], "typed": true },
+    { "name": "the default alone", "values": { "policy": [{ "limit": "1000" }] }, "locked": [], "typed": false },
+    { "name": "a value other than the default", "values": { "policy": [{ "limit": "2000" }] }, "locked": [], "typed": true },
+    { "name": "the default beside a value", "values": { "policy": [{ "limit": "1000", "state": "NY" }] }, "locked": [], "typed": true },
+    { "name": "a value the sheets hide", "values": { "flood": [{ "flood_si": "5000" }] }, "locked": [], "typed": false },
+    { "name": "a value the sheets show once its condition holds", "values": { "policy": [{ "flood_cover": true }], "flood": [{ "flood_si": "5000" }] }, "locked": [], "typed": true },
+    { "name": "a value the app sets", "values": { "policy": [{ "reference": "Q-000001" }] }, "locked": [["policy", "reference"]], "typed": false },
+    { "name": "a value the app sets beside one typed", "values": { "policy": [{ "reference": "Q-000001", "state": "NY" }] }, "locked": [["policy", "reference"]], "typed": true },
+    { "name": "the rows a column gives alone", "values": { "perils": [{ "peril": "AOP" }, { "peril": "EQ" }] }, "locked": [], "typed": false },
+    { "name": "a value in a row a column gives", "values": { "perils": [{ "peril": "EQ", "peril_limit": "250" }] }, "locked": [], "typed": true },
+    { "name": "a value in a row no allowed value gives", "values": { "perils": [{ "peril": "AOP" }, { "peril": "EQ" }, { "peril": "XX", "peril_limit": "9" }] }, "locked": [], "typed": false },
+    { "name": "a second row of a one-row table", "values": { "policy": [{}, { "state": "NY" }] }, "locked": [], "typed": false },
+    { "name": "a table the form no longer has", "values": { "gone": [{ "state": "NY" }] }, "locked": [], "typed": false },
+    { "name": "a stage alone, which no request holds", "values": { "quote_details": [{ "stage": "draft" }] }, "locked": [], "typed": false },
+    { "name": "a quote name, which a request holds whatever the sheets hide", "values": { "quote_details": [{ "quote_name": "Fleet" }] }, "locked": [], "typed": true },
+    { "name": "a stage the sheets hide, set by the app", "values": { "quote_details": [{ "stage": "draft" }] }, "locked": [["quote_details", "stage"]], "typed": false },
+    { "name": "a value shown by a detail the app sets", "values": { "quote_details": [{ "created_by": "ana@example.com" }], "flood": [{ "flood_si": "5000" }] }, "locked": [["quote_details", "created_by"]], "typed": true },
+    { "name": "a value a detail the app sets leaves hidden", "values": { "quote_details": [{ "created_by": "jo@example.com" }], "flood": [{ "flood_si": "5000" }] }, "locked": [["quote_details", "created_by"]], "typed": false }
   ]
 }

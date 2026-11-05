@@ -47,9 +47,6 @@ from haute._code_extraction import (
 from haute._config_io import config_path_for_node
 from haute._config_validation import validate_optimiser_input_selectors
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
-from haute._explore_charts import validate_explore_charts
-from haute._explore_overview import validate_explore_overview
-from haute._explore_pivots import validate_explore_pivot_state
 from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
@@ -468,40 +465,6 @@ def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> NodeSource
     return _config_backed(node, source_names)
 
 
-# Explore uses nested decorator kwargs for presentation configuration, rather
-# than flat snake_case kwargs. These opaque values let the UI evolve without
-# coupling code generation to every presentation-specific field.
-def _explore_keywords(
-    overview: Any,
-    pivot_formulas: Any,
-    pivots: Any,
-    charts: Any,
-    column_config: dict[str, Any],
-) -> list[tuple[str, object]]:
-    """The keywords for ``@pipeline.explore(...)``, in a stable order.
-
-    Empty values are skipped (so the decorator stays bare when nothing is
-    set). Non-empty values are emitted overview, pivot_formulas, pivots, charts,
-    then shared column metadata.
-    """
-    overview = validate_explore_overview(overview, context="explore node config")
-    pivot_formulas, pivots = validate_explore_pivot_state(
-        pivot_formulas, pivots, context="explore node config"
-    )
-    charts = validate_explore_charts(charts, context="explore node config")
-    keywords: list[tuple[str, object]] = []
-    if overview:
-        keywords.append(("overview", overview))
-    if pivot_formulas:
-        keywords.append(("pivot_formulas", pivot_formulas))
-    if pivots:
-        keywords.append(("pivots", pivots))
-    if charts:
-        keywords.append(("charts", charts))
-    keywords.extend(_build_extra_kwargs(column_config, COLUMN_CONFIG_KEYS))
-    return keywords
-
-
 @_register_codegen(NodeType.EXPLORE)
 def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
     if len(source_names) != 1:
@@ -512,26 +475,15 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
             incoming_count=len(source_names),
             incoming_sources=source_names,
         )
-    config = node.data.config
-    keywords = _explore_keywords(
-        config["overview"] if "overview" in config else {},
-        config.get("pivot_formulas"),
-        config["pivots"] if "pivots" in config else [],
-        config["charts"] if "charts" in config else [],
-        config,
-    )
-    steps = config.get("steps")
-    if isinstance(steps, list):
-        # No sidecar: the steps travel in the decorator beside pivots and charts.
-        keywords.append(("steps", steps))
-    return _configured_node(node, source_names, decorator="explore", keywords=tuple(keywords))
+    # Its settings live in its sidecar and its steps in its body (READ-43).
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> NodeSource:
-    # Its free code reads the names ``inputMapping`` keeps (the sidecar holds the
+    # Its free code reads the names ``input_mapping`` keeps (the sidecar holds the
     # mapping), so the function takes them as a Transform's does.
-    input_mapping = node.data.config.get("inputMapping")
+    input_mapping = node.data.config.get("input_mapping")
     if input_mapping is not None:
         source_names = resolve_input_mapping_names(source_names, input_mapping)
     return _config_backed(node, source_names)
@@ -611,7 +563,7 @@ def _transform_body(code: str) -> str:
 def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
     config = node.data.config
     code = str(config.get("code") or "").strip()
-    input_mapping = config.get("inputMapping")
+    input_mapping = config.get("input_mapping")
     steps = config.get("steps")
     if isinstance(steps, list) and input_mapping is not None:
         raise ConfigError(
@@ -629,9 +581,10 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
         keyword_parameters, logical_source_names, node_id=node.id, node_label=node.data.label
     )
     if isinstance(steps, list):
-        # The sidecar owns the steps; the body is their rendering against the
-        # generated parameter names, or the incomplete placeholder when they
-        # cannot be rendered yet (the save warns which step is incomplete).
+        # The body is the steps' rendering against the generated parameter
+        # names, the one place they are kept (READ-22), or the incomplete
+        # placeholder when they cannot be rendered yet: the save keeps the step
+        # list in ``.haute.json`` and warns which step is incomplete.
         try:
             code = render_polars_steps(steps, logical_source_names, start="input").code
         except PolarsStepError:
@@ -643,26 +596,22 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
             node_id=node.id,
             node_label=node.data.label,
         )
-    keywords: list[tuple[str, object]]
-    if isinstance(steps, list):
-        # The sidecar holds every setting of a stepped transform, its column
-        # settings included, so the decorator names only it.
-        keywords = [
-            ("config", config_path_for_node(node.data.nodeType, _func_name(node)).as_posix())
-        ]
-    else:
-        keywords = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
+    # Its column settings are keywords, stepped or not (READ-22).
+    keywords: list[tuple[str, object]] = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
     if input_mapping is not None:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.
-        keywords.append(("inputMapping", input_mapping))
+        keywords.append(("input_mapping", input_mapping))
     # Not written yet: a polars node's output is whatever its code assigns to
     # ``df``, so with no code there is nothing to return — there is no implicit
     # passthrough, whatever the input count. A half-built graph is a normal
     # state to save, so the body is valid Python that keeps the inputs bound
     # and fails loudly if run; save warns about it, and the placeholder
     # round-trips back to "no code" in the editor.
-    body = _transform_body(code) if code else _unindented(INCOMPLETE_TRANSFORM_BODY)
+    # A step list that cannot be rendered yet says so (READ-22); a transform with no code
+    # and no steps has none yet.
+    placeholder = INCOMPLETE_STEPS_BODY if isinstance(steps, list) else INCOMPLETE_TRANSFORM_BODY
+    body = _transform_body(code) if code else _unindented(placeholder)
     return NodeSource(
         "polars",
         tuple(keywords),

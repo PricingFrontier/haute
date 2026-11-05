@@ -1,7 +1,7 @@
 """OUTPUT assembler dry-run route (MULTI_FRAME_PLAN piece 8 / commit-7 aux).
 
 The OUTPUT editor previews the assembled response JSON from an *in-progress*
-(unsaved/volatile) ``outputMapping`` before persisting it. This route:
+(unsaved/volatile) ``output_mapping`` before persisting it. This route:
 
 1. validates the mapping (schema-only — A4, data-independent → the loudest,
    data-free failure);
@@ -104,7 +104,7 @@ def _execute_output_assemble_dry_run_worker(
 async def output_assemble_dry_run(
     body: OutputAssembleDryRunRequest,
 ) -> OutputAssembleDryRunResponse:
-    """Assemble an OUTPUT node's document from an unsaved ``outputMapping``."""
+    """Assemble an OUTPUT node's document from an unsaved ``output_mapping``."""
     # 1. Mapping schema validation — fires on the mapping alone, before any
     #    data is touched (A4). The loudest, cheapest failure.
     try:
@@ -130,7 +130,7 @@ async def output_assemble_dry_run(
 
     # 2. Swap the volatile mapping into the OUTPUT node's config — the dry-run
     #    overrides whatever is persisted so the editor previews unsaved edits.
-    node.data.config = {"outputMapping": body.output_mapping}
+    node.data.config = {"output_mapping": body.output_mapping}
 
     # 3. Run up to the OUTPUT node.
     run = _InteractiveRun("output_assemble_dry_run")

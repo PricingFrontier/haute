@@ -41,7 +41,7 @@ test.describe("a project left on an earlier version outside Haute", () => {
   test.beforeEach(async ({ page }) => {
     resetE2eProject()
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     // In a terminal: git checkout of the first version.
     e2eGit(["switch", "--force", "--detach", "main"])
     await page.reload()
@@ -66,10 +66,10 @@ test.describe("a project left on an earlier version outside Haute", () => {
 
     await expect(toast(page, "Working branch set to from-the-first")).toBeVisible()
     await expectOnBranch(page, "from-the-first")
-    await expect(canvasNode(page, "priced")).toBeVisible()
-    expect(pipelineOnDisk()).toContain("def priced(")
+    await expect(canvasNode(page, "enriched")).toBeVisible()
+    expect(pipelineOnDisk()).toContain("def enriched(")
     expect(checkedOutBranch()).toBe(ledgerOf("from-the-first"))
-    expect(pipelineSavedOn(work)).toContain("def priced_v1(")
+    expect(pipelineSavedOn(work)).toContain("def enriched_v1(")
   })
 
   test("choosing the existing branch instead opens its latest save", async ({ page }) => {
@@ -77,8 +77,8 @@ test.describe("a project left on an earlier version outside Haute", () => {
     await useThisBranch(page).click()
 
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
-    expect(pipelineOnDisk()).toContain("def priced_v1(")
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
+    expect(pipelineOnDisk()).toContain("def enriched_v1(")
   })
 
   test("closing the chooser leaves the warning in the toolbar, which opens it again", async ({
@@ -87,7 +87,7 @@ test.describe("a project left on an earlier version outside Haute", () => {
     await chooser(page).getByRole("button", { name: "Cancel" }).click()
     await expect(chooser(page)).toHaveCount(0)
     await expect(indicator(page)).toHaveText("Viewing an earlier version")
-    await expect(canvasNode(page, "priced")).toBeVisible()
+    await expect(canvasNode(page, "enriched")).toBeVisible()
 
     await indicator(page).click()
     await expect(chooser(page)).toBeVisible()
@@ -95,7 +95,7 @@ test.describe("a project left on an earlier version outside Haute", () => {
 
   test("saving before choosing asks for a branch, then saves onto it", async ({ page }) => {
     await chooser(page).getByRole("button", { name: "Cancel" }).click()
-    await renameNode(page, "priced", "priced_late")
+    await renameNode(page, "enriched", "enriched_late")
     await page.getByRole("button", { name: "Save", exact: true }).click()
 
     await expect(chooser(page)).toBeVisible()
@@ -103,7 +103,7 @@ test.describe("a project left on an earlier version outside Haute", () => {
     await useThisBranch(page).click()
 
     await expectOnBranch(page, "late-work")
-    await expect.poll(() => pipelineSavedOn("late-work")).toContain("def priced_late(")
+    await expect.poll(() => pipelineSavedOn("late-work")).toContain("def enriched_late(")
   })
 
   test("an unusable name is refused and the chooser stays open to put it right", async ({
@@ -133,7 +133,7 @@ test.describe("a project switched to another branch outside Haute", () => {
   test.beforeEach(async ({ page }) => {
     resetE2eProject()
     await page.goto("/")
-    await renameAndSave(page, "priced", "priced_v1")
+    await renameAndSave(page, "enriched", "enriched_v1")
     // In a terminal: git switch main.
     e2eGit(["switch", "--force", "main"])
     await page.reload()
@@ -152,7 +152,7 @@ test.describe("a project switched to another branch outside Haute", () => {
 
     await expect(toast(page, `Working branch set to ${work}`)).toBeVisible()
     await expectOnBranch(page, work)
-    await expect(canvasNode(page, "priced_v1")).toBeVisible()
+    await expect(canvasNode(page, "enriched_v1")).toBeVisible()
   })
 
   test("Open the branch manager hands the choice to the git panel", async ({ page }) => {
@@ -279,7 +279,7 @@ test.describe("a file held open during a switch", () => {
       page,
     }) => {
       await page.goto("/")
-      await renameAndSave(page, "priced", "priced_v1")
+      await renameAndSave(page, "enriched", "enriched_v1")
       await openGitPanel(page)
       await createBranchInManager(page, "other")
 
@@ -306,12 +306,12 @@ test.describe("a file held open during a switch", () => {
       await expectOnBranch(page, work)
       expect(checkedOutBranch()).toBe(ledgerOf(work))
       expect(e2eGit(["status", "--porcelain", "--untracked-files=no"])).toBe("")
-      await expect(canvasNode(page, "priced_v1")).toBeVisible()
+      await expect(canvasNode(page, "enriched_v1")).toBeVisible()
 
       // Closed: the same switch goes through.
       await switchInManager(page, "other")
       await expectOnBranch(page, "other")
-      await expect(canvasNode(page, "priced")).toBeVisible()
+      await expect(canvasNode(page, "enriched")).toBeVisible()
     })
   }
 })

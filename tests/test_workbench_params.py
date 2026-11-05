@@ -161,7 +161,7 @@ def test_a_project_whose_pipeline_sits_at_its_root_has_no_params_folder(tmp_path
 
 
 def _spec(*columns: dict[str, Any], role: str = "input") -> FormSpec:
-    table = {"id": "t_policy", "name": "policy", "role": role, "columns": list(columns)}
+    table = {"name": "policy", "role": role, "columns": list(columns)}
     page = {
         "id": "p",
         "title": "Sheet 1",
@@ -179,8 +179,8 @@ STATE_SOURCE = {"file": "states.csv", "column": "state"}
 def test_a_column_s_values_are_read_again_from_its_file(project: Path) -> None:
     params(project, "states.csv", b"state\nNY\nCA\nTX\n")
     spec = _spec(
-        {"id": "c_state", "name": "state", "options": ["NY"], "options_source": STATE_SOURCE},
-        {"id": "c_cover", "name": "cover", "options": ["Full", "Basic"]},
+        {"name": "state", "options": ["NY"], "options_source": STATE_SOURCE},
+        {"name": "cover", "options": ["Full", "Basic"]},
     )
 
     read = with_param_options(spec, project)
@@ -196,7 +196,7 @@ def test_a_column_s_values_are_read_again_from_its_file(project: Path) -> None:
 def test_an_output_column_s_values_are_not_read_again(project: Path) -> None:
     # Output tables ignore the rules, so a file gone does not stop them.
     spec = _spec(
-        {"id": "c_state", "name": "state", "options": ["NY"], "options_source": STATE_SOURCE},
+        {"name": "state", "options": ["NY"], "options_source": STATE_SOURCE},
         role="output",
     )
 
@@ -204,9 +204,7 @@ def test_an_output_column_s_values_are_not_read_again(project: Path) -> None:
 
 
 def test_a_column_whose_file_can_no_longer_give_its_values_is_named(project: Path) -> None:
-    spec = _spec(
-        {"id": "c_state", "name": "state", "options": ["NY"], "options_source": STATE_SOURCE}
-    )
+    spec = _spec({"name": "state", "options": ["NY"], "options_source": STATE_SOURCE})
 
     with pytest.raises(ParamFileError) as caught:
         with_param_options(spec, project)

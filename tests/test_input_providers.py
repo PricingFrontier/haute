@@ -32,7 +32,7 @@ def test_file_snapshot_is_offline(
     source = tmp_path / "input.csv"
     source.write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": "input.csv",
@@ -58,7 +58,7 @@ def test_file_snapshot_is_offline(
 
 def test_missing_snapshot_is_reported_as_a_config_error(tmp_path: Path) -> None:
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": "input.csv",
@@ -82,7 +82,7 @@ def test_schema_only_resolution_infers_a_missing_csv_snapshot_from_the_node_sett
 ) -> None:
     (tmp_path / "claims.csv").write_text("id;amount\n1;10\n2;20\n", encoding="utf-8")
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": "claims.csv",
         "arguments": {"separator": ";", "schema_overrides": {"id": "str"}},
@@ -118,7 +118,7 @@ def test_inferred_csv_types_come_from_a_bounded_row_count(
 ) -> None:
     lines = ["amount", *(str(n) for n in range(INFERRED_SCHEMA_ROWS)), "1.5"]
     (tmp_path / "claims.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    config = {"inputType": "file", "format": "csv", "path": "claims.csv", "arguments": arguments}
+    config = {"input_type": "file", "format": "csv", "path": "claims.csv", "arguments": arguments}
 
     frame, inferred = _infer(config, tmp_path, SourceCacheStore(tmp_path))
 
@@ -131,7 +131,7 @@ def test_a_declared_csv_schema_is_used_whole_without_inference(tmp_path: Path) -
     lines = ["amount", *(str(n) for n in range(INFERRED_SCHEMA_ROWS)), "1.5"]
     (tmp_path / "claims.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": "claims.csv",
         "arguments": {"schema": {"amount": "Float64"}, "infer_schema_length": None},
@@ -145,7 +145,7 @@ def test_a_declared_csv_schema_is_used_whole_without_inference(tmp_path: Path) -
 
 def test_inferred_parquet_reads_file_metadata_without_a_row_bound(tmp_path: Path) -> None:
     pl.DataFrame({"id": [1], "value": ["a"]}).write_parquet(tmp_path / "claims.parquet")
-    config = {"inputType": "file", "format": "parquet", "mode": "read", "path": "claims.parquet"}
+    config = {"input_type": "file", "format": "parquet", "mode": "read", "path": "claims.parquet"}
 
     frame, inferred = _infer(config, tmp_path, SourceCacheStore(tmp_path))
 
@@ -157,13 +157,13 @@ def test_inferred_parquet_reads_file_metadata_without_a_row_bound(tmp_path: Path
     ("config", "reason"),
     [
         pytest.param(
-            {"inputType": "file", "format": "excel", "path": "claims.xlsx"},
+            {"input_type": "file", "format": "excel", "path": "claims.xlsx"},
             "format 'excel' reads only eagerly",
             id="excel",
         ),
         pytest.param(
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "connection": "HAUTE_TEST_DATABASE_URL",
                 "query": "SELECT 1",
@@ -173,7 +173,7 @@ def test_inferred_parquet_reads_file_metadata_without_a_row_bound(tmp_path: Path
         ),
         pytest.param(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "mode": "read",
                 "path": "claims.csv",
@@ -184,7 +184,7 @@ def test_inferred_parquet_reads_file_metadata_without_a_row_bound(tmp_path: Path
         ),
         pytest.param(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "mode": "scan",
                 "path": "claims.csv",
@@ -214,7 +214,7 @@ def test_schema_only_without_a_recorder_keeps_the_missing_snapshot_rejection(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "claims.csv").write_text("id\n1\n", encoding="utf-8")
-    config = {"inputType": "file", "format": "csv", "path": "claims.csv"}
+    config = {"input_type": "file", "format": "csv", "path": "claims.csv"}
 
     with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing: This Data Input"):
         resolve_data_input(
@@ -226,7 +226,7 @@ def test_schema_only_without_a_recorder_keeps_the_missing_snapshot_rejection(
 
 
 def test_an_inferred_input_whose_file_is_missing_names_it(tmp_path: Path) -> None:
-    config = {"inputType": "file", "format": "csv", "path": "claims.csv"}
+    config = {"input_type": "file", "format": "csv", "path": "claims.csv"}
 
     with pytest.raises(PolarsIoConfigError, match="'claims.csv' does not exist"):
         _infer(config, tmp_path, SourceCacheStore(tmp_path))
@@ -236,7 +236,7 @@ def test_direct_parquet_reads_the_anchored_source_without_a_snapshot(tmp_path: P
     source = tmp_path / "input.parquet"
     pl.DataFrame({"id": [1]}).write_parquet(source)
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "path": "input.parquet",
     }
@@ -255,7 +255,7 @@ def test_eager_only_file_snapshot_requires_admitted_eager_profile(tmp_path: Path
     source = tmp_path / "input.json"
     source.write_text('[{"id": 1}]', encoding="utf-8")
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "json",
         "mode": "read",
         "path": "input.json",
@@ -283,7 +283,7 @@ def test_eager_only_file_snapshot_requires_admitted_eager_profile(tmp_path: Path
 
 def test_inline_snapshot_builds_resolves_and_redacts_records(tmp_path: Path) -> None:
     config = {
-        "inputType": "inline",
+        "input_type": "inline",
         "format": "records",
         "records": [{"customer_secret": "top-secret-value", "id": 1}],
     }
@@ -315,7 +315,7 @@ def test_database_uses_bounded_sqlite_snapshot_and_cached_read_is_offline(
         connection.commit()
     monkeypatch.setenv("HAUTE_TEST_DATABASE_URL", f"sqlite:///{database.as_posix()}")
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies ORDER BY id",
@@ -343,7 +343,7 @@ def test_empty_database_query_publishes_schema_bearing_snapshot(
         connection.commit()
     monkeypatch.setenv("HAUTE_TEST_DATABASE_URL", f"sqlite:///{database.as_posix()}")
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies",
@@ -373,7 +373,7 @@ def test_database_snapshot_uses_one_declared_schema_across_batches(
         connection.commit()
     monkeypatch.setenv("HAUTE_TEST_DATABASE_URL", f"sqlite:///{database.as_posix()}")
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies ORDER BY id",
@@ -393,7 +393,7 @@ def test_database_snapshot_rejects_missing_sqlite_without_creating_it(
 ) -> None:
     database = tmp_path / "missing.sqlite"
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT id FROM policies",
@@ -414,7 +414,7 @@ def test_database_snapshot_uses_runtime_storage_class_for_datetime(
         connection.executemany("INSERT INTO events VALUES (?)", [(1_700_000_000,), (None,)])
         connection.commit()
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT occurred_at FROM events",
@@ -438,7 +438,7 @@ def test_database_snapshot_rejects_incompatible_runtime_storage_classes_before_o
         connection.executemany("INSERT INTO values_table VALUES (?)", [(1,), ("not-an-int",)])
         connection.commit()
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT value FROM values_table",
@@ -460,7 +460,7 @@ def test_empty_database_expression_fails_with_typed_schema_error(
         connection.execute("CREATE TABLE values_table (value INTEGER)")
         connection.commit()
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT value + 1 AS next_value FROM values_table",
@@ -477,7 +477,7 @@ def test_raw_sqlite_uri_is_resolved_relative_to_pipeline_base(tmp_path: Path) ->
         connection.execute("INSERT INTO policies VALUES (7)")
         connection.commit()
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": "sqlite:///pricing.sqlite",
         "query": "SELECT id FROM policies",
@@ -498,7 +498,7 @@ def test_non_snapshot_execution_is_rejected_before_connector_access(
     with pytest.raises(PolarsIoConfigError, match="input_snapshot_missing"):
         resolve_data_input(
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "connection": "HAUTE_TEST_DATABASE_URL",
                 "query": "SELECT 1",
@@ -511,7 +511,7 @@ def test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets(
 ) -> None:
     monkeypatch.setenv("DATABRICKS_TOKEN", "top-secret-token")
     base = {
-        "inputType": "databricks",
+        "input_type": "databricks",
         "http_path": "/sql/1.0/warehouses/abc",
         "table": "main.pricing.policies",
     }
@@ -525,7 +525,7 @@ def test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets(
 
 def test_databricks_identity_excludes_fetch_batch_size() -> None:
     base = {
-        "inputType": "databricks",
+        "input_type": "databricks",
         "http_path": "/sql/1.0/warehouses/abc",
         "table": "main.pricing.policies",
     }
@@ -539,7 +539,7 @@ def test_databricks_identity_excludes_fetch_batch_size() -> None:
 
 def test_identity_excludes_post_snapshot_code(tmp_path: Path) -> None:
     common = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": "data/input.csv",
@@ -562,7 +562,7 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
     tmp_path: Path,
 ) -> None:
     config = {
-        "inputType": "lakehouse",
+        "input_type": "lakehouse",
         "format": "delta",
         "mode": "scan",
         "path": "lake/policies",
@@ -581,7 +581,7 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
     source = tmp_path / "input.ndjson"
     pl.DataFrame({"id": [1]}).write_ndjson(source)
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "ndjson",
         "mode": "scan",
         "path": "input.ndjson",
@@ -620,7 +620,7 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
     source = tmp_path / "input.ndjson"
     pl.DataFrame({"id": [1]}).write_ndjson(source)
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "ndjson",
         "mode": "scan",
         "path": "input.ndjson",
@@ -669,7 +669,7 @@ def test_a_glob_or_folder_snapshot_goes_stale_when_its_files_change(
     write("a", [10, 20])
     write("b", [30])
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": fmt,
         "mode": "read" if fmt == "parquet" else "scan",
         "path": path,
@@ -713,7 +713,7 @@ def test_a_glob_or_folder_snapshot_goes_stale_when_its_files_change(
 
 def test_a_glob_that_matches_nothing_signs_as_missing(tmp_path: Path) -> None:
     (tmp_path / "parts").mkdir()
-    config = {"inputType": "file", "format": "csv", "mode": "scan", "path": "parts/*.csv"}
+    config = {"input_type": "file", "format": "csv", "mode": "scan", "path": "parts/*.csv"}
 
     assert source_signature(config, base_dir=tmp_path) == "missing"
     assert signed_source_files(config, base_dir=tmp_path) == ()
@@ -722,7 +722,7 @@ def test_a_glob_that_matches_nothing_signs_as_missing(tmp_path: Path) -> None:
 def test_a_literal_path_with_glob_off_is_not_expanded(tmp_path: Path) -> None:
     pl.DataFrame({"amount": [1]}).write_csv(tmp_path / "a.csv")
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": "*.csv",

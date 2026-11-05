@@ -552,7 +552,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   Immutable public port ids address boundary handles only and never become frame names.
   That name is simultaneously the name listed in
   the editor, the generated function's parameter, and the key used by
-  name-referencing configs (`input_scenario_map`, `inputMapping`,
+  name-referencing configs (`input_scenario_map`, `input_mapping`,
   `config["inputs"]`) — there are no hidden names, positional suffixes, or
   display-vs-executable mappings. Two incoming edges deriving the same input name on
   one node are a loud validation error, never silently suffixed. Binding remains
@@ -565,7 +565,7 @@ other reader classify the rendered program. The transform builder additionally v
 the steps against the input names the code will execute with (the bound source names) and
 builds the same incomplete function that a
 code-less transform builds, carrying the step-indexed message, when validation or
-rendering fails; a stepped transform carrying `inputMapping` is rejected. The rendered
+rendering fails; a stepped transform carrying `input_mapping` is rejected. The rendered
 code executes through the same sandboxed path as hand-written code, and execution errors
 keep reporting the failing line so the editor can name the failing step. A lazy plan's
 error (a missing column, a type mismatch) is raised only when the plan's schema is

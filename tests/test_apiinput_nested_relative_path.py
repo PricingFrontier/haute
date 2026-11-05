@@ -121,7 +121,7 @@ def _api_output_graph(config: dict[str, Any]) -> PipelineGraph:
                 data=NodeData(
                     label="out",
                     nodeType=NodeType.OUTPUT,
-                    config={"outputMapping": _output_mapping()},
+                    config={"output_mapping": _output_mapping()},
                 ),
             ),
         ],

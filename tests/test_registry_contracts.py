@@ -480,14 +480,14 @@ def test_standalone_passthrough_list_matches_what_a_standalone_run_does(
     # type reads a config of its own.
     sidecars: dict[NodeType, dict[str, Any]] = {
         NodeType.DATA_OUTPUT: {
-            "outputType": "file",
+            "output_type": "file",
             "format": "parquet",
             "mode": "sink",
             "path": "output/node.parquet",
             "arguments": {},
         },
         NodeType.EXPLORE: {},
-        NodeType.EXTERNAL_FILE: {"path": "models/node.pkl", "fileType": "pickle"},
+        NodeType.EXTERNAL_FILE: {"path": "models/node.pkl", "file_type": "pickle"},
         NodeType.MODELLING: {"target": "y", "algorithm": "catboost"},
         NodeType.OPTIMISER: {"data_input": "factors"},
     }

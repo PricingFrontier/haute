@@ -22,8 +22,10 @@ from haute._workbench_form import (
     COLLECTION_COLUMNS_MAX,
     DAYS_MAX,
     HEADER_ROW_MAX,
+    IDENTITY_COLUMNS,
     QUOTE_DETAILS_COLUMNS,
     QUOTE_DETAILS_MANAGED,
+    QUOTE_DETAILS_NAME,
     QUOTE_DETAILS_REFUSAL,
     TABLE_ROWS_MAX,
     FormDocument,
@@ -32,6 +34,7 @@ from haute._workbench_form import (
     SchemaColumn,
     blank_form,
     form_revision,
+    holds_identity,
     identity_clashes,
     quote_details_table,
     render_form,
@@ -41,8 +44,9 @@ from tests._workbench_helpers import form_files, write_files
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
+    """A column as a document holds it, every field written: known by its name in its
+    table (READ-23)."""
     return {
-        "id": f"c_{name}",
         "name": name,
         "type": type_,
         "label": "",
@@ -66,16 +70,14 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 
 #: The quote's reference and option, which every table but quote_details leads with.
-IDENTITY: list[dict[str, Any]] = [
-    {**column("quote_reference"), "id": "quote_reference"},
-    {**column("quote_option", "int"), "id": "quote_option"},
-]
+IDENTITY: list[dict[str, Any]] = [column("quote_reference"), column("quote_option", "int")]
 
 
 # The test project's shape: one-row and many-row input tables, an index column, an output
 # table, a Collection, a Table and a Chart in one section and a Heading in a second, the
 # Table and the second section each shown while a condition holds, and a sample typed into
-# the Collection.
+# the Collection; as a release ships it and the quote store keeps it, each table and column
+# known by its name and each component by its number in its section, with no id.
 ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
@@ -93,7 +95,6 @@ FORM: dict[str, Any] = {
     "schema": {
         "tables": [
             {
-                "id": "t_policy",
                 "name": "policy_details",
                 "role": "input",
                 "rows": "one",
@@ -119,7 +120,6 @@ FORM: dict[str, Any] = {
                 ],
             },
             {
-                "id": "t_layers",
                 "name": "layers",
                 "role": "input",
                 "rows": "many",
@@ -131,7 +131,6 @@ FORM: dict[str, Any] = {
                 ],
             },
             {
-                "id": "t_pricing",
                 "name": "pricing_output",
                 "role": "output",
                 "rows": "one",
@@ -141,19 +140,17 @@ FORM: dict[str, Any] = {
     },
     "pages": [
         {
-            "id": "page_1",
             "title": "Sheet 1",
             "width": 1280,
             "show_when": ALWAYS,
             "sections": [
                 {
-                    "id": "s_cover",
                     "title": "Cover",
                     "height": 376,
                     "show_when": ALWAYS,
                     "widgets": [
                         {
-                            "id": "w_policy",
+                            "number": 1,
                             "type": "collection",
                             "x": 16,
                             "y": 16,
@@ -161,8 +158,8 @@ FORM: dict[str, Any] = {
                             "h": 120,
                             "title": "Policy",
                             "fields": [
-                                {"table": "t_policy", "column": "c_state"},
-                                {"table": "t_pricing", "column": "c_premium"},
+                                {"table": "policy_details", "column": "state"},
+                                {"table": "pricing_output", "column": "premium"},
                             ],
                             "show_when": ALWAYS,
                             "columns": 2,
@@ -195,8 +192,8 @@ FORM: dict[str, Any] = {
                             "frame_weight": "thick",
                             "column_looks": [
                                 {
-                                    "table": "t_policy",
-                                    "column": "c_state",
+                                    "table": "policy_details",
+                                    "column": "state",
                                     "header_color": "#2563EB",
                                     "header_font_color": "#FFFFFF",
                                     "header_align": "left",
@@ -209,8 +206,8 @@ FORM: dict[str, Any] = {
                                         "match": "all",
                                         "conditions": [
                                             {
-                                                "table": "t_policy",
-                                                "column": "c_exposure",
+                                                "table": "policy_details",
+                                                "column": "exposure",
                                                 "op": "filled",
                                                 "values": [],
                                                 "field": None,
@@ -223,20 +220,20 @@ FORM: dict[str, Any] = {
                             "spacers": [1],
                         },
                         {
-                            "id": "w_layers",
+                            "number": 2,
                             "type": "tableInput",
                             "x": 16,
                             "y": 160,
                             "w": 720,
                             "h": 200,
                             "title": "Layers",
-                            "fields": [{"table": "t_layers", "column": "c_limit"}],
+                            "fields": [{"table": "layers", "column": "limit"}],
                             "show_when": {
                                 "match": "any",
                                 "conditions": [
                                     {
-                                        "table": "t_policy",
-                                        "column": "c_state",
+                                        "table": "policy_details",
+                                        "column": "state",
                                         "op": "one_of",
                                         "values": ["CA", "NY"],
                                         "field": None,
@@ -277,8 +274,8 @@ FORM: dict[str, Any] = {
                             "frame_weight": "thick",
                             "column_looks": [
                                 {
-                                    "table": "t_layers",
-                                    "column": "c_limit",
+                                    "table": "layers",
+                                    "column": "limit",
                                     "header_color": "#2563EB",
                                     "header_font_color": "#FFFFFF",
                                     "header_align": "right",
@@ -292,18 +289,18 @@ FORM: dict[str, Any] = {
                             ],
                         },
                         {
-                            "id": "w_limits",
+                            "number": 3,
                             "type": "chart",
                             "x": 760,
                             "y": 16,
                             "w": 480,
                             "h": 280,
                             "title": "Limits",
-                            "fields": [{"table": "t_layers", "column": "c_limit"}],
+                            "fields": [{"table": "layers", "column": "limit"}],
                             "show_when": ALWAYS,
                             # The layers' names label the rows, drawn as lines across, stacked, the
                             # legend on the right and each value labelled.
-                            "category": {"table": "t_layers", "column": "c_layer_name"},
+                            "category": {"table": "layers", "column": "layer_name"},
                             "chart_type": "line",
                             "orientation": "horizontal",
                             "stacked": True,
@@ -313,7 +310,6 @@ FORM: dict[str, Any] = {
                     ],
                 },
                 {
-                    "id": "s_equipment",
                     "title": "Equipment",
                     "height": 64,
                     # Only for New York: its Heading hides with it.
@@ -321,8 +317,8 @@ FORM: dict[str, Any] = {
                         "match": "all",
                         "conditions": [
                             {
-                                "table": "t_policy",
-                                "column": "c_state",
+                                "table": "policy_details",
+                                "column": "state",
                                 "op": "equals",
                                 "values": ["NY"],
                                 "field": None,
@@ -332,7 +328,7 @@ FORM: dict[str, Any] = {
                     },
                     "widgets": [
                         {
-                            "id": "w_title",
+                            "number": 1,
                             "type": "heading",
                             "x": 16,
                             "y": 8,
@@ -351,7 +347,7 @@ FORM: dict[str, Any] = {
             ],
         }
     ],
-    "sample": {"t_policy": [{"c_state": "NY", "c_exposure": "$100,000"}]},
+    "sample": {"policy_details": [{"state": "NY", "exposure": "$100,000"}]},
 }
 
 
@@ -392,14 +388,22 @@ def test_the_editor_names_the_quote_details_columns_the_server_does() -> None:
     each one it reads, and the columns the app sets, named through that map."""
     utils = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils"
     identity = (utils / "quoteIdentity.ts").read_text(encoding="utf-8")
-    columns = re.findall(r'\["(qd_\w+)", "(\w+)", "(\w+)"\]', identity)
+
+    def pairs(name: str) -> tuple[tuple[str, str], ...]:
+        """The view's list of columns *name*, each its name and its type."""
+        held = re.search(rf"export const {name}\b[^=]*= \[(.*?)\n\]", identity, re.DOTALL)
+        assert held is not None, f"quoteIdentity.ts has no {name}"
+        return tuple(re.findall(r'\["(\w+)", "(\w+)"\]', held.group(1)))
+
     managed = re.search(r"QUOTE_DETAILS_MANAGED[^=]*= new Set\(\[([^\]]*)\]\)", identity)
 
-    assert tuple(columns) == QUOTE_DETAILS_COLUMNS
+    # Each column by its name and type, as the server holds them (READ-23), and the
+    # quote's identity the same.
+    assert pairs("QUOTE_DETAILS_COLUMNS") == QUOTE_DETAILS_COLUMNS
+    assert pairs("IDENTITY_COLUMNS") == IDENTITY_COLUMNS
     assert managed is not None
-    by_name = {name: column_id for column_id, name, _ in QUOTE_DETAILS_COLUMNS}
     named = re.findall(r"QUOTE_DETAILS\.(\w+)", managed.group(1))
-    assert {by_name[name] for name in named} == QUOTE_DETAILS_MANAGED
+    assert set(named) == QUOTE_DETAILS_MANAGED
     assert len(named) == len(QUOTE_DETAILS_MANAGED)
 
 
@@ -435,8 +439,9 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
     text = render_form(blank_form("motor"))
 
     # The whole sheet is one section until another is added, as tall as the view's least
-    # sheet height less the room it leaves below the sections, on a sheet 1280 wide.
-    section = {"id": "section_0001", "title": "Section 1", "height": 560}
+    # sheet height less the room it leaves below the sections, on a sheet 1280 wide; neither
+    # holds an id, which a read gives from the sheet's name and the section's title.
+    section = {"title": "Section 1", "height": 560}
     assert json.loads(text) == {
         "version": 1,
         "name": "motor",
@@ -452,7 +457,6 @@ def test_the_blank_form_is_one_empty_sheet_named_after_the_project() -> None:
         "schema": {"tables": [quote_details_table().model_dump(mode="json")]},
         "pages": [
             {
-                "id": "sheet_0001",
                 "title": "Sheet 1",
                 "width": 1280,
                 "show_when": ALWAYS,
@@ -471,10 +475,17 @@ def test_a_form_round_trips_as_one_document_with_its_revision() -> None:
     data = render_form(spec).encode("utf-8")
 
     assert json.loads(data) == FORM
-    # Read, it holds Haute's quote_details table first, as every form read whole does.
+    # Read, it holds Haute's quote_details table first, as every form read whole does, and
+    # each part takes the id its sheet's name, its section's title and its number give it.
     document = read_document(json.loads(data))
     assert document == with_quote_details(spec)
-    assert document.data_schema.tables[0].id == "quote_details"
+    assert document.data_schema.tables[0].name == QUOTE_DETAILS_NAME
+    assert [widget.id for section in document.pages[0].sections for widget in section.widgets] == [
+        "sheet_1/Cover/1",
+        "sheet_1/Cover/2",
+        "sheet_1/Cover/3",
+        "sheet_1/Equipment/1",
+    ]
     # The revision is the document's content hash: the same text, the same revision.
     assert form_revision(data) == form_revision(render_form(spec).encode("utf-8"))
     assert len(form_revision(data)) == 16
@@ -693,7 +704,7 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
     }
     # No text or description yet, of medium size and aligned left, in the file's order.
     heading = widgets(written)[3]
-    assert list(heading) == "id x y w h type text description show_when size align".split()
+    assert list(heading) == "number x y w h type text description show_when size align".split()
     assert [heading[field] for field in ("text", "description", "size", "align")] == [
         "",
         "",
@@ -753,34 +764,34 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
         (lambda f: widgets(f)[0].update(font_size=15), "font_size"),
         # A field's look on a Collection is held as a Table column's is.
         (
-            lambda f: widgets(f)[0]["column_looks"][0].update(column="c_limit"),
-            "has a look for t_policy.c_limit, which it does not show",
+            lambda f: widgets(f)[0]["column_looks"][0].update(column="limit"),
+            "has a look for policy_details.limit, which it does not show",
         ),
         (
             lambda f: widgets(f)[0]["column_looks"].append(dict(widgets(f)[0]["column_looks"][0])),
-            "has two looks for t_policy.c_state",
+            "has two looks for policy_details.state",
         ),
         (
             lambda f: widgets(f)[0].update(
-                column_looks=[{"table": "t_policy", "column": "c_state", "bold": False}]
+                column_looks=[{"table": "policy_details", "column": "state", "bold": False}]
             ),
-            "look for t_policy.c_state changes nothing",
+            "look for policy_details.state changes nothing",
         ),
         (lambda f: widgets(f)[0]["column_looks"][0].update(width=23), "width"),
         # A column's look is for a column the Table shows, one for each, and changes something.
         (
-            lambda f: widgets(f)[1]["column_looks"][0].update(column="c_state"),
-            "has a look for t_layers.c_state, which it does not show",
+            lambda f: widgets(f)[1]["column_looks"][0].update(column="state"),
+            "has a look for layers.state, which it does not show",
         ),
         (
             lambda f: widgets(f)[1]["column_looks"].append(dict(widgets(f)[1]["column_looks"][0])),
-            "has two looks for t_layers.c_limit",
+            "has two looks for layers.limit",
         ),
         (
             lambda f: widgets(f)[1].update(
-                column_looks=[{"table": "t_layers", "column": "c_limit", "align": "auto"}]
+                column_looks=[{"table": "layers", "column": "limit", "align": "auto"}]
             ),
-            "look for t_layers.c_limit changes nothing",
+            "look for layers.limit changes nothing",
         ),
         # A column always shown with its Table changes nothing either, whatever its match;
         # its Show when is a component's.
@@ -788,13 +799,13 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
             lambda f: widgets(f)[1].update(
                 column_looks=[
                     {
-                        "table": "t_layers",
-                        "column": "c_limit",
+                        "table": "layers",
+                        "column": "limit",
                         "show_when": {"match": "any", "conditions": []},
                     }
                 ]
             ),
-            "look for t_layers.c_limit changes nothing",
+            "look for layers.limit changes nothing",
         ),
         (
             lambda f: widgets(f)[1]["column_looks"][0].update(show_when={"match": "none"}),
@@ -807,7 +818,10 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
         (lambda f: widgets(f)[1]["column_looks"][0].update(shadow=True), "shadow"),
         # A Collection's spacers are each the number of its fields before it, in order and
         # none past its last field; only a Collection has them.
-        (lambda f: widgets(f)[0].update(spacers=[2, 1]), "w_policy's spacers are out of order"),
+        (
+            lambda f: widgets(f)[0].update(spacers=[2, 1]),
+            "sheet_1/Cover/1's spacers are out of order",
+        ),
         (lambda f: widgets(f)[0].update(spacers=[3]), "a spacer after 3 fields, but shows 2"),
         (lambda f: widgets(f)[0].update(spacers=[-1]), "spacers.0"),
         (lambda f: widgets(f)[1].update(spacers=[]), "spacers"),
@@ -830,7 +844,7 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
         (lambda f: widgets(f)[1].update(chart_type="line"), "chart_type"),
         (lambda f: widgets(f)[0].update(legend="top"), "legend"),
         # What labels a Chart's rows is held as a field is: a table and a column.
-        (lambda f: widgets(f)[2].update(category={"table": "t_layers"}), "category"),
+        (lambda f: widgets(f)[2].update(category={"table": "layers"}), "category"),
         (lambda f: widgets(f)[3].update(size="huge"), "size"),
         (lambda f: widgets(f)[3].update(align="justify"), "align"),
         # A Heading is its text: it has no title and shows no fields, and no other
@@ -911,35 +925,28 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
             "days",
         ),
         (
-            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(field="t_policy.c_state"),
+            lambda f: widgets(f)[1]["show_when"]["conditions"][0].update(
+                field="policy_details.state"
+            ),
             "field",
         ),
         # A cell is held as typed, text or a tick: a number is another client's shape.
-        (lambda f: f.update(sample={"t1": [{"c1": 1}]}), "sample"),
-        (lambda f: f.update(sample={"t1": [{"c1": None}]}), "sample"),
-        # Each sheet, section, component, table and column has an id of its own: a block
-        # copied by hand or by a merge is refused, naming the id.
+        (lambda f: f.update(sample={"policy_details": [{"state": 1}]}), "sample"),
+        (lambda f: f.update(sample={"policy_details": [{"state": None}]}), "sample"),
+        # A sheet is known by its name, a section by its title on its sheet and a component
+        # by its number in its section (READ-24): a block copied by hand or by a merge, two of
+        # one, is refused, naming it.
         (
             lambda f: f["pages"].append(json.loads(json.dumps(f["pages"][0]))),
-            "Two sheets have the id 'page_1': each needs one of its own",
+            "Two sheets have the id 'sheet_1': each needs one of its own",
         ),
         (
-            lambda f: f["pages"][0]["sections"][1].update(id="s_cover"),
-            "Two sections have the id 's_cover'",
+            lambda f: f["pages"][0]["sections"][1].update(title="Cover"),
+            "Two sections have the id 'sheet_1/Cover'",
         ),
         (
-            lambda f: widgets(f)[1].update(id="w_policy"),
-            "Two components have the id 'w_policy'",
-        ),
-        (
-            lambda f: f["schema"]["tables"][1].update(id="t_policy"),
-            "Two tables have the id 't_policy'",
-        ),
-        (
-            lambda f: f["schema"]["tables"][0]["columns"][3].update(
-                id=f["schema"]["tables"][0]["columns"][2]["id"]
-            ),
-            "Two columns of policy_details have the id",
+            lambda f: widgets(f)[1].update(number=1),
+            "section 'Cover' holds two components numbered 1",
         ),
     ],
 )
@@ -958,8 +965,8 @@ def test_a_column_look_holding_only_a_show_when_is_kept() -> None:
         "match": "any",
         "conditions": [
             {
-                "table": "t_policy",
-                "column": "c_state",
+                "table": "policy_details",
+                "column": "state",
                 "op": "equals",
                 "values": ["NY"],
                 "field": None,
@@ -968,13 +975,13 @@ def test_a_column_look_holding_only_a_show_when_is_kept() -> None:
         ],
     }
     widgets(form)[1]["column_looks"] = [
-        {"table": "t_layers", "column": "c_limit", "show_when": show_when}
+        {"table": "layers", "column": "limit", "show_when": show_when}
     ]
 
     look = widgets(FormSpec.model_validate(form).model_dump(mode="json"))[1]["column_looks"]
 
     assert [(entry["column"], entry["show_when"], entry["bold"]) for entry in look] == [
-        ("c_limit", show_when, False)
+        ("limit", show_when, False)
     ]
 
 
@@ -986,7 +993,8 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
     moved, the file as it was."""
 
     def shrink(layout: dict[str, Any]) -> None:
-        layout["sections"]["s_equipment"]["height"] = 40
+        # The layout keys a section by its title (READ-24).
+        layout["sections"]["Equipment"]["height"] = 40
         layout["width"] = 1000
 
     document, written = read_after_layout_edit(tmp_path, FORM, shrink)
@@ -1002,11 +1010,11 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
     # The form's own checks still refuse such geometry, so a save of it is refused.
     merged = json.loads(json.dumps(FORM))
     merged["pages"][0]["sections"][1]["height"] = 40
-    with pytest.raises(ValidationError, match="widget w_title reaches 48px down"):
+    with pytest.raises(ValidationError, match="widget sheet_1/Equipment/1 reaches 48px down"):
         FormSpec.model_validate(merged)
     narrow = json.loads(json.dumps(FORM))
     narrow["pages"][0]["width"] = 1239
-    with pytest.raises(ValidationError, match="widget w_limits reaches 1240px across"):
+    with pytest.raises(ValidationError, match="widget sheet_1/Cover/3 reaches 1240px across"):
         FormSpec.model_validate(narrow)
 
 
@@ -1042,7 +1050,7 @@ IMPORTS: dict[str, dict[str, Any]] = {
         "format": "sql",
         "connection": "policy_db",
         "query": "select limit_ from layers where policy = :reference",
-        "parameters": [{"name": "reference", "table": "t_policy", "column": "c_state"}],
+        "parameters": [{"name": "reference", "table": "policy_details", "column": "state"}],
     },
 }
 EXPORTS: dict[str, dict[str, Any]] = {
@@ -1062,21 +1070,21 @@ EXPORTS: dict[str, dict[str, Any]] = {
     "sql": {
         "format": "sql",
         "connection": "warehouse",
-        "table_names": [{"table": "t_layers", "name": "quote_layers"}],
+        "table_names": [{"table": "layers", "name": "quote_layers"}],
     },
 }
 
 
 def _with_buttons(*buttons: dict[str, Any]) -> dict[str, Any]:
-    """The test form with a third section holding *buttons*, side by side."""
+    """The test form with a third section holding *buttons*, side by side, numbered in
+    turn."""
     form = json.loads(json.dumps(FORM))
     placed = [
-        {"id": f"w_button_{at}", "x": 16 + 176 * at, "y": 8, "w": 160, "h": 40, **button}
+        {"number": at + 1, "x": 16 + 176 * at, "y": 8, "w": 160, "h": 40, **button}
         for at, button in enumerate(buttons)
     ]
     form["pages"][0]["sections"].append(
         {
-            "id": "s_buttons",
             "title": "Buttons",
             "height": 56,
             "show_when": ALWAYS,
@@ -1092,9 +1100,9 @@ def _import(source: dict[str, Any], **rest: Any) -> dict[str, Any]:
         "label": "Import layers",
         "show_when": ALWAYS,
         "source": source,
-        "table": "t_layers",
+        "table": "layers",
         "mode": "update",
-        "column_names": [{"column": "c_limit", "name": "Limit (GBP)"}],
+        "column_names": [{"column": "limit", "name": "Limit (GBP)"}],
         **rest,
     }
 
@@ -1105,7 +1113,7 @@ def _export(target: dict[str, Any], **rest: Any) -> dict[str, Any]:
         "label": "Send to rating",
         "show_when": ALWAYS,
         "target": target,
-        "tables": ["t_layers", "t_policy"],
+        "tables": ["layers", "policy_details"],
         **rest,
     }
 
@@ -1155,7 +1163,7 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is() -> None
 
     assert json.loads(render_form(spec)) == held
     assert [c.name for c in spec.data_schema.tables[0].columns] == [
-        name for _, name, _ in QUOTE_DETAILS_COLUMNS
+        name for name, _ in QUOTE_DETAILS_COLUMNS
     ]
     assert with_quote_details(spec) is spec
 
@@ -1163,49 +1171,45 @@ def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is() -> None
 #: quote_details as an earlier Haute made it: its reference under the name it had then,
 #: valid_until and currency, which Haute makes no more, and option last.
 EARLIER_DETAILS = [
-    ("qd_reference", "reference", "str"),
-    ("qd_quote_name", "quote_name", "str"),
-    ("qd_insured", "insured", "str"),
-    ("qd_broker", "broker", "str"),
-    ("qd_inception_date", "inception_date", "date"),
-    ("qd_expiry_date", "expiry_date", "date"),
-    ("qd_valid_until", "valid_until", "date"),
-    ("qd_currency", "currency", "str"),
-    ("qd_stage", "stage", "str"),
-    ("qd_assignee", "assignee", "str"),
-    ("qd_archived", "archived", "bool"),
-    ("qd_is_renewal", "is_renewal", "bool"),
-    ("qd_option", "quote_option", "int"),
+    ("reference", "str"),
+    ("quote_name", "str"),
+    ("insured", "str"),
+    ("broker", "str"),
+    ("inception_date", "date"),
+    ("expiry_date", "date"),
+    ("valid_until", "date"),
+    ("currency", "str"),
+    ("stage", "str"),
+    ("assignee", "str"),
+    ("archived", "bool"),
+    ("is_renewal", "bool"),
+    ("quote_option", "int"),
 ]
 
 
 def _earlier(count: int) -> dict[str, Any]:
     """A form holding the first *count* of an earlier Haute's quote_details columns, its
     insured labelled and its currency taking allowed values, as a project gave them."""
-    columns = [
-        {"id": column_id, "name": name, "type": kind}
-        for column_id, name, kind in EARLIER_DETAILS[:count]
-    ]
+    columns = [{"name": name, "type": kind} for name, kind in EARLIER_DETAILS[:count]]
     columns[2]["label"] = "Insured name"
     columns[7].update(options=["GBP", "USD"], default_value="GBP")
     return _with_details_table(lambda table: table.update(columns=columns))
 
 
 @pytest.mark.parametrize("count", [11, 12, 13], ids=["before-is-renewal", "before-option", "wb30"])
-def test_a_form_saved_by_an_earlier_haute_takes_todays_quote_details_by_id(count: int) -> None:
+def test_a_form_saved_by_an_earlier_haute_takes_todays_quote_details_by_name(count: int) -> None:
     held = _earlier(count)
     as_saved = json.dumps(held)
 
     spec = read_document(json.loads(as_saved))
 
-    # Today's columns in today's order: the reference renamed, valid_until and currency
-    # dropped, the missing ones added, what the project gave the kept ones kept.
+    # Today's columns in today's order, each found by its name: the reference renamed,
+    # valid_until and currency dropped, the missing ones added, what the project gave the kept
+    # ones kept.
     details = spec.data_schema.tables[0]
-    assert [(c.id, c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
+    assert [(c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
     assert details.columns[3].label == "Insured name"
-    assert details.columns[15] == SchemaColumn(
-        id="qd_haute_version", name="haute_version", type="str"
-    )
+    assert details.columns[15] == SchemaColumn(name="haute_version", type="str")
     written = json.loads(render_form(spec))["schema"]["tables"][0]["columns"]
     assert not {"valid_until", "currency"} & {column["name"] for column in written}
     # The data it was read from is left as it was.
@@ -1225,39 +1229,58 @@ def test_every_table_but_quote_details_takes_the_quote_identity_at_its_head() ->
 
     spec = FormSpec.model_validate(held)
 
-    identity = [
-        SchemaColumn(id="quote_reference", name="quote_reference", type="str"),
-        SchemaColumn(id="quote_option", name="quote_option", type="int"),
-    ]
+    identity = [SchemaColumn(name=name, type=kind) for name, kind in IDENTITY_COLUMNS]
     details, *others = spec.data_schema.tables
     assert [table.columns[:2] for table in others] == [identity] * len(others)
     assert [c.name for c in others[0].columns[2:]] == ["state", "exposure"]
-    assert not any(c.id.startswith("quote_") for c in details.columns)
+    # quote_details holds its own reference and option among its columns, and takes no
+    # identity at its head besides.
+    assert [(c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
     # The data it was read from is left as it was.
     assert json.dumps(held) == as_saved
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("change", "clashing"),
     [
-        lambda columns: columns[0].update(name="ref"),
-        lambda columns: columns[1].update(type="float"),
-        lambda columns: columns.insert(0, columns.pop(2)),
-        lambda columns: columns[0].update(label="Reference"),
-        lambda columns: columns[1].update(help="Which option"),
-        lambda columns: columns[1].update(required=True),
-        lambda columns: columns[0].update(key=True),
-        lambda columns: columns.pop(1),
+        (lambda columns: columns[0].update(name="ref"), ["quote_option"]),
+        (lambda columns: columns[1].update(type="float"), ["quote_reference", "quote_option"]),
+        (lambda columns: columns.insert(0, columns.pop(2)), ["quote_reference", "quote_option"]),
+        (lambda columns: columns[0].update(label="Reference"), ["quote_reference", "quote_option"]),
+        (
+            lambda columns: columns[1].update(help="Which option"),
+            ["quote_reference", "quote_option"],
+        ),
+        (lambda columns: columns[1].update(required=True), ["quote_reference", "quote_option"]),
+        (lambda columns: columns[0].update(key=True), ["quote_reference", "quote_option"]),
+        (lambda columns: columns.pop(1), ["quote_reference"]),
     ],
+    ids=["renamed", "retyped", "moved", "labelled", "given-help", "required", "keyed", "removed"],
 )
-def test_the_quote_identity_of_a_table_is_haute_s_and_locked(change: Any) -> None:
+def test_a_quote_identity_changed_is_the_table_s_own_and_named_a_clash(
+    change: Any, clashing: list[str]
+) -> None:
+    # The identity is a table's first two columns exactly as Haute makes them (READ-23):
+    # one renamed, retyped, moved, removed or given anything of its own leaves the table's
+    # columns of either name its own, kept as they are, which building the app and deploying
+    # refuse until they are renamed.
     form = json.loads(json.dumps(FORM))
     change(form["schema"]["tables"][1]["columns"])
 
-    with pytest.raises(
-        ValidationError, match="layers leads with the quote's quote_reference and quote_option"
-    ):
-        FormSpec.model_validate(form)
+    spec = FormSpec.model_validate(form)
+
+    layers = spec.data_schema.tables[1]
+    assert [c.name for c in layers.columns] == [
+        c["name"] for c in form["schema"]["tables"][1]["columns"]
+    ]
+    assert not holds_identity(layers)
+    assert identity_clashes(spec) == [
+        f"layers.{name} has a name Haute keeps for the quote's identity in every table: "
+        "rename it, and the table takes quote_reference and quote_option at the next save"
+        for name in clashing
+    ]
+    # The other tables lead with the identity as Haute makes it.
+    assert [holds_identity(table) for table in spec.data_schema.tables] == [True, False, True]
 
 
 def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_is_named() -> None:
@@ -1272,33 +1295,35 @@ def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_i
     spec = FormSpec.model_validate(held)
 
     table = spec.data_schema.tables[1]
-    assert [c.id for c in table.columns] == [
-        "c_quote_reference",
-        "c_state",
-        "c_exposure",
-        "c_quote_option",
-        "c_option",
+    assert [c.name for c in table.columns] == [
+        "quote_reference",
+        "state",
+        "exposure",
+        "quote_option",
+        "option",
     ]
+    assert not holds_identity(table)
     assert identity_clashes(spec) == [
         f"policy_details.{name} has a name Haute keeps for the quote's identity in every "
         "table: rename it, and the table takes quote_reference and quote_option at the next "
         "save"
         for name in ("quote_reference", "quote_option")
     ]
-    # Renamed, the columns keep their ids, and so their values, and the table takes the
-    # identity when the form is next read or saved.
+    # Renamed, the table takes the identity at its head when the form is next read or
+    # saved, its own columns after it under their new names.
     policy["columns"][0]["name"] = "broker_reference"
     policy["columns"][-2]["name"] = "option_load"
     renamed = FormSpec.model_validate(held)
-    assert [c.id for c in renamed.data_schema.tables[1].columns] == [
+    assert [c.name for c in renamed.data_schema.tables[1].columns] == [
         "quote_reference",
         "quote_option",
-        "c_quote_reference",
-        "c_state",
-        "c_exposure",
-        "c_quote_option",
-        "c_option",
+        "broker_reference",
+        "state",
+        "exposure",
+        "option_load",
+        "option",
     ]
+    assert holds_identity(renamed.data_schema.tables[1])
     assert identity_clashes(renamed) == []
 
 
@@ -1306,16 +1331,16 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Today's columns, some left out and some out of order, as a later Haute with one more
-    # reads them: by id, in its order.
+    # reads them: by name, in its order.
     today = _with_details_table()
     fewer = _with_details_table(lambda table: table.update(columns=table["columns"][:9]))
     swapped = _with_details_table(lambda table: table["columns"].insert(3, table["columns"].pop(9)))
-    later = (*QUOTE_DETAILS_COLUMNS, ("qd_renewal_of", "renewal_of", "str"))
+    later = (*QUOTE_DETAILS_COLUMNS, ("renewal_of", "str"))
     monkeypatch.setattr("haute._workbench_form.QUOTE_DETAILS_COLUMNS", later)
 
     for held in (today, fewer, swapped):
         details = FormSpec.model_validate(held).data_schema.tables[0]
-        assert [(c.id, c.name, c.type) for c in details.columns] == list(later)
+        assert [(c.name, c.type) for c in details.columns] == list(later)
 
 
 @pytest.mark.parametrize(
@@ -1325,7 +1350,7 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
         (lambda t: t.update(role="output"), "is Haute's: a one-row input table"),
         # A column Haute does not make is no Haute's: left as it is, and refused.
         (
-            lambda t: t["columns"].append({"id": "qd_extra", "name": "extra", "type": "str"}),
+            lambda t: t["columns"].append({"name": "extra", "type": "str"}),
             "is Haute's: a one-row input table",
         ),
         (lambda t: t["columns"][7].update(type="str"), "is Haute's: a one-row input table"),
@@ -1337,7 +1362,7 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
         ),
         (
             lambda t: t["columns"][0].update(required=True),
-            "reference is set by the underwriter app",
+            "quote_details.quote_reference is set by the underwriter app",
         ),
         (
             lambda t: t["columns"][12].update(default_value="ana@example.com"),
@@ -1365,7 +1390,6 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
             lambda t: t["columns"][10].update(default_value=True),
             "archived is set by the underwriter app and takes no rules or default",
         ),
-        (lambda t: t.update(id="t_details"), "is Haute's own table of a quote's details"),
     ],
     ids=[
         "many-rows",
@@ -1382,7 +1406,6 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
         "options-source",
         "default",
         "ticked-default",
-        "own-id",
     ],
 )
 def test_a_quote_details_table_that_is_not_hautes_is_refused(change: Any, message: str) -> None:

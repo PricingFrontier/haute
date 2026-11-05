@@ -53,7 +53,7 @@ function unique(columns: KnownColumn[]): KnownColumn[] {
  * full and cross joins keep both sides, semi and anti joins keep this frame
  * only, and any right-hand name that clashes takes the suffix.
  */
-export function joinColumns(left: KnownColumn[], right: KnownColumn[], step: Pick<JoinStep, "how" | "leftOn" | "rightOn" | "suffix">): KnownColumn[] {
+export function joinColumns(left: KnownColumn[], right: KnownColumn[], step: Pick<JoinStep, "how" | "left_on" | "right_on" | "suffix">): KnownColumn[] {
   let base = left
   let joined = right
   switch (step.how) {
@@ -62,10 +62,10 @@ export function joinColumns(left: KnownColumn[], right: KnownColumn[], step: Pic
       return left
     case "inner":
     case "left":
-      joined = right.filter((c) => !step.rightOn.includes(c.name))
+      joined = right.filter((c) => !step.right_on.includes(c.name))
       break
     case "right":
-      base = left.filter((c) => !step.leftOn.includes(c.name))
+      base = left.filter((c) => !step.left_on.includes(c.name))
       break
     case "full":
     case "cross":
@@ -139,8 +139,8 @@ function applyStep(state: StepColumns, step: Step, source: ColumnSource): StepCo
         ...state,
         columns: unique([
           ...step.index.filter((k) => k.length > 0).map(keep),
-          ...(step.variableName ? [made(step.variableName, "String")] : []),
-          ...(step.valueName ? [made(step.valueName)] : []),
+          ...(step.variable_name ? [made(step.variable_name, "String")] : []),
+          ...(step.value_name ? [made(step.value_name)] : []),
         ]),
       }
     default:
@@ -197,7 +197,7 @@ export function exprColumns(expr: Expr): string[] {
       return [
         ...operandColumns(expr.of),
         ...expr.over,
-        ...(expr.orderBy ?? []).map((k) => k.column),
+        ...(expr.order_by ?? []).map((k) => k.column),
         ...conditionColumns(expr.where?.conditions ?? []),
       ]
     case "concat":
@@ -235,7 +235,7 @@ export function columnsReadBy(step: Step): string[] {
           ...step.aggregations.flatMap((a) => ("dtype" in a ? [] : [...(a.agg === "len" ? [] : [a.column]), ...conditionColumns(a.where?.conditions ?? [])])),
         ]
       case "join":
-        return step.leftOn
+        return step.left_on
       case "pivot":
         return [...step.index, step.on, step.values]
       case "unpivot":
@@ -257,7 +257,7 @@ export function unknownColumnsOf(step: Step, before: StepColumns, source: Column
   if (step.kind !== "join") return missing
   const right = source.inputs[step.input] ?? []
   if (right.length === 0) return missing
-  return [...missing, ...step.rightOn.filter((name) => name.length > 0 && !right.some((c) => c.name === name))]
+  return [...missing, ...step.right_on.filter((name) => name.length > 0 && !right.some((c) => c.name === name))]
 }
 
 /** A name list for a note: the names when there are one or two, else a count. */

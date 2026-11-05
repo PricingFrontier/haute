@@ -199,7 +199,7 @@ def _seeded_graph(project: Path) -> PipelineGraph:
                         {
                             "banding": "categorical",
                             "column": "region",
-                            "outputColumn": "region_group",
+                            "output_column": "region_group",
                             "rules": [
                                 {"value": "Atlantis", "assignment": "Lost"},
                                 {"value": "Avalon", "assignment": "Lost"},
@@ -216,13 +216,13 @@ def _seeded_graph(project: Path) -> PipelineGraph:
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [
                                 {"region": "north", "value": 1.25},
                                 {"region": "south", "value": 0.75},
                                 {"region": "polar", "value": 2.5},
                             ],
-                            "defaultValue": "1.0",
+                            "default_value": "1.0",
                         }
                     ]
                 },
@@ -231,7 +231,7 @@ def _seeded_graph(project: Path) -> PipelineGraph:
             _node(
                 "with_regions",
                 "edgeJoin",
-                {"how": "left", "maintainOrder": "left_right", "on": "region"},
+                {"how": "left", "maintain_order": "left_right", "on": "region"},
             ),
         ],
         [
@@ -314,7 +314,7 @@ def test_a_many_to_one_join_on_duplicate_keys_reports_its_validation(project: Pa
             _node(
                 "joined",
                 "edgeJoin",
-                {"how": "left", "maintainOrder": "left_right", "on": "region", "validate": "m:1"},
+                {"how": "left", "maintain_order": "left_right", "on": "region", "validate": "m:1"},
             ),
         ],
         [_edge("quotes", "joined", role="base"), _edge("regions", "joined", role="join")],
@@ -351,7 +351,7 @@ def test_a_rating_miss_guard_that_raises_keeps_its_measurements(project: Path) -
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [{"region": "north", "value": 1.5}],
                         }
                     ]
@@ -431,7 +431,7 @@ def test_a_check_result_carries_no_data_or_configuration_value(project: Path) ->
                         {
                             "banding": "categorical",
                             "column": "region",
-                            "outputColumn": "zone",
+                            "output_column": "zone",
                             "rules": [{"value": "Krakatoa", "assignment": "MAGMA-LABEL"}],
                             "default": "DEFAULT-LABEL",
                         }
@@ -445,9 +445,9 @@ def test_a_check_result_carries_no_data_or_configuration_value(project: Path) ->
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [{"region": "Pompeii", "value": 3.14159}],
-                            "defaultValue": "2.71828",
+                            "default_value": "2.71828",
                         }
                     ]
                 },
@@ -532,11 +532,11 @@ def test_each_eligibility_reason_names_its_blocking_node_in_precedence(
         project,
         [
             _parquet("quotes"),
-            _node("pickled", "externalFile", {"path": "model.pkl", "fileType": "pickle"}),
+            _node("pickled", "externalFile", {"path": "model.pkl", "file_type": "pickle"}),
             _node(
                 "registered",
                 "modelScore",
-                {"sourceType": "registered", "registered_model": "m", "version": "1"},
+                {"source_type": "registered", "registered_model": "m", "version": "1"},
             ),
             _csv_input(project, "unbuilt", build=False),
             _csv_input(project, "built"),
@@ -618,12 +618,12 @@ def test_a_registered_model_and_an_uncached_run_model_are_not_local(project: Pat
             _node(
                 "uncached",
                 "modelScore",
-                {"sourceType": "run", "run_id": "run1", "artifact_path": "model.cbm"},
+                {"source_type": "run", "run_id": "run1", "artifact_path": "model.cbm"},
             ),
             _node(
                 "registered",
                 "modelScore",
-                {"sourceType": "registered", "registered_model": "m", "version": "1"},
+                {"source_type": "registered", "registered_model": "m", "version": "1"},
             ),
             _code("uses_uncached", "df = uncached"),
             _code("uses_registered", "df = registered"),
@@ -762,7 +762,7 @@ def _model_graph(project: Path, *, artifact: str = "model.cbm") -> PipelineGraph
             _node(
                 "scored",
                 "modelScore",
-                {"sourceType": "run", "run_id": "run1", "artifact_path": artifact},
+                {"source_type": "run", "run_id": "run1", "artifact_path": artifact},
             ),
             _code("uses_score", "df = scored"),
             _code("plain", "df = quotes.with_columns(net=pl.col('premium') * 0.5)"),
@@ -1363,7 +1363,7 @@ def test_the_remaining_finding_kinds_compare_exact_ratios(project: Path) -> None
                         {
                             "banding": "categorical",
                             "column": "region",
-                            "outputColumn": "zone",
+                            "output_column": "zone",
                             "rules": [
                                 {"value": "north", "assignment": "N"},
                                 {"value": "south", "assignment": "S"},
@@ -1381,12 +1381,12 @@ def test_the_remaining_finding_kinds_compare_exact_ratios(project: Path) -> None
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [
                                 {"region": region, "value": 1.0}
                                 for region in ("north", "south", "east")
                             ],
-                            "defaultValue": "1.0",
+                            "default_value": "1.0",
                         }
                     ]
                 },
@@ -1394,12 +1394,12 @@ def test_the_remaining_finding_kinds_compare_exact_ratios(project: Path) -> None
             _node(
                 "fans_out",
                 "edgeJoin",
-                {"how": "left", "maintainOrder": "left_right", "on": "region"},
+                {"how": "left", "maintain_order": "left_right", "on": "region"},
             ),
             _node(
                 "unmatched",
                 "edgeJoin",
-                {"how": "inner", "maintainOrder": "left_right", "on": "region"},
+                {"how": "inner", "maintain_order": "left_right", "on": "region"},
             ),
             _code(
                 "sparse",
@@ -1452,9 +1452,9 @@ def test_rating_and_banding_thresholds_sit_on_exact_ratios(project: Path) -> Non
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [{"region": "north", "value": 1.0}],
-                            "defaultValue": "1.0",
+                            "default_value": "1.0",
                         }
                     ]
                 },
@@ -1489,7 +1489,7 @@ def test_error_records_classify_configuration_preamble_and_internal_failures(
                         {
                             "banding": "breakpoints",
                             "column": "region",
-                            "outputColumn": "band",
+                            "output_column": "band",
                             "rules": [{"boundary": "10", "label": "low"}],
                         }
                     ]
@@ -1619,7 +1619,7 @@ def _band_ops(name: str = "region_band") -> list[dict[str, Any]]:
                     {
                         "banding": "categorical",
                         "column": "region",
-                        "outputColumn": f"{name}_group",
+                        "output_column": f"{name}_group",
                         "rules": [{"value": "Atlantis", "assignment": "Lost"}],
                         "default": "Other",
                     }
@@ -2083,7 +2083,7 @@ def _loaded_graph(project: Path) -> PipelineGraph:
             _node(
                 "with_regions",
                 "edgeJoin",
-                {"how": "left", "maintainOrder": "left_right", "on": "region", "validate": "m:1"},
+                {"how": "left", "maintain_order": "left_right", "on": "region", "validate": "m:1"},
             ),
             _code(
                 "loaded",
@@ -2309,7 +2309,11 @@ async def test_a_failing_schema_part_leaves_the_data_part_to_answer(
     assert "error" not in result, result
     assert "schema" not in result
     failed = _record(result["data"], "rating_features")
-    assert (failed["status"], failed["error"]["step"]) == ("failed", {"id": "logic", "number": 2})
+    # The transform's steps come from its code, each id its kind and place (READ-22).
+    assert (failed["status"], failed["error"]["step"]) == (
+        "failed",
+        {"id": "free_code-2", "number": 2},
+    )
     assert [(finding["kind"], finding["node"]) for finding in result["data"]["findings"]] == [
         ("execution_failed", "rating_features")
     ]
@@ -2317,7 +2321,7 @@ async def test_a_failing_schema_part_leaves_the_data_part_to_answer(
     assert part == "schema"
     assert (error["code"], error["step"], error["retryable"]) == (
         "schema_unresolvable",
-        "logic",
+        "free_code-2",
         True,
     )
     assert [column["name"] for column in error["inputs"]["quotes"]][:2] == [

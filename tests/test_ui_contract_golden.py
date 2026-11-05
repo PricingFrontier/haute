@@ -50,7 +50,7 @@ def test_ui_contract_fixture_is_canonical_json_snapshot(
     fixture = _load_fixture(fixture_name)
     validated = model.model_validate(fixture)
 
-    # The server answers by alias (a submodel definition's ``definitionId``).
+    # The server answers by alias (a submodel definition's ``definition_id``).
     assert validated.model_dump(mode="json", by_alias=True) == fixture
 
 

@@ -135,10 +135,10 @@ describe("useTracing", () => {
   it.each(["prices", "checks"])("traces an occurrence output's qualified child and %s frame", async (frame) => {
     const child = makeNode("child")
     const owner = makeNode("owner", "submodel", { data: {
-      label: "owner", nodeType: "submodel", config: { definitionId: "rating", alias: "owner" },
+      label: "owner", nodeType: "submodel", config: { definition_id: "rating", alias: "owner" },
     } })
     const occurrence = makeNode("again", "submodel", { data: {
-      label: "again", nodeType: "submodel", config: { definitionId: "rating", alias: "again", instanceOf: "owner" },
+      label: "again", nodeType: "submodel", config: { definition_id: "rating", alias: "again", instance_of: "owner" },
       _sourceHandleInputNames: { out__premium: "again_premium", out__audit: "again_audit" },
     } })
     const submodels = { rating: {
@@ -650,7 +650,7 @@ describe("useTracing", () => {
       data: {
         label: "Inputs",
         nodeType: NODE_TYPES.SUBMODEL,
-        config: { definitionId: "Inputs", alias: "Inputs" },
+        config: { definition_id: "Inputs", alias: "Inputs" },
         _loadAvailability: "unavailable",
       },
     })
@@ -671,7 +671,7 @@ describe("useTracing", () => {
       data: {
         label: "Inputs",
         nodeType: NODE_TYPES.SUBMODEL,
-        config: { definitionId: "Inputs", alias: "Inputs" },
+        config: { definition_id: "Inputs", alias: "Inputs" },
         ...(availability === undefined ? {} : { _loadAvailability: availability }),
       },
     })

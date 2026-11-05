@@ -22,7 +22,7 @@ import {
 // The component is deliberately PRESENTATIONAL + format-agnostic: a host
 // supplies the data via plain getters (`getGrid`, `getSchema`) and a sink
 // (`onPaste`). It never reaches into a particular editor's config shape, so
-// the same strip serves a 4-field outputMapping table, a frames-paths table,
+// the same strip serves a 4-field output_mapping table, a frames-paths table,
 // and an apiInput tables/columns grid without modification.
 //
 // Clipboard + download both degrade gracefully: in a non-secure context (no

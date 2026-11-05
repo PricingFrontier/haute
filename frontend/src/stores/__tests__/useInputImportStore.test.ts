@@ -24,7 +24,7 @@ import useNodeDataStore from "../useNodeDataStore"
 import useNodeWorkStore, { stopNodeWork } from "../useNodeWorkStore"
 import useToastStore from "../useToastStore"
 
-const csvConfig = { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" }
+const csvConfig = { input_type: "file", format: "csv", mode: "scan", path: "quotes.csv" }
 
 function input(id: string, config: Record<string, unknown> = csvConfig): Node {
   return { id, position: { x: 0, y: 0 }, data: { label: id, nodeType: "dataInput", config } }
@@ -93,7 +93,7 @@ describe("startInputImport", () => {
   })
 
   it("starts nothing for an input that reads no snapshot", () => {
-    startInputImport("direct", input("direct", { inputType: "file", format: "parquet", mode: "scan", path: "a.parquet" }), vi.fn())
+    startInputImport("direct", input("direct", { input_type: "file", format: "parquet", mode: "scan", path: "a.parquet" }), vi.fn())
 
     expect(useInputImportStore.getState().runs.direct).toBeUndefined()
     expect(buildInputCache).not.toHaveBeenCalled()
@@ -113,7 +113,7 @@ describe("startInputImport", () => {
     vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
     const onImported = vi.fn()
     startInputImport("csv", input("csv"), onImported)
-    useGraphStore.setState({ nodes: [input("csv", { inputType: "file", format: "parquet", mode: "scan", path: "a.parquet" })] })
+    useGraphStore.setState({ nodes: [input("csv", { input_type: "file", format: "parquet", mode: "scan", path: "a.parquet" })] })
 
     await waitFor(() => expect(useInputImportStore.getState().runs.csv).toBeUndefined())
     expect(onImported).not.toHaveBeenCalled()

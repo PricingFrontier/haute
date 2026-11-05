@@ -66,7 +66,7 @@ def _band_factor(column: str, output_column: str) -> dict:
     return {
         "banding": "breakpoints",
         "column": column,
-        "outputColumn": output_column,
+        "output_column": output_column,
         "rules": [{"boundary": "25", "label": "low"}],
     }
 
@@ -145,7 +145,7 @@ def _reference_backward_pass(
         children = children_of.get(nid, [])
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                mapping = node.data.config.get("outputMapping") or []
+                mapping = node.data.config.get("output_mapping") or []
                 fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 needed[nid] = set(fields) if fields else None
             else:
@@ -214,7 +214,7 @@ def _reference_forward_pass(
 
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                mapping = node.data.config.get("outputMapping") or []
+                mapping = node.data.config.get("output_mapping") or []
                 fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 needed[nid] = set(fields) if fields else None
             else:

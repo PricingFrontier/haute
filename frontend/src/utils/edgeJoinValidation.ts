@@ -120,11 +120,11 @@ export function analyzeEdgeJoinNode({
   const how = readJoinHow(config.how, diagnostics)
   const suffix = readOptionalString(config.suffix, "suffix", diagnostics) || String(EDGE_JOIN_DEFAULT_CONFIG.suffix)
   const onKeys = readKeyList(config.on, "on", diagnostics)
-  const leftKeys = readKeyList(config.leftOn, "leftOn", diagnostics)
-  const rightKeys = readKeyList(config.rightOn, "rightOn", diagnostics)
+  const leftKeys = readKeyList(config.left_on, "left_on", diagnostics)
+  const rightKeys = readKeyList(config.right_on, "right_on", diagnostics)
   const coalesce = readCoalesce(config.coalesce, diagnostics)
   const validate = readAdvancedString(config.validate, "validate", diagnostics)
-  const maintainOrder = readMaintainOrder(config.maintainOrder, diagnostics)
+  const maintainOrder = readMaintainOrder(config.maintain_order, diagnostics)
 
   addRoleDiagnostics({
     diagnostics,
@@ -155,7 +155,7 @@ export function analyzeEdgeJoinNode({
     diagnostics.push("Non-cross joins need join keys.")
   }
   if (hasPairedConfig && leftKeys.length !== rightKeys.length) {
-    diagnostics.push("leftOn and rightOn must contain the same number of keys.")
+    diagnostics.push("left_on and right_on must contain the same number of keys.")
   }
   if ([...onKeys, ...leftKeys, ...rightKeys].some((key) => key === "")) {
     diagnostics.push("Join key rows cannot be blank.")

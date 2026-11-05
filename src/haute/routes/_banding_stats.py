@@ -107,8 +107,8 @@ class BandingStatsService(PointAnalysisService):
             "column": column,
             "mode": _factor_mode(body.factor),
             "rules": body.factor.get("rules") or [],
-            "right_closed": bool(body.factor.get("rightClosed", True)),
-            "output_column": str(body.factor.get("outputColumn") or ""),
+            "right_closed": bool(body.factor.get("right_closed", True)),
+            "output_column": str(body.factor.get("output_column") or ""),
             "histogram_bins": body.histogram_bins,
             "value_limit": body.value_limit,
         }
@@ -250,8 +250,8 @@ class BandingStatsService(PointAnalysisService):
                 dtype,
                 _factor_mode(body.factor),
                 rules,
-                bool(body.factor.get("rightClosed", True)),
-                output_column=str(body.factor.get("outputColumn") or ""),
+                bool(body.factor.get("right_closed", True)),
+                output_column=str(body.factor.get("output_column") or ""),
             )
         except ValueError as exc:
             # Execution's own message, so the editor says what a run would say

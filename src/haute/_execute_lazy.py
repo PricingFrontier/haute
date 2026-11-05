@@ -975,7 +975,7 @@ def _runtime_selector_demands(
     except (KeyError, ValueError):
         return {}
     names = {input_name}
-    raw_mapping = node.data.config.get("inputMapping")
+    raw_mapping = node.data.config.get("input_mapping")
     if raw_mapping:
         if not isinstance(raw_mapping, Mapping):
             return {}
@@ -1095,7 +1095,7 @@ def _runtime_lineage_demands(
             schemas[name] = frozenset(
                 schema_by_key[projection_planner.ProjectionEdgeKey.from_edge(edge)]
             )
-        raw_mapping = node.data.config.get("inputMapping")
+        raw_mapping = node.data.config.get("input_mapping")
         if raw_mapping:
             if not isinstance(raw_mapping, Mapping):
                 return {}

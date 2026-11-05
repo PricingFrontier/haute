@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from haute._graph_utils import _sanitize_func_name
+from haute._node_specs import SINGLETON_NODE_NAMES
 from haute.assistant._node_descriptions import recipe_node_type
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
@@ -52,7 +53,8 @@ def _descriptor(
     )
     source = string_schema("Existing saved graph node id that supplies the recipe input.")
     output_name = string_schema(
-        "Optional new response output graph node connected after the recipe node."
+        "Optional new response output graph node connected after the recipe node: always "
+        '"quote_response", the one name a pipeline\'s response node has.'
     )
     output_columns = {
         "type": "array",
@@ -389,6 +391,14 @@ def _output_operations(
             "output_name must be a non-empty string.",
             argument="output_name",
         )
+    fixed = SINGLETON_NODE_NAMES[recipe_node_type("response_output")]
+    if _sanitize_func_name(output_name) != fixed:
+        # A pipeline holds one response node, named by its type alone (READ-46).
+        raise RecipeError(
+            "recipe_argument_invalid",
+            f"output_name is always {fixed!r}: a pipeline's response node has one name.",
+            argument="output_name",
+        )
     if (
         not isinstance(raw_columns, list)
         or not raw_columns
@@ -419,7 +429,7 @@ def _output_operations(
             "node_type": recipe_node_type("response_output").value,
             "name": output_name,
             "ref": ref,
-            "config": {"outputMapping": mappings},
+            "config": {"output_mapping": mappings},
         },
         {"op": "add_edge", "source": source, "target": f"${ref}"},
     ]
@@ -534,9 +544,9 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
         tables.append(
             {
                 "factors": deepcopy(factors),
-                "outputColumn": output_column,
+                "output_column": output_column,
                 "entries": entries,
-                "defaultValue": _finite_rating_number(
+                "default_value": _finite_rating_number(
                     table["default_value"], argument=f"{table_argument}.default_value"
                 ),
             }
@@ -571,9 +581,9 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
             )
         combined_outputs.append(
             {
-                "outputColumn": output_column,
+                "output_column": output_column,
                 "operation": operation,
-                "baseValue": _finite_rating_number(
+                "base_value": _finite_rating_number(
                     output["base_value"], argument=f"{combined_argument}.base_value"
                 ),
             }
@@ -581,14 +591,14 @@ def _rating_config(values: Mapping[str, Any]) -> dict[str, object]:
 
     config: dict[str, Any] = {
         "tables": tables,
-        "combinedOutputs": combined_outputs,
+        "combined_outputs": combined_outputs,
     }
     try:
         from haute._rating import normalise_combined_outputs
         from haute._rating_step_config import normalise_rating_step_config
 
         config = normalise_rating_step_config(config)
-        config["combinedOutputs"] = normalise_combined_outputs(config)
+        config["combined_outputs"] = normalise_combined_outputs(config)
     except ValueError as exc:
         raise RecipeError(
             "recipe_argument_invalid",
@@ -632,7 +642,7 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
                         {
                             "banding": "categorical",
                             "column": values["column"],
-                            "outputColumn": values["output_column"],
+                            "output_column": values["output_column"],
                             "rules": values["rules"],
                             "default": values["default"],
                         }
@@ -669,8 +679,8 @@ def expand_recipe(recipe_id: str, args: object, *, ref: str) -> list[dict[str, o
                 "ref": ref,
                 "config": {
                     "how": values["how"],
-                    "leftOn": values["left_on"],
-                    "rightOn": values["right_on"],
+                    "left_on": values["left_on"],
+                    "right_on": values["right_on"],
                 },
             },
             {

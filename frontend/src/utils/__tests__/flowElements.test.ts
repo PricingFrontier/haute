@@ -4,7 +4,9 @@ import {
   appEdge,
   appNode,
   deselectNodes,
+  freshNodeLabel,
   nodeLabel,
+  nodeLabels,
   selectOnlyNode,
 } from "../flowElements"
 
@@ -78,5 +80,29 @@ describe("flowElements", () => {
       { id: "b", selected: true },
     ])
     expect(nodes[0].selected).toBe(true)
+  })
+})
+
+describe("a new node's name (READ-13, READ-46)", () => {
+  it("is its type in snake_case, as its decorator spells it", () => {
+    expect(freshNodeLabel(NODE_TYPES.WORKBENCH_OUTPUT, [])).toBe("workbench_output")
+    expect(freshNodeLabel(NODE_TYPES.POLARS, ["quotes"])).toBe("polars")
+  })
+
+  it("takes the next free number only when the name is taken, ignoring case", () => {
+    expect(freshNodeLabel(NODE_TYPES.POLARS, ["Polars"])).toBe("polars_2")
+    expect(freshNodeLabel(NODE_TYPES.POLARS, ["polars", "polars_2", "polars_4"])).toBe("polars_3")
+  })
+
+  it("is a request input's or response node's one name, never numbered (READ-46)", () => {
+    expect(freshNodeLabel(NODE_TYPES.API_INPUT, [])).toBe("quote_input")
+    expect(freshNodeLabel(NODE_TYPES.OUTPUT, ["quote_response"])).toBe("quote_response")
+    expect(freshNodeLabel(NODE_TYPES.WORKBENCH_INPUT, [])).toBe("workbench_input")
+    expect(freshNodeLabel(NODE_TYPES.WORKBENCH_OUTPUT, ["workbench_output"])).toBe("workbench_output")
+  })
+
+  it("reads the labels of the nodes already on the canvas", () => {
+    const nodes = [appNode({ id: "a", type: NODE_TYPES.EDGE_JOIN, position: { x: 0, y: 0 }, label: "edge_join" })]
+    expect(freshNodeLabel(NODE_TYPES.EDGE_JOIN, nodeLabels(nodes))).toBe("edge_join_2")
   })
 })

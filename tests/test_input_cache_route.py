@@ -22,7 +22,7 @@ from tests._project import project_app, use_project, work_elsewhere
 
 def _file_config(path: str = "input.csv") -> dict[str, Any]:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": path,
@@ -247,7 +247,7 @@ def test_cache_status_rejects_lakehouse_path_outside_project_root(
         json={
             "schema_version": 1,
             "config": {
-                "inputType": "lakehouse",
+                "input_type": "lakehouse",
                 "format": "delta",
                 "mode": "scan",
                 "path": "../outside-delta-table",
@@ -276,7 +276,7 @@ def test_cache_status_rejects_raw_sqlite_paths_outside_project_root(
         json={
             "schema_version": 1,
             "config": {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "uri": uri,
                 "query": "SELECT 1",
@@ -792,7 +792,7 @@ def _sqlite_config(tmp_path: Path, rows: int = 3) -> dict[str, Any]:
         )
         connection.commit()
     return {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT id, value FROM policies ORDER BY id",
@@ -1070,7 +1070,7 @@ def test_secret_bearing_config_is_rejected_without_echo(
         json={
             "schema_version": 1,
             "config": {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "uri": "postgresql://alice:do-not-echo@db.example/pricing",
                 "query": "SELECT 1",
@@ -1087,14 +1087,14 @@ def test_secret_bearing_config_is_rejected_without_echo(
 # Formats without a file extension, each in its canonical Data Input shape.
 _EXTENSIONLESS_FORMAT_CONFIGS: dict[str, dict[str, Any]] = {
     "database": {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": "sqlite:///data.sqlite",
         "query": "SELECT 1",
     },
-    "delta": {"inputType": "lakehouse", "format": "delta", "mode": "scan", "path": "table"},
-    "iceberg": {"inputType": "lakehouse", "format": "iceberg", "mode": "scan", "path": "table"},
-    "records": {"inputType": "inline", "format": "records", "records": [{"x": 1}]},
+    "delta": {"input_type": "lakehouse", "format": "delta", "mode": "scan", "path": "table"},
+    "iceberg": {"input_type": "lakehouse", "format": "iceberg", "mode": "scan", "path": "table"},
+    "records": {"input_type": "inline", "format": "records", "records": [{"x": 1}]},
 }
 
 
@@ -1109,7 +1109,7 @@ def _format_configs() -> list[Any]:
             continue
         # A Parquet scan is read directly; its eager read is snapshot-backed.
         mode = "read" if fmt.name == "parquet" else None
-        config = {"inputType": "file", "format": fmt.name, "path": f"input{fmt.extensions[0]}"}
+        config = {"input_type": "file", "format": fmt.name, "path": f"input{fmt.extensions[0]}"}
         if mode is not None:
             config["mode"] = mode
         configs.append(pytest.param(config, id=fmt.name))
@@ -1143,7 +1143,7 @@ def test_the_server_chooses_each_formats_build_profile(
         )
 
     monkeypatch.setattr(input_cache, "_start_build", record_start)
-    if config["inputType"] == "database":
+    if config["input_type"] == "database":
         import sqlite3
 
         # A SQLite snapshot source must be an existing on-disk database.
@@ -1179,7 +1179,7 @@ def test_arguments_that_are_not_an_object_are_a_bad_request(client: TestClient) 
         json={
             "schema_version": 1,
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "read",
                 "path": "input.parquet",
@@ -1200,7 +1200,7 @@ def test_unsupported_database_scheme_is_rejected_before_job_creation(
         json={
             "schema_version": 1,
             "config": {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "uri": "postgresql://db.example/pricing",
                 "query": "SELECT 1",
@@ -1912,7 +1912,7 @@ def test_a_forced_build_re_reads_a_source_whose_changes_cannot_be_detected(
     connection.executemany("INSERT INTO t VALUES (?)", [(1,), (2,)])
     connection.commit()
     config = {
-        "inputType": "database",
+        "input_type": "database",
         "format": "database",
         "uri": "sqlite:///data.sqlite",
         "query": "SELECT x FROM t",

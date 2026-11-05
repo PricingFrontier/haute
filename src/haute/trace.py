@@ -1735,13 +1735,13 @@ def _trace_lineage_alignments(
             continue
         input_names[(edge.source, edge.target, edge.sourceHandle, edge.targetHandle)] = name
         child_inputs.setdefault(edge.target, []).append(name)
-    # A Transform's or Load File's ``inputMapping`` lets its code name an input
+    # A Transform's or Load File's ``input_mapping`` lets its code name an input
     # by a stable logical name (``logical -> current edge name``); the executor
     # binds both, so the trace analysers must read both too.
     input_aliases: dict[str, dict[str, str]] = {}
     for target, names in child_inputs.items():
         node = prepared.node_map[target]
-        mapping = node.data.config.get("inputMapping")
+        mapping = node.data.config.get("input_mapping")
         if not stepped_surface_allows_input_references(node.data.nodeType) or not isinstance(
             mapping, dict
         ):

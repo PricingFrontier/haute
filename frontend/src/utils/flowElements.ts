@@ -1,6 +1,6 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
 import { edgeId } from "./edgeIds"
-import { NODE_TYPE_META, type NodeTypeValue } from "./nodeTypes"
+import { NODE_TYPE_META, SINGLETON_NODE_NAMES, type NodeTypeValue } from "./nodeTypes"
 
 type AppNodeParams = {
   id: string
@@ -64,6 +64,34 @@ export function appEdge({
     targetHandle,
   }
 }
+
+/** A node type's name as its decorator spells it, snake_case: `workbench_output`. */
+export function typeName(type: NodeTypeValue): string {
+  return type.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
+}
+
+/** A label as the function name it becomes, compared ignoring case. */
+const functionKey = (label: string): string => label.trim().replace(/\W+/g, "_").toLowerCase()
+
+/**
+ * A new node's label (READ-13): its type's name, numbered from 2 only when a node already
+ * holds the name (`polars`, then `polars_2`), ignoring case as function names must differ.
+ */
+export function freshNodeLabel(type: NodeTypeValue, taken: Iterable<string>): string {
+  // A request input or response node has its type's one name (READ-46).
+  const fixed = SINGLETON_NODE_NAMES[type]
+  if (fixed !== undefined) return fixed
+  const used = new Set([...taken].map(functionKey))
+  const base = typeName(type)
+  if (!used.has(base)) return base
+  for (let number = 2; ; number += 1) {
+    if (!used.has(`${base}_${number}`)) return `${base}_${number}`
+  }
+}
+
+/** The labels the nodes of `nodes` hold, which a new node's label must not take. */
+export const nodeLabels = (nodes: readonly Node[]): string[] =>
+  nodes.map((node) => String((node.data as { label?: unknown } | undefined)?.label ?? node.id))
 
 export function nodeLabel(type: NodeTypeValue, id: string): string {
   const meta = NODE_TYPE_META[type]

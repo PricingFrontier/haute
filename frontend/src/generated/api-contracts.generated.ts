@@ -899,14 +899,12 @@ export interface RecoveryPipelineNode {
  *
  * None of it is a setting: it is never persisted, hashed or validated as config.
  * ``steps_error`` is derived from the node's ``steps`` whenever its data is
- * built; ``steps_discarded`` (why the parse dropped a stepped node's steps) and
- * ``discarded_sidecar`` (the transform sidecar those steps came from, which the
- * next save retires) are the parse's findings. A request may carry the field
- * back, as a transform of the graph echoes it, but a save reads neither
- * finding from it: it reparses the file on disk.
+ * built; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is
+ * the parse's finding. A request may carry the field back, as a transform of the
+ * graph echoes it, but a save never reads the finding from it: it reparses the
+ * file on disk.
  */
 export interface NodeEditorState {
-  discarded_sidecar: string | null;
   steps_discarded: string | null;
   steps_error: string | null;
 }
@@ -2906,7 +2904,7 @@ export interface ApiInputConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -2951,7 +2949,7 @@ export interface TableV2 {
   /**
    * The path the editor shows for the table, or `null` to show `path`.
    */
-  displayPath?: string | null;
+  display_path?: string | null;
   /**
    * Whether the table is one of the node's outputs.
    */
@@ -3029,7 +3027,7 @@ export interface WorkbenchInputConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -3064,7 +3062,7 @@ export interface WorkbenchOutputConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   selected_columns?: string[];
@@ -3107,13 +3105,13 @@ export interface DataInputFileConfig {
    * The file format, such as `parquet`, `csv` or `ndjson`.
    */
   format?: string;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The provider: a file.
    */
-  inputType: 'file';
+  input_type: 'file';
   mode?: '' | 'read' | 'scan';
   /**
    * The file, relative to the project root or absolute.
@@ -3144,13 +3142,13 @@ export interface DataInputDatabaseConfig {
    * The format of a database read: `database`.
    */
   format?: 'database';
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The provider: a database.
    */
-  inputType: 'database';
+  input_type: 'database';
   /**
    * The SQL query whose rows the node reads.
    */
@@ -3180,13 +3178,13 @@ export interface DataInputLakehouseConfig {
    * The table format: `delta` or `iceberg`.
    */
   format?: 'delta' | 'iceberg';
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The provider: a lakehouse table.
    */
-  inputType: 'lakehouse';
+  input_type: 'lakehouse';
   mode?: '' | 'read' | 'scan';
   /**
    * The table's location.
@@ -3213,13 +3211,13 @@ export interface DataInputDatabricksConfig {
    * The SQL warehouse's HTTP path.
    */
   http_path?: string;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The provider: Databricks.
    */
-  inputType: 'databricks';
+  input_type: 'databricks';
   /**
    * A SQL query to read instead of the whole table.
    */
@@ -3249,13 +3247,13 @@ export interface DataInputInlineConfig {
    * The format of inline rows: `records`.
    */
   format?: 'records';
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The provider: rows held in the config.
    */
-  inputType: 'inline';
+  input_type: 'inline';
   mode?: '' | 'read' | 'scan';
   /**
    * The rows, each an object from column name to value.
@@ -3293,14 +3291,14 @@ export interface DataOutputFileConfig {
    * The file format, such as `parquet` or `csv`.
    */
   format?: string;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   mode?: 'sink' | 'write';
   /**
    * The destination: a file.
    */
-  outputType: 'file';
+  output_type: 'file';
   /**
    * The file written, relative to the project root or absolute.
    */
@@ -3326,14 +3324,14 @@ export interface DataOutputDatabaseConfig {
    * The format of a database write: `database`.
    */
   format?: 'database';
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   mode?: 'sink' | 'write';
   /**
    * The destination: a database.
    */
-  outputType: 'database';
+  output_type: 'database';
   selected_columns?: string[];
   /**
    * The table written.
@@ -3359,14 +3357,14 @@ export interface DataOutputLakehouseConfig {
    * The table format: `delta` or `iceberg`.
    */
   format?: 'delta' | 'iceberg';
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   mode?: 'sink' | 'write';
   /**
    * The destination: a lakehouse table.
    */
-  outputType: 'lakehouse';
+  output_type: 'lakehouse';
   /**
    * The table's location.
    */
@@ -3388,13 +3386,13 @@ export interface DataOutputDatabricksConfig {
    * The SQL warehouse's HTTP path.
    */
   http_path?: string;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The destination: Databricks.
    */
-  outputType: 'databricks';
+  output_type: 'databricks';
   selected_columns?: string[];
   /**
    * The table, as `catalog.schema.table`.
@@ -3424,7 +3422,7 @@ export interface TransformConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -3476,26 +3474,26 @@ export interface EdgeJoinConfig {
    * The join type.
    */
   how?: 'inner' | 'left' | 'right' | 'full' | 'semi' | 'anti' | 'cross';
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The key column or columns on the base input.
    */
-  leftOn?: string | string[];
+  left_on?: string | string[];
   /**
    * Which input's row order the result keeps; required, which the engine's join rules
    * check with the values it takes.
    */
-  maintainOrder?: 'none' | 'left' | 'right' | 'left_right' | 'right_left';
+  maintain_order?: 'none' | 'left' | 'right' | 'left_right' | 'right_left';
   /**
-   * The key column or columns both inputs share; or use `leftOn` and `rightOn`.
+   * The key column or columns both inputs share; or use `left_on` and `right_on`.
    */
   on?: string | string[];
   /**
-   * The key column or columns on the join input, matched in order with `leftOn`.
+   * The key column or columns on the join input, matched in order with `left_on`.
    */
-  rightOn?: string | string[];
+  right_on?: string | string[];
   selected_columns?: string[];
   /**
    * The suffix added to a join-input column whose name the base input already has.
@@ -3546,7 +3544,7 @@ export interface ModelScoreConfig {
    * The feature contract the model scores under, when it is not beside the model.
    */
   feature_contract_path?: string;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -3578,7 +3576,7 @@ export interface ModelScoreConfig {
   /**
    * Where the model comes from; empty or absent when no source is chosen yet.
    */
-  sourceType?: '' | 'run' | 'registered' | 'file';
+  source_type?: '' | 'run' | 'registered' | 'file';
   steps?: {
     [k: string]: unknown;
   }[];
@@ -3613,7 +3611,7 @@ export interface BandingConfig {
    * The factors, each an input column, an output column and its bands.
    */
   factors?: BandingFactor[];
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   selected_columns?: string[];
@@ -3637,15 +3635,15 @@ export interface BandingFactor {
   /**
    * The column the band is written to.
    */
-  outputColumn?: string;
+  output_column?: string;
   /**
    * For breakpoints, whether each band includes its upper boundary (`true`, the default) or its
    * lower one.
    */
-  rightClosed?: boolean;
+  right_closed?: boolean;
   /**
-   * The bands: rule rows in the editor, or a map from each boundary or value to its band in the
-   * config file.
+   * The bands, as rule rows; the config file writes breakpoints as a list of `upper` and
+   * `label`, and categories as a map from each value to its group.
    */
   rules?:
     | {
@@ -3676,9 +3674,9 @@ export interface RatingStepConfig {
   /**
    * Columns combined from the tables' values.
    */
-  combinedOutputs?: RatingCombinedOutput[];
+  combined_outputs?: RatingCombinedOutput[];
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   selected_columns?: string[];
@@ -3697,7 +3695,7 @@ export interface RatingCombinedOutput {
   /**
    * The value the combination starts from: a number, or the editor's text of one.
    */
-  baseValue: string | number;
+  base_value: string | number;
   /**
    * How the tables' values are combined.
    */
@@ -3705,7 +3703,7 @@ export interface RatingCombinedOutput {
   /**
    * The combined column.
    */
-  outputColumn: string;
+  output_column: string;
 }
 /**
  * One table of a Rating Step: a value looked up by up to three factor columns.
@@ -3714,9 +3712,10 @@ export interface RatingTable {
   /**
    * The value of a factor combination the table does not hold; `null` for none.
    */
-  defaultValue?: string | number | null;
+  default_value?: string | number | null;
   /**
-   * The table's rows, each a level of every factor and its `value`.
+   * The table's rows, each a level of every factor and its `value`; the config file
+   * writes them as a grid of `columns` and `rows`.
    */
   entries?: {
     [k: string]: unknown;
@@ -3724,7 +3723,7 @@ export interface RatingTable {
   /**
    * For each factor, the type its levels are read as.
    */
-  factorDtypes?: {
+  factor_dtypes?: {
     [k: string]: {
       [k: string]: unknown;
     };
@@ -3737,11 +3736,11 @@ export interface RatingTable {
    * With no default, whether a missing combination fails the run (`error`) or takes the neutral
    * value (`neutral`).
    */
-  onMissing?: 'error' | 'neutral';
+  on_missing?: 'error' | 'neutral';
   /**
    * The column the looked-up value is written to.
    */
-  outputColumn?: string;
+  output_column?: string;
 }
 /**
  * A output node's data, its config typed by its config model.
@@ -3761,13 +3760,13 @@ export interface OutputConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * The mapping rows, each a column of an incoming frame and the response path it fills.
    */
-  outputMapping?: OutputMappingEntry[];
+  output_mapping?: OutputMappingEntry[];
   selected_columns?: string[];
 }
 /**
@@ -3814,7 +3813,7 @@ export interface ExploreConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   overview?: ExploreOverviewConfig;
@@ -4092,8 +4091,8 @@ export interface ExternalFileConfig {
   /**
    * How the file is loaded.
    */
-  fileType?: 'pickle' | 'json' | 'joblib';
-  inputMapping?: {
+  file_type?: 'pickle' | 'json' | 'joblib';
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -4123,7 +4122,7 @@ export interface LiveSwitchConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -4210,7 +4209,7 @@ export interface ModellingConfig {
    * Columns identifying rows, kept with the predictions but never trained on.
    */
   id_columns?: string[];
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -4405,7 +4404,7 @@ export interface OptimiserConfig {
    * The number of points on the frontier.
    */
   frontier_steps?: number;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -4478,7 +4477,7 @@ export interface ScenarioExpanderConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -4495,13 +4494,13 @@ export interface ScenarioExpanderConfig {
   quote_id?: string;
   selected_columns?: string[];
   /**
-   * The number of grid values, at least 1.
-   */
-  stepCount?: number;
-  /**
    * The column the grid position (from 0) is written to, such as `scenario_index`.
    */
   step_column?: string;
+  /**
+   * The number of grid values, at least 1.
+   */
+  step_count?: number;
   steps?: {
     [k: string]: unknown;
   }[];
@@ -4541,7 +4540,7 @@ export interface OptimiserApplyConfig {
    * For a run source, the experiment's name, shown when the panel reopens.
    */
   experiment_name?: string;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   /**
@@ -4577,7 +4576,7 @@ export interface OptimiserApplyConfig {
   /**
    * Where the optimiser result comes from; empty or absent when none is chosen yet.
    */
-  sourceType?: '' | 'file' | 'run' | 'registered';
+  source_type?: '' | 'file' | 'run' | 'registered';
   /**
    * For a registered source, the version applied, or `latest`; absent when `alias` is set.
    */
@@ -4605,12 +4604,13 @@ export interface ConstantConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   selected_columns?: string[];
   /**
-   * The values, one column each.
+   * The values, one column each; the config file writes them as a map from each name to
+   * its value.
    */
   values?: ConstantValue[];
 }
@@ -4652,14 +4652,14 @@ export interface SubmodelConfig {
   /**
    * The submodel definition this occurrence runs.
    */
-  definitionId?: string;
-  inputMapping?: {
+  definition_id?: string;
+  input_mapping?: {
     [k: string]: string;
   };
   /**
    * For an instance, the occurrence whose definition it shares.
    */
-  instanceOf?: string;
+  instance_of?: string;
   selected_columns?: string[];
 }
 /**
@@ -4680,7 +4680,7 @@ export interface SubmodelPortConfig {
     [k: string]: string;
   };
   contract?: 'opaque' | ContractColumns;
-  inputMapping?: {
+  input_mapping?: {
     [k: string]: string;
   };
   selected_columns?: string[];
@@ -5540,7 +5540,7 @@ export interface ShowWhen {
   match: ('all' | 'any') | number;
 }
 /**
- * A test of the value in a one-row table's column, the column by table and column id.
+ * A test of the value in a one-row table's column, the column by table and column name.
  *
  * The shape is all the file holds a condition to. Whether its column, test and values
  * fit one another is ``haute._workbench_visibility.condition_fits``'s question, asked
@@ -5571,14 +5571,14 @@ export interface Condition {
   values: string[];
 }
 /**
- * A schema column a widget shows, by table and column id, so a rename keeps it.
+ * A schema column a widget shows, by its table's name and its own (READ-23).
  */
 export interface FieldRef {
   column: string;
   table: string;
 }
 /**
- * A many-row table's rows, by table id, passing all of its tests in the same row: any
+ * A many-row table's rows, by table name, passing all of its tests in the same row: any
  * of them, or every one, as ``rows`` says.
  */
 export interface RowsCondition {
@@ -5591,8 +5591,8 @@ export interface RowsCondition {
 }
 /**
  * A test a row of a many-row table must pass: a ``Condition``'s column, test and values,
- * its table the condition's that holds it, and another column of the same row, by id, to
- * test against.
+ * its table the condition's that holds it, and another column of the same row, by name,
+ * to test against.
  */
 export interface RowTest {
   column: string;
@@ -5618,7 +5618,7 @@ export interface RowTest {
   values: string[];
 }
 /**
- * How many of a many-row table's rows, by table id, pass all of its tests in the same
+ * How many of a many-row table's rows, by table name, pass all of its tests in the same
  * row: every row while it has none.
  */
 export interface RowCount {
@@ -5628,7 +5628,7 @@ export interface RowCount {
   where: RowTest[];
 }
 /**
- * A total of a number column's values in the rows of a many-row table, by table id,
+ * A total of a number column's values in the rows of a many-row table, by table name,
  * passing all of its tests in the same row, every row while it has none, tested against
  * a number typed as text.
  */
@@ -5679,6 +5679,7 @@ export interface TableInputWidget {
   header_orientation: 'horizontal' | 'up' | 'down' | 'stacked';
   header_wrap: boolean;
   id: string;
+  number: number | null;
   row_numbers: boolean;
   rows: number;
   show_when: ShowWhen;
@@ -5692,7 +5693,7 @@ export interface TableInputWidget {
 }
 /**
  * How one of a Table's columns, or one of a Collection's fields, looks and when it shows,
- * its field by table and column id: each colour the component's own while None, its values
+ * its field by table and column name: each colour the component's own while None, its values
  * placed as its type puts them, or as the Collection places its boxes', while ``align`` is
  * ``auto``, its label as its component places its labels while ``header_align`` is, and
  * over a Table's column as its values sit while the Table's is too, while ``width`` is
@@ -5743,6 +5744,7 @@ export interface CollectionWidget {
   id: string;
   label_width: number | null;
   labels: 'above' | 'beside';
+  number: number | null;
   show_when: ShowWhen;
   spacers: number[];
   title: string;
@@ -5763,6 +5765,7 @@ export interface ChartWidget {
   h: number;
   id: string;
   legend: 'bottom' | 'top' | 'left' | 'right' | 'none';
+  number: number | null;
   orientation: 'vertical' | 'horizontal';
   show_when: ShowWhen;
   stacked: boolean;
@@ -5781,6 +5784,7 @@ export interface HeadingWidget {
   description: string;
   h: number;
   id: string;
+  number: number | null;
   show_when: ShowWhen;
   size: 'large' | 'medium' | 'small';
   text: string;
@@ -5800,6 +5804,7 @@ export interface ImportWidget {
   id: string;
   label: string;
   mode: 'replace' | 'append' | 'update';
+  number: number | null;
   show_when: ShowWhen;
   source: CsvImport | ExcelImport | SqlImport;
   table: string | null;
@@ -5809,7 +5814,7 @@ export interface ImportWidget {
   y: number;
 }
 /**
- * A column of the table an Import fills, by id, and the name of the column it is read
+ * A column of the table an Import fills, by name, and the name of the column it is read
  * from in the file or the query's answer.
  */
 export interface ColumnName {
@@ -5844,7 +5849,7 @@ export interface SqlImport {
   query: string;
 }
 /**
- * A ``:name`` in an Import's query, given the value of a column by table and column id.
+ * A ``:name`` in an Import's query, given the value of a column by table and column name.
  */
 export interface QueryParameter {
   column: string;
@@ -5860,6 +5865,7 @@ export interface ExportWidget {
   h: number;
   id: string;
   label: string;
+  number: number | null;
   show_when: ShowWhen;
   tables: string[];
   target: CsvExport | ExcelExport | SqlExport;
@@ -5897,7 +5903,7 @@ export interface SqlExport {
   table_names: TableName[];
 }
 /**
- * A table an Export writes to a database, by id, and the name of the table it is
+ * A table an Export writes to a database, by name, and the name of the table it is
  * written to there.
  */
 export interface TableName {
@@ -5912,7 +5918,6 @@ export interface FormSchema {
 }
 export interface SchemaTable {
   columns: SchemaColumn[];
-  id: string;
   name: string;
   role: 'input' | 'output';
   rows: 'one' | 'many';
@@ -5922,7 +5927,6 @@ export interface SchemaColumn {
   default_value: string | boolean;
   group: string;
   help: string;
-  id: string;
   index: boolean;
   key: boolean;
   label: string;
@@ -6035,12 +6039,10 @@ export interface WorkbenchCatalogueColumn {
 }
 /**
  * The form compared with an environment's tables: each difference, each extra, the
- * pairings taken, whether the database matches the form, the SQL that brings its tables to
- * the form, from what they hold, and the default branch whose form named renames, null
- * when none did.
+ * pairings taken, whether the database matches the form, and the SQL that brings its tables
+ * to the form, from what they hold.
  */
 export interface WorkbenchStoreCompareResponse {
-  branch: string | null;
   differences: WorkbenchStoreDifference[];
   extras: WorkbenchStoreExtra[];
   matches: boolean;
@@ -6048,7 +6050,7 @@ export interface WorkbenchStoreCompareResponse {
   sql: string;
 }
 /**
- * A way the database differs from the form: the form's table and column by id (no table
+ * A way the database differs from the form: the form's table and column by name (no table
  * for Haute's own haute_activity), its kind and what it is.
  */
 export interface WorkbenchStoreDifference {
@@ -6059,18 +6061,18 @@ export interface WorkbenchStoreDifference {
 }
 /**
  * A table of the store's, or a column of one of the form's tables, that the database
- * holds and the form does not: its table's and its name there, the form's table's id when
+ * holds and the form does not: its table's and its name there, the form's table's name when
  * the table is the form's, and the quotes holding values in it, None when the table lacks a
  * quote identity column.
  */
 export interface WorkbenchStoreExtra {
   column: string | null;
+  form_table: string | null;
   quotes: number | null;
   table: string;
-  table_id: string | null;
 }
 /**
- * A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+ * A column of the form's table ``table``, ``column``, both by name, that the database
  * holds as ``was``: the analyst's pairing of the two as a rename.
  */
 export interface WorkbenchStoreRename {

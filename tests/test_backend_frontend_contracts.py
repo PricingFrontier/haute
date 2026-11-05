@@ -141,7 +141,7 @@ def test_generated_response_fixture_is_exactly_what_the_server_sends(
     field, so its fixture must match the server's serialization byte for byte."""
     fixture = _load_fixture(fixture_name)
 
-    # FastAPI answers by alias (a submodel definition's ``definitionId``).
+    # FastAPI answers by alias (a submodel definition's ``definition_id``).
     assert model.model_validate(fixture).model_dump(mode="json", by_alias=True) == fixture
 
 

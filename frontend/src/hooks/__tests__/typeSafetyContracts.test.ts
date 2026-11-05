@@ -103,7 +103,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
       id: "n1",
       type: "dataInput",
       position: { x: 0, y: 0 },
-      data: { label: "n1", description: "", nodeType: "dataInput", config: { inputType: "file", format: "parquet", path: "" }, editor: { steps_error: null, steps_discarded: null, discarded_sidecar: null } },
+      data: { label: "n1", description: "", nodeType: "dataInput", config: { input_type: "file", format: "parquet", path: "" }, editor: { steps_error: null, steps_discarded: null } },
     }],
     edges: [],
     pipeline_name: "x",
@@ -165,7 +165,7 @@ describe("#116 - a canonical graph read as the editor's", () => {
 
   it("refuses a node config inside a submodel's graph that its node type's model refuses", () => {
     const [node] = graph().nodes
-    const refused = { ...node, data: { ...node.data, config: { inputType: "file", format: "parquet", path: 3 } } }
+    const refused = { ...node, data: { ...node.data, config: { input_type: "file", format: "parquet", path: 3 } } }
     expect(() => read(withSubmodel(graph({ nodes: [refused] }))))
       .toThrow("PipelineGraph: invalid contract at /submodels/pricing/graph/nodes/0/data")
   })

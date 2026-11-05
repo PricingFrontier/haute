@@ -3,28 +3,28 @@
     {
       "banding": "breakpoints",
       "column": "driver_age",
-      "outputColumn": "age_band",
-      "rules": {
-        "24": "17-24",
-        "59": "25-59",
-        "": "60+"
-      },
+      "output_column": "age_band",
+      "rules": [
+        {"upper": 24, "label": "17-24"},
+        {"upper": 59, "label": "25-59"},
+        {"label": "60+"}
+      ],
       "default": "unknown"
     },
     {
       "banding": "breakpoints",
       "column": "inception_date",
-      "outputColumn": "inception_year",
-      "rules": {
-        "2024-12-31": "2024",
-        "": "2025+"
-      },
+      "output_column": "inception_year",
+      "rules": [
+        {"upper": "2024-12-31", "label": "2024"},
+        {"label": "2025+"}
+      ],
       "default": "unknown"
     },
     {
       "banding": "categorical",
       "column": "region_code",
-      "outputColumn": "region",
+      "output_column": "region",
       "rules": {
         "NE": "North",
         "NW": "North",

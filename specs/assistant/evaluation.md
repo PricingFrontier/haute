@@ -434,7 +434,7 @@ failing turn, `data_findings` when that turn fails only there.
    list of another length or order never matches. The reason names the first
    differing path, such as `config.pivots[0].values[1].aggregation`, never a
    value. A key a case leaves out could still change behaviour, such as a
-   breakpoint factor's `rightClosed`; the execution layer catches that, because
+   breakpoint factor's `right_closed`; the execution layer catches that, because
    every banding case that states breakpoints has a golden on its node and its
    data has a row on each stated boundary.
 4. **Collateral change.** Every node existing before the turn and not named in

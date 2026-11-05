@@ -1,1 +1,20 @@
-{"tables":[{"factors":["driver_age_band"],"outputColumn":"fixture_factor","entries":[{"driver_age_band":"young","value":1.2},{"driver_age_band":"experienced","value":1.0}],"defaultValue":1.0}],"combinedOutputs":[{"outputColumn":"fixture_result","operation":"multiply","baseValue":100.0}]}
+{
+  "combined_outputs": [
+    {
+      "output_column": "fixture_result",
+      "operation": "multiply",
+      "base_value": 100.0
+    }
+  ],
+  "tables": [
+    {
+      "factors": ["driver_age_band"],
+      "output_column": "fixture_factor",
+      "default_value": 1.0,
+      "rows": [
+        ["young", 1.2],
+        ["experienced", 1.0]
+      ]
+    }
+  ]
+}

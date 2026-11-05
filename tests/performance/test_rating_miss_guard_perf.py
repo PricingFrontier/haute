@@ -57,8 +57,8 @@ def _workload(
                 {
                     "name": f"{factor_count}_factor_lookup",
                     "factors": factors,
-                    "outputColumn": "rate",
-                    "onMissing": "neutral",
+                    "output_column": "rate",
+                    "on_missing": "neutral",
                     "entries": entries,
                 }
             ]
@@ -185,7 +185,7 @@ def test_rating_miss_guard_records_representative_decision_evidence(
                     "tables": [
                         {
                             "factors": ["factor"],
-                            "outputColumn": "rate",
+                            "output_column": "rate",
                             "entries": [{"factor": "known", "value": 1.0}],
                         }
                     ]

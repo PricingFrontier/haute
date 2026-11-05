@@ -33,7 +33,7 @@ def ordered(joined: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def response(ordered): ...
+def quote_response(ordered): ...
 
 
 pipeline.connect("quotes", "joined", target_port="base")

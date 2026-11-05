@@ -108,7 +108,7 @@ def test_scenario_expander_streaming_output_is_quote_contiguous_for_optimiser(
                     "column_name": "scenario_value",
                     "min_value": 0.8,
                     "max_value": 1.1,
-                    "stepCount": 4,
+                    "step_count": 4,
                     "step_column": "scenario_index",
                 },
             },
@@ -254,7 +254,7 @@ def test_optimiser_codegen_returns_the_exact_selected_api_frame(tmp_path: Path) 
                 {
                     "id": "api_request",
                     "data": {
-                        "label": "Request",
+                        "label": "quote_input",
                         "nodeType": "apiInput",
                         "config": {},
                     },
@@ -309,7 +309,7 @@ def test_optimiser_codegen_rejects_node_id_selector_for_multi_frame_api_input() 
                 {
                     "id": "api_request",
                     "data": {
-                        "label": "Request",
+                        "label": "quote_input",
                         "nodeType": "apiInput",
                         "config": {},
                     },
@@ -472,7 +472,7 @@ def _make_expander_optimiser_graph(data_path: str) -> dict:
                             "column_name": "scenario_value",
                             "min_value": 0.8,
                             "max_value": 1.2,
-                            "stepCount": 5,
+                            "step_count": 5,
                             "step_column": "scenario_index",
                             "code": (
                                 "df = df.with_columns([\n"

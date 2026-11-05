@@ -72,13 +72,13 @@ describe("pipeline repair response parsers", () => {
       completeness: [
         { element_id: "broken@10", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
       ],
-      previous_config: { inputType: "file", cacheMode: "snapshot" },
+      previous_config: { input_type: "file", cacheMode: "snapshot" },
     })
     const parsed = await parseRecoverUnavailableNodeApplyResponse(recover)
     expect(parsed.repair_kind).toBe("recover_node")
     expect(parsed.field_changes).toHaveLength(2)
     expect(parsed.completeness[0].path).toBe("path")
-    expect(parsed.previous_config).toEqual({ inputType: "file", cacheMode: "snapshot" })
+    expect(parsed.previous_config).toEqual({ input_type: "file", cacheMode: "snapshot" })
     await expect(
       parseRecoverUnavailableNodeApplyResponse({
         ...recover,

@@ -11,7 +11,7 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.api_input(config="config/request.json")
-def request(): ...
+def quote_input(): ...
 
 
 @pipeline.polars
@@ -34,11 +34,11 @@ def joined(quote_rows, driver_rows): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(joined): ...
+def quote_response(joined): ...
 
 
-pipeline.connect("request", "quote_rows", source_port="quotes")
-pipeline.connect("request", "driver_rows", source_port="drivers")
+pipeline.connect("quote_input", "quote_rows", source_port="quotes")
+pipeline.connect("quote_input", "driver_rows", source_port="drivers")
 pipeline.connect("quote_rows", "joined", target_port="base")
 pipeline.connect("driver_rows", "joined", target_port="join")
-pipeline.connect("joined", "response")
+pipeline.connect("joined", "quote_response")

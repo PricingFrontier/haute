@@ -96,7 +96,7 @@ def _output_node() -> GraphNode:
         data=NodeData(
             label="out",
             nodeType=NodeType.OUTPUT,
-            config={"outputMapping": _OUTPUT_MAPPING},
+            config={"output_mapping": _OUTPUT_MAPPING},
         ),
     )
 

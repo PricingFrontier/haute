@@ -84,7 +84,7 @@ def _model_score_graph() -> Any:
                         "label": "ms",
                         "nodeType": "modelScore",
                         "config": {
-                            "sourceType": "run",
+                            "source_type": "run",
                             "run_id": "r1",
                             "artifact_path": "model.cbm",
                             "task": "regression",
@@ -244,7 +244,7 @@ class TestModelLoadedOncePerArtifact:
         request["tables"][0]["columns"][1] |= {"name": "age", "path": "$[:].age", "type": "float"}
         (project / "config" / "request.json").write_text(json.dumps(request))
         (project / "config" / "score.json").write_text(
-            json.dumps({"sourceType": "file", "model_path": "model.cbm", "task": "regression"})
+            json.dumps({"source_type": "file", "model_path": "model.cbm", "task": "regression"})
         )
         (project / "config" / "output.json").write_text(
             json.dumps(make_output_config(["prediction"], source_port="scored"))
@@ -252,11 +252,11 @@ class TestModelLoadedOncePerArtifact:
         (project / "pipeline.py").write_text(
             "import haute\n\n"
             'pipeline = haute.Pipeline("scored_quote", description="Scores a model.")\n\n\n'
-            '@pipeline.api_input(config="config/request.json")\ndef quote(): ...\n\n\n'
+            '@pipeline.api_input(config="config/request.json")\ndef quote_input(): ...\n\n\n'
             '@pipeline.model_score(config="config/score.json")\ndef scored(quote): ...\n\n\n'
-            '@pipeline.output(config="config/output.json")\ndef response(scored): ...\n\n\n'
-            'pipeline.connect("quote", "scored", source_port="quote")\n'
-            'pipeline.connect("scored", "response")\n'
+            '@pipeline.output(config="config/output.json")\ndef quote_response(scored): ...\n\n\n'
+            'pipeline.connect("quote_input", "scored", source_port="quote")\n'
+            'pipeline.connect("scored", "quote_response")\n'
         )
         loads: list[str] = []
         load = mlflow_io.load_local_model

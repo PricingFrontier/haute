@@ -22,6 +22,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from haute._code_extraction import INCOMPLETE_STEPS_MESSAGE
+from haute._config_io import config_path_for_node, node_config_json
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import _scenario_ctx
 from haute._model_source import IncompleteModelSourceError
@@ -100,13 +101,40 @@ def _standalone(
     fn: Callable[..., Any] | None = None,
     target_ports: Sequence[str | None] | None = None,
 ) -> Any:
-    """What a saved file's decorator makes of *frames*, its config in a sidecar."""
-    path = write_node_config(project, node_type, NAME, config)
+    """What a saved file's decorator makes of *frames*, its config in the sidecar a save
+    writes."""
+    path = config_path_for_node(node_type, NAME)
+    (project / path).parent.mkdir(parents=True, exist_ok=True)
+    (project / path).write_text(node_config_json(node_type, config, node_label=NAME), "utf-8")
+    return _run_standalone(
+        project,
+        node_type,
+        path.as_posix(),
+        frames,
+        inputs,
+        kind=kind,
+        fn=fn,
+        target_ports=target_ports,
+    )
+
+
+def _run_standalone(
+    project: Path,
+    node_type: NodeType,
+    sidecar: str,
+    frames: Sequence[pl.LazyFrame],
+    inputs: Sequence[str],
+    *,
+    kind: FunctionKind = "declaration",
+    fn: Callable[..., Any] | None = None,
+    target_ports: Sequence[str | None] | None = None,
+) -> Any:
+    """What a saved file's decorator makes of *frames*, its config the *sidecar* file."""
     return run_configured_node(
         node_type,
         kind,
         name=NAME,
-        config={"config": path},
+        config={"config": sidecar},
         fn=fn or _declaration(project, inputs),
         frames=tuple(frames),
         target_ports=target_ports,
@@ -138,7 +166,7 @@ _BANDING = {
         {
             "banding": "categorical",
             "column": "region",
-            "outputColumn": "band",
+            "output_column": "band",
             "rules": [
                 {"value": "N", "assignment": "north"},
                 {"value": "S", "assignment": "south"},
@@ -150,22 +178,24 @@ _RATING_STEP = {
     "tables": [
         {
             "factors": ["band"],
-            "outputColumn": "factor",
-            "onMissing": "neutral",
+            "output_column": "factor",
+            "on_missing": "neutral",
             "entries": [{"band": "north", "value": 2.0}, {"band": "south", "value": 0.5}],
         }
     ],
-    "combinedOutputs": [{"outputColumn": "premium", "operation": "multiply", "baseValue": 100.0}],
+    "combined_outputs": [
+        {"output_column": "premium", "operation": "multiply", "base_value": 100.0}
+    ],
 }
 _EXPANDER = {
     "column_name": "price",
     "min_value": 1.0,
     "max_value": 2.0,
-    "stepCount": 3,
+    "step_count": 3,
     "step_column": "idx",
 }
 _QUOTE_RESPONSE = {
-    "outputMapping": [
+    "output_mapping": [
         {
             "source_port": "rows",
             "source_column": "premium",
@@ -187,7 +217,7 @@ _ONLINE_ARTIFACT = {
     "scenario_value": "scenario_value",
 }
 _MLFLOW_SCORE = {
-    "sourceType": "run",
+    "source_type": "run",
     "run_id": "run123",
     "artifact_path": "model.cbm",
     "task": "regression",
@@ -277,8 +307,8 @@ def test_a_workbench_output_fills_its_tables_alike(project: Path) -> None:
     workbench_project(
         project,
         [
-            form_table("t_policy", "policy", "input", ("state", "str")),
-            form_table("t_pricing", "pricing", "output", ("premium", "float")),
+            form_table("policy", "input", ("state", "str")),
+            form_table("pricing", "output", ("premium", "float")),
         ],
     )
     # The canvas is given the form's tables as every run's graph is; the saved file's
@@ -318,7 +348,7 @@ def test_a_source_switch_routes_alike(project: Path, scenario: str) -> None:
 
 def test_an_apply_optimisation_applies_its_artifact_alike(project: Path) -> None:
     (project / "artifact.json").write_text(json.dumps(_ONLINE_ARTIFACT), encoding="utf-8")
-    config = {"sourceType": "file", "artifact_path": "artifact.json"}
+    config = {"source_type": "file", "artifact_path": "artifact.json"}
     frames = [_scenarios()]
     canvas = _canvas(NodeType.OPTIMISER_APPLY, config, frames, ["scored"])
     standalone = _standalone(project, NodeType.OPTIMISER_APPLY, config, frames, ["scored"])
@@ -363,7 +393,7 @@ def test_a_model_scoring_with_no_source_passes_through_on_the_canvas_and_is_refu
 def test_a_model_scoring_with_an_incomplete_chosen_source_is_refused_alike(
     project: Path,
 ) -> None:
-    config = {"sourceType": "run", "output_column": "prediction"}
+    config = {"source_type": "run", "output_column": "prediction"}
     frame = pl.LazyFrame({"a": [1.0]})
 
     with pytest.raises(IncompleteModelSourceError) as canvas:
@@ -378,7 +408,7 @@ def test_a_model_scoring_with_an_incomplete_chosen_source_is_refused_alike(
 def test_a_model_scorings_incomplete_steps_are_reported_before_its_source_is_read() -> None:
     # The source is incomplete too: reading it first would report that instead.
     config = {
-        "sourceType": "run",
+        "source_type": "run",
         "output_column": "prediction",
         "steps": [{"id": "f", "kind": "filter", "match": "all", "conditions": []}],
     }
@@ -427,10 +457,10 @@ def test_a_model_scorings_hook_runs_once_after_the_scoring(project: Path) -> Non
     "config",
     [
         pytest.param({}, id="no-source"),
-        pytest.param({"sourceType": ""}, id="blank-source"),
-        pytest.param({"sourceType": "file"}, id="file-without-artifact"),
-        pytest.param({"sourceType": "run"}, id="run-without-id"),
-        pytest.param({"sourceType": "registered"}, id="registered-without-model"),
+        pytest.param({"source_type": ""}, id="blank-source"),
+        pytest.param({"source_type": "file"}, id="file-without-artifact"),
+        pytest.param({"source_type": "run"}, id="run-without-id"),
+        pytest.param({"source_type": "registered"}, id="registered-without-model"),
     ],
 )
 def test_an_apply_optimisation_without_a_complete_source_passes_its_first_frame_through(
@@ -451,19 +481,21 @@ def test_an_apply_optimisation_naming_an_artifact_without_a_source_type_is_refus
 ) -> None:
     config = {"artifact_path": "artifact.json"}
     frames = [_scenarios()]
-    message = "optimiserApply node with artifact_path requires sourceType='file'"
+    message = "optimiserApply node with artifact_path requires source_type='file'"
 
     with pytest.raises(ConfigError, match=message):
         _canvas(NodeType.OPTIMISER_APPLY, config, frames, ["scored"])
+    # A save refuses this config, so the sidecar is written as a hand edit would leave it.
+    sidecar = write_node_config(project, NodeType.OPTIMISER_APPLY, NAME, config)
     with pytest.raises(ConfigError, match=message):
-        _standalone(project, NodeType.OPTIMISER_APPLY, config, frames, ["scored"])
+        _run_standalone(project, NodeType.OPTIMISER_APPLY, sidecar, frames, ["scored"])
 
 
 def test_an_mlflow_apply_optimisations_artifact_path_is_ignored_at_runtime_refused_by_bundler(
     project: Path,
 ) -> None:
     """Today's recorded disagreement: the runtime downloads the run's fixed artifact."""
-    config = {"sourceType": "run", "run_id": "run-1", "artifact_path": "custom/other.json"}
+    config = {"source_type": "run", "run_id": "run-1", "artifact_path": "custom/other.json"}
     (project / "downloaded.json").write_text(json.dumps(_ONLINE_ARTIFACT), encoding="utf-8")
     backend = MagicMock(identity="local:x", tracking_uri="file:///x", registry_uri="file:///x")
     frames = [_scenarios()]
@@ -490,7 +522,7 @@ def test_an_mlflow_apply_optimisations_artifact_path_is_ignored_at_runtime_refus
     node = GraphNode(
         id=NAME, data=NodeData(label=NAME, nodeType=NodeType.OPTIMISER_APPLY, config=config)
     )
-    with pytest.raises(ValueError, match="with artifact_path must set sourceType='file'"):
+    with pytest.raises(ValueError, match="with artifact_path must set source_type='file'"):
         collect_artifacts(PipelineGraph(nodes=[node], edges=[]), [], project)
 
 
@@ -521,7 +553,7 @@ def test_a_data_input_anchors_a_relative_path_alike(
     pipeline_dir.mkdir(parents=True, exist_ok=True)
     (project / data).parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({"quote_id": [1, 2]}).write_parquet(project / data)
-    config = {"inputType": "file", "format": "parquet", "path": "quotes.parquet"}
+    config = {"input_type": "file", "format": "parquet", "path": "quotes.parquet"}
 
     canvas = _canvas(NodeType.DATA_INPUT, config, [], [])
     standalone = _standalone(pipeline_dir, NodeType.DATA_INPUT, config, [], [])

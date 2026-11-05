@@ -119,7 +119,7 @@
             {
               "banding": "categorical",
               "column": "area",
-              "outputColumn": "region",
+              "output_column": "region",
               "rules": [
                 {"value": "NE", "assignment": "North"},
                 {"value": "SW", "assignment": "South"}

@@ -1,1 +1,1 @@
-{"target":"response","required_columns":["fixture_value"],"checks":["parse","execute"]}
+{"target":"quote_response","required_columns":["fixture_value"],"checks":["parse","execute"]}

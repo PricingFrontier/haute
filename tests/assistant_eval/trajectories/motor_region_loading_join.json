@@ -35,7 +35,7 @@
                     "node_type": "dataInput",
                     "name": "region_loadings",
                     "config": {
-                      "inputType": "file",
+                      "input_type": "file",
                       "format": "parquet",
                       "mode": "scan",
                       "path": "data/region_loadings.parquet",
@@ -49,11 +49,11 @@
                     "name": "loaded_quotes",
                     "config": {
                       "how": "left",
-                      "maintainOrder": "left_right",
-                      "leftOn": [
+                      "maintain_order": "left_right",
+                      "left_on": [
                         "region_code"
                       ],
-                      "rightOn": [
+                      "right_on": [
                         "code"
                       ],
                       "validate": "m:1"

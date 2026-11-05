@@ -297,7 +297,7 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "data": {
                         "label": "sm1",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                        "config": {"definition_id": "sm1", "alias": "sm1"},
                     },
                 },
             ],
@@ -347,7 +347,7 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "data": {
                         "label": "sm1",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                        "config": {"definition_id": "sm1", "alias": "sm1"},
                     },
                 },
             ],
@@ -880,8 +880,12 @@ def _parse_configured_node(
     be wrong.
     """
     func_name = function.split("def ", 1)[1].split("(", 1)[0]
+    from haute._config_io import node_config_json
+
     settings = {k: v for k, v in _PALETTE_DEFAULTS[node_type.value].items() if k != "steps"}
-    reference = write_node_config(tmp_path, node_type, func_name, settings)
+    # In the form a save writes it: a rating step's tables as grids, say.
+    sidecar = json.loads(node_config_json(node_type, settings, node_label=func_name))
+    reference = write_node_config(tmp_path, node_type, func_name, sidecar)
     source = (
         "import polars as pl\n"
         "import haute\n\n"
@@ -1092,10 +1096,10 @@ class TestHookMarkerIsNotAnInput:
             tmp_path,
             NodeType.DATA_INPUT,
             "df",
-            {"inputType": "file", "format": "parquet", "path": "df.parquet"},
+            {"input_type": "file", "format": "parquet", "path": "df.parquet"},
         )
         rate = write_node_config(
-            tmp_path, NodeType.RATING_STEP, "rate", {"tables": [], "combinedOutputs": []}
+            tmp_path, NodeType.RATING_STEP, "rate", {"tables": [], "combined_outputs": []}
         )
         band = write_node_config(tmp_path, NodeType.BANDING, "band", {"factors": []})
         consumers = {

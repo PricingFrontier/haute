@@ -36,23 +36,24 @@ from haute._workbench_form import (
     form_revision,
     with_quote_details,
 )
+from haute._workbench_params import ParamFileError
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
 from tests._git_helpers import git_run, init_repo
 from tests._project import use_project
 from tests._store_servers import Target
-from tests._workbench_helpers import form_files, write_files
+from tests._workbench_helpers import form_files, form_table, write_files
 from tests.test_workbench_routes import POLICY, PRICING, form
 
 FORM = with_quote_details(
     FormSpec.model_validate(
-        form(POLICY, PRICING, sample={"t1": [{"c_state": "NY", "c_exposure": "1000"}]})
+        form(POLICY, PRICING, sample={"policy_details": [{"state": "NY", "exposure": "1000"}]})
     )
 ).model_dump(by_alias=True, mode="json")
 #: A quote of the store's, as the app's page sends it: its identity in quote_details.
 VALUES = {
-    "t1": [{"c_state": "NY", "c_exposure": "$1,000"}],
-    "quote_details": [{"qd_reference": "A-1", "qd_option": "1"}],
+    "policy_details": [{"state": "NY", "exposure": "$1,000"}],
+    "quote_details": [{"quote_reference": "A-1", "quote_option": "1"}],
 }
 SIGNED_IN = {EASY_AUTH_NAME: "uw@example.com"}
 #: Where ``haute app serve`` is reached: served so, the app takes a loopback host alone.
@@ -465,7 +466,7 @@ def test_a_request_past_the_deploy_body_limit_is_refused_before_it_is_read_whole
     client = _client(release())
     monkeypatch.setattr(workbench_app, "quote_request", _never)
     revision = client.get("/api/app/form", headers=SIGNED_IN).json()["revision"]
-    oversized = {"t1": [{"c_state": "NY", "c_exposure": "1" * 400}]}
+    oversized = {"policy_details": [{"state": "NY", "exposure": "1" * 400}]}
 
     refused = client.post(
         "/api/app/price",
@@ -619,34 +620,18 @@ def test_the_page_is_the_apps_own_built_page(release: Any, tmp_path: Path) -> No
 # ── Building a project's release ──────────────────────────────────────────
 
 
-def _form_table(
-    tid: str, name: str, role: str, *columns: tuple[str, str], many: bool = False
-) -> dict[str, Any]:
-    return {
-        "id": tid,
-        "name": name,
-        "role": role,
-        "rows": "many" if many else "one",
-        "columns": [
-            {"id": f"c_{column}", "name": column, "type": kind} for column, kind in columns
-        ],
-    }
-
-
 #: The sheets of the pipeline `tests/test_workbench_output.py` prices.
 PROJECT_TABLES = [
-    _form_table("t_policy", "policy", "input", ("state", "str"), ("limit", "int")),
-    _form_table("t_items", "items", "input", ("item_id", "str"), ("value", "float"), many=True),
-    _form_table(
-        "t_pricing",
+    form_table("policy", "input", ("state", "str"), ("limit", "int")),
+    form_table("items", "input", ("item_id", "str"), ("value", "float"), many=True),
+    form_table(
         "pricing",
         "output",
         ("premium", "float"),
         ("limit", "float"),
         ("referral", "str"),
     ),
-    _form_table(
-        "t_item_prices",
+    form_table(
         "item_prices",
         "output",
         ("item_id", "str"),
@@ -655,11 +640,11 @@ PROJECT_TABLES = [
     ),
 ]
 PROJECT_VALUES = {
-    "t_policy": [{"c_state": "NY", "c_limit": "1,000"}],
-    "t_items": [{"c_item_id": "A", "c_value": "10"}, {"c_item_id": "B", "c_value": "30"}],
+    "policy": [{"state": "NY", "limit": "1,000"}],
+    "items": [{"item_id": "A", "value": "10"}, {"item_id": "B", "value": "30"}],
 }
 #: A quote of the store's: its identity in quote_details, as the app's page sends it.
-IDENTITY = {"quote_details": [{"qd_reference": "A-1", "qd_option": "1"}]}
+IDENTITY = {"quote_details": [{"quote_reference": "A-1", "quote_option": "1"}]}
 
 
 @pytest.fixture()
@@ -836,9 +821,9 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
     params = project / "rating" / "files" / "params"
     params.mkdir(parents=True)
     (params / "states.csv").write_text("state\nNY\nCA\nNY\nTX\n", encoding="utf-8")
-    # The form keeps the values as they were picked: NY alone.
+    # The values as they were picked, NY alone, are not written: a schema file holds the
+    # reference, and reading the form fills the values from the file (READ-25).
     state = {
-        "id": "c_state",
         "name": "state",
         "type": "str",
         "options": ["NY"],
@@ -853,12 +838,13 @@ def test_a_release_allows_what_its_params_files_hold_when_it_is_built(
     assert shipped.options == ["NY", "CA", "TX"]
     assert shipped.options_source == OptionsSource(file="states.csv", column="state")
 
-    # A file that can no longer give them refuses the release, leaving the last one as it is.
+    # A file that can no longer give them refuses the release as it refuses the form's read,
+    # naming the column and the file, leaving the last one as it is.
     (params / "states.csv").unlink()
-    with pytest.raises(WorkbenchAppError) as caught:
+    with pytest.raises(ParamFileError) as caught:
         build_release(project, project / "build" / "app")
-    assert str(caught.value) == (
-        "workbench: The allowed values of policy.state could not be read again: "
+    assert caught.value.message == (
+        "The allowed values of policy.state could not be read: "
         "rating/files/params/states.csv doesn't exist."
     )
     assert read_release(project / "build" / "app")[1].data_schema.tables[1].columns[2] == shipped
@@ -884,8 +870,8 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     with pytest.raises(DeployError) as unconnectable:
         build_release(project, project / "build" / "app")
     assert unconnectable.value.message == (
-        "'item_premiums' fills table 'item_prices' of Workbench Output 'response', which "
-        "workbench does not have."
+        "'item_premiums' fills table 'item_prices' of Workbench Output 'workbench_output', "
+        "which workbench does not have."
     )
     write_sheets(project, PROJECT_TABLES)
 

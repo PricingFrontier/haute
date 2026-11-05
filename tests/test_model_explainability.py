@@ -688,7 +688,7 @@ def _load_fake_glm(**_: Any) -> Any:
 # A registered model resolved by alias, its artifact discovered in the run: the
 # configuration names no file, so only the loaded model says what family it is.
 _REGISTERED_GLM = {
-    "sourceType": "registered",
+    "source_type": "registered",
     "registered_model": "conversion",
     "alias": "champion",
     "task": "regression",
@@ -743,7 +743,7 @@ def test_rustystats_glm_explanation_selected_from_rsglm_config(
 
     explanation = _model_explainability.explain_model_score_from_config(
         {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run-1",
             "artifact_path": "conversion.rsglm",
             "task": "regression",

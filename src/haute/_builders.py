@@ -697,11 +697,11 @@ def external_file_node_fn(
     _src_names = list(source_names)
 
     _orig_src = list(orig_source_names) if orig_source_names else None
-    _in_map = dict(config.get("inputMapping", {})) or None
+    _in_map = dict(config.get("input_mapping", {})) or None
     _preamble_ext = dict(preamble_ns) if preamble_ns else {}
     if isinstance(config.get("steps"), list):
         # Steps address the other inputs by their edge names (the first is
-        # already df); a stepped node never carries inputMapping beside them.
+        # already df); a stepped node never carries input_mapping beside them.
         if _in_map is not None:
             raise ConfigError(STEPPED_TRANSFORM_INPUT_MAPPING_MESSAGE, node_id=node_id)
         names = set(_src_names)
@@ -746,7 +746,7 @@ def _output_columns(config: dict[str, Any]) -> _ColumnContract:
     incomplete row (blank source column, e.g. a half-built editor row) is
     skipped — it must not demand a ``""`` column from the upstream frame.
     """
-    mapping = config.get("outputMapping") or []
+    mapping = config.get("output_mapping") or []
     referenced = {e["source_column"] for e in mapping if is_active_mapping_entry(e)}
     return (set(), referenced)
 
@@ -757,9 +757,9 @@ def _output_columns(config: dict[str, Any]) -> _ColumnContract:
 )
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    if config.get("outputMapping") is None:
+    if config.get("output_mapping") is None:
         raise OutputMappingSchemaError(
-            f"OUTPUT node {ctx.node.data.label!r} requires `outputMapping`.",
+            f"OUTPUT node {ctx.node.data.label!r} requires `output_mapping`.",
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
@@ -814,7 +814,7 @@ def _build_workbench_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]
 def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
     # Execution skips a draft factor, so the contract must not promise its output.
     factors = [f for f in config.get("factors") or [] if banding_factor_is_active(f)]
-    produced = {f["outputColumn"] for f in factors}
+    produced = {f["output_column"] for f in factors}
     referenced = {f["column"] for f in factors}
     return produced, referenced
 
@@ -850,12 +850,12 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
     produced: set[str] = set()
     referenced: set[str] = set()
     for t in tables:
-        out = t.get("outputColumn", "")
+        out = t.get("output_column", "")
         if out:
             produced.add(out)
         referenced.update(t.get("factors") or [])
     for combined in normalise_combined_outputs(config):
-        produced.add(combined["outputColumn"])
+        produced.add(combined["output_column"])
     return produced, referenced
 
 
@@ -1344,7 +1344,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     incoming_count = max(len(ctx.source_ids), len(_src_names))
     code = str(config.get("code") or "").strip()
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
-    _in_map = dict(config.get("inputMapping", {})) or None
+    _in_map = dict(config.get("input_mapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
     keyword_parameters = validate_keyword_parameters(config, node_label=ctx.node.data.label)
     # The signature's inputs are the logical names; a parameter shadows the
@@ -1568,7 +1568,7 @@ def _build_submodel(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         "without being expanded into its nodes, so they would not run. Expand the "
         "graph's submodels first (flatten_graph, or parse_pipeline_file(flatten=True)).",
         node_id=ctx.node.id,
-        definition_id=config.get("definitionId"),
+        definition_id=config.get("definition_id"),
     )
 
 
@@ -1966,12 +1966,12 @@ def _ratebook_lookup_table(
 ) -> dict[str, Any]:
     """Convert one saved factor table into a rating-table lookup spec.
 
-    Miss policy (3b.5): the spec deliberately opts in to ``onMissing:
-    "neutral"`` with NO ``defaultValue``.  An optimiser relativity is a
+    Miss policy (3b.5): the spec deliberately opts in to ``on_missing:
+    "neutral"`` with NO ``default_value``.  An optimiser relativity is a
     multiplicative adjustment on an already-rated price, so a level the
     solver never saw keeps the base price (factor 1.0) — failing the whole
     apply would turn one novel quote into a deploy-scoring outage.  Unlike
-    the old blanket ``defaultValue: "1.0"``, the neutral path is LOUD: the
+    the old blanket ``default_value: "1.0"``, the neutral path is LOUD: the
     rating miss guard counts every miss and logs ``rating_table_lookup_misses``
     (table, count, missing keys) at materialisation, and the explainability
     ladder flags the row as ``unseen``.
@@ -1997,9 +1997,9 @@ def _ratebook_lookup_table(
     return {
         "name": name,
         "factors": join_columns,
-        "outputColumn": f"{name}_optimised_factor",
+        "output_column": f"{name}_optimised_factor",
         "entries": lookup_entries,
-        "onMissing": "neutral",
+        "on_missing": "neutral",
     }
 
 
@@ -2130,7 +2130,7 @@ def _apply_ratebook(
             # {"__factor_group__": level, "optimal_scenario_value": value}
             # Convert to the rating table format expected by _apply_rating_table
             table = _ratebook_lookup_table(_name, entries, dtype_records)
-            out_col: str = table["outputColumn"]
+            out_col: str = table["output_column"]
             result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)
             # Neutral fill AFTER the miss guard has counted and logged the
             # misses inside the plan: per-factor columns stay 1.0 for unseen

@@ -112,7 +112,7 @@ class TestLoadFollowsTheAlias:
 def _mlflow_registered_version_signature(config: dict[str, object]) -> object:
     from haute.execution import _mlflow_registered_version_signature as signature
 
-    return signature({"sourceType": "registered", "registered_model": "freq"} | config)
+    return signature({"source_type": "registered", "registered_model": "freq"} | config)
 
 
 def _registered_score_fingerprint(config: dict[str, object]) -> str:
@@ -128,7 +128,7 @@ def _registered_score_fingerprint(config: dict[str, object]) -> str:
                         "label": "n1",
                         "nodeType": "modelScore",
                         "config": {
-                            "sourceType": "registered",
+                            "source_type": "registered",
                             "registered_model": "freq",
                             "task": "regression",
                             "output_column": "prediction",
@@ -203,7 +203,7 @@ class TestCacheIdentityFollowsTheAlias:
                             "label": "score",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "freq",
                                 "alias": "champion",
                                 "task": "regression",
@@ -243,7 +243,7 @@ class TestCacheIdentityFollowsTheAlias:
 class TestAliasConfigValidation:
     @pytest.mark.parametrize("node_type", [NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY])
     def test_an_alias_alone_is_valid(self, node_type: NodeType) -> None:
-        config = {"sourceType": "registered", "registered_model": "freq", "alias": "champion"}
+        config = {"source_type": "registered", "registered_model": "freq", "alias": "champion"}
         assert validate_node_config(node_type, config)["alias"] == "champion"
 
     @pytest.mark.parametrize("node_type", [NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY])
@@ -252,7 +252,7 @@ class TestAliasConfigValidation:
         self, node_type: NodeType, version: str
     ) -> None:
         config = {
-            "sourceType": "registered",
+            "source_type": "registered",
             "registered_model": "freq",
             "alias": "champion",
             "version": version,
@@ -326,7 +326,7 @@ class TestDeployRecordsTheResolvedAlias:
         request["tables"][0]["columns"][1] |= {"name": "age", "path": "$[:].age", "type": "float"}
         (tmp_path / "config" / "request.json").write_text(json.dumps(request))
         score_config = {
-            "sourceType": "registered",
+            "source_type": "registered",
             "registered_model": "freq",
             "alias": "champion",
             "task": "regression",
@@ -336,7 +336,7 @@ class TestDeployRecordsTheResolvedAlias:
         (tmp_path / "config" / "output.json").write_text(
             json.dumps(
                 {
-                    "outputMapping": [
+                    "output_mapping": [
                         {
                             "source_port": "scored",
                             "source_column": "prediction",
@@ -350,11 +350,11 @@ class TestDeployRecordsTheResolvedAlias:
         (tmp_path / "pipeline.py").write_text(
             "import haute\n\n"
             'pipeline = haute.Pipeline("freq_quote", description="Scores freq.")\n\n\n'
-            '@pipeline.api_input(config="config/request.json")\ndef quote(): ...\n\n\n'
+            '@pipeline.api_input(config="config/request.json")\ndef quote_input(): ...\n\n\n'
             '@pipeline.model_score(config="config/score.json")\ndef scored(quote): ...\n\n\n'
-            '@pipeline.output(config="config/output.json")\ndef response(scored): ...\n\n\n'
-            'pipeline.connect("quote", "scored", source_port="quote")\n'
-            'pipeline.connect("scored", "response")\n'
+            '@pipeline.output(config="config/output.json")\ndef quote_response(scored): ...\n\n\n'
+            'pipeline.connect("quote_input", "scored", source_port="quote")\n'
+            'pipeline.connect("scored", "quote_response")\n'
         )
 
         file_config = next(
@@ -397,7 +397,7 @@ class TestDeployRecordsTheResolvedAlias:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "freq",
                                 "alias": "champion",
                             },

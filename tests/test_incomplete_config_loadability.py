@@ -24,7 +24,7 @@ from haute._polars_io_registry import (
 INCOMPLETE_INPUTS: list[tuple[dict[str, Any], list[str]]] = [
     (
         {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "",
@@ -34,34 +34,34 @@ INCOMPLETE_INPUTS: list[tuple[dict[str, Any], list[str]]] = [
         ["path"],
     ),
     (
-        {"inputType": "lakehouse", "format": "delta", "mode": "scan", "path": ""},
+        {"input_type": "lakehouse", "format": "delta", "mode": "scan", "path": ""},
         ["path"],
     ),
     (
-        {"inputType": "databricks", "http_path": "", "table": ""},
+        {"input_type": "databricks", "http_path": "", "table": ""},
         ["http_path", "table"],
     ),
     (
-        {"inputType": "database", "format": "database", "query": ""},
+        {"input_type": "database", "format": "database", "query": ""},
         ["connection", "query"],
     ),
     (
-        {"inputType": "inline", "format": "records"},
+        {"input_type": "inline", "format": "records"},
         ["records"],
     ),
 ]
 
 INCOMPLETE_OUTPUTS: list[tuple[dict[str, Any], list[str]]] = [
     (
-        {"outputType": "file", "format": "parquet", "mode": "sink", "path": "", "arguments": {}},
+        {"output_type": "file", "format": "parquet", "mode": "sink", "path": "", "arguments": {}},
         ["path"],
     ),
     (
-        {"outputType": "lakehouse", "format": "delta", "path": ""},
+        {"output_type": "lakehouse", "format": "delta", "path": ""},
         ["path"],
     ),
     (
-        {"outputType": "database", "format": "database", "table": ""},
+        {"output_type": "database", "format": "database", "table": ""},
         ["connection", "table"],
     ),
 ]
@@ -90,7 +90,7 @@ def test_incomplete_output_is_tolerated_and_reported(config: dict[str, Any], gap
 
 def test_complete_configs_report_no_gaps():
     complete_input = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "data/train.parquet",
@@ -98,7 +98,7 @@ def test_complete_configs_report_no_gaps():
         "code": "",
     }
     complete_output = {
-        "outputType": "file",
+        "output_type": "file",
         "format": "parquet",
         "mode": "sink",
         "path": "out/scored.parquet",
@@ -106,29 +106,29 @@ def test_complete_configs_report_no_gaps():
     }
     assert data_input_completeness(complete_input) == []
     assert data_output_completeness(complete_output) == []
-    inline = {"inputType": "inline", "format": "records", "records": []}
+    inline = {"input_type": "inline", "format": "records", "records": []}
     assert data_input_completeness(inline) == []
 
 
 @pytest.mark.parametrize(
     "config",
     [
-        {"inputType": "file", "format": "parquet", "mode": "teleport", "path": ""},
-        {"inputType": "file", "format": "json", "mode": "scan", "path": ""},
-        {"inputType": "file", "format": "parquet", "path": "", "wormhole": True},
+        {"input_type": "file", "format": "parquet", "mode": "teleport", "path": ""},
+        {"input_type": "file", "format": "json", "mode": "scan", "path": ""},
+        {"input_type": "file", "format": "parquet", "path": "", "wormhole": True},
         {
-            "inputType": "database",
+            "input_type": "database",
             "format": "database",
             "connection": "A",
             "uri": "b://c",
             "query": "Q",
         },
-        {"inputType": "database", "format": "database", "connection": 7, "query": "Q"},
-        {"inputType": "file", "format": "parquet", "path": 123},
-        {"inputType": "portal", "format": "parquet", "path": ""},
-        {"inputType": "inline", "format": "records", "records": "nope"},
-        {"inputType": ["file"], "format": "parquet", "path": "x.parquet"},
-        {"inputType": {"kind": "file"}, "format": "parquet", "path": "x.parquet"},
+        {"input_type": "database", "format": "database", "connection": 7, "query": "Q"},
+        {"input_type": "file", "format": "parquet", "path": 123},
+        {"input_type": "portal", "format": "parquet", "path": ""},
+        {"input_type": "inline", "format": "records", "records": "nope"},
+        {"input_type": ["file"], "format": "parquet", "path": "x.parquet"},
+        {"input_type": {"kind": "file"}, "format": "parquet", "path": "x.parquet"},
     ],
     ids=[
         "invalid-mode",
@@ -151,17 +151,17 @@ def test_structural_violations_stay_strict_in_tolerant_mode(config: dict[str, An
 @pytest.mark.parametrize(
     "config",
     [
-        {"outputType": "file", "format": "parquet", "mode": "beam", "path": ""},
+        {"output_type": "file", "format": "parquet", "mode": "beam", "path": ""},
         {
-            "outputType": "database",
+            "output_type": "database",
             "format": "database",
             "connection": "A",
             "uri": "b://c",
             "table": "t",
         },
-        {"outputType": "file", "format": "parquet", "path": None},
-        {"outputType": "elsewhere", "format": "parquet", "path": ""},
-        {"outputType": ["file"], "format": "parquet", "path": "x.parquet"},
+        {"output_type": "file", "format": "parquet", "path": None},
+        {"output_type": "elsewhere", "format": "parquet", "path": ""},
+        {"output_type": ["file"], "format": "parquet", "path": "x.parquet"},
     ],
     ids=[
         "invalid-mode",
@@ -172,7 +172,7 @@ def test_structural_violations_stay_strict_in_tolerant_mode(config: dict[str, An
     ],
 )
 def test_output_structural_violations_stay_strict(config: dict[str, Any]):
-    if config.get("path") is None and config.get("outputType") == "file":
+    if config.get("path") is None and config.get("output_type") == "file":
         # Explicit null is absence, not a structural violation.
         assert validate_data_output_config(config, require_complete=False) == config
         assert [gap.path for gap in data_output_completeness(config)] == ["path"]
@@ -184,10 +184,10 @@ def test_output_structural_violations_stay_strict(config: dict[str, Any]):
 def test_strict_messages_are_unchanged():
     with pytest.raises(PolarsIoConfigError, match="requires a non-empty 'path'"):
         validate_data_input_config(
-            {"inputType": "file", "format": "parquet", "mode": "scan", "path": ""}
+            {"input_type": "file", "format": "parquet", "mode": "scan", "path": ""}
         )
     with pytest.raises(PolarsIoConfigError, match="exactly one non-empty 'connection' or 'uri'"):
-        validate_data_input_config({"inputType": "database", "format": "database", "query": "Q"})
+        validate_data_input_config({"input_type": "database", "format": "database", "query": "Q"})
 
 
 def test_parse_accepts_incomplete_data_input_sidecar(tmp_path):
@@ -203,7 +203,7 @@ def test_parse_accepts_incomplete_data_input_sidecar(tmp_path):
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "",
@@ -232,7 +232,7 @@ def test_document_reports_completeness_for_loadable_incomplete_nodes(tmp_path):
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "",
@@ -244,7 +244,7 @@ def test_document_reports_completeness_for_loadable_incomplete_nodes(tmp_path):
     (tmp_path / "out.json").write_text(
         json.dumps(
             {
-                "outputType": "file",
+                "output_type": "file",
                 "format": "parquet",
                 "mode": "sink",
                 "path": "",
@@ -280,7 +280,7 @@ def test_parse_still_rejects_structural_violations(tmp_path):
         "def source(): ...\n"
     )
     (tmp_path / "in.json").write_text(
-        json.dumps({"inputType": "file", "format": "json", "mode": "scan", "path": "x.json"})
+        json.dumps({"input_type": "file", "format": "json", "mode": "scan", "path": "x.json"})
     )
     with pytest.raises(ConfigError, match="no lazy scan"):
         parse_pipeline_file(tmp_path / "main.py")

@@ -44,7 +44,7 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNod
 def _banding(column: str = "premium") -> dict[str, Any]:
     return {
         "factors": [
-            {"banding": "breakpoints", "column": column, "outputColumn": "band", "rules": []}
+            {"banding": "breakpoints", "column": column, "output_column": "band", "rules": []}
         ]
     }
 
@@ -61,7 +61,7 @@ def _graph(project: Path, *, source_code: str = "", join_code: str | None = None
                 "source",
                 NodeType.DATA_INPUT,
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": str(project / "quotes.parquet"),
@@ -86,7 +86,7 @@ def _graph(project: Path, *, source_code: str = "", join_code: str | None = None
                     "tables": [
                         {
                             "factors": ["region"],
-                            "outputColumn": "region_factor",
+                            "output_column": "region_factor",
                             "entries": [{"region": "north", "value": 1.0}],
                         }
                     ]
@@ -400,7 +400,7 @@ def test_a_data_input_with_post_load_code_is_one_shared_node_output(project: Pat
 def test_a_missing_snapshot_backed_data_input_starts_no_build(project: Path) -> None:
     csv_path = project / "quotes.csv"
     pl.DataFrame({"premium": [1.0, 2.0]}).write_csv(csv_path)
-    config = {"inputType": "file", "format": "csv", "mode": "scan", "path": str(csv_path)}
+    config = {"input_type": "file", "format": "csv", "mode": "scan", "path": str(csv_path)}
     graph = _graph(project)
     graph = graph.model_copy(
         update={"nodes": [n.with_config(config) if n.id == "source" else n for n in graph.nodes]}
@@ -422,7 +422,7 @@ def test_a_built_snapshot_backed_data_input_is_current_then_stale(project: Path)
 
     csv_path = project / "quotes.csv"
     pl.DataFrame({"premium": [1.0, 2.0]}).write_csv(csv_path)
-    config = {"inputType": "file", "format": "csv", "mode": "scan", "path": str(csv_path)}
+    config = {"input_type": "file", "format": "csv", "mode": "scan", "path": str(csv_path)}
     graph = _graph(project)
     graph = graph.model_copy(
         update={"nodes": [n.with_config(config) if n.id == "source" else n for n in graph.nodes]}

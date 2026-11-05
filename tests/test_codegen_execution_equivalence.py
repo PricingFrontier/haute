@@ -184,7 +184,7 @@ def _cached_api_graph(
 
         build_test_api_input_snapshots(data_path, config)
 
-    api = _node("api", "Quote Input", NodeType.API_INPUT, config)
+    api = _node("api", "quote_input", NodeType.API_INPUT, config)
     transform = _node("transform", "Price Transform", NodeType.POLARS, {"code": code})
     return PipelineGraph(
         nodes=[api, transform],
@@ -323,7 +323,7 @@ def test_scenario_expander_run_matches_executor_batch(tmp_path):
             "column_name": "scenario_value",
             "min_value": 0.8,
             "max_value": 1.2,
-            "stepCount": 5,
+            "step_count": 5,
             "step_column": "scenario_index",
         },
     )
@@ -345,7 +345,7 @@ def test_scenario_expander_saved_file_is_not_a_passthrough(tmp_path):
         "exp",
         "expand",
         NodeType.SCENARIO_EXPANDER,
-        {"stepCount": 7, "step_column": "scenario_index"},
+        {"step_count": 7, "step_column": "scenario_index"},
     )
     graph = PipelineGraph(nodes=[src, expander], edges=[_edge("c", "exp")])
     module = _write_and_import(graph, tmp_path)
@@ -390,7 +390,7 @@ def test_optimiser_apply_run_matches_executor_batch(tmp_path, _widen_sandbox_roo
         "apply_optimisation",
         NodeType.OPTIMISER_APPLY,
         {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": artifact_path,
             "ratebook_input": "ratebook_src",
             "version_column": "__optimiser_version__",
@@ -518,7 +518,7 @@ def test_edge_join_run_matches_executor_batch(tmp_path):
         "j",
         "join_regions",
         NodeType.EDGE_JOIN,
-        {"how": "left", "maintainOrder": "left_right", "on": ["key"]},
+        {"how": "left", "maintain_order": "left_right", "on": ["key"]},
     )
     graph = PipelineGraph(
         nodes=[policies, regions, join],
@@ -560,7 +560,7 @@ def test_banding_run_matches_executor_batch(tmp_path):
                 {
                     "banding": "breakpoints",
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "rules": [
                         {"boundary": "18", "label": "young"},
                         {"boundary": "60", "label": "adult"},
@@ -591,15 +591,15 @@ def test_rating_step_run_matches_executor_batch(tmp_path):
             "tables": [
                 {
                     "factors": ["region"],
-                    "outputColumn": "region_factor",
+                    "output_column": "region_factor",
                     "entries": [
                         {"region": "north", "value": 0.9},
                         {"region": "south", "value": 1.1},
                     ],
                 }
             ],
-            "combinedOutputs": [
-                {"outputColumn": "premium", "operation": "multiply", "baseValue": 200.0}
+            "combined_outputs": [
+                {"output_column": "premium", "operation": "multiply", "base_value": 200.0}
             ],
         },
     )
@@ -646,7 +646,7 @@ def _stub_scoring_model() -> ScoringModel:
 def test_model_score_run_matches_executor_batch(tmp_path, code):
     src = _const("c", "features", [{"name": "a", "value": 1.0}, {"name": "b", "value": 2.0}])
     config = {
-        "sourceType": "run",
+        "source_type": "run",
         "run_id": "run123",
         "artifact_path": "model.cbm",
         "task": "regression",
@@ -712,7 +712,7 @@ def test_model_score_code_naming_its_input_fails_on_both_surfaces(tmp_path):
         "score",
         NodeType.MODEL_SCORE,
         {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -767,7 +767,7 @@ def test_external_file_hook_run_matches_executor_batch(isolated_project: Path) -
         NodeType.EXTERNAL_FILE,
         {
             "path": "factor.json",
-            "fileType": "json",
+            "file_type": "json",
             "code": "df = df.with_columns(scaled=pl.col('value') * obj['factor'])",
         },
     )
@@ -793,7 +793,7 @@ def _output_graph() -> PipelineGraph:
         "quote_response",
         NodeType.OUTPUT,
         {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "rows",
                     "source_column": "premium",
@@ -844,7 +844,7 @@ def test_output_late_nested_fields_survive_full_document_schema_inference(
     data_path.write_text(json.dumps(records), encoding="utf-8")
     api = _node(
         "api",
-        "rows",
+        "quote_input",
         NodeType.API_INPUT,
         {
             "path": str(data_path),
@@ -865,10 +865,10 @@ def test_output_late_nested_fields_survive_full_document_schema_inference(
     )
     out = _node(
         "out",
-        "response",
+        "quote_response",
         NodeType.OUTPUT,
         {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "rows",
                     "source_column": "id",
@@ -922,7 +922,7 @@ def test_generated_api_input_observes_sidecar_only_path_edit(
     pl.DataFrame({"value": [2]}).write_parquet(second)
     api = _node(
         "api",
-        "quotes",
+        "quote_input",
         NodeType.API_INPUT,
         {"path": "first.parquet", "contract": "opaque"},
     )
@@ -931,7 +931,7 @@ def test_generated_api_input_observes_sidecar_only_path_edit(
 
     assert _collect(module.pipeline.run(source="batch"))["value"].to_list() == [1]
 
-    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
+    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quote_input")
     sidecar.write_text(
         json.dumps({"path": "second.parquet", "contract": "opaque"}),
         encoding="utf-8",
@@ -960,7 +960,7 @@ def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
         nodes=[
             _node(
                 "api",
-                "quotes",
+                "quote_input",
                 NodeType.API_INPUT,
                 {"path": "data/source.parquet", "contract": "opaque"},
             )
@@ -995,7 +995,7 @@ def test_generated_external_file_observes_sidecar_loader_edits_and_rejects_malfo
         NodeType.EXTERNAL_FILE,
         {
             "path": "first.json",
-            "fileType": "json",
+            "file_type": "json",
             "code": "df = rows.with_columns(pl.lit(obj['factor']).alias('factor'))",
         },
     )
@@ -1009,13 +1009,13 @@ def test_generated_external_file_observes_sidecar_loader_edits_and_rejects_malfo
 
     sidecar = isolated_project / config_path_for_node(NodeType.EXTERNAL_FILE, "lookup")
     sidecar.write_text(
-        json.dumps({"path": "second.pkl", "fileType": "pickle"}),
+        json.dumps({"path": "second.pkl", "file_type": "pickle"}),
         encoding="utf-8",
     )
     assert _collect(module.pipeline.run(source="batch"))["factor"].to_list() == [5]
 
     sidecar.write_text(json.dumps({"path": "second.pkl"}), encoding="utf-8")
-    with pytest.raises(ValueError, match="fileType"):
+    with pytest.raises(ValueError, match="file_type"):
         module.pipeline.run(source="batch")
 
 
@@ -1024,7 +1024,7 @@ def test_mapped_external_file_reparses_with_only_its_connected_inputs(
 ) -> None:
     """Its function names the logical inputs its code reads, which a node may share.
 
-    The reparse binds each parameter through the sidecar's ``inputMapping`` to
+    The reparse binds each parameter through the sidecar's ``input_mapping`` to
     the edge it stands for, never to the same-named node beside it.
     """
     from haute.parser import parse_pipeline_file
@@ -1036,10 +1036,10 @@ def test_mapped_external_file_reparses_with_only_its_connected_inputs(
         NodeType.EXTERNAL_FILE,
         {
             "path": "lookup.json",
-            "fileType": "json",
+            "file_type": "json",
             "code": "df = df.join(rates, on='k').with_columns("
             "premium=pl.col('x') * pl.col('rate') * obj['factor'])",
-            "inputMapping": {"rates": "current_rates"},
+            "input_mapping": {"rates": "current_rates"},
         },
     )
     graph = PipelineGraph(
@@ -1064,7 +1064,7 @@ def test_mapped_external_file_reparses_with_only_its_connected_inputs(
         ("current_rates", "loader"),
         ("policies", "loader"),
     ]
-    assert reparsed.node_map["loader"].data.config["inputMapping"] == {"rates": "current_rates"}
+    assert reparsed.node_map["loader"].data.config["input_mapping"] == {"rates": "current_rates"}
     assert _executor_frame(reparsed, "loader", source="batch")["premium"].to_list() == [15.0]
 
 
@@ -1077,7 +1077,7 @@ def test_generated_retained_input_fails_on_malformed_sidecar(
         nodes=[
             _node(
                 "api",
-                "quotes",
+                "quote_input",
                 NodeType.API_INPUT,
                 {"path": "source.parquet", "contract": "opaque"},
             )
@@ -1085,7 +1085,7 @@ def test_generated_retained_input_fails_on_malformed_sidecar(
         edges=[],
     )
     module = _write_and_import(graph, isolated_project)
-    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
+    sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quote_input")
     sidecar.write_text("[]", encoding="utf-8")
 
     with pytest.raises(ValueError, match="must contain an object"):

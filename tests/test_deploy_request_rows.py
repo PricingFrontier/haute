@@ -42,7 +42,7 @@ from tests._deploy_helpers import make_resolved_deploy
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
-ORDERED_LEFT = {"how": "left", "on": "region", "suffix": "_r", "maintainOrder": "left_right"}
+ORDERED_LEFT = {"how": "left", "on": "region", "suffix": "_r", "maintain_order": "left_right"}
 # Quotes deliberately out of any key order, with a region repeated.
 QUOTES = pl.DataFrame(
     {"quote_id": [7, 3, 9, 1, 5], "region": ["S", "N", "E", "N", "W"], "age": [40, 22, 35, 61, 18]}
@@ -53,7 +53,7 @@ QUOTE_SCHEMA = {name: str(dtype) for name, dtype in QUOTES.schema.items()}
 
 def _output(fields: list[str], port: str) -> dict[str, Any]:
     return {
-        "outputMapping": [
+        "output_mapping": [
             {"source_port": port, "source_column": f, "output_path": f"$[:].{f}", "enabled": True}
             for f in fields
         ],
@@ -70,7 +70,7 @@ def _node(node_id: str, node_type: str, config: dict[str, Any] | None = None) ->
 def _lookup(node_id: str, path: str, code: str = "") -> dict[str, Any]:
     """A direct Parquet lookup at *path*: the project's file, as resolution finds it."""
     config: dict[str, Any] = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": path,
@@ -314,7 +314,7 @@ def test_the_build_reads_a_snapshot_lookup_across_its_bundled_parts(tmp_path):
         "rates",
         "dataInput",
         {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "scan",
             "path": "rates.csv",
@@ -437,7 +437,7 @@ def test_unchanged_artefacts_are_copied_under_their_digests(tmp_path, remap):
             "mixes",
         ),
         (
-            {**ORDERED_LEFT, "maintainOrder": "none"},
+            {**ORDERED_LEFT, "maintain_order": "none"},
             None,
             "join (how='left', maintain_order='none')",
             "reorders",
@@ -491,7 +491,7 @@ def _branches(join: dict[str, Any], *, right_code: str) -> PipelineGraph:
     return PipelineGraph.model_validate({"nodes": nodes, "edges": edges})
 
 
-REJOIN = {"how": "left", "on": "quote_id", "suffix": "_r", "maintainOrder": "left_right"}
+REJOIN = {"how": "left", "on": "quote_id", "suffix": "_r", "maintain_order": "left_right"}
 RIGHT_ROW_LOCAL = "df = quotes.select('quote_id', (pl.col('age') * 3).alias('a3'))"
 
 
@@ -525,7 +525,7 @@ def test_a_join_of_two_parts_of_the_request_is_refused_whatever_it_declares():
 
 def test_every_refusal_is_collected(remap):
     graph = _priced_graph(
-        {**ORDERED_LEFT, "maintainOrder": "none"},
+        {**ORDERED_LEFT, "maintain_order": "none"},
         remap,
         after="df = priced.filter(pl.col('rate') > 1).sort('rate')",
     )
@@ -580,13 +580,13 @@ def test_node_types_that_cannot_answer_in_order_are_refused(tmp_path):
         "expand": (_node("expand", "scenarioExpander"), "Expander", "repeats"),
         "apply": (
             _node(
-                "apply", "optimiserApply", {"sourceType": "file", "artifact_path": "online.json"}
+                "apply", "optimiserApply", {"source_type": "file", "artifact_path": "online.json"}
             ),
             "Apply Optimisation (online)",
             "mixes",
         ),
         "served": (
-            _node("served", "optimiserApply", {"sourceType": "run", "run_id": "abc"}),
+            _node("served", "optimiserApply", {"source_type": "run", "run_id": "abc"}),
             "Apply Optimisation from MLflow",
             "unproven",
         ),
@@ -635,7 +635,7 @@ def test_a_quote_input_s_root_table_is_the_request_and_its_others_are_not():
 
 
 def test_a_constant_cross_join_keeps_each_quote():
-    cross = {"how": "cross", "suffix": "_c", "maintainOrder": "left_right"}
+    cross = {"how": "cross", "suffix": "_c", "maintain_order": "left_right"}
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
@@ -669,7 +669,7 @@ def test_a_cross_join_with_several_rows_answers_one_quote_per_request(tmp_path):
                 _node(
                     "joined",
                     "edgeJoin",
-                    {"how": "cross", "suffix": "_t", "maintainOrder": "left_right"},
+                    {"how": "cross", "suffix": "_t", "maintain_order": "left_right"},
                 ),
                 _node("out", "output", _output(["quote_id", "tier"], "joined")),
             ],
@@ -1158,7 +1158,7 @@ def test_an_optimiser_apply_in_ratebook_mode_keeps_the_input_it_rates(tmp_path):
 
     def graph(ratebook_input: str) -> PipelineGraph:
         config = {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": "ratebook.json",
             "ratebook_input": ratebook_input,
         }
@@ -1181,7 +1181,7 @@ def test_an_optimiser_apply_in_ratebook_mode_keeps_the_input_it_rates(tmp_path):
     [
         (ORDERED_LEFT, "join (how='left', maintain_order='left_right')"),
         (
-            {"how": "cross", "suffix": "_s", "maintainOrder": "left"},
+            {"how": "cross", "suffix": "_s", "maintain_order": "left"},
             "join (how='cross', maintain_order='left')",
         ),
     ],
@@ -1192,7 +1192,7 @@ def test_an_optimiser_read_from_mlflow_cannot_be_a_checked_lookup(join, operatio
             "nodes": [
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("rates", remap["rates__rates.parquet"]),
-                _node("served", "optimiserApply", {"sourceType": "run", "run_id": "abc"}),
+                _node("served", "optimiserApply", {"source_type": "run", "run_id": "abc"}),
                 _node("priced", "edgeJoin", join),
                 _node("out", "output", _output(["quote_id"], "priced")),
             ],
@@ -1220,7 +1220,7 @@ def _response_graph(mapping: list[dict[str, Any]], remap: dict[str, str]) -> Pip
             "nodes": [
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("rates", remap["rates__rates.parquet"]),
-                _node("out", "output", {"outputMapping": mapping}),
+                _node("out", "output", {"output_mapping": mapping}),
             ],
             "edges": [_quotes_edge("out"), _edge("rates", "out")],
         }
@@ -1262,7 +1262,7 @@ def test_a_response_takes_its_top_level_from_the_quotes(remap):
 
 
 def test_an_edge_join_whose_config_does_not_build_is_not_proved(remap):
-    graph = _priced_graph({"how": "left", "maintainOrder": "left_right"}, remap)
+    graph = _priced_graph({"how": "left", "maintain_order": "left_right"}, remap)
 
     assert _verdict(graph, remap) == (
         "quote_by_quote",
@@ -1279,7 +1279,12 @@ def test_a_right_join_ordered_by_the_quotes_on_its_right_answers_in_order(remap)
                 _node(
                     "priced",
                     "edgeJoin",
-                    {"how": "right", "on": "region", "suffix": "_r", "maintainOrder": "right_left"},
+                    {
+                        "how": "right",
+                        "on": "region",
+                        "suffix": "_r",
+                        "maintain_order": "right_left",
+                    },
                 ),
                 _node("out", "output", _output(["quote_id", "rate"], "priced")),
             ],
@@ -1347,7 +1352,7 @@ def test_a_lookup_joined_twice_is_checked_once(remap):
 
 
 def test_a_left_join_against_one_row_needs_no_check():
-    left_on_constant = {"how": "left", "on": "loading", "suffix": "_c", "maintainOrder": "left"}
+    left_on_constant = {"how": "left", "on": "loading", "suffix": "_c", "maintain_order": "left"}
     graph = PipelineGraph.model_validate(
         {
             "nodes": [
@@ -1355,7 +1360,7 @@ def test_a_left_join_against_one_row_needs_no_check():
                 _node("params", "constant", {"values": [{"name": "loading", "value": "1"}]}),
                 _node("more", "constant", {"values": [{"name": "tax", "value": "0.1"}]}),
                 _node(
-                    "both", "edgeJoin", {"how": "cross", "suffix": "_b", "maintainOrder": "left"}
+                    "both", "edgeJoin", {"how": "cross", "suffix": "_b", "maintain_order": "left"}
                 ),
                 _node("joined", "edgeJoin", left_on_constant),
                 _node("out", "output", _output(["quote_id"], "joined")),
@@ -1375,7 +1380,7 @@ def test_a_left_join_against_one_row_needs_no_check():
 
 def test_input_names_the_executor_would_refuse_are_not_proved():
     graph = _single(
-        _node("calc", "polars", {"code": "df = frame", "inputMapping": {"frame": "missing"}})
+        _node("calc", "polars", {"code": "df = frame", "input_mapping": {"frame": "missing"}})
     )
 
     assert _verdict(graph) == (
@@ -1474,7 +1479,7 @@ def test_an_empty_cross_join_side_drops_the_quotes(tmp_path):
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("tiers", str(empty)),
                 _node(
-                    "joined", "edgeJoin", {"how": "cross", "suffix": "_t", "maintainOrder": "left"}
+                    "joined", "edgeJoin", {"how": "cross", "suffix": "_t", "maintain_order": "left"}
                 ),
                 _node("out", "output", _output(["quote_id"], "joined")),
             ],
@@ -1502,7 +1507,7 @@ def test_a_one_row_cross_join_side_passes_its_check(tmp_path):
                 _node("quotes", "apiInput", {"path": ""}),
                 _lookup("tax", str(single)),
                 _node(
-                    "joined", "edgeJoin", {"how": "cross", "suffix": "_t", "maintainOrder": "left"}
+                    "joined", "edgeJoin", {"how": "cross", "suffix": "_t", "maintain_order": "left"}
                 ),
                 _node("out", "output", _output(["quote_id"], "joined")),
             ],
@@ -1523,7 +1528,7 @@ def test_a_one_row_cross_join_side_passes_its_check(tmp_path):
 def test_a_lookup_that_cannot_be_read_fails_the_build_with_its_own_error(remap):
     # The join names a key the lookup does not hold.
     graph = _priced_graph(
-        {**ORDERED_LEFT, "on": None, "leftOn": "region", "rightOn": "zone"}, remap
+        {**ORDERED_LEFT, "on": None, "left_on": "region", "right_on": "zone"}, remap
     )
 
     with pytest.raises(pl.exceptions.ColumnNotFoundError):
@@ -1578,7 +1583,7 @@ def test_a_cross_join_with_a_request_branch_is_refused():
                 _node("quotes", "apiInput", {"path": ""}),
                 _node("branch", "polars", {"code": "df = quotes.select('age')"}),
                 _node(
-                    "joined", "edgeJoin", {"how": "cross", "suffix": "_b", "maintainOrder": "left"}
+                    "joined", "edgeJoin", {"how": "cross", "suffix": "_b", "maintain_order": "left"}
                 ),
                 _node("out", "output", _output(["quote_id"], "joined")),
             ],
@@ -1605,7 +1610,7 @@ def test_a_constant_s_one_row_is_lost_to_a_sort_and_then_checked():
                 _node("params", "constant", {"values": [{"name": "loading", "value": "1"}]}),
                 _node("sorted", "polars", {"code": "df = params.sort('loading')"}),
                 _node(
-                    "joined", "edgeJoin", {"how": "cross", "suffix": "_c", "maintainOrder": "left"}
+                    "joined", "edgeJoin", {"how": "cross", "suffix": "_c", "maintain_order": "left"}
                 ),
                 _node("out", "output", _output(["quote_id"], "joined")),
             ],

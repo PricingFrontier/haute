@@ -194,7 +194,7 @@ export default function OptimiserPublishSection({
     })
     const pointApplyNodeAtSave = () => {
       if (!saveReceipt || !applyNodeId || !onUpdateNodeConfig) return
-      const result = onUpdateNodeConfig(applyNodeId, { sourceType: "file", artifact_path: saveReceipt.apply_path })
+      const result = onUpdateNodeConfig(applyNodeId, { source_type: "file", artifact_path: saveReceipt.apply_path })
       const applyLabel = applyNodes.find((node) => node.id === applyNodeId)?.data.label ?? applyNodeId
       setApplyMessage(result.ok ? `${applyLabel} now loads ${saveReceipt.apply_path}.` : result.error)
     }

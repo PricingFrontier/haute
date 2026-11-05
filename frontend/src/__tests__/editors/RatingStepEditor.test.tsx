@@ -42,7 +42,7 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
         factors: [{
           banding: "categorical",
           column: outputColumn,
-          outputColumn,
+          output_column: outputColumn,
           rules: assignments.map(a => ({ value: a, assignment: a })),
         }],
       },
@@ -61,7 +61,7 @@ function makeBreakpointBandingNode(outputColumn: string, labels: string[]): Simp
         factors: [{
           banding: "breakpoints",
           column: outputColumn.replace(/_band$/, ""),
-          outputColumn,
+          output_column: outputColumn,
           rules: labels.map((label, i) => ({
             boundary: i === labels.length - 1 ? "" : String((i + 1) * 10),
             label,
@@ -91,7 +91,7 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [{
-            factors: ["empty_one"], outputColumn: "factor", defaultValue: "1.0",
+            factors: ["empty_one"], output_column: "factor", default_value: "1.0",
             entries: [{ empty_one: "stale", value: 1.2 }],
           }],
         }}
@@ -103,9 +103,9 @@ describe("RatingStepEditor", () => {
         {
           id: "banding_empty", data: {
             label: "Banding", description: "", nodeType: "banding", config: { factors: [
-              { banding: "breakpoints", outputColumn: "empty_one", rules: [] },
-              { banding: "categorical", outputColumn: "empty_two", rules: [{}] },
-              { banding: "breakpoints", outputColumn: "healthy", rules: [{ label: "Known" }] },
+              { banding: "breakpoints", output_column: "empty_one", rules: [] },
+              { banding: "categorical", output_column: "empty_two", rules: [{}] },
+              { banding: "breakpoints", output_column: "healthy", rules: [{ label: "Known" }] },
             ] },
           },
         },
@@ -141,32 +141,32 @@ describe("RatingStepEditor", () => {
           tables: [
             {
               factors: ["age_band"],
-              outputColumn: "age_factor",
-              defaultValue: "1.0",
+              output_column: "age_factor",
+              default_value: "1.0",
               entries: [{ age_band: "young", value: 1.1 }],
             },
             {
               factors: ["age_band"],
-              outputColumn: " ",
-              defaultValue: "1.0",
+              output_column: " ",
+              default_value: "1.0",
               entries: [{ age_band: "young", value: 1.1 }],
             },
             {
               factors: [],
-              outputColumn: "region_factor",
-              defaultValue: "1.0",
+              output_column: "region_factor",
+              default_value: "1.0",
               entries: [],
             },
             {
               factors: ["region"],
-              outputColumn: "duplicate_factor",
-              defaultValue: "1.0",
+              output_column: "duplicate_factor",
+              default_value: "1.0",
               entries: [{ region: "north", value: 1.0 }],
             },
             {
               factors: ["region"],
-              outputColumn: "duplicate_factor",
-              defaultValue: "1.0",
+              output_column: "duplicate_factor",
+              default_value: "1.0",
               entries: [{ region: "south", value: 1.0 }],
             },
           ],
@@ -192,17 +192,17 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [
-            { factors: [], outputColumn: " ", defaultValue: "1.0", entries: [] },
+            { factors: [], output_column: " ", default_value: "1.0", entries: [] },
             {
               factors: ["region"],
-              outputColumn: "duplicate_factor",
-              defaultValue: "1.0",
+              output_column: "duplicate_factor",
+              default_value: "1.0",
               entries: [{ region: "north", value: 1.0 }],
             },
             {
               factors: ["region"],
-              outputColumn: "duplicate_factor",
-              defaultValue: "1.0",
+              output_column: "duplicate_factor",
+              default_value: "1.0",
               entries: [{ region: "south", value: 1.0 }],
             },
           ],
@@ -227,8 +227,8 @@ describe("RatingStepEditor", () => {
   it("searches and selects rating tables when many are configured", () => {
     const tables = Array.from({ length: 24 }, (_, idx) => ({
       factors: ["age_band"],
-      outputColumn: idx === 19 ? "telematics_adjustment" : `factor_${String(idx + 1).padStart(2, "0")}`,
-      defaultValue: "1.0",
+      output_column: idx === 19 ? "telematics_adjustment" : `factor_${String(idx + 1).padStart(2, "0")}`,
+      default_value: "1.0",
       entries: [{ age_band: "young", value: 1.0 }],
     }))
 
@@ -259,10 +259,10 @@ describe("RatingStepEditor", () => {
   })
 
   it.each([
-    { label: "Output Column", before: "age_factor", after: "region_factor", key: "outputColumn" },
-    { label: "Default", before: "1.5", after: "2.5", key: "defaultValue" },
+    { label: "Output Column", before: "age_factor", after: "region_factor", key: "output_column" },
+    { label: "Default", before: "1.5", after: "2.5", key: "default_value" },
   ])("shows $label as undo leaves it, and a blur then commits nothing", ({ label, before, after, key }) => {
-    const table = (value: string) => ({ factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [], [key]: value })
+    const table = (value: string) => ({ factors: [], output_column: "age_factor", default_value: "1.0", entries: [], [key]: value })
     const onUpdate = vi.fn()
     const view = render(
       <RatingStepEditor config={{ tables: [table(before)] }} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
@@ -282,14 +282,14 @@ describe("RatingStepEditor", () => {
   })
 
   it.each([
-    { label: "Combined Output Column", key: "outputColumn", before: "technical_price", after: "loaded_price" },
-    { label: "Base Value", key: "baseValue", before: "1.0", after: "2.5" },
+    { label: "Combined Output Column", key: "output_column", before: "technical_price", after: "loaded_price" },
+    { label: "Base Value", key: "base_value", before: "1.0", after: "2.5" },
   ])("shows the combined output's $label as undo leaves it, and a blur commits nothing", ({ label, key, before, after }) => {
-    const combined = (value: string) => ({ outputColumn: "technical_price", operation: "multiply", baseValue: "1.0", [key]: value })
+    const combined = (value: string) => ({ output_column: "technical_price", operation: "multiply", base_value: "1.0", [key]: value })
     const onUpdate = vi.fn()
     const config = (value: string) => ({
-      tables: [{ factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] }],
-      combinedOutputs: [combined(value)],
+      tables: [{ factors: [], output_column: "age_factor", default_value: "1.0", entries: [] }],
+      combined_outputs: [combined(value)],
     })
     const view = render(
       <RatingStepEditor config={config(before)} onUpdate={onUpdate} inputSources={[]} accentColor="#14b8a6" />,
@@ -309,7 +309,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
-        config={{ tables: [{ factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }] }}
+        config={{ tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
         accentColor="#14b8a6"
@@ -318,7 +318,7 @@ describe("RatingStepEditor", () => {
     const input = screen.getByLabelText("Output Column")
     fireEvent.change(input, { target: { value: "age_factor" } })
     fireEvent.keyDown(input, { key: "Enter" })
-    expect(onUpdate).toHaveBeenCalledWith("tables", [expect.objectContaining({ outputColumn: "age_factor" })])
+    expect(onUpdate).toHaveBeenCalledWith("tables", [expect.objectContaining({ output_column: "age_factor" })])
   })
 
   it("persists only the output column on blur", () => {
@@ -326,7 +326,7 @@ describe("RatingStepEditor", () => {
     render(
       <RatingStepEditor
         config={{
-          tables: [{ factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }],
+          tables: [{ factors: [], output_column: "", default_value: "1.0", entries: [] }],
         }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -340,16 +340,16 @@ describe("RatingStepEditor", () => {
     fireEvent.blur(outputColumnInput)
 
     expect(onUpdate).toHaveBeenCalledWith("tables", [
-      expect.objectContaining({ outputColumn: "age_factor" }),
+      expect.objectContaining({ output_column: "age_factor" }),
     ])
   })
 
-  it("keeps a table's onMissing and absent default through an edit", () => {
+  it("keeps a table's on_missing and absent default through an edit", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
         config={{
-          tables: [{ factors: [], outputColumn: "", onMissing: "neutral", entries: [] }],
+          tables: [{ factors: [], output_column: "", on_missing: "neutral", entries: [] }],
         }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -365,15 +365,15 @@ describe("RatingStepEditor", () => {
     fireEvent.blur(outputColumnInput)
 
     expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], outputColumn: "age_factor", onMissing: "neutral", entries: [] },
+      { factors: [], output_column: "age_factor", on_missing: "neutral", entries: [] },
     ])
   })
 
-  it("sets onMissing while Default is empty", () => {
+  it("sets on_missing while Default is empty", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
-        config={{ tables: [{ factors: [], outputColumn: "af", entries: [] }] }}
+        config={{ tables: [{ factors: [], output_column: "af", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
         accentColor="#14b8a6"
@@ -385,7 +385,7 @@ describe("RatingStepEditor", () => {
     expect(onMiss).toHaveValue("error")
     fireEvent.change(onMiss, { target: { value: "neutral" } })
     expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], outputColumn: "af", onMissing: "neutral", entries: [] },
+      { factors: [], output_column: "af", on_missing: "neutral", entries: [] },
     ])
 
   })
@@ -393,7 +393,7 @@ describe("RatingStepEditor", () => {
   it("disables On miss while a default fills every miss", () => {
     render(
       <RatingStepEditor
-        config={{ tables: [{ factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] }] }}
+        config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
         onUpdate={vi.fn()}
         inputSources={[]}
         accentColor="#14b8a6"
@@ -407,7 +407,7 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
-        config={{ tables: [{ factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] }] }}
+        config={{ tables: [{ factors: [], output_column: "af", default_value: "1.0", entries: [] }] }}
         onUpdate={onUpdate}
         inputSources={[]}
         accentColor="#14b8a6"
@@ -420,7 +420,7 @@ describe("RatingStepEditor", () => {
     fireEvent.blur(defaultInput)
 
     expect(onUpdate).toHaveBeenLastCalledWith("tables", [
-      { factors: [], outputColumn: "af", entries: [] },
+      { factors: [], output_column: "af", entries: [] },
     ])
   })
 
@@ -449,7 +449,7 @@ describe("RatingStepEditor", () => {
     const config = {
       code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
       tables: [
-        { name: "Age Factor", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+        { name: "Age Factor", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
       ],
     }
 
@@ -494,7 +494,7 @@ describe("RatingStepEditor", () => {
     const config = {
       code: "df = df.with_columns(pl.lit(1).alias('manual_factor'))",
       tables: [
-        { name: "Age Factor", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+        { name: "Age Factor", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
       ],
     }
 
@@ -564,7 +564,7 @@ describe("RatingStepEditor", () => {
     render(
       <RatingStepEditor
         config={{
-          tables: [{ name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] }],
+          tables: [{ name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] }],
         }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -585,8 +585,8 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [
-            { name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-            { name: "T2", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+            { name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+            { name: "T2", factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
           ],
         }}
         onUpdate={vi.fn()}
@@ -607,7 +607,7 @@ describe("RatingStepEditor", () => {
     render(
       <RatingStepEditor
         config={{
-          combinedOutputs: [{ outputColumn: "", operation: "multiply", baseValue: "1.0" }],
+          combined_outputs: [{ output_column: "", operation: "multiply", base_value: "1.0" }],
         }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -626,9 +626,9 @@ describe("RatingStepEditor", () => {
     render(
       <RatingStepEditor
         config={{
-          combinedOutputs: [
-            { outputColumn: "", operation: "divide" },
-            { outputColumn: "missing_base", operation: "multiply" },
+          combined_outputs: [
+            { output_column: "", operation: "divide" },
+            { output_column: "missing_base", operation: "multiply" },
           ],
         }}
         onUpdate={vi.fn()}
@@ -654,8 +654,8 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [
-            { name: "T1", factors: [], outputColumn: "   ", defaultValue: "1.0", entries: [] },
-            { name: "T2", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+            { name: "T1", factors: [], output_column: "   ", default_value: "1.0", entries: [] },
+            { name: "T2", factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
           ],
         }}
         onUpdate={vi.fn()}
@@ -674,7 +674,7 @@ describe("RatingStepEditor", () => {
     render(
       <RatingStepEditor
         config={{
-          combinedOutputs: [{ outputColumn: "\t ", operation: "multiply", baseValue: "1.0" }],
+          combined_outputs: [{ output_column: "\t ", operation: "multiply", base_value: "1.0" }],
         }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -693,8 +693,8 @@ describe("RatingStepEditor", () => {
       tables: [{
         name: "T1",
         factors: ["age_band"],
-        outputColumn: "af",
-        defaultValue: "1.0",
+        output_column: "af",
+        default_value: "1.0",
         entries: [
           { age_band: "young", value: 1.1 },
           { age_band: "mid", value: 1.0 },
@@ -724,8 +724,8 @@ describe("RatingStepEditor", () => {
       tables: [{
         name: "T1",
         factors: ["age_band", "region"],
-        outputColumn: "combined",
-        defaultValue: "1.0",
+        output_column: "combined",
+        default_value: "1.0",
         entries: [
           { age_band: "young", region: "north", value: 1.1 },
           { age_band: "young", region: "south", value: 1.0 },
@@ -777,20 +777,20 @@ describe("RatingStepEditor", () => {
 
     // Should call onUpdate with tables array containing 2 tables
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
-      expect.objectContaining({ outputColumn: "" }),
-      expect.objectContaining({ outputColumn: "" }),
+      expect.objectContaining({ output_column: "" }),
+      expect.objectContaining({ output_column: "" }),
     ]))
     // A new table has no default, so a level it does not list stops the run.
     const added = onUpdate.mock.calls.at(-1)?.[1] as Record<string, unknown>[]
-    expect(added.at(-1)).toEqual({ factors: [], outputColumn: "", entries: [] })
+    expect(added.at(-1)).toEqual({ factors: [], output_column: "", entries: [] })
   })
 
   it("removing a table when >1 tables", () => {
     const onUpdate = vi.fn()
     const config = {
       tables: [
-        { factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-        { factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+        { factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
       ],
     }
     render(
@@ -815,14 +815,14 @@ describe("RatingStepEditor", () => {
 
     // Should call onUpdate with only region_factor remaining.
     expect(onUpdate).toHaveBeenCalledWith("tables", [
-      expect.objectContaining({ outputColumn: "region_factor" }),
+      expect.objectContaining({ output_column: "region_factor" }),
     ])
   })
 
   it("cannot remove last table", () => {
     const config = {
       tables: [
-        { factors: [], outputColumn: "only_factor", defaultValue: "1.0", entries: [] },
+        { factors: [], output_column: "only_factor", default_value: "1.0", entries: [] },
       ],
     }
     render(
@@ -842,11 +842,11 @@ describe("RatingStepEditor", () => {
   it("operation select (multiply/add/min/max) shown when 2+ tables", () => {
     const config = {
       tables: [
-        { name: "T1", factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] },
-        { name: "T2", factors: [], outputColumn: "rf", defaultValue: "1.0", entries: [] },
+        { name: "T1", factors: [], output_column: "af", default_value: "1.0", entries: [] },
+        { name: "T2", factors: [], output_column: "rf", default_value: "1.0", entries: [] },
       ],
-      combinedOutputs: [
-        { outputColumn: "combined", operation: "multiply", baseValue: "1.0" },
+      combined_outputs: [
+        { output_column: "combined", operation: "multiply", base_value: "1.0" },
       ],
     }
     render(
@@ -878,10 +878,10 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [
-            { name: "T1", factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] },
+            { name: "T1", factors: [], output_column: "af", default_value: "1.0", entries: [] },
           ],
-          combinedOutputs: [
-            { outputColumn: "combined", operation: "multiply", baseValue: "1.0" },
+          combined_outputs: [
+            { output_column: "combined", operation: "multiply", base_value: "1.0" },
           ],
         }}
         onUpdate={vi.fn()}
@@ -899,11 +899,11 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     const config = {
       tables: [
-        { name: "T1", factors: [], outputColumn: "af", defaultValue: "1.0", entries: [] },
-        { name: "T2", factors: [], outputColumn: "rf", defaultValue: "1.0", entries: [] },
+        { name: "T1", factors: [], output_column: "af", default_value: "1.0", entries: [] },
+        { name: "T2", factors: [], output_column: "rf", default_value: "1.0", entries: [] },
       ],
-      combinedOutputs: [
-        { outputColumn: "combined", operation: "multiply", baseValue: "1.0" },
+      combined_outputs: [
+        { output_column: "combined", operation: "multiply", base_value: "1.0" },
       ],
     }
     render(
@@ -919,7 +919,7 @@ describe("RatingStepEditor", () => {
     const operationSelect = screen.getByDisplayValue("× Multiply")
     fireEvent.change(operationSelect, { target: { value: "add" } })
     expect(onUpdate).toHaveBeenCalledWith({
-      combinedOutputs: [expect.objectContaining({ operation: "add", baseValue: "0.0" })],
+      combined_outputs: [expect.objectContaining({ operation: "add", base_value: "0.0" })],
     })
   })
 
@@ -928,8 +928,8 @@ describe("RatingStepEditor", () => {
     render(
       <RatingStepEditor
         config={{
-          combinedOutputs: [
-            { outputColumn: "combined", operation: "multiply", baseValue: "1.0" },
+          combined_outputs: [
+            { output_column: "combined", operation: "multiply", base_value: "1.0" },
           ],
         }}
         onUpdate={onUpdate}
@@ -940,19 +940,19 @@ describe("RatingStepEditor", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Remove combined output"))
-    expect(onUpdate).toHaveBeenCalledWith({ combinedOutputs: [] })
+    expect(onUpdate).toHaveBeenCalledWith({ combined_outputs: [] })
   })
 
   it("supports multiple combined outputs with a banding-style selector row", () => {
     const onUpdate = vi.fn()
     const config = {
       tables: [
-        { name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-        { name: "T2", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+        { name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { name: "T2", factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
       ],
-      combinedOutputs: [
-        { outputColumn: "technical_price", operation: "multiply", baseValue: "1.0" },
-        { outputColumn: "loaded_price", operation: "add", baseValue: "100.0" },
+      combined_outputs: [
+        { output_column: "technical_price", operation: "multiply", base_value: "1.0" },
+        { output_column: "loaded_price", operation: "add", base_value: "100.0" },
       ],
     }
 
@@ -980,15 +980,15 @@ describe("RatingStepEditor", () => {
     fireEvent.change(baseValueInput, { target: { value: "275.50" } })
     fireEvent.blur(baseValueInput)
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      combinedOutputs: expect.arrayContaining([
-        expect.objectContaining({ outputColumn: "loaded_price", baseValue: "275.50" }),
+      combined_outputs: expect.arrayContaining([
+        expect.objectContaining({ output_column: "loaded_price", base_value: "275.50" }),
       ]),
     }))
 
     fireEvent.click(screen.getByLabelText("Add combined output"))
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      combinedOutputs: expect.arrayContaining([
-        expect.objectContaining({ outputColumn: "combined_3" }),
+      combined_outputs: expect.arrayContaining([
+        expect.objectContaining({ output_column: "combined_3" }),
       ]),
     }))
   })
@@ -997,11 +997,11 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     const config = {
       tables: [
-        { name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+        { name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
       ],
-      combinedOutputs: [
-        { outputColumn: "age_factor", operation: "multiply", baseValue: "1.0" },
-        { outputColumn: "combined_3", operation: "multiply", baseValue: "1.0" },
+      combined_outputs: [
+        { output_column: "age_factor", operation: "multiply", base_value: "1.0" },
+        { output_column: "combined_3", operation: "multiply", base_value: "1.0" },
       ],
     }
 
@@ -1020,8 +1020,8 @@ describe("RatingStepEditor", () => {
 
     fireEvent.click(screen.getByLabelText("Add combined output"))
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      combinedOutputs: expect.arrayContaining([
-        expect.objectContaining({ outputColumn: "combined_4" }),
+      combined_outputs: expect.arrayContaining([
+        expect.objectContaining({ output_column: "combined_4" }),
       ]),
     }))
   })
@@ -1031,8 +1031,8 @@ describe("RatingStepEditor", () => {
       tables: [{
         name: "T1",
         factors: ["age_band"],
-        outputColumn: "af",
-        defaultValue: "1.0",
+        output_column: "af",
+        default_value: "1.0",
         entries: [],
       }],
     }
@@ -1069,8 +1069,8 @@ describe("RatingStepEditor", () => {
       tables: [{
         name: "T1",
         factors: ["age_band"],
-        outputColumn: "af",
-        defaultValue: "1.0",
+        output_column: "af",
+        default_value: "1.0",
         entries: [],
       }],
     }
@@ -1224,8 +1224,8 @@ describe("RatingStepEditor", () => {
           tables: [{
             name: "Channel Factor",
             factors: ["channel"],
-            outputColumn: "channel_factor",
-            defaultValue: "1.0",
+            output_column: "channel_factor",
+            default_value: "1.0",
             entries: [
               { channel: "direct", value: 1.0 },
               { channel: "broker", value: 1.0 },
@@ -1259,8 +1259,8 @@ describe("RatingStepEditor", () => {
           tables: [{
             name: "Channel Factor",
             factors: ["channel"],
-            outputColumn: "channel_factor",
-            defaultValue: "1.0",
+            output_column: "channel_factor",
+            default_value: "1.0",
             entries: [
               { channel: "direct", value: 1.05 },
               { channel: "broker", value: 0.95 },
@@ -1286,8 +1286,8 @@ describe("RatingStepEditor", () => {
           tables: [{
             name: "Channel Cover Factor",
             factors: ["age_band", "channel", "cover_type"],
-            outputColumn: "channel_cover_factor",
-            defaultValue: "1.25",
+            output_column: "channel_cover_factor",
+            default_value: "1.25",
             entries: [
               { age_band: "young", channel: "direct", cover_type: "third_party", value: 1.05 },
               { age_band: "young", channel: "aggregator", cover_type: "comprehensive", value: 0.95 },
@@ -1331,8 +1331,8 @@ describe("RatingStepEditor", () => {
           tables: [{
             name: "Age Factor",
             factors: ["age_band"],
-            outputColumn: "age_factor",
-            defaultValue: "1.0",
+            output_column: "age_factor",
+            default_value: "1.0",
             entries: [
               { age_band: "young", value: 1.1 },
               { age_band: "retired", value: 1.4 },
@@ -1397,8 +1397,8 @@ describe("RatingStepEditor", () => {
       tables: [{
         name: "T1",
         factors: ["age_band"],
-        outputColumn: "age_factor",
-        defaultValue: "1.0",
+        output_column: "age_factor",
+        default_value: "1.0",
         entries: [
           { age_band: "young", value: 1.1 },
           { age_band: "old", value: 0.9 },
@@ -1436,10 +1436,10 @@ describe("RatingStepEditor", () => {
   it("renders combination formula summary when 2+ tables have output columns", () => {
     const config = {
       tables: [
-        { name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-        { name: "T2", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+        { name: "T1", factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
+        { name: "T2", factors: [], output_column: "region_factor", default_value: "1.0", entries: [] },
       ],
-      combinedOutputs: [{ outputColumn: "combined", operation: "multiply", baseValue: "1.0" }],
+      combined_outputs: [{ output_column: "combined", operation: "multiply", base_value: "1.0" }],
     }
     render(
       <RatingStepEditor
@@ -1486,9 +1486,9 @@ describe("RatingStepEditor", () => {
           tables: [{
             name: "T1",
             factors: ["age_band"],
-            factorDtypes: { age_band: { kind: "Categorical" } },
-            outputColumn: "age_factor",
-            defaultValue: "1.0",
+            factor_dtypes: { age_band: { kind: "Categorical" } },
+            output_column: "age_factor",
+            default_value: "1.0",
             entries: [],
           }],
         }}
@@ -1504,7 +1504,7 @@ describe("RatingStepEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
         factors: ["age_band", "region"],
-        factorDtypes: { age_band: { kind: "Categorical" } },
+        factor_dtypes: { age_band: { kind: "Categorical" } },
       }),
     ]))
   })
@@ -1517,12 +1517,12 @@ describe("RatingStepEditor", () => {
           tables: [{
             name: "T1",
             factors: ["age_band", "region"],
-            factorDtypes: {
+            factor_dtypes: {
               age_band: { kind: "Categorical" },
               region: { kind: "String" },
             },
-            outputColumn: "age_factor",
-            defaultValue: "1.0",
+            output_column: "age_factor",
+            default_value: "1.0",
             entries: [],
           }],
         }}
@@ -1538,7 +1538,7 @@ describe("RatingStepEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
       expect.objectContaining({
         factors: ["region"],
-        factorDtypes: { region: { kind: "String" } },
+        factor_dtypes: { region: { kind: "String" } },
       }),
     ]))
   })
@@ -1548,8 +1548,8 @@ describe("RatingStepEditor", () => {
       tables: [{
         name: "T1",
         factors: ["age_band", "region", "vehicle_type"],
-        outputColumn: "combined",
-        defaultValue: "1.0",
+        output_column: "combined",
+        default_value: "1.0",
         entries: [
           { age_band: "young", region: "north", vehicle_type: "car", value: 1.0 },
           { age_band: "young", region: "south", vehicle_type: "car", value: 1.1 },

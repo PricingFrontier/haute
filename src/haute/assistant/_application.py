@@ -28,10 +28,16 @@ from haute._input_providers import (
 )
 from haute._node_specs import node_spec
 from haute._pipeline_recovery import load_pipeline_editor_document
-from haute._polars_steps import is_stepped_config, render_polars_steps, stepped_surface_for
+from haute._polars_steps import (
+    STEPS_FROM_CODE,
+    is_stepped_config,
+    render_polars_steps,
+    stepped_surface_for,
+)
+from haute._polars_steps_lift import canonical_steps
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
-from haute._types import GraphEdge, GraphNode, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import INPUT_NAMING_RULE, new_logic_steps
 from haute.assistant._change_record import (
@@ -831,7 +837,7 @@ def _prove_categorical_factors_band_text(
                 continue
             raise AssistantOperationError(
                 "invalid_config",
-                f"Banding output {factor.get('outputColumn')!r} bands {column!r}, a {dtype} "
+                f"Banding output {factor.get('output_column')!r} bands {column!r}, a {dtype} "
                 "column, with categorical rules, which match only the listed values; a "
                 "decimal or date range is banded with breakpoints.",
                 where={"node": node.id, "field": "factors"},
@@ -904,8 +910,16 @@ def _prove_steps_survive_save(
                     where={"node": node_id, "field": "steps"},
                     fix=_steps_fix(node),
                 ) from exc
+            expected = node.data.config["steps"]
+            if node.data.nodeType in STEPS_FROM_CODE:
+                # A stepped node's steps are rebuilt from its code, ids from kind and place
+                # (READ-22, READ-44); while one cannot render, the list waits whole in
+                # .haute.json.
+                if node.data.editor.steps_error is not None:
+                    continue
+                expected = canonical_steps(NodeType(node.data.nodeType), expected)
             discarded = resolved["editor"].steps_discarded
-            if discarded or resolved["config"].get("steps") != node.data.config["steps"]:
+            if discarded or resolved["config"].get("steps") != expected:
                 reason = discarded or "Its steps change on reparse."
                 raise AssistantOperationError(
                     "op_not_applied",
@@ -939,7 +953,7 @@ def _prove_load_file_loads(node_id: str, config: Mapping[str, Any]) -> None:
     """
 
     path = config.get("path")
-    file_type = config.get("fileType")
+    file_type = config.get("file_type")
     if not isinstance(path, str) or not path.strip():
         raise _not_ready(node_id, "Load File has no path. Set the file it loads.")
     try:

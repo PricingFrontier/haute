@@ -23,8 +23,7 @@ import pytest
 
 from haute._graph_utils import _sanitize_func_name
 from haute._mlflow_io import ScoringModel
-from haute._node_specs import CODE_NODE_TYPES, DECORATOR_TO_NODE_TYPE
-from haute._topo import topo_sort_ids
+from haute._node_specs import CODE_NODE_TYPES, DECORATOR_TO_NODE_TYPE, SINGLETON_NODE_NAMES
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError
@@ -66,7 +65,7 @@ def _edge(
 
 def _data_input(path: str, **extra: object) -> dict:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": path,
@@ -118,7 +117,7 @@ _API_INPUT = {
 }
 _EDGE_JOIN = {
     "how": "left",
-    "maintainOrder": "left_right",
+    "maintain_order": "left_right",
     "on": ["policy_id"],
     "suffix": "_claim",
 }
@@ -132,7 +131,7 @@ _BANDING = {
         {
             "banding": "breakpoints",
             "column": "driver_age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": [{"boundary": "25", "label": "young"}],
             "default": "other",
         }
@@ -142,14 +141,14 @@ _RATING_STEP = {
     "tables": [
         {
             "factors": ["area"],
-            "outputColumn": "area_factor",
-            "defaultValue": "1.0",
+            "output_column": "area_factor",
+            "default_value": "1.0",
             "entries": [{"area": "A", "value": "1.2"}],
         }
     ],
 }
 _MODEL_SCORE = {
-    "sourceType": "run",
+    "source_type": "run",
     "run_id": "run-1",
     "artifact_path": "model.cbm",
     "task": "regression",
@@ -160,7 +159,7 @@ _SCENARIO_EXPANDER = {
     "column_name": "price_step",
     "min_value": 0.9,
     "max_value": 1.1,
-    "stepCount": 3,
+    "step_count": 3,
     "step_column": "step_index",
 }
 _OPTIMISER = {
@@ -174,7 +173,7 @@ _OPTIMISER = {
     "tolerance": 0.001,
 }
 _OPTIMISER_APPLY = {
-    "sourceType": "file",
+    "source_type": "file",
     "artifact_path": "artifacts/optimiser.json",
     "version_column": "__optimiser_version__",
     "optimised_value_column": "selected_price",
@@ -187,9 +186,9 @@ _MODELLING = {
     "metrics": ["rmse"],
     "feature_columns": ["driver_age"],
 }
-_EXTERNAL_FILE = {"path": "models/lookup.pkl", "fileType": "pickle"}
+_EXTERNAL_FILE = {"path": "models/lookup.pkl", "file_type": "pickle"}
 _OUTPUT = {
-    "outputMapping": [
+    "output_mapping": [
         {
             "source_port": "in",
             "source_column": "premium",
@@ -199,7 +198,7 @@ _OUTPUT = {
     ],
 }
 _DATA_OUTPUT = {
-    "outputType": "file",
+    "output_type": "file",
     "format": "csv",
     "mode": "sink",
     "path": "outputs/prices.csv",
@@ -267,7 +266,7 @@ def _shared_definition() -> dict:
 
 
 def _occurrence(node_id: str, alias: str, definition_id: str, **extra: str) -> GraphNode:
-    config = {"definitionId": definition_id, "alias": alias, **extra}
+    config = {"definition_id": definition_id, "alias": alias, **extra}
     return GraphNode(
         id=node_id,
         type="submodel",
@@ -288,7 +287,7 @@ def _corpus_graph() -> PipelineGraph:
         _node("unused", "Archived Quotes", NodeType.DATA_INPUT, _data_input("data/old.parquet")),
         _node(
             "api",
-            "Quote Request",
+            "quote_input",
             NodeType.API_INPUT,
             _API_INPUT,
             description='The live "quote" request',
@@ -365,14 +364,14 @@ def _corpus_graph() -> PipelineGraph:
             {"overview": {"dataset_snapshot": True, "schema": True}},
         ),
         _node("explore-h", "Explore Enriched Lookup", NodeType.EXPLORE, {"code": _EXPLORE_CODE}),
-        _node("out", "Quote Response", NodeType.OUTPUT, _OUTPUT),
+        _node("out", "quote_response", NodeType.OUTPUT, _OUTPUT),
         # A source consumed never, and a response node filling its table from one frame.
-        _node("keyed", "Keyed Quote", NodeType.WORKBENCH_INPUT, _WORKBENCH_INPUT),
-        _node("filled", "Workbench Response", NodeType.WORKBENCH_OUTPUT, _WORKBENCH_OUTPUT),
+        _node("keyed", "workbench_input", NodeType.WORKBENCH_INPUT, _WORKBENCH_INPUT),
+        _node("filled", "workbench_output", NodeType.WORKBENCH_OUTPUT, _WORKBENCH_OUTPUT),
         _node("sink", "Results File", NodeType.DATA_OUTPUT, _DATA_OUTPUT),
         _occurrence("occ", "territory_rating", "territory_rating"),
         _occurrence(
-            "occ-copy", "territory_rating_second_copy", "territory_rating", instanceOf="occ"
+            "occ-copy", "territory_rating_second_copy", "territory_rating", instance_of="occ"
         ),
         _occurrence("occ-shared", "shared_territory_rate_tables", "shared_rates"),
     ]
@@ -761,10 +760,10 @@ BROKEN_CALLS = {
         '    instance_of="territory_rating",\n'
         ")\n"
     ),
-    "connect, flat": 'pipeline.connect("Quote_Request", "Live_Or_Batch", source_port="quotes")\n',
+    "connect, flat": 'pipeline.connect("quote_input", "Live_Or_Batch", source_port="quotes")\n',
     "connect, arguments on an indented line": (
         "pipeline.connect(\n"
-        '    "Price_Scenarios_Tagged_For_Review", "Lookup_Enriched_With_Territories"\n'
+        '    "Apply_Optimised_Street_Price", "workbench_output", target_port="pricing_output"\n'
         ")\n"
     ),
     "connect, one argument per line": (
@@ -824,7 +823,7 @@ LONE_BREAKS = {
                     "Quarterly Results Written Back To The Store",
                     NodeType.DATA_OUTPUT,
                     {
-                        "outputType": "file",
+                        "output_type": "file",
                         "format": "csv",
                         "mode": "sink",
                         "path": "out.csv",
@@ -843,30 +842,31 @@ LONE_BREAKS = {
             nodes=[
                 _node("src", "Quotes", NodeType.DATA_INPUT, _data_input("d.parquet")),
                 _node(
-                    "ex",
-                    "Explore Quotes",
-                    NodeType.EXPLORE,
+                    "tx",
+                    "Keep Quote Columns",
+                    NodeType.POLARS,
                     {
-                        "overview": {
-                            "dataset_snapshot": True,
-                            "data_quality": True,
-                            "numeric_summary": False,
-                            "categorical_summary": True,
-                            "schema": True,
-                        }
+                        "code": "df = Quotes",
+                        "selected_columns": [
+                            "quote_reference",
+                            "policy_start_date",
+                            "vehicle_group",
+                            "driver_age",
+                            "annual_mileage",
+                        ],
                     },
                 ),
             ],
-            edges=[_edge("src", "ex")],
+            edges=[_edge("src", "tx")],
         ),
-        "@pipeline.explore(\n"
-        "    overview={\n"
-        '        "dataset_snapshot": True,\n'
-        '        "data_quality": True,\n'
-        '        "numeric_summary": False,\n'
-        '        "categorical_summary": True,\n'
-        '        "schema": True,\n'
-        "    }\n"
+        "@pipeline.polars(\n"
+        "    selected_columns=[\n"
+        '        "quote_reference",\n'
+        '        "policy_start_date",\n'
+        '        "vehicle_group",\n'
+        '        "driver_age",\n'
+        '        "annual_mileage",\n'
+        "    ]\n"
         ")\n",
     ),
 }
@@ -1073,14 +1073,24 @@ def _declarations_only(*, preamble: str = "") -> str:
                 _data_input("data/quotes.parquet"),
                 description="Read with pl.scan_parquet",
             ),
+            _node("pol", "Policies", NodeType.DATA_INPUT, _data_input("data/policies.parquet")),
+            # A join's settings, unlike an Explore node's (READ-43), are its decorator's.
             _node(
-                "explore",
-                "Explore Quotes",
-                NodeType.EXPLORE,
-                {"selected_columns": ["pl", "pl.col"]},
+                "join",
+                "Join Policies",
+                NodeType.EDGE_JOIN,
+                {
+                    "how": "left",
+                    "on": ["quote_reference"],
+                    "maintain_order": "left",
+                    "selected_columns": ["pl", "pl.col"],
+                },
             ),
         ],
-        edges=[_edge("src", "explore")],
+        edges=[
+            _edge("src", "join", target_handle="base"),
+            _edge("pol", "join", target_handle="join"),
+        ],
     )
     return graph_to_code(graph, pipeline_name="declarations", preamble=preamble)
 
@@ -1244,6 +1254,27 @@ def _function_order(text: str) -> list[str]:
     return [function.name for function in _functions(text)]
 
 
+def _topological(node_ids: list[str], edges: list[GraphEdge]) -> list[str]:
+    """*node_ids* in topological order, taking of the nodes ready at once the one the graph
+    lists first (READ-12), whatever order the edges come in."""
+    parents = {node_id: {e.source for e in edges if e.target == node_id} for node_id in node_ids}
+    order: list[str] = []
+    while len(order) < len(node_ids):
+        order.append(next(n for n in node_ids if n not in order and parents[n].issubset(order)))
+    return order
+
+
+def _connect_pairs(text: str) -> list[tuple[str, str]]:
+    """The source and target of each ``pipeline.connect()`` call in *text*, in order."""
+    return [
+        (statement.value.args[0].value, statement.value.args[1].value)
+        for statement in ast.parse(text).body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and _dotted(statement.value.func) == "pipeline.connect"
+    ]
+
+
 def test_each_input_less_source_is_emitted_directly_before_its_first_consumer() -> None:
     def source(node_id: str, label: str) -> GraphNode:
         return _node(node_id, label, NodeType.DATA_INPUT, _data_input(f"data/{node_id}.parquet"))
@@ -1294,20 +1325,35 @@ def test_each_input_less_source_is_emitted_directly_before_its_first_consumer() 
         "Source_D_One",
         "Step_Four",
     ]
-    # The connections keep the graph's edge order.
-    wiring = code[code.index("# Wire nodes together") :].splitlines()[1:]
-    assert wiring[:3] == [
-        'pipeline.connect("Source_B", "Step_One")',
-        'pipeline.connect("Step_One", "Step_Two")',
-        'pipeline.connect("Source_A", "Step_Two")',
-    ]
+    # Each consumer's signature names its inputs in the graph's edge order, which says
+    # every edge, so no connect() is written (READ-30).
+    assert "def Step_Two(Step_One: pl.LazyFrame, Source_A: pl.LazyFrame)" in code
+    assert "def Step_Three(Source_C: pl.LazyFrame, Step_Two: pl.LazyFrame)" in code
+    assert "pipeline.connect" not in code
+
+
+def test_the_connect_calls_left_keep_the_graphs_edge_order(corpus: Corpus) -> None:
+    """The edges no signature can say (a port, a submodel occurrence, a hook's ``df``)
+    keep their connect() calls, in the order the graph lists the edges."""
+    graph = _corpus_graph()
+    names = {
+        node.id: node.data.config["alias"]
+        if node.data.nodeType == NodeType.SUBMODEL
+        else _sanitize_func_name(node.data.label)
+        for node in graph.nodes
+    }
+    calls = _connect_pairs(corpus.files["main.py"])
+    edges = [(names[edge.source], names[edge.target]) for edge in graph.edges]
+
+    assert len(calls) == len(set(calls)) < len(edges)
+    assert calls == [pair for pair in edges if pair in calls]
 
 
 def test_corpus_modules_follow_the_emission_order(corpus: Corpus) -> None:
     """Sources move down to their first consumer; everything else keeps topological order."""
     for path, module in corpus.modules.items():
         names = {node.id: _sanitize_func_name(node.data.label) for node in module.nodes}
-        topological = topo_sort_ids([node.id for node in module.nodes], module.edges)
+        topological = _topological([node.id for node in module.nodes], module.edges)
         parents: dict[str, list[str]] = {}
         for edge in module.edges:
             parents.setdefault(edge.target, []).append(edge.source)
@@ -1407,11 +1453,11 @@ _CODE_TYPE_CONFIGS = {
 }
 
 
-def _fed_by_df(node_type: NodeType, config: dict) -> PipelineGraph:
+def _fed_by_df(node_type: NodeType, config: dict, label: str = "Target Node") -> PipelineGraph:
     return PipelineGraph(
         nodes=[
             _node("upstream", "df", NodeType.DATA_INPUT, _data_input("data/df.parquet")),
-            _node("target", "Target Node", node_type, config),
+            _node("target", label, node_type, config),
         ],
         edges=[_edge("upstream", "target")],
     )
@@ -1453,7 +1499,7 @@ def test_an_api_frame_named_df_on_a_hook_is_a_config_error() -> None:
     }
     graph = PipelineGraph(
         nodes=[
-            _node("api", "Request", NodeType.API_INPUT, api),
+            _node("api", "quote_input", NodeType.API_INPUT, api),
             _node("rate", "Rate", NodeType.RATING_STEP, {**_RATING_STEP, "code": "df = df"}),
         ],
         edges=[_edge("api", "rate", source_handle="df")],
@@ -1475,9 +1521,11 @@ def test_an_api_frame_named_df_on_a_hook_is_a_config_error() -> None:
 def test_a_node_type_without_code_takes_an_input_named_df_as_any_other(
     node_type: NodeType, config: dict
 ) -> None:
-    code = graph_to_code(_fed_by_df(node_type, config), pipeline_name="plain")
+    # A Quote Response takes its fixed name (READ-46).
+    label = SINGLETON_NODE_NAMES.get(node_type, "Target Node")
+    code = graph_to_code(_fed_by_df(node_type, config, label), pipeline_name="plain")
 
-    assert "\ndef Target_Node(df): ...\n" in code
+    assert f"\ndef {_sanitize_func_name(label)}(df): ...\n" in code
 
 
 @pytest.mark.parametrize(

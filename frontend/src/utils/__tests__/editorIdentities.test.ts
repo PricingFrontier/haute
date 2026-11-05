@@ -45,9 +45,9 @@ describe("editor identity resolution", () => {
       ],
     })
     const occurrence = node("pricing", "Tarif café", "submodel", {
-      definitionId: "pricing-definition",
+      definition_id: "pricing-definition",
       alias: "pricing_secondary",
-      instanceOf: "pricing_owner",
+      instance_of: "pricing_owner",
     })
     const definition: SubmodelDefinition = {
       definitionId: "pricing-definition",
@@ -107,7 +107,8 @@ describe("editor identity resolution", () => {
           alias: null,
           collision: null,
           function_name: "node_class_cafe",
-          config_reference: "config/polars/node_class_cafe.json",
+          // A transform has no sidecar (READ-22), so no config reference.
+          config_reference: null,
           default_input_name: "node_class_cafe",
           source_handle_input_names: {},
         },
@@ -129,9 +130,10 @@ describe("editor identity resolution", () => {
     expect(resolvedNodes[0].data).toMatchObject({
       _functionName: "node_class_cafe",
       _defaultInputName: "node_class_cafe",
-      _configReference: "config/polars/node_class_cafe.json",
       _sourceHandleInputNames: {},
     })
+    expect(resolvedNodes[0].data).not.toHaveProperty("_configReference")
+    expect(resolvedNodes[1].data).toMatchObject({ _configReference: "config/quote_input/quotes.json" })
 
     const edges: Edge[] = [
       { id: "ordinary-edge", source: "ordinary", target: "target" },
@@ -215,7 +217,7 @@ describe("editor identity resolution", () => {
       inputPorts: [{ name: "policy", targets: [{ nodeId: child.id, handleId: null }] }],
       outputPorts: [],
     }
-    const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
+    const root = node("instance", "Pricing", "submodel", { definition_id: "pricing", alias: "pricing" })
     const resolve = vi.fn(async (request): Promise<EditorIdentityBatchResponse> => ({
       violations: null,
       identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
@@ -267,7 +269,7 @@ describe("editor identity resolution", () => {
 
   it("rejects a submodel node without alias", () => {
     const occurrence = node("pricing", "Tarif café", "submodel", {
-      definitionId: "pricing-definition",
+      definition_id: "pricing-definition",
     })
     const definition: SubmodelDefinition = {
       definitionId: "pricing-definition",
@@ -308,7 +310,7 @@ describe("naming against the document", () => {
       outputPorts: [],
     }
     const copy = node("copy", "X copy", "polars")
-    const pasted = node("pasted", "rates copy", "submodel", { definitionId: "rates", alias: "rates" })
+    const pasted = node("pasted", "rates copy", "submodel", { definition_id: "rates", alias: "rates" })
     const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
       violations: [],
       identities: [identity("copy", "X copy 2", null, null), identity("pasted", "rates_2", "rates_2", null)],
@@ -325,7 +327,7 @@ describe("naming against the document", () => {
 
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ graph: context, allocate: true }))
     expect(resolved.nodes.map((n) => n.data.label)).toEqual(["X copy 2", "rates_2"])
-    expect(resolved.nodes[1].data.config).toMatchObject({ definitionId: "rates", alias: "rates_2" })
+    expect(resolved.nodes[1].data.config).toMatchObject({ definition_id: "rates", alias: "rates_2" })
   })
 
   it("refuses the whole batch when the server names a collision", async () => {

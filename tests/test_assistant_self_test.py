@@ -267,11 +267,11 @@ class TestPortfolio:
         assert by_id["smoke_join_roles"].turns[0].expectations.required_edges == (
             ("nb_batch", "quote_with_competitor", "base"),
             ("competitor_insight", "quote_with_competitor", "join"),
-            ("quote_with_competitor", "enriched_quotes", None),
+            ("quote_with_competitor", "quote_response", None),
         )
         assert by_id["smoke_rating_step"].turns[0].expectations.required_edges == (
             ("quotes", "age_rating", None),
-            ("age_rating", "age_price_response", None),
+            ("age_rating", "quote_response", None),
         )
         assert by_id["motor_region_loading_join"].turns[0].expectations.required_edges == (
             ("base_premium", "loaded_quotes", "base"),
@@ -282,7 +282,7 @@ class TestPortfolio:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Configuration matching leaves free a key a factor does not state, so a
-        breakpoint factor that adds `rightClosed: false` holds every key its case
+        breakpoint factor that adds `right_closed: false` holds every key its case
         states. Execution catches that inverted closure only on a row that sits
         on a boundary, so each boundary a case states is a value of the column
         its golden bands."""
@@ -311,7 +311,11 @@ class TestPortfolio:
                                 if column.dtype == pl.Date
                                 else float(rule["boundary"])
                             )
-                            assert (column == value).any(), (case.id, factor["outputColumn"], value)
+                            assert (column == value).any(), (
+                                case.id,
+                                factor["output_column"],
+                                value,
+                            )
                     covered.add(case.id)
 
         assert covered == {
@@ -1493,7 +1497,9 @@ def _crashing_replay(config: AssistantConfig) -> TrajectoryProvider:
 
     if config.egress.max_sensitivity == "internal":
         raise _KeywordOnlyError(switch="policies", scenario="renewal_batch")
-    if Path("config/polars/risk_features.json").is_file():
+    # The stepped project is the one whose pipeline builds risk_features from steps.
+    pipeline = Path("pipeline.py")
+    if pipeline.is_file() and "def risk_features(" in pipeline.read_text(encoding="utf-8"):
         os._exit(3)
     return _banding_replay(config)
 

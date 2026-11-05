@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo, useState } from "react"
 import { X, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { fetchExplorePivotMembers } from "../api/client"
-import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
+import { NODE_TYPES, NODE_TYPE_META, REQUEST_INPUT_TYPES, isRequestInputType, isSingletonType } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { edgeInputName, requestInputSourceHandles } from "../utils/apiInputPorts"
 import type { WorkbenchTables } from "../utils/workbenchTables"
@@ -478,6 +478,8 @@ type NodePanelHeaderProps = {
   nodeId: string
   label: string
   readOnly: boolean
+  /** Named by its type alone, so it has no rename (READ-46). */
+  fixedName?: boolean
   onRenameNode?: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   onClose: () => void
 }
@@ -486,6 +488,7 @@ function NodePanelHeader({
   nodeId,
   label,
   readOnly,
+  fixedName = false,
   onRenameNode,
   onClose,
 }: NodePanelHeaderProps) {
@@ -497,7 +500,7 @@ function NodePanelHeader({
           data-testid="node-panel-label-input"
           type="text"
           value={label}
-          disabled={readOnly || rename.pending}
+          disabled={readOnly || fixedName || rename.pending}
           onCommit={(value) => rename.commit(value, onRenameNode)}
           className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
           style={{ color: "var(--text-primary)", borderColor: "transparent" }}
@@ -569,8 +572,8 @@ function unavailableDefinitionNodes(
 ): PipelineGraph["nodes"] {
   const config = (node.data as HauteNodeData).config
   if (effectiveNodeType(node) !== NODE_TYPES.SUBMODEL || !isSubmodelInstanceConfig(config)) return []
-  const definition = submodels?.[config.definitionId]
-  if (!isSubmodelDefinition(definition, config.definitionId)) return []
+  const definition = submodels?.[config.definition_id]
+  if (!isSubmodelDefinition(definition, config.definition_id)) return []
   return definition.graph.nodes.filter((inner) => (
     (inner.data as HauteNodeData)._loadAvailability === "unavailable"
   ))
@@ -994,7 +997,6 @@ type NodeEditorBodyProps = {
   availableColumns: { name: string; dtype: string }[]
   currentColumns: { name: string; dtype: string }[]
   onUpdateConfig: OnUpdateConfig
-  onReplaceConfig: OnReplaceConfig
   configEditor: React.ReactNode
 }
 
@@ -1018,7 +1020,6 @@ function NodeEditorBody({
   availableColumns,
   currentColumns,
   onUpdateConfig,
-  onReplaceConfig,
   configEditor,
 }: NodeEditorBodyProps) {
   let editor = configEditor
@@ -1034,7 +1035,6 @@ function NodeEditorBody({
       <SteppedCodePane
         config={config}
         onUpdate={onUpdateConfig}
-        onReplaceConfig={onReplaceConfig}
         inputSources={chips}
         inputNames={stepInputNames(nodeType, inputSources.map((source) => source.name))}
         onDeleteInput={onDeleteEdge}
@@ -1454,6 +1454,7 @@ function NodePanelContent({
         nodeId={node.id}
         label={String(node.data.label)}
         readOnly={readOnly || Boolean(scopedSave)}
+        fixedName={isSingletonType(String(node.data.nodeType))}
         onRenameNode={onRenameNode}
         onClose={onClose}
       />
@@ -1542,7 +1543,6 @@ function NodePanelContent({
         availableColumns={availableColumns}
         currentColumns={currentColumns}
         onUpdateConfig={handleConfigUpdate}
-        onReplaceConfig={handleConfigReplace}
         configEditor={configEditor}
       />
     </PanelShell>

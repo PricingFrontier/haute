@@ -1162,7 +1162,7 @@ describe("App integration - load a pipeline with nodes", () => {
     // Direct Parquet by derivation, so the pre-preview snapshot-ensure stage
     // skips this source instead of querying the unmocked input-cache API.
     sourceNode.data.config = {
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       path: "data/claims.parquet",
@@ -1270,7 +1270,7 @@ describe("App integration - load a pipeline with nodes", () => {
   it("offers the assistant beside an Explore node's execution error", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     sourceNode.data.config = {
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       path: "data/claims.parquet",
@@ -1314,7 +1314,7 @@ describe("App integration - load a pipeline with nodes", () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
     // Direct Parquet, so the snapshot-ensure stage skips this source.
     sourceNode.data.config = {
-      inputType: "file",
+      input_type: "file",
       format: "parquet",
       mode: "scan",
       path: "data/claims.parquet",
@@ -1363,7 +1363,7 @@ describe("App integration - load a pipeline with nodes", () => {
 
   it("hydrates Pivot field actions from the shared data profile on cold load", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
-    sourceNode.data.config = { inputType: "file", format: "parquet", mode: "scan", path: "data/claims.parquet", arguments: {} }
+    sourceNode.data.config = { input_type: "file", format: "parquet", mode: "scan", path: "data/claims.parquet", arguments: {} }
     sourceNode.data._columns = [{ name: "upstream_only", dtype: "i64" }]
     sourceNode.data._columnsSource = "live"
     const exploreNode = makeNode("explore_1", "Claims Explore", "explore")
@@ -1460,7 +1460,7 @@ describe("App integration - add a node via drag-and-drop from the palette", () =
 
   it("keeps a Quote Input inside a submodel singleton across the whole document", async () => {
     const occurrence = makeNode("inputs", "inputs", "submodel")
-    occurrence.data.config = { definitionId: "definition_inputs", alias: "inputs" }
+    occurrence.data.config = { definition_id: "definition_inputs", alias: "inputs" }
     const nestedApiInput = makeNode("quote_input", "Nested Quote Input", "apiInput")
 
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
@@ -1899,25 +1899,25 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     const mappedConsumer = makeNode("instance_value", "Mapped Consumer", "polars")
     mappedConsumer.data.config = {
 
-      inputMapping: { original_input: "drivers", stable_value: "Other_Source" },
+      input_mapping: { original_input: "drivers", stable_value: "Other_Source" },
       untouched: "downstream-instance-config",
     }
     const firstUnrelatedConsumer = makeNode("instance_key_1", "First Unrelated Consumer", "polars")
     firstUnrelatedConsumer.data.config = {
 
-      inputMapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
+      input_mapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
       untouched: "first-instance-config",
     }
     const secondUnrelatedConsumer = makeNode("instance_key_2", "Second Unrelated Consumer", "polars")
     secondUnrelatedConsumer.data.config = {
 
-      inputMapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
+      input_mapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
       untouched: "second-instance-config",
     }
     const unrelatedConsumer = makeNode("live_instance", "Unrelated Consumer", "polars")
     unrelatedConsumer.data.config = {
 
-      inputMapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
+      input_mapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
     }
     const ordinarySource = makeNode(
@@ -1999,7 +1999,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
   ) {
     const base = makeApiInputGraph()
     const boundary = makeNode("pricing", "pricing", "submodel")
-    boundary.data.config = { definitionId: "definition_pricing", alias: "pricing" }
+    boundary.data.config = { definition_id: "definition_pricing", alias: "pricing" }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
     childRouter.data.config = {
       input_scenario_map: { router_input: "batch", stable_input: "live" },
@@ -2008,13 +2008,13 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     const mappedChild = makeNode("child_value_instance", "Mapped Child", "polars")
     mappedChild.data.config = {
 
-      inputMapping: { original_input: "value_input", stable_value: "stable_input" },
+      input_mapping: { original_input: "value_input", stable_value: "stable_input" },
       untouched: "child-value-config",
     }
     const unrelatedChild = makeNode("child_key_instance", "Unrelated Child", "polars")
     unrelatedChild.data.config = {
 
-      inputMapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
+      input_mapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
       untouched: "child-key-config",
     }
     const ordinary = makeNode(
@@ -2228,17 +2228,17 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     })
     expect(configFor("instance_value")).toEqual({
 
-      inputMapping: { original_input: "driver_risk", stable_value: "Other_Source" },
+      input_mapping: { original_input: "driver_risk", stable_value: "Other_Source" },
       untouched: "downstream-instance-config",
     })
     expect(configFor("instance_key_1")).toEqual({
 
-      inputMapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
+      input_mapping: { drivers: "Mapped_First", stable_key: "Stable_First" },
       untouched: "first-instance-config",
     })
     expect(configFor("instance_key_2")).toEqual({
 
-      inputMapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
+      input_mapping: { drivers: "Mapped_Second", stable_key: "Stable_Second" },
       untouched: "second-instance-config",
     })
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
@@ -2273,17 +2273,17 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     })
     expect(configFor("instance_value")).toEqual({
 
-      inputMapping: { original_input: "drivers", stable_value: "Renamed_Source" },
+      input_mapping: { original_input: "drivers", stable_value: "Renamed_Source" },
       untouched: "downstream-instance-config",
     })
     expect(configFor("live_instance")).toEqual({
 
-      inputMapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
+      input_mapping: { Other_Source: "Mapped_Ordinary", stable_key: "Stable_Value" },
       untouched: "live-instance-config",
     })
     expect(configFor("coded_consumer")).toEqual({
       code: 'df = Other_Source.select("value")',
-      inputMapping: { Other_Source: "Renamed_Source" },
+      input_mapping: { Other_Source: "Renamed_Source" },
       untouched: "coded-consumer-config",
     })
     expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
@@ -2349,7 +2349,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
           function_name: "Renamed_Source",
           default_input_name: "Renamed_Source",
           source_handle_input_names: {},
-          config_reference: "config/polars/Renamed_Source.json",
+          config_reference: null,
         }],
       })
     })
@@ -2462,12 +2462,12 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       })
       expect(nestedConfig("child_value_instance")).toEqual({
 
-        inputMapping: { original_input: "value_input", stable_value: "stable_input" },
+        input_mapping: { original_input: "value_input", stable_value: "stable_input" },
         untouched: "child-value-config",
       })
       expect(nestedConfig("child_key_instance")).toEqual({
 
-        inputMapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
+        input_mapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
         untouched: "child-key-config",
       })
     }
@@ -2657,7 +2657,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
       "submodel",
     )
     occurrence.data.config = {
-      definitionId: "definition_pricing",
+      definition_id: "definition_pricing",
       alias: "pricing_secondary",
     }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
@@ -2672,7 +2672,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     )
     childInstance.data.config = {
 
-      inputMapping: { original_input: "drivers", stable_value: "stable_input" },
+      input_mapping: { original_input: "drivers", stable_value: "stable_input" },
       untouched: "child-value-config",
     }
     const graph = {
@@ -2739,7 +2739,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     })
     expect(nestedConfig("child_value_instance")).toEqual({
 
-      inputMapping: { original_input: "drivers", stable_value: "stable_input" },
+      input_mapping: { original_input: "drivers", stable_value: "stable_input" },
       untouched: "child-value-config",
     })
   })
@@ -2749,10 +2749,10 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
 describe("App integration - read-only submodel instance", () => {
   it("traces the displayed output after an instance rename without refreshing", async () => {
     const owner = makeNode("owner", "owner", "submodel")
-    owner.data.config = { definitionId: "rating", alias: "owner" }
+    owner.data.config = { definition_id: "rating", alias: "owner" }
     owner.data._sourceHandleInputNames = { out__premium: "premium", out__audit: "audit" }
     const copy = makeNode("again", "again", "submodel")
-    copy.data.config = { definitionId: "rating", alias: "again", instanceOf: "owner" }
+    copy.data.config = { definition_id: "rating", alias: "again", instance_of: "owner" }
     copy.data._sourceHandleInputNames = { out__premium: "again_premium", out__audit: "again_audit" }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [owner, copy], edges: [], source_revision: "revision-rename-trace",
@@ -2812,14 +2812,14 @@ describe("App integration - read-only submodel instance", () => {
   it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
     const owner = makeNode("inputs", "inputs", "submodel")
     owner.data.config = {
-      definitionId: "definition_inputs",
+      definition_id: "definition_inputs",
       alias: "inputs",
     }
     const copy = makeNode("inputs_2", "inputs_2", "submodel")
     copy.data.config = {
-      definitionId: "definition_inputs",
+      definition_id: "definition_inputs",
       alias: "inputs_2",
-      instanceOf: owner.id,
+      instance_of: owner.id,
     }
     const child = makeNode("claims_input", "Claims input", "dataInput")
     child.data.config = {
@@ -3120,7 +3120,7 @@ describe("App integration - panel open/close", () => {
 
   it("Instance creates a linked copy of a plain node, not just submodels", async () => {
     const occurrence = (id: string, instanceOf?: string) => ({ ...makeNode(id, id, "submodel"), data: {
-      label: id, nodeType: "submodel", config: { definitionId: "First", alias: id, ...(instanceOf ? { instanceOf } : {}) },
+      label: id, nodeType: "submodel", config: { definition_id: "First", alias: id, ...(instanceOf ? { instance_of: instanceOf } : {}) },
     } })
     const graph = { nodes: [occurrence("First"), occurrence("First_2", "First")], edges: [], submodels: {
       First: { definitionId: "First", file: "modules/First.py", inputPorts: [],
@@ -3163,7 +3163,7 @@ describe("App integration - panel open/close", () => {
   // A main canvas holding one submodel occurrence beside a plain node.
   it("clicking a submodel previews its output and offers Refresh", async () => {
     const occurrence = makeNode("pricing", "pricing", "submodel")
-    occurrence.data.config = { definitionId: "definition_pricing", alias: "pricing" }
+    occurrence.data.config = { definition_id: "definition_pricing", alias: "pricing" }
     occurrence.data._sourceHandleInputNames = { out__premium: "premium" }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [occurrence], edges: [], submodels: { definition_pricing: {
@@ -3186,7 +3186,7 @@ describe("App integration - panel open/close", () => {
 
   function loadSubmodelCanvas(capabilities?: { can_mutate: boolean }): void {
     const occurrence = makeNode("pricing", "pricing", "submodel")
-    occurrence.data.config = { definitionId: "definition_pricing", alias: "pricing" }
+    occurrence.data.config = { definition_id: "definition_pricing", alias: "pricing" }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [occurrence, makeNode("polars_1", "First")],
       edges: [],

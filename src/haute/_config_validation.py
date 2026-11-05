@@ -31,6 +31,67 @@ VALID_KEYS: dict[NodeType, frozenset[str]] = {
     node_type: model.keys for node_type, model in NODE_CONFIG_MODELS.items()
 }
 
+#: The camelCase keys Haute's schemas wrote before every key was snake_case (READ-29),
+#: each with the key it became: in node configs, a rating table's dtype descriptor, the
+#: Polars steps and the transform decorator's keyword.
+SNAKE_CASE_KEYS: dict[str, str] = {
+    "inputMapping": "input_mapping",
+    "inputType": "input_type",
+    "outputType": "output_type",
+    "sourceType": "source_type",
+    "fileType": "file_type",
+    "leftOn": "left_on",
+    "rightOn": "right_on",
+    "maintainOrder": "maintain_order",
+    "outputMapping": "output_mapping",
+    "outputColumn": "output_column",
+    "rightClosed": "right_closed",
+    "defaultValue": "default_value",
+    "onMissing": "on_missing",
+    "factorDtypes": "factor_dtypes",
+    "timeUnit": "time_unit",
+    "timeZone": "time_zone",
+    "combinedOutputs": "combined_outputs",
+    "baseValue": "base_value",
+    "stepCount": "step_count",
+    "definitionId": "definition_id",
+    "instanceOf": "instance_of",
+    "displayPath": "display_path",
+    "orderBy": "order_by",
+    "nullsLast": "nulls_last",
+    "numberType": "number_type",
+    "variableName": "variable_name",
+    "valueName": "value_name",
+    "nodeId": "node_id",
+    "handleId": "handle_id",
+}
+
+
+def camel_case_endpoint_message(field: str, port: Mapping[Any, Any]) -> str | None:
+    """The refusal for a submodel port whose endpoints a module writes in camelCase
+    (READ-45), or ``None``: the graph API keeps ``nodeId`` and ``handleId``, a module
+    does not."""
+    endpoints = port.get("targets") if "targets" in port else [port.get("source")]
+    for endpoint in endpoints if isinstance(endpoints, list) else []:
+        if isinstance(endpoint, Mapping):
+            message = camel_case_key_message(
+                f"Submodel {field} port {port.get('name')!r}",
+                [key for key in endpoint if isinstance(key, str)],
+            )
+            if message is not None:
+                return message
+    return None
+
+
+def camel_case_key_message(where: str, keys: Sequence[str]) -> str | None:
+    """The refusal for *keys* in their camelCase form, or ``None`` when none of them is."""
+    renamed = [key for key in keys if key in SNAKE_CASE_KEYS]
+    if not renamed:
+        return None
+    pairs = ", ".join(f"{key!r} is now {SNAKE_CASE_KEYS[key]!r}" for key in renamed)
+    return f"{where} uses the camelCase keys Haute wrote before its keys were snake_case: {pairs}."
+
+
 #: Every error :func:`validate_node_config` raises for a config it refuses, for a boundary
 #: to answer as the request's refusal: its own (``ConfigError`` and ``NodeConfigError``, the
 #: removed reuse forms' ``ParseError``) and an engine rule's, in the engine's own type (most
@@ -49,7 +110,8 @@ class RemovedConfigKeys:
     """The retired config fields of one node type, grouped by the guidance their refusal
     gives (:func:`reject_removed_config_keys`)."""
 
-    #: ``instanceOf`` is refused, except on the Submodel, whose occurrence carries it.
+    #: The retired ``instanceOf`` reuse form is refused, except on the Submodel, whose
+    #: occurrence carries ``instance_of`` and refuses ``instanceOf`` as its camelCase key.
     instance_of: bool = True
     #: Removed input-identity fields, with the replacement the refusal names.
     input_identity: frozenset[str] = frozenset()
@@ -153,6 +215,18 @@ def removed_node_instance_error(form: str) -> ParseError:
         removed_node_instance=form,
         remediation=remediation,
     )
+
+
+def reject_camel_case_decorator_kwargs(kwargs: Mapping[str, Any], func_name: str = "") -> None:
+    """Refuse a decorator keyword in its camelCase form, such as ``inputMapping=``.
+
+    A decorator's keywords are its config keys, and a keyword no setting reads would
+    otherwise be dropped without a word, leaving the node bound as if it had none.
+    """
+    where = f"The decorator of {func_name!r}" if func_name else "A node decorator"
+    message = camel_case_key_message(where, [key for key in kwargs if key != "_node_type"])
+    if message is not None:
+        raise ConfigError(message, camel_case_keywords=sorted(set(kwargs) & set(SNAKE_CASE_KEYS)))
 
 
 def reject_removed_node_reuse_kwargs(kwargs: Mapping[str, Any]) -> None:
@@ -517,6 +591,9 @@ def reject_unrecognized_config_keys(
     if REMOVED_CONFIG_KEYS[node_type].instance_of and "instanceOf" in config:
         raise removed_node_instance_error("instanceOf")
     unrecognized = unrecognized_config_keys(node_type, config)
+    camel_case = camel_case_key_message(f"Node {node_label!r} ({node_type.value})", unrecognized)
+    if camel_case is not None:
+        raise ConfigError(camel_case, unrecognized_config_keys=unrecognized)
     if unrecognized:
         keys = ", ".join(repr(key) for key in unrecognized)
         raise ConfigError(
@@ -733,6 +810,18 @@ def _shape_error(
     # it might have been), and the branches refused at that value, as deep, together
     # say what it may be.
     first = max(errors, key=lambda error: len(error["loc"]))
+    # A nested key in its camelCase form, such as a rating table's ``outputColumn``: the
+    # shape knows where keys are declared, so a column the analyst named is never taken
+    # for one.
+    extra = [
+        str(error["loc"][-1])
+        for error in errors
+        if error["type"] == "extra_forbidden" and error["loc"]
+    ]
+    camel_case = camel_case_key_message(f"Node {label!r} ({nt.value})", extra)
+    if camel_case is not None:
+        location = _config_location(config, first["loc"])
+        return NodeConfigError(camel_case, setting=setting_path(location))
     model = NODE_CONFIG_MODELS[nt]
     if first["type"] in {"union_tag_not_found", "union_tag_invalid"} and model.discriminant:
         setting = model.discriminant

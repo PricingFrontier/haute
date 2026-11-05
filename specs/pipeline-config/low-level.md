@@ -5,26 +5,31 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
-| `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through `_STANDALONE_WORK`, a `node_type_table` with one handler per node type calling the shared helper canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `selected_input_index`, `load_external_object_from_config`; a structural type or the Transform has no standalone behaviour); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
-| `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join, an Explore or a transform, from the decorator kwargs and function body (`_build_node_config`, reading `_DECORATOR_CONFIG`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`; `_PARSE_TIME_CONTRACT` derives a Model Scoring's outputs alone, and `_AFTER_PARSE` holds a type's last parse step: a Source Switch's inputs, an Edge Join's required order). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs (`_SIDECAR_CODECS`: a Banding's compacted factors and a Rating Step's normalised tables, read back and written), and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
+| `src/haute/_node_bindings.py` | The one rule binding a node's parameters to its inputs (READ-01): `input_parameters` gives the parameters that name inputs and whether the decorator takes the first (a frame hook's `df`; a Data Input hook's `df` names none); `bind_node_inputs` returns the inputs in the order the parameters read them, or raises naming the node and the parameter. The parser (`src/haute/_parser_bindings.py`) and the standalone run (`src/haute/pipeline.py::_bind_edges`) both call it. |
+| `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through `_STANDALONE_WORK`, a `node_type_table` with one handler per node type calling the shared helper canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `selected_input_index`, `load_external_object_from_config`; a structural type or the Transform has no standalone behaviour); `is_configured` says whether a registered node's decorator acts on its settings (`_ALWAYS_CONFIGURED`: an Edge Join, and an Explore, which a run refuses without its sidecar; any other configured type once it names `config=`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`); `seeded_workbench_input_ports` gives the ports of a Workbench Input a score seeds with frames, its sidecar read and given the project form's tables. |
+| `src/haute/_config_builder.py` | The config of a node that keeps its settings on its decorator, an Edge Join or a transform, from the decorator kwargs and function body (`_build_node_config`, reading `_DECORATOR_CONFIG`); sidecar resolution, an Explore node's included (READ-43), the steps rebuilt from a stepped node's body (`_with_lifted_steps`, READ-44) and the parse-time `contract=` cross-check (`_resolve_node_config`; `_PARSE_TIME_CONTRACT` derives a Model Scoring's outputs alone, and `_AFTER_PARSE` holds a type's last parse step: a Source Switch's inputs, an Edge Join's required order). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers (a node's JSON config is read as strict UTF-8 by `_load_json_object`, and a byte that is not UTF-8 is a `ConfigError` naming the file and the byte; `node_configs_read_through` installs another byte reader for a block, which editor recovery uses so its revision authenticates the config bytes it read; `node_config_json` is the one sidecar text every save path writes), `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs (`_SIDECAR_CODECS`, each type's sidecar form: how it is read back, checked and written, the settings it leaves out at their default, and its records written one to a line: a Banding's bands, a Rating Step's grids, a Constant's map, a Quote Input's columns, an Explore node's settings), and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes (which `src/haute/parser.py::load_declared_global_constants` reads) and `global_constants_json` writes it canonically. |
+| `src/haute/_constant_config.py` | A Constant node's sidecar as a map from each constant's name to its value (READ-28): `constants_for_sidecar` writes the editor's list of `{name, value}` entries as that map, a whole number kept as written, and `constants_from_sidecar` reads it back, refusing the list form an earlier Haute wrote with a message naming the map form. Called by the node config module, `src/haute/_config_io.py`, on every Constant sidecar written and read. |
+| `src/haute/_json_files.py` | The one printer of every JSON file Haute writes (READ-10): `render_json(value, one_line=, vertical=)` indents two spaces, keeps keys in the order given and text as typed (`ensure_ascii=False`), writes a list or mapping of numbers alone on one line unless `vertical` names it, and puts on one line whatever `one_line` names; `at(*patterns)` names places by key path, `ANY` (`*`) matching any key or index; `render_json_bytes` gives the UTF-8 bytes with a final newline. Node sidecars, global constants, the editor's sidecar, the workbench form folder and test quotes are written through it. |
 | `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_node_config_models.py` | Each node type's config model: its config `TypedDict` (Quote Input, Workbench Input and Output, the Data Input and Data Output provider branches, Transform, Edge Join, Model Score, Banding, Rating Step, Quote Response, Explore, Load File, Source Switch, Model Training, Optimiser, Optimiser Apply, Scenario Expander, Constant, Submodel, Submodel Port) and the nested shapes it holds, each closed (`extra="forbid"`) and strict under Pydantic, with each key's description as its attribute docstring; `NodeConfigModel` (the node type, its shape, its `TypeAdapter`, its declared keys, and its `check`, `check_inputs` and `completeness` hooks into the engine's value rules); and `NODE_CONFIG_MODELS`, one per `NodeType`, complete at import. |
 | `scripts/generate_node_config_reference.py` | Writes each node reference page's config-keys table (`docs/building-models/nodes/*.md`, between `<!-- config-keys:start -->` and `<!-- config-keys:end -->` inside its "In the pipeline file" note) from the node type's config model: one row per key, a nested key under its parent's path (`factors[].banding`), its type in words and its attribute docstring, a provider branch's own key naming its branches, the universal keys last and a workbench node's form-given keys left out; `--check` fails when a page's table is stale. `NODE_REFERENCE_PAGES` is the one map from node type to page. |
 | `src/haute/_config_validation.py` | `validate_node_config`, the one validation boundary over `NODE_CONFIG_MODELS`; `selected_input_index` (the input a `selected` pass-through returns, resolved by `resolve_optimiser_data_input`); and `CONFIG_REFUSALS`, every error it raises for a refused config, which each boundary answers as the request's refusal; `VALID_KEYS` (each node type's declared keys, from its model), `unrecognized_config_keys` and `reject_unrecognized_config_keys`. `removed_node_instance_error` supplies the shared refusal and one-node-submodel remediation; `reject_removed_config_keys` refuses ordinary-node `instanceOf` and each type's retired fields (`REMOVED_CONFIG_KEYS`), `reject_form_given_keys` a workbench node's `FORM_GIVEN_KEYS`, `validate_optimiser_input_selectors` checks a type's exact-edge selectors (`_INPUT_SELECTORS`), and `reject_removed_node_reuse_kwargs` refuses the removed keywords in parsed and live node decorators. |
 | `src/haute/_keyword_parameters.py` | A code transform's keyword-only parameters: `keyword_parameters_from_signature` (the parse's record and located refusal), `validate_keyword_parameters` (a submitted config's contract), `reject_input_named_keyword_parameters` (codegen and the builder) and `keyword_parameter_values` (the values a run binds). |
-| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `stepped_surface_for` (each stepped node type's `src/haute/_node_specs.py::SteppedSurface` from `src/haute/_node_specs.py::STEPPED_NODE_TYPES`: start mode plus input eligibility `edges`/`none`; a message about a node's steps names it by its specification's display name), `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index; a structured step's optional `comment`, its comment and blank lines verbatim with each line ending in a newline, printed above its statement and outside the step's line range, each line empty or a comment with no whitespace at its end; a free-code step holding only comments accepted, one holding nothing refused; `MAX_EXPR_DEPTH` counting a chain of one operator as one level, where a binary's left operand is a binary of the same operator among `+ - * / // %`, never regrouped; and a variable step refused when a free-code step above it binds its name, read by `_code_bound_names`), `stepped_surface_for` (each stepped node type's `src/haute/_node_specs.py::SteppedSurface` from `src/haute/_node_specs.py::STEPPED_NODE_TYPES`: start mode plus input eligibility `edges`/`none`; a message about a node's steps names it by its specification's display name), `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps_lift.py` | The step renderer's inverse (READ-21), with which READ-22 rebuilds a stepped node's steps on load. `lift_steps` rebuilds the steps from a body: a statement becomes a step only when the renderer, placing that step after the steps rebuilt before it, prints exactly the statement's text, the comment and blank lines above it becoming the step's `comment`; each run of other statements, with the comments and blank lines among them, becomes one free-code step; comment lines after the last statement become a comment-only free-code step; the result must render back byte for byte, trailing newlines apart, or `StepLiftError` is raised. `canonical_steps` gives the canonical form a step list rebuilds as (`specs/codegen/structured-syntax-boundary.md`, Rebuilding steps from code). |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
 | `src/haute/_node_type.py` | `NodeType`, the node-type enum, alone in a standard-library-only leaf so the specification below can import it without the cycle through `haute._types` (which imports `haute._graph_utils` before it would define the enum); `haute._types` re-exports it. |
-| `src/haute/_node_specs.py` | The node specification: `NodeSpec`, `NODE_SPECS` (one entry per `NodeType`, validated at import), `node_spec` and `known_node_spec` (no entry for a value that is not a node type, which only recovery and unset string arguments meet), the derived category views (`REQUEST_INPUT_NODE_TYPES`, `RESPONSE_NODE_TYPES`, `SINK_ONLY_NODE_TYPES`, `SOURCE_NODE_TYPES`, `CODE_NODE_TYPES`, `STEPPED_NODE_TYPES`, `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`, `SINGLETON_NODE_GROUPS`, `REQUEST_INPUT_KINDS`, the decorator and sidecar-folder maps, `DEFAULT_NODE_TYPE`), and `node_type_table` (a concern's exhaustive per-type table). Imports only `haute._node_type` and the standard library. |
+| `src/haute/_node_specs.py` | The node specification: `NodeSpec`, `NODE_SPECS` (one entry per `NodeType`, validated at import), `node_spec` and `known_node_spec` (no entry for a value that is not a node type, which only recovery and unset string arguments meet), the derived category views (`REQUEST_INPUT_NODE_TYPES`, `RESPONSE_NODE_TYPES`, `SINK_ONLY_NODE_TYPES`, `SOURCE_NODE_TYPES`, `CODE_NODE_TYPES`, `STEPPED_NODE_TYPES`, `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`, `STRUCTURAL_NODE_TYPES`, `SINGLETON_NODE_GROUPS`, `SINGLETON_NODE_NAMES`, `REQUEST_INPUT_KINDS`, the decorator and sidecar-folder maps, `DEFAULT_NODE_TYPE`), `singleton_name_problem`, and `node_type_table` (a concern's exhaustive per-type table). Imports only `haute._node_type` and the standard library. |
 | `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen: each node type's callables (exec builder, code template, column contract). |
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml` (`haute_toml` for an automated project, `workbench_haute_toml` for a workbench one), `.env.example` (`env_example`, `app_env_example`), `connections.toml` (`connections_toml`), CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes) and a workbench project's for 3 providers (`workbench_ci_files`, likewise), the CI secrets a target or an app host needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), whose of the two a project's CI reads (`ci_credentials`), starter pipeline/tests/utilities, pre-commit hook. |
+| `src/haute/_scaffold_files.py` | How `haute init` writes a project's files (READ-03): `lf_bytes` and `write_lf` write UTF-8 text with LF line endings whatever the platform, and `ensure_gitattributes` adds to the project's `.gitattributes` each of `GITATTRIBUTES_ENTRIES` it lacks (LF for the Python, JSON, TOML, YAML and Markdown files and the pre-commit hook Haute writes, CSV left out, `uv.lock` marked generated), answering what it added. |
 | `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
 | `src/haute/_project.py` | Project-root discovery from an explicit start (`get_project_root(start)`, the walk-up `src/haute/_project_context.py::resolve_project` uses; `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file(path)`, 4-tier fallback in a folder; the CLI passes the shell's working directory when no path is given). |
 | `src/haute/_project_context.py` | The project a call works in. `ProjectContext` (frozen, slotted, picklable: the absolute, resolved `root`; `ProjectContext.at(root)` takes the root as given; the `pipeline_dir` property reads the root's `haute.toml` when used: the folder of `[project].pipeline`, or the root without one, a malformed file or a pipeline outside the root raising `ConfigError`), `resolve_project(start)` (the one resolver: `get_project_root(start)` then `at`), `project_scope(context)` (a context manager over one `ContextVar`, the one accessor's installer) and `current_project()` (the installed context, `NoProjectContextError` when none; `installed_project()`, for an entry point that installs its own, reports that nothing is installed instead of raising), `standalone_project_scope(source_file)` and `project_holding(folder)` (a standalone run's or a file-given CLI command's project: an installed one, else the project holding the file's folder, else that folder; no file: the working directory, the one entry-point read of it), `graph_pipeline_dir(graph)` (the folder of `graph.source_file`, a relative one under the project root), `context_thread` (a `threading.Thread` running its target in a copy of the starting context) and `ProjectContextMiddleware` (ASGI, installs an app's context for every HTTP request, websocket and lifespan). |
@@ -113,9 +118,9 @@
     messages keep their wording.
   - `decorator`: the `pipeline.<decorator>` name, `None` for the Submodel and its Port.
   - `sidecar` and `config_folder`: where the settings live. `required` with a `config/<folder>/`
-    for the 16 sidecar types; `optional` with `polars` for the Transform, which keeps a sidecar only
-    for its steps; `decorator` for the Edge Join and Explore, whose settings are decorator keywords;
-    `none` for the Submodel and Port.
+    for the 17 sidecar types, Explore's included (READ-43); `decorator` for the Edge Join, whose
+    settings are decorator keywords, and the Transform, whose steps are its code (READ-22) and whose
+    column settings are decorator keywords; `none` for the Submodel and Port.
   - Graph role (booleans):
     - `request_input`: Quote Input, Workbench Input.
     - `response`: Quote Response, Workbench Output.
@@ -146,6 +151,10 @@
   - `scenario_router`: Source Switch. `runs_unconnected`: Workbench Output.
   - `singleton_group`: `request_input` (Quote Input, Workbench Input) or `response` (Quote Response,
     Workbench Output). A pipeline holds at most one node of a group.
+  - `singleton_name`: the one name a singleton group's type has, since a pipeline holds one
+    (READ-46): `quote_input`, `workbench_input`, `quote_response`, `workbench_output`.
+    `singleton_name_problem` gives the refusal of any other name, naming the type by its
+    `display_name`.
   - `code`: where the user's code lives.
     - `transform`: the Transform, whose function is the code.
     - `frame_hook`: Data Input, Rating Step, Model Scoring, Expander, Explore, whose hook
@@ -167,7 +176,7 @@
       whole output into a capture of its own (the seed plan, the walker and the lazy executor read
       it).
   - `structural_role`: the part of a submodel a structural type is: `occurrence` for the Submodel
-    (named by its alias, an `instanceOf` another occurrence, its outputs on `out__<port>` handles,
+    (named by its alias, an `instance_of` another occurrence, its outputs on `out__<port>` handles,
     expanded into its definition's nodes), `port` for the Port (a definition's public input, named
     by its handle); `None` for every executed type.
   - Other facts several modules read join as fields when they are moved, each with its membership
@@ -178,7 +187,8 @@
   - non-null decorators are unique, and non-null config folders are unique;
   - `request_input` implies `source`, and `response` implies `sink_only`;
   - `decorator is None` iff `structural`;
-  - `sidecar` is `required` or `optional` iff `config_folder` is set;
+  - `sidecar` is `required` iff `config_folder` is set;
+  - `singleton_name` is set iff `singleton_group` is;
   - `exactly_two` iff `input_roles` holds two distinct roles;
   - `pass_through == "selected"` iff `pass_through_selector` is set, and that selector is one of the
     type's `input_selectors`;
@@ -199,11 +209,13 @@
   - `STANDALONE_PASSTHROUGH_TYPES`, `PASS_THROUGH_NODE_TYPES`, `WORKBENCH_NODE_TYPES`,
     `STRUCTURAL_NODE_TYPES`;
   - `DECORATOR_TO_NODE_TYPE` / `NODE_TYPE_TO_DECORATOR`, `NODE_TYPE_TO_FOLDER` /
-    `FOLDER_TO_NODE_TYPE` (sidecar folders, required and optional);
+    `FOLDER_TO_NODE_TYPE` (sidecar folders);
   - `REQUEST_INPUT_KINDS` (the request inputs' values);
   - `SINGLETON_NODE_GROUPS` (each group with its message label, its display names joined by "or"
     with the workbench type last: "Quote Input or Workbench Input", "Quote Response or Workbench
     Output");
+  - `SINGLETON_NODE_NAMES` (`singleton_name`, each singleton type's one name; the editor's
+    `SINGLETON_NODE_NAMES` in `frontend/src/utils/nodeTypes.ts` is the twin);
   - `DEFAULT_NODE_TYPE` (the Transform: a node declared without a type).
 
   A set whose membership deliberately differs from every field stays its concern's table (for
@@ -229,8 +241,8 @@
     preview rendering (`executor`), scenario fanout (`_builders`) and presentation fields
     (`_cache`);
   - recovery, naming, the workbench form and submodel instances (`_node_config_recovery`,
-    `_pipeline_recovery`, `_recovery_sources`, `_executable_names`, `_workbench_nodes`,
-    `_submodel_instances`, `routes/_submodel_ops`);
+    `_pipeline_recovery`, `_executable_names`, `_workbench_nodes`, `_submodel_instances`,
+    `routes/_submodel_ops`);
   - projection's rule coverage (`projection`);
   - the RAM estimate's row cardinality (`_ram_estimate`);
   - trace edge alignment, carried values, enrichment and row lineage (the `_trace_*` modules);
@@ -260,9 +272,9 @@
     source (none chosen, an MLflow run or registered model with an optional artifact path, or a
     file) as an `OptimiserApplySource`, `complete` once its identifying field is set, for the
     builder, its column contract, `load_configured_optimiser_artifact` and the deploy bundler. The
-    runtime callers refuse an `artifact_path` without a `sourceType` first, and pass the first
+    runtime callers refuse an `artifact_path` without a `source_type` first, and pass the first
     frame through for a source that is not complete.
-    - The bundler keeps its refusal of a non-empty `artifact_path` unless `sourceType` is `file`.
+    - The bundler keeps its refusal of a non-empty `artifact_path` unless `source_type` is `file`.
     - The runtime tolerates an MLflow source's `artifact_path` but ignores it: it downloads the run's
       fixed `optimiser_result.json` (`_optimiser_io`).
     - That disagreement is recorded, not resolved here; classification does not start honouring the
@@ -312,9 +324,9 @@
   template registrations, a row in each concern table (each fails at import, naming itself, until
   the type is listed) and the frontend editor.
 - **Config shapes** (`_node_config_models.py`) — one config `TypedDict` per node type (the
-  Data Input and Data Output types a union of provider branches tagged by `inputType` /
-  `outputType`), every one inheriting `NodeConfigBase`, which declares the universal keys any
-  node type may carry: `inputMapping` (logical to connected input names), `contract` (the
+  Data Input and Data Output types a union of provider branches tagged by `input_type` /
+  `output_type`), every one inheriting `NodeConfigBase`, which declares the universal keys any
+  node type may carry: `input_mapping` (logical to connected input names), `contract` (the
   column-contract annotation, `"opaque"` or `{inputs, outputs, inputs_by_parent?}` with lists
   of column names; the parse and the live decorator hold a declared contract, whatever spelling
   declared it (`Contract(...)`, an `(inputs, outputs)` pair, a dict of tuples or sets), in that
@@ -322,21 +334,21 @@
   sorted),
   `selected_columns` and `column_renames`. A code-surface type (Transform, Data Input, Load
   File, Rating Step, Model Score, Scenario Expander, Explore) also declares `code`.
-  `instanceOf` belongs to a submodel occurrence's config alone. Each shape and nested shape
+  `instance_of` belongs to a submodel occurrence's config alone. Each shape and nested shape
   carries `__pydantic_config__` = `ConfigDict(extra="forbid", strict=True,
   use_attribute_docstrings=True)`: an undeclared key, a value of another type (a bool for an
   integer, a string for a number, an integer where a whole number is not meant), and a value
   outside a `Literal` enumeration are refused; an integer is a valid number. A key's type is
   the one its engine already requires: a `Literal` only where the engine refuses every other
   value, and `""` in it where the editor writes `""` for "not chosen" (a Data Input's `mode`, a
-  Model Score's or Optimiser Apply's `sourceType`, an Optimiser Apply's `optimiser_mode`). Every
+  Model Score's or Optimiser Apply's `source_type`, an Optimiser Apply's `optimiser_mode`). Every
   key is optional unless the shape marks it `Required` (a provider branch's tag; an Edge
-  Join's `maintainOrder` is required by its join rules, whose refusal names the values it
+  Join's `maintain_order` is required by its join rules, whose refusal names the values it
   takes, and a submodel occurrence's identity by its instance rules):
   an absent key is an unset setting, and a key holds `null` only where its type says so, which
   is exactly where Haute writes `null` for a cleared setting: a banding factor's `default`, a
-  rating table's `defaultValue`, a pivot placement's `decimal_places` and
-  `color_scale_split_by` and its options' `sort_by`, a Quote Input table's `displayPath` and
+  rating table's `default_value`, a pivot placement's `decimal_places` and
+  `color_scale_split_by` and its options' `sort_by`, a Quote Input table's `display_path` and
   `row_id_column` and a column's `levels`, an Edge Join's `validate` and `coalesce` (its "Not set"), and Model Training's
   `tuning`, `loss_function`, `regularization`, `alpha`, `max_iter`, `tol`,
   `robust_standard_errors`, `theta`, `var_power`, `variance_power`, `offset`,
@@ -364,14 +376,14 @@
   constraint names (`RESERVED_OPTIMISER_CONSTRAINT_NAMES`, which moves here from the optimiser
   service) and positive solver controls, the registered-model alias rule,
   `_model_source.parse_model_source` once a source's identifying field is set, Optimiser
-  Apply's `sourceType` for an `artifact_path`, and a Source Switch's non-empty scenario names), `check_inputs(config, input_names)` (the rules
+  Apply's `source_type` for an `artifact_path`, and a Source Switch's non-empty scenario names), `check_inputs(config, input_names)` (the rules
   that need the node's connected input names: the Optimiser's and Optimiser Apply's exact input
   selectors) and `completeness(config, input_names)` (what an unfinished but valid config lacks
   before the node can run: a Data Input/Output provider's locator, a Model Score's or Optimiser
-  Apply's model for its chosen source, a Load File's path or `fileType`, a Quote Input's tables
+  Apply's model for its chosen source, a Load File's path or `file_type`, a Quote Input's tables
   that `_api_input_schema.validate_v2_schema` refuses (a run applies it in full before it reads a
   request), a Transform's code or a
-  stepped node's steps that do not render, a Quote Response's `outputMapping`, Model Training's
+  stepped node's steps that do not render, a Quote Response's `output_mapping`, Model Training's
   target, objective (`training_objective_issue`) and, for a tree family, features
   (`feature_selection_issue`) and its evaluation's blank settings, the Optimiser's objective and a
   ratebook's factor groups, and a
@@ -389,10 +401,9 @@
 - **`NODE_TYPE_TO_FOLDER` / `FOLDER_TO_NODE_TYPE`** (derived in `_node_specs.py` from each
   `NodeSpec`'s `config_folder`; `_config_io.py` reads them) — the bidirectional
   map between a `NodeType` and its `config/<folder>/` sidecar directory name. 17 of the 21
-  node types store external config (all except `edgeJoin`, `explore`, `submodel`, and
-  `submodelPort`); `polars` is the one optional folder (`sidecar == "optional"`):
-  `has_config_folder` stays false for it, `has_optional_config_folder` is true, and
-  `node_emits_sidecar(node)` decides per node (a `steps` list present):
+  node types store external config (`sidecar == "required"`: all except `edgeJoin`,
+  `polars`, `submodel`, and `submodelPort`; a transform's steps live in its code, READ-22),
+  and `node_emits_sidecar(node)` is `has_config_folder` of its type:
 
   | Node type | Sidecar folder |
   |---|---|
@@ -412,7 +423,7 @@
   | `optimiserApply` | `config/apply_optimisation/` |
   | `scenarioExpander` | `config/expander/` |
   | `constant` | `config/constant/` |
-  | `polars` | `config/polars/` (optional: written only for a stepped transform) |
+  | `explore` | `config/explore/` |
 - **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 5-entry registry (one per
   offered `--target`) that every scaffold template dispatches through: `label` (for the
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
@@ -428,9 +439,8 @@
   editor, carried beside the config as `NodeData.editor` and the editor document's
   `RecoveryPipelineNode.editor`, never inside the config: `steps_error` (derived from the
   node's `steps` whenever its data is built, so a value a request carries back is
-  recomputed), `steps_discarded` (why the parse dropped a stepped node's steps) and
-  `discarded_sidecar` (the transform sidecar those steps came from, which the next save
-  retires). No config therefore holds editor state, so no config writer, validator or
+  recomputed) and `steps_discarded` (why the parse dropped a stepped surface's
+  steps). No config therefore holds editor state, so no config writer, validator or
   hash strips any: an underscore-prefixed config key is an undeclared key like any other.
   A request may carry the field back, as a transform of the graph echoes it, but a save
   reads neither parse finding from it: it reparses the file on disk.
@@ -494,24 +504,17 @@ whose code opens with a comment therefore reloads with its steps on every surfac
 every skeleton and propagates any failure. For each skeleton it calls `_resolve_node_config`, which
 either: loads and normalises a `config=` sidecar via `_config_io.load_node_config` and
 attaches code parsed from the function body (`_attach_code_from_body`), then for a
-stepped node type's sidecar reconciles its `steps` with that body, as does an Explore
-node's decorator-carried list (`_reconcile_steps` with no config reference, which is
-why only a transform records a discarded sidecar) (`_reconcile_steps`,
-rendering in the type's start mode against `step_input_names(node_type, param_names)`
-and comparing the extracted body with the rendering passed through the same
-extraction, `_code_extraction.normalise_user_code`, as programs rather than text
-(`_same_program`: the same syntax tree and the same comments, each compared without its
-trailing whitespace, which `ruff format` removes; so a body saved in an earlier
-layout or quoting of the same steps, or reformatted by `ruff format`, keeps them, while
-any other edit, a comment or a respelling in free code included, is a hand edit, as is a
-body only an earlier renderer wrote, such as Haute 0.5's lists for keys, aggregations
-and columns): keep, discard (returning
-the editor state's `steps_discarded` reason, plus `discarded_sidecar` for the transform
-only, which `_resolve_node_config` returns beside the config), or keep an
-unrenderable list behind an empty body; `steps` plus `inputMapping` on an original
-transform is a `ConfigError`); raises
-`_sidecar_required_error` if the node type is folder-backed but no `config=` was given; or,
-for the three types that keep their settings on the decorator (Edge Join, Explore and
+stepped node type rebuilds its steps from that body (`_with_lifted_steps(config,
+func_name, node_type)`, READ-44), its sidecar holding none: `load_node_config` refuses
+one that does. A transform takes no `config=`, which is refused, saying the steps go in
+the function's body: its steps are rebuilt from its extracted body
+by `_with_lifted_steps` (`lift_steps`), except for one with no code, the placeholder an
+unfinished step list is saved with included, or one with an `input_mapping`, which stay
+code-only (READ-22); a frame surface whose function is a declaration has an empty step
+list instead (READ-43, READ-44); raises
+`_sidecar_required_error` if the node type is folder-backed but no `config=` was given,
+an Explore node with its settings or steps on its decorator included; or,
+for the two types that keep their settings on the decorator (Edge Join and
 transform), builds the config from the decorator kwargs and body in `_build_node_config`. Before any of this, `_validate_node_function` enforces the
 declaration/hook shapes the standalone runtime relies on: for a configured node a body that
 is only `...` or `pass` (after an optional docstring, `is_declaration_body`) is a declaration
@@ -531,7 +534,7 @@ absence) no longer fail the parse. Field-level completeness is not a parse artef
 editor document loader recomputes it from the same validators, and execution, preview, and
 deploy still validate strictly before running. An Edge Join's row order has no incomplete
 form (a new join carries its type's, `DEFAULT_JOIN_ORDER`), so the parse refuses an Edge
-Join whose `maintainOrder` is missing or not one of `none`, `left`, `right`, `left_right` and
+Join whose `maintain_order` is missing or not one of `none`, `left`, `right`, `left_right` and
 `right_left`, with a `ConfigError` naming the node, through
 `haute._edge_join.require_edge_join_order`, the check `build_edge_join_kwargs` runs for save
 and execution. A pipeline file written before the order was required therefore opens in the
@@ -556,7 +559,7 @@ layout are not kept, as a positional parameter's annotation is regenerated. Code
 them back after a bare `*`, and the transform builder binds each value beside the inputs, so a
 parameter shadows a preamble name or global constant of the same name, as a function parameter
 does, in the generated module and in canvas execution alike; it also shadows the physical name
-an `inputMapping` renamed its input from, which the canvas binds as well, since the signature's
+an `input_mapping` renamed its input from, which the canvas binds as well, since the signature's
 inputs are the logical names.
 Every other keyword-only form is a `ParseError` naming the node, the parameter and its line,
 raised before any graph is built: the strict parse refuses the file, the editor opens the
@@ -581,7 +584,7 @@ other decorator keyword reported as a removed field and never written over the s
 (`contract=` stays on the decorator). It converts no spelling: a `source_type` key is an
 unknown key like any other. A present value the config model's shape refuses is reconciled
 field by field (a nested shape key by key, a list item by item). A value its `check` refuses (a
-`stepCount` of `0`, a breakpoint that is not a boundary) is repaired as narrowly as the refusal
+`step_count` of `0`, a breakpoint that is not a boundary) is repaired as narrowly as the refusal
 can be isolated: a refused list or map keeps every entry the check does not refuse *at that
 setting* when the entry stands alone in it and loses each it does (reported `removed`, with its
 original value), so one malformed banding factor never takes a valid sibling with it, and a
@@ -590,7 +593,7 @@ setting's, repaired in its turn; a refused scalar takes its own branch's
 palette default where that default passes (`defaulted`, with a warning) and is otherwise
 removed (`needs_input`). A top-level field the saved configuration lacks takes its
 palette default, reported as `defaulted`, when the palette belongs to the configuration's branch
-(an Edge Join's absent `maintainOrder` the order of its join type), as a new node would; a stepped
+(an Edge Join's absent `maintain_order` the order of its join type), as a new node would; a stepped
 node's absent `steps` stays absent, and recover never takes a default from another provider branch
 ([node recovery actions](../server-api/node-recovery-actions.md)). The candidate must then pass
 the model's shape and `check`, so a recovered config always loads: one that does not (an unknown
@@ -645,15 +648,15 @@ wherever it first appears:
 | Node type | Unfinished form (saved; `completeness` names it) | Refused as malformed |
 |---|---|---|
 | Data Input / Data Output | an absent or empty provider locator (`path`, table, query, ...) | a value the provider branch, format, mode or Polars call does not accept |
-| Model Score | a `sourceType` picked before its `run_id` / `registered_model` / `model_path` | an unknown `sourceType`; both `version` and `alias` |
-| Optimiser Apply | a `sourceType` picked before its run, registered model or file | an unknown `sourceType`; an `artifact_path` without a `sourceType`; both `version` and `alias` |
-| Load File | an absent or empty `path` | a `fileType` other than `pickle`, `json` or `joblib` |
+| Model Score | a `source_type` picked before its `run_id` / `registered_model` / `model_path` | an unknown `source_type`; both `version` and `alias` |
+| Optimiser Apply | a `source_type` picked before its run, registered model or file | an unknown `source_type`; an `artifact_path` without a `source_type`; both `version` and `alias` |
+| Load File | an absent or empty `path` | a `file_type` other than `pickle`, `json` or `joblib` |
 | Quote Input | tables the v2 schema rules refuse: a table or column not yet named, a path still to set, a label not yet unique (the panel shows each row) | a value of the wrong type (the shape) |
 | Transform | no code, or steps that do not yet render | `keyword_parameters` not records with a literal default and a usable name, or beside `steps` |
 | Model Training | `{}`; an unset target, algorithm or objective; an evaluation setting the Split pane leaves blank (`modelling/_train_config.blank_evaluation_settings`: a group or date column, a temporal boundary) | an untrainable `algorithm`, GLM `family`/`link`/solver setting or `loss_function` |
 | Optimiser | an unset objective | an unknown `mode`; a reserved constraint name; a solver control that is not positive; more than twelve or reserved analysis columns |
 | Source Switch | a scenario mapped from an input no longer connected | a scenario that is not a non-empty string |
-| Banding, Rating Step, Quote Response, Explore, Scenario Expander, Constant, Edge Join | none | anything their engine rules refuse (a boundary, a rating row, a mapping path, a pivot, a grid size, a duplicate constant name, a join without keys); a Rating Step's `baseValue` is the editor's text of a number or a number |
+| Banding, Rating Step, Quote Response, Explore, Scenario Expander, Constant, Edge Join | none | anything their engine rules refuse (a boundary, a rating row, a mapping path, a pivot, a grid size, a duplicate constant name, a join without keys); a Rating Step's `base_value` is the editor's text of a number or a number |
 
 `timeout` and `auto_range_timeout` are not config keys: training and the optimiser read their
 time limits from the pipeline settings alone.
@@ -662,8 +665,8 @@ time limits from the pipeline settings alone.
 a top-level key the model does not declare is an unknown field (removed from the candidate,
 kept in the evidence), each declared field is reconciled against its annotation (a nested
 shape key by key, a list item by item, a map entry by entry), and a value is valid when the
-annotation's strict `TypeAdapter` accepts it. A discriminant (`inputType`, `outputType`,
-`sourceType`, `algorithm`, `mode`) is the tag of the model's union or its `Literal`; an unknown
+annotation's strict `TypeAdapter` accepts it. A discriminant (`input_type`, `output_type`,
+`source_type`, `algorithm`, `mode`) is the tag of the model's union or its `Literal`; an unknown
 one is never replaced with a default. The engine issues of a candidate are the model's `check`,
 `check_inputs` and `completeness` refusals, each at the setting it names. Recovery keeps no
 rule of its own for any node type.
@@ -710,7 +713,14 @@ underscore-prefixed one included, or a malformed value never reaches a file — 
 `code` and the `contract` annotation, which lives on the decorator so a sidecar copy could
 only go stale, then per-type canonicalisation for `BANDING`/`RATING_STEP`), and serialises the result
 to `{relative_path: json_string}` through `node_config_json`: the config record's own keys
-sorted, two-space indentation, non-ASCII text unescaped and a closing newline. Recover, Reset
+sorted, a setting at the default its loader reads for an absent key left out
+(its `_SIDECAR_CODECS` row's `defaults`: a Rating Step's empty `combined_outputs`, a Data
+Input's or Data Output's empty `arguments`), a rating table's keys in their order (`name`, `factors`,
+`factor_dtypes`, `output_column`, `on_missing`, `default_value`, `entries`, then any other as
+given) and each entry's factors in the table's order then `value`, each entry on one line,
+written by the one printer every committed JSON file goes through
+(`src/haute/_json_files.py::render_json`, high-level **JSON files Haute writes**).
+Recover, Reset
 and the node-scoped save write their sidecar through the same function, so both save paths
 write byte-identical sidecars for one configuration whatever order its keys arrived in; the
 next save of an older sidecar rewrites it in that form once. When one of those three rewrites a
@@ -725,8 +735,10 @@ Banding canonicalisation removes underscore-prefixed properties from expanded ru
 which is where the editor's rule-row `_id` sits; a factor record holds only its declared keys,
 so one the model has refused never reaches it. Compact category maps are data and retain those
 same keys. All other nested dictionaries and payloads retain user keys verbatim, including
-underscore-prefixed schema fields, inline records, rating factors and row metadata, feature
-maps, constraints, and category declarations. Serialization does not mutate the input graph.
+underscore-prefixed schema fields, inline records, rating factor names, feature maps,
+constraints, and category declarations. A rating table's entry holds its levels and its
+rate alone, which is what its grid keeps (READ-26): an entry holding any other key is refused
+at save, naming the key, rather than the key lost. Serialization does not mutate the input graph.
 Shared column settings (`COLUMN_CONFIG_KEYS`) are accepted and parsed consistently across
 node types; inline decorators and JSON sidecars preserve the same authored values.
 Any validation error is raised while collecting/staging content, before an existing sidecar is
@@ -781,12 +793,13 @@ nodes. `starter_test(name)` parses that file and asserts only the configured pip
 `rating/files/data/`, `rating/files/models/` and `rating/files/params/` folders
 (`PIPELINE_FILES_SUBFOLDERS`), but no node sidecars or `prompts/` directory, and removes
 any root `main.py` before writing `rating/main.py`.
-`haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
+`haute_toml()` assembles `[project]`/`[deploy]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block. A workbench project's `haute.toml` is `workbench_haute_toml()`'s
-instead: `[project]`, `[deploy.container]` (registry, port and the base image on the project's
-Python) and no other `[deploy]` key, `[test_quotes]`, `[ci]` and `workbench_table()`'s
+`[deploy.<target>]` block. Neither writes a setting at its default: no `[test_quotes] dir` (its
+folder is `tests/quotes` when it names none) and no `[deploy.container] port` (8080) (READ-41). A workbench project's `haute.toml` is `workbench_haute_toml()`'s
+instead: `[project]`, `[deploy.container]` (registry and the base image on the project's
+Python) and no other `[deploy]` key, `[ci]` and `workbench_table()`'s
 `[workbench]`, `[workbench.app] host` and the three store environments on one provider, with
 no `[safety]` or `[ci.staging]`, which only an endpoint's smoke and impact read. Its
 `[safety]` table names no `impact_dataset`: `haute impact` compares the test quotes until a
@@ -1013,7 +1026,7 @@ also accept the executor's already-resolved inline mapping. Path inputs go
 through `load_node_config` and shared project/pipeline resolution. API input
 validates non-empty paths and JSON `tables[]` before reading/shredding and
 forwards projection/profile fields; external-file resolution validates
-`path`/`fileType`. Invalid tables raise
+`path`/`file_type`. Invalid tables raise
 `ApiInputSchemaError`, which the HTTP contract adapter maps to 422.
 
 **Global constants.** `src/haute/parser.py::load_declared_global_constants` loads the file a
@@ -1103,12 +1116,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `from modules import <module>` imported) and imports nothing itself;
   each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
   boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
-  `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
-  inputs: an input whose name (the input port's for an edge into an occurrence, otherwise
-  `_graph_utils.executable_input_name`'s, so a Quote Input frame by its frame handle) is a
-  positional parameter takes its place, the rest fill the open parameters in
-  order, and a node with more inputs than parameters, like the pipeline's own nodes, keeps
-  registration order. A definition module stays in `sys.modules` as any import does (a
+  `ExecutionError` listing the ports); and `_bind_edges` binds every node, the definitions'
+  and the pipeline's own, by the parser's rule: each input is named as its parameter must
+  name it (the input port's name for an edge into an occurrence, which the definition's file
+  states no `connect()` for; an occurrence's output as `_graph_utils.executable_input_name`
+  names it; a Quote Input frame by its frame handle), and the node receives its inputs in
+  its parameters' order. A definition module stays in `sys.modules` as any import does (a
   `dataclass` with string annotations in it resolves through that entry), and expanding the
   occurrences imports nothing.
 
@@ -1125,17 +1138,34 @@ it on the reading node instead of aborting the walk, and every other run propaga
   `dangling_edges`; the document loads as non-ready with that diagnostic and Save is refused
   until the source is repaired. The live `Pipeline.connect()` rejects the same mistake
   immediately because live submodel children are not registered there.
-- A Polars node's positional parameters are exactly its connected inputs, by name: an
+- Every node's positional parameters bind its connected inputs by name, by the rule in
+  [high-level](high-level.md) (**Binding parameters to inputs**), which
+  `src/haute/_node_bindings.py::bind_node_inputs` implements for the parser and the
+  standalone run alike: an
   ordinary source contributes its sanitised node name, an API input its frame handle, and an
   occurrence its output's name (its sanitised public output port name from an owner; from an
   instance, the instance's name, or `<instance>_<port>` when the definition has several
   outputs);
-  a declared `inputMapping={logical: connected}` lets the code keep another name. The
-  parser infers nothing else: a parameter that matches no connected input, a connected input
-  with no parameter, or a duplicate raises `ParseError` (`unbound_parameters`,
-  `unconsumed_inputs`, `connected_inputs`, `remediation`) from the binding gate; the document
-  loads as non-ready with that diagnostic and Save is refused, so a Save can never rewrite the
-  authored signature (F13). A submodel file's nodes are checked when that file is parsed, so
+  a declared `input_mapping={logical: connected}` lets the code keep another name. A Polars
+  node's or External File's parameter is a variable its code reads, so it names its input
+  exactly; any other node's parameter only names the input, so a parameter spelled with
+  non-ASCII letters (`données`) also names the input of its sanitised name (`donn_xe9_es`).
+  The parser infers nothing else: a parameter that matches no connected input or a duplicate, a
+  connected input with no parameter that the decorator does not take, a parameter naming an
+  input no `connect()` states while a stated input goes unnamed, or stated inputs connected
+  in another order than the parameters read them raises `ParseError` (`node_id`,
+  `unbound_parameters`, `unconsumed_inputs`, `disagreeing_parameters`, `connected_inputs`,
+  `parameter_order`, `connect_order`, `remediation`) from the binding gate
+  (`src/haute/_parser_bindings.py::bind_parameters`); the document loads as non-ready with that
+  diagnostic and Save is refused, so a Save can never rewrite the authored signature (F13).
+  A node that binds has its incoming edges put in the order its parameters read them, the
+  order codegen writes its signature and `connect()` calls in and every run gives it its
+  frames. The standalone `run()`/`score()` first adds the edges parameters imply, inferred as
+  `_build_edges` infers them, then binds every node (`src/haute/pipeline.py::_bind_edges`),
+  naming each input as the parser does (an ordinary source by its sanitised name, stated
+  or implied) and reading an External File's `input_mapping` from its `config=` sidecar
+  both to infer its edges and to bind them (`_raw_node`, `_input_mapping`),
+  refusing the same shapes as an `ExecutionError` before any node runs. A submodel file's nodes are checked when that file is parsed, so
   the failure is the submodel's own: the editor marks the node unavailable inside its
   definition, and the submodel's inspector lists it with Recover settings, which rebinds it. Because the parser also infers an edge from any parameter named
   like a node, an API input's frame handle must not equal another node's sanitised name: Save
@@ -1213,7 +1243,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
   keywords; a config key the node type does not declare (`reject_unrecognized_config_keys`,
   through `validate_node_config` at every boundary); a
   folder-backed node type used without `config=`;
-  `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
+  `optimiserApply` misconfiguration (`artifact_path` set without `source_type`); `modelScore`
   misconfiguration (a blank `run_id`/`registered_model`/`model_path` for the declared source
   when the node runs); project
   root not found, or found without a surrounding git repository.
@@ -1251,12 +1281,12 @@ it on the reading node instead of aborting the walk, and every other run propaga
   frame).
 - **`NodeConfigError`** (`haute.errors`; a `ConfigError` and a `HauteValidationError`, so
   also a `ValueError`) — a node setting the builder cannot run with, raised by
-  `scenario_step_count` for a missing, non-whole or non-positive `stepCount`. It carries the
+  `scenario_step_count` for a missing, non-whole or non-positive `step_count`. It carries the
   stable public code `node_config_invalid` and the safe field `setting`, so the shared
   contract adapter returns it as HTTP 422 / background `contract_error` with the message.
   Bare `ValueError`s that signal an internal invariant (registry misuse, optimiser input
   wiring, ratebook artifact arity) stay bare and remain a sanitized 500. The retained-input
-  `path` and external-file `fileType` checks run when the node executes, where preview already
+  `path` and external-file `file_type` checks run when the node executes, where preview already
   reports the failure on the node, so they stay `ValueError`.
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
@@ -1327,7 +1357,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
   - Apply Optimisation:
     - with no source both pass the first frame through;
     - the incomplete selections tolerated today stay tolerated;
-    - an `artifact_path` without a `sourceType` is refused;
+    - an `artifact_path` without a `source_type` is refused;
     - an MLflow source with a non-default `artifact_path` is accepted at runtime (and still loads the
       run's `optimiser_result.json`) and refused by the deploy bundler, today's recorded
       disagreement.
@@ -1369,7 +1399,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
 - `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type (a cast's required `strict` flag
-writing `strict=False` on a cast and a text parse when false and nothing when true; a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), exponent floats written without the `+` ruff drops (`test_floats_with_an_exponent_render_as_ruff_writes_them`), free code whose lines end in whitespace keeping its steps through `ruff format` while a multiline string keeps its spaces at run time (`test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps`), a frame-mode body opening with a bare string staying a fixed point with its value (`test_a_leading_bare_string_step_is_a_fixed_point_with_its_value`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps keeps them, while Haute 0.5's rendering with list arguments, a mixed list argument, a respelled free-code statement or a sort without the stable sort the renderer now writes is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the render and free-code columns endpoints, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), the expression additions (golden renders, step-indexed refusals and an executed program for a window's expression value and row filter, operand function arguments, `divide`, conditional branches and `sum_horizontal`, a window filter refused on a positional aggregate and a row count refusing `of`, and the generated shapes proved by the lineage and cardinality models), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without a discarded sidecar, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, every corpus translation without inputs reloading unchanged on a Data Input, and a free-code step whose code opens with a comment keeping its steps on every frame-start surface through the editor's save and the assistant's apply (`test_comment_first_free_code_keeps_its_steps_through_the_editor_save`, `test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply`).
+writing `strict=False` on a cast and a text parse when false and nothing when true; a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), exponent floats written without the `+` ruff drops (`test_floats_with_an_exponent_render_as_ruff_writes_them`), free code whose lines end in whitespace keeping its steps through `ruff format` while a multiline string keeps its spaces at run time (`test_free_code_trailing_whitespace_survives_ruff_format_with_its_steps`), a frame-mode body opening with a bare string staying a fixed point with its value (`test_a_leading_bare_string_step_is_a_fixed_point_with_its_value`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, `input_mapping` rejection, codegen/parse round trip with no `config=` and no steps file, the steps lifted back with ids from kind and place (READ-22), a hand edit keeping the other steps (an edited or respelled statement, an older spelling, an unstable sort, each loading as a code step, an edited comment kept on its step, line-end spaces taken off as `ruff format` takes them), a transform with keyword-only parameters staying code, an unfinished list kept in `.haute.json` behind the placeholder, the `config=` refusal saying where the steps go, no polars file collected or written, save-time warnings, the node-scoped save of a transform's code, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the render and free-code columns endpoints, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), the expression additions (golden renders, step-indexed refusals and an executed program for a window's expression value and row filter, operand function arguments, `divide`, conditional branches and `sum_horizontal`, a window filter refused on a positional aggregate and a row count refusing `of`, and the generated shapes proved by the lineage and cardinality models), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's validation carrying `steps` while its sidecar writes none (`test_data_input_validation_carries_steps_and_its_sidecar_writes_none`), a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the placeholder round trip keeping unrenderable steps behind empty code, with the list in `.haute.json`, read back by the parse `haute run` and a deploy use and refused, naming the node, when that file does not hold it (`test_data_input_incomplete_steps_fail_on_every_path`), the save warning naming the Data Input's step, the render endpoint in frame mode, every corpus translation without inputs reloading unchanged on a Data Input, and a free-code step whose code opens with a comment keeping its steps on every frame-start surface through the editor's save and the assistant's apply (`test_comment_first_free_code_keeps_its_steps_through_the_editor_save`, `test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply`).
 - Global constants: `tests/test_config_io.py` covers the file's round trip and every
   refusal; `tests/test_parser_roundtrip.py` the byte-identical round trip of every kind of
   constant, with and without a submodel file, and a missing file as a load error that keeps its
@@ -1464,7 +1494,7 @@ API and real JSON round-trips rather than mocks:
   sidecar (`test_pipeline_recovery.py`: the node opens unavailable with the model's message),
   the save a Quote Response with an invalid mapping path and a Source Switch with an empty
   scenario (400, nothing written), the node-scoped save an Optimiser Apply with an unknown
-  `sourceType` (409), a preview of a request graph with a wrong-typed value (422
+  `source_type` (409), a preview of a request graph with a wrong-typed value (422
   `node_config_invalid` on that node), a standalone `Pipeline.run()` of a pipeline whose
   Constant sidecar holds a non-text `name`, or whose Model Training, Data Output or
   declaration-only Load File sidecar is missing or malformed (refused before any data is read),
@@ -1477,13 +1507,13 @@ API and real JSON round-trips rather than mocks:
   multi-quote request answered as one frame keeps one answer per row even where two answers
   coincide. `timeout` in a Model Training or Optimiser config is an undeclared key.
 - **Recovery** (`test_pipeline_repair_actions.py`, `test_node_config_recovery.py`) — Recover
-  settings on a `stepCount` of `0` takes the palette's `21`, reported `defaulted` with a
+  settings on a `step_count` of `0` takes the palette's `21`, reported `defaulted` with a
   warning, and writes a config that loads; on two banding factors, one valid and one with a
   boundary that is not a number, keeps the valid one, removes the other and reports exactly
   that; on a Rating Step with a valid table, a table whose value is not a number and a combined
   output with no column, keeps the valid table and removes the other two; on an unknown provider
   branch, or two factors writing one output column, it is refused
-  and writes nothing; an Edge Join without `maintainOrder` takes its join type's order; an issue
+  and writes nothing; an Edge Join without `maintain_order` takes its join type's order; an issue
   the model's `completeness` names is reported as a completeness entry.
 - **`test_node_reference_docs.py`** — beside the page checks below, every node page's
   generated config-keys table matches what `scripts/generate_node_config_reference.py`

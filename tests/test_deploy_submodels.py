@@ -58,7 +58,7 @@ pipeline = haute.Pipeline("submodel_quote", description="Prices the quote throug
 
 
 @pipeline.api_input(config="config/request.json")
-def quote(): ...
+def quote_input(): ...
 
 
 '''
@@ -70,8 +70,8 @@ import polars as pl
 submodel = haute.Submodel(
     "factors",
     definition_id="definition_factors",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "scaled", "handleId": None}]}],
-    output_ports=[{"name": "factored", "source": {"nodeId": "factor", "handleId": None}}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "scaled"}]}],
+    output_ports=[{"name": "factored", "source": {"node_id": "factor"}}],
     pipeline_dir="..",
 )
 
@@ -99,8 +99,8 @@ import polars as pl
 submodel = haute.Submodel(
     "rated",
     definition_id="definition_rated",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "rates", "handleId": None}]}],
-    output_ports=[{"name": "rated", "source": {"nodeId": "rates", "handleId": None}}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "rates"}]}],
+    output_ports=[{"name": "rated", "source": {"node_id": "rates"}}],
     pipeline_dir="..",
 )
 
@@ -138,7 +138,7 @@ def _project(
         for column in columns
     ]
     (project / "config" / "output.json").write_text(
-        json.dumps({"outputMapping": [{**m, "enabled": True} for m in mapping]}),
+        json.dumps({"output_mapping": [{**m, "enabled": True} for m in mapping]}),
         encoding="utf-8",
     )
     toml_path = project / "haute.toml"
@@ -175,12 +175,12 @@ def _score_bundle(resolved: ResolvedDeploy, build: Path, quotes: list[dict]) -> 
 
 _ONE_SUBMODEL = """\
 @pipeline.output(config="config/output.json")
-def response(factored): ...
+def quote_response(factored): ...
 
 
 pipeline.submodel(factors.submodel, "factors")
-pipeline.connect("quote", "factors", source_port="quote", target_port="rows")
-pipeline.connect("factors", "response", source_port="factored")
+pipeline.connect("quote_input", "factors", source_port="quote", target_port="rows")
+pipeline.connect("factors", "quote_response", source_port="factored")
 """
 
 
@@ -202,8 +202,8 @@ def test_a_served_pipeline_answers_with_its_submodels_columns(
     assert answers == [{"fixture_value": 30, "factor": 3}]
     assert resolved.output_schema == {"fixture_value": "Int64", "factor": "Int32"}
     assert {node.id for node in resolved.pruned_graph.nodes} == {
-        "quote",
-        "response",
+        "quote_input",
+        "quote_response",
         "submodel_runtime/factors/scaled",
         "submodel_runtime/factors/factor",
     }
@@ -217,21 +217,21 @@ def test_artifacts_inside_submodels_bundle_under_flat_distinct_files(
         monkeypatch,
         """\
 @pipeline.output(config="config/output.json")
-def response(rated): ...
+def quote_response(second): ...
 
 
 pipeline.submodel(rated.submodel, "first")
 pipeline.submodel(rated.submodel, "second", instance_of="first")
-pipeline.connect("quote", "first", source_port="quote", target_port="rows")
+pipeline.connect("quote_input", "first", source_port="quote", target_port="rows")
 pipeline.connect("first", "second", source_port="rated", target_port="rows")
-pipeline.connect("second", "response", source_port="rated")
+pipeline.connect("second", "quote_response", source_port="rated")
 """,
         {"rated": _RATES},
         {"rated": ["fixture_value"]},
         files={
             "data/rates.json": json.dumps({"factor": 2}),
             "config/external_file/rates.json": json.dumps(
-                {"path": "data/rates.json", "fileType": "json"}
+                {"path": "data/rates.json", "file_type": "json"}
             ),
         },
     )
@@ -274,7 +274,7 @@ def test_load_file_deploy_preserves_logical_inputs(
     init_repo(project)
     use_project(project)
     (tmp_path / "project/data/rates.json").write_text('{"factor": 2}', encoding="utf-8")
-    request = parse_pipeline_file(project / "pipeline.py").node_map["quote"]
+    request = parse_pipeline_file(project / "pipeline.py").node_map["quote_input"]
     plain = PipelineGraph(
         nodes=[
             request,
@@ -285,8 +285,8 @@ def test_load_file_deploy_preserves_logical_inputs(
                     nodeType=NodeType.EXTERNAL_FILE,
                     config={
                         "path": "data/rates.json",
-                        "fileType": "json",
-                        "inputMapping": {"policies": "quote", "adjustment": "policies_extra"},
+                        "file_type": "json",
+                        "input_mapping": {"policies": "quote", "adjustment": "policies_extra"},
                         "code": (
                             "df = policies.join(adjustment.select('quote_id', "
                             "fee=pl.col('fixture_value')), on='quote_id').with_columns("
@@ -322,12 +322,12 @@ def test_load_file_deploy_preserves_logical_inputs(
                 ),
             ),
             GraphNode(
-                id="response",
+                id="quote_response",
                 data=NodeData(
-                    label="response",
+                    label="quote_response",
                     nodeType=NodeType.OUTPUT,
                     config={
-                        "outputMapping": [
+                        "output_mapping": [
                             {
                                 "source_port": "after",
                                 "source_column": "premium",
@@ -340,12 +340,16 @@ def test_load_file_deploy_preserves_logical_inputs(
             ),
         ],
         edges=[
-            GraphEdge(id="input", source="quote", sourceHandle="quote", target="rates"),
-            GraphEdge(id="alternative", source="quote", sourceHandle="quote", target="alternative"),
-            GraphEdge(id="extra", source="quote", sourceHandle="quote", target="policies_extra"),
+            GraphEdge(id="input", source="quote_input", sourceHandle="quote", target="rates"),
+            GraphEdge(
+                id="alternative", source="quote_input", sourceHandle="quote", target="alternative"
+            ),
+            GraphEdge(
+                id="extra", source="quote_input", sourceHandle="quote", target="policies_extra"
+            ),
             GraphEdge(id="adjustment", source="policies_extra", target="rates"),
             GraphEdge(id="after", source="rates", target="after"),
-            GraphEdge(id="response", source="after", target="response"),
+            GraphEdge(id="response", source="after", target="quote_response"),
         ],
     )
     if wrapped:
@@ -361,11 +365,11 @@ def test_load_file_deploy_preserves_logical_inputs(
                 data=NodeData(
                     label=instance,
                     nodeType=NodeType.SUBMODEL,
-                    config={"definitionId": "pricing", "alias": instance, "instanceOf": owner},
+                    config={"definition_id": "pricing", "alias": instance, "instance_of": owner},
                 ),
             )
         )
-    graph.edges = [edge for edge in graph.edges if edge.target != "response"]
+    graph.edges = [edge for edge in graph.edges if edge.target != "quote_response"]
     graph.edges.append(
         GraphEdge(id="copy_input", source="alternative", target=instance, targetHandle="in__quote")
     )
@@ -379,18 +383,18 @@ def test_load_file_deploy_preserves_logical_inputs(
     )
     selected = owner if occurrence == "owner" else instance
     response_edge = GraphEdge(
-        id="response", source=selected, sourceHandle=f"out__{output}", target="response"
+        id="response", source=selected, sourceHandle=f"out__{output}", target="quote_response"
     )
     graph.edges.append(response_edge)
-    graph.node_map["response"].data.config["outputMapping"][0]["source_port"] = edge_input_name(
-        response_edge, graph.node_map[selected], submodels=graph.submodels
+    graph.node_map["quote_response"].data.config["output_mapping"][0]["source_port"] = (
+        edge_input_name(response_edge, graph.node_map[selected], submodels=graph.submodels)
     )
     quotes = [{"quote_id": "q1", "fixture_value": 10}]
     (tmp_path / "project/data/quote.json").write_text(json.dumps(quotes), encoding="utf-8")
-    graph.node_map["quote"].data.config["path"] = "data/quote.json"
+    graph.node_map["quote_input"].data.config["path"] = "data/quote.json"
     with project_scope(ProjectContext.at(project)):
         expected = [{"premium": 31 if occurrence == "owner" else 71}]
-        assert execute_graph(flatten_executable_graph(graph))["response"].preview == expected
+        assert execute_graph(flatten_executable_graph(graph))["quote_response"].preview == expected
         SavePipelineService(project).save_graph_transactionally(
             graph=graph,
             name="logical_inputs",
@@ -415,7 +419,7 @@ import polars as pl
 submodel = haute.Submodel(
     "priced",
     definition_id="definition_priced",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "scaled", "handleId": None}]}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "scaled"}]}],
     output_ports=[],
     pipeline_dir="..",
 )
@@ -427,17 +431,17 @@ def scaled(rows: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @submodel.output(config="config/output.json")
-def response(scaled): ...
+def quote_response(scaled): ...
 
 
-submodel.connect("scaled", "response")
+submodel.connect("scaled", "quote_response")
 """
     project = _project(
         tmp_path,
         monkeypatch,
         """\
 pipeline.submodel(priced.submodel, "priced")
-pipeline.connect("quote", "priced", source_port="quote", target_port="rows")
+pipeline.connect("quote_input", "priced", source_port="quote", target_port="rows")
 """,
         {"priced": priced},
         {"scaled": ["fixture_value"]},
@@ -445,7 +449,7 @@ pipeline.connect("quote", "priced", source_port="quote", target_port="rows")
 
     resolved = _resolve(project)
 
-    assert resolved.output_node_id == "submodel_runtime/priced/response"
+    assert resolved.output_node_id == "submodel_runtime/priced/quote_response"
     answers = _score_bundle(resolved, tmp_path / "build", [{"quote_id": "q1", "fixture_value": 10}])
     assert answers == [{"fixture_value": 30}]
 

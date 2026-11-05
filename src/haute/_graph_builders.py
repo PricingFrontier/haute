@@ -19,11 +19,13 @@ from haute._ast_helpers import (
     _get_decorator_node_type,
     reject_removed_node_decorator,
 )
+from haute._code_extraction import holds_incomplete_steps_placeholder
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id, resolve_input_mapping_names
 from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY, keyword_parameters_from_signature
-from haute._node_specs import CODE_NODE_TYPES, node_spec
-from haute._polars_steps import stepped_surface_allows_input_references
+from haute._node_bindings import input_parameters
+from haute._node_specs import DEFAULT_NODE_TYPE
+from haute._polars_steps import STEPS_FROM_CODE, stepped_surface_allows_input_references
 from haute._source_layout import python_lines
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, ParseError
@@ -164,14 +166,20 @@ def _resolve_node_skeleton(
         # Code extraction reports lines within the node's code; name the node.
         exc.context.setdefault("node_id", skeleton.authored_id)
         raise
+    # A transform names no steps file (READ-22): its steps are rebuilt from its code.
     keyword_parameters = keyword_parameters_from_signature(
         skeleton.arguments,
         node_type=node_type,
-        stepped="config" in decorator_kwargs,
+        stepped=False,
         node_id=skeleton.authored_id,
     )
     if keyword_parameters:
-        config = {**config, KEYWORD_PARAMETERS_KEY: keyword_parameters}
+        # A transform with keyword-only parameters is written as code and stays code: its
+        # steps would leave them nowhere to live.
+        config = {
+            **{key: value for key, value in config.items() if key != "steps"},
+            KEYWORD_PARAMETERS_KEY: keyword_parameters,
+        }
     return {
         "func_name": skeleton.authored_id,
         "node_type": node_type,
@@ -180,6 +188,12 @@ def _resolve_node_skeleton(
         "editor": editor,
         "param_names": list(skeleton.param_names),
         "edge_param_names": list(skeleton.edge_param_names),
+        # Its body is the placeholder an unfinished step list is saved with: the steps wait
+        # in the pipeline's .haute.json (READ-22, READ-44).
+        "steps_placeholder": node_type in STEPS_FROM_CODE
+        and not config.get("code")
+        and "steps" not in config
+        and holds_incomplete_steps_placeholder(skeleton.body),
     }
 
 
@@ -245,23 +259,20 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     """Return physical names used to infer a parsed node's incoming edges.
 
     A mapped Transform or Load File signature intentionally keeps the logical
-    parameter names its code reads.  Its ``inputMapping`` (a Transform's
+    parameter names its code reads.  Its ``input_mapping`` (a Transform's
     decorator, a Load File's sidecar) records the current physical edge names,
     so implicit edge reconstruction must apply that mapping before matching
     node identifiers.  Instances keep their existing semantics: their signature
-    is already physical and ``inputMapping`` describes the referenced original.
+    is already physical and ``input_mapping`` describes the referenced original.
     """
     logical_params = list(node_info["edge_param_names"])
     node_type = node_info.get("node_type")
-    if (
-        node_type in CODE_NODE_TYPES
-        and node_spec(node_type).code == "frame_hook"
-        and logical_params[:1] == ["df"]
-    ):
+    naming, _takes_first = input_parameters(node_type or DEFAULT_NODE_TYPE, logical_params)
+    if naming != logical_params:
         # A hook's df is the frame its decorator produced, not an input named df.
-        return logical_params[1:]
+        return naming
     config = node_info.get("config", {})
-    input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
+    input_mapping = config.get("input_mapping") if isinstance(config, dict) else None
     if (
         node_type is None
         or not stepped_surface_allows_input_references(node_type)
@@ -271,7 +282,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
         return logical_params
     if not isinstance(input_mapping, dict):
         raise ConfigError(
-            "inputMapping must be an object mapping logical input names to "
+            "input_mapping must be an object mapping logical input names to "
             "current edge input names.",
             input_mapping=input_mapping,
         )
@@ -280,7 +291,7 @@ def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
     resolved_logical_params = resolve_input_mapping_names(edge_params, input_mapping)
     if resolved_logical_params != logical_params:
         raise ConfigError(
-            "inputMapping logical names must match the function's positional input parameters.",
+            "input_mapping logical names must match the function's positional input parameters.",
             logical_params=logical_params,
             resolved_logical_params=resolved_logical_params,
         )

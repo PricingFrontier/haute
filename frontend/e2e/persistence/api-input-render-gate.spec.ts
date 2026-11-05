@@ -30,7 +30,7 @@ const quotesConfigPath = resolve(
   "rating",
   "config",
   "quote_input",
-  "quotes.json",
+  "quote_input.json",
 )
 
 /** A v2 column with the inference defaults; name/path are the variables. */
@@ -43,7 +43,7 @@ function table(
   label: string,
   columns: ReturnType<typeof col>[],
 ) {
-  return { path, label, displayPath: null, emit: true, row_id_column: null, columns }
+  return { path, label, display_path: null, emit: true, row_id_column: null, columns }
 }
 
 /** All-valid baseline: 2 well-formed tables, no blanks. */
@@ -98,7 +98,7 @@ async function openQuotesEditor(page: import("@playwright/test").Page) {
   await expect(
     page.getByRole("toolbar", { name: /pipeline toolbar/i }),
   ).toBeVisible()
-  await page.getByTestId("rf__node-quotes").click()
+  await page.getByTestId("rf__node-quote_input").click()
   const editor = page.getByTestId("api-input-editor")
   await expect(editor).toBeVisible()
   return editor

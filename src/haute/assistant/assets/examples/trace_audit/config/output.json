@@ -1,1 +1,1 @@
-{"outputMapping":[{"source_port":"derived","source_column":"derived_value","output_path":"$[:].derived_value","enabled":true}]}
+{"output_mapping":[{"source_port":"derived","source_column":"derived_value","output_path":"$[:].derived_value","enabled":true}]}

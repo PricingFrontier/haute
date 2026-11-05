@@ -51,7 +51,7 @@ def _edge(source: str, target: str) -> GraphEdge:
 
 def _snapshot_parquet_input(path: Path) -> dict[str, Any]:
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": str(path),

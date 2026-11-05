@@ -19,7 +19,7 @@
                     "node": "risk_features",
                     "edits": [
                       {
-                        "insert_after": "logic",
+                        "insert_after": "free_code-2",
                         "step": {
                           "kind": "free_code",
                           "code": "# Flag young drivers\ndf = df.with_columns((pl.col('driver_age') < 21).alias('young_driver'))"

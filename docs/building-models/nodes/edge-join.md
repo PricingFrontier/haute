@@ -36,7 +36,7 @@ If the node's settings or connections cannot work, a red box at the top, **EDGE 
 | **JOINING INPUT** | The input on the join handle, by name, or "Not connected". Its bin removes that connection. |
 | **Swap** | Swaps the two inputs' roles. It is available once each role has exactly one input. |
 
-The names are the ones the node's code uses for its inputs: a Quote Input table's label (for example, `quote_info`), a submodel output's port name (for example, `factored`), or the upstream node's name - never an internal node ID such as `Quote_Input_1`.
+The names are the ones the node's code uses for its inputs: a Quote Input table's label (for example, `quote_info`), a submodel output's port name (for example, `factored`), or the upstream node's name - never the Quote Input's own name, `quote_input`.
 
 ### Join settings
 
@@ -83,7 +83,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     An Edge Join has no JSON sidecar. Its settings are arguments of the `@pipeline.edge_join` decorator in the pipeline's `.py` file, on a one-line declaration, and its inputs are ordinary `pipeline.connect(...)` calls whose `target_port` gives each input's role. The decorator performs the join when the file runs on its own:
 
     ```python
-    @pipeline.edge_join(how="left", on=["quote_id"], suffix="_right", maintain_order="left_right")
+    @pipeline.edge_join(how="left", on=["quote_id"], maintain_order="left_right")
     def join_scores(policies, competitor_scores): ...
 
 
@@ -98,11 +98,11 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     | **DOMINANT INPUT** / **JOINING INPUT** | the `target_port` of each connection: `"base"` or `"join"` |
     | **JOIN TYPE** | `how`: `"inner"`, `"left"`, `"right"`, `"full"`, `"semi"`, `"anti"` or `"cross"` |
     | **SAME-NAME KEY** | `on`: the same-name join keys, for example `["quote_id"]` |
-    | **BASE KEY** / **JOIN KEY** | `leftOn` / `rightOn`, written `left_on` / `right_on` in the decorator |
-    | **SUFFIX** | `suffix` (defaults to `"_right"`) |
+    | **BASE KEY** / **JOIN KEY** | `left_on` / `right_on`, written `left_on` / `right_on` in the decorator |
+    | **SUFFIX** | `suffix`, left out at its default `"_right"` |
     | **COALESCE** | `coalesce`: `true` or `false` (absent when not set) |
     | **VALIDATE** | `validate`: `"1:1"`, `"1:m"`, `"m:1"` or `"m:m"` (absent when not set) |
-    | **MAINTAIN ORDER** | `maintainOrder`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"`. Required: a pipeline file that leaves it out opens for recovery, and **Recover settings** gives the join the order for its type. For a join inside a submodel, select the submodel: its panel lists the join with its own **Recover settings** |
+    | **MAINTAIN ORDER** | `maintain_order`, written `maintain_order` in the decorator: `"none"`, `"left"`, `"right"`, `"left_right"` or `"right_left"`. Required: a pipeline file that leaves it out opens for recovery, and **Recover settings** gives the join the order for its type. For a join inside a submodel, select the submodel: its panel lists the join with its own **Recover settings** |
     | **COLUMNS** tab | `selected_columns` |
 
     In the node's settings, same-name keys look like this:
@@ -110,7 +110,7 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     ```json
     {
       "how": "left",
-      "maintainOrder": "left_right",
+      "maintain_order": "left_right",
       "on": ["quote_id"]
     }
     ```
@@ -120,13 +120,13 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     ```json
     {
       "how": "left",
-      "maintainOrder": "left_right",
-      "leftOn": ["quote_id"],
-      "rightOn": ["id"]
+      "maintain_order": "left_right",
+      "left_on": ["quote_id"],
+      "right_on": ["id"]
     }
     ```
 
-    Cross joins do not use keys: `on`, `leftOn`, and `rightOn` must all be absent. Every other join type requires either a non-empty `on` value or both `leftOn` and `rightOn` with the same non-zero number of keys. Do not combine `on` with `leftOn`/`rightOn`.
+    Cross joins do not use keys: `on`, `left_on`, and `right_on` must all be absent. Every other join type requires either a non-empty `on` value or both `left_on` and `right_on` with the same non-zero number of keys. Do not combine `on` with `left_on`/`right_on`.
 
     Input roles live only on the connections. A `baseInput`, `joinInput`, `base_input` or `join_input` setting or decorator argument is rejected: those removed role fields have no compatibility path.
 
@@ -137,14 +137,14 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
     | Key | Type | Description |
     |---|---|---|
     | `how` | `"inner"` or `"left"` or `"right"` or `"full"` or `"semi"` or `"anti"` or `"cross"` | The join type. |
-    | `on` | text or list of text | The key column or columns both inputs share; or use `leftOn` and `rightOn`. |
-    | `leftOn` | text or list of text | The key column or columns on the base input. |
-    | `rightOn` | text or list of text | The key column or columns on the join input, matched in order with `leftOn`. |
+    | `on` | text or list of text | The key column or columns both inputs share; or use `left_on` and `right_on`. |
+    | `left_on` | text or list of text | The key column or columns on the base input. |
+    | `right_on` | text or list of text | The key column or columns on the join input, matched in order with `left_on`. |
     | `suffix` | text | The suffix added to a join-input column whose name the base input already has. |
     | `coalesce` | `true` or `false` or `null` | Whether key columns of the same name are merged into one; `null` leaves it to the join type, as Polars does. |
     | `validate` | `"1:1"` or `"1:m"` or `"m:1"` or `"m:m"` or `null` | The cardinality the keys must have, checked when the join runs; `null` checks none. |
-    | `maintainOrder` | `"none"` or `"left"` or `"right"` or `"left_right"` or `"right_left"` | Which input's row order the result keeps; required, which the engine's join rules check with the values it takes. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `maintain_order` | `"none"` or `"left"` or `"right"` or `"left_right"` or `"right_left"` | Which input's row order the result keeps; required, which the engine's join rules check with the values it takes. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

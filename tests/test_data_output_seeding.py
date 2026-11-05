@@ -48,7 +48,7 @@ def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _data_input(project: Path, name: str) -> dict[str, Any]:
-    return {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(project / name)}
+    return {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(project / name)}
 
 
 def _graph(project: Path, *, with_training: bool = False) -> dict[str, Any]:
@@ -68,7 +68,7 @@ def _graph(project: Path, *, with_training: bool = False) -> dict[str, Any]:
                 "out",
                 "dataOutput",
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "parquet",
                     "path": str(project / "out" / "result.parquet"),
                 },
@@ -421,7 +421,7 @@ def test_response_metrics_keep_parent_preparation_with_worker_evidence(
     pl.read_parquet(project / "quotes.parquet").write_csv(project / "quotes.csv")
     graph = _graph(project)
     graph["nodes"][0]["data"]["config"] = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": str(project / "quotes.csv"),
     }

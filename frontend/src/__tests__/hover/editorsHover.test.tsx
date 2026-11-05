@@ -511,7 +511,7 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
         factors: [{
           banding: "categorical",
           column: outputColumn,
-          outputColumn,
+          output_column: outputColumn,
           rules: assignments.map((a) => ({ value: a, assignment: a })),
         }],
       },
@@ -631,8 +631,8 @@ describe("RatingStepEditor hover integration", () => {
       tables: [{
         name: "T1",
         factors: ["age_band"],
-        outputColumn: "af",
-        defaultValue: "1.0",
+        output_column: "af",
+        default_value: "1.0",
         entries: [],
       }],
     }
@@ -681,8 +681,8 @@ describe("RatingStepEditor hover integration", () => {
       tables: [{
         name: "T1",
         factors: ["age_band"],
-        outputColumn: "af",
-        defaultValue: "1.0",
+        output_column: "af",
+        default_value: "1.0",
         entries: [],
       }],
     }

@@ -59,7 +59,7 @@ def _preview_policy(client: TestClient, **body: Any) -> Any:
         "/api/pipeline/preview",
         json={
             "graph": _editor_graph().model_dump(mode="json"),
-            "node_id": "request",
+            "node_id": "workbench_input",
             "port_label": "policy",
             **body,
         },
@@ -78,7 +78,7 @@ def test_a_browser_graph_runs_on_the_forms_tables_read_anew_for_each_request(
 
     # A hand edit of the form folder reaches the next request, past any cached result: the
     # sample a node runs on is in its cache key.
-    workbench_project(project, FORM_TABLES, {"t_policy": [{"c_state": "CA", "c_limit": "5"}]})
+    workbench_project(project, FORM_TABLES, {"policy": [{"state": "CA", "limit": "5"}]})
     assert _preview_policy(client)["preview"] == [{**_POLICY, "state": "CA", "limit": 5}]
 
 
@@ -86,7 +86,7 @@ def test_the_form_a_pricing_posts_is_run_in_place_of_the_folders(project: Path) 
     app = project_app()
 
     folder = {path.name: path.read_bytes() for path in (project / "workbench").rglob("*.json")}
-    unsaved = tables_form(FORM_TABLES, {"t_policy": [{"c_state": "TX", "c_limit": "7"}]})
+    unsaved = tables_form(FORM_TABLES, {"policy": [{"state": "TX", "limit": "7"}]})
 
     previewed = _preview_policy(
         TestClient(app), workbench_form=unsaved.model_dump(mode="json", by_alias=True)
@@ -129,7 +129,7 @@ def test_a_browser_graph_takes_the_tables_of_the_configured_project_not_the_cwd(
 
     given = flatten_executable_graph(_editor_graph())
 
-    request = next(node for node in given.nodes if node.id == "request")
+    request = next(node for node in given.nodes if node.id == "workbench_input")
     assert request.data.config["sample"]["policy"] == {"state": "NY", "limit": 1000}
 
 
@@ -144,7 +144,10 @@ def test_a_graph_without_a_workbench_node_reads_no_form(tmp_path: Path) -> None:
     ("graph", "owner"),
     [
         (_editor_graph(), "Workbench Input"),
-        (PipelineGraph(nodes=[_node("response", NodeType.WORKBENCH_OUTPUT)]), "Workbench Output"),
+        (
+            PipelineGraph(nodes=[_node("workbench_output", NodeType.WORKBENCH_OUTPUT)]),
+            "Workbench Output",
+        ),
     ],
     ids=["input", "output"],
 )
@@ -225,19 +228,22 @@ def test_deploy_bundles_the_forms_tables_without_its_sample(project: Path) -> No
     resolved = resolve_config(DeployConfig(pipeline_file=project / "main.py", model_name="m"))
 
     assert resolved.workbench_form is not None
-    request = resolved.pruned_graph.node_map["request"].data.config
+    request = resolved.pruned_graph.node_map["workbench_input"].data.config
     assert [table["name"] for table in request["tables"]] == ["quote_details", "policy", "items"]
     assert request["sample"]["policy"] == {"state": "NY", "limit": 1000}
-    response = resolved.pruned_graph.node_map["response"].data.config
+    response = resolved.pruned_graph.node_map["workbench_output"].data.config
     assert [table["name"] for table in response["tables"]] == ["pricing", "item_prices"]
     # The bundle carries the tables the deployed pipeline was validated on, never the sample.
     shipped = {
         node["id"]: node["data"]["config"] for node in shipped_graph(resolved.pruned_graph)["nodes"]
     }
-    assert shipped["request"]["tables"] == request["tables"]
-    assert "sample" not in shipped["request"]
+    assert shipped["workbench_input"]["tables"] == request["tables"]
+    assert "sample" not in shipped["workbench_input"]
     # The config files hold neither.
-    assert json.loads((project / "config" / "workbench_input" / "request.json").read_text()) == {}
+    assert (
+        json.loads((project / "config" / "workbench_input" / "workbench_input.json").read_text())
+        == {}
+    )
 
 
 def _broken_form(project: Path) -> None:
@@ -276,7 +282,7 @@ def test_haute_run_runs_the_pipeline_on_the_forms_tables(
     handle_run(RunConfig(pipeline_file=project / "main.py"))
 
     printed = capsys.readouterr().out
-    assert "✓ request" in printed and "✓ response" in printed
+    assert "✓ workbench_input" in printed and "✓ workbench_output" in printed
 
 
 def test_haute_run_says_why_the_form_cannot_be_read(
@@ -330,7 +336,7 @@ def test_score_holds_a_seeded_workbench_input_to_its_form(project: Path) -> None
 
     # A sidecar an earlier Haute wrote, its copies in it, is refused as a run refuses it.
     workbench_project(project, FORM_TABLES, FORM_SAMPLE)
-    sidecar = project / "config" / "workbench_input" / "request.json"
+    sidecar = project / "config" / "workbench_input" / "workbench_input.json"
     sidecar.write_text(json.dumps({"tables": [], "sample": {}}), encoding="utf-8")
     with pytest.raises(ConfigError, match="removed tables and sample fields"):
         score()

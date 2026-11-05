@@ -68,7 +68,7 @@ InputMode = Literal["read", "scan"]
 OutputMode = Literal["write", "sink"]
 IoGroup = Literal["file", "database", "lakehouse", "inline"]
 _IO_UNIVERSAL_KEYS = {
-    "inputMapping",
+    "input_mapping",
     "selected_columns",
     "column_renames",
     "contract",
@@ -431,7 +431,7 @@ def data_input_is_direct(config: Mapping[str, Any]) -> bool:
     Parquet is ``scan``.
     """
     return (
-        config.get("inputType") == "file"
+        config.get("input_type") == "file"
         and config.get("format") == "parquet"
         and config.get("mode") in (None, "", "scan")
     )
@@ -468,7 +468,7 @@ def _validated_data_input(
 ) -> tuple[dict[str, Any], list[IoCompletenessGap]]:
     result = dict(config)
     gaps: list[IoCompletenessGap] = []
-    input_type = result.get("inputType")
+    input_type = result.get("input_type")
     if not isinstance(input_type, str) or input_type not in {
         "file",
         "database",
@@ -476,10 +476,10 @@ def _validated_data_input(
         "databricks",
         "inline",
     }:
-        raise PolarsIoConfigError(f"Unknown inputType {input_type!r}.")
+        raise PolarsIoConfigError(f"Unknown input_type {input_type!r}.")
 
     common = {
-        "inputType",
+        "input_type",
         "format",
         "arguments",
         "code",
@@ -490,7 +490,7 @@ def _validated_data_input(
         _reject_inactive_fields(
             result,
             allowed={
-                "inputType",
+                "input_type",
                 "http_path",
                 "table",
                 "query",
@@ -499,7 +499,7 @@ def _validated_data_input(
                 "steps",
             }
             | _IO_UNIVERSAL_KEYS,
-            discriminant="inputType",
+            discriminant="input_type",
             value=input_type,
         )
         for field in ("http_path", "table"):
@@ -531,19 +531,19 @@ def _validated_data_input(
     group = format_group(fmt)
     if input_type != group:
         raise PolarsIoConfigError(
-            f"Format {fmt.name!r} belongs to group {group!r}, not inputType {input_type!r}."
+            f"Format {fmt.name!r} belongs to group {group!r}, not input_type {input_type!r}."
         )
     mode = resolve_input_mode(fmt, result) if input_type != "database" else None
     if input_type == "file":
         _reject_inactive_fields(
-            result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
+            result, allowed=polars_common | {"path"}, discriminant="input_type", value=input_type
         )
         gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r}")
         if gap is not None:
             gaps.append(gap)
     elif input_type == "lakehouse":
         _reject_inactive_fields(
-            result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
+            result, allowed=polars_common | {"path"}, discriminant="input_type", value=input_type
         )
         gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r}")
         if gap is not None:
@@ -552,7 +552,7 @@ def _validated_data_input(
         _reject_inactive_fields(
             result,
             allowed=common | {"connection", "uri", "query"},
-            discriminant="inputType",
+            discriminant="input_type",
             value=input_type,
         )
         locator = _database_locator_gap(result, subject="Database input")
@@ -579,7 +579,7 @@ def _validated_data_input(
         _reject_inactive_fields(
             result,
             allowed=polars_common | {"records"},
-            discriminant="inputType",
+            discriminant="input_type",
             value=input_type,
         )
         records = result.get("records")
@@ -632,22 +632,22 @@ def _validated_data_output(
 ) -> tuple[dict[str, Any], list[IoCompletenessGap]]:
     result = dict(config)
     gaps: list[IoCompletenessGap] = []
-    output_type = result.get("outputType")
+    output_type = result.get("output_type")
     if not isinstance(output_type, str) or output_type not in {
         "file",
         "database",
         "lakehouse",
         "databricks",
     }:
-        raise PolarsIoConfigError(f"Unknown outputType {output_type!r}.")
+        raise PolarsIoConfigError(f"Unknown output_type {output_type!r}.")
     if output_type == "databricks":
         from haute._databricks_output import DATABRICKS_WRITE_MODES
 
         _reject_inactive_fields(
             result,
-            allowed={"outputType", "http_path", "table", "write_mode", "arguments"}
+            allowed={"output_type", "http_path", "table", "write_mode", "arguments"}
             | _IO_UNIVERSAL_KEYS,
-            discriminant="outputType",
+            discriminant="output_type",
             value=output_type,
         )
         for field in ("http_path", "table"):
@@ -667,16 +667,16 @@ def _validated_data_output(
     group = format_group(fmt)
     if output_type != group:
         raise PolarsIoConfigError(
-            f"Format {fmt.name!r} belongs to group {group!r}, not outputType {output_type!r}."
+            f"Format {fmt.name!r} belongs to group {group!r}, not output_type {output_type!r}."
         )
     if fmt.writer is None and fmt.sinker is None:
         raise PolarsIoConfigError(f"Format {fmt.name!r} has no output capability.")
-    common = {"outputType", "format", "mode", "arguments"} | _IO_UNIVERSAL_KEYS
+    common = {"output_type", "format", "mode", "arguments"} | _IO_UNIVERSAL_KEYS
     if output_type == "database":
         _reject_inactive_fields(
             result,
             allowed=common | {"connection", "uri", "table"},
-            discriminant="outputType",
+            discriminant="output_type",
             value=output_type,
         )
         locator = _database_locator_gap(result, subject="Database output")
@@ -687,7 +687,7 @@ def _validated_data_output(
             gaps.append(gap)
     else:
         _reject_inactive_fields(
-            result, allowed=common | {"path"}, discriminant="outputType", value=output_type
+            result, allowed=common | {"path"}, discriminant="output_type", value=output_type
         )
         gap = _locator_gap(result, "path", subject=f"Format {fmt.name!r} output")
         if gap is not None:
@@ -717,7 +717,7 @@ def format_for_config(config: Mapping[str, Any]) -> IoFormat:
 
 def is_databricks_output(config: Mapping[str, Any]) -> bool:
     """Whether a Data Output writes a Databricks table (it has no ``format``)."""
-    return config.get("outputType") == "databricks"
+    return config.get("output_type") == "databricks"
 
 
 def data_output_group(config: Mapping[str, Any]) -> str:

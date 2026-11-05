@@ -258,11 +258,11 @@ export function canonicalSubmodelBoundary(
       + ": canonical occurrence config is malformed",
     )
   }
-  const definition = submodels?.[config.definitionId]
-  if (!isSubmodelDefinition(definition, config.definitionId)) {
+  const definition = submodels?.[config.definition_id]
+  if (!isSubmodelDefinition(definition, config.definition_id)) {
     throw new Error(
       "Cannot resolve submodel instance " + boundaryNode.id
-      + ": definition " + config.definitionId + " is missing or malformed",
+      + ": definition " + config.definition_id + " is missing or malformed",
     )
   }
   return {
@@ -500,9 +500,9 @@ export function incomingEdgeInputNames({
       if (!isSubmodelInstanceConfig(instanceConfig)) {
         throw new Error(`Cannot resolve input name: submodel ${boundaryNodeId} has malformed identity`)
       }
-      const definition = submodels?.[instanceConfig.definitionId]
-      if (!isSubmodelDefinition(definition, instanceConfig.definitionId)) {
-        throw new Error(`Cannot resolve input name: submodel definition ${instanceConfig.definitionId} is unavailable`)
+      const definition = submodels?.[instanceConfig.definition_id]
+      if (!isSubmodelDefinition(definition, instanceConfig.definition_id)) {
+        throw new Error(`Cannot resolve input name: submodel definition ${instanceConfig.definition_id} is unavailable`)
       }
       const port = definition.inputPorts.find((candidate) => candidate.name === canonicalPortName)
       if (!port) {

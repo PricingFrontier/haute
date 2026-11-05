@@ -200,7 +200,7 @@ def _preserve_consumer_input_names(
     A consumer of a grouped node used that node's own name as its input; after
     grouping the same frame arrives under its public output port name. If the
     physical name changes, the authored code does not: record the old name as
-    the logical name through ``inputMapping`` and rewrite schema-owned
+    the logical name through ``input_mapping`` and rewrite schema-owned
     selectors, exactly as flattening does across the same boundary.
     """
     renames: dict[str, dict[str, str]] = {}
@@ -383,7 +383,7 @@ def create_submodel_graph(
             label=sm_name,
             nodeType=NodeType.SUBMODEL,
             config=SubmodelInstanceConfig(
-                definitionId=sm_name,
+                definition_id=sm_name,
                 alias=sm_name,
             ).model_dump(by_alias=True),
         ),
@@ -555,7 +555,7 @@ def create_node_instance_graph(
         data=NodeData(
             label=owner_name,
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": definition_name, "alias": owner_name},
+            config={"definition_id": definition_name, "alias": owner_name},
         ),
     )
     definitions = {**(graph.submodels or {}), definition_name: definition}
@@ -627,7 +627,7 @@ def create_node_instance_graph(
         data=NodeData(
             label=base,
             nodeType=NodeType.SUBMODEL,
-            config={"definitionId": definition_name, "alias": base, "instanceOf": owner_name},
+            config={"definition_id": definition_name, "alias": base, "instance_of": owner_name},
         ),
     )
     names, _ = name_candidates(
@@ -652,9 +652,9 @@ def create_node_instance_graph(
             label=instance_name,
             nodeType=NodeType.SUBMODEL,
             config={
-                "definitionId": definition_name,
+                "definition_id": definition_name,
                 "alias": instance_name,
-                "instanceOf": owner_name,
+                "instance_of": owner_name,
             },
         ),
     )

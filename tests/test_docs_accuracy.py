@@ -156,6 +156,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "optimiser-validation",
     "polars-2",
     "polars-node-clarity",
+    "readable-output",
     "t-boost",
     "workbench",
 )
@@ -350,10 +351,10 @@ def test_edge_join_guide_matches_runtime_and_canvas_contract() -> None:
         "output on the right",
         "both the top and bottom join-handle candidates are available",
         "Cross joins do not use keys",
-        "`on`, `leftOn`, and `rightOn` must all be absent",
+        "`on`, `left_on`, and `right_on` must all be absent",
         '"on": ["quote_id"]',
-        '"leftOn": ["quote_id"]',
-        '"rightOn": ["id"]',
+        '"left_on": ["quote_id"]',
+        '"right_on": ["id"]',
     ):
         assert claim in normalised_guide
     assert "palette" not in guide.casefold()

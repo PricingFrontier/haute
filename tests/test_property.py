@@ -343,7 +343,8 @@ def _pipeline_graph_strategy():
             label = f"Step{i}"
             all_labels.append(label)
 
-        all_labels.append("Output")
+        # A Quote Response is named by its type (READ-46).
+        all_labels.append("quote_response")
 
         nodes: list[GraphNode] = []
         edges: list[GraphEdge] = []
@@ -377,22 +378,24 @@ def _pipeline_graph_strategy():
         # Output node
         nodes.append(
             GraphNode(
-                id="output",
+                id="quote_response",
                 data=NodeData(
-                    label="Output",
+                    label="quote_response",
                     nodeType=NodeType.OUTPUT,
                     config=make_output_config([]),
                 ),
             )
         )
 
-        # Chain edges: source → step0 → step1 → ... → output
+        # Chain edges: source → step0 → step1 → ... → quote_response
         prev_id = "source"
         for i in range(n_transforms):
             nid = f"step{i}"
             edges.append(GraphEdge(id=f"e_{prev_id}_{nid}", source=prev_id, target=nid))
             prev_id = nid
-        edges.append(GraphEdge(id=f"e_{prev_id}_output", source=prev_id, target="output"))
+        edges.append(
+            GraphEdge(id=f"e_{prev_id}_quote_response", source=prev_id, target="quote_response")
+        )
 
         return PipelineGraph(
             nodes=nodes,
@@ -671,7 +674,7 @@ class TestRatingTableRowCount:
         ]
         table = {
             "factors": ["factor1"],
-            "outputColumn": "rating",
+            "output_column": "rating",
             "entries": entries,
         }
         result = _apply_rating_table(lf, table).collect()

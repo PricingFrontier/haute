@@ -57,7 +57,7 @@ def _node(nid: str, nt: NodeType, **cfg: Any) -> GraphNode:
     """Convenience node constructor."""
     if nt is NodeType.DATA_INPUT:
         cfg = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "arguments": {},
@@ -171,7 +171,7 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
             "factors": [
                 {
                     "column": "age",
-                    "outputColumn": "age_band",
+                    "output_column": "age_band",
                     "banding": "breakpoints",
                     "rules": [{"boundary": "25", "label": "0"}],
                 }
@@ -182,7 +182,7 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
             "tables": [
                 {
                     "factors": ["age_band"],
-                    "outputColumn": "age_factor",
+                    "output_column": "age_factor",
                     "entries": [],
                 }
             ]
@@ -198,7 +198,7 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
             "column_name": "multiplier",
             "min_value": 0.8,
             "max_value": 1.2,
-            "stepCount": 21,
+            "step_count": 21,
         }
     if nt == NodeType.OPTIMISER_APPLY:
         # Produces at minimum the version column; referenced is opaque
@@ -264,7 +264,7 @@ class TestCodegenEmitsContractMetadata:
                     factors=[
                         {
                             "column": "age",
-                            "outputColumn": "age_band",
+                            "output_column": "age_band",
                             "banding": "breakpoints",
                             "rules": [{"boundary": "25", "label": "0"}],
                         }
@@ -328,9 +328,9 @@ class TestCodegenEmitsContractMetadata:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -429,7 +429,7 @@ class TestParserValidatesUserDeclaredContracts:
         cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)
         from haute.parser import parse_pipeline_source
 
-        # Banding factor says column='age', outputColumn='age_band',
+        # Banding factor says column='age', output_column='age_band',
         # but the user's explicit contract says 'height' / 'height_band'.
         # The parser must detect the disagreement and raise.
         source_config = write_data_input_config(tmp_path, "src", "x.parquet")
@@ -441,9 +441,9 @@ class TestParserValidatesUserDeclaredContracts:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -496,9 +496,9 @@ pipeline.connect("src", "band")
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -549,9 +549,9 @@ pipeline.connect("src", "band")
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "age_band",
+                        "output_column": "age_band",
                         "banding": "breakpoints",
-                        "rules": [{"boundary": "25", "label": "0"}],
+                        "rules": [{"upper": 25, "label": "0"}],
                     }
                 ]
             },
@@ -608,7 +608,7 @@ pipeline.connect("src", "band")
             NodeType.MODEL_SCORE,
             "score",
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run-123",
                 "artifact_path": "model.cbm",
                 "task": "regression",
@@ -711,7 +711,7 @@ class TestExecutorAssertsContractsAtBoundaries:
                     factors=[
                         {
                             "column": "age",  # not present upstream!
-                            "outputColumn": "age_band",
+                            "output_column": "age_band",
                             "banding": "breakpoints",
                             "rules": [{"boundary": "25", "label": "0"}],
                         }
@@ -857,7 +857,7 @@ class TestExecutorAssertsContractsAtBoundaries:
                     factors=[
                         {
                             "column": "age",
-                            "outputColumn": "age_band",
+                            "output_column": "age_band",
                             "banding": "breakpoints",
                             "rules": [
                                 {"boundary": "25", "label": "0"},
@@ -889,7 +889,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         draft = {
             "banding": "categorical",
             "column": "cover",
-            "outputColumn": "cover_band",
+            "output_column": "cover_band",
             "rules": {},
             "default": None,
         }
@@ -1010,7 +1010,7 @@ class TestContractOverheadBenchmark:
                         factors=[
                             {
                                 "column": "age",
-                                "outputColumn": f"band_{i}",
+                                "output_column": f"band_{i}",
                                 "banding": "breakpoints",
                                 "rules": [{"boundary": "25", "label": "0"}],
                                 "default": "1",

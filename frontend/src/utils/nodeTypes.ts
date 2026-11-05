@@ -114,6 +114,23 @@ export const SINGLETON_TYPES = new Set<NodeTypeValue>([
   NODE_TYPES.API_INPUT, NODE_TYPES.WORKBENCH_INPUT, NODE_TYPES.OUTPUT, NODE_TYPES.WORKBENCH_OUTPUT,
 ])
 
+/**
+ * The one name each request input and response node has (READ-46): a pipeline holds one,
+ * so its type names it, never numbered. Twin of the backend's `SINGLETON_NODE_NAMES`
+ * (`src/haute/_types.py`).
+ */
+export const SINGLETON_NODE_NAMES: Readonly<Partial<Record<NodeTypeValue, string>>> = {
+  [NODE_TYPES.API_INPUT]: "quote_input",
+  [NODE_TYPES.OUTPUT]: "quote_response",
+  [NODE_TYPES.WORKBENCH_INPUT]: "workbench_input",
+  [NODE_TYPES.WORKBENCH_OUTPUT]: "workbench_output",
+}
+
+/** A request input's or response node's fixed name, or undefined for any other type. */
+export function singletonName(nodeType: unknown): string | undefined {
+  return typeof nodeType === "string" ? SINGLETON_NODE_NAMES[nodeType as NodeTypeValue] : undefined
+}
+
 /** Whether a node type allows only one instance per pipeline. */
 export function isSingletonType(nodeType: string | undefined): boolean {
   return Boolean(nodeType && SINGLETON_TYPES.has(nodeType as NodeTypeValue))

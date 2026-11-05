@@ -9,7 +9,7 @@
   "inapplicable_variants": [],
   "turns": [
     {
-      "request": "After quotes, add a rating step named age_rating. Use one table with factor driver_age, output age_factor, rows 25 -> 1.3 and 42 -> 1.0, and default 1.0. Add combined output technical_premium using multiply with base value 100. Then add a response output named age_price_response containing quote_id, age_factor, and technical_premium.",
+      "request": "After quotes, add a rating step named age_rating. Use one table with factor driver_age, output age_factor, rows 25 -> 1.3 and 42 -> 1.0, and default 1.0. Add combined output technical_premium using multiply with base value 100. Then add a response output named quote_response containing quote_id, age_factor, and technical_premium.",
       "expectations": {
         "outcome": "applied",
         "saves": true,
@@ -26,7 +26,7 @@
           },
           {
             "source": "age_rating",
-            "target": "age_price_response",
+            "target": "quote_response",
             "target_handle": null
           }
         ],
@@ -40,7 +40,7 @@
                 "factors": [
                   "driver_age"
                 ],
-                "outputColumn": "age_factor",
+                "output_column": "age_factor",
                 "entries": [
                   {
                     "driver_age": 25,
@@ -51,19 +51,19 @@
                     "value": 1.0
                   }
                 ],
-                "defaultValue": 1.0
+                "default_value": 1.0
               }
             ],
-            "combinedOutputs": [
+            "combined_outputs": [
               {
-                "outputColumn": "technical_premium",
+                "output_column": "technical_premium",
                 "operation": "multiply",
-                "baseValue": 100.0
+                "base_value": 100.0
               }
             ]
           },
-          "age_price_response": {
-            "outputMapping": [
+          "quote_response": {
+            "output_mapping": [
               {
                 "source_port": "age_rating",
                 "source_column": "quote_id",

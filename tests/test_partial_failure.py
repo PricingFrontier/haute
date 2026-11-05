@@ -676,7 +676,7 @@ class TestStaleSaveUnderLock:
                             "label": "Source",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "data.parquet",

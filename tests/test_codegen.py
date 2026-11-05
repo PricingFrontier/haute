@@ -71,7 +71,7 @@ def _file_input_config(
         ".ipc": ("ipc", "scan"),
     }.get(suffix, ("parquet", "scan"))
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name or resolved_format,
         "mode": mode or resolved_mode,
         "path": path,
@@ -84,7 +84,7 @@ def _file_input_config(
 
 def _databricks_input_config(*, code: str | None = None) -> dict:
     config = {
-        "inputType": "databricks",
+        "input_type": "databricks",
         "http_path": "/sql/1.0/warehouses/test",
         "table": "catalog.schema.tbl",
         "arguments": {},
@@ -96,7 +96,7 @@ def _databricks_input_config(*, code: str | None = None) -> dict:
 
 def _file_output_config(path: str, format_name: str) -> dict:
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": format_name,
         "mode": "sink" if format_name in {"csv", "parquet"} else "write",
         "path": path,
@@ -428,7 +428,7 @@ class TestNodeToCode:
                     "label": "Output",
                     "nodeType": "output",
                     "config": {
-                        "outputMapping": [
+                        "output_mapping": [
                             {
                                 "source_port": "transform",
                                 "source_column": "a",
@@ -441,7 +441,7 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["transform"])
-        # v2: the outputMapping lives in the JSON schema mapping; the decorator
+        # v2: the output_mapping lives in the JSON schema mapping; the decorator
         # assembles the document through the shared assembler the executor
         # calls (not a passthrough, not a `.select(...)` baked into the body).
         assert code == _declaration(
@@ -514,7 +514,7 @@ class TestNodeToCode:
                     "label": "Score",
                     "nodeType": "modelScore",
                     "config": {
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "abc123",
                         "artifact_path": "model.cbm",
                         "task": "regression",
@@ -543,7 +543,7 @@ class TestNodeToCode:
         function, whatever the working directory.
         """
         config = {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "abc123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -597,8 +597,8 @@ class TestNodeToCode:
                         "tables": [
                             {
                                 "factors": ["region"],
-                                "outputColumn": "region_factor",
-                                "defaultValue": 1.0,
+                                "output_column": "region_factor",
+                                "default_value": 1.0,
                                 "entries": [{"region": "North", "value": 1.1}],
                             }
                         ]
@@ -618,7 +618,7 @@ class TestNodeToCode:
         [
             pytest.param(
                 "Model",
-                {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"},
+                {"path": "model.pkl", "file_type": "pickle", "code": "df = obj.predict(df)"},
                 ["features"],
                 # Every input stays a parameter, the loaded object arrives as
                 # ``obj``, and the body binds ``df`` to the first input itself.
@@ -631,7 +631,7 @@ class TestNodeToCode:
             ),
             pytest.param(
                 "Rates",
-                {"path": "rates.joblib", "fileType": "joblib", "code": "df = obj.predict(df)"},
+                {"path": "rates.joblib", "file_type": "joblib", "code": "df = obj.predict(df)"},
                 [],
                 # A disconnected External File has no inputs and no binding line.
                 '@pipeline.external_file(config="config/load_file/Rates.json")\n'
@@ -655,7 +655,7 @@ class TestNodeToCode:
         assert code == expected
         assert "load_external_object" not in code
         assert config["path"] not in code
-        assert config["fileType"] not in code
+        assert config["file_type"] not in code
         _compile_node_code(code)
 
 
@@ -695,7 +695,8 @@ class TestGraphToCode:
         assert 'Pipeline("test_pipe"' in code
         assert "def Source()" in code
         assert "def Transform(Source: pl.LazyFrame)" in code
-        assert 'pipeline.connect("Source", "Transform")' in code
+        # The signature names the source, so no connect() repeats the edge (READ-30).
+        assert "pipeline.connect" not in code
         compile(code, "<test>", "exec")
 
     def test_preamble_positioned_before_pipeline_def(self):
@@ -757,7 +758,7 @@ class TestGraphToCode:
                     {
                         "id": "c",
                         "data": {
-                            "label": "Out",
+                            "label": "quote_response",
                             "nodeType": "output",
                             "config": make_output_config(["x"]),
                         },
@@ -771,9 +772,10 @@ class TestGraphToCode:
         )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
-        # Verify edges are emitted
-        assert 'pipeline.connect("Read", "Clean")' in code
-        assert 'pipeline.connect("Clean", "Out")' in code
+        # Each edge is said by its target's signature, so no connect() repeats it (READ-30).
+        assert "def Clean(Read: pl.LazyFrame) -> pl.LazyFrame:\n" in code
+        assert "def quote_response(Clean): ...\n" in code
+        assert "pipeline.connect" not in code
 
     def test_optimiser_apply_ratebook_input_returns_selected_source(self):
         graph = _g(
@@ -801,7 +803,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": "artifacts/ratebook.json",
                                 "ratebook_input": "age_veh_banding",
                             },
@@ -856,7 +858,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "online-run",
                                 "optimiser_mode": "online",
                                 "ratebook_input": "stale_banding",
@@ -906,7 +908,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "missing-run",
                                 "ratebook_input": "age_veh_banding",
                             },
@@ -957,7 +959,7 @@ class TestGraphToCode:
                             "label": "apply_optimisation",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": "artifacts/ratebook.json",
                                 "ratebook_input": "age_veh_banding",
                             },
@@ -1280,7 +1282,7 @@ class TestSelectedColumnsCodegen:
                             {
                                 "banding": "breakpoints",
                                 "column": "area",
-                                "outputColumn": "area_factor",
+                                "output_column": "area_factor",
                                 "rules": [{"boundary": "10", "label": "1.0"}],
                             }
                         ],
@@ -1489,7 +1491,7 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_output_with_none_fields(self):
-        """Output node with an empty outputMapping is still a plain declaration:
+        """Output node with an empty output_mapping is still a plain declaration:
         its decorator routes through the assembler."""
         node = _n(
             {
@@ -1548,7 +1550,7 @@ class TestCodegenEdgeCases:
                 "data": {
                     "label": "Model",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": ""},
                 },
             }
         )
@@ -1570,7 +1572,7 @@ class TestCodegenEdgeCases:
                     "nodeType": "externalFile",
                     "config": {
                         "path": "model.pkl",
-                        "fileType": "pickle",
+                        "file_type": "pickle",
                         "code": "df = df.with_columns(prediction=pl.lit(obj))",
                     },
                 },
@@ -1667,7 +1669,7 @@ class TestTemplateParamConsistency:
                             {
                                 "banding": "breakpoints",
                                 "column": "age",
-                                "outputColumn": "age_factor",
+                                "output_column": "age_factor",
                                 "rules": [{"boundary": "100", "label": "1.0"}],
                             }
                         ],
@@ -1694,13 +1696,13 @@ class TestTemplateParamConsistency:
                             {
                                 "banding": "breakpoints",
                                 "column": "age",
-                                "outputColumn": "age_f",
+                                "output_column": "age_f",
                                 "rules": [],
                             },
                             {
                                 "banding": "discrete",
                                 "column": "region",
-                                "outputColumn": "region_f",
+                                "output_column": "region_f",
                                 "rules": [],
                             },
                         ],
@@ -1726,7 +1728,7 @@ class TestTemplateParamConsistency:
                         "tables": [
                             {
                                 "factors": ["x"],
-                                "outputColumn": "f",
+                                "output_column": "f",
                                 "entries": [{"x": "a", "value": 1.0}],
                             }
                         ]
@@ -1776,7 +1778,7 @@ class TestTemplateParamConsistency:
                             {
                                 "banding": "breakpoints",
                                 "column": "x",
-                                "outputColumn": "x_f",
+                                "output_column": "x_f",
                                 "rules": [],
                             }
                         ],
@@ -2391,10 +2393,10 @@ def test_every_config_backed_builder_emits_its_config_decorator(node_type: NodeT
     [
         ({"tables": "nope"}, "tables must be a list"),
         ({"tables": [{"factors": "region"}]}, r"tables\[0\]\.factors must be a list"),
-        ({"tables": [], "combinedOutputs": "nope"}, "combinedOutputs must be a list"),
+        ({"tables": [], "combined_outputs": "nope"}, "combined_outputs must be a list"),
         (
-            {"tables": [], "combinedOutputs": [{"outputColumn": ""}]},
-            r"combinedOutputs\[0\] requires outputColumn",
+            {"tables": [], "combined_outputs": [{"output_column": ""}]},
+            r"combined_outputs\[0\] requires output_column",
         ),
     ],
 )
@@ -2449,7 +2451,7 @@ class TestPassthroughAndBehaviouralCodegen:
             pytest.param(
                 "optimiserApply",
                 "optimiser_apply",
-                {"sourceType": "file", "artifact_path": "models/opt", "version": "3"},
+                {"source_type": "file", "artifact_path": "models/opt", "version": "3"},
                 "apply_optimisation",
                 id="optimiser_apply",
             ),
@@ -2890,7 +2892,7 @@ class TestCanonicalBindingRejection:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     },
                 ],
@@ -2991,7 +2993,7 @@ class TestDeclaredSubmodelOutputs:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     }
                 ],
@@ -3040,9 +3042,7 @@ class TestDeclaredSubmodelOutputs:
             '    "sm1",\n'
             '    definition_id="sm1",\n'
             "    input_ports=[],\n"
-            "    output_ports=[\n"
-            '        {"name": "export", "source": {"nodeId": "child_export", "handleId": None}}\n'
-            "    ],\n"
+            '    output_ports=[{"name": "export", "source": {"node_id": "child_export"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n"
         ) in files["modules/sm1.py"]
@@ -3136,8 +3136,12 @@ class TestSpecialCharacterLabels:
         assert "def " in code
         _compile_node_code(code)
 
-    def test_connect_with_sanitized_labels(self):
-        """Graph connect calls must use sanitized names matching function defs."""
+    def test_an_edge_between_sanitized_labels_parses_back(self, tmp_path):
+        """The signature names the source by the sanitized name its function is defined
+        under, so the parser infers the edge from it (READ-30)."""
+        from haute._config_io import collect_node_configs
+        from haute.parser import parse_pipeline_source
+
         graph = _g(
             {
                 "nodes": [
@@ -3146,7 +3150,7 @@ class TestSpecialCharacterLabels:
                         "data": {
                             "label": "My Source (v2)",
                             "nodeType": "dataInput",
-                            "config": {"path": "d.parquet"},
+                            "config": _file_input_config("d.parquet"),
                         },
                     },
                     {
@@ -3159,8 +3163,14 @@ class TestSpecialCharacterLabels:
         )
         code = graph_to_code(graph)
         compile(code, "<test>", "exec")
-        # The connect call and the def must use the same sanitized name
-        assert "pipeline.connect(" in code
+        assert "def My_Source_v2(): ...\n" in code
+        assert "def Clean__Filter(My_Source_v2: pl.LazyFrame) -> pl.LazyFrame:\n" in code
+        assert "pipeline.connect" not in code
+        for rel_path, content in collect_node_configs(graph).items():
+            (tmp_path / rel_path).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel_path).write_text(content, encoding="utf-8")
+        parsed = parse_pipeline_source(code, _base_dir=tmp_path)
+        assert [(e.source, e.target) for e in parsed.edges] == [("My_Source_v2", "Clean__Filter")]
 
 
 # ---------------------------------------------------------------------------
@@ -3242,8 +3252,9 @@ class TestWrapUserCodeEdgeCases:
     def test_empty_code_returns_first_input_name(self, tmp_path: Path):
         """No code is a declaration; a passthrough node hands on its first input."""
         node = _n({"id": "n", "data": {"label": "Step", "nodeType": "explore", "config": {}}})
+        # Its settings, none here, are in its sidecar (READ-43).
         assert _node_to_code(node, source_names=["my_source"]) == (
-            "@pipeline.explore\ndef Step(my_source): ...\n"
+            '@pipeline.explore(config="config/explore/Step.json")\ndef Step(my_source): ...\n'
         )
         my_source = pl.LazyFrame({"x": [1]})
         assert _run_saved_node(node, tmp_path, my_source, source_names=["my_source"]) is my_source
@@ -3567,7 +3578,7 @@ class TestGenTransformEdgeCases:
                                 "code": (
                                     "df = raw_rows.with_columns(value_doubled=pl.col('value') * 2)"
                                 ),
-                                "inputMapping": {
+                                "input_mapping": {
                                     "raw_rows": "Replacement_Parent",
                                 },
                             },
@@ -3590,12 +3601,12 @@ class TestGenTransformEdgeCases:
         )
 
         code = graph_to_code(graph, pipeline_name="stable_mapping")
-        assert '@pipeline.polars(inputMapping={"raw_rows": "Replacement_Parent"})' in code
+        assert '@pipeline.polars(input_mapping={"raw_rows": "Replacement_Parent"})' in code
         assert "def enriched(raw_rows: pl.LazyFrame)" in code
 
         parsed = parse_pipeline_source(code)
         parsed_enriched = next(node for node in parsed.nodes if node.id == "enriched")
-        assert parsed_enriched.data.config["inputMapping"] == {"raw_rows": "Replacement_Parent"}
+        assert parsed_enriched.data.config["input_mapping"] == {"raw_rows": "Replacement_Parent"}
         assert [
             (edge.source, edge.target) for edge in parsed.edges if edge.target == "enriched"
         ] == [
@@ -3679,7 +3690,7 @@ class TestGenExternalFileEdgeCases:
                 "data": {
                     "label": "ExtModel",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": ""},
                 },
             }
         )
@@ -3698,7 +3709,7 @@ class TestGenExternalFileEdgeCases:
                 "data": {
                     "label": "ExtNone",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": None},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": None},
                 },
             }
         )
@@ -3819,13 +3830,13 @@ class TestRoundTripEdgeCases:
                             {
                                 "banding": "breakpoints",
                                 "column": "age",
-                                "outputColumn": "age_factor",
+                                "output_column": "age_factor",
                                 "rules": [{"boundary": "100", "label": "1.0"}],
                             },
                             {
                                 "banding": "discrete",
                                 "column": "region",
-                                "outputColumn": "region_factor",
+                                "output_column": "region_factor",
                                 "rules": [{"match": "North", "assignment": "1.2"}],
                                 "default": "1.0",
                             },
@@ -3856,21 +3867,21 @@ class TestRoundTripEdgeCases:
                         "tables": [
                             {
                                 "factors": ["region"],
-                                "outputColumn": "region_factor",
-                                "defaultValue": 1.0,
+                                "output_column": "region_factor",
+                                "default_value": 1.0,
                                 "entries": [{"region": "North", "value": 1.1}],
                             },
                             {
                                 "factors": ["age_band"],
-                                "outputColumn": "age_factor",
+                                "output_column": "age_factor",
                                 "entries": [{"age_band": "18-25", "value": 1.5}],
                             },
                         ],
-                        "combinedOutputs": [
+                        "combined_outputs": [
                             {
-                                "outputColumn": "total_factor",
+                                "output_column": "total_factor",
                                 "operation": "add",
-                                "baseValue": 0,
+                                "base_value": 0,
                             }
                         ],
                     },
@@ -4065,7 +4076,7 @@ class TestGraphToCodeSingleFileGuard:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     },
                 ],
@@ -4176,7 +4187,7 @@ class TestSubmodelImportSafePath:
                         "data": {
                             "label": "sm1",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                            "config": {"definition_id": "sm1", "alias": "sm1"},
                         },
                     },
                 ],

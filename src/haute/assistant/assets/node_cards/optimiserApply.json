@@ -2,7 +2,7 @@
   "node_type": "optimiserApply",
   "authorable": true,
   "fields": {
-    "sourceType": "Where the saved optimisation result comes from: \"file\" (artifact_path), \"run\" (an MLflow run_id) or \"registered\" (registered_model with version or alias).",
+    "source_type": "Where the saved optimisation result comes from: \"file\" (artifact_path), \"run\" (an MLflow run_id) or \"registered\" (registered_model with version or alias).",
     "artifact_path": "For a file source: the saved result JSON relative to the project root, as the optimiser's Save wrote it.",
     "optimiser_mode": "\"online\" or \"ratebook\", matching the saved result.",
     "ratebook_input": "Ratebook only, and required even with one input: the incoming edge whose rows get the factors; it carries the band columns the result was solved on.",
@@ -37,7 +37,7 @@
         }
       ],
       "config": {
-        "sourceType": "file",
+        "source_type": "file",
         "artifact_path": "results/online_v1.json",
         "optimiser_mode": "online"
       },
@@ -47,7 +47,7 @@
       "name": "realistic",
       "intent": "Apply a saved ratebook's region factors to banded policies, naming the factor and version columns.",
       "config": {
-        "sourceType": "file",
+        "source_type": "file",
         "artifact_path": "results/ratebook_v1.json",
         "optimiser_mode": "ratebook",
         "ratebook_input": "rating_factors",
@@ -115,7 +115,7 @@
             {
               "banding": "categorical",
               "column": "area",
-              "outputColumn": "region",
+              "output_column": "region",
               "rules": [
                 {"value": "NE", "assignment": "North"},
                 {"value": "SW", "assignment": "South"}

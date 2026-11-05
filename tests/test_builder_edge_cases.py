@@ -110,7 +110,7 @@ class TestBuildOutputEdgeCases:
         assert result.columns == ["a", "c"]
 
     def test_no_fields_returns_empty_document(self) -> None:
-        # An empty outputMapping selects no columns.
+        # An empty output_mapping selects no columns.
         _, fn, _ = _build("output", make_output_config([]), source_names=["up"])
         lf = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
         result = fn(lf).collect()
@@ -228,26 +228,26 @@ class TestBuildLiveSwitchEdgeCases:
 
 class TestBuildScenarioExpanderEdgeCases:
     def test_steps_less_than_one_raises(self) -> None:
-        with pytest.raises(ValueError, match="stepCount >= 1"):
+        with pytest.raises(ValueError, match="step_count >= 1"):
             _build(
                 "scenarioExpander",
-                {"column_name": "sv", "stepCount": 0},
+                {"column_name": "sv", "step_count": 0},
                 source_names=["up"],
             )
 
     def test_negative_steps_raises(self) -> None:
-        with pytest.raises(ValueError, match="stepCount >= 1"):
+        with pytest.raises(ValueError, match="step_count >= 1"):
             _build(
                 "scenarioExpander",
-                {"column_name": "sv", "stepCount": -5},
+                {"column_name": "sv", "step_count": -5},
                 source_names=["up"],
             )
 
     def test_empty_config_is_rejected(self) -> None:
         # The grid size has no absent-key default; a new node carries an explicit 21.
-        with pytest.raises(ValueError, match="requires stepCount"):
+        with pytest.raises(ValueError, match="requires step_count"):
             _build("scenarioExpander", {}, source_names=["up"])
-        _, fn, _ = _build("scenarioExpander", {"stepCount": 21}, source_names=["up"])
+        _, fn, _ = _build("scenarioExpander", {"step_count": 21}, source_names=["up"])
         result = fn(pl.DataFrame({"x": [1]}).lazy()).collect()
         assert "scenario_index" in result.columns
         assert result.shape[0] == 21
@@ -255,7 +255,7 @@ class TestBuildScenarioExpanderEdgeCases:
     def test_cross_join_produces_correct_row_count(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "stepCount": 5},
+            {"column_name": "sv", "min_value": 0.9, "max_value": 1.1, "step_count": 5},
             source_names=["up"],
         )
         lf = pl.DataFrame({"id": [1, 2, 3]}).lazy()
@@ -267,7 +267,7 @@ class TestBuildScenarioExpanderEdgeCases:
     def test_cross_join_10_rows_7_steps(self) -> None:
         _, fn, _ = _build(
             "scenarioExpander",
-            {"column_name": "sv", "min_value": 0.8, "max_value": 1.2, "stepCount": 7},
+            {"column_name": "sv", "min_value": 0.8, "max_value": 1.2, "step_count": 7},
             source_names=["up"],
         )
         lf = pl.DataFrame({"id": list(range(10))}).lazy()
@@ -297,7 +297,7 @@ class TestBuildBandingEdgeCases:
                 "factors": [
                     {
                         "column": "",
-                        "outputColumn": "out",
+                        "output_column": "out",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "10", "label": "low"},
@@ -319,7 +319,7 @@ class TestBuildBandingEdgeCases:
                 "factors": [
                     {
                         "column": "age",
-                        "outputColumn": "",
+                        "output_column": "",
                         "banding": "breakpoints",
                         "rules": [
                             {"boundary": "50", "label": "young"},

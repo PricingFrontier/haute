@@ -105,8 +105,8 @@ def _identifier(config: Mapping[str, Any], key: str, source_type: str) -> str:
     value = _optional_string(config, key)
     if not value:
         raise IncompleteModelSourceError(
-            f"modelScore node is misconfigured: sourceType={source_type!r} but {key} is empty",
-            sourceType=source_type,
+            f"modelScore node is misconfigured: source_type={source_type!r} but {key} is empty",
+            source_type=source_type,
             missing_field=key,
         )
     return value
@@ -118,22 +118,22 @@ def parse_model_source(config: Mapping[str, Any]) -> ModelSource | None:
     Raises:
         IncompleteModelSourceError: the chosen source's identifying field
             (``run_id``, ``registered_model`` or ``model_path``) is empty.
-        ConfigError: ``sourceType`` is not a supported source, a source field
+        ConfigError: ``source_type`` is not a supported source, a source field
             has the wrong type, or a registered source names a version beside
             an alias (or a malformed alias).
     """
-    source_type = config.get("sourceType", "")
+    source_type = config.get("source_type", "")
     if source_type == "":
         return None
     if not isinstance(source_type, str):
         raise ConfigError(
-            "modelScore node has a non-string sourceType",
-            sourceType=source_type,
+            "modelScore node has a non-string source_type",
+            source_type=source_type,
         )
     if source_type not in MODEL_SOURCE_TYPES:
         raise ConfigError(
-            "modelScore node has an unsupported sourceType",
-            sourceType=source_type,
+            "modelScore node has an unsupported source_type",
+            source_type=source_type,
             supported_source_types=list(MODEL_SOURCE_TYPES),
         )
     if source_type == "file":
@@ -169,8 +169,9 @@ def require_model_source(config: Mapping[str, Any]) -> ModelSource:
     source = parse_model_source(config)
     if source is None:
         raise ConfigError(
-            "modelScore node has no model source; set sourceType to 'run', 'registered' or 'file'.",
-            missing_field="sourceType",
+            "modelScore node has no model source; set source_type to 'run', 'registered' or "
+            "'file'.",
+            missing_field="source_type",
             supported_source_types=list(MODEL_SOURCE_TYPES),
         )
     return source

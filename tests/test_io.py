@@ -506,7 +506,7 @@ class TestDataSourceAdapterFlatFile:
         path = tmp_path / "source.csv"
         pl.DataFrame({"premium": [10.5, 12.0]}).write_csv(path)
 
-        result = read_data_source({"sourceType": "flat_file", "path": str(path)}).collect()
+        result = read_data_source({"source_type": "flat_file", "path": str(path)}).collect()
 
         assert result["premium"].to_list() == [10.5, 12.0]
 
@@ -516,7 +516,7 @@ class TestDataSourceAdapterFlatFile:
 
         lf = read_data_source(
             {
-                "sourceType": "flat_file",
+                "source_type": "flat_file",
                 "path": str(path),
                 "schema_overrides": {"quote_id": "String", "premium": "Float64"},
             },
@@ -542,7 +542,7 @@ class TestDataSourceAdapterFlatFile:
 
         result = read_data_source(
             {
-                "sourceType": "flat_file",
+                "source_type": "flat_file",
                 "path": str(path),
                 schema_key: {"quote_id": "String", "premium": "Float64"},
             },
@@ -562,7 +562,7 @@ class TestDataSourceAdapterFlatFile:
         with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
             read_data_source(
                 {
-                    "sourceType": "flat_file",
+                    "source_type": "flat_file",
                     "path": str(path),
                     "expected_columns": ["quote_id", "premium"],
                 },
@@ -572,21 +572,21 @@ class TestDataSourceAdapterFlatFile:
     def test_source_config_is_not_mutated(self, tmp_path: Path) -> None:
         path = tmp_path / "source.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(path)
-        config = {"sourceType": "flat_file", "path": str(path), "code": "df = df"}
+        config = {"source_type": "flat_file", "path": str(path), "code": "df = df"}
 
         build_data_source_adapter(config)
 
-        assert config == {"sourceType": "flat_file", "path": str(path), "code": "df = df"}
+        assert config == {"source_type": "flat_file", "path": str(path), "code": "df = df"}
 
     def test_flat_file_requires_path(self) -> None:
         with pytest.raises(ValueError, match="flat_file.*path"):
-            build_data_source_adapter({"sourceType": "flat_file", "path": ""})
+            build_data_source_adapter({"source_type": "flat_file", "path": ""})
 
 
 class TestApiInputSourceAdapterErrors:
     def test_unknown_api_input_source_type_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unsupported API Input source type"):
-            build_data_source_adapter({"sourceType": "warehouse", "path": "data.parquet"})
+            build_data_source_adapter({"source_type": "warehouse", "path": "data.parquet"})
 
 
 class TestObjectCacheKey:

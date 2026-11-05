@@ -9,7 +9,7 @@
   "inapplicable_variants": [],
   "turns": [
     {
-      "request": "Add an edge join named quote_with_competitor with nb_batch as the main/base input and competitor_insight as the joining/right input. Use a left join on quote_id, then add a response output named enriched_quotes containing quote_id, premium, and competitor_price.",
+      "request": "Add an edge join named quote_with_competitor with nb_batch as the main/base input and competitor_insight as the joining/right input. Use a left join on quote_id, then add a response output named quote_response containing quote_id, premium, and competitor_price.",
       "expectations": {
         "outcome": "applied",
         "saves": true,
@@ -31,7 +31,7 @@
           },
           {
             "source": "quote_with_competitor",
-            "target": "enriched_quotes",
+            "target": "quote_response",
             "target_handle": null
           }
         ],
@@ -41,16 +41,16 @@
         "node_configs": {
           "quote_with_competitor": {
             "how": "left",
-            "maintainOrder": "left_right",
-            "leftOn": [
+            "maintain_order": "left_right",
+            "left_on": [
               "quote_id"
             ],
-            "rightOn": [
+            "right_on": [
               "quote_id"
             ]
           },
-          "enriched_quotes": {
-            "outputMapping": [
+          "quote_response": {
+            "output_mapping": [
               {
                 "source_port": "quote_with_competitor",
                 "source_column": "quote_id",

@@ -126,12 +126,11 @@ def test_the_decorator_and_folder_maps_keep_their_entries() -> None:
         T.OPTIMISER_APPLY: "apply_optimisation",
         T.SCENARIO_EXPANDER: "expander",
         T.CONSTANT: "constant",
-        T.POLARS: "polars",
+        T.EXPLORE: "explore",
     }
-    assert {key for key, s in NODE_SPECS.items() if s.sidecar == "optional"} == {T.POLARS}
     assert {key for key, s in NODE_SPECS.items() if s.sidecar == "decorator"} == {
+        T.POLARS,
         T.EDGE_JOIN,
-        T.EXPLORE,
     }
 
 
@@ -140,6 +139,12 @@ def test_the_singleton_groups_keep_their_members_and_labels() -> None:
         (frozenset({T.API_INPUT, T.WORKBENCH_INPUT}), "Quote Input or Workbench Input"),
         (frozenset({T.OUTPUT, T.WORKBENCH_OUTPUT}), "Quote Response or Workbench Output"),
     )
+    assert dict(specs.SINGLETON_NODE_NAMES) == {
+        T.API_INPUT: "quote_input",
+        T.OUTPUT: "quote_response",
+        T.WORKBENCH_INPUT: "workbench_input",
+        T.WORKBENCH_OUTPUT: "workbench_output",
+    }
 
 
 def test_the_runtime_facts_keep_their_values() -> None:
@@ -301,6 +306,12 @@ def _with(key: NodeType, **changes: object) -> dict[NodeType, specs.NodeSpec]:
         ),
         pytest.param(
             _with(T.BANDING, structural_role="port"), "structural role", id="role-on-executed"
+        ),
+        pytest.param(
+            _with(T.OUTPUT, singleton_name=None), "singleton name", id="singleton-unnamed"
+        ),
+        pytest.param(
+            _with(T.BANDING, singleton_name="banding"), "singleton name", id="name-on-plural"
         ),
     ],
 )

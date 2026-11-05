@@ -96,7 +96,7 @@ def _data_input(
             "label": node_id,
             "nodeType": "dataInput",
             "config": {
-                "inputType": "file",
+                "input_type": "file",
                 "format": fmt,
                 "mode": mode,
                 "path": str(path),
@@ -370,7 +370,7 @@ def _model_scored(project: Path) -> tuple[dict[str, Any], str, tuple[str, ...]]:
                     "label": "scored",
                     "nodeType": "modelScore",
                     "config": {
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "run-1",
                         "artifact_path": "model.pyfunc",
                         "task": "regression",

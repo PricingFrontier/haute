@@ -11,7 +11,7 @@ contract for BOTH halves:
   and ``licenses`` (``drivers[].licenses[]``) — with W1 ancestor keys
   (``policy_id`` into every child; ``driver_id`` into ``licenses``) distributed
   at walk-time.
-- OUTPUT (assembler): the ``outputMapping`` reassembles those four frames into
+- OUTPUT (assembler): the ``output_mapping`` reassembles those four frames into
   one nested JSON document — ``drivers`` carries ``licenses`` (nesting via the
   shared ``driver_id``), ``vehicles`` is a sibling (no cross-multiply), and the
   shared ``policy_id`` collapses to a single root object.

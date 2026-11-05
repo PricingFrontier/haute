@@ -45,13 +45,8 @@ def _collect(frame: pl.LazyFrame | pl.DataFrame) -> pl.DataFrame:
 
 
 def _constant(directory: Path, name: str, **values: object) -> str:
-    """Write a Constant sidecar holding *values*; return its ``config=`` path."""
-    return write_node_config(
-        directory,
-        NodeType.CONSTANT,
-        name,
-        {"values": [{"name": key, "value": value} for key, value in values.items()]},
-    )
+    """Write a Constant sidecar holding *values*, as a map; return its ``config=`` path."""
+    return write_node_config(directory, NodeType.CONSTANT, name, {"values": values})
 
 
 @pytest.fixture()
@@ -95,7 +90,7 @@ def test_a_data_input_declaration_loads_its_sidecar_source(project: Path) -> Non
         project,
         NodeType.DATA_INPUT,
         "quotes",
-        {"inputType": "file", "format": "parquet", "path": "quotes.parquet"},
+        {"input_type": "file", "format": "parquet", "path": "quotes.parquet"},
     )
     namespace = _run_file(
         project,
@@ -131,9 +126,12 @@ def test_a_constant_declaration_reads_its_sidecar_on_every_run(tmp_path: Path) -
 def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refuses_it(
     tmp_path: Path,
 ) -> None:
-    """Two ``rate`` entries would otherwise yield one column holding the second value."""
+    """Two ``rate`` entries would otherwise yield one column holding the second value. The
+    sidecar's map can hold them only by repeating its key, which the run refuses as it
+    reads the file; the executor's rows refuse the second name."""
     values = [{"name": "rate", "value": "1"}, {"name": "rate", "value": "2"}]
-    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": values})
+    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": {}})
+    (tmp_path / config).write_bytes(b'{"values": {"rate": "1", "rate": "2"}}\n')
     namespace = _run_file(
         tmp_path,
         "import haute\n\n"
@@ -146,9 +144,10 @@ def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refu
         data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config={"values": values}),
     )
     message = "Constant name 'rate' is used by more than one value"
-
-    with pytest.raises(NodeConfigError, match=message):
+    with pytest.raises(ValueError, match="duplicate JSON key 'rate'") as raised:
         namespace["pipeline"].run(source="batch")
+    # The run names the sidecar it read, as the parser does.
+    assert str(raised.value).startswith(f"{tmp_path / config}: ")
     # Building the node checks its whole model, so the executor refuses it at build.
     with pytest.raises(NodeConfigError, match=message):
         _build_node_fn(node)
@@ -161,7 +160,7 @@ def test_a_banding_declaration_refuses_two_active_factors_writing_one_column(
         {
             "banding": "categorical",
             "column": column,
-            "outputColumn": "band",
+            "output_column": "band",
             "rules": [{"value": "a", "assignment": "A"}],
         }
         for column in ("x", "y")
@@ -218,7 +217,7 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
         tmp_path,
         NodeType.LIVE_SWITCH,
         "switch",
-        {"input_scenario_map": {"quotes": "live", "cleaned": "batch"}},
+        {"input_scenario_map": {"quote_input": "live", "cleaned": "batch"}},
     )
     namespace = _run_file(
         tmp_path,
@@ -227,8 +226,8 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
         'pipeline = haute.Pipeline("p")\n'
         "opened = []\n\n\n"
         "@pipeline.api_input\n"
-        "def quotes() -> pl.LazyFrame:\n"
-        '    opened.append("quotes")\n'
+        "def quote_input() -> pl.LazyFrame:\n"
+        '    opened.append("quote_input")\n'
         '    return pl.LazyFrame({"source": ["live"]})\n\n\n'
         "@pipeline.polars\n"
         "def history() -> pl.LazyFrame:\n"
@@ -239,15 +238,15 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
         '    opened.append("cleaned")\n'
         "    return history\n\n\n"
         f'@pipeline.live_switch(config="{switch}")\n'
-        "def switch(quotes, cleaned): ...\n\n\n"
-        'pipeline.connect("quotes", "switch")\n'
+        "def switch(quote_input, cleaned): ...\n\n\n"
+        'pipeline.connect("quote_input", "switch")\n'
         'pipeline.connect("history", "cleaned")\n'
         'pipeline.connect("cleaned", "switch")\n',
     )
     pipeline, opened = namespace["pipeline"], namespace["opened"]
 
     assert _collect(pipeline.run(source="live")).to_dicts() == [{"source": "live"}]
-    assert opened == ["quotes"]
+    assert opened == ["quote_input"]
 
     opened.clear()
     assert _collect(pipeline.score(pl.DataFrame({"source": ["scored"]}))).to_dicts() == [
@@ -289,9 +288,9 @@ def test_an_output_declaration_assembles_its_document(tmp_path: Path) -> None:
     output = write_node_config(
         tmp_path,
         NodeType.OUTPUT,
-        "response",
+        "quote_response",
         {
-            "outputMapping": [
+            "output_mapping": [
                 {
                     "source_port": "rows",
                     "source_column": "premium",
@@ -308,8 +307,8 @@ def test_an_output_declaration_assembles_its_document(tmp_path: Path) -> None:
         f'@pipeline.constant(config="{rows}")\n'
         "def rows(): ...\n\n\n"
         f'@pipeline.output(config="{output}")\n'
-        "def response(rows): ...\n\n\n"
-        'pipeline.connect("rows", "response")\n',
+        "def quote_response(rows): ...\n\n\n"
+        'pipeline.connect("rows", "quote_response")\n',
     )
 
     document = _collect(namespace["pipeline"].run(source="batch"))
@@ -336,7 +335,7 @@ def test_a_model_score_declaration_appends_its_predictions(tmp_path: Path) -> No
         NodeType.MODEL_SCORE,
         "score",
         {
-            "sourceType": "run",
+            "source_type": "run",
             "run_id": "run123",
             "artifact_path": "model.cbm",
             "task": "regression",
@@ -408,7 +407,7 @@ def test_a_data_input_hook_runs_on_the_loaded_rows(project: Path) -> None:
         project,
         NodeType.DATA_INPUT,
         "quotes",
-        {"inputType": "file", "format": "parquet", "path": "quotes.parquet"},
+        {"input_type": "file", "format": "parquet", "path": "quotes.parquet"},
     )
     namespace = _run_file(
         project,
@@ -427,7 +426,7 @@ def test_a_data_input_hook_runs_on_the_loaded_rows(project: Path) -> None:
 def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project: Path) -> None:
     (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
     config = write_node_config(
-        project, NodeType.EXTERNAL_FILE, "lookup", {"path": "factor.json", "fileType": "json"}
+        project, NodeType.EXTERNAL_FILE, "lookup", {"path": "factor.json", "file_type": "json"}
     )
     namespace = _run_file(
         project,
@@ -446,6 +445,59 @@ def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project
     )
 
     assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
+
+
+@pytest.mark.parametrize("connected", [True, False], ids=["connected", "inferred"])
+def test_an_external_file_binds_through_the_input_mapping_its_sidecar_holds(
+    project: Path, connected: bool
+) -> None:
+    """The run binds the hook's parameter through its sidecar's ``input_mapping``, and infers
+    its edge through it when no ``connect()`` states one, as the parser does."""
+    (project / "factor.json").write_text('{"factor": 3}', encoding="utf-8")
+    config = write_node_config(
+        project,
+        NodeType.EXTERNAL_FILE,
+        "lookup",
+        {"path": "factor.json", "file_type": "json", "input_mapping": {"original": "rows"}},
+    )
+    namespace = _run_file(
+        project,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def rows() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"value": [2]})\n\n\n'
+        f'@pipeline.external_file(config="{config}")\n'
+        "def lookup(original: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+        "    df = original\n"
+        '    df = df.with_columns(scaled=pl.col("value") * obj["factor"])\n'
+        "    return df\n" + ('\n\npipeline.connect("rows", "lookup")\n' if connected else ""),
+    )
+
+    assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
+
+
+def test_a_run_names_a_non_ascii_source_by_its_executable_name_as_the_parser_does(
+    project: Path,
+) -> None:
+    """A Polars node reads its input under the source's executable name, which spells
+    ``é`` as ``_xe9_``: the run binds that parameter as a parse of the file does."""
+    namespace = _run_file(
+        project,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def données() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"value": [2]})\n\n\n'
+        "@pipeline.polars\n"
+        "def doubled(donn_xe9_es: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    return donn_xe9_es.with_columns(pl.col("value") * 2)\n\n\n'
+        'pipeline.connect("données", "doubled")\n',
+    )
+
+    assert _collect(namespace["pipeline"].run(source="batch"))["value"].to_list() == [4]
 
 
 def test_a_hook_that_returns_nothing_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -622,7 +674,7 @@ def test_a_submodel_definition_reads_its_sidecars_from_the_owning_pipeline(
         '    "rates",\n'
         '    definition_id="rates",\n'
         "    input_ports=[],\n"
-        '    output_ports=[{"name": "rates", "source": {"nodeId": "rates"}}],\n'
+        '    output_ports=[{"name": "rates", "source": {"node_id": "rates"}}],\n'
         '    pipeline_dir="..",\n'
         ")\n\n\n"
         f'@submodel.constant(config="{config}")\n'

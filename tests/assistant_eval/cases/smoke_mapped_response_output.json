@@ -29,7 +29,7 @@
         "modified_nodes": [],
         "node_configs": {
           "quote_response": {
-            "outputMapping": [
+            "output_mapping": [
               {
                 "source_port": "quotes",
                 "source_column": "quote_id",

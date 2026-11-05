@@ -9,7 +9,7 @@
   },
   "inputs": [
     {
-      "edge": "quote",
+      "edge": "quote_input",
       "source_handle": "quote",
       "columns": {
         "quote_id": "String",
@@ -37,7 +37,7 @@
       "intent": "Use the live quote request when live and a new-business batch file otherwise.",
       "inputs": [
         {
-          "edge": "quote",
+          "edge": "quote_input",
           "source_handle": "quote",
           "columns": {
             "quote_id": "String",
@@ -84,7 +84,7 @@
       {
         "op": "add_node",
         "node_type": "apiInput",
-        "name": "quote",
+        "name": "quote_input",
         "config": {
           "path": "requests/quote.json",
           "tables": [

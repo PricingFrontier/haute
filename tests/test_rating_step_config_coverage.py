@@ -220,12 +220,12 @@ def test_duplicate_table_output_columns_are_rejected_with_both_indices() -> None
         "tables": [
             {
                 "factors": ["band"],
-                "outputColumn": "duplicate_factor",
+                "output_column": "duplicate_factor",
                 "entries": [{"band": "A", "value": 2.0}],
             },
             {
                 "factors": ["region"],
-                "outputColumn": "duplicate_factor",
+                "output_column": "duplicate_factor",
                 "entries": [{"region": "north", "value": 5.0}],
             },
         ]
@@ -233,7 +233,7 @@ def test_duplicate_table_output_columns_are_rejected_with_both_indices() -> None
 
     with pytest.raises(
         ValueError,
-        match=r"tables\[1\]\.outputColumn 'duplicate_factor'.*tables\[0\]",
+        match=r"tables\[1\]\.output_column 'duplicate_factor'.*tables\[0\]",
     ):
         normalise_rating_step_config(config)
 
@@ -258,7 +258,7 @@ def test_normalise_preserves_numeric_looking_string_labels_losslessly() -> None:
         "tables": [
             {
                 "factors": ["age"],
-                "outputColumn": "f",
+                "output_column": "f",
                 "entries": [
                     {"age": "25", "value": 1.0},
                     {"age": "25.0", "value": 2.0},
@@ -275,7 +275,7 @@ def test_string_label_spelling_int_like_float_roundtrips_unchanged() -> None:
         "tables": [
             {
                 "factors": ["age"],
-                "outputColumn": "f",
+                "output_column": "f",
                 "entries": [{"age": "25.0", "value": 2.0}],
             }
         ]
@@ -300,10 +300,10 @@ def test_canonical_rows_preserve_scalar_identity_order_and_metadata() -> None:
         "tables": [
             {
                 "factors": ["age"],
-                "factorDtypes": {"age": {"kind": "Float64"}},
-                "outputColumn": "factor",
-                "defaultValue": 1.0,
-                "onMissing": "neutral",
+                "factor_dtypes": {"age": {"kind": "Float64"}},
+                "output_column": "factor",
+                "default_value": 1.0,
+                "on_missing": "neutral",
                 "entries": entries,
             }
         ]
@@ -322,6 +322,9 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
 ) -> None:
     factors = [f"factor_{index}" for index in range(factor_count)]
     entries: list[dict[str, object]] = []
+    # Two entries for the same levels as written are refused (READ-06), so each row's
+    # levels differ from every earlier row's.
+    written_levels: set[tuple[str, ...]] = set()
     for row_index in range(data.draw(st.integers(min_value=0, max_value=8), label="row_count")):
         metadata = data.draw(
             st.dictionaries(_METADATA_KEYS, _JSON_VALUES, max_size=4),
@@ -335,16 +338,20 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
             },
             "value": data.draw(_RATING_VALUES, label=f"value_{row_index}"),
         }
+        levels = tuple(json.dumps(row[factor], sort_keys=True) for factor in factors)
+        if levels in written_levels:
+            continue
+        written_levels.add(levels)
         entries.append(row)
 
     config = {
         "tables": [
             {
                 "factors": factors,
-                "factorDtypes": {factor: {"kind": "String"} for factor in factors},
-                "outputColumn": "rating",
-                "defaultValue": "1.0",
-                "onMissing": "neutral",
+                "factor_dtypes": {factor: {"kind": "String"} for factor in factors},
+                "output_column": "rating",
+                "default_value": "1.0",
+                "on_missing": "neutral",
                 "entries": entries,
             }
         ]
@@ -372,13 +379,13 @@ def test_canonical_row_sidecars_are_lossless_json_roundtrips(
     ],
 )
 def test_factor_dtype_metadata_is_validated(factor_dtypes: object) -> None:
-    with pytest.raises(ValueError, match="factorDtypes"):
+    with pytest.raises(ValueError, match="factor_dtypes"):
         normalise_rating_step_config(
             {
                 "tables": [
                     {
                         "factors": ["age"],
-                        "factorDtypes": factor_dtypes,
+                        "factor_dtypes": factor_dtypes,
                         "entries": [{"age": 25.0, "value": 1.0}],
                     }
                 ]
@@ -394,7 +401,7 @@ def test_factor_dtype_metadata_preserves_every_supported_descriptor(
         "tables": [
             {
                 "factors": ["factor"],
-                "factorDtypes": {"factor": case.descriptor},
+                "factor_dtypes": {"factor": case.descriptor},
                 "entries": [],
             }
         ]
@@ -409,11 +416,11 @@ def test_factor_dtype_metadata_preserves_every_supported_descriptor(
         # Imported or assistant-authored rows: the level and the rate share the key.
         {
             "factors": ["value"],
-            "outputColumn": "value_factor",
+            "output_column": "value_factor",
             "entries": [{"value": 1.2}, {"value": 0.9}],
         },
         # A table whose factors are chosen and whose rows are not built yet.
-        {"factors": ["area", "value"], "outputColumn": "joint_factor"},
+        {"factors": ["area", "value"], "output_column": "joint_factor"},
     ],
 )
 def test_a_factor_named_value_is_refused_with_a_rename(table: dict[str, object]) -> None:
@@ -429,7 +436,7 @@ def test_a_factor_named_value_is_refused_with_a_rename(table: dict[str, object])
 def test_a_factor_merely_containing_value_round_trips() -> None:
     table = {
         "factors": ["vehicle_value", "Value"],
-        "outputColumn": "value_band_factor",
+        "output_column": "value_band_factor",
         "entries": [{"vehicle_value": "high", "Value": "A", "value": 1.1}],
     }
 
@@ -465,18 +472,59 @@ def test_canonical_rows_reject_invalid_factor_scalars(value: object) -> None:
 
 def test_normalise_empty_entries_with_invalid_factors_raises() -> None:
     """F305: an empty-entries table must not skip factor validation."""
-    config = {"tables": [{"factors": [123], "outputColumn": "f", "entries": []}]}
+    config = {"tables": [{"factors": [123], "output_column": "f", "entries": []}]}
     with pytest.raises(ValueError, match="must be a column name"):
         normalise_rating_step_config(config)
 
 
 def test_normalise_empty_entries_missing_factors_key_raises() -> None:
-    config = {"tables": [{"outputColumn": "f", "entries": []}]}
+    config = {"tables": [{"output_column": "f", "entries": []}]}
     with pytest.raises(ValueError, match="factors must be a list"):
         normalise_rating_step_config(config)
 
 
 def test_table_without_entries_still_rejects_malformed_factors() -> None:
-    config = {"tables": [{"factors": "age", "outputColumn": "f"}]}
+    config = {"tables": [{"factors": "age", "output_column": "f"}]}
     with pytest.raises(ValueError, match="factors must be a list"):
         normalise_rating_step_config(config)
+
+
+# ---------------------------------------------------------------------------
+# READ-06: a save refuses two entries for the same levels
+# ---------------------------------------------------------------------------
+
+
+def _age_table(*levels: object, dtypes: dict | None = None) -> dict:
+    table: dict = {
+        "factors": ["age"],
+        "output_column": "age_factor",
+        "entries": [{"age": level, "value": 1.0 + index} for index, level in enumerate(levels)],
+    }
+    if dtypes is not None:
+        table["factor_dtypes"] = dtypes
+    return table
+
+
+def test_a_save_refuses_levels_identical_as_written() -> None:
+    from haute._rating import RatingDuplicateEntriesError
+
+    with pytest.raises(RatingDuplicateEntriesError, match="age='25'; age='25'"):
+        normalise_rating_step_config({"tables": [_age_table("25", "30", "25")]})
+
+
+def test_levels_written_differently_pass_without_factor_dtypes() -> None:
+    config = {"tables": [_age_table("25.0", "25.00")]}
+    assert normalise_rating_step_config(config) == config
+
+
+def test_a_save_refuses_levels_equal_under_the_tables_factor_dtypes() -> None:
+    from haute._config_io import _prepare_config_for_sidecar
+    from haute._rating import RatingDuplicateEntriesError
+    from haute._types import NodeType
+
+    config = {"tables": [_age_table("25.0", "25.00", dtypes={"age": {"kind": "Float64"}})]}
+    with pytest.raises(RatingDuplicateEntriesError, match="age='25.0'; age='25.00'"):
+        _prepare_config_for_sidecar(NodeType.RATING_STEP, config, node_label="rate")
+
+    as_text = {"tables": [_age_table("25.0", "25.00", dtypes={"age": {"kind": "String"}})]}
+    assert _prepare_config_for_sidecar(NodeType.RATING_STEP, as_text, node_label="rate")

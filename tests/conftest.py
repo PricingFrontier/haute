@@ -732,7 +732,7 @@ def make_file_input_config(path: object, **extra: object) -> dict[str, object]:
         ".log": ("lines", "scan"),
     }.get(Path(path_text).suffix.lower(), ("parquet", "scan"))
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name,
         "mode": mode,
         "path": path_text,
@@ -817,7 +817,7 @@ def make_file_output_config(
     }.get(Path(path_text).suffix.lower(), "parquet")
     resolved_mode = mode or ("sink" if resolved_format in {"csv", "ndjson", "parquet"} else "write")
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": resolved_format,
         "mode": resolved_mode,
         "path": path_text,
@@ -863,7 +863,7 @@ def write_node_config(
     func_name: str,
     config: dict,
 ) -> str:
-    """Write a canonical node JSON sidecar and return its relative path."""
+    """Write *config*, already in its sidecar form, as the node's JSON sidecar; its path."""
     rel_path = config_path_for_node(node_type, func_name)
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -900,7 +900,7 @@ def write_data_input_config(
         NodeType.DATA_INPUT,
         func_name,
         {
-            "inputType": "file",
+            "input_type": "file",
             "format": format_name,
             "mode": mode,
             "path": path,
@@ -925,7 +925,7 @@ def make_output_config(fields: list[str], *, source_port: str = "in") -> dict:
     placeholder used by single-parent test graphs.
     """
     return {
-        "outputMapping": [
+        "output_mapping": [
             {
                 "source_port": source_port,
                 "source_column": f,

@@ -180,7 +180,7 @@ describe("ModelScoreEditor", () => {
   it("shows no description line under the source buttons", () => {
     discovery.listFiles.mockResolvedValue({ dir: ".", items: [] })
     for (const sourceType of ["run", "registered", "file"]) {
-      const { unmount } = render(<ModelScoreEditor {...defaultProps()} config={{ sourceType }} />)
+      const { unmount } = render(<ModelScoreEditor {...defaultProps()} config={{ source_type: sourceType }} />)
       expect(screen.queryByText(/pick one specific training run/i)).toBeNull()
       expect(screen.queryByText(/named, versioned model in the registry/i)).toBeNull()
       expect(screen.queryByText(/scored with the feature contract saved beside it/i)).toBeNull()
@@ -210,7 +210,7 @@ describe("ModelScoreEditor", () => {
   it("shows an empty-runs hint once an experiment is chosen and no runs match", () => {
     mockMlflow.browseExpId = "1"
     try {
-      render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+      render(<ModelScoreEditor {...defaultProps()} config={{ source_type: "run" }} />)
       expect(
         screen.getByText(/No finished runs with a model artifact in this experiment yet/i),
       ).toBeInTheDocument()
@@ -235,14 +235,14 @@ describe("ModelScoreEditor", () => {
     })
     const onUpdate = vi.fn()
     render(
-      <ModelScoreEditor {...defaultProps()} onUpdate={onUpdate} config={{ sourceType: "file" }} />,
+      <ModelScoreEditor {...defaultProps()} onUpdate={onUpdate} config={{ source_type: "file" }} />,
     )
 
     // A file source never reads MLflow, so the destination is not offered.
     expect(screen.queryByText(/Local folder/i)).toBeNull()
     fireEvent.click(await screen.findByText("freq.cbm"))
 
-    expect(onUpdate).toHaveBeenCalledWith({ sourceType: "file", model_path: "models/freq.cbm" })
+    expect(onUpdate).toHaveBeenCalledWith({ source_type: "file", model_path: "models/freq.cbm" })
     expect(discovery.listFiles).toHaveBeenCalledWith(".", ".cbm,.ebm,.lgbm,.rsglm,.tboost,.ubj")
   })
 
@@ -263,7 +263,7 @@ describe("ModelScoreEditor", () => {
       <ModelScoreEditor
         {...defaultProps()}
         onUpdate={onUpdate}
-        config={{ sourceType: "file", model_path: "models/freq.cbm", task: "regression" }}
+        config={{ source_type: "file", model_path: "models/freq.cbm", task: "regression" }}
       />,
     )
 
@@ -287,7 +287,7 @@ describe("ModelScoreEditor", () => {
       ),
     )
     render(
-      <ModelScoreEditor {...defaultProps()} config={{ sourceType: "file", model_path: "ext.cbm" }} />,
+      <ModelScoreEditor {...defaultProps()} config={{ source_type: "file", model_path: "ext.cbm" }} />,
     )
 
     expect(await screen.findByTestId("model-file-error")).toHaveTextContent(
@@ -300,7 +300,7 @@ describe("ModelScoreEditor", () => {
     const { onUpdate } = defaultProps()
     render(<ModelScoreEditor config={{}} onUpdate={onUpdate} inputSources={[]} accentColor="#8b5cf6" />)
     fireEvent.click(screen.getByText("Experiment Run"))
-    expect(onUpdate).toHaveBeenCalledWith("sourceType", "run")
+    expect(onUpdate).toHaveBeenCalledWith("source_type", "run")
   })
 
   // 3. Registered mode: shows model name dropdown
@@ -355,7 +355,7 @@ describe("ModelScoreEditor", () => {
   // 7. Run mode: shows experiment dropdown
   it("shows experiment dropdown in run mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     expect(screen.getByText("Experiment")).toBeInTheDocument()
     expect(screen.getByText("Select an experiment...")).toBeInTheDocument()
@@ -367,7 +367,7 @@ describe("ModelScoreEditor", () => {
       { experiment_id: "exp-1", name: "My Experiment" },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     const expSelect = screen.getByDisplayValue("Select an experiment...")
     fireEvent.change(expSelect, { target: { value: "exp-1" } })
@@ -384,7 +384,7 @@ describe("ModelScoreEditor", () => {
   // 9. Run mode: shows Run ID and Artifact Path text inputs
   it("shows Run ID and Artifact Path text inputs in run mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     expect(screen.getByText("Run ID")).toBeInTheDocument()
     expect(screen.getByPlaceholderText("e.g. a1b2c3d4e5f6...")).toBeInTheDocument()
@@ -395,7 +395,7 @@ describe("ModelScoreEditor", () => {
   // 10. Run mode: Run ID text input calls onUpdate
   it("Run ID text input calls onUpdate", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     const runIdInput = screen.getByPlaceholderText("e.g. a1b2c3d4e5f6...")
     fireEvent.change(runIdInput, { target: { value: "abc123" } })
@@ -452,7 +452,7 @@ describe("ModelScoreEditor", () => {
   it("shows experiment error in run mode", () => {
     mockMlflow.errorExperiments = "Experiment list unavailable"
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     expect(screen.getByText("Experiment list unavailable")).toBeInTheDocument()
   })
@@ -461,7 +461,7 @@ describe("ModelScoreEditor", () => {
     mockMlflow.errorRuns = "Runs fetch failed"
     mockMlflow.browseExpId = "exp-1"
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     expect(screen.getByText("Runs fetch failed")).toBeInTheDocument()
   })
@@ -502,7 +502,7 @@ describe("ModelScoreEditor", () => {
   })
 
   it("orders the sources run, registered, file with the destination below them", () => {
-    render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+    render(<ModelScoreEditor {...defaultProps()} config={{ source_type: "run" }} />)
 
     const labels = ["Experiment Run", "Registered Model", "Model file"].map((label) =>
       screen.getByText(label),
@@ -549,7 +549,7 @@ describe("ModelScoreEditor", () => {
     const props = defaultProps()
     props.config = {
       mlflow_destination: "local",
-      sourceType: "run",
+      source_type: "run",
       run_id: "run-abc",
       run_name: "best-run",
       experiment_id: "exp-1",
@@ -617,7 +617,7 @@ describe("ModelScoreEditor", () => {
 
   it("artifact path input calls onUpdate in run mode", () => {
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     const artifactInput = screen.getByPlaceholderText("e.g. model.cbm")
     fireEvent.change(artifactInput, { target: { value: "model/best.cbm" } })
@@ -632,7 +632,7 @@ describe("ModelScoreEditor", () => {
       { run_id: "run-abc", run_name: "best-run", metrics: { rmse: 0.123 }, artifacts: ["model.cbm"] },
     ]
     const props = defaultProps()
-    props.config = { sourceType: "run" }
+    props.config = { source_type: "run" }
     render(<ModelScoreEditor {...props} />)
     const runSelect = screen.getByDisplayValue("Select a run...")
     fireEvent.change(runSelect, { target: { value: "run-abc" } })
@@ -667,7 +667,7 @@ describe("ModelScoreEditor", () => {
         },
       ]
       const props = defaultProps()
-      props.config = { sourceType: "run" }
+      props.config = { source_type: "run" }
       const { rerender } = render(<ModelScoreEditor {...props} />)
       fireEvent.change(screen.getByDisplayValue("Select a run..."), {
         target: { value: "run-cls" },
@@ -682,7 +682,7 @@ describe("ModelScoreEditor", () => {
       rerender(
         <ModelScoreEditor
           {...props}
-          config={{ sourceType: "run", run_id: "run-cls", task: "classification" }}
+          config={{ source_type: "run", run_id: "run-cls", task: "classification" }}
         />,
       )
       expect(screen.getByTestId("model-score-recorded-task")).toHaveTextContent("Classification")
@@ -724,7 +724,7 @@ describe("ModelScoreEditor", () => {
         { run_id: "run-cls", run_name: "c", metrics: {}, params: { task: "classification" }, artifacts: [] },
       ]
       const props = defaultProps()
-      props.config = { sourceType: "run", run_id: "run-cls", task: "regression" }
+      props.config = { source_type: "run", run_id: "run-cls", task: "regression" }
       render(<ModelScoreEditor {...props} />)
       expect(screen.getByRole("alert")).toHaveTextContent(
         "This node scores as regression, but the model was trained for classification.",
@@ -739,7 +739,7 @@ describe("ModelScoreEditor", () => {
         { run_id: "run-foreign", run_name: "f", metrics: {}, params: {}, artifacts: ["model"] },
       ]
       const props = defaultProps()
-      props.config = { sourceType: "run", run_id: "run-foreign", task: "classification" }
+      props.config = { source_type: "run", run_id: "run-foreign", task: "classification" }
       render(<ModelScoreEditor {...props} />)
       expect(screen.getByDisplayValue("Classification")).toBeInTheDocument()
       expect(screen.queryByTestId("model-score-recorded-task")).toBeNull()

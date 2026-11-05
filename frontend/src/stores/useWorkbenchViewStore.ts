@@ -109,7 +109,7 @@ interface WorkbenchViewState {
   schemaWidth: number
   /**
    * The schema's pane as it was left, so it opens again as it was closed: the tables shown
-   * collapsed, by id, the column whose label and rules are open, how far it is scrolled and
+   * collapsed, by name, the column whose label and rules are open, how far it is scrolled and
    * the text filtering its columns, "" for none.
    */
   schemaCollapsed: ReadonlySet<string>
@@ -149,8 +149,12 @@ interface WorkbenchViewState {
   setHeldSize: (size: Size | null) => void
   setPanelWidth: (width: number) => void
   setSchemaWidth: (width: number) => void
-  toggleSchemaCollapsed: (tableId: string) => void
-  setSchemaDetails: (columnId: string | null) => void
+  toggleSchemaCollapsed: (table: string) => void
+  setSchemaDetails: (column: string | null) => void
+  /** A table renamed (READ-23): whether it is collapsed, and its column whose details are open, follow it. */
+  schemaTableRenamed: (from: string, to: string) => void
+  /** A column of `table` renamed: its open details follow it. */
+  schemaColumnRenamed: (table: string, from: string, to: string) => void
   setSchemaScroll: (top: number) => void
   setSchemaSearch: (text: string) => void
   setWidgetPane: (id: string, pane: WidgetPane) => void
@@ -220,6 +224,16 @@ const useWorkbenchViewStore = create<WorkbenchViewState>()((set, get) => ({
       return { schemaCollapsed }
     }),
   setSchemaDetails: (schemaDetails) => set({ schemaDetails }),
+  schemaTableRenamed: (from, to) =>
+    set((s) => {
+      const schemaCollapsed = new Set(s.schemaCollapsed)
+      if (schemaCollapsed.delete(from)) schemaCollapsed.add(to)
+      const details = s.schemaDetails
+      const schemaDetails = details !== null && details.startsWith(`${from}:`) ? `${to}:${details.slice(from.length + 1)}` : details
+      return { schemaCollapsed, schemaDetails }
+    }),
+  schemaColumnRenamed: (table, from, to) =>
+    set((s) => (s.schemaDetails === `${table}:${from}` ? { schemaDetails: `${table}:${to}` } : {})),
   setSchemaScroll: (schemaScroll) => set({ schemaScroll }),
   setSchemaSearch: (schemaSearch) => set({ schemaSearch }),
   setWidgetPane: (id, pane) => set((s) => ({ widgetPanes: { ...s.widgetPanes, [id]: pane } })),

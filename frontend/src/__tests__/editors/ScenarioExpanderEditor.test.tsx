@@ -330,7 +330,7 @@ describe("ScenarioExpanderEditor", () => {
     const props = (min: number, max: number) => ({
       ...DEFAULT_PROPS,
       onUpdate,
-      config: { column_name: "sv", min_value: min, max_value: max, stepCount: 6 },
+      config: { column_name: "sv", min_value: min, max_value: max, step_count: 6 },
     })
     const view = render(<ScenarioExpanderEditor {...props(0, 10)} />)
     view.rerender(<ScenarioExpanderEditor {...props(5, 15)} />)
@@ -357,21 +357,21 @@ describe("ScenarioExpanderEditor", () => {
 
   it("commits a whole step count once on blur", () => {
     const onUpdate = vi.fn()
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ step_count: 21 }} />)
     const stepsInput = screen.getByDisplayValue("21")
 
     fireEvent.change(stepsInput, { target: { value: "10" } })
     expect(onUpdate).not.toHaveBeenCalled()
     fireEvent.blur(stepsInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
-    expect(onUpdate).toHaveBeenCalledWith("stepCount", 10)
+    expect(onUpdate).toHaveBeenCalledWith("step_count", 10)
   })
 
   it.each(["0", "-5", "abc", "2.7", ""])(
     "refuses %j as a step count with a message, keeping the draft and writing nothing",
     (typed) => {
       const onUpdate = vi.fn()
-      render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ stepCount: 21 }} />)
+      render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ step_count: 21 }} />)
       const stepsInput = screen.getByDisplayValue("21") as HTMLInputElement
 
       fireEvent.change(stepsInput, { target: { value: typed } })
@@ -386,21 +386,21 @@ describe("ScenarioExpanderEditor", () => {
   )
 
   it("marks a saved step count the backend refuses", () => {
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ stepCount: 2.7 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ step_count: 2.7 }} />)
     expect(screen.getByTestId("scenario-steps-error").textContent).toBe(
       "Steps must be a whole number of at least 1.",
     )
   })
 
   it("step size shows calculated interval", () => {
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", min_value: 0.8, max_value: 1.2, stepCount: 21 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", min_value: 0.8, max_value: 1.2, step_count: 21 }} />)
     const stepSize = screen.getByTestId("step-size")
     // (1.2 - 0.8) / (21 - 1) = 0.02
     expect(stepSize.textContent).toBe("0.02")
   })
 
   it("step size shows dash when steps is 1", () => {
-    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", stepCount: 1 }} />)
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", step_count: 1 }} />)
     const stepSize = screen.getByTestId("step-size")
     expect(stepSize.textContent).toBe("-")
   })
@@ -465,7 +465,7 @@ describe("ScenarioExpanderEditor", () => {
       column_name: "custom_col",
       min_value: 0.5,
       max_value: 2.0,
-      stepCount: 11,
+      step_count: 11,
       step_column: "my_step",
     }
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={config} />)

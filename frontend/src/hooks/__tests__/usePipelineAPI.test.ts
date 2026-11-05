@@ -242,7 +242,7 @@ function makeSnapshotInput(id = "snapshot-input"): Node {
     data: {
       ...node.data,
       config: {
-        inputType: "file",
+        input_type: "file",
         format: "csv",
         mode: "scan",
         path: `${id}.csv`,
@@ -1369,7 +1369,7 @@ describe("usePipelineAPI", () => {
       new ApiError(
         "HTTP 400",
         400,
-        "edgeJoin non-cross joins require join keys via on or leftOn/rightOn.",
+        "edgeJoin non-cross joins require join keys via on or left_on/right_on.",
       ),
     )
     const params = makeParams()
@@ -1394,12 +1394,12 @@ describe("usePipelineAPI", () => {
   it.each([
     [
       "non-cross joins without keys",
-      { how: "left", maintainOrder: "left_right" },
+      { how: "left", maintain_order: "left_right" },
       "Non-cross joins need join keys.",
     ],
     [
       "cross joins with keys",
-      { how: "cross", on: ["policy_id"], maintainOrder: "left_right" },
+      { how: "cross", on: ["policy_id"], maintain_order: "left_right" },
       "Cross joins must not configure join keys.",
     ],
   ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
@@ -1452,7 +1452,7 @@ describe("usePipelineAPI", () => {
       document_fingerprint: "fingerprint-saved",
       warnings: [],
     }))
-    const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
+    const graph = edgeJoinSaveGraph({ how: "left", on: ["policy_id"], maintain_order: "left_right" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))

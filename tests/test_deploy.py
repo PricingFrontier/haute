@@ -220,13 +220,13 @@ class TestPruner:
         from haute.deploy._pruner import find_output_node
 
         output_id = find_output_node(full_graph)
-        assert output_id == "output"
+        assert output_id == "quote_response"
 
     def test_find_deploy_input_nodes(self, full_graph: dict) -> None:
         from haute.deploy._pruner import find_deploy_input_nodes
 
         inputs = find_deploy_input_nodes(full_graph)
-        assert inputs == ["quotes"]
+        assert inputs == ["quote_input"]
 
     def test_prune_for_deploy(self, full_graph: dict) -> None:
         from haute.deploy._pruner import find_output_node, prune_for_deploy
@@ -237,10 +237,10 @@ class TestPruner:
         kept_set = set(kept)
         removed_set = set(removed)
 
-        # Live scoring path: quotes → policies (switch) → area_lookup → output
-        assert "quotes" in kept_set
+        # Live scoring path: quote_input → policies (switch) → area_lookup → quote_response
+        assert "quote_input" in kept_set
         assert "policies" in kept_set
-        assert "output" in kept_set
+        assert "quote_response" in kept_set
 
         # Batch source pruned (liveSwitch keeps only live branch)
         assert "batch_quotes" in removed_set
@@ -273,7 +273,7 @@ class TestPruner:
                             "label": "batch_src",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "d.parquet",
@@ -530,7 +530,7 @@ class TestPruner:
                         "data": {
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "d.parquet",
@@ -558,7 +558,7 @@ class TestBundler:
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
+        artifacts = collect_artifacts(pruned, ["quote_input"], FIXTURE_DIR)
 
         # All artifact paths should exist
         for name, path in artifacts.items():
@@ -601,7 +601,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_abc",
                                 "artifact_path": "model.cbm",
                             },
@@ -627,7 +627,7 @@ class TestBundler:
                         "id": "ms1",
                         "data": {
                             "nodeType": "modelScore",
-                            "config": {"sourceType": "run"},
+                            "config": {"source_type": "run"},
                         },
                     },
                 ],
@@ -673,7 +673,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": str(data_file),
@@ -695,7 +695,7 @@ class TestBundler:
     # -- Registered model tests (B1 fix) ------------------------------------
 
     def test_registered_model_resolved_and_bundled(self, tmp_path, monkeypatch):
-        """MODEL_SCORE with sourceType='registered' resolves via MLflow and bundles."""
+        """MODEL_SCORE with source_type='registered' resolves via MLflow and bundles."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -711,7 +711,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-prod-model",
                                 "version": "3",
                             },
@@ -733,7 +733,7 @@ class TestBundler:
         assert artifacts[name].is_file()
 
     def test_registered_model_latest_version(self, tmp_path, monkeypatch):
-        """sourceType='registered' with version='latest' resolves correctly."""
+        """source_type='registered' with version='latest' resolves correctly."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -748,7 +748,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-model",
                                 "version": "latest",
                             },
@@ -768,7 +768,7 @@ class TestBundler:
         assert sorted(artifacts) == ["ms_latest__feature_contract.json", "ms_latest__model.cbm"]
 
     def test_registered_model_empty_version(self, tmp_path, monkeypatch):
-        """sourceType='registered' with empty version (defaults to latest)."""
+        """source_type='registered' with empty version (defaults to latest)."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -783,7 +783,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "my-model",
                                 "version": "",
                             },
@@ -806,7 +806,7 @@ class TestBundler:
         ]
 
     def test_registered_model_skipped_without_model_name(self):
-        """sourceType='registered' with no registered_model is silently skipped."""
+        """source_type='registered' with no registered_model is silently skipped."""
         from haute.deploy._bundler import collect_artifacts
 
         graph = _g(
@@ -817,7 +817,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "",
                                 "version": "1",
                             },
@@ -842,7 +842,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "nonexistent-model",
                                 "version": "1",
                             },
@@ -877,7 +877,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_direct",
                                 "artifact_path": "direct.cbm",
                             },
@@ -888,7 +888,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "prod-model",
                                 "version": "2",
                             },
@@ -911,7 +911,7 @@ class TestBundler:
         assert artifacts["ms_reg__registered.cbm"].is_file()
 
     def test_run_based_model_still_works_with_explicit_source_type(self, tmp_path, monkeypatch):
-        """sourceType='run' explicitly set still works (no regression)."""
+        """source_type='run' explicitly set still works (no regression)."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -926,7 +926,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_explicit",
                                 "artifact_path": "model.cbm",
                             },
@@ -944,7 +944,7 @@ class TestBundler:
         assert "ms_explicit_run__model.cbm" in artifacts
 
     def test_model_score_without_source_type_is_not_bundled(self, tmp_path, monkeypatch):
-        """MODEL_SCORE without sourceType is untouched, as in the preview: nothing bundles."""
+        """MODEL_SCORE without source_type is untouched, as in the preview: nothing bundles."""
         from haute.deploy._bundler import collect_artifacts
 
         use_project(tmp_path)
@@ -1026,7 +1026,7 @@ class TestBundler:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "registered",
+                                "source_type": "registered",
                                 "registered_model": "prod-model",
                                 "version": "4",
                                 "mlflow_destination": "local",
@@ -1299,7 +1299,7 @@ class TestScorer:
         result = score_graph(
             graph=pruned,
             input_df=sample,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
         )
 
@@ -1322,7 +1322,7 @@ class TestScorer:
         result = score_graph(
             graph=pruned,
             input_df=sample,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
         )
 
@@ -1369,7 +1369,7 @@ class TestScorer:
                         "data": {
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -1430,7 +1430,7 @@ class TestSchema:
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        schema = infer_input_schema(pruned, "quotes")
+        schema = infer_input_schema(pruned, "quote_input")
 
         assert isinstance(schema, dict)
         assert len(schema) > 0
@@ -1444,7 +1444,7 @@ class TestSchema:
         output_id = find_output_node(full_graph)
         pruned, _kept, _removed = prune_for_deploy(full_graph, output_id)
 
-        schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
+        schema = infer_output_schema(pruned, output_id, ["quote_input"], project_root=tmp_path)
 
         assert isinstance(schema, dict)
         assert len(schema) > 0
@@ -1477,9 +1477,11 @@ class TestValidators:
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
-        artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
-        input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
+        artifacts = collect_artifacts(pruned, ["quote_input"], FIXTURE_DIR)
+        input_schema = infer_input_schema(pruned, "quote_input")
+        output_schema = infer_output_schema(
+            pruned, output_id, ["quote_input"], project_root=tmp_path
+        )
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1490,7 +1492,7 @@ class TestValidators:
             **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
             artifacts=artifacts,
             input_schema=input_schema,
@@ -1515,9 +1517,11 @@ class TestValidators:
 
         output_id = find_output_node(full_graph)
         pruned, _kept, removed = prune_for_deploy(full_graph, output_id)
-        artifacts = collect_artifacts(pruned, ["quotes"], FIXTURE_DIR)
-        input_schema = infer_input_schema(pruned, "quotes")
-        output_schema = infer_output_schema(pruned, output_id, ["quotes"], project_root=tmp_path)
+        artifacts = collect_artifacts(pruned, ["quote_input"], FIXTURE_DIR)
+        input_schema = infer_input_schema(pruned, "quote_input")
+        output_schema = infer_output_schema(
+            pruned, output_id, ["quote_input"], project_root=tmp_path
+        )
 
         config = DeployConfig(
             pipeline_file=PIPELINE_FILE,
@@ -1529,7 +1533,7 @@ class TestValidators:
             **resolved_paths(config),
             full_graph=full_graph,
             pruned_graph=pruned,
-            input_node_ids=["quotes"],
+            input_node_ids=["quote_input"],
             output_node_id=output_id,
             artifacts=artifacts,
             input_schema=input_schema,
@@ -1658,8 +1662,8 @@ allow_aggregate_statistics = false
         )
         resolved = resolve_config(config)
 
-        assert resolved.output_node_id == "output"
-        assert "quotes" in resolved.input_node_ids
+        assert resolved.output_node_id == "quote_response"
+        assert "quote_input" in resolved.input_node_ids
         assert len(resolved.input_schema) > 0
         assert len(resolved.output_schema) > 0
         assert len(resolved.removed_node_ids) > 0
@@ -2113,11 +2117,11 @@ class TestParserApiInput:
         graph = parse_pipeline_file(PIPELINE_FILE)
         quotes_node = None
         for n in graph.nodes:
-            if n.id == "quotes":
+            if n.id == "quote_input":
                 quotes_node = n
                 break
 
-        assert quotes_node is not None, "quotes node not found"
+        assert quotes_node is not None, "quote_input node not found"
         assert quotes_node.data.nodeType == "apiInput", (
             f"Expected apiInput nodeType, got: {quotes_node.data.nodeType}"
         )

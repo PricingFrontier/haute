@@ -304,7 +304,7 @@ class TestPreviewRuntimeFileInvalidation:
                                 "nodeType": "externalFile",
                                 "config": {
                                     "path": str(factor),
-                                    "fileType": "json",
+                                    "file_type": "json",
                                     "code": "df = src.with_columns(y=pl.lit(obj['factor']))",
                                 },
                             },
@@ -365,7 +365,7 @@ class TestPreviewRuntimeFileInvalidation:
                                 "label": "apply",
                                 "nodeType": "optimiserApply",
                                 "config": {
-                                    "sourceType": "file",
+                                    "source_type": "file",
                                     "artifact_path": str(artifact),
                                     "ratebook_input": "scored",
                                 },
@@ -863,7 +863,7 @@ class TestModelFileSourceInvalidation:
                                     "label": "ms",
                                     "nodeType": "modelScore",
                                     "config": {
-                                        "sourceType": "file",
+                                        "source_type": "file",
                                         "model_path": str(model),
                                         "task": "regression",
                                         "output_column": "pred",

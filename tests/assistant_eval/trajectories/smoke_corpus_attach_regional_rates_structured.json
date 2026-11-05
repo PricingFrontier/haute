@@ -31,15 +31,15 @@
                           "kind": "join",
                           "input": "rates",
                           "how": "left",
-                          "leftOn": [
+                          "left_on": [
                             "region"
                           ],
-                          "rightOn": [
+                          "right_on": [
                             "region"
                           ],
                           "suffix": "_right",
                           "validate": "m:1",
-                          "maintainOrder": "left"
+                          "maintain_order": "left"
                         },
                         {
                           "id": "s281",

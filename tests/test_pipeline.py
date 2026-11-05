@@ -275,7 +275,7 @@ class TestPipeline:
             return df.with_columns(y=pl.col("x") * 3)
 
         # No connect() calls — must raise, not silently use wrong data
-        with pytest.raises(ValueError, match="no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.run(source="batch")
 
     def test_score_no_edges_raises(self):
@@ -291,7 +291,7 @@ class TestPipeline:
             return df.with_columns(y=pl.col("x") + 100)
 
         custom = pl.DataFrame({"x": [5]})
-        with pytest.raises(ValueError, match="no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.score(custom)
 
     def test_to_graph_with_explicit_edges(self):
@@ -342,9 +342,9 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame:
+        def transform(source: pl.DataFrame) -> pl.DataFrame:
             captured.append(_scenario_ctx.get())
-            return df
+            return source
 
         p.connect("source", "transform")
         p.run(source="batch")
@@ -366,9 +366,9 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame:
+        def transform(source: pl.DataFrame) -> pl.DataFrame:
             captured.append(_scenario_ctx.get())
-            return df
+            return source
 
         p.connect("source", "transform")
         p.score(pl.DataFrame({"x": [5]}))
@@ -385,7 +385,7 @@ class TestPipeline:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def boom(df: pl.DataFrame) -> pl.DataFrame:
+        def boom(source: pl.DataFrame) -> pl.DataFrame:
             raise RuntimeError("kaboom")
 
         p.connect("source", "boom")
@@ -406,7 +406,7 @@ class TestPipeline:
         def rated(source: pl.DataFrame) -> pl.LazyFrame:
             table = {
                 "factors": ["region"],
-                "outputColumn": "factor",
+                "output_column": "factor",
                 "entries": [{"region": "north", "value": 2.0}],
             }
             return _apply_rating_table(source.lazy(), table)
@@ -466,14 +466,14 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("one_port_score")
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
         def consume(quotes: pl.DataFrame) -> pl.DataFrame:
             return quotes
 
-        p.connect("api_source", "consume", source_port="quotes")
+        p.connect("quote_input", "consume", source_port="quotes")
         return p
 
     @staticmethod
@@ -481,7 +481,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("two_port_score")
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
@@ -495,8 +495,8 @@ class TestPipelinePortAwareExecution:
                 }
             )
 
-        p.connect("api_source", "combine", source_port="quotes")
-        p.connect("api_source", "combine", source_port="drivers")
+        p.connect("quote_input", "combine", source_port="quotes")
+        p.connect("quote_input", "combine", source_port="drivers")
         return p
 
     def test_run_selects_the_frame_from_a_one_frame_api_input_dict(self):
@@ -504,14 +504,14 @@ class TestPipelinePortAwareExecution:
         expected = pl.DataFrame({"quote_id": [17]})
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             return {"quotes": expected}
 
         @p.polars
         def consume(quotes: pl.DataFrame) -> pl.DataFrame:
             return quotes
 
-        p.connect("api_source", "consume", source_port="quotes")
+        p.connect("quote_input", "consume", source_port="quotes")
 
         result = p.run(source="batch")
         assert isinstance(result, pl.DataFrame)
@@ -521,7 +521,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("many_frame_run")
 
         @p.api_input
-        def api_source() -> dict[str, pl.DataFrame]:
+        def quote_input() -> dict[str, pl.DataFrame]:
             return {
                 "quotes": pl.DataFrame({"quote_id": [17]}),
                 "drivers": pl.DataFrame({"driver_id": [31]}),
@@ -538,8 +538,8 @@ class TestPipelinePortAwareExecution:
                 }
             )
 
-        p.connect("api_source", "combine", source_port="quotes")
-        p.connect("api_source", "combine", source_port="drivers")
+        p.connect("quote_input", "combine", source_port="quotes")
+        p.connect("quote_input", "combine", source_port="drivers")
 
         assert p.run(source="batch").to_dict(as_series=False) == {
             "quote_id": [17],
@@ -550,7 +550,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("source_only_score")
 
         @p.api_input
-        def api_source() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("score() must seed the apiInput source")
 
         seed = pl.DataFrame({"quote_id": [17]})
@@ -566,14 +566,14 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("unnamed_port_score")
 
         @p.api_input
-        def api_source() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("score() must seed the apiInput source")
 
         @p.polars
-        def consume(quotes: pl.DataFrame) -> pl.DataFrame:
-            return quotes
+        def consume(quote_input: pl.DataFrame) -> pl.DataFrame:
+            return quote_input
 
-        p.connect("api_source", "consume")
+        p.connect("quote_input", "consume")
         seed = pl.DataFrame({"quote_id": [17]})
 
         assert p.score(seed).to_dict(as_series=False) == {"quote_id": [17]}
@@ -661,7 +661,7 @@ class TestPipelinePortAwareExecution:
         p = Pipeline("source_only_dict_score")
 
         @p.api_input
-        def api_source() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("score() must seed the apiInput source")
 
         with pytest.raises(ExecutionError) as exc_info:
@@ -726,7 +726,7 @@ class TestDecoratorAliases:
         reg = NodeRegistry("test")
 
         @reg.api_input
-        def src() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame()
 
         assert reg.nodes[0].config["_node_type"] == NodeType.API_INPUT
@@ -854,15 +854,15 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def b(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def b(a: pl.DataFrame) -> pl.DataFrame:
+            return a
 
         @p.polars
         def c(df: pl.DataFrame) -> pl.DataFrame:
             return df
 
         p.connect("a", "b")
-        with pytest.raises(ValueError, match="disconnected|no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.run(source="batch")
 
     def test_self_loop_detected(self):
@@ -888,16 +888,16 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def b(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(b=pl.col("x") + 10)
+        def b(a: pl.DataFrame) -> pl.DataFrame:
+            return a.with_columns(b=pl.col("x") + 10)
 
         @p.polars
-        def c(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(c=pl.col("x") + 100)
+        def c(a: pl.DataFrame) -> pl.DataFrame:
+            return a.with_columns(c=pl.col("x") + 100)
 
         @p.polars
-        def d(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-            return left.hstack(right.select("c"))
+        def d(b: pl.DataFrame, c: pl.DataFrame) -> pl.DataFrame:
+            return b.hstack(c.select("c"))
 
         p.connect("a", "b").connect("a", "c").connect("b", "d").connect("c", "d")
         result = p.run(source="batch")
@@ -922,8 +922,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [888]})
 
         @p.polars
-        def merge(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b.rename({"x": "y"}))
+        def merge(src1: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
+            return src1.hstack(src2.rename({"x": "y"}))
 
         p.connect("src1", "merge").connect("src2", "merge")
         with pytest.raises(ExecutionError, match="[Mm]ark exactly one source"):
@@ -938,8 +938,8 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"x": [999]})
 
         @p.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(y=pl.col("x") + 1)
+        def transform(src: pl.DataFrame) -> pl.DataFrame:
+            return src.with_columns(y=pl.col("x") + 1)
 
         p.connect("src", "transform")
         result = p.score(pl.DataFrame({"x": [41]}))
@@ -949,7 +949,7 @@ class TestPipelineEdgeCases:
         p = Pipeline("seed_api")
 
         @p.api_input(api_input=True)
-        def live_src() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
         @p.data_input
@@ -957,10 +957,10 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"y": [77]})
 
         @p.polars
-        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+        def combine(quote_input: pl.DataFrame, static_src: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(static_src)
 
-        p.connect("live_src", "combine").connect("static_src", "combine")
+        p.connect("quote_input", "combine").connect("static_src", "combine")
         input_df = pl.DataFrame({"x": [42]})
         result = p.score(input_df)
         assert result["x"].to_list() == [42]
@@ -1004,18 +1004,20 @@ class TestPipelineEdgeCases:
         p = Pipeline("all_api")
 
         @p.api_input(api_input=True)
-        def src1() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
-        @p.api_input(api_input=True)
+        # A pipeline holds one Quote Input (READ-46): the second source is marked live by
+        # the flag alone.
+        @p.data_input(api_input=True)
         def src2() -> pl.DataFrame:
             return pl.DataFrame({"x": [888]})
 
         @p.polars
-        def merge(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b.rename({"x": "y"}))
+        def merge(quote_input: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(src2.rename({"x": "y"}))
 
-        p.connect("src1", "merge").connect("src2", "merge")
+        p.connect("quote_input", "merge").connect("src2", "merge")
         input_df = pl.DataFrame({"x": [42]})
         with pytest.raises(ExecutionError, match="multiple live input"):
             p.score(input_df)
@@ -1024,7 +1026,7 @@ class TestPipelineEdgeCases:
         p = Pipeline("mixed")
 
         @p.api_input(api_input=True)
-        def live() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [999]})
 
         @p.data_input
@@ -1032,10 +1034,10 @@ class TestPipelineEdgeCases:
             return pl.DataFrame({"y": [55]})
 
         @p.polars
-        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+        def combine(quote_input: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(static)
 
-        p.connect("live", "combine").connect("static", "combine")
+        p.connect("quote_input", "combine").connect("static", "combine")
         input_df = pl.DataFrame({"x": [10]})
         result = p.score(input_df)
         assert result["x"].to_list() == [10]
@@ -1062,7 +1064,7 @@ class TestPipelineEdgeCases:
         def unconnected(df: pl.DataFrame) -> pl.DataFrame:
             return df
 
-        with pytest.raises(ValueError, match="no inbound edges"):
+        with pytest.raises(ExecutionError, match="parameter 'df' names no input"):
             p.run(source="batch")
 
     def test_to_graph_config_filters_internal_keys(self):
@@ -1093,7 +1095,7 @@ class TestSubmodel:
             input_ports=[
                 {
                     "name": "quotes",
-                    "targets": [{"nodeId": "transform"}],
+                    "targets": [{"node_id": "transform"}],
                 }
             ],
             output_ports=[],
@@ -1114,7 +1116,7 @@ class TestSubmodel:
             output_ports=[
                 {
                     "name": "score",
-                    "source": {"nodeId": "score_node"},
+                    "source": {"node_id": "score_node"},
                 }
             ],
         )
@@ -1184,16 +1186,16 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def result(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(kept=pl.lit("output"))
+        def quote_response(src: pl.DataFrame) -> pl.DataFrame:
+            return src.with_columns(kept=pl.lit("output"))
 
         @p.data_output
-        def audit(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(sink=pl.lit("side_effect"))
+        def audit(quote_response: pl.DataFrame) -> pl.DataFrame:
+            return quote_response.with_columns(sink=pl.lit("side_effect"))
 
-        # 'audit' is wired after 'result' so it sorts last in topo order, but
-        # 'result' is the declared output that must be returned.
-        p.connect("src", "result").connect("result", "audit")
+        # 'audit' is wired after 'quote_response' so it sorts last in topo order, but
+        # 'quote_response' is the declared output that must be returned.
+        p.connect("src", "quote_response").connect("quote_response", "audit")
         out = p.run(source="batch")
         assert "kept" in out.columns
         assert "sink" not in out.columns
@@ -1207,12 +1209,12 @@ class TestOutputResolution:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def left(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def left(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
         @p.polars
-        def right(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def right(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
         p.connect("src", "left").connect("src", "right")
         with pytest.raises(ExecutionError, match="multiple terminal nodes"):
@@ -1225,15 +1227,17 @@ class TestOutputResolution:
         def src() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
+        # A pipeline holds one Quote Response (READ-46); a Workbench Output is a response
+        # node too.
         @p.output
-        def out_a(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def quote_response(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
-        @p.output
-        def out_b(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        @p.workbench_output
+        def workbench_output(src: pl.DataFrame) -> pl.DataFrame:
+            return src
 
-        p.connect("src", "out_a").connect("src", "out_b")
+        p.connect("src", "quote_response").connect("src", "workbench_output")
         with pytest.raises(ExecutionError, match="multiple response nodes"):
             p.run(source="batch")
 
@@ -1241,18 +1245,18 @@ class TestOutputResolution:
         p = Pipeline("score_out")
 
         @p.api_input
-        def live() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             return pl.DataFrame({"x": [1]})
 
         @p.output
-        def result(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(kept=pl.lit("output"))
+        def quote_response(quote_input: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.with_columns(kept=pl.lit("output"))
 
         @p.data_output
-        def audit(df: pl.DataFrame) -> pl.DataFrame:
-            return df.with_columns(sink=pl.lit("side_effect"))
+        def audit(quote_response: pl.DataFrame) -> pl.DataFrame:
+            return quote_response.with_columns(sink=pl.lit("side_effect"))
 
-        p.connect("live", "result").connect("result", "audit")
+        p.connect("quote_input", "quote_response").connect("quote_response", "audit")
         out = p.score(pl.DataFrame({"x": [7]}))
         assert "kept" in out.columns
         assert "sink" not in out.columns
@@ -1324,11 +1328,11 @@ class TestNodeArityValidation:
             return pl.DataFrame({"x": [2]})
 
         @p.polars
-        def one_input(df: pl.DataFrame) -> pl.DataFrame:
-            return df
+        def one_input(a: pl.DataFrame) -> pl.DataFrame:
+            return a
 
         p.connect("a", "one_input").connect("b", "one_input")
-        with pytest.raises(ExecutionError, match="accepts 1 input.*2 edge"):
+        with pytest.raises(ExecutionError, match="input 'b' is connected but no parameter"):
             p.run(source="batch")
 
     def test_multi_param_node_under_wired_raises_haute_error(self):
@@ -1340,11 +1344,11 @@ class TestNodeArityValidation:
             return pl.DataFrame({"x": [1]})
 
         @p.polars
-        def needs_two(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-            return left.hstack(right)
+        def needs_two(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
+            return a.hstack(b)
 
         p.connect("a", "needs_two")
-        with pytest.raises(ExecutionError, match="accepts 2 input.*1 edge"):
+        with pytest.raises(ExecutionError, match="parameter 'b' names no input"):
             p.run(source="batch")
 
     def test_node_call_extra_dfs_raises(self):
@@ -1367,7 +1371,7 @@ class TestApiInputDecoratorMarksSeed:
         p = Pipeline("decorated")
 
         @p.api_input
-        def live() -> pl.DataFrame:
+        def quote_input() -> pl.DataFrame:
             raise AssertionError("api_input source must be seeded, not called")
 
         @p.data_input
@@ -1375,10 +1379,10 @@ class TestApiInputDecoratorMarksSeed:
             return pl.DataFrame({"y": [5]})
 
         @p.polars
-        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+        def combine(quote_input: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
+            return quote_input.hstack(static)
 
-        p.connect("live", "combine").connect("static", "combine")
+        p.connect("quote_input", "combine").connect("static", "combine")
         result = p.score(pl.DataFrame({"x": [9]}))
         assert result["x"].to_list() == [9]
         assert result["y"].to_list() == [5]
@@ -1467,7 +1471,7 @@ class TestGlobalConstantsRuntimeApi:
                         "data": {
                             "label": "sm_alias",
                             "nodeType": "submodel",
-                            "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                            "config": {"definition_id": "definition_sm", "alias": "sm_alias"},
                         },
                     },
                 ],
@@ -1513,19 +1517,30 @@ class TestGlobalConstantsRuntimeApi:
             assert module.global_constants is Pipeline("x").global_constants
 
 
+def _write_sidecar(base_dir, node_type: NodeType, func_name: str, config: dict) -> str:
+    """Write *config*, as the editor holds it, to the node's sidecar in the form a save
+    writes it (a Constant's values as a map, a rating table as a grid), and return the
+    sidecar's path relative to *base_dir*."""
+    from haute._config_io import config_path_for_node, node_config_json
+
+    rel_path = config_path_for_node(node_type, func_name)
+    target = base_dir / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(node_config_json(node_type, config, node_label=func_name).encode("utf-8"))
+    return rel_path.as_posix()
+
+
 def _switch_pipeline(tmp_path, *, sources: list[str] | None) -> Pipeline:
     """A file-backed pipeline whose switch routes ``live`` and ``nb_batch``."""
     import json
 
-    from tests.conftest import write_node_config
-
     def constant(name: str, origin: str) -> str:
         values = {"values": [{"name": "origin", "value": origin}]}
-        return write_node_config(tmp_path, NodeType.CONSTANT, name, values)
+        return _write_sidecar(tmp_path, NodeType.CONSTANT, name, values)
 
     live = constant("live_rows", "live")
     batch = constant("nb_rows", "nb_batch")
-    switch = write_node_config(
+    switch = _write_sidecar(
         tmp_path,
         NodeType.LIVE_SWITCH,
         "switch",
@@ -1582,8 +1597,8 @@ import polars as pl
 submodel = haute.Submodel(
     "factors",
     definition_id="definition_factors",
-    input_ports=[{"name": "rows", "targets": [{"nodeId": "aged", "handleId": None}]}],
-    output_ports=[{"name": "factored", "source": {"nodeId": "factor", "handleId": None}}],
+    input_ports=[{"name": "rows", "targets": [{"node_id": "aged"}]}],
+    output_ports=[{"name": "factored", "source": {"node_id": "factor"}}],
     pipeline_dir="..",
 )
 
@@ -1625,9 +1640,7 @@ def _exec_pipeline(path, source: str) -> dict:
 
 def _submodel_pipeline(tmp_path, main_body: str, factors: str = _FACTORS_MODULE):
     """Write a pipeline importing ``modules/factors.py``; return its path and live pipeline."""
-    from tests.conftest import write_node_config
-
-    rows = write_node_config(
+    rows = _write_sidecar(
         tmp_path,
         NodeType.CONSTANT,
         "quotes",
@@ -1740,8 +1753,8 @@ class TestStandaloneSubmodels:
             "submodel = haute.Submodel(\n"
             '    "rates",\n'
             '    definition_id="definition_rates",\n'
-            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "joined"}]}],\n'
-            '    output_ports=[{"name": "out", "source": {"nodeId": "joined"}}],\n'
+            '    input_ports=[{"name": "rows", "targets": [{"node_id": "joined"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "joined"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             "@submodel.polars\n"
@@ -1803,7 +1816,7 @@ class TestStandaloneSubmodels:
             '    "whole",\n'
             '    definition_id="definition_whole",\n'
             "    input_ports=[],\n"
-            '    output_ports=[{"name": "out", "source": {"nodeId": "doubled"}}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "doubled"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             "@submodel.polars\n"
@@ -1828,9 +1841,7 @@ class TestStandaloneSubmodels:
             pipeline.run()
 
     def test_a_hooks_df_input_from_a_port_comes_first(self, tmp_path) -> None:
-        from tests.conftest import write_node_config
-
-        rated_config = write_node_config(
+        rated_config = _write_sidecar(
             tmp_path,
             NodeType.RATING_STEP,
             "rated",
@@ -1838,11 +1849,11 @@ class TestStandaloneSubmodels:
                 "tables": [
                     {
                         "factors": ["year"],
-                        "outputColumn": "rel",
+                        "output_column": "rel",
                         "entries": [{"year": 2010, "value": 1.5}],
                     }
                 ],
-                "combinedOutputs": [],
+                "combined_outputs": [],
             },
         )
         (tmp_path / "modules").mkdir()
@@ -1852,8 +1863,8 @@ class TestStandaloneSubmodels:
             "submodel = haute.Submodel(\n"
             '    "rating",\n'
             '    definition_id="definition_rating",\n'
-            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
-            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    input_ports=[{"name": "rows", "targets": [{"node_id": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "rated"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             "@submodel.polars\n"
@@ -1886,9 +1897,7 @@ class TestStandaloneSubmodels:
         ]
 
     def test_a_quote_input_frame_is_named_by_its_frame_handle(self, tmp_path) -> None:
-        from tests.conftest import write_node_config
-
-        rated_config = write_node_config(
+        rated_config = _write_sidecar(
             tmp_path,
             NodeType.RATING_STEP,
             "rated",
@@ -1896,11 +1905,11 @@ class TestStandaloneSubmodels:
                 "tables": [
                     {
                         "factors": ["year"],
-                        "outputColumn": "rel",
+                        "output_column": "rel",
                         "entries": [{"year": 2010, "value": 1.5}],
                     }
                 ],
-                "combinedOutputs": [],
+                "combined_outputs": [],
             },
         )
         (tmp_path / "modules").mkdir()
@@ -1910,16 +1919,16 @@ class TestStandaloneSubmodels:
             "submodel = haute.Submodel(\n"
             '    "rating",\n'
             '    definition_id="definition_rating",\n'
-            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
-            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    input_ports=[{"name": "rows", "targets": [{"node_id": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"node_id": "rated"}}],\n'
             '    pipeline_dir="..",\n'
             ")\n\n\n"
             '@submodel.api_input(config="config/api_input/payload.json")\n'
-            "def payload(): ...\n\n\n"
+            "def quote_input(): ...\n\n\n"
             f'@submodel.rating_step(config="{rated_config}")\n'
             "def rated(df: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:\n"
             '    return df.join(lookup.lazy(), how="cross")\n\n\n'
-            'submodel.connect("payload", "rated", source_port="lookup")\n',
+            'submodel.connect("quote_input", "rated", source_port="lookup")\n',
             encoding="utf-8",
         )
         source = (

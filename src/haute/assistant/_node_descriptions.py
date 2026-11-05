@@ -109,7 +109,7 @@ class AssistantNodeDescription:
     read_only_wiring: str | None = None
     #: The fix for a pivot step that does not render on the type's steps.
     pivot_step_fix: str | None = None
-    #: Its ``outputMapping`` rows name incoming frames by ``source_port``.
+    #: Its ``output_mapping`` rows name incoming frames by ``source_port``.
     output_mapping: bool = False
     #: The parser a config the assistant writes must pass, so a refusal names the node.
     config_parser: Callable[[dict[str, Any]], object] | None = None
@@ -253,16 +253,16 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
             usage=(
                 "Band a number or date column at breakpoints, or map categorical values to "
                 "named bands. Breakpoint rules are {boundary, label} rows: each boundary is "
-                "its band's upper bound (inclusive unless rightClosed is false), every "
+                "its band's upper bound (inclusive unless right_closed is false), every "
                 "boundary is a number, a date, or a date and time of one kind, and one "
                 "final row may leave the boundary empty for the open-ended band. "
                 "Categorical rules are {value, assignment} rows. Give each factor an "
-                "outputColumn and an explicit default for values outside the rules."
+                "output_column and an explicit default for values outside the rules."
             ),
             schema_effect="adds each configured factor output column",
             examples=("discrete_banding",),
             recipes=("categorical_banding",),
-            list_entry_names=(("factors", "outputColumn"),),
+            list_entry_names=(("factors", "output_column"),),
             config_parser=_parse_banding_config,
             structured_config="factors",
         ),
@@ -277,8 +277,8 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
             examples=("rating_step",),
             recipes=("rating_step",),
             list_entry_names=(
-                ("tables", "outputColumn"),
-                ("combinedOutputs", "outputColumn"),
+                ("tables", "output_column"),
+                ("combined_outputs", "output_column"),
             ),
             config_parser=_parse_rating_step_config,
             structured_config="tables",
@@ -287,14 +287,14 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
             summary="Assemble the quote's JSON response from upstream columns.",
             usage=(
                 "Assemble the top-level JSON response from selected upstream columns "
-                "with an explicit outputMapping whose source_port names the incoming "
+                "with an explicit output_mapping whose source_port names the incoming "
                 "frame; it has no output edge."
             ),
             schema_effect="projects mapped columns into the declared JSON response",
             recipes=("response_output",),
             input_ports="one or more frames, each addressed by a mapping row's source_port",
-            wiring_extra="Each outputMapping row's source_port names one incoming frame.",
-            list_entry_names=(("outputMapping", "output_path"),),
+            wiring_extra="Each output_mapping row's source_port names one incoming frame.",
+            list_entry_names=(("output_mapping", "output_path"),),
             output_mapping=True,
         ),
         NodeType.EXPLORE: AssistantNodeDescription(
@@ -317,7 +317,7 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
                 "Load a pickle, JSON or joblib file and expose the loaded object as `obj`; "
                 "the first input is `df` and further inputs are named by their edges. "
                 "Without steps or code the node returns its first input unchanged. Set "
-                "fileType. A model Haute trains is scored with Model Scoring, not loaded here."
+                "file_type. A model Haute trains is scored with Model Scoring, not loaded here."
             ),
             schema_effect="the steps or code see the loaded object as `obj`",
             input_ports=(
@@ -381,14 +381,14 @@ ASSISTANT_NODE_DESCRIPTIONS = node_type_table(
         NodeType.SCENARIO_EXPANDER: AssistantNodeDescription(
             summary="Repeat each row across a grid of scenario values.",
             usage=(
-                "Repeat each row once per scenario step: stepCount (required, at least 1) "
+                "Repeat each row once per scenario step: step_count (required, at least 1) "
                 "sets how many; step_column names the 0-based index column (default "
                 "scenario_index); column_name, when set, adds a value column spaced evenly "
                 "from min_value to max_value; quote_id names the column identifying each "
                 "quote."
             ),
             schema_effect=(
-                "repeats rows stepCount times, adding the step index and optional value columns"
+                "repeats rows step_count times, adding the step index and optional value columns"
             ),
         ),
         NodeType.OPTIMISER_APPLY: AssistantNodeDescription(

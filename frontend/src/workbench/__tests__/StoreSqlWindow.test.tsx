@@ -44,7 +44,7 @@ describe("StoreSqlWindow", () => {
   const comparedProd = (renames: { table: string; column: string; was: string }[]) => {
     const form = useWorkbenchFormStore.getState().form
     if (form === null) throw new Error("no form")
-    const answer = { differences: [], extras: [], renames, matches: false, sql: "-- from the prod database", branch: null }
+    const answer = { differences: [], extras: [], renames, matches: false, sql: "-- from the prod database" }
     useStoreCompareStore.setState({ environment: "prod", renames, compared: { status: "compared", form, renames, answer } })
   }
 
@@ -75,7 +75,7 @@ describe("StoreSqlWindow", () => {
     )
     comparedProd([])
     useStoreCompareStore.setState({ read: { status: "read", tables: [] } })
-    const pairing = { table: "policy", column: "policy.state", was: "region" }
+    const pairing = { table: "policy", column: "state", was: "region" }
     // The analyst pairs a column and the replacement comparison is still in flight.
     useStoreCompareStore.getState().pair(pairing)
     useStoreCompareStore.getState().compare(useWorkbenchFormStore.getState().form!)
@@ -92,7 +92,6 @@ describe("StoreSqlWindow", () => {
       renames: [pairing],
       matches: false,
       sql: "-- renamed in prod",
-      branch: null,
     })
     expect(await screen.findByRole("option", { name: "The prod database" })).toBeInTheDocument()
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "database" } })

@@ -1136,7 +1136,7 @@ class TestGenerateDockerfile:
                         data=NodeData(
                             label="apply",
                             nodeType=NodeType.OPTIMISER_APPLY,
-                            config={"sourceType": source_type},
+                            config={"source_type": source_type},
                         ),
                     )
                 ]

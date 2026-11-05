@@ -19,7 +19,7 @@ def _legacy_demo(root: Path) -> Path:
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
         'output_ports=[{"portId": "output_1", "label": "live_switch", '
-        '"source": {"nodeId": "live_switch", "handleId": None}}], pipeline_dir="..")\n\n'
+        '"source": {"node_id": "live_switch"}}], pipeline_dir="..")\n\n'
         "@submodel.polars\ndef live_switch():\n"
         '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
         encoding="utf-8",
@@ -75,7 +75,7 @@ def _canonical_demo(root: Path, *, legacy_port: bool = False) -> Path:
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        f'output_ports=[{port}"source": {{"nodeId": "live_switch", "handleId": None}}}}], '
+        f'output_ports=[{port}"source": {{"node_id": "live_switch"}}}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef live_switch():\n"
         '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
@@ -256,8 +256,7 @@ def test_reset_derives_uncached_instance_input_from_its_definition(tmp_path, ext
         child.write_text(
             child.read_text(encoding="utf-8").replace(
                 "output_ports=[",
-                'output_ports=[{"name": "audit", '
-                '"source": {"nodeId": "live_switch", "handleId": None}}, ',
+                'output_ports=[{"name": "audit", "source": {"node_id": "live_switch"}}, ',
             ),
             encoding="utf-8",
             newline="\n",
@@ -325,7 +324,8 @@ def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_pat
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
         '@pipeline.constant(config="custom.json")\ndef source(): ...\n'
     )
-    assert json.loads(config.read_text()) == {"values": [{"name": "constant_1", "value": "1.0"}]}
+    # The palette's default constant, written as a map from name to value (READ-28).
+    assert config.read_text() == '{\n  "values": {\n    "constant_1": 1.0\n  }\n}\n'
 
 
 def test_reset_rolls_back_all_artifacts_when_verification_fails(tmp_path, monkeypatch):
@@ -396,7 +396,7 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
         # incomplete configuration; reset is never blocked by completeness.
         result = _apply(tmp_path, request)
         written = json.loads((tmp_path / "custom.json").read_text())
-        assert written["inputType"] == "file"
+        assert written["input_type"] == "file"
         assert written["path"] == ""
         assert result.document.load_status == "ready"
     else:
@@ -525,7 +525,7 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "json",
                 "path": "quotes.json",
                 "arguments": {},
@@ -574,7 +574,7 @@ def test_recover_reports_a_sidecar_backed_nodes_decorator_keywords_as_removed(tm
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sidecar = tmp_path / "config" / "constant" / "rates.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text('{"values": [{"name": "base", "value": "1"}]}\n', encoding="utf-8")
+    sidecar.write_text('{"values": {"base": 1}}\n', encoding="utf-8")
     (tmp_path / "main.py").write_text(
         'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
         '@pipeline.constant(config="config/constant/rates.json", '
@@ -597,9 +597,9 @@ def test_recover_reports_a_sidecar_backed_nodes_decorator_keywords_as_removed(tm
     assert ("/colour", "removed") in outcomes
     result = _apply(tmp_path, request)
     assert result.document.load_status == "ready"
-    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
-        "values": [{"name": "base", "value": "1"}]
-    }
+    assert sidecar.read_text(encoding="utf-8") == '{\n  "values": {\n    "base": 1\n  }\n}\n'
+    rates = next(node for node in result.document.nodes if node.authored_id == "rates")
+    assert (rates.config or {})["values"] == [{"name": "base", "value": "1"}]
     source = (tmp_path / "main.py").read_text(encoding="utf-8")
     assert '@pipeline.constant(config="config/constant/rates.json")' in source
     assert "colour" not in source
@@ -611,7 +611,7 @@ def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_pat
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sidecar = tmp_path / "config" / "model_scoring" / "score.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text('{"sourceType": "run", "run_id": "abc"}\n', encoding="utf-8")
+    sidecar.write_text('{"source_type": "run", "run_id": "abc"}\n', encoding="utf-8")
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n\n\n'
         "@pipeline.polars\ndef quotes() -> pl.LazyFrame:\n"
@@ -625,10 +625,12 @@ def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_pat
     plan = build_recover_unavailable_node_plan(
         project_root=tmp_path, request=_request(tmp_path, "score", "recover")
     )
-    changes = {change.path: change.outcome for change in plan.response.field_changes}
-    assert changes["/source_type"] == "removed"
+    changes = [(change.path, change.outcome) for change in plan.response.field_changes]
+    # The keyword is reported removed beside the sidecar's own source_type, which is kept.
+    assert ("/source_type", "removed") in changes
+    assert ("/source_type", "retained") in changes
     assert plan.response.previous_config is not None
-    assert plan.response.previous_config["sourceType"] == "run"
+    assert plan.response.previous_config["source_type"] == "run"
 
 
 def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):
@@ -657,7 +659,10 @@ def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sidecar = tmp_path / "config" / "constant" / "rates.json"
     sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(json.dumps({**reordered, "retired": True}), encoding="utf-8")
+    # The file as written (values as a map, READ-28), its keys in another order, with a
+    # retired key that makes the node unavailable until Recover.
+    written = {"contract": "opaque", **json.loads(whole_document(config)), "retired": True}
+    sidecar.write_text(json.dumps(written, ensure_ascii=False), encoding="utf-8")
     (tmp_path / "main.py").write_text(
         'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
         '@pipeline.constant(config="config/constant/rates.json")\n'
@@ -678,6 +683,7 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     so the regenerated decorator carries none, and no stale copy is left in the
     sidecar."""
     from haute._config_builder import resolve_parse_time_contract
+    from haute._config_io import node_config_json
     from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import NodeType
 
@@ -699,7 +705,7 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     draft = {
         "banding": "categorical",
         "column": "cover",
-        "outputColumn": "cover_band",
+        "output_column": "cover_band",
         "rules": {},
         "default": None,
     }
@@ -725,12 +731,18 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     assert "contract" not in (node.config or {})
     derived = resolve_parse_time_contract(NodeType.BANDING, node.config or {})
     assert (derived.inputs, derived.outputs) == (frozenset(), frozenset())
-    assert json.loads(sidecar.read_text()) == {"factors": [draft]}
+    # The draft's own bytes, its null default left unwritten (READ-27), and no contract.
+    assert sidecar.read_text(encoding="utf-8") == node_config_json(
+        NodeType.BANDING, {"factors": [draft]}, node_label="band"
+    )
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "factors": [{key: value for key, value in draft.items() if key != "default"}]
+    }
 
 
 def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
-    """The worked example: a Scenario Expander sidecar from before the stepCount rename
-    (`steps: 11`) whose `stepCount` was then hand-edited to 0. The recover applies: the
+    """The worked example: a Scenario Expander sidecar from before the step_count rename
+    (`steps: 11`) whose `step_count` was then hand-edited to 0. The recover applies: the
     stale `steps` is removed, and the count the engine refuses takes the palette's 21,
     reported as defaulted, so the written config loads."""
     from haute._config_io import collect_node_configs
@@ -759,7 +771,7 @@ def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
                         "step_column": "scenario_index",
                         "min_value": 0.1,
                         "max_value": 0.3,
-                        "stepCount": 3,
+                        "step_count": 3,
                         "steps": [],
                     },
                 ),
@@ -775,7 +787,7 @@ def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
         config_file.write_text(content)
     sidecar = tmp_path / "config/expander/grid.json"
     stale = json.loads(sidecar.read_text())
-    stale["stepCount"] = 0
+    stale["step_count"] = 0
     stale["steps"] = 11
     sidecar.write_text(json.dumps(stale))
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
@@ -790,19 +802,19 @@ def test_recover_gives_a_refused_step_count_the_palette_default(tmp_path):
     assert ("/steps", "removed") in outcomes
     # The refusal's outcome replaces the value's: the plan lists it once.
     assert [
-        change.outcome for change in plan.response.field_changes if change.path == "/stepCount"
+        change.outcome for change in plan.response.field_changes if change.path == "/step_count"
     ] == ["defaulted"]
     assert {
         change.reason
         for change in plan.response.field_changes
-        if (change.path, change.outcome) == ("/stepCount", "defaulted")
+        if (change.path, change.outcome) == ("/step_count", "defaulted")
     } == {"The value was refused; replaced with the audited default."}
     result = _apply(tmp_path, request)
     assert result.completeness == []
     applied = next(node for node in result.document.nodes if node.authored_id == "grid")
     assert applied.availability == "ready"
     written = json.loads(sidecar.read_text())
-    assert written["stepCount"] == 21
+    assert written["step_count"] == 21
     assert "steps" not in written
 
 
@@ -817,7 +829,7 @@ def test_recover_empty_locator_applies_as_incomplete(tmp_path):
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "",
@@ -860,7 +872,7 @@ def test_recover_refuses_unreadable_config_sidecars(tmp_path):
 
 
 _OUTPUT_CONFIG = {
-    "outputType": "file",
+    "output_type": "file",
     "format": "parquet",
     "mode": "sink",
     "path": "out.parquet",
@@ -889,7 +901,7 @@ def test_recover_replaces_a_body_a_type_without_code_never_runs(tmp_path):
     (tmp_path / "a.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "quotes.parquet",
@@ -936,7 +948,7 @@ def test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook(tmp_pa
     (tmp_path / "in.json").write_text(
         json.dumps(
             {
-                "inputType": "file",
+                "input_type": "file",
                 "format": "parquet",
                 "mode": "scan",
                 "path": "quotes.parquet",
@@ -992,13 +1004,13 @@ def test_recover_gives_a_join_saved_without_its_order_the_order_for_its_type(tmp
 
     result = _apply(tmp_path, _request(tmp_path, "joined", "recover"))
 
-    assert ("/maintainOrder", "defaulted") in {
+    assert ("/maintain_order", "defaulted") in {
         (change.path, change.outcome) for change in result.field_changes
     }
     assert result.document.load_status == "ready"
     assert 'maintain_order="right_left"' in (tmp_path / "main.py").read_text()
     joined = parse_pipeline_file(tmp_path / "main.py").node_map["joined"]
-    assert joined.data.config["maintainOrder"] == "right_left"
+    assert joined.data.config["maintain_order"] == "right_left"
 
 
 def test_recover_gives_an_asof_join_the_palette_join_type(tmp_path):
@@ -1076,7 +1088,7 @@ def test_recover_reaches_a_join_saved_without_its_order_inside_a_submodel(tmp_pa
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        'output_ports=[{"name": "joined", "source": {"nodeId": "joined", "handleId": None}}], '
+        'output_ports=[{"name": "joined", "source": {"node_id": "joined"}}], '
         'pipeline_dir="..")\n\n'
         + _ORDERLESS_JOIN.replace("OWNER", "submodel").replace("HOW", "left"),
         encoding="utf-8",
@@ -1120,7 +1132,7 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
 
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     sink_config = {
-        "outputType": "file",
+        "output_type": "file",
         "format": "parquet",
         "mode": "sink",
         "path": "out.parquet",
@@ -1139,7 +1151,7 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
         '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n' + generated_sink
     )
     broken_input = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": "quotes.parquet",
@@ -1175,7 +1187,7 @@ def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, a
         pytest.param("missing.json", None, id="config-file-missing"),
         pytest.param(
             "in.json",
-            {"inputType": "carrier-pigeon", "path": "quotes.parquet", "arguments": {}},
+            {"input_type": "carrier-pigeon", "path": "quotes.parquet", "arguments": {}},
             id="unknown-provider",
         ),
     ],
@@ -1233,7 +1245,7 @@ def _submodel_with_an_unbound_node(root: Path, *, parent_node: str) -> Path:
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        'output_ports=[{"name": "out", "source": {"nodeId": "quotes", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "quotes"}}], '
         'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef quotes():\n"
         '    df = pl.LazyFrame({"quote_id": [1]})\n    return df\n\n'
@@ -1410,7 +1422,7 @@ def test_recover_commits_in_a_file_a_stray_statement_keeps_degraded(tmp_path):
 
 _PORT_FED = {
     "edge-join": (
-        '{"nodeId": "result", "handleId": "base"}',
+        '{"node_id": "result", "handle_id": "base"}',
         "@submodel.polars\ndef rates():\n"
         '    df = pl.LazyFrame({"quote_id": [1], "rate": [2.0]})\n    return df\n\n'
         '@submodel.edge_join(how="left", on=["quote_id"])\ndef result(records, rates): ...\n\n'
@@ -1418,7 +1430,7 @@ _PORT_FED = {
         'maintain_order="left_right"',
     ),
     "polars": (
-        '{"nodeId": "result", "handleId": None}',
+        '{"node_id": "result"}',
         '@submodel.polars(contract="none")\ndef result(records):\n'
         "    df = records.head(1)\n    return df\n",
         "df = records.head(1)",
@@ -1441,7 +1453,7 @@ def test_recover_keeps_the_input_a_submodel_port_feeds(tmp_path, kind):
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", '
         f'input_ports=[{{"name": "records", "targets": [{port_target}]}}], '
-        'output_ports=[{"name": "out", "source": {"nodeId": "result", "handleId": None}}], '
+        'output_ports=[{"name": "out", "source": {"node_id": "result"}}], '
         'pipeline_dir="..")\n\n' + child_body,
         encoding="utf-8",
     )

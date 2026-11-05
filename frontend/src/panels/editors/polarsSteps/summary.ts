@@ -91,7 +91,7 @@ function exprParts(expr: Expr): SummaryPart[] {
       const label = WINDOW_AGGREGATIONS.find((a) => a.value === expr.agg)?.label ?? expr.agg
       const subject = COLUMNLESS_AGGREGATIONS.has(expr.agg) ? [text(label)] : [text(label), op("of"), ...operandParts(expr.of)]
       const over = expr.over.length ? [op("over"), ...list(expr.over, (name) => [column(name)])] : [op("over all rows")]
-      const order = expr.orderBy?.length ? [op("ordered by"), ...list(expr.orderBy, (k) => [column(k.column), ...(k.descending ? [op("desc")] : [])])] : []
+      const order = expr.order_by?.length ? [op("ordered by"), ...list(expr.order_by, (k) => [column(k.column), ...(k.descending ? [op("desc")] : [])])] : []
       const filter = expr.where ? [op("where"), ...conditionsParts(expr.where.conditions, expr.where.match)] : []
       return [...subject, ...filter, ...over, ...order]
     }
@@ -156,8 +156,8 @@ export function summaryParts(step: Step): SummaryPart[] {
       ]
     case "join": {
       if (!step.input) return prompt("Choose an input…")
-      const keys = step.how === "cross" ? [text("every row")] : step.leftOn.length
-        ? list(step.leftOn.map((left, i) => [left, step.rightOn[i] ?? ""] as const), ([left, right]) =>
+      const keys = step.how === "cross" ? [text("every row")] : step.left_on.length
+        ? list(step.left_on.map((left, i) => [left, step.right_on[i] ?? ""] as const), ([left, right]) =>
             left === right ? [column(left)] : [column(left), op("="), column(right, "key")])
         : [missing("keys")]
       return [text(`${step.how} join`), code(step.input), op("on"), ...keys, ...(step.validate ? [op(`(${step.validate})`)] : [])]
@@ -190,7 +190,7 @@ export function summaryParts(step: Step): SummaryPart[] {
       ]
     case "unpivot":
       if (step.on.length === 0) return prompt("Choose columns…")
-      return [...list(step.on, (c) => [column(c)]), op("into"), column(step.variableName, "name"), op("/"), column(step.valueName, "name")]
+      return [...list(step.on, (c) => [column(c)]), op("into"), column(step.variable_name, "name"), op("/"), column(step.value_name, "name")]
   }
 }
 
@@ -228,7 +228,7 @@ export function unfinishedPart(step: Step): string | null {
       return step.columns.length === 0 && !step.dtypes?.length ? "the columns to drop" : null
     case "join":
       if (!step.input) return "an input to join"
-      return step.how !== "cross" && (step.leftOn.length === 0 || step.leftOn.some((k, i) => !k || !step.rightOn[i])) ? "the key columns to match on" : null
+      return step.how !== "cross" && (step.left_on.length === 0 || step.left_on.some((k, i) => !k || !step.right_on[i])) ? "the key columns to match on" : null
     default:
       return null
   }

@@ -19,7 +19,15 @@ from pathlib import Path
 import pytest
 
 from haute._graph_utils import _sanitize_func_name
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
+from haute._polars_steps_lift import canonical_steps
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    SubmodelDefinition,
+)
 from haute.assistant._ops import (
     AssistantOperationError,
     ConfigVisibility,
@@ -125,7 +133,7 @@ class TestAddNode:
         assert node.data.nodeType == "edgeJoin"
         assert node.data.config == {
             "how": "left",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
             "suffix": "_lookup",
         }
 
@@ -143,7 +151,7 @@ class TestAddNode:
         )
 
         assert _get(out, "claims").data.config == {
-            "inputType": "file",
+            "input_type": "file",
             "format": "parquet",
             "mode": "scan",
             "path": "claims.parquet",
@@ -157,12 +165,12 @@ class TestAddNode:
         [
             (
                 "dataInput",
-                {"inputType": "database", "connection": "warehouse", "query": "select 1"},
+                {"input_type": "database", "connection": "warehouse", "query": "select 1"},
                 {"format", "mode", "path"},
             ),
             (
                 "modelScore",
-                {"sourceType": "run", "run_id": "abc123", "artifact_path": "model.cbm"},
+                {"source_type": "run", "run_id": "abc123", "artifact_path": "model.cbm"},
                 {"registered_model", "version", "task", "output_column"},
             ),
         ],
@@ -188,6 +196,19 @@ class TestAddNode:
     def test_unknown_node_type_rejected(self):
         with pytest.raises(OpValidationError):
             _apply(_graph([]), [{"op": "add_node", "node_type": "notAType", "name": "x"}])
+
+    def test_a_quote_input_is_named_by_its_type(self):
+        """A pipeline holds one Quote Input, so its type names it (READ-46)."""
+
+        with pytest.raises(OpValidationError, match="always named 'quote_input'") as refused:
+            _apply(_graph([]), [{"op": "add_node", "node_type": "apiInput", "name": "quote"}])
+        assert refused.value.fix == "Name it 'quote_input'."
+        assert refused.value.where["node"] == "quote"
+
+        out = _apply(
+            _graph([]), [{"op": "add_node", "node_type": "apiInput", "name": "quote_input"}]
+        )
+        assert _get(out, "quote_input").data.nodeType == NodeType.API_INPUT
 
     def test_sanitized_id_collision_is_rejected_without_changing_input(self):
         graph = _graph([_node("My_Step")])
@@ -413,20 +434,20 @@ class TestUpdateNode:
 _AGE = {
     "banding": "breakpoints",
     "column": "driver_age",
-    "outputColumn": "age_band",
+    "output_column": "age_band",
     "rules": [{"boundary": "24", "label": "17-24"}, {"boundary": "", "label": "25+"}],
 }
 _REGION = {
     "banding": "categorical",
     "column": "region_code",
-    "outputColumn": "region",
+    "output_column": "region",
     "rules": [{"value": "NW", "assignment": "North"}],
     "default": "Other",
 }
 _LICENCE = {
     "banding": "breakpoints",
     "column": "licence_years",
-    "outputColumn": "licence_band",
+    "output_column": "licence_band",
     "rules": [{"boundary": "2", "label": "new"}, {"boundary": "", "label": "settled"}],
 }
 
@@ -462,8 +483,8 @@ def test_an_output_row_ref_to_a_node_the_plan_deleted_is_an_unknown_reference():
                 {
                     "op": "add_node",
                     "node_type": "output",
-                    "name": "response",
-                    "config": {"outputMapping": [row]},
+                    "name": "quote_response",
+                    "config": {"output_mapping": [row]},
                 },
             ],
         )
@@ -641,7 +662,7 @@ class TestBlindRewriteGuard:
             }
             for name in ("quote_id", "expected_frequency", "region")
         ]
-        response = _graph([_node("quote_response", "output", outputMapping=saved)])
+        response = _graph([_node("quote_response", "output", output_mapping=saved)])
         rows = [saved[0], {**saved[0], "output_path": "$[:].premium", "source_column": "premium"}]
 
         with pytest.raises(AssistantOperationError) as caught:
@@ -651,7 +672,7 @@ class TestBlindRewriteGuard:
                     {
                         "op": "update_node",
                         "node": "quote_response",
-                        "config": {"outputMapping": rows},
+                        "config": {"output_mapping": rows},
                     }
                 ],
                 read={"other"},
@@ -659,7 +680,7 @@ class TestBlindRewriteGuard:
 
         error = caught.value
         assert error.code == "config_unread"
-        assert error.where == {"op_index": 0, "node": "quote_response", "field": "outputMapping"}
+        assert error.where == {"op_index": 0, "node": "quote_response", "field": "output_mapping"}
         assert "'$[:].expected_frequency', '$[:].region'" in str(error)
         assert "'$[:].quote_id'" not in str(error)
         assert error.fix is not None
@@ -671,12 +692,12 @@ class TestBlindRewriteGuard:
                 {
                     "op": "update_node",
                     "node": "quote_response",
-                    "config": {"outputMapping": [*saved, rows[1]]},
+                    "config": {"output_mapping": [*saved, rows[1]]},
                 }
             ],
             read=set(),
         )
-        assert _get(kept, "quote_response").data.config["outputMapping"] == [*saved, rows[1]]
+        assert _get(kept, "quote_response").data.config["output_mapping"] == [*saved, rows[1]]
 
     def test_without_a_visibility_nothing_is_guarded(self):
         """An apply replays a plan its dry-run already judged."""
@@ -1018,9 +1039,9 @@ class TestEditSteps:
 
 _JOIN = {
     "how": "left",
-    "maintainOrder": "left_right",
-    "leftOn": ["k"],
-    "rightOn": ["k"],
+    "maintain_order": "left_right",
+    "left_on": ["k"],
+    "right_on": ["k"],
     "suffix": "_right",
 }
 
@@ -1056,8 +1077,8 @@ class TestRenameNode:
         ("consumer", "key", "expected"),
         [
             (
-                _node("sink", code="df = frame", inputMapping={"frame": "src"}),
-                "inputMapping",
+                _node("sink", code="df = frame", input_mapping={"frame": "src"}),
+                "input_mapping",
                 {"frame": "renamed"},
             ),
             (
@@ -1101,7 +1122,7 @@ class TestRenameNode:
                 _node(
                     "sink",
                     "output",
-                    outputMapping=[
+                    output_mapping=[
                         {
                             "source_port": "src",
                             "source_column": "x",
@@ -1110,7 +1131,7 @@ class TestRenameNode:
                         }
                     ],
                 ),
-                "outputMapping",
+                "output_mapping",
                 [
                     {
                         "source_port": "renamed",
@@ -1142,7 +1163,7 @@ class TestRenameNode:
             [
                 _node("src", "dataInput"),
                 _node("stepped", steps=[{"id": "s", "kind": "source", "input": "src"}]),
-                _node("mapped", code="df = frame", inputMapping={"frame": "src"}),
+                _node("mapped", code="df = frame", input_mapping={"frame": "src"}),
                 _node(
                     "free",
                     steps=[
@@ -1163,7 +1184,7 @@ class TestRenameNode:
         "consumer",
         [
             _node("sink", "liveSwitch", input_scenario_map={"src": "live", "renamed": "batch"}),
-            _node("sink", code="df = frame", inputMapping={"frame": "src", "alt": "renamed"}),
+            _node("sink", code="df = frame", input_mapping={"frame": "src", "alt": "renamed"}),
         ],
     )
     def test_rename_refuses_a_rewrite_that_collides_in_a_mapping(self, consumer: GraphNode):
@@ -1195,7 +1216,7 @@ class TestRenameNode:
     def test_rename_reconciliation_covers_every_field_the_editor_reconciles(self):
         """The editor's rename plan and this operation rewrite the same fields.
 
-        ``outputMapping`` is reconciled here only: the editor's Quote Response
+        ``output_mapping`` is reconciled here only: the editor's Quote Response
         panel owns its mapping rows.
         """
         import re
@@ -1213,7 +1234,7 @@ class TestRenameNode:
         editor_fields.add("steps")
 
         assert editor_fields <= set(RENAME_RECONCILED_FIELDS)
-        assert set(RENAME_RECONCILED_FIELDS) - editor_fields == {"outputMapping"}
+        assert set(RENAME_RECONCILED_FIELDS) - editor_fields == {"output_mapping"}
 
     @pytest.mark.parametrize(
         ("consumer", "field"),
@@ -1264,15 +1285,29 @@ class TestRenameNode:
 
         assert "renamed" in _ids(out)
 
-    def test_rename_of_an_api_input_keeps_its_frame_names(self):
+    @pytest.mark.parametrize(
+        ("node_id", "node_type"),
+        [("quote_input", "apiInput"), ("quote_response", "output")],
+    )
+    def test_a_quote_input_or_response_keeps_its_one_name(self, node_id: str, node_type: str):
+        """A pipeline holds one of each, so its type names it and no rename applies (READ-46)."""
+
         graph = _graph(
-            [_node("api", "apiInput"), _node("sink", code="df = quotes")],
-            [_edge("api", "sink", sh="quotes")],
+            [_node("priced", code="df = quotes"), _node(node_id, node_type)],
+            [
+                _edge("quote_input", "priced", sh="quotes")
+                if node_type == "apiInput"
+                else _edge("priced", "quote_response")
+            ],
         )
 
-        out = _apply(graph, [{"op": "rename_node", "node": "api", "new_name": "requests"}])
+        with pytest.raises(
+            OpValidationError, match=f"Cannot rename '{node_id}': it is always named '{node_id}'"
+        ) as refused:
+            _apply(graph, [{"op": "rename_node", "node": node_id, "new_name": "requests"}])
 
-        assert "requests" in _ids(out)
+        assert refused.value.where["node"] == node_id
+        assert _ids(graph) == {"priced", node_id}
 
     def test_rename_applies_after_an_earlier_op_rewrites_the_consumer(self):
         graph = _graph(
@@ -1372,7 +1407,7 @@ class TestUpdatePreamble:
 
 class TestSubmodelBoundary:
     def _graph_with_submodel(self) -> PipelineGraph:
-        placeholder = _node("submodel__sm1", "submodel", definitionId="sm1", alias="sm1")
+        placeholder = _node("submodel__sm1", "submodel", definition_id="sm1", alias="sm1")
         graph = _graph([_node("a"), placeholder], [])
         return graph.model_copy(
             update={
@@ -1423,7 +1458,7 @@ class TestSubmodelBoundary:
         graph = _graph(
             [
                 _node("vehicle_factors", "submodel"),
-                _node("response", "output", outputMapping=[row]),
+                _node("response", "output", output_mapping=[row]),
             ],
             [_edge("vehicle_factors", "response", sh="out__factored")],
         )
@@ -2042,8 +2077,8 @@ class TestSemanticPlans:
         rating_tables = [
             {
                 "factors": ["region"],
-                "outputColumn": "rate_factor",
-                "defaultValue": "1.0",
+                "output_column": "rate_factor",
+                "default_value": "1.0",
                 "entries": [{"region": "north", "value": "1.25"}],
             }
         ]
@@ -2052,7 +2087,7 @@ class TestSemanticPlans:
                 _node("quotes", "dataInput", path="quotes.parquet"),
                 _node("prepared", code="df = quotes"),
                 _node("t"),
-                _node("rated", "ratingStep", tables=rating_tables, combinedOutputs=[]),
+                _node("rated", "ratingStep", tables=rating_tables, combined_outputs=[]),
             ],
             [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
         )
@@ -2107,19 +2142,24 @@ class TestSemanticPlans:
                 ],
             )
 
-        assert "step 2 ('logic')" in str(excinfo.value)
-        assert excinfo.value.where["step"] == "logic"
+        # The plan holds the steps as the save's reload will, each id its kind and place
+        # (READ-44).
+        assert "step 2 ('free_code-2')" in str(excinfo.value)
+        assert excinfo.value.where["step"] == "free_code-2"
 
     @pytest.mark.parametrize(
-        ("node", "steps"),
+        ("node", "steps", "named"),
         [
-            # The rendered `df = prepared` line retains a frame, but not this step's.
+            # The rendered `df = prepared` line retains a frame, but not this step's. The
+            # plan holds a stepped node's steps as its reload will, each id its kind and
+            # place (READ-22, READ-44).
             (
                 "t",
                 [
                     {"id": "start", "kind": "source", "input": "prepared"},
                     {"id": "logic", "kind": "free_code", "code": "df.filter(pl.col('x') > 1)"},
                 ],
+                "free_code-2",
             ),
             (
                 "rated",
@@ -2127,16 +2167,17 @@ class TestSemanticPlans:
                     {"id": "keep", "kind": "limit", "n": 2},
                     {"id": "logic", "kind": "free_code", "code": "# tidy\ndf.drop('x')"},
                 ],
+                "free_code-2",
             ),
         ],
     )
     def test_a_free_code_step_whose_frame_result_is_discarded_is_refused(
-        self, tmp_path: Path, node: str, steps: list[dict]
+        self, tmp_path: Path, node: str, steps: list[dict], named: str
     ):
         with pytest.raises(OpValidationError) as excinfo:
             self._stepped_plan(tmp_path, node, steps)
         message = str(excinfo.value)
-        assert "step 2 ('logic')" in message
+        assert f"step 2 ('{named}')" in message
         assert "discarded" in message
 
     @pytest.mark.parametrize(
@@ -2154,7 +2195,8 @@ class TestSemanticPlans:
             self._stepped_plan(tmp_path, "rated", steps)
         message = str(excinfo.value)
         assert f"Rating Step code sees only df; {name} is not in scope" in message
-        assert "step 1 ('logic')" in message
+        # The plan holds the steps as the save's reload will (READ-44).
+        assert "step 1 ('free_code-1')" in message
 
     @pytest.mark.parametrize(
         "code",
@@ -2173,7 +2215,7 @@ class TestSemanticPlans:
         assert plan.diff.config_changes == ("rated:steps",)
 
     @pytest.mark.parametrize(
-        ("node", "steps", "fix"),
+        ("node", "steps", "fix", "named"),
         [
             (
                 "t",
@@ -2183,19 +2225,22 @@ class TestSemanticPlans:
                 ],
                 "df is already the 'prepared' frame the source step chose; transform df "
                 "directly (df = df.filter(...)).",
+                "free_code-2",
             ),
             (
                 "rated",
                 [{"id": "logic", "kind": "free_code", "code": "df = df['prepared']"}],
                 "df is this node's own frame; transform df directly (df = df.filter(...)).",
+                "free_code-1",
             ),
         ],
     )
     def test_a_step_indexing_df_by_an_input_name_names_the_operation_that_wrote_it(
-        self, tmp_path: Path, node: str, steps: list[dict], fix: str
+        self, tmp_path: Path, node: str, steps: list[dict], fix: str, named: str
     ):
         """The check runs on the planned graph after the whole batch, and its
-        failure still names the operation that wrote the node."""
+        failure still names the operation that wrote the node, and the step by the id
+        the plan holds: a transform's as its reload will give it (READ-22)."""
 
         from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
 
@@ -2212,12 +2257,12 @@ class TestSemanticPlans:
                     tables=[
                         {
                             "factors": ["region"],
-                            "outputColumn": "rate_factor",
-                            "defaultValue": "1.0",
+                            "output_column": "rate_factor",
+                            "default_value": "1.0",
                             "entries": [{"region": "north", "value": "1.25"}],
                         }
                     ],
-                    combinedOutputs=[],
+                    combined_outputs=[],
                 ),
             ],
             [_edge("quotes", "prepared"), _edge("prepared", "t"), _edge("prepared", "rated")],
@@ -2233,7 +2278,7 @@ class TestSemanticPlans:
 
         error = excinfo.value
         assert "indexes df by the input name 'prepared'" in str(error)
-        assert error.where == {"op_index": 1, "node": node, "field": "steps", "step": "logic"}
+        assert error.where == {"op_index": 1, "node": node, "field": "steps", "step": named}
         assert error.fix == fix
         assert error.graph is not None
 
@@ -2573,9 +2618,14 @@ class TestSemanticPlans:
         assert replayed.postconditions == plan.postconditions
 
         saved = _apply(graph, ops)
-        # Reparse returns code-mode code normalised; the digest compares it so.
+        # Reparse returns code-mode code normalised, and a stepped node's steps rebuilt from
+        # its code (READ-44); the digest compares them so.
         coded = _get(saved, "coded")
         saved.nodes[saved.nodes.index(coded)] = coded.with_config({"code": "df = src.head(3)"})
+        reloaded = _get(saved, "rated")
+        saved.nodes[saved.nodes.index(reloaded)] = reloaded.with_config(
+            {**reloaded.data.config, "steps": canonical_steps(NodeType.RATING_STEP, steps)}
+        )
         verify_postconditions(saved, plan.postconditions)
 
         rated = _get(saved, "rated")

@@ -10,7 +10,7 @@ import ModalShell from "../components/ModalShell"
 import { ModalFormHeader } from "../components/ModalForm"
 import { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import { cellKey } from "../utils/sheetValues"
-import { COLLECTION_OPTIONS, QUOTE_DETAILS_ID, type SampleValue } from "../utils/workbenchForm"
+import { COLLECTION_OPTIONS, QUOTE_DETAILS_NAME, type SampleValue } from "../utils/workbenchForm"
 import { FieldBoxes } from "../workbench/sheet/FieldBoxes"
 import { NO_MARKS, fieldLabel } from "../workbench/sheet/fieldCells"
 import { sheetColours } from "../workbench/sheet/sheetColours"
@@ -61,7 +61,7 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
   // anything else that does not fit, at once.
   const marked = Object.fromEntries(Object.entries(problems).filter(([, problem]) => shown.checked || problem !== "Required"))
   const values: SheetValues = {
-    rows: { [QUOTE_DETAILS_ID]: [{ ...shown.details, [REFERENCE_COLUMN]: shown.reference }] },
+    rows: { [QUOTE_DETAILS_NAME]: [{ ...shown.details, [REFERENCE_COLUMN]: shown.reference }] },
     setCell: (_table: string, _row: number, columnId: string, value: SampleValue) =>
       columnId === REFERENCE_COLUMN ? setReference(typeof value === "string" ? value : "") : setDetail(columnId, value),
     setRows: KEEP_ROWS,
@@ -76,7 +76,7 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
   }
   // What stops Create while nothing is being typed: the first field that does not fit.
   const blocked = fields.flatMap(({ found }) => {
-    const problem = found === null ? undefined : problems[cellKey(found.table.id, 0, found.column.id)]
+    const problem = found === null ? undefined : problems[cellKey(found.table.name, 0, found.column.name)]
     return found === null || problem === undefined ? [] : [`${fieldLabel(found)}: ${problem}`]
   })[0]
 

@@ -175,7 +175,7 @@ def _safe_config(
             detail="invalid_input_config: The Data Input configuration is invalid.",
         ) from None
 
-    if config["inputType"] in {"file", "lakehouse"}:
+    if config["input_type"] in {"file", "lakehouse"}:
         # Canonicalise, don't merely validate: the snapshot identity, the
         # freshness signature, and the bytes the build reads all follow this
         # path. Execution resolves the same locator by the same rule
@@ -193,7 +193,7 @@ def _safe_config(
         except RuntimePathError as exc:
             raise runtime_path_http_exception(exc) from None
 
-    if config["inputType"] == "database" and "uri" in config:
+    if config["input_type"] == "database" and "uri" in config:
         from haute._database_io import (
             DatabaseConfigError,
             validate_sqlite_project_path,

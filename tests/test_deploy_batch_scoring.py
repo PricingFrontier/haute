@@ -134,9 +134,9 @@ def _conservative_graph() -> PipelineGraph:
         {
             "nodes": [
                 {
-                    "id": "quotes",
+                    "id": "quote_input",
                     "data": {
-                        "label": "quotes",
+                        "label": "quote_input",
                         "nodeType": "apiInput",
                         "config": _quotes_input_config(),
                     },
@@ -163,12 +163,12 @@ def _conservative_graph() -> PipelineGraph:
                     },
                 },
                 {
-                    "id": "out",
+                    "id": "quote_response",
                     "data": {
-                        "label": "out",
+                        "label": "quote_response",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": "total",
@@ -181,9 +181,9 @@ def _conservative_graph() -> PipelineGraph:
                 },
             ],
             "edges": [
-                make_edge("quotes", "shape", source_handle="quotes").model_dump(),
+                make_edge("quote_input", "shape", source_handle="quotes").model_dump(),
                 make_edge("shape", "agg").model_dump(),
-                make_edge("agg", "out").model_dump(),
+                make_edge("agg", "quote_response").model_dump(),
             ],
         }
     )
@@ -195,9 +195,9 @@ def _provable_group_by_graph() -> PipelineGraph:
         {
             "nodes": [
                 {
-                    "id": "quotes",
+                    "id": "quote_input",
                     "data": {
-                        "label": "quotes",
+                        "label": "quote_input",
                         "nodeType": "apiInput",
                         "config": _quotes_input_config(),
                     },
@@ -216,12 +216,12 @@ def _provable_group_by_graph() -> PipelineGraph:
                     },
                 },
                 {
-                    "id": "out",
+                    "id": "quote_response",
                     "data": {
-                        "label": "out",
+                        "label": "quote_response",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "agg",
                                     "source_column": "premium",
@@ -234,8 +234,8 @@ def _provable_group_by_graph() -> PipelineGraph:
                 },
             ],
             "edges": [
-                make_edge("quotes", "agg", source_handle="quotes").model_dump(),
-                make_edge("agg", "out").model_dump(),
+                make_edge("quote_input", "agg", source_handle="quotes").model_dump(),
+                make_edge("agg", "quote_response").model_dump(),
             ],
         }
     )
@@ -250,7 +250,7 @@ def _write_policy_sample(tmp_path: Path, graph: PipelineGraph) -> PipelineGraph:
     )
     nodes = []
     for node in graph.nodes:
-        if node.id == "quotes":
+        if node.id == "quote_input":
             data = node.data.model_copy(
                 update={"config": {**node.data.config, "path": str(sample)}}
             )
@@ -779,7 +779,7 @@ def _child_plan(tmp_path: Path, rows: list[dict[str, Any]]):
     return prepare_batch_scoring(
         rows,
         graph=graph,
-        input_node_ids=["quotes"],
+        input_node_ids=["quote_input"],
         output_node_id=output_id,
         artifact_paths={},
         output_fields=None,
@@ -922,8 +922,8 @@ class TestRealSpawn:
         plan = prepare_batch_scoring(
             [{"segment": "a", "premium": 1.0}, {"segment": "b", "premium": 2.0}],
             graph=_conservative_graph(),
-            input_node_ids=["quotes"],
-            output_node_id="out",
+            input_node_ids=["quote_input"],
+            output_node_id="quote_response",
             artifact_paths={},
             output_fields=None,
         )
@@ -955,7 +955,7 @@ class TestInferDeployExecutionPolicy:
         graph, output_id = _fixture_graph()
 
         policy = infer_deploy_execution_policy(
-            graph, output_id, ["quotes"], batch_runtime="hard_capped_worker"
+            graph, output_id, ["quote_input"], batch_runtime="hard_capped_worker"
         )
 
         assert policy["schema_version"] == 1
@@ -974,7 +974,7 @@ class TestInferDeployExecutionPolicy:
         graph = _write_policy_sample(tmp_path, _conservative_graph())
 
         policy = infer_deploy_execution_policy(
-            graph, "out", ["quotes"], batch_runtime="hard_capped_worker"
+            graph, "quote_response", ["quote_input"], batch_runtime="hard_capped_worker"
         )
 
         assert policy["status"] == "warned"
@@ -997,7 +997,7 @@ class TestInferDeployExecutionPolicy:
 
         with pytest.raises(DeployError) as error:
             infer_deploy_execution_policy(
-                graph, "out", ["quotes"], batch_runtime="hard_capped_worker"
+                graph, "quote_response", ["quote_input"], batch_runtime="hard_capped_worker"
             )
 
         assert "agg" in str(error.value)
@@ -1026,7 +1026,7 @@ class TestInferDeployExecutionPolicy:
         )
 
         infer_deploy_execution_policy(
-            graph, output_id, ["quotes"], batch_runtime="hard_capped_worker"
+            graph, output_id, ["quote_input"], batch_runtime="hard_capped_worker"
         )
 
         assert [context.release_calls for context in contexts] == [[True]]
@@ -1041,7 +1041,9 @@ class TestInferDeployExecutionPolicy:
         graph = _write_policy_sample(tmp_path, _conservative_graph())
 
         with pytest.raises(DeployError, match="serving process") as error:
-            infer_deploy_execution_policy(graph, "out", ["quotes"], batch_runtime="in_process")
+            infer_deploy_execution_policy(
+                graph, "quote_response", ["quote_input"], batch_runtime="in_process"
+            )
 
         assert "agg" in str(error.value)
         assert "group_by" in str(error.value)
@@ -1050,7 +1052,7 @@ class TestInferDeployExecutionPolicy:
         graph, output_id = _fixture_graph()
 
         policy = infer_deploy_execution_policy(
-            graph, output_id, ["quotes"], batch_runtime="in_process"
+            graph, output_id, ["quote_input"], batch_runtime="in_process"
         )
 
         assert policy["runtime"] == "in_process"
@@ -1096,7 +1098,7 @@ class TestPrepareAndAccept:
             prepare_batch_scoring(
                 [{"a": 1}, {"a": 2}],
                 graph=graph,
-                input_node_ids=["quotes"],
+                input_node_ids=["quote_input"],
                 output_node_id=output_id,
                 artifact_paths={},
                 output_fields=None,
@@ -1158,7 +1160,7 @@ class TestPrepareAndAccept:
             prepare_batch_scoring(
                 [{"a": 1}, {"a": 2}],
                 graph=graph,
-                input_node_ids=["quotes"],
+                input_node_ids=["quote_input"],
                 output_node_id=output_id,
                 artifact_paths={},
                 output_fields=None,
@@ -1194,7 +1196,9 @@ class TestOutputSchemaConservativeFallback:
 
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
+        schema = infer_output_schema(
+            graph, "quote_response", ["quote_input"], project_root=tmp_path
+        )
 
         # The OUTPUT node maps the aggregation only; the dtype comes from the
         # parquet the worker actually wrote.
@@ -1238,7 +1242,7 @@ class TestOutputSchemaConservativeFallback:
                             )
                         }
                     )
-                    if node.id == "quotes"
+                    if node.id == "quote_input"
                     else node
                     for node in conservative.nodes
                 ]
@@ -1254,7 +1258,9 @@ class TestOutputSchemaConservativeFallback:
 
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
+        schema = infer_output_schema(
+            graph, "quote_response", ["quote_input"], project_root=tmp_path
+        )
 
         assert spawns == [DEPLOY_BATCH_PROCESS_NAME]
         assert schema == {"total": "Float64"}
@@ -1280,7 +1286,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "_dry_run_output_schema", counting_dry_run)
         monkeypatch.setattr(_schema, "run_isolated_worker", recording_runner)
 
-        schema = infer_output_schema(graph, output_id, ["quotes"], project_root=tmp_path)
+        schema = infer_output_schema(graph, output_id, ["quote_input"], project_root=tmp_path)
 
         assert schema
         assert len(dry_runs) == 1
@@ -1301,7 +1307,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "run_isolated_worker", unsupported_runner)
 
         with pytest.raises(DeployError) as error:
-            infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
+            infer_output_schema(graph, "quote_response", ["quote_input"], project_root=tmp_path)
 
         message = str(error.value)
         assert "hard-capped batch worker" in message
@@ -1327,7 +1333,7 @@ class TestOutputSchemaConservativeFallback:
         monkeypatch.setattr(_schema, "run_isolated_worker", failing_runner)
 
         with pytest.raises(DeployError) as error:
-            infer_output_schema(graph, "out", ["quotes"], project_root=tmp_path)
+            infer_output_schema(graph, "quote_response", ["quote_input"], project_root=tmp_path)
 
         message = str(error.value)
         assert "agg" in message
@@ -1420,7 +1426,7 @@ class TestBatchCleanupFailsLoud:
             prepare_batch_scoring(
                 [{"a": 1}, {"a": 2}],
                 graph=graph,
-                input_node_ids=["quotes"],
+                input_node_ids=["quote_input"],
                 output_node_id=output_id,
                 artifact_paths={},
                 output_fields=None,

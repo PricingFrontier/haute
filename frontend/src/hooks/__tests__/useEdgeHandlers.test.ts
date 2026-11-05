@@ -97,8 +97,8 @@ function makeSubmodelInputParams() {
   }
   params.graphRef.current.nodes = [
     identifiedNode("source"), identifiedNode("other"),
-    identifiedNode("owner", NODE_TYPES.SUBMODEL, { config: { definitionId: "pricing", alias: "owner" } }),
-    identifiedNode("copy", NODE_TYPES.SUBMODEL, { config: { definitionId: "pricing", alias: "copy", instanceOf: "owner" } }),
+    identifiedNode("owner", NODE_TYPES.SUBMODEL, { config: { definition_id: "pricing", alias: "owner" } }),
+    identifiedNode("copy", NODE_TYPES.SUBMODEL, { config: { definition_id: "pricing", alias: "copy", instance_of: "owner" } }),
   ]
   params.validateConnection = (connection) => validatePipelineConnection(
     connection, params.graphRef.current.nodes as unknown as SimpleNode[],
@@ -1060,7 +1060,7 @@ describe("useEdgeHandlers", () => {
       position: { x: 200, y: 150 },
       origin: [0.5, 0.5],
       data: {
-        label: "Edge Join 1",
+        label: "edge_join",
         nodeType: NODE_TYPES.EDGE_JOIN,
         _defaultInputName: "server_edgeJoin_1",
         config: {
@@ -1265,7 +1265,7 @@ describe("useEdgeHandlers", () => {
       type: NODE_TYPES.EDGE_JOIN,
       position: { x: 220, y: 120 },
       data: {
-        label: "Edge Join 1",
+        label: "edge_join",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
           how: "left",
@@ -1753,7 +1753,7 @@ describe("useEdgeHandlers", () => {
       data: {
         label: "scoring",
         nodeType: "submodel",
-        config: { definitionId: "definition_scoring", alias: "scoring" },
+        config: { definition_id: "definition_scoring", alias: "scoring" },
       },
     } as unknown as Node
     const copy = {
@@ -1762,9 +1762,9 @@ describe("useEdgeHandlers", () => {
         label: "scoring_2",
         nodeType: "submodel",
         config: {
-          definitionId: "definition_scoring",
+          definition_id: "definition_scoring",
           alias: "scoring_2",
-          instanceOf: "scoring",
+          instance_of: "scoring",
         },
       },
     } as unknown as Node
@@ -1815,7 +1815,7 @@ describe("useEdgeHandlers", () => {
       data: {
         label: "Inputs",
         nodeType: NODE_TYPES.SUBMODEL,
-        config: { definitionId: "definition_inputs", alias: "inputs" },
+        config: { definition_id: "definition_inputs", alias: "inputs" },
       },
     } as unknown as Node
     const submodels = {
@@ -1891,13 +1891,13 @@ describe("useEdgeHandlers", () => {
         selected: true,
         position: { x: 300, y: 400 },
         data: expect.objectContaining({
-          label: "Data Output 1",
+          label: "data_output",
           description: "",
           nodeType: NODE_TYPES.DATA_OUTPUT,
           _defaultInputName: "server_dataOutput_1",
           _sourceHandleInputNames: {},
           config: {
-            outputType: "file",
+            output_type: "file",
             format: "parquet",
             mode: "sink",
             path: "",

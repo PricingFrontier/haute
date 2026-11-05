@@ -76,9 +76,12 @@ sheet it changed. A save writes only the files that changed.
 A table's files are named after the table in lower case, and a sheet's after its title
 (**BR Coverages** is `br_coverages.json`). Each file says only what is set: a setting left
 at its default is not written. A component names a column as `table.column`, or by the
-column's name alone where its table is already given. Each table and column keeps the id
-written beside its name for good, so renaming one keeps the values saved quotes hold for
-it. The quote's reference and option lead every table without being written in its file.
+column's name alone where its table is already given. A table and a column are known by
+their names: renaming a column in the workbench changes every place that uses it, and the
+quote store keeps the old column, with the values saved quotes hold in it, while the renamed
+one starts empty. Two tables, or two columns of one table, can't have names that differ only
+in case. The quote's reference and option lead every table without being written in its
+file.
 
 The workbench opens only a folder whose files `form.json` lists: a file it doesn't list,
 a listed file that is missing, a file named in capitals, or a table's file naming two columns
@@ -879,8 +882,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   database's own SQL, starting from the tables the database holds (on the tab of the
   environment Compare shows), from the schema your default branch holds, which is what
   staging and prod run, or from nothing, for a new database. It adds tables and columns,
-  renames a table or column (by its id, or as you paired it) rather than dropping it and
-  adding another, changes a column's type in place (a value that does not convert stops it),
+  renames a column you paired in Compare rather than adding another, keeps a column or
+  table you renamed or removed, with its values, beside the one you added, changes a column's type in place (a value that does not convert stops it),
   and leaves a table or column your schema does not have with its DROP commented out, since
   the app does not need it gone. What it cannot write, such as a table changing between one
   row and many rows per quote, or a column taking no null, it says in a comment, with the

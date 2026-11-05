@@ -19,6 +19,8 @@ GITIGNORE_GUARD_ENTRIES: tuple[str, ...] = (
     ".env",
     ".haute/",
     "impact_report.md",
+    # The test quotes report haute app build writes, which CI keeps as an artifact.
+    "test_quotes_report.md",
     ".haute_cache/",
     "mlruns/",
     # The root's local folders, anchored so the versioned pipeline folder's files/data/
@@ -44,15 +46,24 @@ def ensure_gitignore_guards(project_dir: Path) -> list[str]:
     """
     gitignore_path = project_dir / ".gitignore"
     if not gitignore_path.exists():
-        gitignore_path.write_text("\n".join(GITIGNORE_GUARD_ENTRIES) + "\n", encoding="utf-8")
+        gitignore_path.write_bytes(("\n".join(GITIGNORE_GUARD_ENTRIES) + "\n").encode("utf-8"))
         return list(GITIGNORE_GUARD_ENTRIES)
 
     # User-authored files may carry non-UTF-8 bytes; replace instead of raising
     # (same posture as haute._io.read_user_text, inlined to keep this module
     # free of the polars import chain).
-    existing = set(gitignore_path.read_text(encoding="utf-8", errors="replace").splitlines())
+    text = gitignore_path.read_text(encoding="utf-8", errors="replace")
+    existing = {line.strip() for line in text.splitlines()}
     missing = [entry for entry in GITIGNORE_GUARD_ENTRIES if entry not in existing]
     if missing:
-        with open(gitignore_path, "a", encoding="utf-8") as fh:
-            fh.write("\n# Haute\n" + "\n".join(missing) + "\n")
+        # The heading is written once: a file that already has Haute's section gains the
+        # entries a newer Haute guards at its end (READ-41).
+        lead = "" if text.endswith("\n") or not text else "\n"
+        heading = "" if _HEADING in existing else f"\n{_HEADING}\n"
+        with open(gitignore_path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(lead + (heading or "") + "\n".join(missing) + "\n")
     return missing
+
+
+#: The heading over the entries Haute appends to a project's own ``.gitignore``.
+_HEADING = "# Haute"

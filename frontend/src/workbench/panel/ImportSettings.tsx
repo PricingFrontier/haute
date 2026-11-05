@@ -49,8 +49,8 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
   const change = useWorkbenchFormStore((s) => s.change)
   const { source } = widget
   const inputs = form.schema.tables.filter((table) => table.role === "input")
-  const table = form.schema.tables.find((candidate) => candidate.id === widget.table)
-  const offered = inputs.some((candidate) => candidate.id === widget.table)
+  const table = form.schema.tables.find((candidate) => candidate.name === widget.table)
+  const offered = inputs.some((candidate) => candidate.name === widget.table)
   return (
     <ButtonPanes form={form} widget={widget}>
       <FormatToggle widget={widget} format={source.format} onChange={(format) => change((spec) => setImportFormat(spec, widget.id, format))} />
@@ -105,7 +105,7 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
           )}
           <option value="">None</option>
           {inputs.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
+            <option key={candidate.name} value={candidate.name}>
               {candidate.name}
             </option>
           ))}
@@ -196,7 +196,7 @@ function ParameterRow({
   const change = useWorkbenchFormStore((s) => s.change)
   const given = source.parameters.find((parameter) => parameter.name === name)
   const key = given === undefined ? "" : columnKey(given.table, given.column)
-  const choices = new Map(tables.flatMap((table) => parameterColumns(table).map((column) => [columnKey(table.id, column.id), { table: table.id, column: column.id }] as const)))
+  const choices = new Map(tables.flatMap((table) => parameterColumns(table).map((column) => [columnKey(table.name, column.name), { table: table.name, column: column.name }] as const)))
   const found = given === undefined ? null : fieldColumn(form, given)
   return (
     <div className="flex items-center gap-1.5">
@@ -217,9 +217,9 @@ function ParameterRow({
         )}
         <option value="">None</option>
         {tables.map((table) => (
-          <optgroup key={table.id} label={table.name}>
+          <optgroup key={table.name} label={table.name}>
             {parameterColumns(table).map((column) => (
-              <option key={column.id} value={columnKey(table.id, column.id)}>
+              <option key={column.name} value={columnKey(table.name, column.name)}>
                 {columnLabel(column)}
               </option>
             ))}
@@ -243,7 +243,7 @@ function ParameterRow({
 function ColumnNames({ widget, table }: { widget: ImportWidget; table: SchemaTable }) {
   const change = useWorkbenchFormStore((s) => s.change)
   const columns = importColumns(table)
-  const strays = widget.column_names.filter((named) => !columns.some((column) => column.id === named.column))
+  const strays = widget.column_names.filter((named) => !columns.some((column) => column.name === named.column))
   const commit = (column: string, name: string) => change((spec) => setColumnName(spec, widget.id, column, name))
   return (
     <Section title="Columns" aside={`${widget.column_names.length} named`}>
@@ -251,7 +251,7 @@ function ColumnNames({ widget, table }: { widget: ImportWidget; table: SchemaTab
         const type = COLUMN_TYPES[column.type]
         const label = columnLabel(column)
         return (
-          <div key={column.id} className="flex items-center gap-1.5">
+          <div key={column.name} className="flex items-center gap-1.5">
             <span title={type.label} className={`flex size-4 shrink-0 items-center justify-center ${type.color}`}>
               <type.icon size={12} aria-hidden="true" />
             </span>
@@ -260,9 +260,9 @@ function ColumnNames({ widget, table }: { widget: ImportWidget; table: SchemaTab
             </span>
             <CommittedTextField
               aria-label={`${label} is read from`}
-              value={widget.column_names.find((named) => named.column === column.id)?.name ?? ""}
+              value={widget.column_names.find((named) => named.column === column.name)?.name ?? ""}
               placeholder={column.name}
-              onCommit={(name) => commit(column.id, name)}
+              onCommit={(name) => commit(column.name, name)}
               className={`${FIELD_CLASS} min-w-0 flex-1`}
               style={INPUT_STYLE}
             />
@@ -270,7 +270,7 @@ function ColumnNames({ widget, table }: { widget: ImportWidget; table: SchemaTab
         )
       })}
       {strays.map((named) => {
-        const column = table.columns.find((candidate) => candidate.id === named.column)
+        const column = table.columns.find((candidate) => candidate.name === named.column)
         const label = column === undefined ? "Missing column" : columnLabel(column)
         return (
           <div key={named.column} className="flex items-center gap-1.5">

@@ -156,7 +156,7 @@ describe("insertEdgeJoinNode", () => {
     expect(joinNode?.position).toEqual({ x: 100, y: 50 })
     expect(joinNode?.origin).toEqual([0.5, 0.5])
     expect(joinNode?.data).toMatchObject({
-      label: "Edge Join 1",
+      label: "edge_join",
       nodeType: NODE_TYPES.EDGE_JOIN,
       config: {
         how: "left",
@@ -187,11 +187,11 @@ describe("insertEdgeJoinNode", () => {
     expect(edges).toHaveLength(1)
     expect(result.nodes.find((n) => n.id === "b")?.data.config).toEqual({})
     expect(finalized.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
-      inputMapping: { a: "server_assigned_join" },
+      input_mapping: { a: "server_assigned_join" },
     })
   })
 
-  it("rewrites a stepped consumer's step references instead of adding inputMapping", () => {
+  it("rewrites a stepped consumer's step references instead of adding input_mapping", () => {
     const stepped: Node = {
       ...node("b"),
       data: {
@@ -199,7 +199,7 @@ describe("insertEdgeJoinNode", () => {
         config: {
           steps: [
             { id: "s", kind: "source", input: "a" },
-            { id: "j", kind: "join", input: "other", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_o" },
+            { id: "j", kind: "join", input: "other", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_o" },
           ],
         },
       },
@@ -216,10 +216,10 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
     const finalized = finalizeInsertion(result, "server_assigned_join")
     const config = finalized.nodes.find((n) => n.id === "b")?.data.config as Record<string, unknown>
-    expect(config.inputMapping).toBeUndefined()
+    expect(config.input_mapping).toBeUndefined()
     expect(config.steps).toEqual([
       { id: "s", kind: "source", input: "server_assigned_join" },
-      { id: "j", kind: "join", input: "other", how: "left", leftOn: ["k"], rightOn: ["k"], suffix: "_o" },
+      { id: "j", kind: "join", input: "other", how: "left", left_on: ["k"], right_on: ["k"], suffix: "_o" },
     ])
   })
 
@@ -253,7 +253,7 @@ describe("insertEdgeJoinNode", () => {
     const finalizedSecond = finalizeInsertion(second, "server_second_join")
     expect(finalizedSecond.nodes.some((n) => n.id === "edgeJoin_2")).toBe(true)
     expect(finalizedSecond.nodes.map((n) => n.data.label)).toEqual(
-      expect.arrayContaining(["Edge Join 1", "Edge Join 2"]),
+      expect.arrayContaining(["edge_join", "edge_join_2"]),
     )
     expect(finalizedSecond.edges).toEqual(
       expect.arrayContaining([
@@ -263,7 +263,7 @@ describe("insertEdgeJoinNode", () => {
       ]),
     )
     expect(finalizedSecond.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
-      inputMapping: { a: "server_second_join" },
+      input_mapping: { a: "server_second_join" },
     })
   })
 
@@ -294,7 +294,7 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
     const finalized = finalizeInsertion(result, "Edge_Join_1")
     expect(finalized.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
-      inputMapping: { raw_rows: "Edge_Join_1" },
+      input_mapping: { raw_rows: "Edge_Join_1" },
     })
   })
 
@@ -307,7 +307,7 @@ describe("insertEdgeJoinNode", () => {
         label: "pricing_secondary",
         nodeType: NODE_TYPES.SUBMODEL,
         config: {
-          definitionId: "definition_pricing",
+          definition_id: "definition_pricing",
           alias: "pricing_secondary",
         },
         _defaultInputName: null,
@@ -345,11 +345,11 @@ describe("insertEdgeJoinNode", () => {
     if (!result.ok) return
     const finalized = finalizeInsertion(result, "Edge_Join_1")
     expect(finalized.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
-      inputMapping: { written_premium: "Edge_Join_1" },
+      input_mapping: { written_premium: "Edge_Join_1" },
     })
   })
 
-  it("adds inputMapping to a downstream Load File, whose code names its inputs", () => {
+  it("adds input_mapping to a downstream Load File, whose code names its inputs", () => {
     const target: Node = {
       ...node("loader"),
       type: NODE_TYPES.EXTERNAL_FILE,
@@ -373,11 +373,38 @@ describe("insertEdgeJoinNode", () => {
     const finalized = finalizeInsertion(result, "Edge_Join_1")
     expect(finalized.nodes.find((n) => n.id === "loader")?.data.config).toEqual({
       code: "df = df.join(a, on='k')",
-      inputMapping: { a: "Edge_Join_1" },
+      input_mapping: { a: "Edge_Join_1" },
     })
   })
 
-  it("does not add inputMapping to a downstream node that does not name its inputs", () => {
+  it("refuses a join on an input a Load File code step reads by name, whatever its copy of the code", () => {
+    const join = { id: "f", kind: "free_code", code: "df = df.join(a, on='k')" }
+    const unfinished = { id: "u", kind: "filter", match: "all", conditions: [] }
+    for (const [steps, code] of [
+      [[join], "df = df.join(a, on='k')"],
+      [[join, unfinished], "df = df.join(a, on='k')"],
+      [[join], ""],
+    ] as const) {
+      const loader: Node = {
+        ...node("loader"),
+        type: NODE_TYPES.EXTERNAL_FILE,
+        data: { label: "Loader", nodeType: NODE_TYPES.EXTERNAL_FILE, config: { steps: [...steps], code } },
+      }
+      expect(() => {
+        const result = insertEdgeJoinNode({
+          nodes: [node("a"), loader, node("lookup")],
+          edges: [edge("e-a-loader", "a", "loader")],
+          targetEdgeId: "e-a-loader",
+          connection: { source: "lookup" },
+          position: { x: 0, y: 0 },
+          idFactory: () => "edgeJoin_1",
+        })
+        if (result.ok) finalizeInsertion(result, "Edge_Join_1")
+      }).toThrow(/"Loader" has a code step that reads "a" by name/)
+    }
+  })
+
+  it("does not add input_mapping to a downstream node that does not name its inputs", () => {
     const target: Node = {
       ...node("output"),
       type: NODE_TYPES.OUTPUT,
@@ -430,7 +457,7 @@ describe("insertEdgeJoinNode", () => {
       ...node("target"),
       data: {
         ...node("target").data,
-        config: { inputMapping: { a: "other" } },
+        config: { input_mapping: { a: "other" } },
       },
     }
 
@@ -654,7 +681,7 @@ describe("insertEdgeJoinNodeFromSources", () => {
       position: { x: 120, y: 80 },
       origin: [0.5, 0.5],
       data: {
-        label: "Edge Join 1",
+        label: "edge_join",
         nodeType: NODE_TYPES.EDGE_JOIN,
         config: {
           how: "left",

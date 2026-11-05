@@ -1474,8 +1474,8 @@ tests.
   unseen-level-as-neutral, float-keyed-level agreement with the engine), missing-component-column
   errors, reconciliation-mismatch and missing-output-column error surfacing, explicit-empty
   config-value rejection (`optimised_value_column`, artifact `quote_id`, artifact `mode`),
-  Polars-type-mismatch fallback to the Python match path, duplicate-level "last wins" agreement
-  with the runtime engine, and an incompatible `price-contour` install surfacing the guard's
+  Polars-type-mismatch fallback to the Python match path, the last entry of a hand-built
+  duplicate level kept (the runtime engine refuses one), and an incompatible `price-contour` install surfacing the guard's
   diagnosis. Limited
   traces pin a `max_pct` ratio explanation linearised against the whole portfolio, a custom
   quote-id column explained from exactly the clicked quote's rows, and
@@ -1547,10 +1547,11 @@ tests.
   values never share a key and carry the generator's quote counts, two spellings of one value
   in one emitted table are refused with the loud `ValueError`, the saved artifact rates every
   typed row with its own level with the engine and the explainability mirror agreeing and no
-  miss logged, and a duplicate saved key resolves to the last entry in both. Negative
-  controls built with `hypothesis.find`: verbatim (uncanonicalised) labels let the apply
-  path silently keep the last of two rates for one value (the 3b.10 fault the loud check
-  prevents), and a first-entry-wins mirror disagrees with the engine. The real solver's
+  miss logged, and a duplicate saved key is refused at apply (`RatingDuplicateEntriesError`)
+  whatever its rates. Negative control built with `hypothesis.find`: verbatim
+  (uncanonicalised) labels reach the apply path as one level held twice (the 3b.10 fault),
+  which it refuses rather than keeping either rate, and the loud save check refuses the same
+  table first. The real solver's
   verbatim emission format stays pinned by the fixtures in
   `test_optimiser_ratebook_apply_agreement.py`; it is not run per example.
 

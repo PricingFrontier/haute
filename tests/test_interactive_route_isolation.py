@@ -124,8 +124,8 @@ def test_rejected_node_config_is_a_422_through_the_spawn_worker(
     assert preview.status_code == 422, preview.text
     assert preview.json()["detail"] == {
         "error_code": "node_config_invalid",
-        "message": "Scenario expander requires stepCount (the number of grid values).",
-        "setting": "stepCount",
+        "message": "Scenario expander requires step_count (the number of grid values).",
+        "setting": "step_count",
     }
 
 
@@ -309,7 +309,7 @@ def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_5
     from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
     from haute.routes.pipeline import _raise_interactive_remote_http_error
 
-    payload = NodeConfigError("stepCount is required", setting="stepCount").to_payload()
+    payload = NodeConfigError("step_count is required", setting="step_count").to_payload()
     config_error = _remote_error(
         remote_module=NodeConfigError.__module__,
         remote_type=NodeConfigError.__name__,
@@ -552,7 +552,7 @@ def test_preview_worker_reraises_a_public_config_rejection_and_releases_context(
     body = PreviewNodeRequest.model_validate(
         {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
     )
-    rejection = NodeConfigError("stepCount is required", setting="stepCount")
+    rejection = NodeConfigError("step_count is required", setting="step_count")
     monkeypatch.setattr(
         pipeline_mod,
         "create_isolated_execution_context",

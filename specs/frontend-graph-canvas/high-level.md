@@ -85,7 +85,7 @@ the reparse re-keys the id. It never renames the definition file. A proposed occ
 the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`),
 and, like any rename, when the server's naming rule refuses it (below).
 Exactly one occurrence is the editable definition owner; created instances persist
-`instanceOf` pointing directly at the owner's occurrence name. Opening the owner
+`instance_of` pointing directly at the owner's occurrence name. Opening the owner
 navigates to the shared definition editor and shows that edits affect every
 occurrence. Opening an instance presents the same definition with an explicit
 read-only indicator. The panel and every canvas mutation path reject edits in
@@ -235,7 +235,7 @@ candidate, with the error toast.
   and frame-row presentation as a full-detail API-input node. The header
   retains the package icon and `SUBMODEL` identity and shows the occurrence
   alias in its right-hand badge. The body does not expose the backing file or
-  repeat the name. A canonical occurrence resolves `config.definitionId`
+  repeat the name. A canonical occurrence resolves `config.definition_id`
   against the typed definition registry, derives its accessible child count
   from the definition graph, renders one generic left-side `inputs` socket, and
   renders every public output row with its `out__<name>` handle and
@@ -337,6 +337,11 @@ candidate, with the error toast.
   that does not rename keeps the node's name and sends no naming context. The Create
   Submodel dialog stays open with the typed name and shows a refusal inline,
   closing only on success.
+- **Fixed names.** A request input and a response node are named by their type alone
+  (`quote_input`, `quote_response`, `workbench_input`, `workbench_output`, READ-46): a new
+  or pasted one takes that name, never a numbered one, and the editor offers no rename for
+  it (a submodel holding one keeps its own Rename). The server's name allocation refuses
+  one whose name another node holds, saying to rename that node.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (the request inputs, Quote Input and Workbench Input,
@@ -352,12 +357,12 @@ candidate, with the error toast.
   point cannot reach an unguarded path. Creating an
   instance of an ordinary node wraps it in a one-node submodel through
   `POST /api/submodel/instance` (above); no ordinary node carries
-  `config.instanceOf`. Creating an instance of a canonical `SUBMODEL` retains only its
-  `definitionId`, allocates a fresh immutable node id and collision-free alias,
+  `config.instance_of`. Creating an instance of a canonical `SUBMODEL` retains only its
+  `definition_id`, allocates a fresh immutable node id and collision-free alias,
   labels the copy with its alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
   step. Deleting a submodel occurrence is owner-aware: an instance copy (valid
-  `instanceOf`) deletes exactly like an ordinary node — together with its
+  `instance_of`) deletes exactly like an ordinary node — together with its
   incident edges, as one undo step — from the context menu, the delete handler,
   the window keyboard shortcut, and React Flow's native delete. The definition
   owner (or an occurrence with malformed identity) is refused on every one of
@@ -568,7 +573,7 @@ candidate, with the error toast.
   together with its revision, for the snapshot it saved; edits made since stay
   dirty.
 - **Submodel navigation.** Drilling resolves a canonical occurrence from its
-  node type and `{definitionId, alias}` config, loads the shared definition by
+  node type and `{definition_id, alias}` config, loads the shared definition by
   definition id, verifies any returned identity, and builds boundary nodes from
   that definition's structured ports and the selected occurrence's parent
   bindings. Pending drill-in is bound to the initiating document, source file

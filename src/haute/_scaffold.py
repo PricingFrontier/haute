@@ -66,7 +66,9 @@ serving_scale_to_zero = true
     "container": {
         "label": "Container registry",
         "env_body": """
+# The registry account CI pushes the image with: its user name
 DOCKER_USERNAME=
+# That account's password or access token
 DOCKER_PASSWORD=
 """,
         "secrets": [
@@ -81,7 +83,6 @@ DOCKER_PASSWORD=
             """\
 [deploy.container]
 registry = ""
-port = 8080
 base_image = "python:3.11.9-slim"
 """
         ),
@@ -89,9 +90,13 @@ base_image = "python:3.11.9-slim"
     "azure-container-apps": {
         "label": "Azure Container Apps",
         "env_body": """
+# The Azure subscription holding the container registry and the app
 AZURE_SUBSCRIPTION_ID=
+# The Microsoft Entra tenant the service principal belongs to
 AZURE_TENANT_ID=
+# The service principal CI signs in as: its application (client) id
 AZURE_CLIENT_ID=
+# That service principal's client secret
 AZURE_CLIENT_SECRET=
 """,
         "secrets": [
@@ -109,7 +114,6 @@ AZURE_CLIENT_SECRET=
             f"""\
 [deploy.container]
 registry = ""
-port = 8080
 base_image = "python:3.11.9-slim"
 
 [deploy.azure-container-apps]
@@ -122,8 +126,10 @@ environment_name = ""
     "aws-ecs": {
         "label": "AWS ECS",
         "env_body": """
+# The IAM user CI deploys as: its access key and secret
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
+# The region the registry and the service are in
 AWS_DEFAULT_REGION=eu-west-1
 """,
         "secrets": [
@@ -141,7 +147,6 @@ AWS_DEFAULT_REGION=eu-west-1
             f"""\
 [deploy.container]
 registry = ""
-port = 8080
 base_image = "python:3.11.9-slim"
 
 [deploy.aws-ecs]
@@ -154,7 +159,9 @@ service = "{name}"
     "gcp-run": {
         "label": "GCP Cloud Run",
         "env_body": """
+# The Google Cloud project holding the registry and the service
 GCP_PROJECT_ID=
+# The service account CI deploys as: its JSON key, on one line
 GCP_SERVICE_ACCOUNT_KEY=
 """,
         "secrets": [
@@ -170,7 +177,6 @@ GCP_SERVICE_ACCOUNT_KEY=
             f"""\
 [deploy.container]
 registry = ""
-port = 8080
 base_image = "python:3.11.9-slim"
 
 [deploy.gcp-run]
@@ -457,9 +463,6 @@ endpoint_name = "{name}"
             _TEMPLATE_BASE_IMAGE, f'base_image = "{container_base_image(python_version)}"'
         ),
         f"""\
-[test_quotes]
-dir = "tests/quotes"
-
 [safety]
 # `haute impact` compares staging with production on these quotes. Without a
 # sample it compares the test quotes; commit a Parquet sample of your book (not
@@ -496,15 +499,11 @@ def workbench_haute_toml(
 name = "{name}"
 pipeline = "{PIPELINE_FILE}"
 
-# The underwriter app's image: what it is built on, the registry the workbench's CI pushes
-# it to (required there) and the port it serves on.
+# The underwriter app's image: what it is built on and the registry the workbench's CI
+# pushes it to (required there). It serves on port 8080 unless `port` says otherwise.
 [deploy.container]
 registry = ""
-port = 8080
 base_image = "{container_base_image(python_version)}"
-
-[test_quotes]
-dir = "tests/quotes"
 
 [ci]
 provider = "{ci}"
@@ -2118,12 +2117,12 @@ exit $status
 
 
 def starter_pipeline(name: str) -> str:
-    """Generate a valid, discoverable pipeline with an empty canvas."""
-    return f'''\
-"""Pipeline: {name}
+    """Generate a valid, discoverable pipeline with an empty canvas.
 
-Blank pipeline scaffolded by ``haute init``. Add nodes in the Haute editor.
-"""
+    It opens with the docstring codegen writes, so the first save keeps it as it is.
+    """
+    return f'''\
+"""Pipeline: {name}"""
 
 import haute
 

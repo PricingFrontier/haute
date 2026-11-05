@@ -323,7 +323,7 @@ def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> d
     pl.DataFrame({"quote_id": range(rows), "y": rng.rand(rows) * 10}).write_parquet(competitor)
     join_config: dict[str, object] = {
         "how": "left",
-        "maintainOrder": "left_right",
+        "maintain_order": "left_right",
         "on": ["quote_id"],
     }
     if validate is not None:
@@ -1173,7 +1173,7 @@ class TestExportEndpoint:
                     "data": {
                         "label": "rating",
                         "nodeType": "submodel",
-                        "config": {"definitionId": "rating", "alias": "rating"},
+                        "config": {"definition_id": "rating", "alias": "rating"},
                     },
                 }
             ],
@@ -3787,8 +3787,8 @@ def glm_collision_data(tmp_path) -> str:
 
 _MISSING_STEP_COUNT_PAYLOAD = {
     "error_code": "node_config_invalid",
-    "message": "Scenario expander requires stepCount (the number of grid values).",
-    "setting": "stepCount",
+    "message": "Scenario expander requires step_count (the number of grid values).",
+    "setting": "step_count",
 }
 
 

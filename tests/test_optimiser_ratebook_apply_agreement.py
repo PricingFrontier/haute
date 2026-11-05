@@ -19,8 +19,8 @@ malformed shapes (level arity mismatch, separator levels under a
 non-composite name, duplicate/empty components, missing frame columns) raise
 loud ``ValueError``s naming the table.
 
-Miss semantics (3b.5): the blanket ``defaultValue: "1.0"`` is gone.  The
-apply path opts in to the W3a ``onMissing: "neutral"`` machinery explicitly —
+Miss semantics (3b.5): the blanket ``default_value: "1.0"`` is gone.  The
+apply path opts in to the W3a ``on_missing: "neutral"`` machinery explicitly —
 unseen levels still rate 1.0 (an optimiser relativity is a multiplicative
 adjustment on an already-rated price, so "no adjustment" is the safe
 degradation for apply-to-broader-population deploy scoring; failing the whole
@@ -44,7 +44,7 @@ import structlog.testing
 
 from haute._builders import _apply_ratebook, _ratebook_lookup_table
 from haute._optimiser_apply_explainability import _match_ratebook_entry
-from haute._rating import _apply_rating_table, rating_dtype_descriptor
+from haute._rating import RatingDuplicateEntriesError, _apply_rating_table, rating_dtype_descriptor
 from tests.optimiser_fixtures import make_solved_result
 
 MISS_EVENT = "rating_table_lookup_misses"
@@ -94,7 +94,7 @@ def _engine_matches(frame: pl.DataFrame, name: str, entries: list[dict[str, Any]
     ]
     table = _ratebook_lookup_table(name, entries, dtype_records)
     out = _apply_rating_table(frame.lazy(), table).collect()
-    return [value is not None for value in out[table["outputColumn"]].to_list()]
+    return [value is not None for value in out[table["output_column"]].to_list()]
 
 
 def _mirror_matches(frame: pl.DataFrame, name: str, entries: list[dict[str, Any]]) -> list[bool]:
@@ -188,38 +188,29 @@ class TestMirrorAgreesWithEngine:
         frame = pl.DataFrame({"channel": ["online"], "age": [25.0]})
         assert_engine_and_mirror_agree(frame, "channel:age", entries, [True])
 
-    def test_duplicate_level_resolves_to_last_in_both(self) -> None:
-        """Engine dedups keep="last"; the mirror walks reversed."""
+    def test_a_duplicate_level_is_refused_by_the_engine(self) -> None:
+        """Two entries for one level are refused by the shared rating lookup, never
+        resolved to one of them, so no applied row has a duplicate to explain."""
         entries = [
             {"__factor_group__": f"online{SEP}18-25", "optimal_scenario_value": 1.05},
             {"__factor_group__": f"online{SEP}18-25", "optimal_scenario_value": 1.20},
         ]
         frame = pl.DataFrame({"channel": ["online"], "age_band": ["18-25"]})
-        out = _apply_ratebook(
-            frame.lazy(),
-            _artifact(
-                {"channel:age_band": entries},
-                {
-                    "channel:age_band": [
-                        {"column": "channel", "dtype": {"kind": "String"}},
-                        {"column": "age_band", "dtype": {"kind": "String"}},
-                    ]
-                },
-            ),
-            "",
-            "__v__",
-        )
-        engine_value = out.collect()["channel:age_band_optimised_factor"][0]
-        matched = _match_ratebook_entry(
-            entries,
-            ["channel", "age_band"],
-            ["online", "18-25"],
-            "channel:age_band",
-            input_dtypes=[pl.String, pl.String],
-        )
-        assert matched is not None
-        assert engine_value == pytest.approx(1.20)
-        assert matched["optimal_scenario_value"] == pytest.approx(1.20)
+        with pytest.raises(RatingDuplicateEntriesError, match="channel:age_band"):
+            _apply_ratebook(
+                frame.lazy(),
+                _artifact(
+                    {"channel:age_band": entries},
+                    {
+                        "channel:age_band": [
+                            {"column": "channel", "dtype": {"kind": "String"}},
+                            {"column": "age_band", "dtype": {"kind": "String"}},
+                        ]
+                    },
+                ),
+                "",
+                "__v__",
+            ).collect()
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +396,7 @@ class TestRealSolverEndToEnd:
                 label="apply",
                 nodeType=NodeType.OPTIMISER_APPLY,
                 config={
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": str(artifact_path),
                     "ratebook_input": "base",
                 },
@@ -468,7 +459,7 @@ class TestRealSolverEndToEnd:
                 label="apply",
                 nodeType=NodeType.OPTIMISER_APPLY,
                 config={
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": str(artifact_path),
                     "ratebook_input": "base",
                 },

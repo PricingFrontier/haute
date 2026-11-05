@@ -418,7 +418,7 @@ applies once, so the id names one change); the plan's summary and assumptions (b
 chip per node the plan added, changed, removed or renamed, naming the node, its palette
 type name (for example "Transform" or "Banding"), what happened to it, the earlier name of
 a renamed node, the configuration fields it changed in plain words derived from their keys
-(`outputColumn` reads "output column"), and for a stepped node the kinds of its steps after
+(`output_column` reads "output column"), and for a stepped node the kinds of its steps after
 the save and how many steps the plan changed; the edges added and removed; whether the
 preamble changed; the save's warnings; the Git commit the save made with its parent; and
 `revision`, the editor document revision the save produced (the revision the canvas and
@@ -689,7 +689,7 @@ it names an unconnected node a plain edge would name the same, which is told tha
 **Writes to stepped nodes land in the saved config or fail naming the fix.** A node
 the assistant adds starts from the palette's config for its type (`node_defaults.json`),
 so it matches a node the analyst drops from the palette: every stepped type opens in the
-step builder with `steps`, and a Data Input carries its `inputType`. The assistant
+step builder with `steps`, and a Data Input carries its `input_type`. The assistant
 writes new Polars logic as steps and never changes how an existing node is authored: on
 a node that holds steps it refuses a `code` write or the removal of `steps` (which would
 switch the node to code mode, an analyst action in the editor), on a code-mode node with
@@ -728,7 +728,7 @@ GLM family and terms) and a valid evaluation object (`parse_evaluation_config`, 
 training also requires), and its target, weight, offset, identifier, evaluation and feature
 columns (a GLM's term columns included) must exist in the input schema the dry-run
 resolves, checked by the function training preparation runs on the materialised schema. A
-Load File must load its `path` as its declared `fileType` exactly as execution loads it:
+Load File must load its `path` as its declared `file_type` exactly as execution loads it:
 with empty steps the node passes its input through and never loads the file, so schema
 resolution alone does not prove it. A failure is a structured `node_not_ready` error naming
 the node and the product's message, and no plan is stored. A node the plan does not add or
@@ -1024,7 +1024,7 @@ banding with string `{value, assignment}` rows, Quote Response output paths root
 several tables and a combined output, a nested API Input, a Source Switch, a Model
 Training node for a tree family (loss and params) and a Poisson GLM with an exposure
 offset under a log link, Model Scoring from a training run, an Expander with its
-`stepCount`, an online and a ratebook Optimisation (the ratebook with a Banding source),
+`step_count`, an online and a ratebook Optimisation (the ratebook with a Banding source),
 online and ratebook Apply Optimisation, and Data Input, Data Output, Constant, Edge Join
 and Explore configurations. A field meaning also carries a material choice its node
 needs: the Rating Step card says its factor values, relativities and missing-factor
@@ -1634,8 +1634,8 @@ reports:
 - Rating, for a Rating Step: per table, identified by its 0-based position in
   `tables` and its output column, the rows the table read; the rows whose factor
   key has no entry, keys canonicalised exactly as the lookup canonicalises them
-  and counted alike whether `defaultValue` fills them, `"onMissing": "neutral"`
-  leaves them null, or the default `"onMissing": "error"` raises; the number of
+  and counted alike whether `default_value` fills them, `"on_missing": "neutral"`
+  leaves them null, or the default `"on_missing": "error"` raises; the number of
   entries; and the number of entries no row's key matched. A table execution
   skips is `skipped`, with no counts. At most 20 tables per node, with the
   number omitted.
@@ -1714,7 +1714,7 @@ share finding. The kinds are a closed set:
 
 A `join_validation_failed` finding replaces the `execution_failed` finding of the
 join whose validation raised. When a rating step's miss guard raises (its
-table's `onMissing` is `error` and it has no usable `defaultValue`), that
+table's `on_missing` is `error` and it has no usable `default_value`), that
 table's `rating_misses` finding is advisory whatever its share and replaces the
 node's `execution_failed` finding. Each replacement states the cause. Findings
 are ordered advisory first, then by the changed nodes' order, then by the order
@@ -1793,7 +1793,7 @@ offending node of the lineage in topological order, ties broken by node id:
 2. `sink_only`: a Quote Response, Data Output, Explore, Model Training or
    Optimisation node, which has no output frame to measure.
 3. `artifact_in_lineage`: the node or an ancestor is a Load File whose
-   `fileType` deserialises an opaque object: `pickle` or `joblib` (the loaders
+   `file_type` deserialises an opaque object: `pickle` or `joblib` (the loaders
    in `src/haute/_io.py`). A `json` Load File is data and stays
    eligible. The check never invokes an excluded node's loader; that the
    dry-run's schema tier may already have loaded it in the server process does
@@ -1801,7 +1801,7 @@ offending node of the lineage in topological order, ties broken by node id:
 4. `artifact_not_local`: the node or an ancestor is a Model Scoring node whose
    model is not already in the local model cache that editor previews load from,
    or an Apply Optimisation node whose artifact is not a local file. A Model
-   Scoring node is local when it names an MLflow run (`sourceType` `run`) with a
+   Scoring node is local when it names an MLflow run (`source_type` `run`) with a
    `run_id` and an `artifact_path` whose flavor loads from one file (not a
    `pyfunc` directory), and that file, with the contract its run logged (or the record
    that it logged none), exists in the disk model cache for the node's resolved destination: the files the preview's
@@ -1812,7 +1812,7 @@ offending node of the lineage in topological order, ties broken by node id:
    Model Scoring node in the editor, which fills the cache. The worker loads a
    local model from that cache only: a cache file that disappears after
    eligibility is an execution failure, never a download. An Apply
-   Optimisation node is local when its `sourceType` is `file`, a JSON artifact
+   Optimisation node is local when its `source_type` is `file`, a JSON artifact
    inside the project; `run` and `registered` sources download through MLflow
    and are not local.
 5. `input_not_prepared`: the lineage reads an input in a state the table above

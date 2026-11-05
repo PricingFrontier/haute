@@ -4742,7 +4742,7 @@ def _lineage_input_bindings(
             return None
         by_name[name] = binding
 
-    raw_mapping = node.data.config.get("inputMapping")
+    raw_mapping = node.data.config.get("input_mapping")
     if raw_mapping:
         if not isinstance(raw_mapping, Mapping):
             return None
@@ -5008,7 +5008,7 @@ def compute_prepared_plan(
                 # incomplete editor rows do not demand a blank source column.
                 from haute._output_assembler import is_active_mapping_entry
 
-                mapping = node.data.config.get("outputMapping") or []
+                mapping = node.data.config.get("output_mapping") or []
                 source_cols = {e["source_column"] for e in mapping if is_active_mapping_entry(e)}
                 needed[node_id] = source_cols or None
                 node_reasons[node_id] = ProjectionReason(

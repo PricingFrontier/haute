@@ -1192,7 +1192,7 @@ def _pinned_graph_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
         node.id
         for node in resolved.pruned_graph.nodes
         if DEPLOY_ARTIFACTS[node.data.nodeType] == "optimiser_result"
-        and node.data.config.get("sourceType") in {"run", "registered"}
+        and node.data.config.get("source_type") in {"run", "registered"}
     ]
     if not nodes:
         return []

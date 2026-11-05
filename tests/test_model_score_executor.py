@@ -36,7 +36,7 @@ def _make_model_score_graph(
 ) -> PipelineGraph:
     """Build a 2-node graph: dataInput → modelScore."""
     config = {
-        "sourceType": source_type,
+        "source_type": source_type,
         "run_id": run_id,
         "artifact_path": artifact_path,
         "registered_model": registered_model,
@@ -171,7 +171,7 @@ class TestModelScoreClassification:
 
 class TestModelScorePassthrough:
     def test_empty_config_passthrough(self, sample_data):
-        """Empty config (no sourceType) acts as passthrough."""
+        """Empty config (no source_type) acts as passthrough."""
         graph = make_graph(
             {
                 "nodes": [
@@ -306,16 +306,16 @@ class TestBuildNodeFnModelScore:
     def test_build_node_fn_rejects_non_string_source_type(self):
         node = GraphNode(
             id="ms1",
-            data=NodeData(label="scorer", nodeType="modelScore", config={"sourceType": 1}),
+            data=NodeData(label="scorer", nodeType="modelScore", config={"source_type": 1}),
         )
 
         with pytest.raises(
             NodeConfigError,
-            match=r"Node 'scorer' \(modelScore\) setting 'sourceType': Input should be ''",
+            match=r"Node 'scorer' \(modelScore\) setting 'source_type': Input should be ''",
         ) as raised:
             _build_node_fn(node, source_names=["upstream"])
 
-        assert raised.value.setting == "sourceType"
+        assert raised.value.setting == "source_type"
 
     def test_build_node_fn_rejects_unknown_source_type(self):
         node = GraphNode(
@@ -323,17 +323,17 @@ class TestBuildNodeFnModelScore:
             data=NodeData(
                 label="scorer",
                 nodeType="modelScore",
-                config={"sourceType": "warehouse"},
+                config={"source_type": "warehouse"},
             ),
         )
 
         with pytest.raises(
             NodeConfigError,
-            match=r"setting 'sourceType': Input should be '', 'run', 'registered' or 'file'",
+            match=r"setting 'source_type': Input should be '', 'run', 'registered' or 'file'",
         ) as raised:
             _build_node_fn(node, source_names=["upstream"])
 
-        assert raised.value.setting == "sourceType"
+        assert raised.value.setting == "source_type"
 
     def test_build_node_fn_returns_passthrough_no_config(self):
         """_build_node_fn returns passthrough for empty modelScore config."""
@@ -352,9 +352,9 @@ class TestBuildNodeFnModelScore:
     @pytest.mark.parametrize(
         ("config", "message"),
         [
-            ({"sourceType": "run", "run_id": ""}, "run_id is empty"),
+            ({"source_type": "run", "run_id": ""}, "run_id is empty"),
             (
-                {"sourceType": "registered", "registered_model": ""},
+                {"source_type": "registered", "registered_model": ""},
                 "registered_model is empty",
             ),
         ],
@@ -380,7 +380,7 @@ class TestBuildNodeFnModelScore:
                 label="scorer",
                 nodeType="modelScore",
                 config={
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "abc",
                     "artifact_path": "model.cbm",
                     "task": "regression",

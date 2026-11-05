@@ -104,21 +104,20 @@ Checking claim frequency by area:
 4. Click **Refresh** on the preview. The preview's **OVERVIEW** shows the two cards, and its **PIVOTS** shows the table with a frequency for each area.
 
 ??? note "In the pipeline file"
-    The node's settings are stored as arguments of its decorator in the pipeline's `.py` file, `@pipeline.explore(...)`; it has no JSON sidecar. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the input as `df`.
+    The node's settings are stored in a JSON sidecar, `config/explore/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.explore(config="config/explore/<node name>.json")`. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the input as `df`, and Haute reads the steps back from it.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **TRANSFORM** steps | `steps`, a decorator argument; their generated code in the function body |
+    | **TRANSFORM** steps | the function body, which Haute reads the steps back from |
     | **OVERVIEW** cards | `overview`: `dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary` and `schema`, each `true` when switched on (an off card is left out) |
     | **PIVOTS** | `pivots`: each pivot with its filter, column, row and value placements, sorting, formatting and totals |
     | **FORMULAS** | `pivot_formulas`: the node's shared library of calculated fields |
     | **CHARTS** | `charts`: each chart with its source pivot and formatting |
 
-    Empty settings are left out, so a new node's decorator is bare.
+    Empty settings are left out, so a new node's sidecar is nearly empty. Each pivot placement, formula and chart series sits on one line.
 
     The column metadata any node may carry, `selected_columns` and `column_renames`, has
-    no editor control on an Explore node; when present it is stored as decorator
-    arguments too.
+    no editor control on an Explore node; when present it is stored in the sidecar too.
 
     <!-- config-keys:start -->
 
@@ -127,7 +126,7 @@ Checking claim frequency by area:
     | Key | Type | Description |
     |---|---|---|
     | `code` | text | The Polars code the node's function runs; when `steps` are present, their rendering. |
-    | `steps` | list of map of text to any JSON value | The low-code steps the node's code is rendered from, in order. |
+    | `steps` | list of map of text to any JSON value | The low-code steps, in order, rebuilt from the node's code each time it loads; the config file does not hold them. |
     | `overview` | object | Which overview cards are shown. |
     | `overview.dataset_snapshot` | `true` or `false` | Show the dataset snapshot card. |
     | `overview.data_quality` | `true` or `false` | Show the data quality card. |
@@ -185,7 +184,7 @@ Checking claim frequency by area:
     | `pivots[].options.column_grand_totals` | `true` or `false` | Show a grand total column. |
     | `pivots[].options.sort_by` | text or `null` | The value rows are sorted by; `null` for none. |
     | `charts` | list of object | The chart cards. |
-    | `inputMapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
+    | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |
     | `column_renames` | map of text to text | New names for columns passed downstream, from each column's name to its new one. |

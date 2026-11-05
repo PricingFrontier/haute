@@ -47,13 +47,16 @@ from haute._node_config_models import NODE_CONFIG_MODELS
 from haute._node_specs import (
     NODE_TYPE_TO_FOLDER,
     REQUEST_INPUT_NODE_TYPES,
+    SINGLETON_NODE_NAMES,
     STEPPED_NODE_TYPES,
     STRUCTURAL_NODE_TYPES,
     node_spec,
+    singleton_name_problem,
 )
 from haute._output_assembler import is_active_mapping_entry
 from haute._polars_steps import (
     STEP_KINDS,
+    STEPS_FROM_CODE,
     PolarsStepError,
     is_stepped_config,
     rename_step_inputs,
@@ -65,6 +68,7 @@ from haute._polars_steps import (
     stepped_surface_for,
     validate_polars_steps,
 )
+from haute._polars_steps_lift import canonical_steps
 from haute._sandbox import _bound_names
 from haute._types import (
     GraphEdge,
@@ -429,14 +433,14 @@ def _palette_config_for(node_type: NodeType, config: Mapping[str, Any]) -> dict[
 def _resolve_output_rows(
     node_type: NodeType, config: Mapping[str, Any], refs: Mapping[str, str], graph: PipelineGraph
 ) -> Mapping[str, Any]:
-    """*config* with each ``outputMapping`` row's ``$ref`` source_port resolved.
+    """*config* with each ``output_mapping`` row's ``$ref`` source_port resolved.
 
     A ``source_port`` names the incoming frame a row reads, by the input name
     its edge gives: a ``$ref`` resolves to that name for the node the ref
     declared. Any other config is returned as written.
     """
 
-    rows = config.get("outputMapping")
+    rows = config.get("output_mapping")
     if not ASSISTANT_NODE_DESCRIPTIONS[node_type].output_mapping or not isinstance(rows, list):
         return config
     resolved: list[object] = []
@@ -463,12 +467,12 @@ def _resolve_output_rows(
                 _invalid(
                     f"Output mapping source {port!r} names a node whose frames are named by "
                     "their ports",
-                    where={"field": "outputMapping"},
+                    where={"field": "output_mapping"},
                     fix="Write the source_port as the incoming edge's port name.",
                 )
             row = {**cast(Mapping[str, Any], row), "source_port": name}
         resolved.append(row)
-    return {**config, "outputMapping": resolved}
+    return {**config, "output_mapping": resolved}
 
 
 def _workbench_node(node_type: NodeType) -> tuple[str, str] | None:
@@ -517,6 +521,14 @@ def _apply_add_node(
     _validate_config(op.node_type, op.config, operation="add_node")
 
     node_id = _sanitize_func_name(op.name)
+    if singleton_name_problem(op.node_type, node_id) is not None:
+        fixed = SINGLETON_NODE_NAMES[op.node_type]
+        _invalid(
+            f"Cannot add node {op.name!r}: this node type is always named {fixed!r}, "
+            "since a pipeline holds one",
+            where={"node": node_id},
+            fix=f"Name it {fixed!r}.",
+        )
     if _node_index(graph, node_id) is not None:
         _invalid(
             f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists",
@@ -559,7 +571,7 @@ def _apply_add_node(
 _NAME_LISTS = frozenset({"inputs", "selected_columns"})
 #: Config maps keyed by input or column names; any other map's keys can be
 #: category values, so a refusal counts them instead of naming them.
-_NAME_KEYED_MAPS = frozenset({"input_scenario_map", "inputMapping", "column_renames"})
+_NAME_KEYED_MAPS = frozenset({"input_scenario_map", "input_mapping", "column_renames"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -830,6 +842,15 @@ def _apply_edit_steps(
         if isinstance(edit, StepReplace):
             position = position_of(edit.replace)
             step.setdefault("id", edit.replace)
+            # The comment above the replaced step stays above its replacement (READ-22),
+            # a code step holding its comments in its code.
+            replaced = edited[position]
+            if (
+                step.get("kind") != "free_code"
+                and isinstance(replaced, Mapping)
+                and isinstance(replaced.get("comment"), str)
+            ):
+                step.setdefault("comment", replaced["comment"])
             taken = ids[:position] + ids[position + 1 :]
         else:
             position = 0 if edit.insert_after is None else position_of(edit.insert_after) + 1
@@ -861,13 +882,13 @@ _HANDLE_NAMED_SOURCES = REQUEST_INPUT_NODE_TYPES | STRUCTURAL_NODE_TYPES
 _INPUT_NAME_FIELDS = ("data_input", "banding_source", "analysis_input", "ratebook_input")
 #: The consumer config fields a rename rewrites when they name the renamed input:
 #: those the editor's rename reconciles (``frontend/src/utils/nodeUpdatePlan.ts``)
-#: and ``outputMapping`` rows' ``source_port``.
+#: and ``output_mapping`` rows' ``source_port``.
 RENAME_RECONCILED_FIELDS = (
     "steps",
-    "inputMapping",
+    "input_mapping",
     "input_scenario_map",
     *_INPUT_NAME_FIELDS,
-    "outputMapping",
+    "output_mapping",
 )
 
 
@@ -932,7 +953,7 @@ def _rewrite_consumer(
             except PolarsStepError:
                 _rename_collision(node.id, new)
             changes.extend(step_changes)
-    raw_mapping = config.get("inputMapping")
+    raw_mapping = config.get("input_mapping")
     mapping = raw_mapping if isinstance(raw_mapping, Mapping) else {}
     if (
         not isinstance(steps, list)
@@ -945,10 +966,10 @@ def _rewrite_consumer(
     if bound:
         if new in mapping.values():
             _rename_collision(node.id, new)
-        config["inputMapping"] = {
+        config["input_mapping"] = {
             logical: new if current == old else current for logical, current in mapping.items()
         }
-        changes.extend(f"inputMapping.{logical}" for logical in bound)
+        changes.extend(f"input_mapping.{logical}" for logical in bound)
     scenario_map = config.get("input_scenario_map")
     if isinstance(scenario_map, Mapping) and old in scenario_map:
         if new in scenario_map:
@@ -961,7 +982,7 @@ def _rewrite_consumer(
         if config.get(field_name) == old:
             config[field_name] = new
             changes.append(field_name)
-    output_mapping = config.get("outputMapping")
+    output_mapping = config.get("output_mapping")
     if isinstance(output_mapping, list):
         rows = [
             position
@@ -969,11 +990,11 @@ def _rewrite_consumer(
             if isinstance(entry, Mapping) and entry.get("source_port") == old
         ]
         if rows:
-            config["outputMapping"] = [
+            config["output_mapping"] = [
                 {**entry, "source_port": new} if position in rows else entry
                 for position, entry in enumerate(output_mapping, start=1)
             ]
-            changes.extend(f"outputMapping[{position}].source_port" for position in rows)
+            changes.extend(f"output_mapping[{position}].source_port" for position in rows)
     return changes, refused
 
 
@@ -1045,6 +1066,13 @@ def _apply_rename_node(
     _refuse_workbench_input(graph, old_id, "rename")
     index = _node_index(graph, old_id)
     assert index is not None
+    fixed = SINGLETON_NODE_NAMES.get(NodeType(graph.nodes[index].data.nodeType))
+    if fixed is not None:
+        _invalid(
+            f"Cannot rename {old_id!r}: it is always named {fixed!r}, since a pipeline holds one",
+            where={"node": old_id},
+            fix="Leave its name as it is.",
+        )
     new_id = _sanitize_func_name(op.new_name)
     if new_id != old_id and _node_index(graph, new_id) is not None:
         _invalid(
@@ -3131,7 +3159,7 @@ def _validate_output_rows_read_inputs(
     is told the names the incoming edges give and the naming rule.
     """
 
-    rows = node.data.config.get("outputMapping")
+    rows = node.data.config.get("output_mapping")
     names = _incoming_input_names(result, node.id, nodes_by_id)
     for position, row in enumerate(rows if isinstance(rows, list) else [], start=1):
         if not isinstance(row, Mapping) or "enabled" not in row:
@@ -3157,9 +3185,9 @@ def _validate_output_rows_read_inputs(
                 purpose="the column comes from",
             )
         _invalid(
-            f"Row {position} of the outputMapping of node {node.id!r} reads source_port {port!r}, "
+            f"Row {position} of the output_mapping of node {node.id!r} reads source_port {port!r}, "
             f"which no incoming edge provides; its incoming edges are {connected}.",
-            where={"node": node.id, "field": "outputMapping"},
+            where={"node": node.id, "field": "output_mapping"},
             fix=fix,
             did_you_mean=suggested,
         )
@@ -3204,9 +3232,9 @@ def _validate_assistant_authored_graph(
             )
 
     mapping_changed = {
-        change.removesuffix(":outputMapping")
+        change.removesuffix(":output_mapping")
         for change in config_changes
-        if change.endswith(":outputMapping")
+        if change.endswith(":output_mapping")
     }
     for node_id in sorted(set(authored_added) | mapping_changed):
         node = nodes_by_id.get(node_id)
@@ -3224,6 +3252,31 @@ def _validate_assistant_authored_graph(
             where={"node": disconnected[0]},
             fix=f"Add an add_edge operation that connects {disconnected[0]!r} in the same plan.",
         )
+
+
+def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
+    """*graph* with each stepped node's steps as the save's reload rebuilds them from its code
+    (READ-22, READ-44): ids from kind and place, and the canonical form, so the plan's diff and
+    postconditions are what the committed graph holds. Steps that cannot render yet are
+    saved whole beside the code, and stay as they are."""
+    nodes: list[GraphNode] = []
+    changed = False
+    for node in graph.nodes:
+        steps = node.data.config.get("steps")
+        if (
+            node.data.nodeType in STEPS_FROM_CODE
+            and isinstance(steps, list)
+            and node.data.editor.steps_error is None
+        ):
+            try:
+                reloaded = canonical_steps(NodeType(node.data.nodeType), steps)
+            except PolarsStepError:
+                reloaded = steps
+            if reloaded != steps:
+                node = node.with_config({**node.data.config, "steps": reloaded})
+                changed = True
+        nodes.append(node)
+    return graph.model_copy(update={"nodes": nodes}) if changed else graph
 
 
 def prepare_graph_edit(
@@ -3246,7 +3299,7 @@ def prepare_graph_edit(
     applied = _apply_ops_with_refs(
         snapshot.graph, ops, positions, config_visibility=config_visibility
     )
-    result, refs = applied.graph, applied.refs
+    result, refs = _transform_steps_as_reloaded(applied.graph), applied.refs
     diff = _semantic_diff(snapshot.graph, result, ops, applied)
     try:
         _validate_assistant_authored_graph(result, diff, applied.new_node_ids)

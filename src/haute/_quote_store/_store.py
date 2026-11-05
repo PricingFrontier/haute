@@ -35,14 +35,14 @@ from haute._quote_store._catalogue import (
     table_problems,
 )
 from haute._quote_store._providers import SignIn, make_server_engine, missing_privileges
-from haute._quote_store._schema import StoreSchema, store_schema
+from haute._quote_store._schema import StoreSchema, store_schema, with_kept_columns
 from haute._workbench_config import (
     STORE_DATABASE_ENV,
     STORE_SERVER_ENV,
     STORE_URL_ENV,
     WorkbenchError,
 )
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec
+from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
 #: What places a hosted app's database and signs it in, as a refusal names it.
 HOST_VARIABLES = (
@@ -276,7 +276,7 @@ def _catalogue_differences(
     :func:`._catalogue.table_problems`); and a column of those tables the store does not
     write that takes no null, so no row could be inserted."""
     differences: list[str] = []
-    tables = [(stored.table, stored.form.id != QUOTE_DETAILS_ID) for stored in schema.tables]
+    tables = [(stored.table, stored.form.name != QUOTE_DETAILS_NAME) for stored in schema.tables]
     tables.append((schema.activity, False))
     for table, refers in tables:
         found = catalogue.table(table.name)
@@ -342,6 +342,13 @@ def open_engine(
                         + ". Grant them to it.",
                         differences=lacking,
                     )
+                schema = with_kept_columns(
+                    schema,
+                    {
+                        found.name: [(column.name, column.kind) for column in found.columns]
+                        for found in catalogue.tables
+                    },
+                )
     except Exception:
         engine.dispose()
         raise

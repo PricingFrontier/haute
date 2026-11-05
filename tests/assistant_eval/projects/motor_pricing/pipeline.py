@@ -9,8 +9,8 @@ pipeline = haute.Pipeline(
 )
 
 
-@pipeline.api_input(config="config/quote_input/quote_request.json")
-def quote_request(): ...
+@pipeline.api_input(config="config/quote_input/quote_input.json")
+def quote_input(): ...
 
 
 @pipeline.data_input(config="config/data_input/batch_quotes.json")
@@ -21,7 +21,7 @@ def batch_quotes(): ...
 def policies(quotes, batch_quotes): ...
 
 
-@pipeline.polars(config="config/polars/rating_features.json")
+@pipeline.polars
 def rating_features(policies: pl.LazyFrame) -> pl.LazyFrame:
     df = policies
     # Derive the driver's age at inception and the vehicle value in thousands
@@ -57,16 +57,7 @@ def base_premium(df: pl.LazyFrame) -> pl.LazyFrame:
 def quote_response(base_premium): ...
 
 
-@pipeline.explore(
-    overview={
-        "dataset_snapshot": True,
-        "data_quality": True,
-        "numeric_summary": True,
-        "categorical_summary": True,
-        "schema": True,
-    },
-    steps=[],
-)
+@pipeline.explore(config="config/explore/premium_explore.json")
 def premium_explore(base_premium): ...
 
 
@@ -74,13 +65,5 @@ def premium_explore(base_premium): ...
 def priced_batch(base_premium): ...
 
 
-# Wire nodes together - edges define data flow
-pipeline.connect("quote_request", "policies", source_port="quotes")
-pipeline.connect("batch_quotes", "policies")
-pipeline.connect("policies", "rating_features")
-pipeline.connect("rating_features", "claim_frequency")
-pipeline.connect("claim_frequency", "rating_bands")
+pipeline.connect("quote_input", "policies", source_port="quotes")
 pipeline.connect("rating_bands", "base_premium")
-pipeline.connect("base_premium", "quote_response")
-pipeline.connect("base_premium", "premium_explore")
-pipeline.connect("base_premium", "priced_batch")

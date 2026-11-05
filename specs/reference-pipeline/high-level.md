@@ -35,13 +35,13 @@ Out of scope:
 ## Behaviour
 
 - The pipeline is named `reference` and has three nodes wired in a line: a CSV
-  Data Input (`quotes`), a Polars transform (`features`), and an output (`priced`).
+  Data Input (`quotes`), a Polars transform (`features`), and an output (`quote_response`).
 - `quotes` reads `examples/reference/data/quotes.csv`, six synthetic quotes with
   `quote_id`, `driver_age`, `vehicle_year`, `region` and `sum_insured`. Its
   sidecar path is project-root relative, like every Data Input path.
 - `features` adds `vehicle_age` (2026 minus `vehicle_year`) and `driver_band`
   (the driver's age cut at 25, 40 and 65, as text).
-- `priced` maps `quote_id`, `vehicle_age`, `driver_band` and `sum_insured` from the
+- `quote_response` maps `quote_id`, `vehicle_age`, `driver_band` and `sum_insured` from the
   `features` port into one JSON object per quote.
 - `main.py` is exactly what Haute's code generation writes for this graph, so
   saving it from the editor does not rewrite it.

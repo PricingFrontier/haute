@@ -477,13 +477,13 @@ class TestHauteModelPredict:
         from haute.parser import parse_pipeline_file
 
         full_graph = parse_pipeline_file(PIPELINE_FILE)
-        pruned, _kept, _removed = prune_for_deploy(full_graph, "output")
+        pruned, _kept, _removed = prune_for_deploy(full_graph, "quote_response")
 
         model = HauteModel()
         model._graph = pruned
         model._project = current_project()
-        model._input_node_ids = ["quotes"]
-        model._output_node_id = "output"
+        model._input_node_ids = ["quote_input"]
+        model._output_node_id = "quote_response"
         model._output_fields = output_fields
         model._request_rows = RequestRows("in_request_order")
         model._omittable = frozenset()
@@ -1888,7 +1888,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "original.parquet",
@@ -1935,7 +1935,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "lookup.csv",
@@ -1986,7 +1986,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "lookup.csv",
@@ -2036,7 +2036,7 @@ class TestScoreGraphStaticDataSourceRemap:
                             "label": "lookup",
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "csv",
                                 "mode": "scan",
                                 "path": "lookup.csv",
@@ -2294,7 +2294,7 @@ class TestScoreGraphExternalFileRemap:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": "original/lookup.pkl",
-                                "fileType": "pickle",
+                                "file_type": "pickle",
                                 "code": "df = df.with_columns(pl.lit(99).alias('ext_val'))",
                             },
                         },
@@ -2363,7 +2363,7 @@ class TestScoreGraphExternalFileRemap:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": str(lookup),
-                                "fileType": "json",
+                                "file_type": "json",
                                 "code": "df = df.with_columns(base=pl.lit(obj['base']))",
                             },
                         },
@@ -2420,7 +2420,7 @@ class TestScoreGraphExternalFileRemap:
                 "data": {
                     "label": "ext",
                     "nodeType": "externalFile",
-                    "config": {"path": str(lookup), "fileType": "json", "code": code},
+                    "config": {"path": str(lookup), "file_type": "json", "code": code},
                 },
             },
             {
@@ -2491,7 +2491,7 @@ class TestScoreGraphExternalFileRemap:
                             "nodeType": "externalFile",
                             "config": {
                                 "path": "original/lookup.pkl",
-                                "fileType": "pickle",
+                                "file_type": "pickle",
                                 "code": "",
                             },
                         },
@@ -2560,7 +2560,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": "artifacts/opt_artifact.json",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
@@ -2656,7 +2656,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "opt",
                             "nodeType": "optimiserApply",
-                            "config": {"sourceType": "file", "artifact_path": str(original)},
+                            "config": {"source_type": "file", "artifact_path": str(original)},
                         },
                     },
                     {
@@ -2752,7 +2752,7 @@ class TestScoreGraphOptimiserApplyRemap:
                                     {
                                         "banding": "categorical",
                                         "column": "region",
-                                        "outputColumn": "region_band",
+                                        "output_column": "region_band",
                                         "rules": {
                                             "London": "South",
                                             "Manchester": "North",
@@ -2768,7 +2768,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "file",
+                                "source_type": "file",
                                 "artifact_path": (
                                     "artifacts/ratebook.json" if bundled else str(artifact_path)
                                 ),
@@ -2869,7 +2869,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_abc",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
@@ -2942,7 +2942,7 @@ class TestScoreGraphOptimiserApplyRemap:
                             "label": "opt",
                             "nodeType": "optimiserApply",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_abc",
                                 "version_column": "__opt_v__",
                                 "optimised_value_column": "selected_factor",
@@ -3024,7 +3024,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3123,7 +3123,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "remote-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3223,7 +3223,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "remote-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3477,7 +3477,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3565,7 +3565,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3664,7 +3664,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3771,7 +3771,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3861,7 +3861,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "remote-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -3951,7 +3951,7 @@ class TestScoreGraphModelScoreRemap:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "r1",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -4070,7 +4070,7 @@ class TestBundledModelContractInputs:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "obsolete-run",
                                 "artifact_path": "model.cbm",
                                 "task": "regression",
@@ -4267,11 +4267,13 @@ class TestResolveConfigEdgeCases:
         from haute._types import NodeType
 
         source = MagicMock()
-        source.id = "api"
+        source.id = "quote_input"
+        source.data.label = "quote_input"
         source.data.nodeType = NodeType.API_INPUT
         source.data.config = {}
         output = MagicMock()
-        output.id = "out"
+        output.id = "quote_response"
+        output.data.label = "quote_response"
         output.data.nodeType = NodeType.OUTPUT
         output.data.config = {}
         graph = MagicMock()
@@ -4411,12 +4413,12 @@ class TestResolveConfigEdgeCases:
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+                return_value=(graph, ["quote_input", "shape", "agg", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
         ):
@@ -4451,12 +4453,12 @@ class TestResolveConfigEdgeCases:
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["quotes", "shape", "agg", "out"], []),
+                return_value=(graph, ["quote_input", "shape", "agg", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quotes"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"segment": "String"}),
             patch("haute.deploy._schema.run_isolated_worker", forbidden_runner),
@@ -4505,12 +4507,12 @@ class TestResolveConfigEdgeCases:
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph) as parse,
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["api", "out"], []),
+                return_value=(graph, ["quote_input", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
@@ -4590,12 +4592,12 @@ class TestResolveConfigEdgeCases:
         graph = self._minimal_graph()
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["api", "out"], []),
+                return_value=(graph, ["quote_input", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
@@ -4621,12 +4623,12 @@ class TestResolveConfigEdgeCases:
         graph = self._minimal_graph()
         with (
             patch("haute.parser.parse_pipeline_file", return_value=graph),
-            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.find_output_node", return_value="quote_response"),
             patch(
                 "haute.deploy._config.prune_for_deploy",
-                return_value=(graph, ["api", "out"], []),
+                return_value=(graph, ["quote_input", "quote_response"], []),
             ),
-            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["quote_input"]),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(
@@ -5754,7 +5756,7 @@ class TestValidateDeployEdgeCases:
                         "data": {
                             "nodeType": "dataInput",
                             "config": {
-                                "inputType": "file",
+                                "input_type": "file",
                                 "format": "parquet",
                                 "mode": "scan",
                                 "path": "lookup.parquet",
@@ -6057,7 +6059,7 @@ class TestOmittableRequestColumns:
                         "data": {
                             "label": node_id,
                             "nodeType": "modelScore",
-                            "config": {"sourceType": "file", "model_path": f"{node_id}.cbm"},
+                            "config": {"source_type": "file", "model_path": f"{node_id}.cbm"},
                         },
                     }
                     for node_id in ("freq", "sev", "unbundled")

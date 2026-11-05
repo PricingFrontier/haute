@@ -143,6 +143,13 @@ def test_expression_depth_cap_agrees() -> None:
     assert int(match.group(1)) == steps.MAX_EXPR_DEPTH
 
 
+def test_chain_operators_agree() -> None:
+    """The operators whose left-nested chain counts as one level of nesting."""
+    match = re.search(r"^export const CHAIN_OPERATORS\b.*= new Set\(\[(.*)\]\)$", SOURCE, re.M)
+    assert match
+    assert set(re.findall(r'"([^"]+)"', match.group(1))) == set(steps._CHAIN_OPERATORS)
+
+
 def test_default_join_order_agrees() -> None:
     """A new join's row order, and the order a join type change moves to, match the renderer."""
     editor = dict(re.findall(r'^\s+(\w+): "(\w+)",?$', declaration("DEFAULT_JOIN_ORDER"), re.M))
@@ -192,10 +199,10 @@ def test_join_output_fixture_matches_polars(case: dict[str, object]) -> None:
         "kind": "join",
         "input": "claims",
         "how": case["how"],
-        "leftOn": case["leftOn"],
-        "rightOn": case["rightOn"],
+        "left_on": case["left_on"],
+        "right_on": case["right_on"],
         "suffix": fixture["suffix"],
-        "maintainOrder": steps.DEFAULT_JOIN_ORDER[str(case["how"])],
+        "maintain_order": steps.DEFAULT_JOIN_ORDER[str(case["how"])],
     }
     code = steps.render_polars_steps(
         [{"id": "s", "kind": "source", "input": "quotes"}, join],

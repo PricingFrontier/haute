@@ -478,7 +478,7 @@ _DEPENDENT_DEFAULTS: Mapping[NodeType, Mapping[str, _DependentDefault]] = node_t
         NodeType.POLARS: _NO_DEPENDENT_DEFAULTS,
         NodeType.EDGE_JOIN: MappingProxyType(
             {
-                "maintainOrder": _DependentDefault(
+                "maintain_order": _DependentDefault(
                     _join_order_default,
                     "Missing from the saved configuration; the order for this join type was used.",
                 )

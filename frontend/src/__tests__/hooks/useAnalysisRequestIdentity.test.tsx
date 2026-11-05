@@ -38,9 +38,9 @@ const common = { node, allNodes: [node], edges: [] }
 const factor = {
   banding: "breakpoints" as const,
   column: "premium",
-  outputColumn: "band",
+  output_column: "band",
   rules: [{ boundary: "50", label: "low" }, { boundary: "", label: "high" }],
-  rightClosed: true,
+  right_closed: true,
 }
 const stats = { status: "ok" as const, data_version: "generation-1", rule_counts: [750, 250] }
 const levels = {
@@ -108,7 +108,7 @@ describe("analysis request identity", () => {
       initialProps: { value: factor },
     })
     await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
-    hook.rerender({ value: { ...factor, outputColumn: "renamed_band" } })
+    hook.rerender({ value: { ...factor, output_column: "renamed_band" } })
     await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(mocks.stats).toHaveBeenCalledTimes(1)
     expect(hook.result.current.stats).toEqual(stats)

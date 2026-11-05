@@ -1,10 +1,11 @@
 """The quote store's schema changes (specs/workbench): a plan from one structure of the store's
-tables to a form's, by stable id, and the SQL Haute writes from it for the people who own a
+tables to a form's, by name, and the SQL Haute writes from it for the people who own a
 database, from an earlier form or from none, which keeps what the form removed, notes what it
 cannot make, and is one transaction."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 import pytest
 
 from haute._quote_store import _migrate, offline_plan, open_book, render_sql, store_url
+from haute._quote_store._rows import KEPT_KEY
 from haute._quote_store._schema import structure
 from haute._workbench_form import FormSpec, with_quote_details
 
@@ -38,14 +40,12 @@ def form(*tables: dict[str, Any]) -> FormSpec:
     )
 
 
-def column(name: str, type_: str = "str", id_: str | None = None, **rest: Any) -> dict[str, Any]:
-    return {"id": id_ or f"c_{name}", "name": name, "type": type_, **rest}
+def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
+    return {"name": name, "type": type_, **rest}
 
 
-def table(
-    name: str, *columns: dict[str, Any], rows: str = "one", id_: str | None = None
-) -> dict[str, Any]:
-    return {"id": id_ or f"t_{name}", "name": name, "rows": rows, "columns": list(columns)}
+def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
+    return {"name": name, "rows": rows, "columns": list(columns)}
 
 
 POLICY = table("policy", column("region"), column("value", "float"))
@@ -108,29 +108,36 @@ def script(base: FormSpec | None, release: FormSpec, dialect: str = "sqlite") ->
 # ── The plan ────────────────────────────────────────────────────────────
 
 
-def test_a_plan_names_each_step_by_stable_id() -> None:
+def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None:
     before = structure(form(POLICY, table("extras", column("notes"))))
+    # region renamed area and seats added in policy, extras renamed additions, drivers new.
     after = structure(
         form(
-            table(
-                "policy_info",
-                column("area", id_="c_region"),
-                column("value", "float"),
-                column("seats", "int"),
-                id_="t_policy",
-            ),
+            table("policy", column("area"), column("value", "float"), column("seats", "int")),
+            table("additions", column("notes")),
             table("drivers", column("age", "int")),
         )
     )
 
     made = _migrate.plan(after, before, dict.fromkeys(_migrate.wanted_counts(after, before), 0))
 
+    # A table or column is its name (READ-23): renamed, it is one the SQL keeps, values and
+    # all, and one it makes.
     assert [(step.kind, step.table, step.column, step.was) for step in made.steps] == [
-        ("rename table", "policy_info", None, "policy"),
-        ("rename column", "policy_info", "area", "region"),
-        ("add column", "policy_info", "seats", None),
+        ("add column", "policy", "area", None),
+        ("add column", "policy", "seats", None),
+        ("keep column", "policy", "region", None),
+        ("create table", "additions", None, None),
         ("create table", "drivers", None, None),
         ("keep table", "extras", None, None),
+    ]
+    assert [(step.table_key, step.column_key) for step in made.steps] == [
+        ("policy", "area"),
+        ("policy", "seats"),
+        ("policy", "region"),
+        ("additions", None),
+        ("drivers", None),
+        ("extras", None),
     ]
     assert made.refusals == ()
     # The form's tables once it is carried out: nothing of what the form removed.
@@ -158,29 +165,26 @@ def test_the_sql_from_none_makes_every_table_and_the_activity(url: str) -> None:
     open_book(url, release, environment=TEST, haute_version="1").close()
 
 
-def test_the_sql_for_a_change_renames_and_adds_keeping_every_value(url: str) -> None:
-    base = form(table("policy", column("left", id_="c_a"), column("right", id_="c_b")))
+def test_the_sql_for_a_renamed_column_adds_it_and_keeps_the_old_with_its_values(url: str) -> None:
+    base = form(table("policy", column("left"), column("right")))
     script_run(url, script(None, base))
     quote(url, left="L", right="R")
-    # A swap of two names, a change of the table's case and a column added.
-    release = form(
-        table(
-            "Policy",
-            column("right", id_="c_a"),
-            column("left", id_="c_b"),
-            column("seats", "int"),
-            id_="t_policy",
-        )
-    )
+    # right renamed starboard, and a column added.
+    release = form(table("policy", column("left"), column("starboard"), column("seats", "int")))
 
     written = script(base, release)
 
-    # Renamed through temporary names, never dropped and added again.
-    assert "haute_tmp_" in written
-    assert "DROP" not in written
+    # Nothing renamed, nothing dropped: the old column stays, its DROP commented out.
+    assert "haute_tmp_" not in written
+    assert [
+        line for line in written.splitlines() if "DROP" in line and not line.startswith("--")
+    ] == []
+    assert '-- ALTER TABLE policy DROP COLUMN "right";' in written
     script_run(url, written)
-    assert columns(url, "Policy")[2:] == ["right", "left", "seats"]
-    assert sql(url, 'SELECT "right", "left", seats FROM "Policy"') == [("L", "R", None)]
+    assert columns(url, "policy")[2:] == ["left", "right", "starboard", "seats"]
+    assert sql(url, 'SELECT "left", "right", starboard, seats FROM policy') == [
+        ("L", "R", None, None)
+    ]
     open_book(url, release, environment=TEST, haute_version="1").close()
 
 
@@ -214,46 +218,32 @@ def test_a_removed_table_or_column_is_a_drop_left_commented_out() -> None:
     ] == []
 
 
-def test_a_removed_column_s_drop_names_its_table_as_the_renames_leave_it() -> None:
-    # Two tables swap names while one loses a column: its DROP names the table under its new
-    # name, never the other table now holding its old one.
-    base = form(POLICY, table("cover", column("level")))
-    release = form(
-        table("cover", column("region"), id_="t_policy"),
-        table("policy", column("level"), id_="t_cover"),
-    )
-
-    written = script(base, release, "postgresql")
-
-    assert "-- ALTER TABLE cover DROP COLUMN value;" in written
-    assert "DROP COLUMN value;" not in written.replace("-- ALTER TABLE cover DROP COLUMN", "")
-
-
 def test_a_refusal_naming_a_name_of_many_lines_stays_a_comment() -> None:
     hostile = "a\nDELETE FROM policy;\n--"
     base = form(table("policy", column(hostile)))
-    release = form(table("policy", column(hostile, id_="c_other")))
+    # Renamed in its case alone: a new column taking the removed one's name, refused.
+    release = form(table("policy", column(hostile.upper())))
 
     written = script(base, release, "postgresql")
 
-    assert "-- Not written: the new column policy.a" in written
-    assert "-- DELETE FROM policy;" in written
-    assert "DELETE FROM policy;" not in [line.strip() for line in written.splitlines()]
+    assert "-- Not written: the new column policy.A" in written
+    assert "-- DELETE FROM POLICY;" in written
+    assert "DELETE FROM POLICY;" not in [line.strip() for line in written.splitlines()]
 
 
 def test_what_the_sql_cannot_make_is_a_note() -> None:
     base = form(POLICY, table("vehicles", column("reg"), rows="many"))
 
     # A table whose rows change is noted, never made again; a new column taking the name of
-    # one the form removes is not written, its refusal noted.
+    # one the form removes, whatever its case, is not written, its refusal noted.
     release = form(
-        table("policy", column("region"), column("value", "float", id_="c_other")),
+        table("policy", column("region"), column("Value", "float")),
         table("vehicles", column("reg"), rows="one"),
     )
     written = script(base, release, "postgresql")
 
     assert written.startswith(
-        "-- Not written: the new column policy.value takes the name of a column the form removes"
+        "-- Not written: the new column policy.Value takes the name of a column the form removes"
     )
     assert (
         "-- vehicles changes from an input table of many rows per quote to an input table of "
@@ -265,7 +255,7 @@ def test_what_the_sql_cannot_make_is_a_note() -> None:
 def test_the_sql_is_one_transaction_with_every_value_written_in(url: str) -> None:
     script_run(url, script(None, form(POLICY)))
     quote(url, region="north", value=1.5)
-    renamed = form(table("policy", column("area", id_="c_region"), column("value", "float")))
+    renamed = form(table("policy", column("area"), column("value", "float")))
     written = script(form(POLICY), renamed)
 
     assert written.startswith("-- Run with sqlite3 -bail")
@@ -278,10 +268,14 @@ def test_the_sql_is_one_transaction_with_every_value_written_in(url: str) -> Non
         script_run(url, failing)
     assert columns(url, "policy") == ["quote_reference", "quote_option", "region", "value"]
 
-    # Run whole, the tables fit the release: the app opens them, the quote's values kept.
+    # Run whole, the tables fit the release: the app opens them, the quote's values kept, the
+    # renamed column's under its old name.
     script_run(url, written)
+    assert sql(url, "SELECT region, area FROM policy") == [("north", None)]
     with open_book(url, renamed, environment=TEST, haute_version="1") as book:
-        assert book.read("A-1", 1).values["t_policy"][0]["c_region"] == "north"
+        row = book.read("A-1", 1).values["policy"][0]
+        assert row["value"] == "1.5"
+        assert json.loads(row[KEPT_KEY]) == {"region": "north"}
 
 
 def test_a_form_the_tables_already_fit_has_nothing_to_change() -> None:

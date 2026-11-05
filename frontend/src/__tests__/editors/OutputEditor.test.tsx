@@ -1,7 +1,7 @@
 /**
  * Render tests for the v2 OutputEditor.
  *
- * The OUTPUT node config is v2: { outputMapping: Entry[] }.
+ * The OUTPUT node config is v2: { output_mapping: Entry[] }.
  * Each incoming edge (= source FRAME) is one collapsible block; rows inside a
  * block map a frame column → an output_path. Tests cover:
  *   - one block per incoming frame + empty state when there are none;
@@ -398,7 +398,7 @@ describe("OutputEditor - frame blocks", () => {
 
   it("surfaces the per-frame column set from the apiInput table matching the handle", () => {
     const config = {
-      outputMapping: [
+      output_mapping: [
         { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
       ],
     }
@@ -421,7 +421,7 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -431,9 +431,9 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-add-row"))
 
     expect(onUpdateSpy).toHaveBeenCalledTimes(1)
-    const arg = onUpdateSpy.mock.calls[0][0] as { outputMapping: Record<string, unknown>[] }
-    expect(arg.outputMapping).toHaveLength(1)
-    expect(arg.outputMapping[0]).toEqual({
+    const arg = onUpdateSpy.mock.calls[0][0] as { output_mapping: Record<string, unknown>[] }
+    expect(arg.output_mapping).toHaveLength(1)
+    expect(arg.output_mapping[0]).toEqual({
       source_port: "policies",
       source_column: "",
       output_path: "",
@@ -446,7 +446,7 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
           ],
@@ -460,9 +460,9 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-row-0-remove"))
 
     expect(onUpdateSpy).toHaveBeenCalledTimes(1)
-    const arg = onUpdateSpy.mock.calls[0][0] as { outputMapping: { source_column: string }[] }
-    expect(arg.outputMapping).toHaveLength(1)
-    expect(arg.outputMapping[0].source_column).toBe("premium")
+    const arg = onUpdateSpy.mock.calls[0][0] as { output_mapping: { source_column: string }[] }
+    expect(arg.output_mapping).toHaveLength(1)
+    expect(arg.output_mapping[0].source_column).toBe("premium")
   })
 
   it("per-row enable toggle flips just that entry's enabled flag", () => {
@@ -470,7 +470,7 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
         }}
@@ -482,8 +482,8 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     expandFrame("output-frame-0")
     fireEvent.click(screen.getByTestId("output-frame-0-row-0-enabled"))
 
-    const arg = onUpdateSpy.mock.calls[0][0] as { outputMapping: { enabled: boolean }[] }
-    expect(arg.outputMapping[0].enabled).toBe(false)
+    const arg = onUpdateSpy.mock.calls[0][0] as { output_mapping: { enabled: boolean }[] }
+    expect(arg.output_mapping[0].enabled).toBe(false)
   })
 
   it("per-frame enable toggle flips every row in the frame at once", () => {
@@ -491,7 +491,7 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
@@ -506,10 +506,10 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-enable"))
 
     const arg = onUpdateSpy.mock.calls[0][0] as {
-      outputMapping: { source_port: string; enabled: boolean }[]
+      output_mapping: { source_port: string; enabled: boolean }[]
     }
-    const policies = arg.outputMapping.filter((e) => e.source_port === "policies")
-    const drivers = arg.outputMapping.filter((e) => e.source_port === "drivers")
+    const policies = arg.output_mapping.filter((e) => e.source_port === "policies")
+    const drivers = arg.output_mapping.filter((e) => e.source_port === "drivers")
     expect(policies.every((e) => e.enabled === false)).toBe(true)
     // drivers untouched
     expect(drivers.every((e) => e.enabled === true)).toBe(true)
@@ -520,7 +520,7 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "", output_path: "", enabled: true },
           ],
         }}
@@ -539,11 +539,11 @@ describe("OutputEditor - rows: add / remove / enable / save", () => {
     fireEvent.blur(pathInput)
 
     const arg = onUpdateSpy.mock.calls[onUpdateSpy.mock.calls.length - 1][0] as {
-      outputMapping: Record<string, unknown>[]
+      output_mapping: Record<string, unknown>[]
     }
     // The config holds the mapping and nothing else: the response is JSON.
-    expect(Object.keys(arg)).toEqual(["outputMapping"])
-    const entry = arg.outputMapping[0]
+    expect(Object.keys(arg)).toEqual(["output_mapping"])
+    const entry = arg.output_mapping[0]
     // Exactly the four persisted fields — no editor-only status.
     expect(Object.keys(entry).sort()).toEqual(
       ["enabled", "output_path", "source_column", "source_port"].sort(),
@@ -559,7 +559,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -569,15 +569,15 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-infer"))
 
     const arg = onUpdateSpy.mock.calls[0][0] as {
-      outputMapping: { source_column: string; output_path: string }[]
+      output_mapping: { source_column: string; output_path: string }[]
     }
     // policies has two columns → two rows.
-    expect(arg.outputMapping).toHaveLength(2)
-    expect(arg.outputMapping.map((e) => e.source_column).sort()).toEqual([
+    expect(arg.output_mapping).toHaveLength(2)
+    expect(arg.output_mapping.map((e) => e.source_column).sort()).toEqual([
       "policy_id",
       "premium",
     ])
-    for (const e of arg.outputMapping) {
+    for (const e of arg.output_mapping) {
       expect(e.output_path).toBe(`$[:].${e.source_column}`)
     }
   })
@@ -586,7 +586,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={SINGLE_FRAME_API_NODES}
         edges={SINGLE_FRAME_API_EDGES}
@@ -597,12 +597,12 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
 
     expect(onUpdateSpy).toHaveBeenCalled()
     const arg = onUpdateSpy.mock.calls[0][0] as {
-      outputMapping: { source_column: string; output_path: string }[]
+      output_mapping: { source_column: string; output_path: string }[]
     }
-    const cols = arg.outputMapping.map((e) => e.source_column).sort()
+    const cols = arg.output_mapping.map((e) => e.source_column).sort()
     // Selected config columns are mapped; the unselected one is excluded; no "" row.
     expect(cols).toEqual(["abi_code", "premium"])
-    for (const e of arg.outputMapping) {
+    for (const e of arg.output_mapping) {
       expect(e.output_path).toBe(`$[:].${e.source_column}`)
     }
   })
@@ -611,7 +611,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -628,7 +628,7 @@ describe("OutputEditor - Infer (Inferred pills)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -652,7 +652,7 @@ describe("OutputEditor - Clear", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
@@ -667,11 +667,11 @@ describe("OutputEditor - Clear", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-clear"))
 
     const arg = onUpdateSpy.mock.calls[onUpdateSpy.mock.calls.length - 1][0] as {
-      outputMapping: { source_port: string }[]
+      output_mapping: { source_port: string }[]
     }
     // The policies frame is emptied; the drivers frame survives intact.
-    expect(arg.outputMapping.some((e) => e.source_port === "policies")).toBe(false)
-    expect(arg.outputMapping.filter((e) => e.source_port === "drivers")).toHaveLength(1)
+    expect(arg.output_mapping.some((e) => e.source_port === "policies")).toBe(false)
+    expect(arg.output_mapping.filter((e) => e.source_port === "drivers")).toHaveLength(1)
     // The frame's rows are gone from the DOM and the empty-state hint shows.
     expect(screen.queryByTestId("output-frame-0-row-0")).toBeNull()
     expect(screen.getByText(/No fields mapped from this frame yet/)).toBeTruthy()
@@ -680,7 +680,7 @@ describe("OutputEditor - Clear", () => {
   it("Clear is disabled when the frame has no rows", () => {
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={vi.fn()}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -695,7 +695,7 @@ describe("OutputEditor - Clear", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -721,7 +721,7 @@ describe("OutputEditor - path validation", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
         }}
@@ -753,7 +753,7 @@ describe("OutputEditor - path validation", () => {
       render(
         <StatefulHarness
           initialConfig={{
-            outputMapping: [
+            output_mapping: [
               { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             ],
           }}
@@ -777,7 +777,7 @@ describe("OutputEditor - path validation", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].x", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].x", enabled: true },
           ],
@@ -797,7 +797,7 @@ describe("OutputEditor - path validation", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].obj", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].obj[:].x", enabled: true },
           ],
@@ -815,7 +815,7 @@ describe("OutputEditor - path validation", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].cover", enabled: true },
             { source_port: "drivers", source_column: "driver_id", output_path: "$[:].cover.drivers[:].driver_id", enabled: true },
@@ -836,7 +836,7 @@ describe("OutputEditor - path validation", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
             { source_port: "policies", source_column: "premium", output_path: "$[:].cover.premium", enabled: true },
             { source_port: "drivers", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
@@ -856,7 +856,7 @@ describe("OutputEditor - path validation", () => {
     render(
       <StatefulHarness
         initialConfig={{
-          outputMapping: [
+          output_mapping: [
             { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
           ],
         }}
@@ -890,7 +890,7 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={allNodes}
         edges={edges}
@@ -901,16 +901,16 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
     fireEvent.click(screen.getByTestId("output-frame-0-add-row"))
 
     const persisted = onUpdateSpy.mock.calls.at(-1)?.[0] as {
-      outputMapping: { source_port: string }[]
+      output_mapping: { source_port: string }[]
     }
-    expect(persisted.outputMapping.at(-1)?.source_port).toBe(name)
+    expect(persisted.output_mapping.at(-1)?.source_port).toBe(name)
   })
 
   it("two NULL-handle sources persist DISTINCT, non-empty source_ports = sanitised labels", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={TWO_SINGLE_PORT_NODES}
         edges={TWO_SINGLE_PORT_EDGES}
@@ -923,9 +923,9 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
     fireEvent.click(screen.getByTestId("output-frame-1-infer"))
 
     const arg = onUpdateSpy.mock.calls[onUpdateSpy.mock.calls.length - 1][0] as {
-      outputMapping: { source_port: string; source_column: string }[]
+      output_mapping: { source_port: string; source_column: string }[]
     }
-    const ports = arg.outputMapping.map((e) => e.source_port)
+    const ports = arg.output_mapping.map((e) => e.source_port)
     // Distinct, non-empty, equal to the sanitised source labels ("Source A" →
     // "Source_A", "Source B" → "Source_B") — NOT "" for both.
     expect(ports).toContain("Source_A")
@@ -934,7 +934,7 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
     // The two frames did not collapse onto one port.
     expect(new Set(ports).size).toBe(2)
     // Each port carries exactly its own column.
-    const byPort = Object.fromEntries(arg.outputMapping.map((e) => [e.source_port, e.source_column]))
+    const byPort = Object.fromEntries(arg.output_mapping.map((e) => [e.source_port, e.source_column]))
     expect(byPort["Source_A"]).toBe("alpha")
     expect(byPort["Source_B"]).toBe("beta")
   })
@@ -943,7 +943,7 @@ describe("OutputEditor - source_port derivation (blocker)", () => {
 
 describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   it("two sources resolving to the same port show a blocking banner", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: COLLIDING_PORT_NODES,
       edges: COLLIDING_PORT_EDGES,
     })
@@ -953,7 +953,7 @@ describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   })
 
   it("no duplicate banner when resolved ports are distinct", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -963,7 +963,7 @@ describe("OutputEditor - same-resolved-port collision (blocker)", () => {
   it("expand/collapse is isolated by edge.id even when ports collide", () => {
     // Both frames resolve to "shared"; expanding ONE must not expand the other
     // (expand state is keyed by edge.id, not the resolved port).
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: COLLIDING_PORT_NODES,
       edges: COLLIDING_PORT_EDGES,
     })
@@ -985,7 +985,7 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [row("Source_A", "alpha", "$[:].alpha"), row("Source_B", "beta", "$[:].beta")],
+          output_mapping: [row("Source_A", "alpha", "$[:].alpha"), row("Source_B", "beta", "$[:].beta")],
         }}
       />,
       { allNodes: TWO_SINGLE_PORT_NODES, edges: TWO_SINGLE_PORT_EDGES },
@@ -1000,7 +1000,7 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [
+          output_mapping: [
             row("policies", "policy_id", "$[:].policy_id"),
             row("policies", "premium", "$[:].drivers[:].premium"),
             row("drivers", "driver_id", "$[:].drivers[:].driver_id"),
@@ -1019,7 +1019,7 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
       <OutputEditor
         {...DEFAULT_PROPS}
         config={{
-          outputMapping: [
+          output_mapping: [
             row("policies", "policy_id", "$[:].cover.drivers[:].policy_id"),
             row("drivers", "driver_id", "$[:].cover.drivers[:].driver_id"),
           ],
@@ -1068,7 +1068,7 @@ describe("OutputEditor - one frame per array level (JSON-R02)", () => {
     ],
   ])("shows no banner when %s", (_case, outputMapping) => {
     render(
-      <OutputEditor {...DEFAULT_PROPS} config={{ outputMapping }} />,
+      <OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: outputMapping }} />,
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expect(screen.queryByTestId("output-same-level-banner")).toBeNull()
@@ -1080,7 +1080,7 @@ describe("OutputEditor - Inferred pill survives earlier-row removal (major)", ()
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={MULTI_FRAME_NODES}
         edges={MULTI_FRAME_EDGES}
@@ -1117,7 +1117,7 @@ describe("OutputEditor - the response document", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
-        initialConfig={{ outputMapping: [] }}
+        initialConfig={{ output_mapping: [] }}
         onUpdateSpy={onUpdateSpy}
         allNodes={[]}
         edges={[]}
@@ -1132,7 +1132,7 @@ describe("OutputEditor - the response document", () => {
 
 describe("OutputEditor - frames-table input schema", () => {
   it("is collapsed by default (no schema container)", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -1141,7 +1141,7 @@ describe("OutputEditor - frames-table input schema", () => {
   })
 
   it("expands to show each frame's columns + types (apiInput config source)", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -1164,7 +1164,7 @@ describe("OutputEditor - frames-table input schema", () => {
 
   it("excludes unselected columns and shows dtypes for a non-apiInput source", () => {
     // Single-port polars source: columns come from `_columns` ({name, dtype}).
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: SINGLE_PORT_NODES,
       edges: SINGLE_PORT_EDGES,
     })
@@ -1178,7 +1178,7 @@ describe("OutputEditor - frames-table input schema", () => {
   })
 
   it("a single-frame apiInput omits its unselected column from the schema view", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: SINGLE_FRAME_API_NODES,
       edges: SINGLE_FRAME_API_EDGES,
     })
@@ -1191,7 +1191,7 @@ describe("OutputEditor - frames-table input schema", () => {
   })
 
   it("collapses again on a second toggle", () => {
-    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />, {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ output_mapping: [] }} />, {
       allNodes: MULTI_FRAME_NODES,
       edges: MULTI_FRAME_EDGES,
     })
@@ -1206,7 +1206,7 @@ describe("OutputEditor - frames-table input schema", () => {
 
 describe("OutputEditor - assembled-output preview", () => {
   const SINGLE_PORT_CONFIG = {
-    outputMapping: [
+    output_mapping: [
       { source_port: "Upstream Node", source_column: "premium", output_path: "$[:].premium", enabled: true },
     ],
   }
@@ -1253,7 +1253,7 @@ describe("OutputEditor - assembled-output preview", () => {
     await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
 
     view.rerender(editor({
-      outputMapping: [{ ...SINGLE_PORT_CONFIG.outputMapping[0], output_path: "$[:].total" }],
+      output_mapping: [{ ...SINGLE_PORT_CONFIG.output_mapping[0], output_path: "$[:].total" }],
     }))
     expect(screen.queryByTestId("output-preview-json")).toBeNull()
     expect(screen.getByText("Refresh to assemble the response from the current mapping.")).toBeTruthy()
@@ -1275,7 +1275,7 @@ describe("OutputEditor - assembled-output preview", () => {
     await waitFor(() => expect(mockOutputAssembleDryRun).toHaveBeenCalled())
     const arg = mockOutputAssembleDryRun.mock.calls[0][0]
     expect(arg.nodeId).toBe("output_1")
-    expect(arg.outputMapping).toEqual(SINGLE_PORT_CONFIG.outputMapping)
+    expect(arg.outputMapping).toEqual(SINGLE_PORT_CONFIG.output_mapping)
   })
 
   it("shows a 'showing N of M' note when the document exceeds the row cap", async () => {

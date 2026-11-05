@@ -790,7 +790,7 @@ def _data_input(label: str) -> object:
             label=label,
             nodeType=NodeType.DATA_INPUT,
             config={
-                "inputType": "file",
+                "input_type": "file",
                 "format": "csv",
                 "mode": "scan",
                 "path": "data/rows.csv",
@@ -876,22 +876,18 @@ class TestSaveService:
         assert (outside / "doc.json").read_text(encoding="utf-8") == '{"k": 1}'
 
     @_ESCAPES
-    def test_the_on_disk_baseline_leaves_out_a_file_outside_the_pipeline_folder(
-        self, layout: tuple[Path, Path], escape: str, monkeypatch: pytest.MonkeyPatch
+    def test_the_on_disk_baseline_holds_only_files_the_pipeline_s_nodes_own(
+        self, layout: tuple[Path, Path], escape: str
     ) -> None:
-        from haute.routes._save_pipeline import SavePipelineService
-
+        """The stale sweep's baseline is what the file's nodes own: a transform owns no
+        file (READ-22), so a ``config/polars/`` file left beside it is not swept, and
+        nothing outside the pipeline folder is ever in it."""
         project, _ = layout
         (project / "main.py").write_text(_PIPELINE, encoding="utf-8")
-        owned = project / "config" / "polars" / "quotes.json"
-        owned.parent.mkdir(parents=True)
-        owned.write_text("{}", encoding="utf-8")
+        leftover = project / "config" / "polars" / "quotes.json"
+        leftover.parent.mkdir(parents=True)
+        leftover.write_text("{}", encoding="utf-8")
         escaping = _escaping(project, escape, "doc.json")
-        monkeypatch.setattr(
-            SavePipelineService,
-            "_discarded_sidecars_recursive",
-            lambda _self, _graph: ["config/polars/quotes.json", escaping],
-        )
 
         service = self._service(project)
         # The save reads its file once; the baseline is computed from that read.
@@ -900,7 +896,8 @@ class TestSaveService:
         )
         prev = service._compute_disk_prev_config_files(on_disk)
 
-        assert "config/polars/quotes.json" in prev
+        assert prev == {}
+        assert "config/polars/quotes.json" not in prev
         assert escaping not in prev
 
 

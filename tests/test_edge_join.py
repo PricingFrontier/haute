@@ -76,7 +76,7 @@ def test_execute_edge_join_collects_two_eager_frames_when_requested() -> None:
     result = execute_edge_join(
         pl.DataFrame({"id": [1, 2], "left": ["a", "b"]}),
         pl.DataFrame({"id": [1], "right": [10]}),
-        {"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+        {"how": "left", "maintain_order": "left_right", "on": ["id"]},
         collect_eager=True,
     )
 
@@ -130,12 +130,12 @@ def test_edge_join_config_keys_are_registered() -> None:
     expected = {
         "how",
         "on",
-        "leftOn",
-        "rightOn",
+        "left_on",
+        "right_on",
         "suffix",
         "coalesce",
         "validate",
-        "maintainOrder",
+        "maintain_order",
     }
     assert expected <= VALID_KEYS[NodeType.EDGE_JOIN]
     assert "baseInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
@@ -145,7 +145,7 @@ def test_edge_join_config_keys_are_registered() -> None:
             NodeType.EDGE_JOIN,
             {
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["region"],
                 "suffix": "_lookup",
             },
@@ -192,12 +192,12 @@ pipeline.connect("quotes", "join_rates", target_port="base")
     assert node.data.nodeType is NodeType.EDGE_JOIN
     assert node.data.config == {
         "how": "left",
-        "leftOn": ["region"],
-        "rightOn": ["rating_region"],
+        "left_on": ["region"],
+        "right_on": ["rating_region"],
         "suffix": "_lookup",
         "coalesce": True,
         "validate": "m:1",
-        "maintainOrder": "left",
+        "maintain_order": "left",
     }
 
 
@@ -235,7 +235,7 @@ pipeline.connect("quotes", "join_rates", target_port="base")
         ConfigError, match="Edge Join 'join_rates' does not state its joined rows' order"
     ) as refused:
         parse_pipeline_file(_write_pipeline(tmp_path, code))
-    assert refused.value.context["maintainOrder"] == order
+    assert refused.value.context["maintain_order"] == order
 
 
 @pytest.mark.parametrize("selected_columns", [None, [], ["factor"]])
@@ -269,7 +269,7 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(
             _edge_join_node(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["region"],
                     "suffix": "_lookup",
                     **(
@@ -305,18 +305,11 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(
     constant_dir = tmp_path / "config" / "constant"
     constant_dir.mkdir(parents=True)
     (constant_dir / "quotes.json").write_text(
-        json.dumps({"values": [{"name": "region", "value": "N"}]}),
+        json.dumps({"values": {"region": "N"}}),
         encoding="utf-8",
     )
     (constant_dir / "lookup.json").write_text(
-        json.dumps(
-            {
-                "values": [
-                    {"name": "region", "value": "N"},
-                    {"name": "factor", "value": "1.1"},
-                ]
-            }
-        ),
+        json.dumps({"values": {"region": "N", "factor": 1.1}}),
         encoding="utf-8",
     )
     parsed = parse_pipeline_file(_write_pipeline(tmp_path, code))
@@ -380,7 +373,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
             _edge_join_node(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["region"],
                 }
             ),
@@ -396,11 +389,11 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     constant_dir = tmp_path / "config" / "constant"
     constant_dir.mkdir(parents=True)
     (constant_dir / "Data_Source_5.json").write_text(
-        json.dumps({"values": ds_values}),
+        json.dumps({"values": {"region": "N"}}),
         encoding="utf-8",
     )
     (constant_dir / "Enrich_Step.json").write_text(
-        json.dumps({"values": enrich_values}),
+        json.dumps({"values": {"region": "N", "factor": 1.1}}),
         encoding="utf-8",
     )
     path = _write_pipeline(tmp_path, code)
@@ -450,7 +443,7 @@ def test_edge_join_codegen_fails_loudly_when_base_role_handle_is_missing() -> No
             _edge_join_node(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["region"],
                 }
             ),
@@ -469,13 +462,13 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
     graph = PipelineGraph(
         nodes=[
             GraphNode(
-                id="request",
-                data=NodeData(label="request", nodeType=NodeType.API_INPUT, config={}),
+                id="quote_input",
+                data=NodeData(label="quote_input", nodeType=NodeType.API_INPUT, config={}),
             ),
             _edge_join_node(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["region"],
                 }
             ),
@@ -483,14 +476,14 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
         edges=[
             GraphEdge(
                 id="e_quotes_join",
-                source="request",
+                source="quote_input",
                 sourceHandle="quotes",
                 target="join",
                 targetHandle="base",
             ),
             GraphEdge(
                 id="e_lookup_join",
-                source="request",
+                source="quote_input",
                 sourceHandle="lookup",
                 target="join",
                 targetHandle="join",
@@ -501,11 +494,11 @@ def test_edge_join_codegen_allows_distinct_frames_from_one_api_input_node() -> N
     code = graph_to_code(graph, pipeline_name="joins")
 
     assert (
-        'pipeline.connect("request", "Join_Rates", source_port="quotes", target_port="base")'
+        'pipeline.connect("quote_input", "Join_Rates", source_port="quotes", target_port="base")'
         in code
     )
     assert (
-        'pipeline.connect("request", "Join_Rates", source_port="lookup", target_port="join")'
+        'pipeline.connect("quote_input", "Join_Rates", source_port="lookup", target_port="join")'
         in code
     )
 
@@ -527,7 +520,7 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                 data=NodeData(
                     label="rating",
                     nodeType=NodeType.SUBMODEL,
-                    config={"definitionId": "rating", "alias": "rating"},
+                    config={"definition_id": "rating", "alias": "rating"},
                 ),
             ),
         ],
@@ -553,7 +546,7 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                                 "nodeType": "edgeJoin",
                                 "config": {
                                     "how": "left",
-                                    "maintainOrder": "left_right",
+                                    "maintain_order": "left_right",
                                     "on": ["id"],
                                 },
                             },
@@ -603,7 +596,7 @@ def test_submodel_edge_join_codegen_uses_public_input_role_edge() -> None:
     module = files["modules/rating.py"]
     assert "base_input=" not in module
     assert "join_input=" not in module
-    assert '"targets": [{"nodeId": "join", "handleId": "base"}]' in module
+    assert '"targets": [{"node_id": "join", "handle_id": "base"}]' in module
     assert 'submodel.connect("Lookup", "Join", target_port="join")' in module
 
 
@@ -641,7 +634,7 @@ def _external_edge_join_with_groupable_inputs() -> PipelineGraph:
                     nodeType=NodeType.EDGE_JOIN,
                     config={
                         "how": "left",
-                        "maintainOrder": "left_right",
+                        "maintain_order": "left_right",
                         "on": ["id"],
                     },
                 ),
@@ -685,7 +678,7 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
     occurrence = next(
         node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
     )
-    definition = result.graph.submodels[occurrence.data.config["definitionId"]]
+    definition = result.graph.submodels[occurrence.data.config["definition_id"]]
     output_port_by_source = {port.source.node_id: port.name for port in definition.output_ports}
 
     join_config = result.graph.node_map["join"].data.config
@@ -772,7 +765,7 @@ def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects()
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(base, join): ...
+    def join_rates(quotes, lookup): ...
 
     pipeline.connect("lookup", "join_rates", target_port="join")
     pipeline.connect("quotes", "join_rates", target_port="base")
@@ -806,7 +799,7 @@ def test_edge_join_declaration_joins_in_pipeline_run() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(base, join): ...
+    def join_rates(quotes, lookup): ...
 
     pipeline.connect("quotes", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
@@ -821,7 +814,7 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
     pipeline = Pipeline("joins")
 
     @pipeline.api_input(api_input=True)
-    def quotes() -> pl.DataFrame:
+    def quote_input() -> pl.DataFrame:
         raise AssertionError("score() should seed API inputs without calling the source")
 
     @pipeline.data_input
@@ -829,9 +822,9 @@ def test_edge_join_declaration_joins_in_pipeline_score() -> None:
         return pl.DataFrame({"region": ["N", "S"], "factor": [1.1, 0.9]})
 
     @pipeline.edge_join(how="left", maintain_order="left_right", on=["region"])
-    def join_rates(base, join): ...
+    def join_rates(quote_input, lookup): ...
 
-    pipeline.connect("quotes", "join_rates", target_port="base")
+    pipeline.connect("quote_input", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
 
     result = pipeline.score(pl.DataFrame({"quote_id": [1, 2, 3], "region": ["N", "S", "E"]}))
@@ -851,7 +844,7 @@ def test_codegen_edge_join_uses_ports_without_legacy_role_decorator_args() -> No
                 id="lookup",
                 data=NodeData(label="lookup", nodeType=NodeType.CONSTANT, config={"values": []}),
             ),
-            _edge_join_node({"how": "left", "maintainOrder": "left_right", "on": ["region"]}),
+            _edge_join_node({"how": "left", "maintain_order": "left_right", "on": ["region"]}),
         ],
         edges=[
             GraphEdge(id="lookup_join", source="lookup", target="join", targetHandle="join"),
@@ -871,7 +864,7 @@ def test_edge_join_builder_joins_by_target_handle_roles() -> None:
     _, fn, is_source = _build_edge_join(
         {
             "how": "left",
-            "maintainOrder": "left_right",
+            "maintain_order": "left_right",
             "on": ["region"],
             "suffix": "_lookup",
         },
@@ -893,9 +886,9 @@ def test_edge_join_builder_supports_left_on_right_on() -> None:
     _, fn, _ = _build_edge_join(
         {
             "how": "inner",
-            "maintainOrder": "left_right",
-            "leftOn": ["region"],
-            "rightOn": ["rating_region"],
+            "maintain_order": "left_right",
+            "left_on": ["region"],
+            "right_on": ["rating_region"],
         },
         source_ids=["quotes", "lookup"],
     )
@@ -913,7 +906,7 @@ def test_edge_join_builder_rejects_duplicate_target_handle_roles() -> None:
         _build_edge_join(
             {
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["region"],
             },
             source_ids=["quotes", "lookup"],
@@ -943,7 +936,7 @@ def test_edge_join_codegen_rejects_duplicate_target_handle_roles() -> None:
             _edge_join_node(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["region"],
                 }
             ),
@@ -961,18 +954,18 @@ def test_edge_join_codegen_rejects_duplicate_target_handle_roles() -> None:
 @pytest.mark.parametrize(
     ("config", "message"),
     [
-        ({"how": "cross", "maintainOrder": "left_right", "on": ["region"]}, "cross"),
+        ({"how": "cross", "maintain_order": "left_right", "on": ["region"]}, "cross"),
         (
             {
                 "on": ["region"],
-                "leftOn": ["region"],
+                "left_on": ["region"],
             },
-            "on.*leftOn",
+            "on.*left_on",
         ),
         (
             {
-                "leftOn": ["region", "vehicle"],
-                "rightOn": ["rating_region"],
+                "left_on": ["region", "vehicle"],
+                "right_on": ["rating_region"],
             },
             "same number",
         ),
@@ -1123,13 +1116,13 @@ def test_edge_join_runtime_how_matrix_with_unmatched_rows_on_both_sides(
     expected_rows: list[tuple],
 ) -> None:
     result = _run_edge_join(
-        {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": ["k"]}, _HOW_BASE, _HOW_JOIN
+        {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": ["k"]}, _HOW_BASE, _HOW_JOIN
     )
     _assert_edge_join_output(result, expected_columns, expected_rows)
 
 
 def test_edge_join_runtime_cross_join_is_full_product_with_suffixed_collisions() -> None:
-    result = _run_edge_join({"how": "cross", "maintainOrder": "left_right"}, _HOW_BASE, _HOW_JOIN)
+    result = _run_edge_join({"how": "cross", "maintain_order": "left_right"}, _HOW_BASE, _HOW_JOIN)
     # Cross joins have no keys, so the shared name ``k`` is an ordinary
     # collision and the right copy gets the default suffix.
     expected_rows = [
@@ -1145,7 +1138,7 @@ def test_edge_join_runtime_semi_join_dedupes_duplicate_right_matches() -> None:
 
     # The fixture provably multiplies under a plain left join (k=2 twice)…
     left_result = _run_edge_join(
-        {"how": "left", "maintainOrder": "left_right", "on": ["k"]}, _HOW_BASE, dup_join
+        {"how": "left", "maintain_order": "left_right", "on": ["k"]}, _HOW_BASE, dup_join
     )
     _assert_edge_join_output(
         left_result,
@@ -1155,7 +1148,7 @@ def test_edge_join_runtime_semi_join_dedupes_duplicate_right_matches() -> None:
 
     # …while semi keeps each matching base row exactly once with no right columns.
     semi_result = _run_edge_join(
-        {"how": "semi", "maintainOrder": "left", "on": ["k"]}, _HOW_BASE, dup_join
+        {"how": "semi", "maintain_order": "left", "on": ["k"]}, _HOW_BASE, dup_join
     )
     _assert_edge_join_output(semi_result, ["k", "bv"], [(2, "b2"), (3, "b3")])
 
@@ -1163,7 +1156,7 @@ def test_edge_join_runtime_semi_join_dedupes_duplicate_right_matches() -> None:
 def test_edge_join_runtime_anti_join_keeps_only_unmatched_base_rows() -> None:
     dup_join = pl.DataFrame({"k": [2, 2, 3], "jv": ["a", "b", "c"]})
     result = _run_edge_join(
-        {"how": "anti", "maintainOrder": "left", "on": ["k"]}, _HOW_BASE, dup_join
+        {"how": "anti", "maintain_order": "left", "on": ["k"]}, _HOW_BASE, dup_join
     )
     _assert_edge_join_output(result, ["k", "bv"], [(1, "b1")])
 
@@ -1176,7 +1169,7 @@ _SUFFIX_JOIN = pl.DataFrame({"k": [1], "shared": ["R"], "also": ["Ra"]})
 
 def test_edge_join_runtime_default_suffix_applies_to_every_colliding_column() -> None:
     result = _run_edge_join(
-        {"how": "inner", "maintainOrder": "left_right", "on": ["k"]}, _SUFFIX_BASE, _SUFFIX_JOIN
+        {"how": "inner", "maintain_order": "left_right", "on": ["k"]}, _SUFFIX_BASE, _SUFFIX_JOIN
     )
     _assert_edge_join_output(
         result,
@@ -1187,7 +1180,7 @@ def test_edge_join_runtime_default_suffix_applies_to_every_colliding_column() ->
 
 def test_edge_join_runtime_custom_suffix_applies_to_every_colliding_column() -> None:
     result = _run_edge_join(
-        {"how": "inner", "maintainOrder": "left_right", "on": ["k"], "suffix": "_lkp"},
+        {"how": "inner", "maintain_order": "left_right", "on": ["k"], "suffix": "_lkp"},
         _SUFFIX_BASE,
         _SUFFIX_JOIN,
     )
@@ -1200,7 +1193,7 @@ def test_edge_join_runtime_custom_suffix_applies_to_every_colliding_column() -> 
 
 def test_edge_join_runtime_suffix_untouched_when_no_columns_collide() -> None:
     result = _run_edge_join(
-        {"how": "inner", "maintainOrder": "left_right", "on": ["k"], "suffix": "_lkp"},
+        {"how": "inner", "maintain_order": "left_right", "on": ["k"], "suffix": "_lkp"},
         _HOW_BASE,
         _HOW_JOIN,
     )
@@ -1217,7 +1210,7 @@ def test_edge_join_refuses_a_coalesce_that_is_not_a_boolean_before_any_join(
 ) -> None:
     with pytest.raises(ConfigError, match="coalesce must be true or false") as refused:
         build_edge_join_kwargs(
-            {"how": "inner", "maintainOrder": "left_right", "on": ["k"], "coalesce": coalesce}
+            {"how": "inner", "maintain_order": "left_right", "on": ["k"], "coalesce": coalesce}
         )
 
     assert refused.value.context["coalesce"] == coalesce
@@ -1240,7 +1233,7 @@ def test_edge_join_runtime_inner_join_coalesce_controls_key_right_column(
     expected_rows: list[tuple],
 ) -> None:
     result = _run_edge_join(
-        {"how": "inner", "maintainOrder": "left_right", "on": ["k"], "coalesce": coalesce},
+        {"how": "inner", "maintain_order": "left_right", "on": ["k"], "coalesce": coalesce},
         _HOW_BASE,
         _HOW_JOIN,
     )
@@ -1264,7 +1257,7 @@ def test_edge_join_runtime_left_right_coalesce_false_keeps_null_filled_key_right
     expected_rows: list[tuple],
 ) -> None:
     result = _run_edge_join(
-        {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": ["k"], "coalesce": False},
+        {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": ["k"], "coalesce": False},
         _HOW_BASE,
         _HOW_JOIN,
     )
@@ -1289,7 +1282,7 @@ def test_edge_join_runtime_semi_anti_accept_and_ignore_coalesce(
     # there is nothing to coalesce — the flag is accepted and the output
     # is identical to the unflagged join.
     result = _run_edge_join(
-        {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": ["k"], "coalesce": coalesce},
+        {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": ["k"], "coalesce": coalesce},
         _HOW_BASE,
         _HOW_JOIN,
     )
@@ -1302,7 +1295,7 @@ def test_edge_join_runtime_cross_join_ignores_coalesce(coalesce: bool) -> None:
     # accepted and ignored — the full product with suffixed collisions is
     # unchanged (same spirit as the cross+validate pin).
     result = _run_edge_join(
-        {"how": "cross", "maintainOrder": "left_right", "coalesce": coalesce}, _HOW_BASE, _HOW_JOIN
+        {"how": "cross", "maintain_order": "left_right", "coalesce": coalesce}, _HOW_BASE, _HOW_JOIN
     )
     assert result.height == 9
     assert result.columns == ["k", "bv", "k_right", "jv"]
@@ -1314,7 +1307,7 @@ def test_edge_join_runtime_cross_join_ignores_coalesce(coalesce: bool) -> None:
         # Polars default for full joins is coalesce=False: both key columns
         # survive, with nulls marking each side's unmatched rows.
         (
-            {"how": "full", "maintainOrder": "left_right", "on": ["k"]},
+            {"how": "full", "maintain_order": "left_right", "on": ["k"]},
             ["k", "bv", "k_right", "jv"],
             [
                 (1, "b1", None, None),
@@ -1324,7 +1317,7 @@ def test_edge_join_runtime_cross_join_ignores_coalesce(coalesce: bool) -> None:
             ],
         ),
         (
-            {"how": "full", "maintainOrder": "left_right", "on": ["k"], "coalesce": False},
+            {"how": "full", "maintain_order": "left_right", "on": ["k"], "coalesce": False},
             ["k", "bv", "k_right", "jv"],
             [
                 (1, "b1", None, None),
@@ -1335,7 +1328,7 @@ def test_edge_join_runtime_cross_join_ignores_coalesce(coalesce: bool) -> None:
         ),
         # coalesce=True merges both key columns: k carries 4 from the right.
         (
-            {"how": "full", "maintainOrder": "left_right", "on": ["k"], "coalesce": True},
+            {"how": "full", "maintain_order": "left_right", "on": ["k"], "coalesce": True},
             ["k", "bv", "jv"],
             [(1, "b1", None), (2, "b2", "j2"), (3, "b3", "j3"), (4, None, "j4")],
         ),
@@ -1351,7 +1344,7 @@ def test_edge_join_runtime_full_join_coalesce_controls_key_right_presence(
     _assert_edge_join_output(result, expected_columns, expected_rows)
 
 
-# -- leftOn / rightOn ---------------------------------------------------------
+# -- left_on / right_on ---------------------------------------------------------
 
 _LO_BASE = pl.DataFrame({"lk": [1, 2], "bv": ["b1", "b2"]})
 _RO_JOIN = pl.DataFrame({"rk": [2, 3], "jv": ["j2", "j3"]})
@@ -1378,7 +1371,12 @@ def test_edge_join_runtime_left_on_right_on_matrix_with_differing_key_names(
     expected_rows: list[tuple],
 ) -> None:
     result = _run_edge_join(
-        {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "leftOn": ["lk"], "rightOn": ["rk"]},
+        {
+            "how": how,
+            "maintain_order": DEFAULT_JOIN_ORDER[how],
+            "left_on": ["lk"],
+            "right_on": ["rk"],
+        },
         _LO_BASE,
         _RO_JOIN,
     )
@@ -1389,9 +1387,9 @@ def test_edge_join_runtime_full_join_left_on_right_on_coalesce_merges_into_left_
     result = _run_edge_join(
         {
             "how": "full",
-            "maintainOrder": "left_right",
-            "leftOn": ["lk"],
-            "rightOn": ["rk"],
+            "maintain_order": "left_right",
+            "left_on": ["lk"],
+            "right_on": ["rk"],
             "coalesce": True,
         },
         _LO_BASE,
@@ -1410,9 +1408,9 @@ def test_edge_join_runtime_multi_column_left_on_right_on_keys() -> None:
     result = _run_edge_join(
         {
             "how": "inner",
-            "maintainOrder": "left_right",
-            "leftOn": ["a", "b"],
-            "rightOn": ["c", "d"],
+            "maintain_order": "left_right",
+            "left_on": ["a", "b"],
+            "right_on": ["c", "d"],
         },
         base_df,
         join_df,
@@ -1422,7 +1420,7 @@ def test_edge_join_runtime_multi_column_left_on_right_on_keys() -> None:
 
 def test_edge_join_runtime_cross_join_rejects_left_on_right_on_keys() -> None:
     _assert_edge_join_raises(
-        {"how": "cross", "maintainOrder": "left_right", "leftOn": ["lk"], "rightOn": ["rk"]},
+        {"how": "cross", "maintain_order": "left_right", "left_on": ["lk"], "right_on": ["rk"]},
         _LO_BASE,
         _RO_JOIN,
         ConfigError,
@@ -1473,7 +1471,7 @@ def test_edge_join_runtime_validate_passes_when_relationship_holds(
     expected_rows: list[tuple],
 ) -> None:
     result = _run_edge_join(
-        {"how": "left", "maintainOrder": "left_right", "on": ["k"], "validate": validate},
+        {"how": "left", "maintain_order": "left_right", "on": ["k"], "validate": validate},
         base_df,
         join_df,
     )
@@ -1496,7 +1494,7 @@ def test_edge_join_runtime_validate_violation_fails_loudly(
     join_df: pl.DataFrame,
 ) -> None:
     _assert_edge_join_raises(
-        {"how": "left", "maintainOrder": "left_right", "on": ["k"], "validate": validate},
+        {"how": "left", "maintain_order": "left_right", "on": ["k"], "validate": validate},
         base_df,
         join_df,
         pl.exceptions.ComputeError,
@@ -1506,7 +1504,7 @@ def test_edge_join_runtime_validate_violation_fails_loudly(
 
 def test_edge_join_runtime_validate_rejects_unknown_mode_loudly() -> None:
     _assert_edge_join_raises(
-        {"how": "left", "maintainOrder": "left_right", "on": ["k"], "validate": "bogus"},
+        {"how": "left", "maintain_order": "left_right", "on": ["k"], "validate": "bogus"},
         _HOW_BASE,
         _HOW_JOIN,
         ConfigError,
@@ -1517,7 +1515,7 @@ def test_edge_join_runtime_validate_rejects_unknown_mode_loudly() -> None:
 @pytest.mark.parametrize("how", ["semi", "anti"])
 def test_edge_join_runtime_validate_unsupported_on_semi_anti_fails_loudly(how: str) -> None:
     _assert_edge_join_raises(
-        {"how": how, "maintainOrder": DEFAULT_JOIN_ORDER[how], "on": ["k"], "validate": "1:1"},
+        {"how": how, "maintain_order": DEFAULT_JOIN_ORDER[how], "on": ["k"], "validate": "1:1"},
         _HOW_BASE,
         _HOW_JOIN,
         pl.exceptions.ComputeError,
@@ -1531,7 +1529,7 @@ def test_edge_join_runtime_cross_join_ignores_validate() -> None:
     # If a Polars upgrade starts rejecting it, this test must be revisited
     # alongside the frontend editor's validate field.
     result = _run_edge_join(
-        {"how": "cross", "maintainOrder": "left_right", "validate": "1:1"}, _HOW_BASE, _HOW_JOIN
+        {"how": "cross", "maintain_order": "left_right", "validate": "1:1"}, _HOW_BASE, _HOW_JOIN
     )
     assert result.height == 9
     assert result.columns == ["k", "bv", "k_right", "jv"]
@@ -1565,7 +1563,7 @@ def test_edge_join_runtime_validate_violation_attributed_to_join_node_in_graph_e
             _edge_join_node(
                 {
                     "how": "left",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["k"],
                     "validate": "1:1",
                 }
@@ -1593,7 +1591,7 @@ def test_edge_join_runtime_mismatched_key_dtypes_fail_loudly() -> None:
     # an empty or wrong frame.
     str_join = pl.DataFrame({"k": ["1", "2"], "jv": ["a", "b"]})
     _assert_edge_join_raises(
-        {"how": "inner", "maintainOrder": "left_right", "on": ["k"]},
+        {"how": "inner", "maintain_order": "left_right", "on": ["k"]},
         _HOW_BASE,
         str_join,
         pl.exceptions.SchemaError,
@@ -1606,7 +1604,7 @@ def test_edge_join_runtime_numeric_key_widths_upcast_to_supertype() -> None:
     # supertype (a documented cast, not silence — values still match).
     i32_join = pl.DataFrame({"k": pl.Series([2, 3], dtype=pl.Int32), "jv": ["a", "b"]})
     result = _run_edge_join(
-        {"how": "inner", "maintainOrder": "left_right", "on": ["k"]}, _HOW_BASE, i32_join
+        {"how": "inner", "maintain_order": "left_right", "on": ["k"]}, _HOW_BASE, i32_join
     )
     _assert_edge_join_output(result, ["k", "bv", "jv"], [(2, "b2", "a"), (3, "b3", "b")])
     assert result.schema["k"] == pl.Int64
@@ -1617,7 +1615,7 @@ def test_edge_join_rejects_handleless_incoming_edges() -> None:
         _build_edge_join(
             {
                 "how": "left",
-                "maintainOrder": "left_right",
+                "maintain_order": "left_right",
                 "on": ["region"],
             },
             source_ids=["quotes", "lookup"],
@@ -1628,7 +1626,7 @@ def test_edge_join_rejects_handleless_incoming_edges() -> None:
 def test_edge_join_roles_come_from_target_handles_even_when_source_ids_match() -> None:
     """Two API frames may originate at one API node but occupy different roles."""
     _, fn, _ = _build_edge_join(
-        {"how": "left", "maintainOrder": "left_right", "on": ["region"]},
+        {"how": "left", "maintain_order": "left_right", "on": ["region"]},
         source_ids=["api_request", "api_request"],
         source_names=["lookup_frame", "quotes_frame"],
         target_handles=["join", "base"],
@@ -1646,7 +1644,7 @@ def test_edge_join_roles_come_from_target_handles_even_when_source_ids_match() -
 def test_edge_join_rejects_legacy_config_role_selectors(role_key: str) -> None:
     config = {
         "how": "left",
-        "maintainOrder": "left_right",
+        "maintain_order": "left_right",
         "on": ["region"],
         role_key: "legacy-source",
     }

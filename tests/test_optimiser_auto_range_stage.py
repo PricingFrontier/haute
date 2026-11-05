@@ -60,7 +60,7 @@ def _body(path: Path, **config: Any) -> OptimiserFrontierAutoRangeRequest:
                         "label": "source",
                         "nodeType": "dataInput",
                         "config": {
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             "path": str(path),

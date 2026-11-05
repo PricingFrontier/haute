@@ -86,7 +86,7 @@
     },
     "downstream": [
       {"op": "add_node", "node_type": "explore", "name": "inspect", "config": {}},
-      {"op": "add_edge", "source": "card", "target": "inspect", "source_handle": "quotes"}
+      {"op": "add_edge", "source": "quote_input", "target": "inspect", "source_handle": "quotes"}
     ]
   }
 }

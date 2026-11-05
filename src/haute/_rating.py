@@ -45,6 +45,32 @@ from haute.errors import (
 
 logger = get_logger(component="rating")
 
+
+class RatingDuplicateEntriesError(ConfigSettingError):
+    """A rating table with two entries for the same levels (READ-06).
+
+    Refused at run time once the levels are converted to the factor columns'
+    types, and on save for levels identical as written or equal under the
+    table's ``factor_dtypes``; no path keeps one of the two. ``levels`` are the
+    entries' levels as written.
+    """
+
+    def __init__(self, table: Mapping[str, Any], levels: list[dict[str, Any]]) -> None:
+        name = table.get("name") or table.get("output_column") or "unnamed"
+        written = "; ".join(
+            ", ".join(f"{factor}={value!r}" for factor, value in level.items()) for level in levels
+        )
+        super().__init__(
+            f"Rating table {name!r} has more than one entry for the same levels: {written}. "
+            "Keep one entry for each combination of levels.",
+            setting="tables",
+            fix="Remove or merge the duplicate entries.",
+            values=tuple(levels),
+        )
+        self.table = name
+        self.levels = levels
+
+
 # ---------------------------------------------------------------------------
 # Banding
 # ---------------------------------------------------------------------------
@@ -599,7 +625,7 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     # save writes anything.
     compact_banding_config_for_sidecar(config)
     for factor in factors:
-        output_column = str(factor.get("outputColumn", "") or "").strip()
+        output_column = str(factor.get("output_column", "") or "").strip()
         configured_rules = factor.get("rules", []) or []
         if not str(factor.get("column", "") or "").strip() or not output_column:
             continue
@@ -608,7 +634,7 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
             # and one must band rows: a falsy label such as 0 reads as no band name.
             intervals = _breakpoints_to_rules(
                 normalise_banding_rules("breakpoints", configured_rules),
-                right_closed=bool(factor.get("rightClosed", True)),
+                right_closed=bool(factor.get("right_closed", True)),
             )
             if not any(
                 _banding_rule_comparators(rule) and rule.get("assignment") not in (None, "")
@@ -653,11 +679,11 @@ def apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Fra
         lf = _apply_banding(
             lf,
             factor["column"],
-            factor["outputColumn"],
+            factor["output_column"],
             banding_type,
             factor["rules"],
             factor.get("default"),
-            right_closed=factor.get("rightClosed", True),
+            right_closed=factor.get("right_closed", True),
             schema=schema,
         )
     return lf
@@ -756,7 +782,7 @@ _RATING_PARAMETRIC_DESCRIPTOR_KINDS = frozenset(
     {"Categorical", "Datetime", "Duration", "Decimal", "Enum"}
 )
 _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY: Mapping[str, str] = MappingProxyType(
-    {"type": "kind", "time_unit": "timeUnit", "time_zone": "timeZone"}
+    {"type": "kind", "time_unit": "time_unit", "time_zone": "time_zone"}
 )
 _RATING_SPEC_KEY_BY_DESCRIPTOR_KEY: Mapping[str, str] = MappingProxyType(
     {descriptor: spec for spec, descriptor in _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.items()}
@@ -767,7 +793,7 @@ class RatingTableMissError(HauteValidationError):
     """A rating-table lookup left rows without a matching entry.
 
     Raised at materialisation time when a table has no usable
-    ``defaultValue`` and ``onMissing`` is ``"error"`` (the default).
+    ``default_value`` and ``on_missing`` is ``"error"`` (the default).
     The message names the table, the missing key(s) (capped at
     ``_MISS_KEY_DISPLAY_CAP``) and the affected row count.
     """
@@ -805,12 +831,12 @@ def is_rating_dtype_descriptor(value: object) -> bool:
         return set(value) == {"kind"}
     if kind == "Datetime":
         return (
-            set(value) == {"kind", "timeUnit", "timeZone"}
-            and value.get("timeUnit") in {"ms", "us", "ns"}
-            and (value.get("timeZone") is None or isinstance(value.get("timeZone"), str))
+            set(value) == {"kind", "time_unit", "time_zone"}
+            and value.get("time_unit") in {"ms", "us", "ns"}
+            and (value.get("time_zone") is None or isinstance(value.get("time_zone"), str))
         )
     if kind == "Duration":
-        return set(value) == {"kind", "timeUnit"} and value.get("timeUnit") in {"ms", "us", "ns"}
+        return set(value) == {"kind", "time_unit"} and value.get("time_unit") in {"ms", "us", "ns"}
     if kind == "Decimal":
         precision = value.get("precision")
         scale = value.get("scale")
@@ -1095,7 +1121,7 @@ def _normalise_on_missing(value: object) -> str:
         return "error"
     if normalised not in _SUPPORTED_ON_MISSING:
         raise ConfigSettingError(
-            f"Unsupported rating table onMissing {normalised!r}; "
+            f"Unsupported rating table on_missing {normalised!r}; "
             f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}",
             setting="tables",
             values=(normalised,),
@@ -1158,7 +1184,7 @@ def _apply_rating_miss_guard(
             f"factor(s) {factors!r}. Missing key(s): {shown_text} "
             f"(showing {len(shown)} of {missed.height} distinct).{default_note} "
             "Add the missing level(s) to the table, set a numeric "
-            '\'defaultValue\', or set "onMissing": "neutral" to accept '
+            '\'default_value\', or set "on_missing": "neutral" to accept '
             "neutral pricing for misses."
         )
 
@@ -1186,7 +1212,7 @@ def _normalise_combine_operation(operation: object) -> str:
         raise ConfigSettingError(
             f"Unsupported rating combine operation {normalised!r}; "
             f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}",
-            setting="combinedOutputs",
+            setting="combined_outputs",
             values=(normalised,),
         )
     return normalised
@@ -1253,9 +1279,9 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
         raise ConfigSettingError(
             "rating table entries require a non-empty factors list", setting="tables"
         )
-    output_col: str = table.get("outputColumn", "")
-    default_raw = table.get("defaultValue")
-    on_missing = _normalise_on_missing(table.get("onMissing"))
+    output_col: str = table.get("output_column", "")
+    default_raw = table.get("default_value")
+    on_missing = _normalise_on_missing(table.get("on_missing"))
 
     if not factors or not output_col:
         return None
@@ -1302,7 +1328,7 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     default_note = ""
     if has_default and default_val is None:
         default_note = (
-            f" Note: configured defaultValue {default_raw!r} is not a usable "
+            f" Note: configured default_value {default_raw!r} is not a usable "
             "finite number and was ignored."
         )
 
@@ -1383,17 +1409,21 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
         ]
     )
 
-    # B14: Deduplicate the factor keys so a left join cannot fan out rows.
-    # keep="last" preserves the last-authored entry within a duplicate-key
-    # group, matching trace enrichment which walks entries in reverse to
-    # report the same winning row. Deduplication happens after strict
-    # originating-dtype coercion and key generation, so representational
-    # aliases such as Float64 entry strings "25.0" and "25.00" form one group.
-    # Rename "value" to an internal name to avoid collision with any
-    # input "value" column in the input frame (Bug #1/#2).
-    deduplicated = keyed_entries.unique(subset=key_columns, keep="last").rename(
-        {"value": lookup_value_column}
-    )
+    # READ-06: two entries for the same levels are refused, never resolved by
+    # one of them. The check runs after strict originating-dtype coercion and
+    # key generation, so representational aliases such as Float64 entry strings
+    # "25.0" and "25.00" are one level, and a duplicate an upstream dtype change
+    # creates is refused at that run. Without duplicates a left join cannot fan
+    # out rows. "value" is renamed to an internal name to avoid collision with
+    # any input "value" column in the input frame (Bug #1/#2).
+    duplicated = keyed_entries.select(pl.struct(key_columns).is_duplicated()).to_series()
+    if duplicated.any():
+        levels = [
+            {factor: row[factor] for factor in factors}
+            for row in lookup.filter(duplicated).select(factors).to_dicts()
+        ]
+        raise RatingDuplicateEntriesError(table, levels)
+    deduplicated = keyed_entries.rename({"value": lookup_value_column})
     return RatingTableLookup(
         factors=tuple(factors),
         output_column=output_col,
@@ -1432,7 +1462,7 @@ def apply_rating_table_lookup(
     lf = lf.join(built.lookup.lazy(), on=key_columns, how="left", maintain_order="left")
 
     # Miss guard (3a.3): only when no usable default exists — a usable
-    # defaultValue fills every miss below, so nothing can be silent.
+    # default_value fills every miss below, so nothing can be silent.
     # Diagnostics relabel temporary keys with the public factor names.
     if built.default_value is None and guard_misses:
         joined_schema = pl.Schema(
@@ -1454,7 +1484,7 @@ def apply_rating_table_lookup(
             input_schema=joined_schema,
         )
 
-    # Rename value → outputColumn, apply default
+    # Rename value → output_column, apply default
     if built.default_value is not None:
         lf = lf.with_columns(
             pl.col(lookup_value_column).fill_null(built.default_value).alias(built.output_column),
@@ -1474,20 +1504,20 @@ def _apply_rating_table(
     """Apply a single rating table lookup via a Polars left join.
 
     *table* must contain ``factors`` (list of column names to join on),
-    ``outputColumn``, ``entries`` (list of dicts with one key per factor
-    plus a ``value`` key), and optionally ``defaultValue`` and
-    ``onMissing``.
+    ``output_column``, ``entries`` (list of dicts with one key per factor
+    plus a ``value`` key), and optionally ``default_value`` and
+    ``on_missing``.
 
     Both join sides are canonicalised with :func:`_rating_key_expr`, so
     int-like float keys (``25.0``) match string-keyed entries (``"25"``)
     deterministically.
 
     Miss policy (3a.3 — breaking change, release-noted): a lookup miss
-    with no usable ``defaultValue`` raises :class:`RatingTableMissError`
-    at materialisation.  ``"onMissing": "neutral"`` opts back in to the
+    with no usable ``default_value`` raises :class:`RatingTableMissError`
+    at materialisation.  ``"on_missing": "neutral"`` opts back in to the
     old behaviour explicitly — the table output stays null (combined
     outputs fill the operation's neutral element) and every miss is
-    counted and logged at WARNING.  A usable ``defaultValue`` always
+    counted and logged at WARNING.  A usable ``default_value`` always
     fills misses with no error or warning.
     """
     frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
@@ -1510,7 +1540,7 @@ def _combine_rating_columns(
     Null inputs fold in as the operation's neutral element (1.0 multiply,
     0.0 add; min/max skip nulls horizontally).  In the rating-step path
     nulls can only reach this point when a table explicitly opted in with
-    ``"onMissing": "neutral"`` — every such miss has already been counted
+    ``"on_missing": "neutral"`` — every such miss has already been counted
     and logged by the miss guard in ``_apply_rating_table`` (3a.3);
     misses are otherwise rejected loudly there.
     """
@@ -1525,12 +1555,12 @@ def _combine_rating_columns(
         raise ConfigSettingError(
             f"Rating output {output_col!r} cannot combine duplicate participant "
             f"column(s) {duplicate_columns!r}",
-            setting="combinedOutputs",
+            setting="combined_outputs",
         )
     if output_col in seen_columns:
         raise ConfigSettingError(
             f"Rating output column {output_col!r} cannot overwrite a participant column",
-            setting="combinedOutputs",
+            setting="combined_outputs",
         )
     if not columns:
         return lf
@@ -1616,66 +1646,67 @@ def _rating_extrema_expr(
 
 def normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return strictly validated canonical combined-output definitions."""
-    raw_outputs = config.get("combinedOutputs")
+    raw_outputs = config.get("combined_outputs")
     if raw_outputs is None or raw_outputs == []:
         return []
     if not isinstance(raw_outputs, list):
         raise ConfigSettingError(
-            "ratingStep combinedOutputs must be a list", setting="combinedOutputs"
+            "ratingStep combined_outputs must be a list", setting="combined_outputs"
         )
 
     outputs: list[dict[str, Any]] = []
     seen_output_cols: set[str] = {
-        str(t.get("outputColumn", "") or "").strip()
+        str(t.get("output_column", "") or "").strip()
         for t in config.get("tables", []) or []
-        if str(t.get("outputColumn", "") or "").strip()
+        if str(t.get("output_column", "") or "").strip()
     }
     for idx, item in enumerate(raw_outputs):
         if not isinstance(item, dict):
             raise ConfigSettingError(
-                f"ratingStep combinedOutputs[{idx}] must be an object", setting="combinedOutputs"
+                f"ratingStep combined_outputs[{idx}] must be an object", setting="combined_outputs"
             )
-        output_col = str(item.get("outputColumn", "") or "").strip()
+        output_col = str(item.get("output_column", "") or "").strip()
         if not output_col:
             raise ConfigSettingError(
-                f"ratingStep combinedOutputs[{idx}] requires outputColumn",
-                setting="combinedOutputs",
+                f"ratingStep combined_outputs[{idx}] requires output_column",
+                setting="combined_outputs",
             )
         if output_col in seen_output_cols:
             raise ConfigSettingError(
-                f"ratingStep combinedOutputs[{idx}].outputColumn {output_col!r} "
+                f"ratingStep combined_outputs[{idx}].output_column {output_col!r} "
                 "duplicates another rating output column",
-                setting="combinedOutputs",
+                setting="combined_outputs",
             )
         seen_output_cols.add(output_col)
         operation = _normalise_combine_operation(item.get("operation", "multiply"))
 
-        base_raw = item.get("baseValue")
+        base_raw = item.get("base_value")
         if (
             base_raw is None
             or isinstance(base_raw, bool)
             or (isinstance(base_raw, str) and not base_raw.strip())
         ):
             raise ConfigSettingError(
-                f"ratingStep combinedOutputs[{idx}] requires baseValue", setting="combinedOutputs"
+                f"ratingStep combined_outputs[{idx}] requires base_value",
+                setting="combined_outputs",
             )
         try:
             base_value = float(base_raw)
         except (TypeError, ValueError) as exc:
             raise ConfigSettingError(
-                f"ratingStep combinedOutputs[{idx}].baseValue must be numeric",
-                setting="combinedOutputs",
+                f"ratingStep combined_outputs[{idx}].base_value must be numeric",
+                setting="combined_outputs",
             ) from exc
         if not math.isfinite(base_value):
             raise ConfigSettingError(
-                f"ratingStep combinedOutputs[{idx}].baseValue must be finite",
-                setting="combinedOutputs",
+                f"ratingStep combined_outputs[{idx}].base_value must be finite",
+                setting="combined_outputs",
             )
         outputs.append(
             {
-                "outputColumn": output_col,
+                "output_column": output_col,
                 "operation": operation,
-                "baseValue": base_value,
+                "base_value": base_value,
             }
         )
     return outputs
@@ -1718,13 +1749,13 @@ def _rating_table_skip_reason(table: dict[str, Any]) -> str | None:
     """
     factors: list[str] = table.get("factors", []) or []
     entries: list[dict[str, Any]] = table.get("entries", []) or []
-    output_col = table.get("outputColumn", "")
+    output_col = table.get("output_column", "")
     if not factors:
         return "no factors"
     if not entries:
         return "no entries"
     if not output_col:
-        return "no outputColumn"
+        return "no output_column"
     entry_cols: set[str] = set()
     for entry in entries:
         if isinstance(entry, dict):
@@ -1768,7 +1799,7 @@ def _apply_rating_step_outputs(
     out_cols: list[str] = []
     for table in tables:
         lf = _apply_rating_table(lf, table, input_schema=schema)
-        output_col = str(table.get("outputColumn", "") or "").strip()
+        output_col = str(table.get("output_column", "") or "").strip()
         # A table with no output column is a deliberately disabled/passthrough
         # node — it was never asked to contribute a column, so stay quiet.
         if not output_col:
@@ -1782,7 +1813,7 @@ def _apply_rating_step_outputs(
             out_cols.append(output_col)
             schema[output_col] = pl.Float64
         else:
-            # F082 (fail loud): the author configured an outputColumn but the
+            # F082 (fail loud): the author configured an output_column but the
             # table is incomplete, so it produced nothing and is omitted from
             # combined outputs.  Log the skip so the omission is observable
             # instead of a silently dropped column.
@@ -1798,12 +1829,12 @@ def _apply_rating_step_outputs(
             lf,
             out_cols,
             combined["operation"],
-            combined["outputColumn"],
-            combined["baseValue"],
+            combined["output_column"],
+            combined["base_value"],
             input_schema=schema,
         )
-        if combined["baseValue"] is not None or out_cols:
-            schema[combined["outputColumn"]] = pl.Float64
+        if combined["base_value"] is not None or out_cols:
+            schema[combined["output_column"]] = pl.Float64
     return lf
 
 

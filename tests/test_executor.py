@@ -82,7 +82,7 @@ def _ready_source_node(nid: str, path: str = "data.parquet"):
 
 def _file_output_config(path: str, format_name: str) -> dict[str, object]:
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": format_name,
         "mode": "sink" if format_name in {"csv", "parquet"} else "write",
         "path": path,
@@ -427,7 +427,7 @@ class TestBuildNodeFn:
                     "label": "db",
                     "nodeType": "dataInput",
                     "config": {
-                        "inputType": "databricks",
+                        "input_type": "databricks",
                         "http_path": "/sql/1.0/warehouses/test",
                         "table": "cat.sch.tbl",
                         "arguments": {},
@@ -677,7 +677,7 @@ class TestBuildNodeFn:
             "t",
             code="df = raw_rows.with_columns(y=pl.col('x') + 1)",
         )
-        node.data.config["inputMapping"] = {"raw_rows": "Edge_Join_1"}
+        node.data.config["input_mapping"] = {"raw_rows": "Edge_Join_1"}
         _, fn, is_source = _build_node_fn(
             node,
             source_names=["Edge_Join_1"],
@@ -715,7 +715,7 @@ class TestBuildNodeFn:
         assert df.columns == ["a"]
 
     def test_output_empty_mapping_returns_empty_document(self):
-        # An empty outputMapping maps no columns, so the assembled document
+        # An empty output_mapping maps no columns, so the assembled document
         # is empty.
         node = _output_node("out", fields=[])
         _, fn, _ = _build_node_fn(node)
@@ -731,7 +731,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "sink",
                     "nodeType": "dataOutput",
-                    "config": {"outputType": "file", "format": "parquet", "path": ""},
+                    "config": {"output_type": "file", "format": "parquet", "path": ""},
                 },
             }
         )
@@ -756,7 +756,7 @@ class TestBuildNodeFn:
                     "nodeType": "externalFile",
                     "config": {
                         "path": str(p),
-                        "fileType": "json",
+                        "file_type": "json",
                         "code": "df = df.with_columns(y=pl.lit(obj['multiplier']))",
                     },
                 },
@@ -788,7 +788,7 @@ class TestBuildNodeFn:
                     "nodeType": "externalFile",
                     "config": {
                         "path": str(p),
-                        "fileType": "pickle",
+                        "file_type": "pickle",
                         "code": "df = df.with_columns(y=pl.lit(obj['factor']))",
                     },
                 },
@@ -807,7 +807,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "ext",
                     "nodeType": "externalFile",
-                    "config": {"path": "model.pkl", "fileType": "pickle", "code": ""},
+                    "config": {"path": "model.pkl", "file_type": "pickle", "code": ""},
                 },
             }
         )
@@ -836,7 +836,7 @@ class TestBuildNodeFn:
             (
                 "factors",
                 "submodel",
-                {"definitionId": "definition_factors", "alias": "factors"},
+                {"definition_id": "definition_factors", "alias": "factors"},
                 "Submodel 'factors' reached execution",
             ),
             ("port1", "submodelPort", {}, "Submodel port 'port1' reached execution"),
@@ -1297,7 +1297,7 @@ class TestTargetPreviewRowLimit:
                                 "nodeType": "edgeJoin",
                                 "config": {
                                     "how": "left",
-                                    "maintainOrder": "left_right",
+                                    "maintain_order": "left_right",
                                     "on": ["id"],
                                 },
                             },
@@ -2148,7 +2148,7 @@ class TestBuildNodeFnErrorPaths:
                     "nodeType": "externalFile",
                     "config": {
                         "path": str(tmp_path / "does_not_exist.pkl"),
-                        "fileType": "pickle",
+                        "file_type": "pickle",
                         "code": "df = obj",
                     },
                 },
@@ -2961,7 +2961,7 @@ df = src.with_columns(
                     "label": "score",
                     "nodeType": "modelScore",
                     "config": {
-                        "sourceType": "run",
+                        "source_type": "run",
                         "run_id": "abc123",
                         "artifact_path": "model",
                         "task": "regression",
@@ -3686,7 +3686,7 @@ class TestPreviewCacheInvalidation:
                                 "label": "dout",
                                 "nodeType": "dataOutput",
                                 "config": {
-                                    "outputType": "file",
+                                    "output_type": "file",
                                     "format": "parquet",
                                     "path": str(out_path),
                                 },
@@ -4606,7 +4606,7 @@ class TestPreambleFailureIsolation:
                                 "label": "sink",
                                 "nodeType": "dataOutput",
                                 "config": {
-                                    "outputType": "file",
+                                    "output_type": "file",
                                     "path": str(tmp_path / "out.parquet"),
                                     "format": "parquet",
                                 },
@@ -4730,7 +4730,7 @@ class TestTargetPreviewDiagnosticReplan:
                 data=NodeData(
                     label=node_id,
                     nodeType=NodeType.EDGE_JOIN,
-                    config={"how": "left", "maintainOrder": "left_right", "on": ["id"]},
+                    config={"how": "left", "maintain_order": "left_right", "on": ["id"]},
                 ),
             )
 
@@ -4859,7 +4859,7 @@ class TestBuilderPostCodeProjection:
                 "column_name": "scenario_value",
                 "min_value": 1.0,
                 "max_value": 3.0,
-                "stepCount": 3,
+                "step_count": 3,
                 "step_column": "scenario_index",
                 "code": "df = df.select(result=pl.col('scenario_value') * pl.col('premium'))",
                 "contract": {"inputs": ["premium"], "outputs": ["result"]},
@@ -4883,7 +4883,7 @@ class TestBuilderPostCodeProjection:
             {
                 "min_value": 1.0,
                 "max_value": 1.0,
-                "stepCount": 2,
+                "step_count": 2,
                 "step_column": "",
                 "code": "df = df.select(result=pl.col('premium') + pl.col('scenario_index'))",
                 "contract": {"inputs": ["premium"], "outputs": ["result"]},
@@ -4901,8 +4901,8 @@ class TestBuilderPostCodeProjection:
                 "tables": [
                     {
                         "factors": ["vehicle_age_band", "cover_type"],
-                        "outputColumn": "vehicle_factor",
-                        "defaultValue": "1.0",
+                        "output_column": "vehicle_factor",
+                        "default_value": "1.0",
                         "entries": [
                             {
                                 "vehicle_age_band": "1-3",

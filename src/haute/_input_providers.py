@@ -1,6 +1,6 @@
 """Provider dispatch for the canonical Data Input node.
 
-This module is the only runtime branch on ``inputType``. Format-specific
+This module is the only runtime branch on ``input_type``. Format-specific
 Polars invocation stays in :mod:`haute._polars_io_registry`; generation
 layout/publication stays in :mod:`haute._source_cache`.
 """
@@ -147,7 +147,7 @@ def source_cache_identity(
     inputs bypass the cache entirely.
     """
     validated = validate_data_input_config(config)
-    provider = str(validated["inputType"])
+    provider = str(validated["input_type"])
     descriptor: dict[str, object]
     if provider in {"file", "lakehouse"}:
         anchored = _resolved_config_path(validated, base_dir)
@@ -208,7 +208,7 @@ def _local_source_path(config: Mapping[str, Any], base_dir: str | Path | None) -
     # Lakehouse locators are tables/directories whose freshness needs a
     # provider version token. Treating a directory as a missing file made an
     # unchanged string falsely report "fresh" forever.
-    if validated["inputType"] != "file":
+    if validated["input_type"] != "file":
         return None
     return Path(str(_resolved_config_path(validated, base_dir)["path"]))
 
@@ -280,7 +280,7 @@ def _snapshot_builder(
     profile: ExecutionProfile,
     allow_admitted_eager: bool = False,
 ) -> tuple[object, BuildClass]:
-    provider = config["inputType"]
+    provider = config["input_type"]
     if provider in {"file", "lakehouse"}:
         anchored = _resolved_config_path(config, base_dir)
         _mode, build_class, warning_code = snapshot_input_plan(
@@ -340,7 +340,7 @@ def input_snapshot_warning_code(
 ) -> str | None:
     """Return the build plan's warning code without contacting the provider."""
     validated = validate_data_input_config(config)
-    if validated["inputType"] not in {"file", "lakehouse"}:
+    if validated["input_type"] not in {"file", "lakehouse"}:
         return None
     anchored = _resolved_config_path(validated, base_dir)
     return snapshot_input_plan(format_for_config(anchored), anchored)[2]
@@ -451,7 +451,7 @@ def _infer_input_schema(
     base_dir: str | Path | None,
 ) -> tuple[pl.LazyFrame, InferredInputSchema]:
     """Scan a local file input's schema without a snapshot, or refuse with the remedy."""
-    provider = str(config["inputType"])
+    provider = str(config["input_type"])
     if provider != "file":
         article = "an" if provider[0] in "aeiou" else "a"
         raise _not_inferable(f"{article} {provider} input has no local file to scan")

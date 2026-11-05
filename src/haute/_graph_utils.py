@@ -197,13 +197,13 @@ def edge_input_name(
     if node_type in REQUEST_INPUT_KINDS and edge.sourceHandle is None:
         raise ValueError(f"{node_type} edge {edge.id!r} has no sourceHandle/frame label")
     instance_of = (
-        source_node.data.config.get("instanceOf")
+        source_node.data.config.get("instance_of")
         if _structural_role(node_type) == "occurrence"
         else None
     )
     source_handles: list[str] | None = None
     if instance_of is not None:
-        definition_id = source_node.data.config.get("definitionId")
+        definition_id = source_node.data.config.get("definition_id")
         if not isinstance(definition_id, str):
             raise ValueError(f"Submodel instance {source_node.id!r} requires a definitionId.")
         definition = (submodels or {}).get(definition_id)
@@ -366,7 +366,7 @@ def resolve_input_mapping_names(
 
     Ordinary Polars transforms normally address each input by its current
     edge-derived name.  A structural rewrite can replace a parent without
-    changing what that input means to the authored code; ``inputMapping``
+    changing what that input means to the authored code; ``input_mapping``
     records that relationship as ``logical_name -> current_edge_name``.
 
     The relation is deliberately one-to-one.  Accepting stale values,
@@ -378,7 +378,7 @@ def resolve_input_mapping_names(
 
     if not isinstance(input_mapping, dict):
         raise ConfigError(
-            "inputMapping must be an object mapping logical input names to "
+            "input_mapping must be an object mapping logical input names to "
             "current edge input names.",
             input_mapping=input_mapping,
         )
@@ -394,7 +394,7 @@ def resolve_input_mapping_names(
     ]
     if invalid_entries:
         raise ConfigError(
-            "inputMapping entries must use non-empty canonical Haute input "
+            "input_mapping entries must use non-empty canonical Haute input "
             "identifiers for both logical names and current edge names.",
             invalid_entries=invalid_entries,
         )
@@ -407,7 +407,7 @@ def resolve_input_mapping_names(
     duplicate_values = duplicate_input_names(list(mapping.values()))
     if stale_values or duplicate_values:
         raise ConfigError(
-            "inputMapping must map each logical input to one distinct current edge input name.",
+            "input_mapping must map each logical input to one distinct current edge input name.",
             stale_values=stale_values,
             duplicate_values=duplicate_values,
             source_names=list(source_names),
@@ -418,7 +418,7 @@ def resolve_input_mapping_names(
     duplicate_logical_names = duplicate_input_names(resolved)
     if duplicate_logical_names:
         raise ConfigError(
-            "inputMapping produces duplicate logical input names.",
+            "input_mapping produces duplicate logical input names.",
             duplicate_logical_names=duplicate_logical_names,
             source_names=list(source_names),
         )
@@ -434,7 +434,7 @@ def resolve_orig_source_names(
 ) -> list[str] | None:
     """Return logical input names that differ from the current edge names.
 
-    For Transform or Load File code with ``inputMapping``, the
+    For Transform or Load File code with ``input_mapping``, the
     mapping preserves stable authored names across a parent-replacement rewrite.
 
     Returns ``None`` when no aliasing is required.
@@ -442,7 +442,7 @@ def resolve_orig_source_names(
     # Imported here: the steps module reaches this one through user-code execution.
     from haute._polars_steps import stepped_surface_allows_input_references
 
-    input_mapping = node.data.config.get("inputMapping")
+    input_mapping = node.data.config.get("input_mapping")
     if not stepped_surface_allows_input_references(node.data.nodeType) or input_mapping is None:
         return None
     source_names = [
@@ -467,7 +467,7 @@ def code_input_bindings(
     """Map every name *node*'s code can see to the id of the edge it binds.
 
     The single authority for the runtime naming rules a code analysis mirrors:
-    the edge input name, then ``inputMapping`` aliases, then the ``df`` alias
+    the edge input name, then ``input_mapping`` aliases, then the ``df`` alias
     for the first input, so two analyses cannot disagree about which edge an
     alias refers to. The alias relation is validated by the canonical resolver
     the executor uses, so a mapping the runtime would reject (a stale value, two
@@ -489,7 +489,7 @@ def code_input_bindings(
             return None
         by_name[name] = edge.id
 
-    raw_mapping = node.data.config.get("inputMapping")
+    raw_mapping = node.data.config.get("input_mapping")
     # Every non-``None`` value is validated, exactly as runtime code generation
     # does: a falsey non-mapping (``[]``, ``""``, ``0``) is malformed, not absent.
     if raw_mapping is not None:

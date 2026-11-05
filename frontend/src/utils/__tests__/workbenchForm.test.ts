@@ -68,6 +68,7 @@ import {
   removeSection,
   removeSpacer,
   removeWidget,
+  sampleHolds,
   renamePage,
   renameSection,
   rowsShown,
@@ -113,7 +114,7 @@ import {
   type FieldsWidget,
   type Widget,
 } from "../workbenchForm"
-import { identityCount, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_ID, QUOTE_DETAILS_MANAGED } from "../quoteIdentity"
+import { identityCount, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED } from "../quoteIdentity"
 import { columnKey, sheetVisibility, testableColumns } from "../sheetVisibility"
 
 /** A section `height` tall holding `widgets`, always shown unless `showWhen` says otherwise. */
@@ -138,8 +139,7 @@ const blank = (): FormSpec => ({
 /** The components of a sheet's section, the first of the first sheet unless said otherwise. */
 const widgetsOf = (spec: FormSpec, page = 0, at = 0): Widget[] => spec.pages[page].sections[at].widgets
 
-const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
-  id,
+const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
@@ -161,8 +161,7 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
   ...overrides,
 })
 
-const table = (id: string, name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
-  id,
+const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
   name,
   role: "input",
   rows: "one",
@@ -172,24 +171,18 @@ const table = (id: string, name: string, overrides: Partial<SchemaTable> = {}): 
 
 /** A blank form with one schema table, `t`, holding the given columns. */
 const withTable = (...columns: SchemaColumn[]): FormSpec =>
-  addSchemaTable(blank(), table("t", "t", { columns }))
+  addSchemaTable(blank(), table("t", { columns }))
 
 const messages = (spec: FormSpec, reserved: ReadonlySet<string> = new Set()) =>
   schemaProblems(spec, reserved).map((problem) => problem.message)
 
 describe("Haute's own table", () => {
-  it("names each of its columns' ids by the column's name, so a name it no longer has does not compile", () => {
-    expect(Object.entries(QUOTE_DETAILS)).toEqual(QUOTE_DETAILS_COLUMNS.map(([id, name]) => [name, id]))
-    expect([QUOTE_DETAILS.quote_reference, QUOTE_DETAILS.quote_name, QUOTE_DETAILS.is_renewal]).toEqual(["qd_reference", "qd_quote_name", "qd_is_renewal"])
+  it("names each of its columns by the column's name, so a name it no longer has does not compile", () => {
+    expect(Object.entries(QUOTE_DETAILS)).toEqual(QUOTE_DETAILS_COLUMNS.map(([name]) => [name, name]))
+    expect([QUOTE_DETAILS.quote_reference, QUOTE_DETAILS.quote_name, QUOTE_DETAILS.is_renewal]).toEqual(["quote_reference", "quote_name", "is_renewal"])
     expect(QUOTE_DETAILS_MANAGED.has(QUOTE_DETAILS.stage)).toBe(true)
     // @ts-expect-error quote_details has no column of this name
     expect(QUOTE_DETAILS.renewal).toBeUndefined()
-  })
-
-  it("names a table of the analyst's called quote_details in the server's own words, not as a repeated name", () => {
-    const spec = addSchemaTable(blank(), table("t_mine", "quote_details"))
-
-    expect(messages(spec)).toEqual(["quote_details is Haute's own table of a quote's details: name yours otherwise"])
   })
 })
 
@@ -205,30 +198,40 @@ describe("names", () => {
     const first = createSchemaTable(spec)
     spec = addSchemaTable(spec, first)
     spec = addSchemaTable(spec, createSchemaTable(spec))
-    spec = addSchemaColumn(spec, first.id, createSchemaColumn(spec, first.id))
-    spec = addSchemaColumn(spec, first.id, createSchemaColumn(spec, first.id))
+    spec = addSchemaColumn(spec, first.name, createSchemaColumn(spec, first.name))
+    spec = addSchemaColumn(spec, first.name, createSchemaColumn(spec, first.name))
 
     expect(spec.schema.tables.map((t) => t.name)).toEqual(["table", "table_2"])
-    expect(spec.schema.tables[0].columns.map((c) => [c.id, c.name, c.type, c.index, c.group, c.default_value])).toEqual([
-      ["quote_reference", "quote_reference", "str", false, "", ""],
-      ["quote_option", "quote_option", "int", false, "", ""],
-      [expect.any(String), "column", "str", false, "", ""],
-      [expect.any(String), "column_2", "str", false, "", ""],
+    expect(spec.schema.tables[0].columns.map((c) => [c.name, c.type, c.index, c.group, c.default_value])).toEqual([
+      ["quote_reference", "str", false, "", ""],
+      ["quote_option", "int", false, "", ""],
+      ["column", "str", false, "", ""],
+      ["column_2", "str", false, "", ""],
     ])
-    expect(spec.schema.tables[1].columns.map((c) => c.id)).toEqual(["quote_reference", "quote_option"])
+    expect(spec.schema.tables[1].columns.map((c) => c.name)).toEqual(["quote_reference", "quote_option"])
+    // A table and a column are known by their names: neither is given an id.
+    expect(spec.schema.tables.some((t) => "id" in t || t.columns.some((c) => "id" in c))).toBe(false)
     expect(messages(spec)).toEqual([])
   })
 
+  it("names a table or a column apart from the others whatever their case", () => {
+    expect(uniqueName("table", ["Table"])).toBe("table_2")
+    expect(uniqueName("column", ["column", "COLUMN_2"])).toBe("column_3")
+    const spec = addSchemaTable(blank(), table("Table", { columns: [column("Column")] }))
+    expect(createSchemaTable(spec).name).toBe("table_2")
+    expect(createSchemaColumn(spec, "Table").name).toBe("column_2")
+  })
+
   it("gives a new column the type of the column above it, Text first, under the quote's identity or under the index", () => {
-    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
     // Under the quote's option, an Integer, it is Text.
     expect(createSchemaColumn(spec, "t").type).toBe("str")
     expect(createSchemaColumn(spec, "t", 0).type).toBe("str")
     spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 2)
     expect(createSchemaColumn(spec, "t").type).toBe("str")
 
-    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "a", type: "float", min: 0, number_format: "percent" })
-    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), id: "b", type: "date" })
+    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), name: "a", type: "float", min: 0, number_format: "percent" })
+    spec = addSchemaColumn(spec, "t", { ...createSchemaColumn(spec, "t"), name: "b", type: "date" })
     // At the end by default, or under the column at the place before the one given; the type alone, none of its rules or format.
     expect(createSchemaColumn(spec, "t")).toMatchObject({ type: "date" })
     expect(createSchemaColumn(spec, "t", 4)).toMatchObject({ type: "float", min: null, number_format: "general" })
@@ -238,10 +241,10 @@ describe("names", () => {
 
 describe("problems", () => {
   it("holds a table's name to the port rules, with the document's reserved labels", () => {
-    let spec = addSchemaTable(blank(), table("a", "sum insured"))
-    spec = addSchemaTable(spec, table("b", "class"))
-    spec = addSchemaTable(spec, table("c", "Policy"))
-    spec = addSchemaTable(spec, table("d", "policy"))
+    let spec = addSchemaTable(blank(), table("sum insured"))
+    spec = addSchemaTable(spec, table("class"))
+    spec = addSchemaTable(spec, table("Policy"))
+    spec = addSchemaTable(spec, table("policy"))
 
     expect(messages(spec, new Set(["class"]))).toEqual([
       'Table "sum insured": A frame label must be an ASCII identifier (letters, digits, and underscores only).',
@@ -252,7 +255,7 @@ describe("problems", () => {
   })
 
   it("catches invalid, keyword and repeated column names, as the server refuses them", () => {
-    const spec = withTable(column("a", "sum insured"), column("b", "value"), column("c", "value"), column("d", "class"))
+    const spec = withTable(column("sum insured"), column("value"), column("value"), column("class"))
 
     expect(messages(spec)).toEqual([
       'Column "sum insured" in Table "t" needs a name of letters, digits and _',
@@ -262,11 +265,11 @@ describe("problems", () => {
   })
 
   it("holds every name to the quote store's rules, each table being a table of its name there", () => {
-    let spec = withTable(column("a", "limit"), column("b", "Limit"), column("c", `c${"x".repeat(63)}`), column("d", "haute_note"))
-    spec = addSchemaTable(spec, table("h", "haute_extras"))
-    spec = addSchemaTable(spec, table("s", "sqlite_cache"))
-    spec = addSchemaTable(spec, table("l", `l${"x".repeat(63)}`))
-    spec = addSchemaTable(spec, table("m", "items", { rows: "many", columns: [column("k", "item", { key: true }), column("r", "quote_row", { type: "int" })] }))
+    let spec = withTable(column("limit"), column("Limit"), column(`c${"x".repeat(63)}`), column("haute_note"))
+    spec = addSchemaTable(spec, table("haute_extras"))
+    spec = addSchemaTable(spec, table("sqlite_cache"))
+    spec = addSchemaTable(spec, table(`l${"x".repeat(63)}`))
+    spec = addSchemaTable(spec, table("items", { rows: "many", columns: [column("item", { key: true }), column("quote_row", { type: "int" })] }))
 
     expect(messages(spec)).toEqual([
       'Column "Limit" in Table "t" differs from "limit" only in case, so a database cannot hold both',
@@ -278,29 +281,31 @@ describe("problems", () => {
       'Column "quote_row" in Table "items" is the quote store\'s number for each row of a many-row table',
     ])
     // Haute's own quote_details.haute_version, and quote_row in a one-row table, are no problem.
-    expect(messages(addSchemaTable(blank(), table("o", "policy", { columns: [column("r", "quote_row", { type: "int" })] })))).toEqual([])
+    expect(messages(addSchemaTable(blank(), table("policy", { columns: [column("quote_row", { type: "int" })] })))).toEqual([])
   })
 
   it("names a table's own column taking the quote's quote_reference or quote_option as the server does, never a missing identity", () => {
     // A column of its own named reference or option is no clash.
-    const spec = withTable(column("a", "quote_reference"), column("b", "quote_option", { type: "int" }), column("c", "limit"), column("e", "option"))
-
-    expect(messages(spec)).toEqual(
-      ["quote_reference", "quote_option"].map(
-        (name) =>
-          `t.${name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`,
-      ),
+    const spec = withTable(column("limit"), column("quote_reference"), column("quote_option", { type: "int" }), column("option"))
+    const clashes = ["quote_reference", "quote_option"].map(
+      (name) =>
+        `t.${name} has a name Haute keeps for the quote's identity in every table: rename it, and the table takes quote_reference and quote_option at the next save`,
     )
+
+    expect(messages(spec)).toEqual(clashes)
+    // At its head but changed, they are its own still; exactly as Haute makes them, they are the identity.
+    expect(messages(withTable(column("quote_reference", { label: "Reference" }), column("quote_option", { type: "int" }), column("limit")))).toEqual(clashes)
+    expect(messages(withTable(column("quote_reference"), column("quote_option", { type: "int" }), column("limit")))).toEqual([])
     // A table leading with the identity: a second column of either name repeats it.
-    let held = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "u", name: "u" })
-    held = addSchemaColumn(held, "u", column("d", "quote_option"))
+    let held = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "u" })
+    held = addSchemaColumn(held, "u", column("quote_option"))
     expect(messages(held)).toEqual(['Column "quote_option" in Table "u" repeats the name quote_option'])
     // A table without it and without such a column is no problem.
-    expect(messages(withTable(column("e", "limit")))).toEqual([])
+    expect(messages(withTable(column("limit")))).toEqual([])
   })
 
   it("flags allowed values on a tick box or a date, which cannot have them", () => {
-    const spec = withTable(column("a", "smoker", { type: "bool", options: ["Y"] }), column("b", "start", { type: "date", options: ["2020-01-01"] }))
+    const spec = withTable(column("smoker", { type: "bool", options: ["Y"] }), column("start", { type: "date", options: ["2020-01-01"] }))
 
     expect(messages(spec)).toEqual([
       'Column "smoker" in Table "t" allows values, which a tick box cannot',
@@ -309,7 +314,7 @@ describe("problems", () => {
   })
 
   it("needs a key in a many-row table, and drops keys and the index when a table goes back to one row", () => {
-    let spec = setSchemaTableRows(withTable(column("a", "item", { default_value: "Laptop" }), column("b", "value", { group: "Cover" })), "t", "many")
+    let spec = setSchemaTableRows(withTable(column("item", { default_value: "Laptop" }), column("value", { group: "Cover" })), "t", "many")
     expect(messages(spec)).toEqual(['Table "t" has many rows, so it needs a key column'])
     // A many-row table's columns take no default; a group stays.
     expect(spec.schema.tables[0].columns.map((c) => [c.default_value, c.group])).toEqual([
@@ -317,34 +322,34 @@ describe("problems", () => {
       ["", "Cover"],
     ])
 
-    spec = updateSchemaColumn(spec, "t", "a", { key: true })
+    spec = updateSchemaColumn(spec, "t", "item", { key: true })
     expect(messages(spec)).toEqual([])
     const index = createIndexColumn(spec, "t")
     spec = addSchemaColumn(spec, "t", index, 0)
-    spec = withSampleCell(spec, "t", 0, "a", "x")
-    spec = addWidget(spec, "s", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }), fields: [{ table: "t", column: index.id }] })
+    spec = withSampleCell(spec, "t", 0, "item", "x")
+    spec = addWidget(spec, "s", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }), fields: [{ table: "t", column: index.name }] })
 
     spec = setSchemaTableRows(spec, "t", "one")
     expect(spec.schema.tables[0].columns.map((c) => [c.name, c.key])).toEqual([["item", false], ["value", false]])
     expect(widgetsOf(spec)[0]).toMatchObject({ fields: [] })
-    expect(spec.sample).toEqual({ t: [{ a: "x" }] })
+    expect(spec.sample).toEqual({ t: [{ item: "x" }] })
   })
 
   it("drops a table's sample rows when it is made an output, which only typing fills", () => {
-    let spec = addSchemaTable(withTable(column("a", "value")), table("u", "u", { columns: [column("b", "other")] }))
-    spec = withSampleCell(spec, "t", 0, "a", "x")
-    spec = withSampleCell(spec, "u", 0, "b", "y")
+    let spec = addSchemaTable(withTable(column("value")), table("u", { columns: [column("other")] }))
+    spec = withSampleCell(spec, "t", 0, "value", "x")
+    spec = withSampleCell(spec, "u", 0, "other", "y")
 
     const output = updateSchemaTable(spec, "t", { role: "output" })
 
     // The form folder writes no sample for an output table, so a save would refuse them.
-    expect(output.sample).toEqual({ u: [{ b: "y" }] })
+    expect(output.sample).toEqual({ u: [{ other: "y" }] })
     // An edit as any other: the form before it, which undo goes back to, keeps them.
-    expect(spec.sample).toEqual({ t: [{ a: "x" }], u: [{ b: "y" }] })
+    expect(spec.sample).toEqual({ t: [{ value: "x" }], u: [{ other: "y" }] })
   })
 
   it("keeps whether a column is required when its table is made an output, which marking a quote final checks there too", () => {
-    const spec = withTable(column("a", "value", { type: "float", required: true, min: 1, default_value: "2" }))
+    const spec = withTable(column("value", { type: "float", required: true, min: 1, default_value: "2" }))
 
     const output = updateSchemaTable(spec, "t", { role: "output" })
 
@@ -353,7 +358,7 @@ describe("problems", () => {
 
   it("changes a column's type, dropping the rules the new type cannot have", () => {
     let spec = withTable(
-      column("a", "value", {
+      column("value", {
         type: "float",
         min: 1,
         max: 5,
@@ -367,7 +372,7 @@ describe("problems", () => {
 
     // Between Decimal and Integer, a number keeps its range, its allowed values, the file
     // they came from, and its format.
-    spec = changeSchemaColumnType(spec, "t", "a", "int")
+    spec = changeSchemaColumnType(spec, "t", "value", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({
       type: "int",
       min: 1,
@@ -378,7 +383,7 @@ describe("problems", () => {
       decimal_places: 1,
       use_grouping: false,
     })
-    spec = changeSchemaColumnType(spec, "t", "a", "str")
+    spec = changeSchemaColumnType(spec, "t", "value", "str")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({
       type: "str",
       min: null,
@@ -388,39 +393,39 @@ describe("problems", () => {
       decimal_places: null,
       use_grouping: true,
     })
-    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    spec = changeSchemaColumnType(spec, "t", "value", "date")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "date", options: [], options_source: null })
-    spec = changeSchemaColumnType(spec, "t", "a", "int")
+    spec = changeSchemaColumnType(spec, "t", "value", "int")
     expect(spec.schema.tables[0].columns[0]).toMatchObject({ type: "int", min: null, max: null, options: [] })
 
     // A default is text, kept between the types that take text, or a tick, kept while a
     // tick box stays one.
-    spec = updateSchemaColumn(spec, "t", "a", { default_value: "5" })
-    spec = changeSchemaColumnType(spec, "t", "a", "str")
+    spec = updateSchemaColumn(spec, "t", "value", { default_value: "5" })
+    spec = changeSchemaColumnType(spec, "t", "value", "str")
     expect(spec.schema.tables[0].columns[0].default_value).toBe("5")
-    spec = changeSchemaColumnType(spec, "t", "a", "bool")
+    spec = changeSchemaColumnType(spec, "t", "value", "bool")
     expect(spec.schema.tables[0].columns[0].default_value).toBe("")
-    spec = updateSchemaColumn(spec, "t", "a", { default_value: true })
-    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    spec = updateSchemaColumn(spec, "t", "value", { default_value: true })
+    spec = changeSchemaColumnType(spec, "t", "value", "date")
     expect(spec.schema.tables[0].columns[0].default_value).toBe("")
     // A date's box shows a day alone: text that is not one goes as the column becomes a
     // Date, and a day stays.
-    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "a", "str"), "t", "a", { default_value: "not-a-date" })
-    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "value", "str"), "t", "value", { default_value: "not-a-date" })
+    spec = changeSchemaColumnType(spec, "t", "value", "date")
     expect(spec.schema.tables[0].columns[0].default_value).toBe("")
-    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "a", "str"), "t", "a", { default_value: "2026-01-01" })
-    spec = changeSchemaColumnType(spec, "t", "a", "date")
+    spec = updateSchemaColumn(changeSchemaColumnType(spec, "t", "value", "str"), "t", "value", { default_value: "2026-01-01" })
+    spec = changeSchemaColumnType(spec, "t", "value", "date")
     expect(spec.schema.tables[0].columns[0].default_value).toBe("2026-01-01")
   })
 
   it("checks an input column's rules, which an output table ignores", () => {
     const spec = withTable(
-      column("a", "value", { type: "float", min: 10, max: 5 }),
-      column("b", "year", { type: "int", options: ["2020", "2020.5"], options_source: { file: "years.csv", column: "year" } }),
-      column("c", "deductible", { type: "float", options: ["500", "1e3", "lots"], options_source: { file: "deductibles.csv", column: "deductible" } }),
-      column("d", "row_number", { type: "int", index: true, min: 10, max: 5 }),
+      column("value", { type: "float", min: 10, max: 5 }),
+      column("year", { type: "int", options: ["2020", "2020.5"], options_source: { file: "years.csv", column: "year" } }),
+      column("deductible", { type: "float", options: ["500", "1e3", "lots"], options_source: { file: "deductibles.csv", column: "deductible" } }),
+      column("row_number", { type: "int", index: true, min: 10, max: 5 }),
       // Allowed values come from a params file: ones typed in, as an older form holds them, do not.
-      column("e", "state", { options: ["CA", "NY"] }),
+      column("state", { options: ["CA", "NY"] }),
     )
 
     expect(messages(spec)).toEqual([
@@ -434,8 +439,8 @@ describe("problems", () => {
 
   it("reads a number column's allowed values as its cells and the server read them", () => {
     const spec = withTable(
-      column("a", "limit", { type: "float", options: ["1,000", "$2,500.50", "0x10"], options_source: { file: "limits.csv", column: "limit" } }),
-      column("b", "years", { type: "int", options: ["3", "5.0", "1e3"], options_source: { file: "years.csv", column: "years" } }),
+      column("limit", { type: "float", options: ["1,000", "$2,500.50", "0x10"], options_source: { file: "limits.csv", column: "limit" } }),
+      column("years", { type: "int", options: ["3", "5.0", "1e3"], options_source: { file: "years.csv", column: "years" } }),
     )
 
     // `1,000` is priced as 1000, so it is a number; `0x10` fails as a cell, so it is not.
@@ -444,20 +449,20 @@ describe("problems", () => {
 
   it("checks a one-row input column's default against its rules, as a cell typed into it is", () => {
     const spec = withTable(
-      column("a", "value", { type: "float", min: 10, default_value: "5" }),
-      column("b", "years", { type: "int", default_value: "2.5" }),
-      column("c", "cover", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "New" }),
-      column("d", "smoker", { type: "bool", default_value: "yes" }),
-      column("e", "name", { default_value: true }),
+      column("value", { type: "float", min: 10, default_value: "5" }),
+      column("years", { type: "int", default_value: "2.5" }),
+      column("cover", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "New" }),
+      column("smoker", { type: "bool", default_value: "yes" }),
+      column("name", { default_value: true }),
       // Kept: a number as the server reads one, an allowed value, a tick, a blank or an unticked box.
-      column("f", "limit", { type: "float", min: 0, default_value: "£250,000" }),
-      column("g", "basis", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "RC" }),
-      column("h", "vat", { type: "bool", default_value: true }),
-      column("i", "note", { required: true, default_value: " " }),
-      column("j", "flag", { type: "bool", default_value: false }),
-      column("k", "expiry", { type: "date", default_value: "2026-12-31" }),
+      column("limit", { type: "float", min: 0, default_value: "£250,000" }),
+      column("basis", { options: ["ACV", "RC"], options_source: { file: "covers.csv", column: "cover" }, default_value: "RC" }),
+      column("vat", { type: "bool", default_value: true }),
+      column("note", { required: true, default_value: " " }),
+      column("flag", { type: "bool", default_value: false }),
+      column("expiry", { type: "date", default_value: "2026-12-31" }),
       // Refused: a Date's default that is not a day, as a hand-edited file may hold.
-      column("l", "inception", { type: "date", default_value: "2026-02-30" }),
+      column("inception", { type: "date", default_value: "2026-02-30" }),
     )
 
     expect(messages(spec)).toEqual([
@@ -475,10 +480,10 @@ describe("problems", () => {
 
 describe("columns", () => {
   it("inserts and moves columns", () => {
-    let spec = withTable(column("a", "a"), column("b", "b"), column("c", "c"))
+    let spec = withTable(column("a"), column("b"), column("c"))
     const names = () => spec.schema.tables[0].columns.map((c) => c.name)
 
-    spec = addSchemaColumn(spec, "t", column("x", "x"), 1)
+    spec = addSchemaColumn(spec, "t", column("x"), 1)
     expect(names()).toEqual(["a", "x", "b", "c"])
     spec = moveSchemaColumn(spec, "t", "a", 3)
     expect(names()).toEqual(["x", "b", "c", "a"])
@@ -486,17 +491,17 @@ describe("columns", () => {
     // The index stays first: it is not moved, and nothing is moved above it.
     spec = setSchemaTableRows(spec, "t", "many")
     spec = addSchemaColumn(spec, "t", createIndexColumn(spec, "t"), 0)
-    expect(moveSchemaColumn(spec, "t", spec.schema.tables[0].columns[0].id, 2)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", spec.schema.tables[0].columns[0].name, 2)).toBe(spec)
     expect(moveSchemaColumn(spec, "t", "b", 0)).toBe(spec)
     spec = moveSchemaColumn(spec, "t", "b", 1)
     expect(names()).toEqual(["row_number", "b", "x", "c", "a"])
   })
 
   it("keeps the quote's identity first and locked, the index after it", () => {
-    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
-    spec = addSchemaColumn(spec, "t", column("a", "a"))
-    spec = addSchemaColumn(spec, "t", column("b", "b"))
-    const ids = () => spec.schema.tables[0].columns.map((c) => c.id)
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
+    spec = addSchemaColumn(spec, "t", column("a"))
+    spec = addSchemaColumn(spec, "t", column("b"))
+    const names = () => spec.schema.tables[0].columns.map((c) => c.name)
 
     // Nothing moves, retypes, renames, marks or removes it, and nothing goes above it.
     expect(moveSchemaColumn(spec, "t", "quote_option", 3)).toBe(spec)
@@ -508,15 +513,15 @@ describe("columns", () => {
     // The index goes after it, and stays there.
     const index = createIndexColumn(spec, "t")
     spec = addSchemaColumn(spec, "t", index, identityCount(spec.schema.tables[0]))
-    expect(ids()).toEqual(["quote_reference", "quote_option", index.id, "a", "b"])
+    expect(names()).toEqual(["quote_reference", "quote_option", index.name, "a", "b"])
     expect(moveSchemaColumn(spec, "t", "b", 2)).toBe(spec)
-    expect(moveSchemaColumn(spec, "t", index.id, 4)).toBe(spec)
+    expect(moveSchemaColumn(spec, "t", index.name, 4)).toBe(spec)
     spec = moveSchemaColumn(spec, "t", "b", 3)
-    expect(ids()).toEqual(["quote_reference", "quote_option", index.id, "b", "a"])
+    expect(names()).toEqual(["quote_reference", "quote_option", index.name, "b", "a"])
   })
 
   it("moves a table, Haute's quote_details table staying first", () => {
-    let spec = addSchemaTable(addSchemaTable(addSchemaTable(blank(), table("a", "a")), table("b", "b")), table("c", "c"))
+    let spec = addSchemaTable(addSchemaTable(addSchemaTable(blank(), table("a")), table("b")), table("c"))
     const names = () => spec.schema.tables.map((t) => t.name)
 
     spec = moveSchemaTable(spec, 0, 2)
@@ -525,7 +530,7 @@ describe("columns", () => {
     expect(() => moveSchemaTable(spec, 0, 3)).toThrow("the schema has 3 tables")
 
     // quote_details stays first: it is not moved, and nothing is moved above it.
-    spec = { ...spec, schema: { tables: [table("quote_details", "quote_details"), ...spec.schema.tables] } }
+    spec = { ...spec, schema: { tables: [table("quote_details"), ...spec.schema.tables] } }
     expect(moveSchemaTable(spec, 0, 2)).toBe(spec)
     expect(moveSchemaTable(spec, 3, 0)).toBe(spec)
     spec = moveSchemaTable(spec, 3, 1)
@@ -533,36 +538,36 @@ describe("columns", () => {
   })
 
   it("gives a table an index column, an Integer named row_number, that can be its key", () => {
-    let spec = setSchemaTableRows(withTable(column("a", "item", { key: true })), "t", "many")
+    let spec = setSchemaTableRows(withTable(column("item", { key: true })), "t", "many")
     const index = createIndexColumn(spec, "t")
 
     expect([index.name, index.type, index.index]).toEqual(["row_number", "int", true])
     spec = addSchemaColumn(spec, "t", index, 0)
-    spec = updateSchemaColumn(spec, "t", "a", { key: false })
+    spec = updateSchemaColumn(spec, "t", "item", { key: false })
     expect(messages(spec)).toContain('Table "t" has many rows, so it needs a key column')
-    spec = updateSchemaColumn(spec, "t", index.id, { key: true })
+    spec = updateSchemaColumn(spec, "t", index.name, { key: true })
     expect(messages(spec)).toEqual([])
     expect(createIndexColumn(spec, "t").name).toBe("row_number_2")
   })
 
   it("gives a table a row for each of one column's allowed values, until the table has one row or the column's type takes none", () => {
     const values = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } }
-    let spec = setSchemaTableRows(withTable(column("a", "peril", { key: true, ...values }), column("b", "zone", values)), "t", "many")
+    let spec = setSchemaTableRows(withTable(column("peril", { key: true, ...values }), column("zone", values)), "t", "many")
     const given = () => spec.schema.tables[0].columns.map((c) => c.row_per_value)
 
-    spec = setRowPerValue(spec, "t", "a", true)
+    spec = setRowPerValue(spec, "t", "peril", true)
     expect(given()).toEqual([true, false])
     // Ticking another unticks the first, as one column gives a table its rows.
-    spec = setRowPerValue(spec, "t", "b", true)
+    spec = setRowPerValue(spec, "t", "zone", true)
     expect(given()).toEqual([false, true])
-    spec = setRowPerValue(spec, "t", "b", false)
+    spec = setRowPerValue(spec, "t", "zone", false)
     expect(given()).toEqual([false, false])
 
-    spec = setRowPerValue(spec, "t", "a", true)
+    spec = setRowPerValue(spec, "t", "peril", true)
     expect(given()).toEqual([true, false])
     expect(setSchemaTableRows(spec, "t", "one").schema.tables[0].columns.map((c) => c.row_per_value)).toEqual([false, false])
-    expect(changeSchemaColumnType(spec, "t", "a", "date").schema.tables[0].columns[0]).toMatchObject({ options: [], row_per_value: false })
-    expect(changeSchemaColumnType(spec, "t", "a", "int").schema.tables[0].columns[0].row_per_value).toBe(true)
+    expect(changeSchemaColumnType(spec, "t", "peril", "date").schema.tables[0].columns[0]).toMatchObject({ options: [], row_per_value: false })
+    expect(changeSchemaColumnType(spec, "t", "peril", "int").schema.tables[0].columns[0].row_per_value).toBe(true)
   })
 
   it("refuses to edit a table or column that is not in the schema", () => {
@@ -574,12 +579,12 @@ describe("columns", () => {
 describe("what the sheets show", () => {
   /** Policy details (one row) shown by a Collection, equipment (many rows) by a Table, in the sheet's one section, with a sample. */
   const sheet = (): FormSpec => {
-    let spec = addSchemaTable(blank(), table("policy", "policy", { columns: [column("policy.state", "state")] }))
+    let spec = addSchemaTable(blank(), table("policy", { columns: [column("state")] }))
     spec = addSchemaTable(
       spec,
-      table("equipment", "equipment", {
+      table("equipment", {
         rows: "many",
-        columns: [column("equipment.item", "item", { key: true }), column("equipment.value", "value", { type: "float" })],
+        columns: [column("item", { key: true }), column("value", { type: "float" })],
       }),
     )
     spec = {
@@ -592,8 +597,8 @@ describe("what the sheets show", () => {
           show_when: { match: "all", conditions: [] },
           sections: [
             section("s", "Section 1", 560, [
-              { id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "policy.state" }], show_when: { match: "all", conditions: [] } },
-              {
+              { number: null, id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "state" }], show_when: { match: "all", conditions: [] } },
+              { number: null,
                 id: "w_grid",
                 type: "tableInput",
                 x: 0,
@@ -603,7 +608,7 @@ describe("what the sheets show", () => {
                 title: "Equipment",
                 rows: 3,
                 ...TABLE_OPTIONS,
-                fields: [{ table: "equipment", column: "equipment.item" }, { table: "equipment", column: "equipment.value" }],
+                fields: [{ table: "equipment", column: "item" }, { table: "equipment", column: "value" }],
                 show_when: { match: "all", conditions: [] },
               },
             ]),
@@ -611,8 +616,8 @@ describe("what the sheets show", () => {
         },
       ],
       sample: {
-        policy: [{ "policy.state": "NY" }],
-        equipment: [{ "equipment.item": "A", "equipment.value": "100" }, { "equipment.item": "B" }],
+        policy: [{ state: "NY" }],
+        equipment: [{ item: "A", value: "100" }, { item: "B" }],
       },
     }
     return spec
@@ -621,37 +626,70 @@ describe("what the sheets show", () => {
     widgetsOf(spec).filter(showsFields).find((widget) => widget.id === widgetId)?.fields.map((field) => field.column)
 
   it("never offers the quote's identity to the sheets: no condition tests it and no Chart plots it", () => {
-    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), id: "t", rows: "many" })
-    spec = addSchemaColumn(spec, "t", column("a", "value", { type: "float" }))
+    let spec = addSchemaTable(blank(), { ...createSchemaTable(blank()), name: "t", rows: "many" })
+    spec = addSchemaColumn(spec, "t", column("value", { type: "float" }))
     const [t] = spec.schema.tables
 
-    expect(testableColumns(t).map((c) => c.id)).toEqual(["a"])
-    expect(t.columns.filter(plottable).map((c) => c.id)).toEqual(["a"])
+    expect(testableColumns(t).map((c) => c.name)).toEqual(["value"])
+    expect(t.columns.filter((c) => plottable(t, c)).map((c) => c.name)).toEqual(["value"])
   })
 
   it("finds the widgets showing a table or a column, and the column a field names", () => {
     const spec = sheet()
 
     expect(fieldUses(spec, "equipment").map((w) => w.id)).toEqual(["w_grid"])
-    expect(fieldUses(spec, "equipment", "equipment.value").map((w) => w.id)).toEqual(["w_grid"])
+    expect(fieldUses(spec, "equipment", "value").map((w) => w.id)).toEqual(["w_grid"])
     expect(fieldUses(spec, "policy", "missing")).toEqual([])
-    expect(fieldColumn(spec, { table: "equipment", column: "equipment.value" })?.column.name).toBe("value")
+    expect(fieldColumn(spec, { table: "equipment", column: "value" })?.column.name).toBe("value")
     expect(fieldColumn(spec, { table: "gone", column: "x" })).toBeNull()
   })
 
   it("removing a column takes it out of the widgets that show it, and out of the sample", () => {
-    const spec = removeSchemaColumn(sheet(), "equipment", "equipment.value")
+    const spec = removeSchemaColumn(sheet(), "equipment", "value")
 
-    expect(fields(spec, "w_grid")).toEqual(["equipment.item"])
-    expect(spec.sample.equipment).toEqual([{ "equipment.item": "A" }, { "equipment.item": "B" }])
+    expect(fields(spec, "w_grid")).toEqual(["item"])
+    expect(spec.sample.equipment).toEqual([{ item: "A" }, { item: "B" }])
   })
 
   it("removing a table takes its columns out of the widgets, and its rows out of the sample", () => {
     const spec = removeSchemaTable(sheet(), "policy")
 
-    expect(spec.schema.tables.map((t) => t.id)).toEqual(["equipment"])
+    expect(spec.schema.tables.map((t) => t.name)).toEqual(["equipment"])
     expect(fields(spec, "w_boxes")).toEqual([])
     expect(Object.keys(spec.sample)).toEqual(["equipment"])
+  })
+
+  it("renames a table or a column in every use of its old name, and refuses a name taken whatever its case", () => {
+    const state = { table: "policy", column: "state" }
+    const value = { table: "equipment", column: "value" }
+    let spec = setColumnLook(sheet(), "w_grid", value, { bold: true })
+    spec = setSectionShowWhen(spec, "s", { match: "all", conditions: [{ ...state, op: "equals", values: ["NY"], field: null, days: 0 }] })
+    spec = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 120 }), id: "w_chart", fields: [value], category: { table: "equipment", column: "item" } })
+    const grid = (form: FormSpec) => findWidget(form, "w_grid")!.widget as Extract<Widget, { type: "tableInput" }>
+    const charted = (form: FormSpec) => findWidget(form, "w_chart")!.widget as ChartWidget
+    const shown = (form: FormSpec) => form.pages[0].sections[0].show_when.conditions
+
+    // A column: its fields, its look, a Chart's fields and category, and its sample values follow it.
+    const sumInsured = updateSchemaColumn(spec, "equipment", "value", { name: "sum_insured" })
+    expect(fields(sumInsured, "w_grid")).toEqual(["item", "sum_insured"])
+    expect(grid(sumInsured).column_looks.map((look) => look.column)).toEqual(["sum_insured"])
+    expect(charted(sumInsured).fields).toEqual([{ table: "equipment", column: "sum_insured" }])
+    expect(sumInsured.sample.equipment).toEqual([{ item: "A", sum_insured: "100" }, { item: "B" }])
+    expect(charted(updateSchemaColumn(spec, "equipment", "item", { name: "plant" })).category).toEqual({ table: "equipment", column: "plant" })
+    // A table: its fields, the conditions on it and its sample rows follow it.
+    const cover = updateSchemaTable(spec, "policy", { name: "cover" })
+    expect(findWidget(cover, "w_boxes")!.widget).toMatchObject({ fields: [{ table: "cover", column: "state" }] })
+    expect(shown(cover)).toEqual([{ table: "cover", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }])
+    expect(cover.sample).toEqual({ equipment: spec.sample.equipment, cover: [{ state: "NY" }] })
+
+    // Onto another's name, whatever its case, nothing changes; its own in another case is a rename.
+    expect(updateSchemaTable(spec, "policy", { name: "Equipment" })).toBe(spec)
+    expect(updateSchemaColumn(spec, "equipment", "value", { name: "ITEM" })).toBe(spec)
+    expect(updateSchemaTable(spec, "policy", { name: "Policy" }).schema.tables.map((t) => t.name)).toEqual(["Policy", "equipment"])
+    // Onto a name the sample holds a kept value under, nothing changes either, rather than one value lost.
+    const kept = { ...spec, sample: { ...spec.sample, equipment: [{ item: "A", value: "100", colour: "red" }] } }
+    expect(sampleHolds(kept, "equipment", "colour")).toBe(true)
+    expect(updateSchemaColumn(kept, "equipment", "value", { name: "colour" })).toBe(kept)
   })
 
   it("leaves its input untouched", () => {
@@ -659,9 +697,9 @@ describe("what the sheets show", () => {
     const snapshot = JSON.stringify(before)
 
     removeSchemaTable(before, "policy")
-    updateSchemaColumn(before, "policy", "policy.state", { name: "region" })
+    updateSchemaColumn(before, "policy", "state", { name: "region" })
     removeSpacer(addSpacer(before, "w_boxes"), "w_boxes", 1)
-    toggleField(addSpacer(before, "w_boxes"), "w_boxes", { table: "policy", column: "policy.state" })
+    toggleField(addSpacer(before, "w_boxes"), "w_boxes", { table: "policy", column: "state" })
     moveInOrder(before, "w_grid", 0, 1)
 
     expect(JSON.stringify(before)).toBe(snapshot)
@@ -744,6 +782,7 @@ describe("what the sheets show", () => {
     // In the file's order, so a component the view made compares equal to it saved.
     expect(Object.keys(grid)).toEqual([
       "id",
+      "number",
       "x",
       "y",
       "w",
@@ -781,6 +820,7 @@ describe("what the sheets show", () => {
     expect(grid.column_looks).not.toBe(TABLE_OPTIONS.column_looks)
     expect(Object.keys(boxes)).toEqual([
       "id",
+      "number",
       "x",
       "y",
       "w",
@@ -874,7 +914,7 @@ describe("what the sheets show", () => {
     // Its rows numbered, of columns, upright, unstacked, its legend at the bottom and no data labels.
     expect(CHART_OPTIONS).toEqual({ category: null, chart_type: "column", orientation: "vertical", stacked: false, legend: "bottom", data_labels: false })
     expect(chart).toMatchObject({ type: "chart", title: "", fields: [], ...CHART_OPTIONS })
-    expect(Object.keys(chart)).toEqual(["id", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
+    expect(Object.keys(chart)).toEqual(["id", "number", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
     expect(chart).not.toHaveProperty("rows")
     expect(chart).not.toHaveProperty("density")
     expect(chart).not.toHaveProperty("columns")
@@ -902,7 +942,7 @@ describe("what the sheets show", () => {
     // Medium and aligned left, with no text or description yet, and no title or fields, in the file's order.
     expect(HEADING_OPTIONS).toEqual({ size: "medium", align: "left" })
     expect(heading).toMatchObject({ type: "heading", text: "", description: "", ...HEADING_OPTIONS })
-    expect(Object.keys(heading)).toEqual(["id", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
+    expect(Object.keys(heading)).toEqual(["id", "number", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
     expect([showsFields(heading), showsFields(grid)]).toEqual([false, true])
 
     let spec = [heading, grid].reduce((current, widget) => addWidget(current, "s", widget), blank())
@@ -939,56 +979,56 @@ describe("what the sheets show", () => {
 
     // A Heading shows no column, so it is no column's use, and removing one passes it by.
     expect(fieldUses(spec, "equipment").map((widget) => widget.id)).toEqual(["w_grid"])
-    expect(head(removeSchemaTable(removeSchemaColumn(spec, "equipment", "equipment.value"), "policy"))).toEqual(head(spec))
+    expect(head(removeSchemaTable(removeSchemaColumn(spec, "equipment", "value"), "policy"))).toEqual(head(spec))
   })
 
   it("shows a column in a component, stops showing it, and moves fields in order", () => {
     let spec = sheet()
-    spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
+    spec = toggleField(spec, "w_boxes", { table: "policy", column: "state" })
     expect(fields(spec, "w_boxes")).toEqual([])
-    spec = toggleField(spec, "w_boxes", { table: "policy", column: "policy.state" })
-    expect(fields(spec, "w_boxes")).toEqual(["policy.state"])
+    spec = toggleField(spec, "w_boxes", { table: "policy", column: "state" })
+    expect(fields(spec, "w_boxes")).toEqual(["state"])
 
     spec = moveInOrder(spec, "w_grid", 1, 0)
-    expect(fields(spec, "w_grid")).toEqual(["equipment.value", "equipment.item"])
+    expect(fields(spec, "w_grid")).toEqual(["value", "item"])
     // A Table's order is its fields alone.
     expect(orderItems(widgetsOf(spec)[1] as FieldsWidget)).toEqual([
-      { kind: "field", field: { table: "equipment", column: "equipment.value" } },
-      { kind: "field", field: { table: "equipment", column: "equipment.item" } },
+      { kind: "field", field: { table: "equipment", column: "value" } },
+      { kind: "field", field: { table: "equipment", column: "item" } },
     ])
   })
 
   it("gives a Table's column a look of its own, takes away one that changes nothing, and drops it as the column goes", () => {
-    const value = { table: "equipment", column: "equipment.value" }
-    const item = { table: "equipment", column: "equipment.item" }
+    const value = { table: "equipment", column: "value" }
+    const item = { table: "equipment", column: "item" }
     const grid = (form: FormSpec) => widgetsOf(form)[1] as Extract<Widget, { type: "tableInput" }>
     let spec = setColumnLook(sheet(), "w_grid", value, { cell_color: "#2563EB", width: 120 })
-    expect(grid(spec).column_looks).toEqual([{ table: "equipment", column: "equipment.value", ...PLAIN_COLUMN_LOOK, cell_color: "#2563EB", width: 120 }])
+    expect(grid(spec).column_looks).toEqual([{ table: "equipment", column: "value", ...PLAIN_COLUMN_LOOK, cell_color: "#2563EB", width: 120 }])
     expect(columnLook(grid(spec), value)).toEqual({ ...PLAIN_COLUMN_LOOK, cell_color: "#2563EB", width: 120 })
     expect(columnLook(grid(spec), item)).toBe(PLAIN_COLUMN_LOOK)
 
     // A change keeps the rest of its look, and a new look goes after the others.
     spec = setColumnLook(setColumnLook(spec, "w_grid", value, { bold: true }), "w_grid", item, { align: "center" })
     expect(grid(spec).column_looks.map((look) => [look.column, look.bold, look.cell_color, look.align])).toEqual([
-      ["equipment.value", true, "#2563EB", "auto"],
-      ["equipment.item", false, null, "center"],
+      ["value", true, "#2563EB", "auto"],
+      ["item", false, null, "center"],
     ])
 
     // Set back to the Table's own, it is no look at all; cleared, it goes whatever it held.
-    expect(grid(setColumnLook(spec, "w_grid", item, { align: "auto" })).column_looks.map((look) => look.column)).toEqual(["equipment.value"])
-    expect(grid(setColumnLook(spec, "w_grid", value, "clear")).column_looks.map((look) => look.column)).toEqual(["equipment.item"])
+    expect(grid(setColumnLook(spec, "w_grid", item, { align: "auto" })).column_looks.map((look) => look.column)).toEqual(["value"])
+    expect(grid(setColumnLook(spec, "w_grid", value, "clear")).column_looks.map((look) => look.column)).toEqual(["item"])
 
     // A column the Table stops showing, unticked or gone from the schema, takes its look with it;
     // shown again, it starts plain. Moving it keeps it.
     expect(grid(moveInOrder(spec, "w_grid", 1, 0)).column_looks).toEqual(grid(spec).column_looks)
     const unticked = toggleField(spec, "w_grid", value)
-    expect(grid(unticked).column_looks.map((look) => look.column)).toEqual(["equipment.item"])
+    expect(grid(unticked).column_looks.map((look) => look.column)).toEqual(["item"])
     expect(columnLook(grid(toggleField(unticked, "w_grid", value)), value)).toBe(PLAIN_COLUMN_LOOK)
-    expect(grid(removeSchemaColumn(spec, "equipment", "equipment.item")).column_looks.map((look) => look.column)).toEqual(["equipment.value"])
+    expect(grid(removeSchemaColumn(spec, "equipment", "item")).column_looks.map((look) => look.column)).toEqual(["value"])
     expect(grid(removeSchemaTable(spec, "equipment")).column_looks).toEqual([])
 
     // A Collection's fields have looks as a Table's columns do, dropped as the field goes.
-    const state = { table: "policy", column: "policy.state" }
+    const state = { table: "policy", column: "state" }
     const boxes = (form: FormSpec) => widgetsOf(form)[0] as Extract<Widget, { type: "collection" }>
     const boxed = setColumnLook(spec, "w_boxes", state, { header_color: "#2563EB", header_align: "left", width: 64 })
     expect(boxes(boxed).column_looks).toEqual([{ ...state, ...PLAIN_COLUMN_LOOK, header_color: "#2563EB", header_align: "left", width: 64 }])
@@ -998,45 +1038,45 @@ describe("what the sheets show", () => {
     // Only a Table's columns and a Collection's fields have looks, and only those it shows.
     const charted = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 280 }), id: "w_chart", fields: [value] })
     expect(() => setColumnLook(charted, "w_chart", value, { bold: true })).toThrow("Only a Table or a Collection has column looks")
-    expect(() => setColumnLook(unticked, "w_grid", value, { bold: true })).toThrow("The Table does not show equipment.equipment.value")
-    expect(() => setColumnLook(spec, "w_boxes", value, { bold: true })).toThrow("The Collection does not show equipment.equipment.value")
+    expect(() => setColumnLook(unticked, "w_grid", value, { bold: true })).toThrow("The Table does not show equipment.value")
+    expect(() => setColumnLook(spec, "w_boxes", value, { bold: true })).toThrow("The Collection does not show equipment.value")
   })
 
   it("puts spacers among a Collection's fields, moves and removes them, and keeps their places as fields come and go", () => {
     // The policy's boxes showing its state, year and region.
-    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("policy.year", "year", { type: "int" })), "policy", column("policy.region", "region"))
-    spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" }), "w_boxes", { table: "policy", column: "policy.region" })
+    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("year", { type: "int" })), "policy", column("region"))
+    spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "year" }), "w_boxes", { table: "policy", column: "region" })
     const boxes = (form: FormSpec) => widgetsOf(form)[0] as CollectionWidget
     const order = (form: FormSpec) => orderItems(boxes(form)).map((item) => (item.kind === "field" ? item.field.column : "spacer"))
 
     // Added after the last field, then moved between the first two; a second there makes the gap wider.
     spec = addSpacer(spec, "w_boxes")
-    expect(order(spec)).toEqual(["policy.state", "policy.year", "policy.region", "spacer"])
+    expect(order(spec)).toEqual(["state", "year", "region", "spacer"])
     expect(boxes(spec).spacers).toEqual([3])
     spec = moveInOrder(spec, "w_boxes", 3, 1)
-    expect(order(spec)).toEqual(["policy.state", "spacer", "policy.year", "policy.region"])
+    expect(order(spec)).toEqual(["state", "spacer", "year", "region"])
     expect(boxes(spec).spacers).toEqual([1])
     spec = moveInOrder(addSpacer(spec, "w_boxes"), "w_boxes", 4, 2)
-    expect(order(spec)).toEqual(["policy.state", "spacer", "spacer", "policy.year", "policy.region"])
+    expect(order(spec)).toEqual(["state", "spacer", "spacer", "year", "region"])
     expect(boxes(spec).spacers).toEqual([1, 1])
 
     // A field moved past the spacers leaves them where they are in the order.
-    expect(order(moveInOrder(spec, "w_boxes", 0, 4))).toEqual(["spacer", "spacer", "policy.year", "policy.region", "policy.state"])
+    expect(order(moveInOrder(spec, "w_boxes", 0, 4))).toEqual(["spacer", "spacer", "year", "region", "state"])
     expect(boxes(moveInOrder(spec, "w_boxes", 0, 4)).spacers).toEqual([0, 0])
 
     // A field it stops showing, unticked or gone from the schema, takes its place in the count
     // with it; a field ticked goes after any spacer at the end.
-    const unticked = toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" })
-    expect(order(unticked)).toEqual(["policy.state", "spacer", "spacer", "policy.region"])
-    expect(boxes(removeSchemaColumn(spec, "policy", "policy.state")).spacers).toEqual([0, 0])
-    const ticked = toggleField(addSpacer(unticked, "w_boxes"), "w_boxes", { table: "policy", column: "policy.year" })
-    expect(order(ticked)).toEqual(["policy.state", "spacer", "spacer", "policy.region", "spacer", "policy.year"])
+    const unticked = toggleField(spec, "w_boxes", { table: "policy", column: "year" })
+    expect(order(unticked)).toEqual(["state", "spacer", "spacer", "region"])
+    expect(boxes(removeSchemaColumn(spec, "policy", "state")).spacers).toEqual([0, 0])
+    const ticked = toggleField(addSpacer(unticked, "w_boxes"), "w_boxes", { table: "policy", column: "year" })
+    expect(order(ticked)).toEqual(["state", "spacer", "spacer", "region", "spacer", "year"])
     // Left showing no fields, it keeps no spacers.
     expect(boxes(removeSchemaTable(spec, "policy"))).toMatchObject({ fields: [], spacers: [] })
 
     // Removed at its place in the order; a place holding a field holds no spacer.
     spec = removeSpacer(spec, "w_boxes", 2)
-    expect(order(spec)).toEqual(["policy.state", "spacer", "policy.year", "policy.region"])
+    expect(order(spec)).toEqual(["state", "spacer", "year", "region"])
     expect(() => removeSpacer(spec, "w_boxes", 0)).toThrow("No spacer is at 0")
     expect(() => moveInOrder(spec, "w_boxes", 9, 0)).toThrow("Nothing is at 9 in its order")
 
@@ -1049,20 +1089,20 @@ describe("what the sheets show", () => {
   it("leaves out of a copy pasted what it shows or tests of a column the schema has lost since, as removing the column does", () => {
     // The policy's boxes showing its state, year and region, a spacer before the region,
     // shown while the year and the state are as said.
-    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("policy.year", "year", { type: "int" })), "policy", column("policy.region", "region"))
-    spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "policy.year" }), "w_boxes", { table: "policy", column: "policy.region" })
+    let spec = addSchemaColumn(addSchemaColumn(sheet(), "policy", column("year", { type: "int" })), "policy", column("region"))
+    spec = toggleField(toggleField(spec, "w_boxes", { table: "policy", column: "year" }), "w_boxes", { table: "policy", column: "region" })
     spec = moveInOrder(addSpacer(spec, "w_boxes"), "w_boxes", 3, 2)
-    const onYear: Condition = { table: "policy", column: "policy.year", op: "equals", values: ["2024"], field: null, days: 0 }
-    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }
+    const onYear: Condition = { table: "policy", column: "year", op: "equals", values: ["2024"], field: null, days: 0 }
+    const onState: Condition = { table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }
     spec = updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [onYear, onState] } })
     const copied = findWidget(spec, "w_boxes")!.widget
 
     // The year removed after the copy: pasted, the copy is as the original is now.
-    const lost = removeSchemaColumn(spec, "policy", "policy.year")
+    const lost = removeSchemaColumn(spec, "policy", "year")
     const pasted = pasteWidget(lost, copied, "s")
-    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, x: 16, y: 16 })
+    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, number: 1, x: 16, y: 16 })
     expect(findWidget(pasted.spec, pasted.id)?.widget).toMatchObject({
-      fields: [{ table: "policy", column: "policy.state" }, { table: "policy", column: "policy.region" }],
+      fields: [{ table: "policy", column: "state" }, { table: "policy", column: "region" }],
       spacers: [1],
       show_when: { match: "all", conditions: [onState] },
     })
@@ -1071,23 +1111,23 @@ describe("what the sheets show", () => {
     expect(findWidget(emptied.spec, emptied.id)?.widget).toMatchObject({ fields: [], spacers: [], show_when: { match: "all", conditions: [] } })
 
     // A Table's look for a column lost since goes with it; the others' stay.
-    const looked = setColumnLook(setColumnLook(sheet(), "w_grid", { table: "equipment", column: "equipment.item" }, { bold: true }), "w_grid", { table: "equipment", column: "equipment.value" }, { bold: true })
+    const looked = setColumnLook(setColumnLook(sheet(), "w_grid", { table: "equipment", column: "item" }, { bold: true }), "w_grid", { table: "equipment", column: "value" }, { bold: true })
     const grid = findWidget(looked, "w_grid")!.widget
-    const pastedGrid = pasteWidget(removeSchemaColumn(looked, "equipment", "equipment.value"), grid, "s")
-    expect(findWidget(pastedGrid.spec, pastedGrid.id)?.widget).toMatchObject({ column_looks: [{ table: "equipment", column: "equipment.item", bold: true }] })
+    const pastedGrid = pasteWidget(removeSchemaColumn(looked, "equipment", "value"), grid, "s")
+    expect(findWidget(pastedGrid.spec, pastedGrid.id)?.widget).toMatchObject({ column_looks: [{ table: "equipment", column: "item", bold: true }] })
   })
 
   it("leaves out of a copy pasted what its conditions test of a column lost since, a group left with none, and a count of a table lost since", () => {
-    const onState: Condition = { table: "policy", column: "policy.state", op: "equals", values: ["NY"], field: null, days: 0 }
-    const onValue: RowsCondition = { table: "equipment", rows: "every", where: [{ column: "equipment.value", op: "above", values: ["50"], field: null, days: 0 }] }
-    const count: RowCount = { table: "equipment", where: [{ column: "equipment.value", op: "filled", values: [], field: null, days: 0 }], op: "at_least", count: 1 }
+    const onState: Condition = { table: "policy", column: "state", op: "equals", values: ["NY"], field: null, days: 0 }
+    const onValue: RowsCondition = { table: "equipment", rows: "every", where: [{ column: "value", op: "above", values: ["50"], field: null, days: 0 }] }
+    const count: RowCount = { table: "equipment", where: [{ column: "value", op: "filled", values: [], field: null, days: 0 }], op: "at_least", count: 1 }
     const spec = updateWidget(sheet(), "w_boxes", {
       show_when: { match: "any", conditions: [{ match: "all", conditions: [onState, onValue] }, { match: "all", conditions: [count] }] },
     })
     const copied = findWidget(spec, "w_boxes")!.widget
 
     // In every row with no test left goes; a count keeps counting, its test on the column gone.
-    const lostValue = pasteWidget(removeSchemaColumn(spec, "equipment", "equipment.value"), copied, "s")
+    const lostValue = pasteWidget(removeSchemaColumn(spec, "equipment", "value"), copied, "s")
     expect(findWidget(lostValue.spec, lostValue.id)?.widget.show_when).toEqual({
       match: "any",
       conditions: [{ match: "all", conditions: [onState] }, { match: "all", conditions: [{ ...count, where: [] }] }],
@@ -1106,29 +1146,29 @@ describe("what the sheets show", () => {
   })
 
   it("sets a sample cell, adding empty rows up to it, and replaces several tables' rows as one edit", () => {
-    let spec = withSampleCell(sheet(), "equipment", 3, "equipment.item", "C")
-    expect(spec.sample.equipment).toEqual([{ "equipment.item": "A", "equipment.value": "100" }, { "equipment.item": "B" }, {}, { "equipment.item": "C" }])
-    spec = withSampleCell(spec, "policy", 0, "policy.year", true)
-    expect(spec.sample.policy).toEqual([{ "policy.state": "NY", "policy.year": true }])
+    let spec = withSampleCell(sheet(), "equipment", 3, "item", "C")
+    expect(spec.sample.equipment).toEqual([{ item: "A", value: "100" }, { item: "B" }, {}, { item: "C" }])
+    spec = withSampleCell(spec, "policy", 0, "year", true)
+    expect(spec.sample.policy).toEqual([{ state: "NY", year: true }])
     expect(withCell([], 0, "c", "x")).toEqual([{ c: "x" }])
 
-    spec = withSampleRows(spec, { equipment: [{ "equipment.item": "B" }], premiums: [{ "premiums.item": "B" }] })
-    expect(spec.sample.equipment).toEqual([{ "equipment.item": "B" }])
-    expect(spec.sample.premiums).toEqual([{ "premiums.item": "B" }])
-    expect(spec.sample.policy).toEqual([{ "policy.state": "NY", "policy.year": true }])
+    spec = withSampleRows(spec, { equipment: [{ item: "B" }], premiums: [{ item: "B" }] })
+    expect(spec.sample.equipment).toEqual([{ item: "B" }])
+    expect(spec.sample.premiums).toEqual([{ item: "B" }])
+    expect(spec.sample.policy).toEqual([{ state: "NY", year: true }])
   })
 
   it("starts the sample again as a new quote, its one-row tables' defaults alone, and leaves a new quote's sample as it is", () => {
-    const spec = updateSchemaColumn(sheet(), "policy", "policy.state", { default_value: "CA" })
+    const spec = updateSchemaColumn(sheet(), "policy", "state", { default_value: "CA" })
     expect(isNewQuoteSample(spec)).toBe(false)
     const reset = newQuoteSample(spec)
-    expect(reset.sample).toEqual({ policy: [{ "policy.state": "CA" }] })
+    expect(reset.sample).toEqual({ policy: [{ state: "CA" }] })
     expect(reset.pages).toBe(spec.pages)
     expect(isNewQuoteSample(reset)).toBe(true)
     expect(newQuoteSample(reset)).toBe(reset)
     // Typing into it afterwards leaves what a new quote starts with as it was.
-    reset.sample.policy[0]["policy.state"] = "NY"
-    expect(newQuoteSample(spec).sample).toEqual({ policy: [{ "policy.state": "CA" }] })
+    reset.sample.policy[0].state = "NY"
+    expect(newQuoteSample(spec).sample).toEqual({ policy: [{ state: "CA" }] })
 
     // Without defaults a new quote holds nothing; a row left empty in a grid shows, so it is not one.
     const empty = newQuoteSample(sheet())
@@ -1138,25 +1178,25 @@ describe("what the sheets show", () => {
 
   it("sets the rows a Table's grid starts with, starting its grid in the sample again at them and keeping every value typed", () => {
     // Its table keeps its rows up to the last with a value typed, made up to the rows with empty ones.
-    let spec = withSampleRows(sheet(), { equipment: [{ "equipment.item": "A" }, {}, { "equipment.item": "C" }, { "equipment.item": " " }, {}] })
-    expect(setTableRows(spec, "w_grid", 1).sample.equipment).toEqual([{ "equipment.item": "A" }, {}, { "equipment.item": "C" }])
+    let spec = withSampleRows(sheet(), { equipment: [{ item: "A" }, {}, { item: "C" }, { item: " " }, {}] })
+    expect(setTableRows(spec, "w_grid", 1).sample.equipment).toEqual([{ item: "A" }, {}, { item: "C" }])
     const more = setTableRows(spec, "w_grid", 5)
-    expect(more.sample.equipment).toEqual([{ "equipment.item": "A" }, {}, { "equipment.item": "C" }, {}, {}])
+    expect(more.sample.equipment).toEqual([{ item: "A" }, {}, { item: "C" }, {}, {}])
     expect(widgetsOf(more)[1]).toMatchObject({ rows: 5 })
     // A value in a column the grid does not show is typed too.
-    expect(setTableRows(withSampleRows(spec, { equipment: [{}, { "equipment.gone": "x" }, {}] }), "w_grid", 1).sample.equipment).toEqual([{}, { "equipment.gone": "x" }])
+    expect(setTableRows(withSampleRows(spec, { equipment: [{}, { gone: "x" }, {}] }), "w_grid", 1).sample.equipment).toEqual([{}, { gone: "x" }])
 
     // With nothing typed it holds no rows, so the grid shows those it starts with; the policy's row stays.
-    spec = withSampleRows(spec, { equipment: [{}, { "equipment.value": "" }] })
-    expect(setTableRows(spec, "w_grid", 4).sample).toEqual({ policy: [{ "policy.state": "NY" }] })
+    spec = withSampleRows(spec, { equipment: [{}, { value: "" }] })
+    expect(setTableRows(spec, "w_grid", 4).sample).toEqual({ policy: [{ state: "NY" }] })
     expect(() => setTableRows(spec, "w_boxes", 2)).toThrow("Only a Table has rows")
   })
 
   it("prices on the schema and the sample alone: laying the sheet out differently changes nothing", () => {
     const spec = sheet()
     const moved = updateWidget(spec, "w_grid", { x: 100, rows: 7 })
-    const typed = withSampleCell(spec, "policy", 0, "policy.state", "CA")
-    const retyped = updateSchemaColumn(spec, "policy", "policy.state", { type: "int" })
+    const typed = withSampleCell(spec, "policy", 0, "state", "CA")
+    const retyped = updateSchemaColumn(spec, "policy", "state", { type: "int" })
 
     expect(pricingBasis(moved)).toBe(pricingBasis(spec))
     expect(pricingBasis(typed)).not.toBe(pricingBasis(spec))
@@ -1175,17 +1215,15 @@ describe("what the sheets show", () => {
     const empty = updateWidget(spec, "w_boxes", { fields: [] })
     expect(widgetProblems(empty).map((p) => p.message)).toEqual(['Collection "Policy" shows no fields'])
 
-    const dangling = updateWidget(spec, "w_grid", { fields: [{ table: "gone", column: "gone.x" }] })
+    const dangling = updateWidget(spec, "w_grid", { fields: [{ table: "gone", column: "x" }] })
     expect(widgetProblems(dangling).map((p) => p.message)).toEqual([
       'Table "Equipment" shows a column that is no longer in the schema',
     ])
-    // A name a sheet's file gives that its schema doesn't hold reads as "?" and the name: the
-    // same problem, on a known table or an unknown one.
-    for (const field of [{ table: "equipment", column: "?gone" }, { table: "?gone", column: "?x" }]) {
-      expect(widgetProblems(updateWidget(spec, "w_grid", { fields: [field] })).map((p) => p.message)).toEqual([
-        'Table "Equipment" shows a column that is no longer in the schema',
-      ])
-    }
+    // A name a sheet's file gives that its schema doesn't hold is kept as written: the same
+    // problem on a known table as on an unknown one.
+    expect(widgetProblems(updateWidget(spec, "w_grid", { fields: [{ table: "equipment", column: "gone" }] })).map((p) => p.message)).toEqual([
+      'Table "Equipment" shows a column that is no longer in the schema',
+    ])
 
     // A table switched between one row and many after its columns were chosen.
     expect(widgetProblems(setSchemaTableRows(spec, "policy", "many")).map((p) => p.message)).toEqual([
@@ -1196,26 +1234,26 @@ describe("what the sheets show", () => {
     ])
 
     // Two many-row tables line up only by their keys' names.
-    spec = addSchemaTable(spec, table("premiums", "premiums", { role: "output", rows: "many", columns: [column("premiums.item", "item", { key: true }), column("premiums.premium", "premium", { type: "float" })] }))
-    spec = toggleField(spec, "w_grid", { table: "premiums", column: "premiums.premium" })
+    spec = addSchemaTable(spec, table("premiums", { role: "output", rows: "many", columns: [column("item", { key: true }), column("premium", { type: "float" })] }))
+    spec = toggleField(spec, "w_grid", { table: "premiums", column: "premium" })
     expect(widgetProblems(spec)).toEqual([])
-    expect(widgetProblems(updateSchemaColumn(spec, "premiums", "premiums.item", { key: false })).map((p) => p.message)).toEqual([
+    expect(widgetProblems(updateSchemaColumn(spec, "premiums", "item", { key: false })).map((p) => p.message)).toEqual([
       'Table "Equipment" shows tables whose rows do not line up',
     ])
   })
 
   it("says a Table's tables do not line up when a column gives one its rows and another has rows of its own, or other values", () => {
     const values = (options: string[]) => ({ options, options_source: { file: "plant.csv", column: "item" }, row_per_value: true })
-    let spec = updateSchemaColumn(sheet(), "equipment", "equipment.item", values(["Crane", "Lift"]))
+    let spec = updateSchemaColumn(sheet(), "equipment", "item", values(["Crane", "Lift"]))
     // An input table keyed alike, shown beside it, its rows its own.
-    spec = addSchemaTable(spec, table("hire", "hire", { rows: "many", columns: [column("hire.item", "item", { key: true }), column("hire.days", "days", { type: "int" })] }))
-    spec = toggleField(spec, "w_grid", { table: "hire", column: "hire.days" })
+    spec = addSchemaTable(spec, table("hire", { rows: "many", columns: [column("item", { key: true }), column("days", { type: "int" })] }))
+    spec = toggleField(spec, "w_grid", { table: "hire", column: "days" })
     const apart = ['Table "Equipment" shows tables whose rows do not line up']
 
     expect(widgetProblems(spec).map((p) => p.message)).toEqual(apart)
     // Given the same rows by its own column, in the same order, it lines up; given others, it does not.
-    expect(widgetProblems(updateSchemaColumn(spec, "hire", "hire.item", values(["Crane", "Lift"])))).toEqual([])
-    expect(widgetProblems(updateSchemaColumn(spec, "hire", "hire.item", values(["Lift", "Crane"]))).map((p) => p.message)).toEqual(apart)
+    expect(widgetProblems(updateSchemaColumn(spec, "hire", "item", values(["Crane", "Lift"])))).toEqual([])
+    expect(widgetProblems(updateSchemaColumn(spec, "hire", "item", values(["Lift", "Crane"]))).map((p) => p.message)).toEqual(apart)
   })
 })
 
@@ -1257,6 +1295,32 @@ describe("sections", () => {
     expect(createSection(spec.pages[0], 300).height).toBe(300)
     // Counted on its own sheet: a new sheet's next section is its second.
     expect(createSection(createPage(spec)).title).toBe("Section 2")
+  })
+
+  it("numbers a component one more than the highest in the section it enters, added, duplicated, moved or pasted", () => {
+    const numbers = (spec: FormSpec) => spec.pages[0].sections.map((s) => s.widgets.map((widget) => widget.number))
+    // As a file numbers them: Policy's and Equipment's one component each 1, Notes empty.
+    let spec = stacked()
+    for (const s of spec.pages[0].sections) s.widgets.forEach((widget, index) => (widget.number = index + 1))
+    spec = addWidget(spec, "s_notes", { ...createWidget("heading", nowhere), id: "w_a" })
+    spec = addWidget(spec, "s_notes", { ...createWidget("heading", { ...nowhere, y: 24 }), id: "w_b" })
+    expect(numbers(spec)).toEqual([[1], [1], [1, 2]])
+    // A copy sits after its original, numbered after the highest.
+    spec = duplicateWidget(spec, "w_a").spec
+    expect(numbers(spec)[2]).toEqual([1, 3, 2])
+    // Moved to another section, it takes the next number there; its old one is not reused.
+    spec = placeWidget(spec, "w_a", "s_policy", { x: 440, y: 16, w: 80, h: 24 })
+    expect(numbers(spec)).toEqual([[1, 2], [1], [3, 2]])
+    const pasted = pasteWidget(spec, findWidget(spec, "w_grid")!.widget, "s_notes")
+    spec = pasted.spec
+    expect(numbers(spec)[2]).toEqual([3, 2, 4])
+    // Moved within its section, it keeps its number.
+    spec = placeWidget(spec, "w_b", "s_notes", { x: 200, y: 0, w: 80, h: 24 })
+    expect(numbers(spec)[2]).toEqual([3, 2, 4])
+    // Once the highest is deleted, its number can come back, its box gone with it.
+    spec = removeWidget(spec, pasted.id)
+    spec = addWidget(spec, "s_notes", { ...createWidget("heading", nowhere), id: "w_c" })
+    expect(numbers(spec)[2]).toEqual([3, 2, 4])
   })
 
   it("adds a section at a place on its sheet, or at the end", () => {
@@ -1321,7 +1385,7 @@ describe("sections", () => {
 
   it("renames a section and sets when it shows, leaving its input untouched", () => {
     const spec = stacked()
-    const whileCovered: ShowWhen = { match: "any", conditions: [{ table: "policy", column: "policy.cover", op: "ticked", values: [], field: null, days: 0 }] }
+    const whileCovered: ShowWhen = { match: "any", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
 
     expect(titles(renameSection(spec, "s_notes", "Endorsements"))).toEqual(["Policy", "Equipment", "Endorsements"])
     const next = setSectionShowWhen(spec, "s_equipment", whileCovered)
@@ -1402,7 +1466,7 @@ describe("sections", () => {
   })
 
   it("removes a section with its components, the sample kept, but never a sheet's last", () => {
-    const spec = { ...stacked(), sample: { equipment: [{ "equipment.item": "Crane" }] } }
+    const spec = { ...stacked(), sample: { equipment: [{ item: "Crane" }] } }
 
     const without = removeSection(spec, "s_equipment")
     expect(titles(without)).toEqual(["Policy", "Notes"])
@@ -1631,7 +1695,7 @@ describe("sections", () => {
 
     // Into its own section, over its original: 16 right, and as far down as Policy's 136 lets it, last there.
     const once = pasteWidget(spec, boxes, "s_policy")
-    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, x: 32, y: 16 } })
+    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, number: 1, x: 32, y: 16 } })
     expect(once.id).not.toBe("w_boxes")
     expect(findWidget(once.spec, "w_boxes")?.widget).toEqual(boxes)
     expect(heights(once.spec)).toEqual([136, 232, 48])
@@ -1742,8 +1806,9 @@ describe("sections", () => {
 
 describe("when sheets and components show", () => {
   const always = (): ShowWhen => ({ match: "all", conditions: [] })
-  const ticked: Condition = { table: "policy", column: "policy.bi", op: "ticked", values: [], field: null, days: 0 }
+  const ticked: Condition = { table: "policy", column: "bi", op: "ticked", values: [], field: null, days: 0 }
   const collection = (id: string, title: string, columns: [string, string][], showWhen: ShowWhen = always()) => ({
+    number: null,
     id,
     type: "collection" as const,
     x: 0,
@@ -1763,22 +1828,22 @@ describe("when sheets and components show", () => {
     ...blank(),
     schema: {
       tables: [
-        table("policy", "policy", {
+        table("policy", {
           columns: [
-            column("policy.bi", "bi", { type: "bool", label: "BI cover" }),
-            column("policy.class", "class", { options: ["Motor", "Fleet"] }),
-            column("policy.start", "start", { type: "date" }),
-            column("policy.extra", "extra"),
+            column("bi", { type: "bool", label: "BI cover" }),
+            column("class", { options: ["Motor", "Fleet"] }),
+            column("start", { type: "date" }),
+            column("extra"),
           ],
         }),
-        table("bi", "bi", { columns: [column("bi.limit", "limit", { type: "float" })] }),
+        table("bi", { columns: [column("limit", { type: "float" })] }),
       ],
     },
     pages: [
-      { id: "p", title: "Main", width: 1280, show_when: always(), sections: [section("s_main", "Policy", 136, [collection("w_policy", "Policy", [["policy", "policy.bi"], ["policy", "policy.class"]])])] },
-      { id: "p_bi", title: "BI", width: 1280, show_when: { match: "all", conditions: [ticked] }, sections: [section("s_bi", "Limits", 136, [collection("w_bi", "Limits", [["bi", "bi.limit"]])])] },
+      { id: "p", title: "Main", width: 1280, show_when: always(), sections: [section("s_main", "Policy", 136, [collection("w_policy", "Policy", [["policy", "bi"], ["policy", "class"]])])] },
+      { id: "p_bi", title: "BI", width: 1280, show_when: { match: "all", conditions: [ticked] }, sections: [section("s_bi", "Limits", 136, [collection("w_bi", "Limits", [["bi", "limit"]])])] },
     ],
-    sample: { bi: [{ "bi.limit": "500,000" }] },
+    sample: { bi: [{ limit: "500,000" }] },
   })
 
   it("creates sheets, sections and components always shown, each with a show_when of its own", () => {
@@ -1794,7 +1859,7 @@ describe("when sheets and components show", () => {
 
   it("sets when a sheet, a section or a component shows, leaving its input untouched", () => {
     const spec = covered()
-    const either: ShowWhen = { match: "any", conditions: [ticked, { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }] }
+    const either: ShowWhen = { match: "any", conditions: [ticked, { table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }] }
 
     const next = setPageShowWhen(spec, "p_bi", either)
     expect(next.pages[1].show_when).toEqual(either)
@@ -1806,15 +1871,15 @@ describe("when sheets and components show", () => {
   })
 
   it("takes the conditions testing a column or a table out with it, wherever they are, a section's among them", () => {
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
+    const onClass: Condition = { table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     let spec = updateWidget(covered(), "w_bi", { show_when: { match: "all", conditions: [onClass] } })
     spec = setSectionShowWhen(spec, "s_bi", { match: "any", conditions: [ticked, onClass] })
-    expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
-    expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["s_bi", "w_bi"])
+    expect(conditionUses(spec, "policy", "bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
+    expect(conditionUses(spec, "policy", "class").map((holder) => holder.id)).toEqual(["s_bi", "w_bi"])
     expect(conditionUses(spec, "policy").map((holder) => holder.id)).toEqual(["p_bi", "s_bi", "w_bi"])
     expect(conditionUses(spec, "bi")).toEqual([])
 
-    const withoutBox = removeSchemaColumn(spec, "policy", "policy.bi")
+    const withoutBox = removeSchemaColumn(spec, "policy", "bi")
     expect(withoutBox.pages[1].show_when.conditions).toEqual([])
     // The section keeps its other condition, and its match.
     expect(findSection(withoutBox, "s_bi")?.section.show_when).toEqual({ match: "any", conditions: [onClass] })
@@ -1827,32 +1892,32 @@ describe("when sheets and components show", () => {
   })
 
   it("counts a test against another field among that field's uses, and takes it out with the field or its table", () => {
-    const later: Condition = { table: "bi", column: "bi.limit", op: "above", values: [], field: null, days: 0 }
-    const againstExtra: Condition = { table: "policy", column: "policy.class", op: "contains", values: [], field: { table: "policy", column: "policy.extra" }, days: 0 }
-    const againstLimit: Condition = { ...later, field: { table: "bi", column: "bi.limit" } }
+    const later: Condition = { table: "bi", column: "limit", op: "above", values: [], field: null, days: 0 }
+    const againstExtra: Condition = { table: "policy", column: "class", op: "contains", values: [], field: { table: "policy", column: "extra" }, days: 0 }
+    const againstLimit: Condition = { ...later, field: { table: "bi", column: "limit" } }
     let spec = updateWidget(covered(), "w_bi", { show_when: { match: "all", conditions: [againstExtra] } })
     spec = setSectionShowWhen(spec, "s_bi", { match: "all", conditions: [againstLimit] })
-    expect(conditionUses(spec, "policy", "policy.extra").map((holder) => holder.id)).toEqual(["w_bi"])
+    expect(conditionUses(spec, "policy", "extra").map((holder) => holder.id)).toEqual(["w_bi"])
     expect(conditionUses(spec, "policy").map((holder) => holder.id)).toEqual(["p_bi", "w_bi"])
 
-    const withoutExtra = removeSchemaColumn(spec, "policy", "policy.extra")
+    const withoutExtra = removeSchemaColumn(spec, "policy", "extra")
     expect(findWidget(withoutExtra, "w_bi")?.widget.show_when.conditions).toEqual([])
     expect(findSection(withoutExtra, "s_bi")?.section.show_when.conditions).toEqual([againstLimit])
     // A condition whose field's table goes goes with it, though its own table stays.
-    const fieldOnBi: Condition = { ...againstExtra, field: { table: "bi", column: "bi.limit" } }
+    const fieldOnBi: Condition = { ...againstExtra, field: { table: "bi", column: "limit" } }
     const withoutBi = removeSchemaTable(updateWidget(spec, "w_policy", { show_when: { match: "all", conditions: [fieldOnBi] } }), "bi")
     expect(findWidget(withoutBi, "w_policy")?.widget.show_when.conditions).toEqual([])
   })
 
   it("gives a field a Show when of its own in its look, which its uses count and its column takes out with it", () => {
-    const bi = { table: "policy", column: "policy.bi" }
-    const klass = { table: "policy", column: "policy.class" }
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
+    const bi = { table: "policy", column: "bi" }
+    const klass = { table: "policy", column: "class" }
+    const onClass: Condition = { table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     const policy = (form: FormSpec) => findWidget(form, "w_policy")?.widget as Extract<Widget, { type: "collection" }>
     const spec = setColumnLook(covered(), "w_policy", bi, { show_when: { match: "any", conditions: [onClass] } })
     expect(policy(spec).column_looks).toEqual([{ ...bi, ...PLAIN_COLUMN_LOOK, show_when: { match: "any", conditions: [onClass] } }])
     expect(hasOwnLook(columnLook(policy(spec), bi))).toBe(false)
-    expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["w_policy"])
+    expect(conditionUses(spec, "policy", "class").map((holder) => holder.id)).toEqual(["w_policy"])
 
     // Clear puts back its look and keeps its Show when; emptied of conditions, it always
     // shows, so a look that sets nothing else goes.
@@ -1865,15 +1930,15 @@ describe("when sheets and components show", () => {
     ])
 
     // Its conditions go with the column they test, and its look with them while it sets nothing else.
-    expect(policy(removeSchemaColumn(spec, "policy", "policy.class")).column_looks).toEqual([])
-    expect(policy(removeSchemaColumn(setColumnLook(spec, "w_policy", bi, { bold: true }), "policy", "policy.class")).column_looks).toEqual([
+    expect(policy(removeSchemaColumn(spec, "policy", "class")).column_looks).toEqual([])
+    expect(policy(removeSchemaColumn(setColumnLook(spec, "w_policy", bi, { bold: true }), "policy", "class")).column_looks).toEqual([
       { ...bi, ...PLAIN_COLUMN_LOOK, bold: true, show_when: { match: "all", conditions: [] } },
     ])
-    expect(policy(removeSchemaColumn(spec, "policy", "policy.start")).column_looks).toEqual(policy(spec).column_looks)
+    expect(policy(removeSchemaColumn(spec, "policy", "start")).column_looks).toEqual(policy(spec).column_looks)
 
     // Pasted after the column it tests is gone, the copy holds no condition on it.
     const copied = policy(spec)
-    const pasted = pasteWidget(removeSchemaColumn(spec, "policy", "policy.class"), copied, "s_main")
+    const pasted = pasteWidget(removeSchemaColumn(spec, "policy", "class"), copied, "s_main")
     expect((findWidget(pasted.spec, pasted.id)?.widget as Extract<Widget, { type: "collection" }>).column_looks).toEqual([])
 
     // A field waiting on itself is named on its component, by its label.
@@ -1884,14 +1949,14 @@ describe("when sheets and components show", () => {
   })
 
   it("counts a Heading's conditions as any component's, and takes them out with their column or table", () => {
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
+    const onClass: Condition = { table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     const heading = { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 40 }), id: "w_head", text: "Fleet", show_when: { match: "all" as const, conditions: [onClass] } }
     const spec = addWidget(covered(), "s_main", heading)
-    expect(conditionUses(spec, "policy", "policy.class").map((holder) => holder.id)).toEqual(["w_head"])
+    expect(conditionUses(spec, "policy", "class").map((holder) => holder.id)).toEqual(["w_head"])
 
-    expect(findWidget(removeSchemaColumn(spec, "policy", "policy.class"), "w_head")?.widget.show_when.conditions).toEqual([])
+    expect(findWidget(removeSchemaColumn(spec, "policy", "class"), "w_head")?.widget.show_when.conditions).toEqual([])
     expect(findWidget(removeSchemaTable(spec, "policy"), "w_head")?.widget.show_when.conditions).toEqual([])
-    expect(findWidget(removeSchemaColumn(spec, "policy", "policy.bi"), "w_head")?.widget.show_when.conditions).toEqual([onClass])
+    expect(findWidget(removeSchemaColumn(spec, "policy", "bi"), "w_head")?.widget.show_when.conditions).toEqual([onClass])
   })
 
   it("says what stops a sheet's or a component's conditions doing what they say", () => {
@@ -1899,43 +1964,43 @@ describe("when sheets and components show", () => {
     expect([...pageProblems(spec), ...widgetProblems(spec)]).toEqual([])
 
     // Retyped under its condition: the test no longer fits.
-    expect(pageProblems(changeSchemaColumnType(spec, "policy", "policy.bi", "str")).map((p) => p.message)).toEqual([
+    expect(pageProblems(changeSchemaColumnType(spec, "policy", "bi", "str")).map((p) => p.message)).toEqual([
       'Sheet "BI" tests bi with "is ticked", which a Text column cannot take',
     ])
     // A value no allowed value can match.
-    const property = updateWidget(spec, "w_bi", { show_when: { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "one_of", values: ["Fleet", "Property"], field: null, days: 0 }] } })
+    const property = updateWidget(spec, "w_bi", { show_when: { match: "all", conditions: [{ table: "policy", column: "class", op: "one_of", values: ["Fleet", "Property"], field: null, days: 0 }] } })
     expect(widgetProblems(property).map((p) => p.message)).toEqual([
       'Collection "Limits" tests class against "Property", which isn\'t one of its allowed values',
     ])
     // Tested only on the sheet it shows, or on no component: nothing could show the sheet again.
-    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "bi", column: "bi.limit", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
+    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "bi", column: "limit", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on limit, which is only on components that hide with it, so it could not show again once hidden',
     ])
-    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
+    expect(pageProblems(setPageShowWhen(spec, "p_bi", { match: "all", conditions: [{ table: "policy", column: "extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on extra, which is on no Table or Collection',
     ])
     // A Chart only plots, so a column only a Chart plots is on no Table or Collection either.
-    const plotted = addWidget(changeSchemaColumnType(spec, "policy", "policy.extra", "float"), "s_main", {
+    const plotted = addWidget(changeSchemaColumnType(spec, "policy", "extra", "float"), "s_main", {
       ...createWidget("chart", { x: 0, y: 240, w: 480, h: 280 }),
-      fields: [{ table: "policy", column: "policy.extra" }],
+      fields: [{ table: "policy", column: "extra" }],
     })
-    expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "policy.extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
+    expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
       'Sheet "BI" waits on extra, which is on no Table or Collection',
     ])
     // A Heading's conditions are checked as any component's, and it is named by its text.
     const headed = addWidget(spec, "s_bi", {
       ...createWidget("heading", { x: 0, y: 160, w: 480, h: 40 }),
       text: "Business interruption",
-      show_when: { match: "all", conditions: [{ table: "policy", column: "policy.gone", op: "filled", values: [], field: null, days: 0 }] },
+      show_when: { match: "all", conditions: [{ table: "policy", column: "gone", op: "filled", values: [], field: null, days: 0 }] },
     })
     expect(widgetProblems(headed).map((p) => p.message)).toEqual(['Heading "Business interruption" tests a column that is no longer in the schema'])
   })
 
   it("names a condition on the price on what takes values typed, and never on what takes nothing typed", () => {
     const base = covered()
-    const premium = table("premium", "premium", { role: "output", columns: [column("premium.count", "referral_count", { type: "int" })] })
+    const premium = table("premium", { role: "output", columns: [column("referral_count", { type: "int" })] })
     const spec = { ...base, schema: { tables: [...base.schema.tables, premium] } }
-    const referred: Condition = { table: "premium", column: "premium.count", op: "above", values: ["0"], field: null, days: 0 }
+    const referred: Condition = { table: "premium", column: "referral_count", op: "above", values: ["0"], field: null, days: 0 }
     const never = "tests referral_count, a part of the price, which hides only what takes nothing typed: here it is never applied"
     // The section holds the policy's Collection, which takes values typed, and so do both.
     expect(sectionProblems(setSectionShowWhen(spec, "s_main", { match: "all", conditions: [referred] }))).toEqual([{ sectionId: "s_main", message: `Section "Policy" ${never}` }])
@@ -1954,29 +2019,29 @@ describe("when sheets and components show", () => {
     expect(sectionProblems(spec)).toEqual([])
 
     // A test its column's type does not take.
-    expect(showing("s_main", { table: "policy", column: "policy.class", op: "ticked", values: [], field: null, days: 0 })).toEqual([
+    expect(showing("s_main", { table: "policy", column: "class", op: "ticked", values: [], field: null, days: 0 })).toEqual([
       { sectionId: "s_main", message: 'Section "Policy" tests class with "is ticked", which a Text column cannot take' },
     ])
     // A value no allowed value can match.
-    expect(showing("s_bi", { table: "policy", column: "policy.class", op: "equals", values: ["Property"], field: null, days: 0 })).toEqual([
+    expect(showing("s_bi", { table: "policy", column: "class", op: "equals", values: ["Property"], field: null, days: 0 })).toEqual([
       { sectionId: "s_bi", message: 'Section "Limits" tests class against "Property", which isn\'t one of its allowed values' },
     ])
     // Tested only inside the section it shows, or on no component: nothing could show the section again.
-    expect(showing("s_bi", { table: "bi", column: "bi.limit", op: "filled", values: [], field: null, days: 0 })).toEqual([
+    expect(showing("s_bi", { table: "bi", column: "limit", op: "filled", values: [], field: null, days: 0 })).toEqual([
       { sectionId: "s_bi", message: 'Section "Limits" waits on limit, which is only on components that hide with it, so it could not show again once hidden' },
     ])
-    expect(showing("s_main", { table: "policy", column: "policy.extra", op: "filled", values: [], field: null, days: 0 })).toEqual([
+    expect(showing("s_main", { table: "policy", column: "extra", op: "filled", values: [], field: null, days: 0 })).toEqual([
       { sectionId: "s_main", message: 'Section "Policy" waits on extra, which is on no Table or Collection' },
     ])
   })
 
   it("reads conditions as sentences by their columns' labels", () => {
     const spec = covered()
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "one_of", values: ["Motor", "Fleet"], field: null, days: 0 }
+    const onClass: Condition = { table: "policy", column: "class", op: "one_of", values: ["Motor", "Fleet"], field: null, days: 0 }
     expect(conditionText(spec, ticked)).toBe("BI cover is ticked")
     expect(conditionText(spec, onClass)).toBe("Class is one of Motor, Fleet")
-    expect(conditionText(spec, { table: "policy", column: "policy.start", op: "above", values: ["2026-01-01"], field: null, days: 0 })).toBe("Start is after 2026-01-01")
-    expect(conditionText(spec, { table: "policy", column: "policy.gone", op: "filled", values: [], field: null, days: 0 })).toBe("A missing column is filled")
+    expect(conditionText(spec, { table: "policy", column: "start", op: "above", values: ["2026-01-01"], field: null, days: 0 })).toBe("Start is after 2026-01-01")
+    expect(conditionText(spec, { table: "policy", column: "gone", op: "filled", values: [], field: null, days: 0 })).toBe("A missing column is filled")
 
     expect(showWhenText(spec, always())).toBe("Always shows")
     expect(showWhenText(spec, { match: "all", conditions: [ticked] })).toBe("Shows when BI cover is ticked")
@@ -1988,9 +2053,9 @@ describe("when sheets and components show", () => {
   /** `covered`, with a many-row table of drivers, its ages on a Table in `sectionId` and its covers on none. */
   const listed = (sectionId = "s_main"): FormSpec => {
     const spec = covered()
-    const columns = [column("drivers.age", "age", { type: "int", label: "Age" }), column("drivers.cover", "cover", { options: ["Full", "Partial"] })]
-    spec.schema.tables.push(table("drivers", "drivers", { rows: "many", columns }))
-    return addWidget(spec, sectionId, {
+    const columns = [column("age", { type: "int", label: "Age" }), column("cover", { options: ["Full", "Partial"] })]
+    spec.schema.tables.push(table("drivers", { rows: "many", columns }))
+    return addWidget(spec, sectionId, { number: null,
       id: "w_drivers",
       type: "tableInput",
       x: 0,
@@ -2000,36 +2065,36 @@ describe("when sheets and components show", () => {
       title: "Drivers",
       rows: 3,
       ...TABLE_OPTIONS,
-      fields: [{ table: "drivers", column: "drivers.age" }],
+      fields: [{ table: "drivers", column: "age" }],
       show_when: always(),
     })
   }
-  const young: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "below", values: ["25"], field: null, days: 0 }] }
+  const young: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "age", op: "below", values: ["25"], field: null, days: 0 }] }
   const twoDrivers: RowCount = { table: "drivers", where: [], op: "at_least", count: 2 }
-  const aged: RowCount = { table: "drivers", where: [{ column: "drivers.age", op: "filled", values: [], field: null, days: 0 }], op: "at_least", count: 1 }
-  const ageSum: RowTotal = { table: "drivers", total: "sum", column: "drivers.age", where: [], op: "above", value: "50" }
+  const aged: RowCount = { table: "drivers", where: [{ column: "age", op: "filled", values: [], field: null, days: 0 }], op: "at_least", count: 1 }
+  const ageSum: RowTotal = { table: "drivers", total: "sum", column: "age", where: [], op: "above", value: "50" }
 
   it("takes what a group's conditions test of a column out with it, a group left with none with it, and a count out with its table alone", () => {
-    const onClass: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }
+    const onClass: Condition = { table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }
     const spec = setSectionShowWhen(listed(), "s_bi", {
       match: "all",
       conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }, { match: "any", conditions: [ticked] }],
     })
-    expect(conditionUses(spec, "drivers", "drivers.age").map((holder) => holder.id)).toEqual(["s_bi"])
+    expect(conditionUses(spec, "drivers", "age").map((holder) => holder.id)).toEqual(["s_bi"])
     expect(conditionUses(spec, "drivers").map((holder) => holder.id)).toEqual(["s_bi"])
-    expect(conditionUses(spec, "policy", "policy.bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
+    expect(conditionUses(spec, "policy", "bi").map((holder) => holder.id)).toEqual(["p_bi", "s_bi"])
     const shown = (next: FormSpec) => findSection(next, "s_bi")?.section.show_when
 
     // In any row with no test left goes, as does a total of the column; a count keeps counting.
-    expect(shown(removeSchemaColumn(spec, "drivers", "drivers.age"))).toEqual({
+    expect(shown(removeSchemaColumn(spec, "drivers", "age"))).toEqual({
       match: "all",
       conditions: [onClass, { match: "any", conditions: [twoDrivers, { ...aged, where: [] }] }, { match: "any", conditions: [ticked] }],
     })
-    expect(shown(removeSchemaColumn(spec, "policy", "policy.bi"))).toEqual({
+    expect(shown(removeSchemaColumn(spec, "policy", "bi"))).toEqual({
       match: "all",
       conditions: [onClass, { match: "any", conditions: [young, twoDrivers, aged, ageSum] }],
     })
-    expect(conditionUses(spec, "drivers", "drivers.cover")).toEqual([])
+    expect(conditionUses(spec, "drivers", "cover")).toEqual([])
     expect(shown(removeSchemaTable(spec, "drivers"))).toEqual({ match: "all", conditions: [onClass, { match: "any", conditions: [ticked] }] })
   })
 
@@ -2039,7 +2104,7 @@ describe("when sheets and components show", () => {
     const showing = (next: FormSpec, showWhen: ShowWhen) => pageProblems(setPageShowWhen(next, "p_bi", showWhen)).map((p) => p.message)
 
     // A condition in a group that cannot hold is named as any other.
-    const classTicked: Condition = { table: "policy", column: "policy.class", op: "ticked", values: [], field: null, days: 0 }
+    const classTicked: Condition = { table: "policy", column: "class", op: "ticked", values: [], field: null, days: 0 }
     expect(showing(spec, { match: "all", conditions: [{ match: "any", conditions: [ticked, classTicked] }] })).toEqual([
       'Sheet "BI" tests class with "is ticked", which a Text column cannot take',
     ])
@@ -2054,7 +2119,7 @@ describe("when sheets and components show", () => {
     ])
     expect(showing(removeWidget(spec, "w_drivers"), { match: "all", conditions: [young] })).toEqual(['Sheet "BI" waits on age, which is on no Table'])
     // A test of a row against a value no allowed value can match.
-    const uncovered: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.cover", op: "equals", values: ["None"], field: null, days: 0 }] }
+    const uncovered: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "cover", op: "equals", values: ["None"], field: null, days: 0 }] }
     expect(showing(spec, { match: "all", conditions: [uncovered] })).toEqual([
       'Sheet "BI" tests cover against "None", which isn\'t one of its allowed values',
       'Sheet "BI" waits on cover, which is on no Table',
@@ -2064,25 +2129,25 @@ describe("when sheets and components show", () => {
   it("reads a test against another field by that field's label, with its days", () => {
     const spec = listed()
     const field = (column: string) => ({ table: "drivers", column })
-    expect(conditionText(spec, { table: "drivers", column: "drivers.age", op: "above", values: [], field: field("drivers.cover"), days: 0 })).toBe("Age is greater than Cover")
-    const start: Condition = { table: "drivers", column: "drivers.age", op: "above", values: [], field: field("drivers.gone"), days: -1 }
+    expect(conditionText(spec, { table: "drivers", column: "age", op: "above", values: [], field: field("cover"), days: 0 })).toBe("Age is greater than Cover")
+    const start: Condition = { table: "drivers", column: "age", op: "above", values: [], field: field("gone"), days: -1 }
     expect(conditionText(spec, start)).toBe("Age is greater than A missing column - 1 day")
-    const rows: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "drivers.age", op: "at_least", values: [], field: "drivers.cover", days: 30 }] }
+    const rows: RowsCondition = { table: "drivers", rows: "any", where: [{ column: "age", op: "at_least", values: [], field: "cover", days: 30 }] }
     expect(conditionText(spec, rows)).toBe("Age is at least Cover + 30 days in any row of drivers")
   })
 
   it("reads a condition in any or every row, a count and a group as sentences", () => {
     const spec = listed()
     expect(conditionText(spec, young)).toBe("Age is less than 25 in any row of drivers")
-    expect(conditionText(spec, { ...young, rows: "every", where: [{ column: "drivers.age", op: "filled", values: [], field: null, days: 0 }] })).toBe("Age is filled in every row of drivers")
-    const full = { column: "drivers.cover", op: "equals" as const, values: ["Full"], field: null, days: 0 }
+    expect(conditionText(spec, { ...young, rows: "every", where: [{ column: "age", op: "filled", values: [], field: null, days: 0 }] })).toBe("Age is filled in every row of drivers")
+    const full = { column: "cover", op: "equals" as const, values: ["Full"], field: null, days: 0 }
     expect(conditionText(spec, { ...young, where: [...young.where, full] })).toBe("Age is less than 25 and Cover equals Full in any row of drivers")
     expect(conditionText(spec, twoDrivers)).toBe("Number of rows in drivers is at least 2")
     expect(conditionText(spec, { ...twoDrivers, where: young.where })).toBe("Number of rows in drivers where Age is less than 25 is at least 2")
     expect(conditionText(spec, { table: "gone", where: [], op: "equals", count: 0 })).toBe("Number of rows in a missing table equals 0")
     expect(conditionText(spec, ageSum)).toBe("Sum of Age in drivers is greater than 50")
     expect(conditionText(spec, { ...ageSum, total: "average", where: [full] })).toBe("Average of Age in drivers where Cover equals Full is greater than 50")
-    expect(conditionText(spec, { ...ageSum, total: "min", column: "drivers.gone" })).toBe("Smallest of A missing column in drivers is greater than 50")
+    expect(conditionText(spec, { ...ageSum, total: "min", column: "gone" })).toBe("Smallest of A missing column in drivers is greater than 50")
 
     expect(showWhenText(spec, { match: "all", conditions: [ticked, { match: "any", conditions: [young, twoDrivers] }] })).toBe(
       "Shows when all of these are true: BI cover is ticked; any of (Age is less than 25 in any row of drivers, Number of rows in drivers is at least 2)",
@@ -2093,7 +2158,7 @@ describe("when sheets and components show", () => {
   it("says when at least a number asks for more conditions than its Show when or a group holds", () => {
     const spec = listed()
     const showing = (showWhen: ShowWhen) => pageProblems(setPageShowWhen(spec, "p_bi", showWhen)).map((p) => p.message)
-    const motor: Condition = { table: "policy", column: "policy.class", op: "equals", values: ["Motor"], field: null, days: 0 }
+    const motor: Condition = { table: "policy", column: "class", op: "equals", values: ["Motor"], field: null, days: 0 }
 
     expect(showing({ match: 2, conditions: [ticked, motor] })).toEqual([])
     expect(showing({ match: 3, conditions: [ticked, motor] })).toEqual(['Sheet "BI" needs at least 3 conditions to hold but has only 2, so it never shows'])
@@ -2121,14 +2186,14 @@ describe("when sheets and components show", () => {
     expect(pricingBasis(setPageShowWhen(spec, "p_bi", always()))).not.toBe(pricingBasis(spec))
     expect(pricingBasis(updateWidget(spec, "w_bi", { x: 100 }))).toBe(pricingBasis(spec))
     // A section's conditions hide its components' columns too, while its height changes nothing.
-    const onFleet: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "policy.class", op: "equals", values: ["Fleet"], field: null, days: 0 }] }
+    const onFleet: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }] }
     expect(pricingBasis(setSectionShowWhen(spec, "s_main", onFleet))).not.toBe(pricingBasis(spec))
     expect(pricingBasis(setSectionHeight(spec, "s_main", 400))).toBe(pricingBasis(spec))
     // A column the sheets hide is still declared to the pipeline, so one renamed or retyped
     // is priced anew, though the quote reads the same.
-    expect(sheetVisibility(spec, spec.sample).hidden).toContain(columnKey("bi", "bi.limit"))
-    expect(pricingBasis(updateSchemaColumn(spec, "bi", "bi.limit", { name: "cover_limit" }))).not.toBe(pricingBasis(spec))
-    expect(pricingBasis(updateSchemaColumn(spec, "bi", "bi.limit", { type: "int" }))).not.toBe(pricingBasis(spec))
+    expect(sheetVisibility(spec, spec.sample).hidden).toContain(columnKey("bi", "limit"))
+    expect(pricingBasis(updateSchemaColumn(spec, "bi", "limit", { name: "cover_limit" }))).not.toBe(pricingBasis(spec))
+    expect(pricingBasis(updateSchemaColumn(spec, "bi", "limit", { type: "int" }))).not.toBe(pricingBasis(spec))
   })
 })
 
@@ -2139,35 +2204,36 @@ describe("charts", () => {
    */
   const schema = (): FormSchema => ({
     tables: [
-      table("policy", "policy", {
+      table("policy", {
         columns: [
-          column("policy.si", "sum_insured", { type: "float" }),
-          column("policy.excess", "excess", { type: "int" }),
-          column("policy.state", "state"),
+          column("sum_insured", { type: "float" }),
+          column("excess", { type: "int" }),
+          column("state"),
         ],
       }),
-      table("equipment", "equipment", {
+      table("equipment", {
         rows: "many",
         columns: [
-          column("equipment.row", "row_number", { type: "int", index: true }),
-          column("equipment.item", "item", { key: true, label: "Item" }),
-          column("equipment.value", "value", { type: "float" }),
+          column("row_number", { type: "int", index: true }),
+          column("item", { key: true, label: "Item" }),
+          column("value", { type: "float" }),
         ],
       }),
-      table("premiums", "premiums", {
+      table("premiums", {
         role: "output",
         rows: "many",
-        columns: [column("premiums.item", "item", { key: true }), column("premiums.premium", "premium", { type: "float" })],
+        columns: [column("item", { key: true }), column("premium", { type: "float" })],
       }),
-      table("claims", "claims", {
+      table("claims", {
         rows: "many",
-        columns: [column("claims.claim", "claim", { key: true }), column("claims.paid", "paid", { type: "float" })],
+        columns: [column("claim", { key: true }), column("paid", { type: "float" })],
       }),
     ],
   })
   const ref = (tableId: string, columnId: string): FieldRef => ({ table: tableId, column: columnId })
   const chart = (fields: FieldRef[], options: Partial<ChartWidget> = {}): ChartWidget => ({
     id: "w_chart",
+    number: null,
     type: "chart",
     x: 0,
     y: 0,
@@ -2193,87 +2259,91 @@ describe("charts", () => {
 
   it("counts the column labelling a Chart's rows as one it shows, and numbers the rows again once it is removed", () => {
     // Plotting premiums, its rows labelled by equipment's items.
-    const spec = charted(chart([ref("premiums", "premiums.premium")], { category: ref("equipment", "equipment.item") }))
+    const spec = charted(chart([ref("premiums", "premium")], { category: ref("equipment", "item") }))
 
-    expect(fieldUses(spec, "equipment", "equipment.item").map((w) => w.id)).toEqual(["w_chart"])
+    expect(fieldUses(spec, "equipment", "item").map((w) => w.id)).toEqual(["w_chart"])
     expect(fieldUses(spec, "equipment").map((w) => w.id)).toEqual(["w_chart"])
-    expect(fieldUses(spec, "equipment", "equipment.value")).toEqual([])
+    expect(fieldUses(spec, "equipment", "value")).toEqual([])
 
-    expect(category(removeSchemaColumn(spec, "equipment", "equipment.value"))).toEqual(ref("equipment", "equipment.item"))
-    expect(category(removeSchemaColumn(spec, "equipment", "equipment.item"))).toBeNull()
+    expect(category(removeSchemaColumn(spec, "equipment", "value"))).toEqual(ref("equipment", "item"))
+    expect(category(removeSchemaColumn(spec, "equipment", "item"))).toBeNull()
     expect(category(removeSchemaTable(spec, "equipment"))).toBeNull()
   })
 
   it("takes a Chart's rows from its first field's table, else from the column labelling them", () => {
     const spec = charted(chart([]))
 
-    expect(chartGrain(spec.schema, chart([ref("equipment", "equipment.value")]))).toBe("many:item")
-    expect(chartGrain(spec.schema, chart([ref("policy", "policy.si")], { category: ref("equipment", "equipment.item") }))).toBe("one")
-    expect(chartGrain(spec.schema, chart([], { category: ref("premiums", "premiums.item") }))).toBe("many:item")
-    expect(chartGrain(spec.schema, chart([ref("gone", "gone.x"), ref("claims", "claims.paid")]))).toBe("many:claim")
+    expect(chartGrain(spec.schema, chart([ref("equipment", "value")]))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("policy", "sum_insured")], { category: ref("equipment", "item") }))).toBe("one")
+    expect(chartGrain(spec.schema, chart([], { category: ref("premiums", "item") }))).toBe("many:item")
+    expect(chartGrain(spec.schema, chart([ref("gone", "x"), ref("claims", "paid")]))).toBe("many:claim")
     expect(chartGrain(spec.schema, chart([]))).toBeNull()
   })
 
   it("plots number columns other than the index", () => {
     const types: SchemaColumn["type"][] = ["int", "float", "str", "bool", "date"]
-    expect(types.map((type) => plottable(column("a", "a", { type })))).toEqual([true, true, false, false, false])
-    expect(plottable(column("a", "row_number", { type: "int", index: true }))).toBe(false)
+    const t = table("t")
+    expect(types.map((type) => plottable(t, column("a", { type })))).toEqual([true, true, false, false, false])
+    expect(plottable(t, column("row_number", { type: "int", index: true }))).toBe(false)
+    // Nor the quote's option, an Integer at the head of a table holding the identity.
+    const held = createSchemaTable(blank())
+    expect(plottable(held, held.columns[1])).toBe(false)
   })
 
   it("labels a many-row Chart's rows by the columns of the tables keyed alike, an output's included, but never the index", () => {
     const spec = charted(chart([]))
     const labels = (widget: ChartWidget) =>
-      labelColumns(spec, widget).map(({ table: shown, columns }) => [shown.id, columns.map((c) => c.name)])
+      labelColumns(spec, widget).map(({ table: shown, columns }) => [shown.name, columns.map((c) => c.name)])
 
-    expect(labels(chart([ref("equipment", "equipment.value")]))).toEqual([
+    expect(labels(chart([ref("equipment", "value")]))).toEqual([
       ["equipment", ["item", "value"]],
       ["premiums", ["item", "premium"]],
     ])
-    expect(labels(chart([ref("policy", "policy.si")]))).toEqual([])
+    expect(labels(chart([ref("policy", "sum_insured")]))).toEqual([])
     expect(labels(chart([]))).toEqual([])
   })
 
   it("says what stops a Chart plotting what it should", () => {
     expect(widgetName(chart([], { title: "" }))).toBe("A Chart")
     expect(problems(chart([]))).toEqual(['Chart "Premiums" shows no fields'])
-    expect(problems(chart([ref("policy", "policy.si"), ref("policy", "policy.gone")]))).toEqual([
+    expect(problems(chart([ref("policy", "sum_insured"), ref("policy", "gone")]))).toEqual([
       'Chart "Premiums" shows a column that is no longer in the schema',
     ])
-    expect(problems(chart([ref("policy", "policy.state")]))).toEqual(['Chart "Premiums" plots State, which is not a number'])
-    expect(problems(chart([ref("equipment", "equipment.item")]))).toEqual(['Chart "Premiums" plots Item, which is not a number'])
-    expect(problems(chart([ref("equipment", "equipment.row")]))).toEqual(['Chart "Premiums" plots Row number, which numbers the rows'])
-    expect(problems(chart([ref("equipment", "equipment.value")], { category: ref("equipment", "equipment.gone") }))).toEqual([
+    expect(problems(chart([ref("policy", "state")]))).toEqual(['Chart "Premiums" plots State, which is not a number'])
+    expect(problems(chart([ref("equipment", "item")]))).toEqual(['Chart "Premiums" plots Item, which is not a number'])
+    expect(problems(chart([ref("equipment", "row_number")]))).toEqual(['Chart "Premiums" plots Row number, which numbers the rows'])
+    expect(problems(chart([ref("equipment", "value")], { category: ref("equipment", "gone") }))).toEqual([
       'Chart "Premiums" labels its rows by a column that is no longer in the schema',
     ])
-    expect(problems(chart([ref("equipment", "equipment.value"), ref("claims", "claims.paid")]))).toEqual([
+    expect(problems(chart([ref("equipment", "value"), ref("claims", "paid")]))).toEqual([
       'Chart "Premiums" shows tables whose rows do not line up',
     ])
-    expect(problems(chart([ref("equipment", "equipment.value")], { category: ref("claims", "claims.claim") }))).toEqual([
+    expect(problems(chart([ref("equipment", "value")], { category: ref("claims", "claim") }))).toEqual([
       'Chart "Premiums" shows tables whose rows do not line up',
     ])
-    expect(problems(chart([ref("equipment", "equipment.value"), ref("premiums", "premiums.premium")], { chart_type: "pie" }))).toEqual([
+    expect(problems(chart([ref("equipment", "value"), ref("premiums", "premium")], { chart_type: "pie" }))).toEqual([
       'Chart "Premiums" is a pie of many rows, so it plots only its first field',
     ])
   })
 
   it("finds nothing wrong with a Chart of one-row tables, or of input and output tables keyed alike", () => {
-    expect(problems(chart([ref("policy", "policy.si"), ref("policy", "policy.excess")]))).toEqual([])
-    expect(problems(chart([ref("policy", "policy.si"), ref("policy", "policy.excess")], { chart_type: "pie" }))).toEqual([])
+    expect(problems(chart([ref("policy", "sum_insured"), ref("policy", "excess")]))).toEqual([])
+    expect(problems(chart([ref("policy", "sum_insured"), ref("policy", "excess")], { chart_type: "pie" }))).toEqual([])
     expect(
-      problems(chart([ref("equipment", "equipment.value"), ref("premiums", "premiums.premium")], { category: ref("premiums", "premiums.item") })),
+      problems(chart([ref("equipment", "value"), ref("premiums", "premium")], { category: ref("premiums", "item") })),
     ).toEqual([])
   })
 })
 
 describe("output tables lined up with a grid's rows", () => {
-  // Ids differ from names: the grid holds rows by id, the pricing answers by name.
-  const claims = table("t_claims", "claims", { rows: "many", columns: [column("c_claim", "claim", { key: true })] })
-  const equipment = table("t_equipment", "equipment", {
+  // The grid holds rows by column name, as the pricing answers them.
+  const claims = table("claims", { rows: "many", columns: [column("claim", { key: true })] })
+  const equipment = table("equipment", {
     rows: "many",
-    columns: [column("c_item", "item", { key: true }), column("c_value", "value", { type: "float" })],
+    columns: [column("item", { key: true }), column("value", { type: "float" })],
   })
-  const premiums = table("t_premiums", "premiums", { role: "output", rows: "many", columns: [column("c_p_item", "item", { key: true })] })
-  const fees = table("t_fees", "fees", { role: "output", rows: "many", columns: [column("c_fee", "fee", { key: true })] })
+  const premiums = table("premiums", { role: "output", rows: "many", columns: [column("item", { key: true })] })
+  const fees = table("fees", { role: "output", rows: "many", columns: [column("fee", { key: true })] })
   const schema: FormSchema = { tables: [claims, equipment, premiums, fees] }
   const price = (typed: Record<string, unknown>[]) => ({
     sample: { equipment: typed },
@@ -2284,57 +2354,57 @@ describe("output tables lined up with a grid's rows", () => {
   })
 
   it("lines each many-row output up with the grid's rows through the first input table keyed alike", () => {
-    const held: Record<string, Record<string, string>[]> = { t_equipment: [{ c_item: "A", c_value: "1" }, {}, { c_item: "B" }] }
+    const held: Record<string, Record<string, string>[]> = { equipment: [{ item: "A", value: "1" }, {}, { item: "B" }] }
     const lined = linedUpOutputs([claims, equipment], [premiums, fees], held, 4, price([{ item: "A", value: 1 }, { item: "B", value: null }]), schema)
 
-    expect([...lined.keys()]).toEqual(["t_premiums"])
-    expect(lined.get("t_premiums")).toEqual([{ item: "A", premium: 10 }, undefined, { item: "B", premium: 20 }, undefined])
+    expect([...lined.keys()]).toEqual(["premiums"])
+    expect(lined.get("premiums")).toEqual([{ item: "A", premium: 10 }, undefined, { item: "B", premium: 20 }, undefined])
     expect(linedUpOutputs([claims, equipment], [premiums], held, 4, null, schema)).toEqual(new Map())
   })
 
   it("lines output tables alone up with the first one's answer, the others by its keys, nothing before a price", () => {
     // Premiums keyed by item; a second output keyed alike, answered in another order and short a row.
-    const charges = table("t_charges", "charges", { role: "output", rows: "many", columns: [column("c_c_item", "item", { key: true })] })
+    const charges = table("charges", { role: "output", rows: "many", columns: [column("item", { key: true })] })
     const answered = answeredOutputs([premiums, charges], {
       sample: {},
       tables: { premiums: [{ item: "B", premium: 20 }, { item: "A", premium: 10 }], charges: [{ item: "A", charge: 1 }] },
     })
 
-    expect([...answered.keys()]).toEqual(["t_premiums", "t_charges"])
-    expect(answered.get("t_premiums")).toEqual([{ item: "B", premium: 20 }, { item: "A", premium: 10 }])
-    expect(answered.get("t_charges")).toEqual([undefined, { item: "A", charge: 1 }])
+    expect([...answered.keys()]).toEqual(["premiums", "charges"])
+    expect(answered.get("premiums")).toEqual([{ item: "B", premium: 20 }, { item: "A", premium: 10 }])
+    expect(answered.get("charges")).toEqual([undefined, { item: "A", charge: 1 }])
     // The first without keys: the others have nothing to match it by.
     const unkeyed = { ...premiums, columns: premiums.columns.map((c) => ({ ...c, key: false })) }
-    expect(answeredOutputs([unkeyed, charges], price([])).get("t_charges")).toEqual([undefined, undefined])
+    expect(answeredOutputs([unkeyed, charges], price([])).get("charges")).toEqual([undefined, undefined])
     expect(answeredOutputs([premiums], null)).toEqual(new Map())
     expect(answeredOutputs([], price([]))).toEqual(new Map())
   })
 
   it("reads the grid's rows as the quote does: a value in a column it leaves out fills no row", () => {
-    const quoted: FormSchema = { tables: [{ ...equipment, columns: equipment.columns.filter((c) => c.id !== "c_value") }, premiums] }
-    const held: Record<string, Record<string, string>[]> = { t_equipment: [{ c_value: "5" }, { c_item: "A" }] }
+    const quoted: FormSchema = { tables: [{ ...equipment, columns: equipment.columns.filter((c) => c.name !== "value") }, premiums] }
+    const held: Record<string, Record<string, string>[]> = { equipment: [{ value: "5" }, { item: "A" }] }
     const lined = linedUpOutputs([equipment], [premiums], held, 2, price([{ item: "A" }]), quoted)
 
-    expect(lined.get("t_premiums")).toEqual([undefined, { item: "A", premium: 10 }])
+    expect(lined.get("premiums")).toEqual([undefined, { item: "A", premium: 10 }])
   })
 })
 
 describe("Imports and Exports", () => {
   const rect = { x: 16, y: 16, w: 160, h: 40 }
-  const details = table(QUOTE_DETAILS_ID, QUOTE_DETAILS_ID, {
-    columns: [column("qd_reference", "quote_reference"), column("qd_option", "quote_option", { type: "int" }), column("qd_insured", "insured"), column("qd_stage", "stage")],
+  const details = table(QUOTE_DETAILS_NAME, {
+    columns: [column("quote_reference"), column("quote_option", { type: "int" }), column("insured"), column("stage")],
   })
-  const layers = table("layers", "layers", {
+  const layers = table("layers", {
     rows: "many",
     columns: [
-      column("quote_reference", "quote_reference"),
-      column("quote_option", "quote_option", { type: "int" }),
-      column("layers.row", "row_number", { type: "int", index: true }),
-      column("layers.limit", "limit", { type: "float", key: true }),
-      column("layers.excess", "excess", { type: "float" }),
+      column("quote_reference"),
+      column("quote_option", { type: "int" }),
+      column("row_number", { type: "int", index: true }),
+      column("limit", { type: "float", key: true }),
+      column("excess", { type: "float" }),
     ],
   })
-  const premiums = table("premiums", "premiums", { role: "output", columns: [column("premiums.total", "total", { type: "float" })] })
+  const premiums = table("premiums", { role: "output", columns: [column("total", { type: "float" })] })
   /** A form with quote_details, a many-row input table and an output table, and an Import and an Export on its sheet. */
   const buttons = (): FormSpec => {
     let spec = blank()
@@ -2352,6 +2422,7 @@ describe("Imports and Exports", () => {
 
     expect(imported(spec)).toEqual({
       id: "w_in",
+      number: 1,
       ...rect,
       type: "import",
       label: "Import",
@@ -2374,11 +2445,11 @@ describe("Imports and Exports", () => {
 
   it("starts a format's settings afresh, keeping an Import's table and an Export's file between a CSV and a workbook", () => {
     let spec = setImportTable(buttons(), "w_in", "layers")
-    spec = setColumnName(spec, "w_in", "layers.limit", "Limit (GBP)")
+    spec = setColumnName(spec, "w_in", "limit", "Limit (GBP)")
     spec = updateImportSource(spec, "w_in", { delimiter: "tab" })
     spec = setImportFormat(spec, "w_in", "excel")
     expect(imported(spec).source).toEqual({ format: "excel", sheet: "", header_row: 1 })
-    expect(imported(spec).column_names).toEqual([{ column: "layers.limit", name: "Limit (GBP)" }])
+    expect(imported(spec).column_names).toEqual([{ column: "limit", name: "Limit (GBP)" }])
     expect(setImportFormat(spec, "w_in", "excel")).toBe(spec)
     expect(() => updateImportSource(spec, "w_in", { delimiter: "comma" })).toThrow("An Import from excel has no delimiter")
 
@@ -2392,24 +2463,24 @@ describe("Imports and Exports", () => {
 
   it("drops an Import's column names as its table changes and takes a blank name away", () => {
     let spec = setImportTable(buttons(), "w_in", "layers")
-    spec = setColumnName(spec, "w_in", "layers.limit", "Limit")
-    spec = setColumnName(spec, "w_in", "layers.excess", "XS")
-    spec = setColumnName(spec, "w_in", "layers.limit", "Limit (GBP)")
+    spec = setColumnName(spec, "w_in", "limit", "Limit")
+    spec = setColumnName(spec, "w_in", "excess", "XS")
+    spec = setColumnName(spec, "w_in", "limit", "Limit (GBP)")
     expect(imported(spec).column_names).toEqual([
-      { column: "layers.limit", name: "Limit (GBP)" },
-      { column: "layers.excess", name: "XS" },
+      { column: "limit", name: "Limit (GBP)" },
+      { column: "excess", name: "XS" },
     ])
-    expect(setColumnName(spec, "w_in", "layers.excess", "XS")).toBe(spec)
-    spec = setColumnName(spec, "w_in", "layers.excess", "  ")
-    expect(imported(spec).column_names).toEqual([{ column: "layers.limit", name: "Limit (GBP)" }])
-    spec = setImportTable(spec, "w_in", QUOTE_DETAILS_ID)
+    expect(setColumnName(spec, "w_in", "excess", "XS")).toBe(spec)
+    spec = setColumnName(spec, "w_in", "excess", "  ")
+    expect(imported(spec).column_names).toEqual([{ column: "limit", name: "Limit (GBP)" }])
+    spec = setImportTable(spec, "w_in", QUOTE_DETAILS_NAME)
     expect(imported(spec).column_names).toEqual([])
   })
 
   it("fills only the columns an underwriter types, and gives a parameter a one-row input table's columns", () => {
-    expect(importColumns(layers).map((c) => c.id)).toEqual(["layers.limit", "layers.excess"])
-    expect(importColumns(details).map((c) => c.id)).toEqual(["qd_insured"])
-    expect(parameterColumns(details).map((c) => c.id)).toEqual(["qd_reference", "qd_option", "qd_insured", "qd_stage"])
+    expect(importColumns(layers).map((c) => c.name)).toEqual(["limit", "excess"])
+    expect(importColumns(details).map((c) => c.name)).toEqual(["insured"])
+    expect(parameterColumns(details).map((c) => c.name)).toEqual(["quote_reference", "quote_option", "insured", "stage"])
     expect(parameterColumns(layers)).toEqual([])
     expect(parameterColumns(premiums)).toEqual([])
   })
@@ -2426,19 +2497,19 @@ describe("Imports and Exports", () => {
     expect(problems(spec, "w_in")).toEqual(['Import "Import" names no connection', 'Import "Import" has no query'])
     spec = updateImportSource(spec, "w_in", { connection: "policy_db" })
     spec = setImportQuery(spec, "w_in", "select * from layers where policy = :ref and option = :opt")
-    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_ID, column: "qd_reference" })
-    spec = bindParameter(spec, "w_in", "opt", { table: "layers", column: "layers.limit" })
+    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_NAME, column: "quote_reference" })
+    spec = bindParameter(spec, "w_in", "opt", { table: "layers", column: "limit" })
     expect(problems(spec, "w_in")).toEqual(['Import "Import" gives :opt a column of a many-row table'])
     spec = bindParameter(spec, "w_in", "opt", null)
     expect(problems(spec, "w_in")).toEqual(['Import "Import" gives :opt no column'])
-    spec = bindParameter(spec, "w_in", "opt", { table: QUOTE_DETAILS_ID, column: "qd_stage" })
+    spec = bindParameter(spec, "w_in", "opt", { table: QUOTE_DETAILS_NAME, column: "stage" })
     expect(problems(spec, "w_in")).toEqual([])
-    expect(bindParameter(spec, "w_in", "opt", { table: QUOTE_DETAILS_ID, column: "qd_stage" })).toBe(spec)
+    expect(bindParameter(spec, "w_in", "opt", { table: QUOTE_DETAILS_NAME, column: "stage" })).toBe(spec)
 
     spec = setImportQuery(spec, "w_in", "select * from layers where policy = :ref")
-    expect(parameters(spec)).toEqual([{ name: "ref", table: QUOTE_DETAILS_ID, column: "qd_reference" }])
+    expect(parameters(spec)).toEqual([{ name: "ref", table: QUOTE_DETAILS_NAME, column: "quote_reference" }])
     const stray = structuredClone(spec)
-    parameters(stray).push({ name: "gone", table: QUOTE_DETAILS_ID, column: "qd_insured" })
+    parameters(stray).push({ name: "gone", table: QUOTE_DETAILS_NAME, column: "insured" })
     expect(problems(stray, "w_in")).toEqual(['Import "Import" gives a column to :gone, which its query does not hold'])
   })
 
@@ -2448,22 +2519,22 @@ describe("Imports and Exports", () => {
     expect(problems(setImportTable(spec, "w_in", "missing"), "w_in")).toEqual(['Import "Import" fills a table that is no longer in the schema'])
     const index = structuredClone(setImportTable(spec, "w_in", "layers"))
     imported(index).column_names = [
-      { column: "layers.row", name: "Row" },
-      { column: "layers.gone", name: "Gone" },
+      { column: "row_number", name: "Row" },
+      { column: "gone", name: "Gone" },
     ]
     expect(problems(index, "w_in")).toEqual([
       'Import "Import" reads into a column that is no longer in the schema',
       'Import "Import" reads into a column an underwriter does not type',
     ])
-    const perils = updateSchemaColumn(setImportTable(spec, "w_in", "layers"), "layers", "layers.excess", { type: "str", options: ["Fire", "Flood"], row_per_value: true })
+    const perils = updateSchemaColumn(setImportTable(spec, "w_in", "layers"), "layers", "excess", { type: "str", options: ["Fire", "Flood"], row_per_value: true })
     expect(problems(perils, "w_in")).toEqual(['Import "Import" replaces the rows of layers, which has a row for each allowed value; only Update by key keeps them'])
     expect(problems(setImportMode(perils, "w_in", "update"), "w_in")).toEqual([])
   })
 
   it("exports each table once in the order ticked, names a database's tables, and says what stops it", () => {
     let spec = toggleExportTable(buttons(), "w_out", "layers")
-    spec = toggleExportTable(spec, "w_out", QUOTE_DETAILS_ID)
-    expect(exported(spec).tables).toEqual(["layers", QUOTE_DETAILS_ID])
+    spec = toggleExportTable(spec, "w_out", QUOTE_DETAILS_NAME)
+    expect(exported(spec).tables).toEqual(["layers", QUOTE_DETAILS_NAME])
     expect(problems(spec, "w_out")).toEqual(['Export "Export" exports more than one table to a CSV, which holds one'])
     spec = updateExportTarget(spec, "w_out", { file_name: "{insured}-{broker}" })
     expect(problems(setExportFormat(spec, "w_out", "excel"), "w_out")).toEqual(['Export "Export" names its file by {broker}, which is not a column of quote_details'])
@@ -2475,50 +2546,50 @@ describe("Imports and Exports", () => {
     expect(exported(spec).target).toEqual({ format: "sql", connection: "", table_names: [{ table: "layers", name: "quote_layers" }] })
     expect(() => setTableName(spec, "w_out", "premiums", "p")).toThrow("does not export premiums")
     spec = toggleExportTable(spec, "w_out", "layers")
-    expect(exported(spec)).toMatchObject({ tables: [QUOTE_DETAILS_ID], target: { table_names: [] } })
+    expect(exported(spec)).toMatchObject({ tables: [QUOTE_DETAILS_NAME], target: { table_names: [] } })
   })
 
   it("finds the Imports and Exports a table or a column is used by, and removing it takes it out of them", () => {
     let spec = setImportFormat(setImportTable(buttons(), "w_in", "layers"), "w_in", "sql")
-    spec = setColumnName(spec, "w_in", "layers.excess", "XS")
+    spec = setColumnName(spec, "w_in", "excess", "XS")
     spec = setImportQuery(spec, "w_in", "select :ref, :ins")
-    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_ID, column: "qd_reference" })
-    spec = bindParameter(spec, "w_in", "ins", { table: QUOTE_DETAILS_ID, column: "qd_insured" })
+    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_NAME, column: "quote_reference" })
+    spec = bindParameter(spec, "w_in", "ins", { table: QUOTE_DETAILS_NAME, column: "insured" })
     spec = setTableName(setExportFormat(toggleExportTable(spec, "w_out", "layers"), "w_out", "sql"), "w_out", "layers", "quote_layers")
 
     expect(buttonUses(spec, "layers").map((w) => w.id)).toEqual(["w_in", "w_out"])
-    expect(buttonUses(spec, "layers", "layers.excess").map((w) => w.id)).toEqual(["w_in", "w_out"])
-    expect(buttonUses(spec, "layers", "layers.limit").map((w) => w.id)).toEqual(["w_in", "w_out"])
-    expect(buttonUses(spec, QUOTE_DETAILS_ID, "qd_insured").map((w) => w.id)).toEqual(["w_in"])
+    expect(buttonUses(spec, "layers", "excess").map((w) => w.id)).toEqual(["w_in", "w_out"])
+    expect(buttonUses(spec, "layers", "limit").map((w) => w.id)).toEqual(["w_in", "w_out"])
+    expect(buttonUses(spec, QUOTE_DETAILS_NAME, "insured").map((w) => w.id)).toEqual(["w_in"])
 
-    expect(parameters(removeSchemaColumn(spec, QUOTE_DETAILS_ID, "qd_insured")).map((p) => p.name)).toEqual(["ref"])
-    expect(imported(removeSchemaColumn(spec, "layers", "layers.excess")).column_names).toEqual([])
+    expect(parameters(removeSchemaColumn(spec, QUOTE_DETAILS_NAME, "insured")).map((p) => p.name)).toEqual(["ref"])
+    expect(imported(removeSchemaColumn(spec, "layers", "excess")).column_names).toEqual([])
     const noLayers = removeSchemaTable(spec, "layers")
     expect(imported(noLayers)).toMatchObject({ table: null, column_names: [] })
     expect(exported(noLayers)).toMatchObject({ tables: [], target: { table_names: [] } })
-    expect(parameters(removeSchemaTable(spec, QUOTE_DETAILS_ID))).toEqual([])
+    expect(parameters(removeSchemaTable(spec, QUOTE_DETAILS_NAME))).toEqual([])
   })
 
   it("counts an Import as using each column it reads, by its own name or another, and an Export each column of a table it exports", () => {
     let spec = setImportTable(buttons(), "w_in", "layers")
 
-    expect(buttonUses(spec, "layers", "layers.limit").map((w) => w.id)).toEqual(["w_in"])
-    expect(buttonUses(spec, "layers", "layers.row")).toEqual([])
-    expect(buttonUses(spec, "premiums", "premiums.total")).toEqual([])
+    expect(buttonUses(spec, "layers", "limit").map((w) => w.id)).toEqual(["w_in"])
+    expect(buttonUses(spec, "layers", "row_number")).toEqual([])
+    expect(buttonUses(spec, "premiums", "total")).toEqual([])
 
     spec = toggleExportTable(spec, "w_out", "premiums")
-    expect(buttonUses(spec, "premiums", "premiums.total").map((w) => w.id)).toEqual(["w_out"])
-    expect(buttonUses(spec, "layers", "layers.row")).toEqual([])
+    expect(buttonUses(spec, "premiums", "total").map((w) => w.id)).toEqual(["w_out"])
+    expect(buttonUses(spec, "layers", "row_number")).toEqual([])
   })
 
   it("pastes an Import or an Export without what the schema has lost since it was copied", () => {
     let spec = setImportFormat(setImportTable(buttons(), "w_in", "layers"), "w_in", "sql")
-    spec = setColumnName(spec, "w_in", "layers.excess", "XS")
-    spec = bindParameter(setImportQuery(spec, "w_in", "select :ins"), "w_in", "ins", { table: QUOTE_DETAILS_ID, column: "qd_insured" })
+    spec = setColumnName(spec, "w_in", "excess", "XS")
+    spec = bindParameter(setImportQuery(spec, "w_in", "select :ins"), "w_in", "ins", { table: QUOTE_DETAILS_NAME, column: "insured" })
     spec = toggleExportTable(spec, "w_out", "layers")
     const copiedIn = imported(spec)
     const copiedOut = exported(spec)
-    spec = removeSchemaColumn(removeSchemaColumn(spec, "layers", "layers.excess"), QUOTE_DETAILS_ID, "qd_insured")
+    spec = removeSchemaColumn(removeSchemaColumn(spec, "layers", "excess"), QUOTE_DETAILS_NAME, "insured")
 
     const pastedIn = pasteWidget(spec, copiedIn, "s")
     expect(findWidget(pastedIn.spec, pastedIn.id)!.widget).toMatchObject({ table: "layers", column_names: [], source: { parameters: [] } })

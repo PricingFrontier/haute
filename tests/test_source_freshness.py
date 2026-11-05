@@ -295,7 +295,7 @@ def test_every_consumer_shares_one_proof(tmp_path: Path, hashes: list[Path]) -> 
     from haute.execution import _stat_gated_runtime_path_fingerprint
 
     path = _write(tmp_path / "quotes.csv")
-    config = {"inputType": "file", "format": "csv", "mode": "scan", "path": str(path)}
+    config = {"input_type": "file", "format": "csv", "mode": "scan", "path": str(path)}
 
     signature = source_signature(config, base_dir=tmp_path)
     fingerprint = _stat_gated_runtime_path_fingerprint(path)

@@ -203,19 +203,19 @@ function frameSchemaColumns(
 // persisted (writeV2 emits only the four entry fields). Auto-mapped rows start
 // Inferred (pilled); editing a row's column or path flips it to Confirmed.
 //
-// Status is keyed by a row's ABSOLUTE index into `outputMapping` — the SAME
+// Status is keyed by a row's ABSOLUTE index into `output_mapping` — the SAME
 // coordinate the rows render and reconcile by (`key={r.index}`). Keying by the
 // per-frame LOCAL index (the old bug) desynced the pill from its row whenever
 // an earlier row shifted the locals. Removing a row compacts the array, so
 // `removeRow` REMAPS this map (drop the removed key, slide higher keys down)
 // so a surviving Inferred pill follows its row rather than smearing onto a
-// neighbour. Appends land at the end (`outputMapping.length`) and need no shift.
+// neighbour. Appends land at the end (`output_mapping.length`) and need no shift.
 
 type RowStatusMap = Record<number, OutputRowStatus>
 
 /**
  * Re-key a status map after the entry at `removedIndex` is deleted from
- * `outputMapping` (which compacts every higher index down by one). Drops the
+ * `output_mapping` (which compacts every higher index down by one). Drops the
  * removed entry's status and slides each higher key down so status keeps
  * tracking the row it belongs to.
  */
@@ -305,12 +305,12 @@ export default function OutputEditor({
 
   // An OUTPUT level takes one frame (the backend rejects two), so frames that
   // emit at the same array level are flagged before a run or save fails.
-  const sharedLevels = useMemo(() => framesSharingALevel(v2.outputMapping), [v2.outputMapping])
+  const sharedLevels = useMemo(() => framesSharingALevel(v2.output_mapping), [v2.output_mapping])
   // Rows whose paths the backend refuses together, in any frames (absolute indices).
-  const pathConflicts = useMemo(() => mappingPathConflicts(v2.outputMapping), [v2.outputMapping])
+  const pathConflicts = useMemo(() => mappingPathConflicts(v2.output_mapping), [v2.output_mapping])
 
   // Editor-only row status (Inferred pill). Never persisted. Keyed by ABSOLUTE
-  // index into v2.outputMapping.
+  // index into v2.output_mapping.
   const [rowStatus, setRowStatus] = useState<RowStatusMap>({})
   // Which frame blocks are expanded — keyed by EDGE id (stable per incoming
   // edge), not the resolved port, so two frames resolving to the same port
@@ -345,7 +345,7 @@ export default function OutputEditor({
   // while both are still the editor's, so an edit or a source switch never
   // leaves an earlier document beside the current rows.
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const persistedMapping = useMemo(() => writeV2(v2).outputMapping as Array<Record<string, unknown>>, [v2])
+  const persistedMapping = useMemo(() => writeV2(v2).output_mapping as Array<Record<string, unknown>>, [v2])
   const previewKey = useMemo(() => JSON.stringify([persistedMapping, activeSource]), [persistedMapping, activeSource])
   const [assembled, setAssembled] = useState<
     | { key: string; status: "loading" }
@@ -456,21 +456,21 @@ export default function OutputEditor({
     [allNodes, edges, submodels, preamble, nodeById],
   )
 
-  // Rows for a given frame, with their absolute index into v2.outputMapping so
+  // Rows for a given frame, with their absolute index into v2.output_mapping so
   // mutations + row status address the right entry.
   const rowsForPort = useCallback(
     (port: string) =>
-      v2.outputMapping
+      v2.output_mapping
         .map((entry, index) => ({ entry, index }))
         .filter((r) => r.entry.source_port === port),
-    [v2.outputMapping],
+    [v2.output_mapping],
   )
 
   const setEntry = useCallback(
     (absIndex: number, patch: Partial<OutputMappingEntryV2>) => {
       const next: OutputConfigV2 = {
         ...v2,
-        outputMapping: v2.outputMapping.map((e, i) => (i === absIndex ? { ...e, ...patch } : e)),
+        output_mapping: v2.output_mapping.map((e, i) => (i === absIndex ? { ...e, ...patch } : e)),
       }
       writeBack(next)
     },
@@ -484,11 +484,11 @@ export default function OutputEditor({
   const addRow = useCallback(
     (port: string) => {
       // The new entry is appended, so its absolute index is the current length.
-      const newAbsIndex = v2.outputMapping.length
+      const newAbsIndex = v2.output_mapping.length
       const next: OutputConfigV2 = {
         ...v2,
-        outputMapping: [
-          ...v2.outputMapping,
+        output_mapping: [
+          ...v2.output_mapping,
           { source_port: port, source_column: "", output_path: "", enabled: true },
         ],
       }
@@ -503,7 +503,7 @@ export default function OutputEditor({
     (absIndex: number) => {
       const next: OutputConfigV2 = {
         ...v2,
-        outputMapping: v2.outputMapping.filter((_, i) => i !== absIndex),
+        output_mapping: v2.output_mapping.filter((_, i) => i !== absIndex),
       }
       // The array compacts on removal, so re-key row status to match.
       setRowStatus((prev) => remapStatusAfterRemoval(prev, absIndex))
@@ -521,12 +521,12 @@ export default function OutputEditor({
    */
   const clearFrame = useCallback(
     (port: string) => {
-      const survivors = v2.outputMapping
+      const survivors = v2.output_mapping
         .map((e, i) => ({ e, i }))
         .filter((x) => x.e.source_port !== port)
       const next: OutputConfigV2 = {
         ...v2,
-        outputMapping: survivors.map((x) => x.e),
+        output_mapping: survivors.map((x) => x.e),
       }
       setRowStatus((prev) => {
         const m: RowStatusMap = {}
@@ -551,7 +551,7 @@ export default function OutputEditor({
       if (oldPrefix === newPrefix) return
       const next: OutputConfigV2 = {
         ...v2,
-        outputMapping: v2.outputMapping.map((e) =>
+        output_mapping: v2.output_mapping.map((e) =>
           e.source_port === port
             ? { ...e, output_path: substitutePrefix(e.output_path, oldPrefix, newPrefix) }
             : e,
@@ -585,12 +585,12 @@ export default function OutputEditor({
       // Keep other frames in place; replace this frame's rows with the pasted
       // set. Preserve relative ordering: other frames first, then this frame's
       // new rows at the end (absolute indices for this frame thus reset).
-      const others = v2.outputMapping
+      const others = v2.output_mapping
         .map((e, i) => ({ e, i }))
         .filter((x) => x.e.source_port !== port)
       const next: OutputConfigV2 = {
         ...v2,
-        outputMapping: [...others.map((x) => x.e), ...pasted],
+        output_mapping: [...others.map((x) => x.e), ...pasted],
       }
       // Re-key status: `others` keep their relative order at the new front
       // indices (0..others.length-1); carry each surviving row's status across
@@ -611,7 +611,7 @@ export default function OutputEditor({
   const autoMap = useCallback(
     (port: string, columns: string[]) => {
       const existing = new Set(
-        v2.outputMapping
+        v2.output_mapping
           .filter((e) => e.source_port === port)
           .map((e) => e.source_column),
       )
@@ -619,7 +619,7 @@ export default function OutputEditor({
       if (fresh.length === 0) return
       // Additions are appended, so their absolute indices start at the current
       // length and run sequentially.
-      const baseAbsIndex = v2.outputMapping.length
+      const baseAbsIndex = v2.output_mapping.length
       const additions: OutputMappingEntryV2[] = fresh.map((column) => ({
         source_port: port,
         source_column: column,
@@ -634,7 +634,7 @@ export default function OutputEditor({
         })
         return draft
       })
-      writeBack({ ...v2, outputMapping: [...v2.outputMapping, ...additions] })
+      writeBack({ ...v2, output_mapping: [...v2.output_mapping, ...additions] })
     },
     [v2, writeBack],
   )
@@ -728,7 +728,7 @@ export default function OutputEditor({
                 getGrid={() => ({
                   headers: ["frame", "rows", "root_path"],
                   rows: frames.map(({ port, label }) => {
-                    const portRows = v2.outputMapping.filter((e) => e.source_port === port)
+                    const portRows = v2.output_mapping.filter((e) => e.source_port === port)
                     return [label, String(portRows.length), commonRootPath(portRows.map((e) => e.output_path))]
                   }),
                 })}
@@ -819,14 +819,14 @@ export default function OutputEditor({
                   isOpen={isOpen}
                   frameEnabled={anyEnabled}
                   rowStatus={rowStatus}
-                  frameSchema={writeV2({ ...v2, outputMapping: rows.map((r) => r.entry) })}
+                  frameSchema={writeV2({ ...v2, output_mapping: rows.map((r) => r.entry) })}
                   loadFrameData={() => previewFrameData(edge, columns)}
                   onToggleExpand={() => toggleExpanded(edge.id)}
                   onToggleFrameEnabled={(on) => {
                     // Per-frame enable toggles every row in the frame at once.
                     const next: OutputConfigV2 = {
                       ...v2,
-                      outputMapping: v2.outputMapping.map((e) =>
+                      output_mapping: v2.output_mapping.map((e) =>
                         e.source_port === port ? { ...e, enabled: on } : e,
                       ),
                     }
@@ -1266,7 +1266,7 @@ function arrayPrefix(path: string): Seg[] {
 
 /**
  * Best-effort conflict detection over the whole mapping. Returns the ABSOLUTE
- * indices (into `outputMapping`) of the active rows the backend's
+ * indices (into `output_mapping`) of the active rows the backend's
  * `validate_v2_output_mapping` refuses together:
  *   - injectivity: two distinct columns of one frame on one path;
  *   - one kind per place: across every frame, a place a path steps through is an

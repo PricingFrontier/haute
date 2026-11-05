@@ -46,7 +46,7 @@ export default function OptimiserApplyEditor({
   onDeleteInput?: (edgeId: string) => void
   accentColor: string
 }) {
-  const sourceType = configField(config, "sourceType", "file")
+  const sourceType = configField(config, "source_type", "file")
   const artifactPath = configField(config, "artifact_path", "")
   const versionColumn = configField(config, "version_column", "__optimiser_version__")
   const optimisedValueColumn = configField(config, "optimised_value_column", "")
@@ -218,7 +218,7 @@ export default function OptimiserApplyEditor({
         <div className="mt-1">
           <ToggleButtonGroup
             value={sourceType}
-            onChange={(v) => onUpdate({ sourceType: v, optimiser_mode: "" })}
+            onChange={(v) => onUpdate({ source_type: v, optimiser_mode: "" })}
             options={[
               { key: "file", label: "File Path" },
               { key: "registered", label: "Registered" },

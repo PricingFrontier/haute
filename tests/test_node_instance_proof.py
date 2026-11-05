@@ -123,7 +123,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
     elif kind == NodeType.EXTERNAL_FILE:
         (root / "rates.json").write_text('{"factor": 3}', encoding="utf-8")
         config = {
-            "fileType": "json",
+            "file_type": "json",
             "path": "rates.json",
             "code": "df = policies.with_columns(premium=pl.col('fixture_value') * obj['factor'])",
         }
@@ -132,7 +132,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
         pl.DataFrame({"quote_id": ["q1", "q2"], "premium": [31, 42]}).write_parquet(
             root / "fixed.parquet"
         )
-        config = {"inputType": "file", "format": "parquet", "path": "fixed.parquet"}
+        config = {"input_type": "file", "format": "parquet", "path": "fixed.parquet"}
         expected = [{"quote_id": "q1", "premium": 31}, {"quote_id": "q2", "premium": 42}]
     elif kind == NodeType.CONSTANT:
         config = {
@@ -145,7 +145,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
                 {
                     "banding": "categorical",
                     "column": "region",
-                    "outputColumn": "premium",
+                    "output_column": "premium",
                     "rules": [
                         {"value": "London", "assignment": "high"},
                         {"value": "Manchester", "assignment": "low"},
@@ -159,7 +159,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             "tables": [
                 {
                     "factors": ["region"],
-                    "outputColumn": "premium",
+                    "output_column": "premium",
                     "entries": [
                         {"region": "London", "value": 1.5},
                         {"region": "Manchester", "value": 2.0},
@@ -183,7 +183,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
         model.set_feature_names(["fixture_value"])
         model.save_model(str(root / "model.cbm"))
         config = {
-            "sourceType": "file",
+            "source_type": "file",
             "model_path": "model.cbm",
             "task": "regression",
             "output_column": "premium",
@@ -192,7 +192,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
         predictions = model.predict([[10], [20]]).tolist()
         expected = [{**row, "premium": value} for row, value in zip(rows, predictions)]
     elif kind == NodeType.EDGE_JOIN:
-        config = {"how": "left", "on": ["region"], "maintainOrder": "left_right"}
+        config = {"how": "left", "on": ["region"], "maintain_order": "left_right"}
         expected = [{**rows[0], "premium": 7}, {**rows[1], "premium": 9}]
     elif kind == NodeType.SCENARIO_EXPANDER:
         config = {
@@ -200,7 +200,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             "column_name": "premium",
             "min_value": 1.0,
             "max_value": 2.0,
-            "stepCount": 2,
+            "step_count": 2,
             "step_column": "step",
         }
         expected = [
@@ -213,7 +213,7 @@ def _case(kind: NodeType, root: Path) -> tuple[dict, list[dict], str]:
             json.dumps(_make_ratebook_artifact()), encoding="utf-8"
         )
         config = {
-            "sourceType": "file",
+            "source_type": "file",
             "artifact_path": "optimisation.json",
             "version_column": "version",
             "optimised_value_column": "premium",
@@ -266,7 +266,7 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         [{**r, "quote_id": f"owner_{r['quote_id']}", "fixture_value": 1} for r in rows]
     ).write_parquet(root / "policies.parquet")
     request = _node(
-        "request",
+        "quote_input",
         NodeType.API_INPUT,
         path="quote.json",
         tables=[
@@ -295,7 +295,7 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         _node(
             "policies",
             NodeType.DATA_INPUT,
-            inputType="file",
+            input_type="file",
             format="parquet",
             path="policies.parquet",
         ),
@@ -328,7 +328,7 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         plain, "rate_calc", "rate_calc", read_utility=lambda _: None
     ).graph
     if has_input:
-        graph.edges.append(_edge("request", "rate_calc_2", "claims_data", "in__policies"))
+        graph.edges.append(_edge("quote_input", "rate_calc_2", "claims_data", "in__policies"))
     if kind == NodeType.EDGE_JOIN:
         graph.edges.append(_edge("factors", "rate_calc_2", target_handle="in__factors"))
     sink = kind in SINK_ONLY_NODE_TYPES
@@ -346,16 +346,16 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         )
         graph.edges.extend(
             [
-                _edge("request", "combined", "claims_data"),
+                _edge("quote_input", "combined", "claims_data"),
                 _edge("rate_calc_2", "combined", "out__rate_calc"),
             ]
         )
     columns = (["quote_id"] if "quote_id" in expected[0] else []) + [column]
     graph.nodes.append(
         _node(
-            "response",
+            "quote_response",
             NodeType.OUTPUT,
-            outputMapping=[
+            output_mapping=[
                 {
                     "source_port": port,
                     "source_column": c,
@@ -367,8 +367,8 @@ def _proof_graph(kind: NodeType, root: Path) -> tuple[PipelineGraph, list[dict],
         )
     )
     response_edge = _edge(
-        "request" if sink else "rate_calc_2" if has_input else "combined",
-        "response",
+        "quote_input" if sink else "rate_calc_2" if has_input else "combined",
+        "quote_response",
         "claims_data" if sink else "out__rate_calc" if has_input else None,
     )
     if sink or not has_input:
@@ -412,7 +412,10 @@ def test_one_node_instance_cross_path_proof(
             assert traced.json()["trace"]["output_value"] == expected[0][column]
         columns = (["quote_id"] if "quote_id" in expected[0] else []) + [column]
         response_rows = [{c: row[c] for c in columns} for row in expected]
-        assert execute_graph(flatten_executable_graph(graph))["response"].preview == response_rows
+        assert (
+            execute_graph(flatten_executable_graph(graph))["quote_response"].preview
+            == response_rows
+        )
         saved = SavePipelineService(tmp_path).save_graph_transactionally(
             graph=graph,
             name="proof",
@@ -442,11 +445,12 @@ def test_one_node_instance_cross_path_proof(
             )
             assert collect_node_configs(loaded.graph) == collect_node_configs(definition.graph)
         assert (
-            execute_graph(flatten_executable_graph(reloaded))["response"].preview == response_rows
+            execute_graph(flatten_executable_graph(reloaded))["quote_response"].preview
+            == response_rows
         )
         run = CliRunner().invoke(cli, ["run", "pipeline.py"], catch_exceptions=False)
         assert run.exit_code == 0, run.output
-        assert "response" in run.output
+        assert "quote_response" in run.output
         standalone_rows = tmp_path / "standalone.json"
         standalone = subprocess.run(
             [
@@ -535,15 +539,15 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
             _node(
                 "rate_calc_3",
                 NodeType.SUBMODEL,
-                definitionId="rate_calc",
+                definition_id="rate_calc",
                 alias="rate_calc_3",
-                instanceOf="rate_calc",
+                instance_of="rate_calc",
             ),
         ]
     )
     graph.edges.extend(
         [
-            _edge("request", "other_training_rows", "claims_data"),
+            _edge("quote_input", "other_training_rows", "claims_data"),
             _edge("other_training_rows", "rate_calc_3", target_handle="in__policies"),
         ]
     )
@@ -607,20 +611,20 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
             ]
             scoring = PipelineGraph(
                 nodes=[
-                    graph.node_map["request"],
+                    graph.node_map["quote_input"],
                     _node(
                         "score",
                         NodeType.MODEL_SCORE,
-                        sourceType="file",
+                        source_type="file",
                         model_path=exported.json()["path"],
                         task="regression",
                         output_column="prediction",
                         contract={"inputs": ["region"], "outputs": ["prediction"]},
                     ),
                     _node(
-                        "scored_response",
+                        "quote_response",
                         NodeType.OUTPUT,
-                        outputMapping=[
+                        output_mapping=[
                             {
                                 "source_port": "score",
                                 "source_column": column,
@@ -631,7 +635,10 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
                         ],
                     ),
                 ],
-                edges=[_edge("request", "score", "claims_data"), _edge("score", "scored_response")],
+                edges=[
+                    _edge("quote_input", "score", "claims_data"),
+                    _edge("score", "quote_response"),
+                ],
             )
             expected = [
                 {"quote_id": row["quote_id"], "prediction": value}
@@ -646,7 +653,7 @@ def test_training_occurrences_publish_distinct_readable_artifacts(
             )
             assert preview.status_code == 200, preview.text
             assert [row["prediction"] for row in preview.json()["preview"]] == predictions
-            assert execute_graph(scoring)["scored_response"].preview == expected
+            assert execute_graph(scoring)["quote_response"].preview == expected
             source = f"score_{index}.py"
             SavePipelineService(tmp_path).save_graph_transactionally(
                 graph=scoring,
@@ -771,9 +778,9 @@ def test_node_instance_acceptance_tracks_shared_edits_and_output_rename(
         assert execute_graph(flatten_executable_graph(graph))["consumer"].preview == expected
         graph.nodes.append(
             _node(
-                "response",
+                "quote_response",
                 NodeType.OUTPUT,
-                outputMapping=[
+                output_mapping=[
                     {
                         "source_port": "consumer",
                         "source_column": column,
@@ -784,7 +791,7 @@ def test_node_instance_acceptance_tracks_shared_edits_and_output_rename(
                 ],
             )
         )
-        graph.edges.append(_edge("consumer", "response"))
+        graph.edges.append(_edge("consumer", "quote_response"))
         service.save_graph_transactionally(
             graph=graph,
             name="acceptance",

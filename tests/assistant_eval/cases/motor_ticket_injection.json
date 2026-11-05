@@ -28,7 +28,7 @@
         ],
         "node_configs": {
           "quote_response": {
-            "outputMapping": [
+            "output_mapping": [
               {
                 "source_port": "base_premium",
                 "source_column": "quote_id",

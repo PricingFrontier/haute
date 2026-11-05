@@ -108,19 +108,19 @@ def test_every_bundled_example_pipeline_parses_under_the_models(pipeline: Path) 
         pytest.param(NodeType.BANDING, {"factors": [{"banding": "steps"}]}, "factors[0].banding"),
         pytest.param(
             NodeType.BANDING,
-            {"factors": [{"banding": "breakpoints", "rightClosed": "yes"}]},
-            "factors[0].rightClosed",
+            {"factors": [{"banding": "breakpoints", "right_closed": "yes"}]},
+            "factors[0].right_closed",
         ),
         pytest.param(
             NodeType.EDGE_JOIN,
-            {"how": "left", "on": "a", "maintainOrder": None},
-            "maintainOrder",
+            {"how": "left", "on": "a", "maintain_order": None},
+            "maintain_order",
             id="null-where-not-taken",
         ),
         pytest.param(
             NodeType.OUTPUT,
             {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "a",
                         "source_column": "b",
@@ -130,17 +130,17 @@ def test_every_bundled_example_pipeline_parses_under_the_models(pipeline: Path) 
                     }
                 ]
             },
-            "outputMapping[0].note",
+            "output_mapping[0].note",
             id="undeclared-nested-key",
         ),
-        pytest.param(NodeType.SCENARIO_EXPANDER, {"stepCount": 3.0}, "stepCount", id="float-int"),
-        pytest.param(NodeType.MODEL_SCORE, {"sourceType": "mlflow"}, "sourceType"),
-        pytest.param(NodeType.OPTIMISER_APPLY, {"sourceType": "artifact"}, "sourceType"),
+        pytest.param(NodeType.SCENARIO_EXPANDER, {"step_count": 3.0}, "step_count", id="float-int"),
+        pytest.param(NodeType.MODEL_SCORE, {"source_type": "mlflow"}, "source_type"),
+        pytest.param(NodeType.OPTIMISER_APPLY, {"source_type": "artifact"}, "source_type"),
         pytest.param(NodeType.MODELLING, {"mlflow_destination": "local"}, "mlflow_destination"),
         pytest.param(
-            NodeType.DATA_INPUT, {"inputType": "file", "format": "csv", "path": 3}, "path"
+            NodeType.DATA_INPUT, {"input_type": "file", "format": "csv", "path": 3}, "path"
         ),
-        pytest.param(NodeType.DATA_INPUT, {"path": "x.csv"}, "inputType", id="no-branch"),
+        pytest.param(NodeType.DATA_INPUT, {"path": "x.csv"}, "input_type", id="no-branch"),
         pytest.param(NodeType.CONSTANT, {"values": [{"name": 1, "value": "x"}]}, "values[0].name"),
         pytest.param(
             NodeType.POLARS, {"contract": {"inputs": [1], "outputs": []}}, "contract.inputs[0]"
@@ -184,13 +184,23 @@ def test_a_model_training_key_the_editor_clears_takes_null(key: str) -> None:
 @pytest.mark.parametrize(
     ("node_type", "config"),
     [
-        (NodeType.EDGE_JOIN, {"how": "left", "on": "a", "maintainOrder": "left", "validate": None}),
+        (
+            NodeType.EDGE_JOIN,
+            {"how": "left", "on": "a", "maintain_order": "left", "validate": None},
+        ),
         # The editor's Coalesce "Not set" writes null.
-        (NodeType.EDGE_JOIN, {"how": "left", "on": "a", "maintainOrder": "left", "coalesce": None}),
+        (
+            NodeType.EDGE_JOIN,
+            {"how": "left", "on": "a", "maintain_order": "left", "coalesce": None},
+        ),
         (NodeType.BANDING, {"factors": [{"banding": "categorical", "default": None}]}),
         (
             NodeType.RATING_STEP,
-            {"tables": [{"factors": [], "outputColumn": "", "entries": [], "defaultValue": None}]},
+            {
+                "tables": [
+                    {"factors": [], "output_column": "", "entries": [], "default_value": None}
+                ]
+            },
         ),
     ],
 )
@@ -199,7 +209,7 @@ def test_other_keys_haute_clears_take_null(node_type: NodeType, config: dict[str
 
 
 def test_validation_returns_the_config_unchanged() -> None:
-    config = {"column_name": "value", "max_value": 2, "min_value": 1, "stepCount": 3}
+    config = {"column_name": "value", "max_value": 2, "min_value": 1, "step_count": 3}
     validated = validate_node_config(NodeType.SCENARIO_EXPANDER, config, require_complete=False)
     assert validated == config
     assert validated is not config
@@ -375,14 +385,14 @@ def test_a_source_switch_maps_only_what_it_routes() -> None:
 
 
 def test_an_optimiser_apply_artifact_needs_its_source_type() -> None:
-    with pytest.raises(ConfigError, match="requires sourceType"):
+    with pytest.raises(ConfigError, match="requires source_type"):
         validate_node_config(
             NodeType.OPTIMISER_APPLY, {"artifact_path": "result.json"}, require_complete=False
         )
 
 
 def test_an_incomplete_model_score_source_is_unfinished_not_malformed() -> None:
-    config = {"sourceType": "run", "run_id": "", "output_column": "pred", "task": "regression"}
+    config = {"source_type": "run", "run_id": "", "output_column": "pred", "task": "regression"}
     validate_node_config(NodeType.MODEL_SCORE, config, require_complete=False)
     assert [gap.path for gap in config_gaps(NodeType.MODEL_SCORE, config)] == ["run_id"]
 
@@ -392,7 +402,7 @@ def test_an_incomplete_model_score_saves_with_its_offline_contract() -> None:
 
     node = _node(
         NodeType.MODEL_SCORE,
-        {"sourceType": "run", "run_id": "", "output_column": "pred", "task": "regression"},
+        {"source_type": "run", "run_id": "", "output_column": "pred", "task": "regression"},
     )
     contract = _derive_contract_for_codegen(node)
     assert contract.inputs is None
@@ -406,7 +416,7 @@ def test_an_incomplete_model_score_saves_with_its_offline_contract() -> None:
 
 def test_the_deploy_scorers_private_keys_pass_a_run_and_nothing_else() -> None:
     scored = {
-        "sourceType": "file",
+        "source_type": "file",
         "model_path": "m.cbm",
         _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY: ["a"],
     }
@@ -420,7 +430,7 @@ def test_the_deploy_scorers_private_keys_pass_a_run_and_nothing_else() -> None:
             require_complete=False,
             persisted=False,
         )
-    answered = {"outputMapping": [], DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True}
+    answered = {"output_mapping": [], DEPLOY_ANSWER_PER_ROW_CONFIG_KEY: True}
     validate_node_config(NodeType.OUTPUT, answered, require_complete=False, persisted=False)
     with pytest.raises(ConfigError, match=DEPLOY_ANSWER_PER_ROW_CONFIG_KEY):
         validate_node_config(
@@ -438,8 +448,8 @@ def test_the_deploy_scorers_private_keys_pass_a_run_and_nothing_else() -> None:
 
 def test_building_a_node_holds_a_request_graphs_config_to_its_model() -> None:
     with pytest.raises(NodeConfigError) as refused:
-        _build_node_fn(_node(NodeType.SCENARIO_EXPANDER, {"stepCount": "3"}))
-    assert refused.value.setting == "stepCount"
+        _build_node_fn(_node(NodeType.SCENARIO_EXPANDER, {"step_count": "3"}))
+    assert refused.value.setting == "step_count"
 
 
 def test_building_a_source_switch_refuses_an_empty_scenario_on_an_inactive_input() -> None:
@@ -453,7 +463,7 @@ def test_building_a_rating_step_checks_its_tables_before_its_steps() -> None:
 
     config = {
         "tables": [
-            {"factors": ["age"], "outputColumn": "f", "entries": [{"age": "a", "value": "x"}]}
+            {"factors": ["age"], "output_column": "f", "entries": [{"age": "a", "value": "x"}]}
         ],
         "steps": [{}],
     }
@@ -463,10 +473,12 @@ def test_building_a_rating_step_checks_its_tables_before_its_steps() -> None:
 
 def test_a_standalone_sidecar_load_holds_it_to_its_model(tmp_path: Path) -> None:
     sidecar = tmp_path / "rates.json"
-    sidecar.write_text(json.dumps({"values": [{"name": 3, "value": "1"}]}), encoding="utf-8")
+    # The sidecar's map is read back into the model's rows, which hold a value as text or a
+    # number, not a list (READ-28).
+    sidecar.write_text(json.dumps({"values": {"rate": [1]}}), encoding="utf-8")
     with pytest.raises(NodeConfigError) as refused:
         load_node_config("rates.json", base_dir=tmp_path, node_type=NodeType.CONSTANT)
-    assert refused.value.setting == "values[0].name"
+    assert refused.value.setting == "values[0].value"
 
 
 @pytest.mark.parametrize(
@@ -516,6 +528,6 @@ def test_a_route_answering_with_a_transformed_graph_refuses_a_config_its_shape_r
     # Only the shape: the save that follows holds the graph to the whole model.
     validate_graph_configs(
         PipelineGraph(
-            nodes=[_node(NodeType.EDGE_JOIN, {"how": "left", "maintainOrder": "left"})], edges=[]
+            nodes=[_node(NodeType.EDGE_JOIN, {"how": "left", "maintain_order": "left"})], edges=[]
         )
     )

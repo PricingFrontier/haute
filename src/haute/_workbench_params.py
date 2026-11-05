@@ -14,8 +14,12 @@ its commit's params files hold.
 from __future__ import annotations
 
 import io
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -68,17 +72,24 @@ def _params_path(project_root: Path, file: str) -> tuple[Path, str]:
 def _read(
     path: Path, name: str, *, columns: list[str] | None = None, n_rows: int | None = None
 ) -> pl.DataFrame:
-    """The CSV at *path* read as text, UTF-8 when its bytes are, else Windows-1252, as Excel
-    writes a "CSV (Comma delimited)" file on Windows: the encoding chosen from the bytes,
-    never from what a CSV reader makes of them, since one replaces a byte it cannot read. A
-    column name holding a character no encoding could give (U+FFFD, left by an earlier save
-    that lost it) is refused; so is a file neither encoding reads."""
+    """The CSV at *path*, read as :func:`_frame` reads its bytes."""
     try:
         raw = path.read_bytes()
     except OSError as exc:
         raise ParamFileError(
             f"{name} could not be read: {exc.strerror or exc}", path=name
         ) from None
+    return _frame(raw, name, columns=columns, n_rows=n_rows)
+
+
+def _frame(
+    raw: bytes, name: str, *, columns: list[str] | None = None, n_rows: int | None = None
+) -> pl.DataFrame:
+    """The CSV at *path* read as text, UTF-8 when its bytes are, else Windows-1252, as Excel
+    writes a "CSV (Comma delimited)" file on Windows: the encoding chosen from the bytes,
+    never from what a CSV reader makes of them, since one replaces a byte it cannot read. A
+    column name holding a character no encoding could give (U+FFFD, left by an earlier save
+    that lost it) is refused; so is a file neither encoding reads."""
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -121,14 +132,26 @@ def read_param_file(project_root: Path, file: str, column: str | None = None) ->
     be read, or *column* is not in its header, holds no values or holds too many.
     """
     path, name = _params_path(project_root, file)
-    columns = _read(path, name, n_rows=0).columns
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ParamFileError(
+            f"{name} could not be read: {exc.strerror or exc}", path=name
+        ) from None
+    return param_file_from_bytes(raw, name, column)
+
+
+def param_file_from_bytes(raw: bytes, name: str, column: str | None = None) -> ParamFile:
+    """:func:`read_param_file` for a params file's bytes, named *name*: what a past revision
+    of the file holds reads as the working tree's does (READ-25)."""
+    columns = _frame(raw, name, n_rows=0).columns
     if column is None:
         return ParamFile(columns=columns, values=[])
     if column not in columns:
         raise ParamFileError(f"{name} has no column {column}.", path=name)
     values = (
         streaming_collect(
-            _read(path, name, columns=[column])
+            _frame(raw, name, columns=[column])
             .lazy()
             .select(pl.col(column).str.strip_chars())
             .filter(pl.col(column).is_not_null() & (pl.col(column) != ""))
@@ -175,3 +198,79 @@ def with_param_options(spec: FormSpec, project_root: Path) -> FormSpec:
     return spec.model_copy(
         update={"data_schema": spec.data_schema.model_copy(update={"tables": tables})}
     )
+
+
+#: Reads a params file's allowed values: from its file name and the column asked for.
+ParamValues = Callable[[str, str], list[str]]
+
+
+def _fits(value: str, kind: str) -> bool:
+    """Whether the allowed value *value* is one a column of type *kind* holds."""
+    try:
+        if kind == "int":
+            int(value)
+        elif kind == "float":
+            return math.isfinite(float(value))
+        elif kind == "date":
+            date.fromisoformat(value)
+        elif kind == "bool":
+            return value.lower() in ("true", "false")
+    except ValueError:
+        return False
+    return True
+
+
+def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> None:
+    """Give each input column whose allowed values come from a params file those values, as
+    *read* finds them at the revision the form is read at (READ-25): a schema file writes only
+    the column's ``options_source``. A file or column that cannot give them, or a value the
+    column's type does not hold, is refused, naming the file and the column."""
+    for table in tables:
+        if table.get("role", "input") != "input":
+            continue
+        for column in table.get("columns", []):
+            source = column.get("options_source")
+            if not isinstance(source, dict):
+                continue
+            where = f"{table.get('name')}.{column.get('name')}"
+            try:
+                values = read(source["file"], source["column"])
+            except ParamFileError as exc:
+                raise ParamFileError(
+                    f"The allowed values of {where} could not be read: {exc.message}",
+                    **exc.context,
+                ) from exc
+            kind = column.get("type", "str")
+            misfit = next((value for value in values if not _fits(value, kind)), None)
+            if misfit is not None:
+                raise ParamFileError(
+                    f"{source['file']} gives {where} the value {misfit!r}, which a {kind} "
+                    "column does not hold.",
+                    path=source["file"],
+                )
+            column["options"] = values
+
+
+def working_tree_param_values(project_root: Path) -> ParamValues:
+    """Read allowed values from the params files as the working tree holds them."""
+    return lambda file, column: read_param_file(project_root, file, column).values
+
+
+def param_values_at(project_root: Path, ref: str) -> ParamValues:
+    """Read allowed values from the params files as the git *ref* holds them, never from the
+    working tree (READ-25)."""
+    from haute._git_core import _run_git_process
+
+    def read(file: str, column: str) -> list[str]:
+        files = pipeline_files_folder(project_root)
+        if files is None:
+            raise ParamFileError(
+                "This project's pipeline sits at the project root, so it has no params folder."
+            )
+        name = f"{files}/{PARAMS_FOLDER}/{file}"
+        shown = _run_git_process("show", f"{ref}:./{name}", binary=True, cwd=project_root)
+        if shown.returncode != 0:
+            raise ParamFileError(f"{name} doesn't exist at {ref}.", path=name)
+        return param_file_from_bytes(shown.stdout, name, column).values
+
+    return read

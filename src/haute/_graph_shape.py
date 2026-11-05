@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
-from haute._node_specs import SINGLETON_NODE_GROUPS, node_spec
+from haute._graph_utils import _sanitize_func_name
+from haute._node_specs import SINGLETON_NODE_GROUPS, node_spec, singleton_name_problem
 from haute._submodel_instances import resolve_submodel_instances
 from haute._types import PipelineGraph, SubmodelInputPort, SubmodelOutputPort
 from haute.errors import ParseError
@@ -15,7 +16,8 @@ from haute.errors import ParseError
 
 
 def validate_singleton_groups(graph: PipelineGraph) -> None:
-    """Raise ``ValueError`` when *graph* holds two nodes of one singleton group.
+    """Raise ``ValueError`` when *graph* holds two nodes of one singleton group, or names
+    one other than its type's one name (READ-46).
 
     Pass the flattened graph, so that nodes inside submodels count.
     """
@@ -23,6 +25,13 @@ def validate_singleton_groups(graph: PipelineGraph) -> None:
         count = sum(1 for node in graph.nodes if node.data.nodeType in group)
         if count > 1:
             raise ValueError(f"Only one {label} node is allowed per pipeline (found {count}).")
+    # Each is named by its type alone (READ-46).
+    for node in graph.nodes:
+        problem = singleton_name_problem(
+            node.data.nodeType, _sanitize_func_name(node.data.label or node.id)
+        )
+        if problem is not None:
+            raise ValueError(problem)
 
 
 def validate_graph_shape_contracts(

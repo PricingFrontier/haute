@@ -227,7 +227,7 @@ class WorkbenchTablesResponse(BaseModel):
     tables: list[WorkbenchTable]
     sample: dict[str, Any] = Field(default_factory=dict)
     response_tables: list[WorkbenchTable] = Field(default_factory=list)
-    #: The columns the quote store keeps in each table that the form does not, by table id.
+    #: The columns the quote store keeps in each table that the form does not, by table name.
     store_columns: dict[str, list[WorkbenchStoreColumn]] = Field(default_factory=dict)
 
 
@@ -298,7 +298,7 @@ class WorkbenchStoreCatalogueResponse(BaseModel):
 
 
 class WorkbenchStoreRename(BaseModel):
-    """A column of the form's table ``table`` (by id), ``column`` (by id), that the database
+    """A column of the form's table ``table``, ``column``, both by name, that the database
     holds as ``was``: the analyst's pairing of the two as a rename."""
 
     table: BoundedName
@@ -318,7 +318,7 @@ class WorkbenchStoreCompareRequest(BaseModel):
 
 
 class WorkbenchStoreDifference(BaseModel):
-    """A way the database differs from the form: the form's table and column by id (no table
+    """A way the database differs from the form: the form's table and column by name (no table
     for Haute's own haute_activity), its kind and what it is."""
 
     table: str | None
@@ -331,28 +331,26 @@ class WorkbenchStoreDifference(BaseModel):
 
 class WorkbenchStoreExtra(BaseModel):
     """A table of the store's, or a column of one of the form's tables, that the database
-    holds and the form does not: its table's and its name there, the form's table's id when
+    holds and the form does not: its table's and its name there, the form's table's name when
     the table is the form's, and the quotes holding values in it, None when the table lacks a
     quote identity column."""
 
     table: str
     column: str | None
-    table_id: str | None
+    form_table: str | None
     quotes: int | None = None
 
 
 class WorkbenchStoreCompareResponse(BaseModel):
     """The form compared with an environment's tables: each difference, each extra, the
-    pairings taken, whether the database matches the form, the SQL that brings its tables to
-    the form, from what they hold, and the default branch whose form named renames, null
-    when none did."""
+    pairings taken, whether the database matches the form, and the SQL that brings its tables
+    to the form, from what they hold."""
 
     differences: list[WorkbenchStoreDifference]
     extras: list[WorkbenchStoreExtra]
     renames: list[WorkbenchStoreRename]
     matches: bool
     sql: str
-    branch: str | None
 
 
 class WorkbenchFormFile(BaseModel):
@@ -403,7 +401,7 @@ class WorkbenchParamFileResponse(BaseModel):
     values: list[str] = Field(default_factory=list)
 
 
-#: Values typed into the sheets: by table id, rows keyed by column id, as typed.
+#: Values typed into the sheets: by table name, rows keyed by column name, as typed.
 WorkbenchValues = dict[str, list[dict[str, Cell]]]
 #: Priced output tables: each table's rows by its name, as Preview's pricing gives them.
 WorkbenchPricedTables = dict[str, list[dict[str, Any]]]
@@ -2373,7 +2371,7 @@ class WriteOutputResponse(BaseModel):
 class OutputAssembleDryRunRequest(BaseModel):
     graph: Graph
     node_id: BoundedName
-    #: The in-progress (volatile, unsaved) outputMapping to preview.
+    #: The in-progress (volatile, unsaved) output_mapping to preview.
     output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
     #: Cap upstream source rows so the preview stays cheap.
     row_limit: int = Field(default=100, ge=1, le=10000)

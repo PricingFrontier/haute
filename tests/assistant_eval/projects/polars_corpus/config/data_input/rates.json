@@ -1,7 +1,6 @@
 {
-  "arguments": {},
   "format": "parquet",
-  "inputType": "file",
+  "input_type": "file",
   "mode": "scan",
   "path": "data/rates.parquet"
 }

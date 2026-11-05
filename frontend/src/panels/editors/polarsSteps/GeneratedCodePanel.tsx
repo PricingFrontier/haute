@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Code, Lock } from "lucide-react"
+import { ChevronDown, ChevronUp, Lock } from "lucide-react"
 import { useEffect, useId, useMemo, useState } from "react"
 
 import type { StepStart } from "../../../utils/polarsStepInputs"
@@ -30,9 +30,6 @@ export default function GeneratedCodePanel({
   activeStep = null,
   onPointStep,
   onOpenStep,
-  switchEnabled,
-  switchDisabledReason,
-  onSwitchToCode,
 }: {
   /** Names the failing step the way the surface numbers its cards. */
   start: StepStart
@@ -53,9 +50,6 @@ export default function GeneratedCodePanel({
   activeStep?: number | null
   onPointStep?: (stepIndex: number | null) => void
   onOpenStep?: (stepIndex: number) => void
-  switchEnabled: boolean
-  switchDisabledReason?: string
-  onSwitchToCode: () => void
 }) {
   const [open, setOpen] = useState(true)
   const [slow, setSlow] = useState(false)
@@ -168,19 +162,6 @@ export default function GeneratedCodePanel({
             })
           )}
         </pre>
-      </div>
-      <div className="flex items-center justify-end gap-2 px-3 pb-2">
-        <button
-          type="button"
-          onClick={onSwitchToCode}
-          disabled={!switchEnabled}
-          title={switchEnabled ? "Replace the steps with editable code" : switchDisabledReason}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-        >
-          <Code size={12} aria-hidden="true" />
-          Switch to code
-        </button>
       </div>
     </section>
   )

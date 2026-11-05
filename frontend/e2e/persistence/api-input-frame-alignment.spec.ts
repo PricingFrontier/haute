@@ -20,12 +20,12 @@ const quotesConfigPath = resolve(
   "rating",
   "config",
   "quote_input",
-  "quotes.json",
+  "quote_input.json",
 )
 const pipelinePath = resolve(e2eProjectRoot, "rating", "main.py")
 
-const API_NODE_ID = "quotes"
-const API_NODE_LABEL = "quotes"
+const API_NODE_ID = "quote_input"
+const API_NODE_LABEL = "quote_input"
 const DOWNSTREAM_NODE_ID = "enriched"
 const MAX_CENTRE_DELTA_PX = 3
 const LONG_FRAME_LABEL = "policyholders_with_exceptionally_long_frame_identity_2026"
@@ -71,7 +71,7 @@ function emittedTable(label: string, index: number) {
   return {
     path: index === 0 ? "$[:]" : `$[:].frame_${index}[:]`,
     label,
-    displayPath: null,
+    display_path: null,
     emit: true,
     row_id_column: null,
     columns: [selectedColumn(index)],
@@ -271,7 +271,7 @@ function expectGeneratedInputIdentity(
   }
 
   // A coded consumer keeps the parameter names its code was authored with
-  // (ENG-T08): a renamed frame is recorded on the decorator's inputMapping as
+  // (ENG-T08): a renamed frame is recorded on the decorator's input_mapping as
   // logical -> current edge name, and the connect lines carry the new name.
   // The signature may be broken over lines, as ruff lays out a long one.
   const parameters = signature[1]
@@ -289,9 +289,9 @@ function expectGeneratedInputIdentity(
   expect(source).toMatch(/def\s+enriched\s*\([\s\S]*?\)\s*-> pl\.LazyFrame:/)
   for (const [logical, current] of Object.entries(inputMapping)) {
     const binding = new RegExp(
-      String.raw`inputMapping=\{[^}]*["']${logical}["']:\s*["']${current}["']`,
+      String.raw`input_mapping=\{[^}]*["']${logical}["']:\s*["']${current}["']`,
     )
-    expect(source, `inputMapping binds ${logical} to ${current}`).toMatch(binding)
+    expect(source, `input_mapping binds ${logical} to ${current}`).toMatch(binding)
   }
 
   for (const label of labels) {

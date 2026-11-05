@@ -989,7 +989,7 @@ def _named_cardinality_inputs(
     *,
     alias_first_as_df: bool = False,
 ) -> Mapping[str, _ResolvedRowCardinality] | None:
-    """Mirror runtime edge/inputMapping names for AST cardinality analysis."""
+    """Mirror runtime edge/input_mapping names for AST cardinality analysis."""
 
     bindings = _cardinality_name_bindings(
         index,
@@ -2382,7 +2382,7 @@ def _port_operand_counts(
     """Map each incoming edge to how many join operands it supplies.
 
     The cardinality analysis counts operands under the names the *code* uses,
-    which ``inputMapping`` can alias away from the edge's own name, and several
+    which ``input_mapping`` can alias away from the edge's own name, and several
     aliases can name the same edge. Resolving every counted name back to an edge
     identity and summing there is what keeps ``logical.join(logical, ...)``
     charged twice. A counted name that resolves to no edge means the estimator

@@ -28,8 +28,7 @@ import { BLANK_THEME, pricingBasis, type SampleRow } from "../workbenchForm"
 import presetCases from "./fixtures/presetRows.json"
 import typedCases from "./fixtures/typedText.json"
 
-const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
-  id,
+const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColumn => ({
   name,
   type: "str",
   label: "",
@@ -52,36 +51,33 @@ const column = (id: string, name: string, overrides: Partial<SchemaColumn> = {})
 })
 
 const equipment: SchemaTable = {
-  id: "equipment",
   name: "equipment",
   role: "input",
   rows: "many",
   columns: [
-    column("row", "row_number", { type: "int", index: true, key: true }),
-    column("item", "item", { required: true }),
-    column("value", "value", { type: "float", min: 0, max: 1_000_000 }),
+    column("row_number", { type: "int", index: true, key: true }),
+    column("item", { required: true }),
+    column("value", { type: "float", min: 0, max: 1_000_000 }),
   ],
 }
 const policy: SchemaTable = {
-  id: "policy",
   name: "policy",
   role: "input",
   rows: "one",
-  columns: [column("state", "state", { options: ["CA", "NY"], required: true }), column("years", "years", { type: "int", min: 1, max: 200 })],
+  columns: [column("state", { options: ["CA", "NY"], required: true }), column("years", { type: "int", min: 1, max: 200 })],
 }
 const premiums: SchemaTable = {
-  id: "premiums",
   name: "premiums",
   role: "output",
   rows: "many",
-  columns: [column("p_row", "row_number", { type: "int", key: true }), column("premium", "premium", { type: "float", required: true })],
+  columns: [column("row_number", { type: "int", key: true }), column("premium", { type: "float", required: true })],
 }
 
 describe("filled rows", () => {
   it("counts text other than blank and a tick as typed, in any column but the index", () => {
     expect([filled("x"), filled(" "), filled(""), filled(true), filled(false), filled(undefined)]).toEqual([true, false, false, true, false, false])
     expect(rowFilled(equipment, { item: "Crane" })).toBe(true)
-    expect(rowFilled(equipment, { row: "7" })).toBe(false)
+    expect(rowFilled(equipment, { row_number: "7" })).toBe(false)
     expect(rowFilled(equipment, {})).toBe(false)
     expect(rowFilled(equipment, undefined)).toBe(false)
   })
@@ -92,10 +88,10 @@ describe("a new quote", () => {
   // whose defaults a new quote never takes.
   const detailed: SchemaTable = {
     ...policy,
-    columns: [column("state", "state", { options: ["CA", "NY"], default_value: "NY" }), column("years", "years", { type: "int" }), column("vat", "vat", { type: "bool", default_value: true })],
+    columns: [column("state", { options: ["CA", "NY"], default_value: "NY" }), column("years", { type: "int" }), column("vat", { type: "bool", default_value: true })],
   }
-  const listed: SchemaTable = { ...equipment, columns: equipment.columns.map((c) => (c.id === "item" ? { ...c, default_value: "Crane" } : c)) }
-  const priced: SchemaTable = { ...premiums, rows: "one", columns: [column("premium", "premium", { type: "float", default_value: "100" })] }
+  const listed: SchemaTable = { ...equipment, columns: equipment.columns.map((c) => (c.name === "item" ? { ...c, default_value: "Crane" } : c)) }
+  const priced: SchemaTable = { ...premiums, rows: "one", columns: [column("premium", { type: "float", default_value: "100" })] }
   const schema = { tables: [detailed, listed, priced] }
 
   it("starts with each one-row input table's row holding its columns' defaults, and nothing else", () => {
@@ -122,17 +118,16 @@ describe("a row for each value", () => {
   // The cases the server's preset_rows holds itself to as well.
   type Case = {
     name: string
-    table: { role: SchemaTable["role"]; rows: SchemaTable["rows"]; columns: (Partial<SchemaColumn> & { id: string; name: string })[] }
+    table: { role: SchemaTable["role"]; rows: SchemaTable["rows"]; columns: (Partial<SchemaColumn> & { name: string })[] }
     rows: SampleRow[]
     read: SampleRow[]
   }
   const cases = presetCases.cases as unknown as Case[]
   const tableOf = ({ table }: Case): SchemaTable => ({
-    id: "t_cover",
     name: "coverage",
     role: table.role,
     rows: table.rows,
-    columns: table.columns.map(({ id, name, ...rest }) => column(id, name, rest)),
+    columns: table.columns.map(({ name, ...rest }) => column(name, rest)),
   })
 
   it.each(cases.map((one) => [one.name, one] as const))("%s", (_, one) => {
@@ -140,15 +135,14 @@ describe("a row for each value", () => {
   })
 
   const coverage: SchemaTable = {
-    id: "coverage",
     name: "coverage",
     role: "input",
     rows: "many",
-    columns: [column("peril", "peril", { options: ["AOP", "EQ"], row_per_value: true, key: true }), column("limit", "limit", { type: "float" })],
+    columns: [column("peril", { options: ["AOP", "EQ"], row_per_value: true, key: true }), column("limit", { type: "float" })],
   }
 
   it("names the column giving a table its rows, the first that may", () => {
-    expect(presetColumn(coverage)?.id).toBe("peril")
+    expect(presetColumn(coverage)?.name).toBe("peril")
     expect(presetColumn(equipment)).toBeNull()
   })
 
@@ -182,17 +176,17 @@ describe("a row for each value", () => {
 
 describe("formattedNumber", () => {
   it("shows a number column's values in its format, as an Explore pivot does, typed text read as the server reads it", () => {
-    const money = column("c", "premium", { type: "float", number_format: "currency_gbp" })
+    const money = column("premium", { type: "float", number_format: "currency_gbp" })
     expect(formattedNumber(money, 1234.5)).toBe("£1,234.50")
     expect(formattedNumber(money, "£1,234.5")).toBe("£1,234.50")
-    expect(formattedNumber(column("c", "rate", { type: "float", number_format: "percent", decimal_places: 1 }), "0.125")).toBe("12.5%")
-    expect(formattedNumber(column("c", "count", { type: "int", decimal_places: 0, use_grouping: false }), 12345.6)).toBe("12346")
+    expect(formattedNumber(column("rate", { type: "float", number_format: "percent", decimal_places: 1 }), "0.125")).toBe("12.5%")
+    expect(formattedNumber(column("count", { type: "int", decimal_places: 0, use_grouping: false }), 12345.6)).toBe("12346")
   })
 
   it("leaves a value as it is in General, outside a number column, or when it is not a number", () => {
-    expect(formattedNumber(column("c", "premium", { type: "float" }), "1000")).toBeNull()
-    expect(formattedNumber(column("c", "name", { number_format: "number" }), "1000")).toBeNull()
-    expect(formattedNumber(column("c", "premium", { type: "float", number_format: "number" }), "lots")).toBeNull()
+    expect(formattedNumber(column("premium", { type: "float" }), "1000")).toBeNull()
+    expect(formattedNumber(column("name", { number_format: "number" }), "1000")).toBeNull()
+    expect(formattedNumber(column("premium", { type: "float", number_format: "number" }), "lots")).toBeNull()
   })
 })
 
@@ -227,7 +221,7 @@ describe("cellProblem", () => {
   })
 
   it("takes a Date as a real day written YYYY-MM-DD, as the server reads one", () => {
-    const inception = column("c", "inception", { type: "date" })
+    const inception = column("inception", { type: "date" })
     expect(cellProblem(inception, "2026-02-28")).toBeNull()
     expect(cellProblem(inception, "")).toBeNull()
     // Text a column retyped to a Date may still hold.
@@ -237,17 +231,17 @@ describe("cellProblem", () => {
   })
 
   it("never faults a tick box or the index", () => {
-    expect(cellProblem(column("c", "c", { type: "bool", required: true }), undefined)).toBeNull()
+    expect(cellProblem(column("c", { type: "bool", required: true }), undefined)).toBeNull()
     expect(cellProblem(equipment.columns[0], "x")).toBeNull()
   })
 
   it("marks a value of another type left in a column since retyped, which the server refuses", () => {
-    expect(cellProblem(column("c", "c"), true)).toBe("A tick, not a value")
-    expect(cellProblem(column("c", "c", { type: "float", required: true }), true)).toBe("A tick, not a value")
-    expect(cellProblem(column("c", "c", { type: "bool" }), "yes")).toBe("Not a tick")
+    expect(cellProblem(column("c"), true)).toBe("A tick, not a value")
+    expect(cellProblem(column("c", { type: "float", required: true }), true)).toBe("A tick, not a value")
+    expect(cellProblem(column("c", { type: "bool" }), "yes")).toBe("Not a tick")
     // An unticked box and blank text are nothing the server sends.
-    expect(cellProblem(column("c", "c"), false)).toBeNull()
-    expect(cellProblem(column("c", "c", { type: "bool" }), " ")).toBeNull()
+    expect(cellProblem(column("c"), false)).toBeNull()
+    expect(cellProblem(column("c", { type: "bool" }), " ")).toBeNull()
   })
 })
 
@@ -308,12 +302,12 @@ describe("pricedRows", () => {
   })
 
   it("matches on every key column, as the server typed it, and nothing without keys or typed rows", () => {
-    const keyedByItem: SchemaTable = { ...equipment, columns: [column("item", "item", { key: true }), column("value", "value", { type: "float", key: true })] }
+    const keyedByItem: SchemaTable = { ...equipment, columns: [column("item", { key: true }), column("value", { type: "float", key: true })] }
     const byValue = [{ item: "Crane", value: 100, premium: 1 }, { item: "Crane", value: 200, premium: 2 }]
     expect(pricedRows(keyedByItem, [{ item: "Crane", value: "$200" }], [{ item: "Crane", value: 200 }], byValue)).toEqual([{ item: "Crane", value: 200, premium: 2 }])
     // A key the output row lacks, or holds null, matches nothing.
     expect(pricedRows(keyedByItem, [{ item: "Crane", value: "1" }], [{ item: "Crane", value: 1 }], [{ item: "Crane", premium: 3 }, { item: "Crane", value: null, premium: 4 }])).toEqual([undefined])
-    expect(pricedRows({ ...equipment, columns: [column("item", "item")] }, grid, typed, output)).toEqual([undefined, undefined, undefined, undefined])
+    expect(pricedRows({ ...equipment, columns: [column("item")] }, grid, typed, output)).toEqual([undefined, undefined, undefined, undefined])
     expect(pricedRows(equipment, grid, [], output)).toEqual([undefined, undefined, undefined, undefined])
   })
 })

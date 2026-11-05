@@ -278,9 +278,9 @@ backend API modules own validation and persistence.
   transaction. Join type choices are exactly `inner`, `left`,
   `right`, `full`, `semi`, `anti`, and `cross`. A cross join has no key controls or persisted
   keys; every other mode requires either one-or-more same-name `on` keys or equal-length,
-  non-empty `leftOn`/`rightOn` pairs, and the two key forms cannot coexist.
+  non-empty `left_on`/`right_on` pairs, and the two key forms cannot coexist.
 - Renaming an ordinary source or an API-input frame atomically migrates downstream
-  `input_scenario_map`, `inputMapping`, a Quote Response's `outputMapping[].source_port`, and
+  `input_scenario_map`, `input_mapping`, a Quote Response's `output_mapping[].source_port`, and
   exact-name Optimiser/Optimiser Apply input selectors. A duplicate post-rename input
   name rejects the entire edit and is shown inline; no graph or mapping change is partially
   applied.
@@ -313,8 +313,8 @@ backend API modules own validation and persistence.
   for cross-editor persistence/keyboard journeys rather than duplicating every
   component shape.
 - Rating, Output, and API Input expose only their current persisted shapes:
-  Rating uses `tables[].entries` plus `combinedOutputs`; Output uses
-  `outputMapping` rows with all four required fields including `enabled` and
+  Rating uses `tables[].entries` plus `combined_outputs`; Output uses
+  `output_mapping` rows with all four required fields including `enabled` and
   nothing else, the response document being JSON (no format is chosen or
   stored); API Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
@@ -565,8 +565,10 @@ suffix is never suggested as a column, a pivot suggests its index and output nam
 and an unpivot its index plus the two new columns. Membership lists add every value
 type through an explicit Add action, so a select's default (true, today's date) can
 be added like any other. A locked generated-code panel shows the code the render endpoint returns for
-the current steps, highlighted with the same Python parser and colours as code mode, and
-carries the confirmed one-way `Switch to code` action. Its lines are linked to their steps:
+the current steps, highlighted with the same Python parser and colours as code mode.
+There is no switch to code: a Free code step holds what no other step does, and a node
+shows the code box only while its code is not steps (code that does not rebuild as
+steps). Its lines are linked to their steps:
 pointing at or focusing a card tints that step's line range (every line of a step that
 spans several), pointing at a line highlights its card, and clicking a line opens that
 card (a line of the start step focuses the start selector). The code fades, with a
@@ -610,10 +612,8 @@ restored steps, and an obsolete render must not replace their code. As soon as t
 start input is known (chosen in the selector, or the node's only
 connected input) the start step is written to the config, so the node renders
 `df = <input>` and can be previewed before any step is added. A
-node without inputs cannot add steps and is told to connect an input or switch to code,
-with the switch offered there under the same rule as the code panel's (disabled, with the
-reason as its tooltip, while persisted steps cannot render). Renaming an upstream node rewrites the input references
-inside a stepped transform's steps instead of recording an `inputMapping` binding on it.
+node without inputs cannot add steps and is told to connect an input. Renaming an upstream node rewrites the input references
+inside a stepped transform's steps instead of recording an `input_mapping` binding on it.
 A node whose steps were discarded on load shows the discard reason above the code box.
 A persisted step whose shape the forms cannot edit (an unknown kind or a missing
 setting, including a kind named after an inherited JavaScript object property)
@@ -715,8 +715,7 @@ Data Input) rather than from the input chips it displays, so it never offers a j
 executor would refuse: while that list is empty the `Add step` chooser withholds join
 and concat and keeps group by, pivot and unpivot. A frame-mode step list starts its
 column suggestions from the pane's code columns (below). An empty frame-mode list renders to empty code, so
-the confirmed switch to code on an empty list writes empty code, and the node behaves
-exactly as with an empty code box until a step is added. Every Transform tab (Data Input,
+the node behaves exactly as with an empty code box until a step is added. Every Transform tab (Data Input,
 External File, Scenario Expander, Rating Step, Model Score) and Explore's own "Transform"
 pane mount this pane in `frame` mode, with the surface's eligible input names from the shared table: every connected
 input for an External File (whose free code still reaches `obj`, as the tab's code hint
@@ -755,7 +754,7 @@ scanner or claim whole-application WCAG conformance.
 
 Display identity and executable identity are one identity. `InputSource.name` is the input's
 single name — the chip text, the code argument, and the key persisted contracts use (the
-live-switch `input_scenario_map` and a Transform's or Load File's `inputMapping`, both consumed by the
+live-switch `input_scenario_map` and a Transform's or Load File's `input_mapping`, both consumed by the
 backend). It is read per edge by the shared `edgeInputName` helper from server-owned editor
 identity metadata, so the panel can never advertise a name the code does not
 recognise.

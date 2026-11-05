@@ -2,7 +2,7 @@
   "node_type": "scenarioExpander",
   "authorable": true,
   "fields": {
-    "stepCount": "Required whole number of at least 1: how many copies of each input row to make, one per scenario step.",
+    "step_count": "Required whole number of at least 1: how many copies of each input row to make, one per scenario step.",
     "step_column": "The 0-based step index column added to each copy; default \"scenario_index\".",
     "column_name": "Optional value column added to each copy, spaced evenly from min_value (step 0) to max_value (the last step); set it with min_value and max_value.",
     "min_value / max_value": "The first and last scenario values, such as 0.9 and 1.1 for a price factor from -10% to +10%.",
@@ -23,7 +23,7 @@
       "name": "minimal",
       "intent": "Copy each quote five times with a step index.",
       "config": {
-        "stepCount": 5,
+        "step_count": 5,
         "steps": []
       },
       "produces": ["quote_id", "scenario_index"]
@@ -32,7 +32,7 @@
       "name": "realistic",
       "intent": "Test price factors from 0.9 to 1.1 in 21 steps and price each scenario.",
       "config": {
-        "stepCount": 21,
+        "step_count": 21,
         "step_column": "scenario_index",
         "column_name": "scenario_value",
         "min_value": 0.9,

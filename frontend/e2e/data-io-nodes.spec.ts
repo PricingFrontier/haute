@@ -71,7 +71,7 @@ test.describe("data input/output nodes", () => {
             label: "wide_in",
             nodeType: "dataInput",
             config: {
-              inputType: "file",
+              input_type: "file",
               format: "parquet",
               mode: "scan",
               path: "data/sample.parquet",
@@ -87,7 +87,7 @@ test.describe("data input/output nodes", () => {
             label: "wide_out",
             nodeType: "dataOutput",
             config: {
-              outputType: "file",
+              output_type: "file",
               format: "ndjson",
               mode: "sink",
               path: "outputs/wide.jsonl",

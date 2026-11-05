@@ -34,7 +34,7 @@ describe("stepped node derived code", () => {
       data: {
         nodeType,
         config: { steps: [{ id: "s", kind: "source", input: "quotes" }], code: "old", _authored: "keep" },
-        editor: { steps_error: "old error", steps_discarded: null, discarded_sidecar: null },
+        editor: { steps_error: "old error", steps_discarded: null },
       },
     } as Node
     const graph = {
@@ -46,7 +46,7 @@ describe("stepped node derived code", () => {
     expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"steps_error":"old error"')
     const config = node.data.config as Record<string, unknown>
     config.code = "df = quotes"
-    ;(node.data as Record<string, unknown>).editor = { steps_error: null, steps_discarded: null, discarded_sidecar: null }
+    ;(node.data as Record<string, unknown>).editor = { steps_error: null, steps_discarded: null }
     expect(serializeSnapshot(graph)).toBe(before)
     expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"code":"df = quotes"')
     expect(JSON.stringify(cloneGraphSnapshot(graph))).toContain('"code":"df = quotes"')

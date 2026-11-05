@@ -76,9 +76,9 @@ def _examples():
             "feature_contract_path": "models/features.json",
         }
     )
-    by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
+    by_type[NodeType.EXTERNAL_FILE].data.config.update({"file_type": "joblib"})
     quotes = by_type[NodeType.API_INPUT].data.config["tables"][0]
-    quotes.update({"displayPath": "quotes[]", "row_id_column": "quote_id"})
+    quotes.update({"display_path": "quotes[]", "row_id_column": "quote_id"})
     quote_id, premium = quotes["columns"]
     quote_id.update({"status": "Confirmed", "origin": "manual", "key": True})
     premium.update({"status": "Inferred", "origin": "inferred", "key": False})
@@ -164,11 +164,11 @@ def _examples():
             "run_name": "Best run",
         }
     )
-    by_type[NodeType.BANDING].data.config["factors"][0]["rightClosed"] = False
+    by_type[NodeType.BANDING].data.config["factors"][0]["right_closed"] = False
     by_type[NodeType.RATING_STEP].data.config["tables"][0].update(
         {
-            "factorDtypes": {"score_band": {"kind": "String"}},
-            "onMissing": "neutral",
+            "factor_dtypes": {"score_band": {"kind": "String"}},
+            "on_missing": "neutral",
         }
     )
     chart = _chart()
@@ -239,7 +239,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "connection": "warehouse",
                 "query": "SELECT _id FROM quotes",
@@ -249,7 +249,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "uri": "sqlite:///pricing.db",
                 "query": "SELECT _id FROM quotes",
@@ -259,7 +259,7 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "databricks",
+                "input_type": "databricks",
                 "http_path": "/sql/warehouses/test",
                 "table": "catalog.schema.quotes",
                 "query": "SELECT _id FROM catalog.schema.quotes",
@@ -269,20 +269,21 @@ def _examples():
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "inline",
+                "input_type": "inline",
                 "format": "records",
                 "mode": "read",
                 "records": [{"_id": 17, "nested": {"_key": "value"}}],
                 "arguments": {"infer_schema_length": 1},
-                # Post-load steps: the sidecar owns them and codegen renders
-                # them after the load scaffold (`df = df.head(2)`).
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                # Post-load steps: codegen renders them after the load scaffold
+                # (`df = df.head(2)`), the only copy of them, and the load rebuilds
+                # them with the ids it gives (READ-44).
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
             NodeType.DATA_INPUT,
             {
-                "inputType": "lakehouse",
+                "input_type": "lakehouse",
                 "format": "delta",
                 "mode": "scan",
                 "path": "data/lakehouse",
@@ -292,7 +293,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "database",
+                "output_type": "database",
                 "format": "database",
                 "mode": "write",
                 "connection": "warehouse",
@@ -303,7 +304,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "database",
+                "output_type": "database",
                 "format": "database",
                 "mode": "write",
                 "uri": "sqlite:///pricing.db",
@@ -314,7 +315,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "lakehouse",
+                "output_type": "lakehouse",
                 "format": "delta",
                 "mode": "write",
                 "path": "outputs/lakehouse",
@@ -324,7 +325,7 @@ def _examples():
         (
             NodeType.DATA_OUTPUT,
             {
-                "outputType": "databricks",
+                "output_type": "databricks",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.schema.scored",
                 "write_mode": "append",
@@ -339,17 +340,18 @@ def _examples():
                 "suffix": "_lookup",
                 "coalesce": False,
                 "validate": "m:1",
-                "maintainOrder": "left",
+                "maintain_order": "left",
             },
         ),
-        # Frame-mode step lists: the sidecar owns them and codegen renders
-        # them after each surface's scaffold (`df = df.head(2)`).
+        # Frame-mode step lists: codegen renders them after each surface's
+        # scaffold (`df = df.head(2)`), the only copy of them, and the load
+        # rebuilds them with the ids it gives (READ-44).
         (
             NodeType.EXTERNAL_FILE,
             {
                 "path": "models/external.pkl",
-                "fileType": "pickle",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "file_type": "pickle",
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -358,24 +360,24 @@ def _examples():
                 "tables": [
                     {
                         "factors": ["score_band"],
-                        "outputColumn": "rate_factor",
-                        "defaultValue": "1.0",
+                        "output_column": "rate_factor",
+                        "default_value": "1.0",
                         "entries": [{"score_band": "low", "value": "1.25"}],
                     }
                 ],
-                "combinedOutputs": [],
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "combined_outputs": [],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
             NodeType.MODEL_SCORE,
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "run-1",
                 "artifact_path": "models/score.cbm",
                 "task": "regression",
                 "output_column": "prediction",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         (
@@ -385,9 +387,9 @@ def _examples():
                 "column_name": "scenario_value",
                 "min_value": 0.0,
                 "max_value": 1.0,
-                "stepCount": 3,
+                "step_count": 3,
                 "step_column": "step_index",
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
             },
         ),
         # A Tweedie GLM reporting robust standard errors, which a penalty would void.
@@ -433,12 +435,13 @@ def _examples():
                 positive_class="claim",
             ),
         ),
-        # Explore keeps its steps in the decorator beside its cards, so the
-        # round trip has to carry both.
+        # An Explore node's steps are rebuilt from its code, each id its kind and
+        # place, and its cards live in its sidecar (READ-43), so the round trip
+        # has to carry both.
         (
             NodeType.EXPLORE,
             {
-                "steps": [{"id": "l", "kind": "limit", "n": 2}],
+                "steps": [{"id": "limit-1", "kind": "limit", "n": 2}],
                 "pivot_formulas": [_formula()],
                 "pivots": [_pivot(formulas=["formula_1"])],
             },
@@ -455,8 +458,9 @@ def _examples():
             {**config, "contract": "opaque", **deepcopy(_SHARED_COLUMN_CONFIG)}
         )
         yield f"{node_type.value}-variant-{index}", variant
-    # A stepped transform persists its steps in the optional polars sidecar and
-    # regenerates its body from them; the sidecar must survive save -> parse.
+    # A stepped transform's steps live only in its code (READ-22): the save renders them
+    # into the body and the load rebuilds them, each id its kind and place, so the steps
+    # carry the ids a load gives them and must survive save -> parse.
     variant = graph.model_copy(deep=True)
     polars = next(node for node in variant.nodes if node.data.nodeType == NodeType.POLARS)
     upstream_id = next(edge.source for edge in variant.edges if edge.target == polars.id)
@@ -464,8 +468,12 @@ def _examples():
     stepped = polars.with_config(
         {
             "steps": [
-                {"id": "s", "kind": "source", "input": _sanitize_func_name(upstream.data.label)},
-                {"id": "l", "kind": "limit", "n": 5},
+                {
+                    "id": "source-1",
+                    "kind": "source",
+                    "input": _sanitize_func_name(upstream.data.label),
+                },
+                {"id": "limit-2", "kind": "limit", "n": 5},
             ],
             "contract": "opaque",
             **deepcopy(_SHARED_COLUMN_CONFIG),
@@ -495,20 +503,20 @@ def _examples():
 # These fields represent graph relationships rather than independent settings.
 # Their round-trip contracts are tested with real owner/copy and boundary graphs.
 _STRUCTURAL_POLICY = {
-    NodeType.POLARS: {"inputMapping"},
-    NodeType.MODEL_SCORE: {"inputMapping"},
-    NodeType.SUBMODEL: {"definitionId", "alias", "instanceOf"},
+    NodeType.POLARS: {"input_mapping"},
+    NodeType.MODEL_SCORE: {"input_mapping"},
+    NodeType.SUBMODEL: {"definition_id", "alias", "instance_of"},
 }
 
 # Keys every shape inherits from NodeConfigBase. ``selected_columns``,
 # ``column_renames`` and an opaque ``contract`` are exercised on every type above.
-# ``inputMapping`` is a graph relationship (test_rename_stable_binding.py,
+# ``input_mapping`` is a graph relationship (test_rename_stable_binding.py,
 # test_parser_conservation.py), and a declared column contract is checked against,
 # and on a config-driven type replaced by, the contract its builder derives at
 # parse, its parent keys being node ids (test_column_contracts_adoption.py,
 # test_codegen.py).
 _UNIVERSAL_POLICY = {
-    "inputMapping",
+    "input_mapping",
     "contract.inputs",
     "contract.outputs",
     "contract.inputs_by_parent",
@@ -582,12 +590,43 @@ def test_every_declared_field_has_a_roundtrip_example_or_structural_policy():
     _assert_field_inventory(list(_examples()), _schemas())
 
 
+#: An API Input column's settings at the value inference gives them: its sidecar leaves
+#: them out and the load gives them back (READ-42). Written out here, not imported, so the
+#: oracle does not lean on the code it checks. A column given no "selected" is not
+#: selected, and the save writes it so.
+_API_INPUT_COLUMN_DEFAULTS = {
+    "status": "Inferred",
+    "selected": False,
+    "levels": None,
+    "origin": "inferred",
+    "key": False,
+}
+
+
+def _authored(node_type, key, value):
+    """*value* as the load gives it back, by the rules this oracle encodes."""
+    if node_type == NodeType.API_INPUT and key == "tables":
+        return [
+            {
+                **table,
+                "columns": [
+                    {**_API_INPUT_COLUMN_DEFAULTS, **column} for column in table["columns"]
+                ],
+            }
+            for table in value
+        ]
+    return value
+
+
 def _assert_authored_values(original, parsed):
     # This oracle deliberately does not call production normalizers: applying
     # the same lossy normalizer to both sides could conceal a persistence bug.
-    # The one equivalence it encodes is the contract rule itself: an absent
+    # It encodes two equivalences, both rules of the file format. An absent
     # contract and "opaque" mean the same, so codegen omits an opaque contract
     # and a node whose settings live in its decorator parses back without one.
+    # An API Input column given no "status", "levels", "origin" or "key" reads
+    # back with the value inference gives it, and one given no "selected" as not
+    # selected.
     for node in original.nodes:
         restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
         for key, value in node.data.config.items():
@@ -597,7 +636,8 @@ def _assert_authored_values(original, parsed):
                 )
                 continue
             assert key in restored, f"{node.data.nodeType}.{key} disappeared"
-            assert restored[key] == value, f"{node.data.nodeType}.{key} changed"
+            expected = _authored(node.data.nodeType, key, value)
+            assert restored[key] == expected, f"{node.data.nodeType}.{key} changed"
 
 
 @pytest.mark.parametrize(

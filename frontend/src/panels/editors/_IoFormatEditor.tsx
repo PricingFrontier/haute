@@ -20,7 +20,7 @@ import PathPickerField from "./shared/PathPickerField"
 type Direction = "input" | "output"
 
 const INPUT_COMMON_KEYS = new Set([
-  "inputMapping",
+  "input_mapping",
   "selected_columns",
   "column_renames",
   "contract",
@@ -30,7 +30,7 @@ const INPUT_COMMON_KEYS = new Set([
 ])
 
 const OUTPUT_COMMON_KEYS = new Set([
-  "inputMapping",
+  "input_mapping",
   "selected_columns",
   "column_renames",
   "contract",
@@ -422,7 +422,7 @@ export default function IoFormatEditor({
     direction === "input" ? INPUT_COMMON_KEYS : OUTPUT_COMMON_KEYS
   const knownKeys = new Set<string>([
     ...common,
-    direction === "input" ? "inputType" : "outputType",
+    direction === "input" ? "input_type" : "output_type",
     "format",
     "arguments",
     ...fields.map((field) => field.name),

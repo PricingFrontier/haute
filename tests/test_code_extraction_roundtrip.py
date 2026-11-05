@@ -91,7 +91,7 @@ def _write_sidecars(base_dir: Path) -> None:
     load_dir = base_dir / "config" / "load_file"
     load_dir.mkdir(parents=True, exist_ok=True)
     (load_dir / "lookup.json").write_text(
-        json.dumps({"path": "models/lookup.pkl", "fileType": "pickle"})
+        json.dumps({"path": "models/lookup.pkl", "file_type": "pickle"})
     )
 
 

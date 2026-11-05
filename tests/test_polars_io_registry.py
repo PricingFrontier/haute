@@ -51,7 +51,7 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
         ).write_parquet(partition / "part.parquet")
 
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "mode": "scan",
         "path": str(dataset),
@@ -132,7 +132,7 @@ def test_database_config_rejects_inline_uri_credentials(uri: str) -> None:
     with pytest.raises(PolarsIoConfigError, match="credentials"):
         validate_data_input_config(
             {
-                "inputType": "database",
+                "input_type": "database",
                 "format": "database",
                 "uri": uri,
                 "query": "SELECT 1",
@@ -142,7 +142,7 @@ def test_database_config_rejects_inline_uri_credentials(uri: str) -> None:
 
 def test_file_parquet_scan_is_derived_direct_and_stored_cache_mode_is_rejected() -> None:
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "parquet",
         "path": "input.parquet",
     }
@@ -157,20 +157,20 @@ def test_file_parquet_scan_is_derived_direct_and_stored_cache_mode_is_rejected()
 @pytest.mark.parametrize(
     "config",
     [
-        {"inputType": "file", "format": "csv", "mode": "scan", "path": "input.csv"},
+        {"input_type": "file", "format": "csv", "mode": "scan", "path": "input.csv"},
         {
-            "inputType": "database",
+            "input_type": "database",
             "format": "database",
             "connection": "DATABASE_URL",
             "query": "SELECT 1",
         },
-        {"inputType": "lakehouse", "format": "delta", "path": "lake/table"},
+        {"input_type": "lakehouse", "format": "delta", "path": "lake/table"},
         {
-            "inputType": "databricks",
+            "input_type": "databricks",
             "http_path": "/sql/1.0/warehouses/abc",
             "table": "main.pricing.policies",
         },
-        {"inputType": "inline", "format": "records", "records": [{"id": 1}]},
+        {"input_type": "inline", "format": "records", "records": [{"id": 1}]},
     ],
 )
 def test_non_parquet_inputs_are_derived_snapshot_backed(config: dict[str, object]) -> None:
@@ -623,7 +623,7 @@ class TestSnapshotBuildReads:
             return real_scan(*args, **kwargs)
 
         monkeypatch.setattr(pl, "scan_csv", recording_scan)
-        config = {"inputType": "file", "format": "csv", "path": str(path), "arguments": arguments}
+        config = {"input_type": "file", "format": "csv", "path": str(path), "arguments": arguments}
 
         frame, warning_code = read_polars_input_for_snapshot(config)
 
@@ -641,7 +641,7 @@ class TestSnapshotBuildReads:
 
         path = tmp_path / "rows.csv"
         path.write_text("id\n1\n", encoding="utf-8")
-        config = {"inputType": "file", "format": "csv", "path": str(path), "arguments": arguments}
+        config = {"input_type": "file", "format": "csv", "path": str(path), "arguments": arguments}
 
         with pytest.raises(BoundedMemoryUnsupportedError, match="declared 'schema'"):
             read_polars_input(config, profile=ExecutionProfile.LAZY_SINK)
@@ -687,7 +687,7 @@ class TestSnapshotBuildReads:
         path = tmp_path / "rows.csv"
         path.write_text("id\n1\n", encoding="utf-8")
         scanned = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "mode": "read",
             "path": str(path),
@@ -702,7 +702,7 @@ class TestSnapshotBuildReads:
 
         json_path = tmp_path / "rows.json"
         json_path.write_text('[{"id": 1}]', encoding="utf-8")
-        eager = {"inputType": "file", "format": "json", "mode": "read", "path": str(json_path)}
+        eager = {"input_type": "file", "format": "json", "mode": "read", "path": str(json_path)}
         assert (
             input_snapshot_build_class(
                 eager,
@@ -729,7 +729,7 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
         self, config_format: str, suffix: str, how: str
     ) -> None:
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": config_format,
             "path": f"quotes.{suffix}",
             "arguments": {"has_header": False},
@@ -741,7 +741,7 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
     @pytest.mark.parametrize("names", [[], ["id", "id"], ["id", ""], "id"])
     def test_new_columns_must_name_each_column_once(self, names: object) -> None:
         config = {
-            "inputType": "file",
+            "input_type": "file",
             "format": "csv",
             "path": "quotes.csv",
             "arguments": {"has_header": False, "new_columns": names},

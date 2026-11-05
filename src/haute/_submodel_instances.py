@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, unquote
@@ -31,10 +33,10 @@ from haute._types import (
 )
 from haute.errors import ParseError
 
-#: Whether a node type's ``outputMapping`` names its inputs by their ports (the
+#: Whether a node type's ``output_mapping`` names its inputs by their ports (the
 #: Quote Response's), so a boundary rename rewrites them.
 _NAMES_INPUTS_IN_OUTPUT_MAPPING = node_type_table(
-    "inputs named in outputMapping",
+    "inputs named in output_mapping",
     {
         NodeType.API_INPUT: False,
         NodeType.WORKBENCH_INPUT: False,
@@ -368,12 +370,28 @@ def _reject_output_mapping_collisions(
             destination in by_destination and by_destination[destination] != source_column
         ):
             raise ParseError(
-                "Submodel boundary outputMapping rename collides.",
+                "Submodel boundary output_mapping rename collides.",
                 node_id=node_id,
                 output_path=output_path,
             )
         seen.add(identity)
         by_destination[destination] = source_column
+
+
+def _free_code_reads(steps: list[Any], renames: Mapping[str, str]) -> bool:
+    """Whether a free-code step among *steps* names an input *renames* renames: its code
+    reads the input by the name the boundary changes, which only ``input_mapping`` keeps."""
+    renamed = {old for old, new in renames.items() if old != new}
+    for step in steps:
+        if not isinstance(step, Mapping) or step.get("kind") != "free_code":
+            continue
+        try:
+            tree = ast.parse(str(step.get("code") or ""))
+        except SyntaxError:
+            continue
+        if any(isinstance(node, ast.Name) and node.id in renamed for node in ast.walk(tree)):
+            return True
+    return False
 
 
 def rewrite_boundary_input_names(
@@ -384,7 +402,7 @@ def rewrite_boundary_input_names(
 
     Selector fields and live-switch map keys follow the new physical edge name.
     Free Transform and Load File code retains its public logical name through
-    ``inputMapping``, their steps have the references rewritten, and instance
+    ``input_mapping``, their steps have the references rewritten, and instance
     mappings only update existing physical values.
     """
     rewritten: list[GraphNode] = []
@@ -396,25 +414,25 @@ def rewrite_boundary_input_names(
         fields = node_spec(node.data.nodeType).input_selectors
         config = dict(node.data.config)
         changed = False
-        if _NAMES_INPUTS_IN_OUTPUT_MAPPING[node.data.nodeType] and "outputMapping" in config:
-            raw_output_mapping = config["outputMapping"]
+        if _NAMES_INPUTS_IN_OUTPUT_MAPPING[node.data.nodeType] and "output_mapping" in config:
+            raw_output_mapping = config["output_mapping"]
             if not isinstance(raw_output_mapping, list):
                 raise ParseError(
-                    "Submodel boundary OUTPUT outputMapping must be a list.",
+                    "Submodel boundary OUTPUT output_mapping must be a list.",
                     node_id=node.id,
                 )
             output_mapping: list[dict[str, Any]] = []
             for entry_index, entry in enumerate(raw_output_mapping):
                 if not isinstance(entry, dict):
                     raise ParseError(
-                        "Submodel boundary OUTPUT outputMapping entries must be objects.",
+                        "Submodel boundary OUTPUT output_mapping entries must be objects.",
                         node_id=node.id,
                         entry_index=entry_index,
                     )
                 source_port = entry.get("source_port")
                 if not isinstance(source_port, str) or not source_port:
                     raise ParseError(
-                        "Submodel boundary OUTPUT outputMapping source_port must be a "
+                        "Submodel boundary OUTPUT output_mapping source_port must be a "
                         "non-empty string.",
                         node_id=node.id,
                         entry_index=entry_index,
@@ -428,7 +446,7 @@ def rewrite_boundary_input_names(
                 output_mapping.append(rewritten_entry)
             if output_mapping != raw_output_mapping:
                 _reject_output_mapping_collisions(node.id, output_mapping)
-                config["outputMapping"] = output_mapping
+                config["output_mapping"] = output_mapping
                 changed = True
 
         for field in fields:
@@ -465,7 +483,7 @@ def rewrite_boundary_input_names(
                 config["input_scenario_map"] = scenario_map
                 changed = True
 
-        raw_mapping = config.get("inputMapping")
+        raw_mapping = config.get("input_mapping")
         if raw_mapping is not None:
             if not isinstance(raw_mapping, dict) or any(
                 not isinstance(logical, str)
@@ -475,7 +493,7 @@ def rewrite_boundary_input_names(
                 for logical, current in raw_mapping.items()
             ):
                 raise ParseError(
-                    "Submodel boundary inputMapping must map non-empty string names.",
+                    "Submodel boundary input_mapping must map non-empty string names.",
                     node_id=node.id,
                 )
             input_mapping: dict[str, str] = {}
@@ -493,10 +511,26 @@ def rewrite_boundary_input_names(
         steps = config.get("steps")
         # Transform and Load File code address their inputs by edge name.
         names_inputs = stepped_surface_allows_input_references(node.data.nodeType)
+        if (
+            names_inputs
+            and isinstance(steps, list)
+            and config.get("code")
+            and node.data.editor.steps_error is None
+            and _free_code_reads(steps, renames)
+        ):
+            # A free-code step names a renamed input inside its code, which the boundary
+            # cannot rewrite. The expanded node runs its code as code without steps runs:
+            # it keeps reading the names it was written with, through input_mapping. The
+            # load rebuilds steps from any body (READ-44), so such a node has steps. Steps
+            # that do not render yet have no code to run: they stay, and the node fails as
+            # unfinished.
+            del config["steps"]
+            changed = True
+            steps = None
         if names_inputs and isinstance(steps, list):
             # Steps hold the edge names themselves, so the boundary rename
             # rewrites the references inside the steps rather than recording
-            # an ``inputMapping`` indirection.
+            # an ``input_mapping`` indirection.
             try:
                 renamed_steps = rename_step_inputs(steps, renames)
             except PolarsStepError as exc:
@@ -516,7 +550,7 @@ def rewrite_boundary_input_names(
                 if logical in input_mapping:
                     raise ParseError(
                         "Submodel boundary cannot preserve a Polars logical input name "
-                        "already used by inputMapping.",
+                        "already used by input_mapping.",
                         node_id=node.id,
                         logical_input_name=logical,
                         mapped_input_name=input_mapping[logical],
@@ -531,12 +565,12 @@ def rewrite_boundary_input_names(
         )
         if duplicate_currents:
             raise ParseError(
-                "Submodel boundary inputMapping produces duplicate physical inputs.",
+                "Submodel boundary input_mapping produces duplicate physical inputs.",
                 node_id=node.id,
                 duplicate_input_names=duplicate_currents,
             )
         if input_mapping != (raw_mapping or {}):
-            config["inputMapping"] = input_mapping
+            config["input_mapping"] = input_mapping
             changed = True
         if not changed:
             rewritten.append(node)

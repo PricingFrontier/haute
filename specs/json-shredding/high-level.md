@@ -193,7 +193,12 @@ pattern its source writes dates in (`%d/%m/%Y` for a day-first feed); without on
 it reads ISO-8601 dates (`%Y-%m-%d`). A format on any other type, or one that is not
 a strftime pattern, is rejected. When present, `emit` and `selected` are
 actual booleans (integer/string lookalikes are rejected), and column `status`
-is exactly `Confirmed` or `Inferred`. These declared scalar types are checked
+is exactly `Confirmed` or `Inferred`. The node's sidecar writes each column on one line,
+its keys in the order name, path, type, "status", "selected", "levels", "format", "origin",
+"key", and leaves out a setting at the value inference gives it: "status" `Inferred`,
+"selected" true, "levels" null, "origin" `inferred` and "key" false (READ-42). Loading the
+sidecar gives each back before anything reads the config, since the shred takes a column
+without "selected" as not selected; a sidecar that still writes them loads the same. These declared scalar types are checked
 at this boundary before the shred can coerce them by truthiness. Table paths
 end at an array boundary; columns may live at that boundary
 or at an ancestor boundary so an ancestor value can be distributed into child
@@ -287,7 +292,7 @@ specification defines it.
 strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
 `cross` rejects every key field. Every other strategy requires either a
 non-empty `on` key (one name or a list shared by both frames) or both
-non-empty `leftOn` and `rightOn` keys with equal lengths; `on` cannot coexist
+non-empty `left_on` and `right_on` keys with equal lengths; `on` cannot coexist
 with the paired form. A `coalesce` option, when set, is `true` or `false`. The base and join frames are explicit roles, not inferred
 from edge order. Every persisted
 incoming edge carries its role as `targetHandle="base"` or `targetHandle="join"`;

@@ -134,6 +134,28 @@ describe("useNodeDataCache", () => {
     expect(result.current.canBuild).toBe(true)
   })
 
+  it("holds a refused point as the node's state, not a toast", async () => {
+    const message = "Node 'Explore' must have exactly one incoming connection to read its data (found 0)."
+    mockGetPoint.mockRejectedValue(Object.assign(new Error(message), { status: 400, detail: message }))
+    const { result } = renderCache("explore")
+
+    await waitFor(() => expect(result.current.unreadable).toBe(message))
+    expect(result.current.point).toBeNull()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("raises a failed point lookup as a toast", async () => {
+    mockGetPoint.mockRejectedValue(Object.assign(new Error("server down"), { status: 500, detail: "server down" }))
+    const { result } = renderCache("explore")
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual([
+        "Data cache inspection failed: server down",
+      ]),
+    )
+    expect(result.current.unreadable).toBeNull()
+  })
+
   it("gives two consumers of one point their own availability from one slot entry", async () => {
     const narrow = {
       generation_id: "gen-1",

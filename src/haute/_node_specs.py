@@ -38,6 +38,7 @@ __all__ = [
     "REQUEST_INPUT_NODE_TYPES",
     "RESPONSE_NODE_TYPES",
     "SINGLETON_NODE_GROUPS",
+    "SINGLETON_NODE_NAMES",
     "SINK_ONLY_NODE_TYPES",
     "SOURCE_NODE_TYPES",
     "STANDALONE_PASSTHROUGH_TYPES",
@@ -52,6 +53,7 @@ __all__ = [
     "known_node_spec",
     "node_spec",
     "node_type_table",
+    "singleton_name_problem",
 ]
 
 #: Where ``df`` comes from when a step list starts: ``input`` means the first
@@ -72,9 +74,9 @@ InputCardinality = Literal[
     "none", "exactly_one", "exactly_two", "zero_or_more", "one_or_more", "structural"
 ]
 
-#: Where a node type's settings live: a required ``config/<folder>/`` sidecar,
-#: an optional one (the Transform's steps), its decorator keywords, or nowhere.
-SidecarPolicy = Literal["required", "optional", "decorator", "none"]
+#: Where a node type's settings live: a ``config/<folder>/`` sidecar, its
+#: decorator keywords, or nowhere.
+SidecarPolicy = Literal["required", "decorator", "none"]
 
 #: Where the user's code lives: the Transform's function is its code; a frame
 #: hook post-processes ``df``; Load File's object hook receives ``obj``.
@@ -121,7 +123,7 @@ class NodeSpec:
     #: The ``pipeline.<decorator>`` name; ``None`` for the Submodel and its Port.
     decorator: str | None
     sidecar: SidecarPolicy
-    #: The ``config/<folder>/`` of a required or optional sidecar.
+    #: The ``config/<folder>/`` of its sidecar.
     config_folder: str | None
     inputs: InputCardinality
     recompute_cost: RecomputeCost
@@ -152,6 +154,9 @@ class NodeSpec:
     #: Runs with no inputs connected (the Workbench Output fills its tables).
     runs_unconnected: bool = False
     singleton_group: SingletonGroup | None = None
+    #: The one name a node of a singleton group has, since a pipeline holds one
+    #: (READ-46). The editor's ``SINGLETON_NODE_NAMES`` is the twin.
+    singleton_name: str | None = None
     code: CodeSurface = "none"
     stepped: SteppedSurface | None = None
     #: A stateful transform: its standalone run routes through the executor's
@@ -164,7 +169,7 @@ class NodeSpec:
     #: A standalone run returns one of its inputs.
     standalone_passthrough: bool = False
     #: A structural type's part of a submodel. An ``occurrence`` (the Submodel) is
-    #: named by its alias, may be an ``instanceOf`` another occurrence, outputs on
+    #: named by its alias, may be an ``instance_of`` another occurrence, outputs on
     #: ``out__<port>`` handles and is expanded into its definition's nodes; a ``port``
     #: (the Port) is a definition's public input, named by its handle.
     structural_role: StructuralRole | None = None
@@ -189,6 +194,7 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             request_input=True,
             source=True,
             singleton_group="request_input",
+            singleton_name="quote_input",
         ),
         NodeType.WORKBENCH_INPUT: NodeSpec(
             NodeType.WORKBENCH_INPUT,
@@ -202,6 +208,7 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             source=True,
             workbench=True,
             singleton_group="request_input",
+            singleton_name="workbench_input",
         ),
         NodeType.WORKBENCH_OUTPUT: NodeSpec(
             NodeType.WORKBENCH_OUTPUT,
@@ -216,6 +223,7 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             workbench=True,
             runs_unconnected=True,
             singleton_group="response",
+            singleton_name="workbench_output",
             behavioural=True,
         ),
         NodeType.DATA_INPUT: NodeSpec(
@@ -246,8 +254,8 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             NodeType.POLARS,
             display_name="Transform",
             decorator="polars",
-            sidecar="optional",
-            config_folder="polars",
+            sidecar="decorator",
+            config_folder=None,
             inputs="one_or_more",
             recompute_cost="code",
             code="transform",
@@ -309,20 +317,21 @@ NODE_SPECS: Mapping[NodeType, NodeSpec] = MappingProxyType(
             response=True,
             sink_only=True,
             singleton_group="response",
+            singleton_name="quote_response",
             behavioural=True,
         ),
         NodeType.EXPLORE: NodeSpec(
             NodeType.EXPLORE,
             display_name="Explore",
             decorator="explore",
-            sidecar="decorator",
-            config_folder=None,
+            sidecar="required",
+            config_folder="explore",
             inputs="exactly_one",
             recompute_cost="cheap",
             sink_only=True,
             input_count_enforced=True,
             code="frame_hook",
-            # The single input is bound as df by codegen; steps live in the decorator.
+            # The single input is bound as df by codegen; its code holds its steps.
             stepped=_FRAME_STEPS,
             standalone_passthrough=True,
         ),
@@ -480,8 +489,10 @@ def _validate_node_specs(specs: Mapping[NodeType, NodeSpec]) -> None:
             problem("a response is sink-only")
         if (spec.decorator is None) != spec.structural:
             problem("exactly the structural types have no decorator")
-        if (spec.sidecar in ("required", "optional")) != (spec.config_folder is not None):
-            problem("a required or optional sidecar, and only one, has a config folder")
+        if (spec.sidecar == "required") != (spec.config_folder is not None):
+            problem("a sidecar, and only one, has a config folder")
+        if (spec.singleton_group is None) != (spec.singleton_name is None):
+            problem("exactly a singleton group's type has a singleton name")
         if (spec.inputs == "exactly_two") != (
             len(spec.input_roles) == 2 and len(set(spec.input_roles)) == 2
         ):
@@ -627,6 +638,31 @@ def _singleton_groups() -> tuple[tuple[frozenset[NodeType], str], ...]:
 #: The groups a pipeline holds at most one node of, each with the label its
 #: refusal names ("Quote Input or Workbench Input").
 SINGLETON_NODE_GROUPS: tuple[tuple[frozenset[NodeType], str], ...] = _singleton_groups()
+
+#: The one name each request input and response node has (READ-46): a pipeline holds one
+#: of each, so its type names it, never numbered. The editor's ``SINGLETON_NODE_NAMES``
+#: (``frontend/src/utils/nodeTypes.ts``) is the twin.
+SINGLETON_NODE_NAMES: Mapping[NodeType, str] = MappingProxyType(
+    {
+        key: spec.singleton_name
+        for key, spec in NODE_SPECS.items()
+        if spec.singleton_name is not None
+    }
+)
+
+
+def singleton_name_problem(node_type: NodeType | str, name: str) -> str | None:
+    """Why a node of *node_type* cannot be called *name*, or ``None`` when it can: a request
+    input or response node has its type's one name (READ-46)."""
+    spec = known_node_spec(node_type)
+    if spec is None or spec.singleton_name is None or name == spec.singleton_name:
+        return None
+    fixed = spec.singleton_name
+    return (
+        f"A {spec.display_name} is always named {fixed!r}, since a pipeline holds one; "
+        f"rename {name!r} to {fixed!r}, and each connect() that names it."
+    )
+
 
 #: The type of a node declared without one: a transform.
 DEFAULT_NODE_TYPE: NodeType = NodeType.POLARS

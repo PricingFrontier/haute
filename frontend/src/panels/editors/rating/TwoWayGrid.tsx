@@ -49,7 +49,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
   const colFactor = usedFactors[1]
   const entries = useMemo(() => table.entries || [], [table.entries])
   const stats = useMemo(() => tableStats(entries), [entries])
-  const safeDefault = resolveDefault(table.defaultValue)
+  const safeDefault = resolveDefault(table.default_value)
   const { regionRef, regionProps, cellProps, isCellSelected } = useGridCellSelection()
 
   if (!rowFactor || !colFactor) return null

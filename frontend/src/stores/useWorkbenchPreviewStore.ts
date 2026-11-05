@@ -17,7 +17,7 @@ import useWorkbenchPricingStore, { PRICING_DELAY_MS, type SamplePrice } from "./
 import { latest } from "../utils/latest"
 
 interface WorkbenchPreviewState {
-  /** The quote, by table id, rows keyed by column id, as typed. */
+  /** The quote, by table name, rows keyed by column name, as typed. */
   quote: Record<string, SampleRow[]>
   /** What the last pricing of the quote gave, for the basis it was priced for. */
   price: SamplePrice | null

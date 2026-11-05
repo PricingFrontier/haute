@@ -202,8 +202,8 @@ def test_a_workbench_outputs_cell_reads_its_own_tables_seeds(project: Path, api:
     workbench_project(
         project,
         [
-            form_table("t_a", "a_table", "output", ("id", "int"), ("a", "int"), many=True),
-            form_table("t_d", "d_table", "output", ("id", "int"), ("d", "float"), many=True),
+            form_table("a_table", "output", ("id", "int"), ("a", "int"), many=True),
+            form_table("d_table", "output", ("id", "int"), ("d", "float"), many=True),
         ],
         pipeline="rating/main.py",
     )
@@ -915,7 +915,7 @@ def test_a_seed_whose_inputs_moved_is_not_traced_above(
     claims = pl.DataFrame({"id": list(range(_ROWS)), "d": [value / 10 for value in range(_ROWS)]})
     claims.write_csv(project / "claims.csv")
     csv_input = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "mode": "scan",
         "path": str(project / "claims.csv"),

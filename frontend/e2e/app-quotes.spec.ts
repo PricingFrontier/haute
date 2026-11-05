@@ -19,19 +19,17 @@ import { buildWorkbenchPipeline, enableWorkbench, FORM_FILES, readFormFile, writ
 /** The form's sheet: one Collection showing the policy's limit and region, and the premium priced. */
 const SHEET_FILES: Record<string, unknown> = {
   "sheets/sheet_1.json": {
-    id: "page_1",
     title: "Sheet 1",
     sections: [
       {
-        id: "section_1",
         title: "Section 1",
-        components: [{ id: "collection_1", type: "collection", fields: ["policy.limit", "policy.region", "pricing.premium"] }],
+        components: [{ number: 1, type: "collection", fields: ["policy.limit", "policy.region", "pricing.premium"] }],
       },
     ],
   },
   "sheets/sheet_1.layout.json": {
     width: 1280,
-    sections: { section_1: { height: 560, components: { collection_1: { x: 184, y: 112, w: 720, h: 120 } } } },
+    sections: { "Section 1": { height: 560, components: { "1": { x: 184, y: 112, w: 720, h: 120 } } } },
   },
 }
 
@@ -114,7 +112,7 @@ test.describe("the underwriter app's quotes", () => {
     })
 
     const limit = page.getByRole("textbox", { name: "Limit" })
-    const premium = page.getByTestId("priced-t_pricing:c_premium")
+    const premium = page.getByTestId("priced-pricing:premium")
     const unsaved = page.getByTestId("quote-unsaved")
     const question = page.getByTestId("question")
 
@@ -186,7 +184,7 @@ test.describe("the underwriter app's quotes", () => {
 
     const restarted = await test.step("a column added to the form closes dev's quotes as the app starts again, its table left as it was", async () => {
       const policy = readFormFile("schema/policy.json")
-      writeFormFiles({ "schema/policy.json": { ...policy, columns: [...policy.columns, { id: "c_excess", name: "excess", type: "int" }] } })
+      writeFormFiles({ "schema/policy.json": { ...policy, columns: [...policy.columns, { name: "excess", type: "int" }] } })
       await app.stop()
       const again = await serve(staticDir)
 
@@ -202,7 +200,7 @@ test.describe("the underwriter app's quotes", () => {
       await page.getByTestId("view-switcher-workbench").click()
       await page.getByRole("button", { name: "Schema" }).click()
       await page.getByRole("combobox", { name: "Compare with" }).selectOption("dev")
-      await expect(page.getByTestId("database-mark-t_policy-c_excess")).toHaveText("missing")
+      await expect(page.getByTestId("database-mark-policy-excess")).toHaveText("missing")
 
       await page.getByRole("button", { name: "SQL" }).click()
       const window = page.getByTestId("store-sql-window")

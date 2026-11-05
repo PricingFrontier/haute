@@ -151,7 +151,7 @@ def _scan_with_reader(target: Path, reader: Mapping[str, Any]) -> pl.LazyFrame:
 
     arguments = {k: v for k, v in reader["arguments"].items() if k != "schema"}
     config = {
-        "inputType": "file",
+        "input_type": "file",
         "format": reader["format"],
         "path": str(target),
         "arguments": arguments,

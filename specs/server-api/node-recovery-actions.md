@@ -63,14 +63,18 @@ carries as its remediation (for the file path, `from modules import rates`, then
   document's completeness list; reset is never blocked by completeness, only by unknown
   types, ambiguous spans, or shared artifacts.
 - **Recover settings** supports known ordinary node types with an unambiguous function
-  span and resolvable incoming connections. It rebuilds the target's configuration with
-  the pure recovery engine: authored fields that are valid under the current contract
+  span and resolvable incoming connections. It reads the node's sidecar as a load reads
+  its file format (`haute._config_io.config_from_sidecar`: rating grids, band lists and
+  constant maps decoded, defaults left unwritten given again), a file in a form before
+  one of those answered as unreadable, naming the current form, and rebuilds the target's
+  configuration with the pure recovery engine: authored fields that are valid under the
+  current contract
   are retained exactly; an invalid present value is replaced with the matching branch's
   audited default only where that default is structurally valid; a top-level field the
   saved configuration lacks (one added or renamed since it was written) takes its palette
   default, reported as `defaulted`, so the node comes back as a new node would with the
   unchanged fields kept. The palette is used only when it belongs to the configuration's
-  branch: the discriminant (`inputType`, `outputType`, `sourceType`, `algorithm`, `mode`)
+  branch: the discriminant (`input_type`, `output_type`, `source_type`, `algorithm`, `mode`)
   is present and equals the palette's, and for Data Input/Output so do a present `format`
   and `mode`; recovery never fills a default from a different provider/format/mode
   branch. A stepped node's absent `steps` stays absent, because its absence means the
@@ -97,7 +101,7 @@ carries as its remediation (for the file path, `from modules import rates`, then
   `removed`, its lines visible in the source diff; the author re-adds any custom code
   in the node's editor. Such a body is never moved into a hook, where its old calls would
   name inputs the hook does not bind. It is never compared with a stepped node's
-  `steps` either: a step list the parser can use (a list, and no `inputMapping` beside an
+  `steps` either: a step list the parser can use (a list, and no `input_mapping` beside an
   edges surface) is kept as settings and regenerates the hook that performs it. The
   `contract=` annotation is generated
   scaffolding: recover derives it from the recovered settings exactly as the parse-time check does (never loading an
@@ -118,8 +122,8 @@ carries as its remediation (for the file path, `from modules import rates`, then
   configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
   action with a manual-repair error and changes no bytes — there is no draft archive,
   and Reset is the explicit destructive replacement. Settings with no provider the node
-  can keep (a Data Input or Data Output whose config file is missing, or whose `inputType`
-  or `outputType` is unknown) are refused with `repair_action_unsupported`, naming Reset.
+  can keep (a Data Input or Data Output whose config file is missing, or whose `input_type`
+  or `output_type` is unknown) are refused with `repair_action_unsupported`, naming Reset.
   An `async def` node function, which the parser refuses, is a node function to Recover
   and Reset alike, and both regenerate it as a plain `def`. Unknown types, nodes refused for a
   removed node-level instance form, submodels, and ambiguous or shared artifacts cannot be

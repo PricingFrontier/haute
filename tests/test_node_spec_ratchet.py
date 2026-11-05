@@ -166,7 +166,15 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
         "SUBMODEL",
         "the node-instance route: builds the owner and instance occurrences",
     ),
+    ("pipeline.py", "Pipeline._with_submodels_expanded"): (
+        "SUBMODEL",
+        "names each registered submodel occurrence's output edges as the parser names them",
+    ),
     # Routes and guards for one type.
+    ("pipeline.py", "_refuse_explore_decorator_settings"): (
+        "EXPLORE",
+        "an Explore node's settings are its sidecar's alone (READ-43)",
+    ),
     ("executor.py", "_data_output_config"): ("DATA_OUTPUT", "the Data Output write's config"),
     ("routes/pipeline.py", "_prepare_data_output_request"): (
         "DATA_OUTPUT",

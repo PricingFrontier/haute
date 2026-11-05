@@ -23,7 +23,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -57,11 +57,12 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME
+from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME, SubmodelDefinition
 from haute.errors import (
     ConfigError,
     ConflictError,
     ForbiddenError,
+    HauteError,
     InvalidRequestError,
     ParseError,
     PathOutsideProjectError,
@@ -174,6 +175,17 @@ class _ManagedChildSidecar(NamedTuple):
 
     source_path: Path
     graph: PipelineGraph
+    #: By node, the public input ports that reach it: inputs its function names.
+    port_inputs: dict[str, list[str]]
+
+
+def _port_inputs(definition: SubmodelDefinition) -> dict[str, list[str]]:
+    """By node, the public input ports of *definition* that reach it."""
+    reached: dict[str, list[str]] = {}
+    for port in definition.input_ports:
+        for target in port.targets:
+            reached.setdefault(target.node_id, []).append(port.name)
+    return reached
 
 
 class _DefinitionFile(NamedTuple):
@@ -841,7 +853,7 @@ class SavePipelineService:
                     "Submodel module path ownership changed for "
                     f"{submitted_definition.recorded_path!r} "
                     f"(persisted {previous_definition.recorded_path!r}): "
-                    f"definitionId {previous_definition.definition_id!r} cannot be "
+                    f"definition_id {previous_definition.definition_id!r} cannot be "
                     f"replaced by {submitted_definition.definition_id!r}. "
                     "Reload the pipeline before saving."
                 )
@@ -1469,6 +1481,7 @@ class SavePipelineService:
                 _ManagedChildSidecar(
                     source_path=child_path,
                     graph=definition.graph,
+                    port_inputs=_port_inputs(definition),
                 )
             )
 
@@ -1528,12 +1541,22 @@ class SavePipelineService:
         internal list (used by unit tests that drive ``_write_code``
         directly without the broader save pipeline).
         """
+        from haute._io import read_user_source
         from haute.codegen import graph_to_code, graph_to_code_multi
 
         if touched is None:
             touched = []
 
         self._validate_source_file_matches_pipeline_root(py_path.resolve())
+
+        def read_existing(rel_path: str) -> str | None:
+            # The file a generated path overwrites, so its functions keep their order
+            # (READ-12); a path refused here is refused again when it is written.
+            try:
+                out_path = self._validate_output_rel_path(rel_path, body.source_file)
+            except (HauteError, ValueError):
+                return None
+            return read_user_source(out_path)[1] if out_path.is_file() else None
 
         if graph.submodels:
             files = graph_to_code_multi(
@@ -1543,6 +1566,7 @@ class SavePipelineService:
                 preamble=body.preamble or "",
                 source_file=body.source_file,
                 preserved_blocks=body.preserved_blocks or None,
+                read_existing=read_existing,
             )
         else:
             files = {
@@ -1552,6 +1576,7 @@ class SavePipelineService:
                     description=body.description,
                     preamble=body.preamble or "",
                     preserved_blocks=body.preserved_blocks or None,
+                    existing_source=read_existing(body.source_file),
                 )
             }
         self._write_generated_code_files(files, body.source_file, touched)
@@ -1563,6 +1588,9 @@ class SavePipelineService:
         touched: list[_TouchedFile],
     ) -> None:
         """Write generated ``.py`` files through the shared output allowlist."""
+        from haute._io import read_user_source
+        from haute.codegen import keep_module_docstring
+
         # Resolve and collision-check every path BEFORE any write, comparing
         # casefolded for the same reason as the config-sidecar guards:
         # distinct rel-paths like ``modules/Pricing.py`` / ``modules/pricing.py``
@@ -1583,6 +1611,10 @@ class SavePipelineService:
                     "default to. Rename one of the modules before saving."
                 )
             seen[folded] = rel_path
+            if out_path.is_file():
+                # A docstring the analyst wrote is kept; codegen's is written only
+                # for a file that has none (READ-02).
+                code = keep_module_docstring(code, read_user_source(out_path)[1])
             resolved.append((out_path, code))
         for out_path, code in resolved:
             self._stage_write(out_path, code, touched)
@@ -1725,18 +1757,6 @@ class SavePipelineService:
                     "Replace the link with a folder inside the project, then save again."
                 )
             self._stage_write(out_path, json_content, touched)
-
-    @staticmethod
-    def _discarded_sidecars_recursive(graph: PipelineGraph) -> list[str]:
-        """Relative sidecar paths the parser found discarded (``editor.discarded_sidecar``)."""
-        found: list[str] = []
-        scoped = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
-        for scoped_graph in scoped:
-            for node in scoped_graph.nodes:
-                rel = node.data.editor.discarded_sidecar
-                if rel:
-                    found.append(rel.replace("\\", "/"))
-        return found
 
     @staticmethod
     def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
@@ -1941,14 +1961,6 @@ class SavePipelineService:
             return {}
         try:
             prev = self._collect_node_configs_recursive(disk_graph)
-            # A polars sidecar whose steps were discarded on parse (the body
-            # was hand-edited) is no longer collected from the graph, but this
-            # pipeline still owns the file: keep it in the baseline so the
-            # stale sweep retires it.
-            for rel in self._discarded_sidecars_recursive(disk_graph):
-                path = (self._pipeline_root / rel).resolve()
-                if rel not in prev and is_contained(self._pipeline_root, path) and path.is_file():
-                    prev[rel] = path.read_text(encoding="utf-8")
             # A declared constants file that loads is this pipeline's to retire
             # when its last constant goes; one that fails to load is left alone.
             constants_path = self._pipeline_root / GLOBAL_CONSTANTS_FILE
@@ -1984,6 +1996,7 @@ class SavePipelineService:
         touched: list[_TouchedFile] | None = None,
         *,
         managed_parent: str | None = None,
+        port_inputs: Mapping[str, Sequence[str]] | None = None,
         identity_check: Callable[[Path], None] | None = None,
     ) -> list[str]:
         """Persist node positions and source state to ``.haute.json``.
@@ -2005,7 +2018,9 @@ class SavePipelineService:
             if sidecar_path.exists():
                 previous_bytes = sidecar_path.read_bytes()
             touched.append(_TouchedFile(target=sidecar_path, previous_bytes=previous_bytes))
-        warnings = save_sidecar(py_path, graph, managed_parent=managed_parent)
+        warnings = save_sidecar(
+            py_path, graph, managed_parent=managed_parent, port_inputs=port_inputs
+        )
         if touched is not None:
             # Record the committed identity so rollback restores only our bytes.
             touched[-1] = touched[-1]._replace(written_digest=_artifact_digest(sidecar_path))
@@ -2030,6 +2045,7 @@ class SavePipelineService:
                     child.graph.active_source,
                     touched,
                     managed_parent=parent_relative,
+                    port_inputs=child.port_inputs,
                     identity_check=self._require_artifact_identity,
                 )
             )

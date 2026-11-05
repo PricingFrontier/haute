@@ -82,14 +82,14 @@ describe("ExternalFileEditor", () => {
     const onUpdate = vi.fn()
     render(<ExternalFileEditor {...DEFAULT_PROPS} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("JSON"))
-    expect(onUpdate).toHaveBeenCalledWith("fileType", "json")
+    expect(onUpdate).toHaveBeenCalledWith("file_type", "json")
   })
 
   it("calls onUpdate when clicking JOBLIB button", () => {
     const onUpdate = vi.fn()
     render(<ExternalFileEditor {...DEFAULT_PROPS} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("JOBLIB"))
-    expect(onUpdate).toHaveBeenCalledWith("fileType", "joblib")
+    expect(onUpdate).toHaveBeenCalledWith("file_type", "joblib")
   })
 
   it("renders File Path section with FileBrowser", () => {
@@ -112,14 +112,14 @@ describe("ExternalFileEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("path", "model.pkl")
   })
 
-  it("reflects external fileType config changes (B22 fix)", () => {
-    const { rerender } = render(<ExternalFileEditor {...DEFAULT_PROPS} config={{ fileType: "pickle" }} />)
+  it("reflects external file_type config changes (B22 fix)", () => {
+    const { rerender } = render(<ExternalFileEditor {...DEFAULT_PROPS} config={{ file_type: "pickle" }} />)
     const pickleBtn = screen.getByText("PICKLE").closest("button")!
     // Pickle is active
     expect(pickleBtn.style.background).toContain("147")
 
     // Simulate external config change to json
-    rerender(<ExternalFileEditor {...DEFAULT_PROPS} config={{ fileType: "json" }} />)
+    rerender(<ExternalFileEditor {...DEFAULT_PROPS} config={{ file_type: "json" }} />)
     const jsonBtn = screen.getByText("JSON").closest("button")!
     expect(jsonBtn.style.background).toContain("147")
   })

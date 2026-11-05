@@ -147,7 +147,7 @@ Submodel graph expansion and boundary rewiring are owned by
 - `JoinKey = str | list[str]`.
 - `EDGE_JOIN_DECORATOR_TO_CONFIG` / `EDGE_JOIN_CONFIG_TO_DECORATOR` — snake_case
   Python-decorator-kwarg ↔ camelCase graph-config-key maps for join options such as
-  `left_on` ↔ `leftOn`; role arguments are deliberately absent.
+  `left_on` ↔ `left_on`; role arguments are deliberately absent.
 - `_ALLOWED_HOW = {"inner", "left", "right", "full", "semi", "anti", "cross"}`.
 - `resolve_edge_join_role_indices(target_handles)` validates exactly one `base` and one `join`
   incoming target handle and returns their positions. It does not inspect source node ids.
@@ -674,7 +674,7 @@ planning, so an admitted execution sizes the generation it will read.
    path, with a final numeric-suffix dedup pass) and typed via the widened
    `levels` map. Only the root level defaults `emit=True`.
 6. Label assignment — inferred `label`s are B4-valid identifiers, never raw
-   table paths (`path`/`displayPath` still carry the path). The root level is
+   table paths (`path`/`display_path` still carry the path). The root level is
    labelled `quote_info`; every other level is labelled by its innermost array key
    through `derive_identifier_label(raw)` (`src/haute/_api_input_schema.py`): the
    `_sanitize_func_name` character pipeline (strip; spaces/hyphens → `_`;
@@ -747,9 +747,9 @@ Polars' order-compatible automatic engine. An active execution context records t
 boundary and polls the native query for cancellation and RSS enforcement; no
 production edge-join path calls bare Polars `.collect()`.
 `build_edge_join_kwargs` accepts exactly `inner`, `left`, `right`, `full`,
-`semi`, `anti`, and `cross`. `cross` rejects `on`, `leftOn`, and `rightOn`;
+`semi`, `anti`, and `cross`. `cross` rejects `on`, `left_on`, and `right_on`;
 every other mode requires either a non-empty `on` value or non-empty,
-equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms. A set
+equal-length `left_on`/`right_on` values, and rejects mixing the two forms. A set
 `coalesce` must be a boolean (an empty value is unset); any other value is a
 `ConfigError`, never a Polars `TypeError` at the join.
 
@@ -862,7 +862,7 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms. A set
   `edgeJoin` config: wrong connected-input count/distinctness, unresolved or
   ambiguous base/join role, unsupported `how`, missing/conflicting join keys,
   mismatched key counts, non-string suffix, non-boolean `coalesce`, malformed
-  `on`/`leftOn`/`rightOn`.
+  `on`/`left_on`/`right_on`.
 - `ValueError` — used by the small config validators in `_edge_join.py` for
   malformed non-graph-sourced inputs.
 - Grammar rejections in `_jsonpath.parse_path` / `parse_data_path` raise whatever

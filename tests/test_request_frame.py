@@ -198,7 +198,7 @@ def _graph() -> PipelineGraph:
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "calc",
                                     "source_column": f,
@@ -360,7 +360,7 @@ def test_a_dated_dry_run_reaches_the_worker_as_iso_strings(tmp_path):
                         "label": "out",
                         "nodeType": "output",
                         "config": {
-                            "outputMapping": [
+                            "output_mapping": [
                                 {
                                     "source_port": "quotes",
                                     "source_column": "start",

@@ -154,7 +154,7 @@ export function ColumnDetails({
               <span style={{ color: "var(--text-muted)" }}>Range</span>
               <div className="flex items-center gap-1.5">
                 <ValidatedTextField
-                  dataTestId={`schema-column-${column.id}-min`}
+                  dataTestId={`schema-column-${column.name}-min`}
                   value={column.min === null ? "" : String(column.min)}
                   onCommit={(text) => set({ min: bound(text) })}
                   validate={numberOrNothing}
@@ -164,7 +164,7 @@ export function ColumnDetails({
                 />
                 <span style={{ color: "var(--text-muted)" }}>to</span>
                 <ValidatedTextField
-                  dataTestId={`schema-column-${column.id}-max`}
+                  dataTestId={`schema-column-${column.name}-max`}
                   value={column.max === null ? "" : String(column.max)}
                   onCommit={(text) => set({ max: bound(text) })}
                   validate={numberOrNothing}
@@ -178,7 +178,7 @@ export function ColumnDetails({
           {column.type !== "bool" && column.type !== "date" && (
             <>
               <span style={{ color: "var(--text-muted)" }}>Allowed</span>
-              <AllowedField tableId={table.id} column={column} set={set} />
+              <AllowedField tableId={table.name} column={column} set={set} />
             </>
           )}
           {table.rows === "many" && column.type !== "bool" && column.type !== "date" && column.options.length > 0 && (
@@ -187,7 +187,7 @@ export function ColumnDetails({
               <ConfigCheckbox
                 label="A row for each"
                 checked={column.row_per_value}
-                onChange={(on) => change((f) => setRowPerValue(f, table.id, column.id, on))}
+                onChange={(on) => change((f) => setRowPerValue(f, table.name, column.name, on))}
               />
             </>
           )}

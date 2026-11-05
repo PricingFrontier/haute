@@ -83,7 +83,7 @@ describe("EdgeJoinEditor", () => {
     const onUpdate = vi.fn()
     renderEditor({ how: "left", suffix: "_right" }, onUpdate)
 
-    expect(onUpdate).toHaveBeenCalledWith({ on: ["policy_id"], leftOn: [], rightOn: [] })
+    expect(onUpdate).toHaveBeenCalledWith({ on: ["policy_id"], left_on: [], right_on: [] })
   })
 
   it("does not seed when keys are already configured", () => {
@@ -118,18 +118,18 @@ describe("EdgeJoinEditor", () => {
 
     rerender(
       <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
-        <EdgeJoinEditor config={{ how: "left", on: ["policy_id"], leftOn: [], rightOn: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
+        <EdgeJoinEditor config={{ how: "left", on: ["policy_id"], left_on: [], right_on: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
       </GraphProvider>,
     )
     fireEvent.change(screen.getByLabelText("Same-name key 1"), { target: { value: "" } })
     rerender(
       <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
-        <EdgeJoinEditor config={{ how: "left", on: [], leftOn: [], rightOn: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
+        <EdgeJoinEditor config={{ how: "left", on: [], left_on: [], right_on: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
       </GraphProvider>,
     )
 
     expect(onUpdate).toHaveBeenCalledTimes(2)
-    expect(onUpdate).toHaveBeenLastCalledWith({ on: [], leftOn: [], rightOn: [] })
+    expect(onUpdate).toHaveBeenLastCalledWith({ on: [], left_on: [], right_on: [] })
   })
 
   it("does not render a duplicate edge-join title inside the config body", () => {
@@ -249,14 +249,14 @@ describe("EdgeJoinEditor", () => {
       how: "left",
       on: ["policy_id"],
       suffix: "_lookup",
-      maintainOrder: "left_right",
+      maintain_order: "left_right",
     })
 
     fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "inner" } })
-    expect(onUpdate).toHaveBeenCalledWith({ how: "inner", maintainOrder: "left_right" })
+    expect(onUpdate).toHaveBeenCalledWith({ how: "inner", maintain_order: "left_right" })
 
     fireEvent.change(screen.getByLabelText("Same-name key 1"), { target: { value: "state" } })
-    expect(onUpdate).toHaveBeenCalledWith({ on: ["state"], leftOn: [], rightOn: [] })
+    expect(onUpdate).toHaveBeenCalledWith({ on: ["state"], left_on: [], right_on: [] })
 
     fireEvent.change(screen.getByLabelText("Suffix"), { target: { value: "_dim" } })
     expect(onUpdate).not.toHaveBeenCalledWith("suffix", "_dim")
@@ -280,30 +280,30 @@ describe("EdgeJoinEditor", () => {
   it("clears every key representation when changing to a cross join", () => {
     const { onUpdate } = renderEditor({
       how: "left",
-      leftOn: ["policy_id"],
-      rightOn: ["lookup_policy_id"],
-      maintainOrder: "left_right",
+      left_on: ["policy_id"],
+      right_on: ["lookup_policy_id"],
+      maintain_order: "left_right",
     })
 
     fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "cross" } })
 
     expect(onUpdate).toHaveBeenCalledWith({
       how: "cross",
-      maintainOrder: "left_right",
+      maintain_order: "left_right",
       on: [],
-      leftOn: [],
-      rightOn: [],
+      left_on: [],
+      right_on: [],
     })
   })
 
   it("moves a default row order with the join type and keeps a chosen one", () => {
-    const { onUpdate } = renderEditor({ how: "left", on: ["policy_id"], maintainOrder: "left_right" })
+    const { onUpdate } = renderEditor({ how: "left", on: ["policy_id"], maintain_order: "left_right" })
     fireEvent.change(screen.getByLabelText("Join Type"), { target: { value: "right" } })
-    expect(onUpdate).toHaveBeenLastCalledWith({ how: "right", maintainOrder: "right_left" })
+    expect(onUpdate).toHaveBeenLastCalledWith({ how: "right", maintain_order: "right_left" })
 
-    const chosen = renderEditor({ how: "left", on: ["policy_id"], maintainOrder: "none" })
+    const chosen = renderEditor({ how: "left", on: ["policy_id"], maintain_order: "none" })
     fireEvent.change(within(chosen.container).getByLabelText("Join Type"), { target: { value: "anti" } })
-    expect(chosen.onUpdate).toHaveBeenLastCalledWith({ how: "anti", maintainOrder: "none" })
+    expect(chosen.onUpdate).toHaveBeenLastCalledWith({ how: "anti", maintain_order: "none" })
     expect(within(within(chosen.container).getByLabelText("Maintain Order")).queryByRole("option", { name: "Not set" })).not.toBeInTheDocument()
   })
 
@@ -317,16 +317,16 @@ describe("EdgeJoinEditor", () => {
 
     expect(onUpdate).toHaveBeenCalledWith({
       on: [],
-      leftOn: ["policy_id"],
-      rightOn: ["policy_id"],
+      left_on: ["policy_id"],
+      right_on: ["policy_id"],
     })
   })
 
   it("updates paired key rows and can add another pair", () => {
     const { onUpdate } = renderEditor({
       how: "left",
-      leftOn: ["policy_id"],
-      rightOn: ["lookup_policy_id"],
+      left_on: ["policy_id"],
+      right_on: ["lookup_policy_id"],
     })
 
     expect(screen.getByRole("radio", { name: "Paired base/join keys" })).toHaveAttribute("aria-checked", "true")
@@ -334,15 +334,15 @@ describe("EdgeJoinEditor", () => {
     fireEvent.change(screen.getByLabelText("Join key 1"), { target: { value: "region" } })
     expect(onUpdate).toHaveBeenCalledWith({
       on: [],
-      leftOn: ["policy_id"],
-      rightOn: ["region"],
+      left_on: ["policy_id"],
+      right_on: ["region"],
     })
 
     fireEvent.click(screen.getByRole("button", { name: "Add key pair" }))
     expect(onUpdate).toHaveBeenCalledWith({
       on: [],
-      leftOn: ["policy_id", ""],
-      rightOn: ["lookup_policy_id", ""],
+      left_on: ["policy_id", ""],
+      right_on: ["lookup_policy_id", ""],
     })
   })
 
@@ -350,8 +350,8 @@ describe("EdgeJoinEditor", () => {
     renderEditor({
       how: "left",
       on: ["policy_id"],
-      leftOn: ["state"],
-      rightOn: ["region"],
+      left_on: ["state"],
+      right_on: ["region"],
     })
 
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -388,8 +388,8 @@ describe("EdgeJoinEditor", () => {
   it("marks only the incomplete side of a paired key row as invalid", () => {
     renderEditor({
       how: "left",
-      leftOn: ["policy_id"],
-      rightOn: [""],
+      left_on: ["policy_id"],
+      right_on: [""],
     })
 
     expect(screen.getByLabelText("Base key 1")).not.toHaveAttribute("aria-invalid")
@@ -448,6 +448,6 @@ describe("EdgeJoinEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("validate", "1:1")
 
     fireEvent.change(screen.getByLabelText("Maintain Order"), { target: { value: "left" } })
-    expect(onUpdate).toHaveBeenCalledWith("maintainOrder", "left")
+    expect(onUpdate).toHaveBeenCalledWith("maintain_order", "left")
   })
 })

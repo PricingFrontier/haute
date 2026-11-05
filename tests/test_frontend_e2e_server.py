@@ -60,7 +60,7 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
     assert {node.id for node in graph.nodes} == {
         "raw_rows",
         "enriched",
-        "priced",
+        "quote_response",
         "browser_model",
         "browser_glm",
         "browser_mixed_banding",
@@ -71,7 +71,7 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
         "browser_ratebook_quotes",
         "browser_ratebook_banding",
         "browser_ratebook",
-        "quotes",
+        "quote_input",
     }
     ratebook = next(node for node in graph.nodes if node.id == "browser_ratebook")
     assert ratebook.data.config["mode"] == "ratebook"

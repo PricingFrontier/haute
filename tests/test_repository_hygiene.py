@@ -748,7 +748,7 @@ _BACKEND_MINT_ALLOWLIST = {
     # specification defines it (lower case, each run of other characters one
     # "_"); a save refuses two titles making one name, or none, so no collision
     # reaches the folder.
-    "src/haute/_workbench_folder.py",
+    "src/haute/_workbench_form.py",
     # NOTE (not an entry): _scaffold.py's clean_columns mint lives inside the
     # starter-pipeline TEMPLATE STRING that `haute init` writes into the
     # user's project — string constants are invisible to the AST walk, and
@@ -775,6 +775,11 @@ _FRONTEND_MINT_ALLOWLIST = {
     # chartExportFileName mints a one-off browser-download filename only;
     # it never names a project artefact, and collisions are therefore cosmetic.
     "frontend/src/panels/explore/chartData.ts",
+    # freshNodeLabel suggests a new node's label (READ-13): typeName spells a
+    # node type as its decorator does, and functionKey folds the labels already
+    # taken only to skip one a function name would repeat. The label is not an
+    # identity: the server mints the function name and refuses a collision.
+    "frontend/src/utils/flowElements.ts",
 }
 
 

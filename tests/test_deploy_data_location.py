@@ -86,15 +86,15 @@ def _write_pipeline(
     """Write the pipeline :func:`_deploy` deploys into ``rating/`` and return its file."""
     quotes = "request" if batch_path is None else "switch"
     nodes = [
-        _node("request", NodeType.API_INPUT, {"path": "quotes.parquet"}),
+        _node("quote_input", NodeType.API_INPUT, {"path": "quotes.parquet"}),
         _node("rates", NodeType.DATA_INPUT, rates),
         _node("priced", NodeType.POLARS, {"code": f"df = {quotes}.join(rates, on='region')"}),
-        _node("out", NodeType.OUTPUT, make_output_config(["quote_id", "factor"])),
+        _node("quote_response", NodeType.OUTPUT, make_output_config(["quote_id", "factor"])),
     ]
     edges = [
-        _edge("request", "priced" if batch_path is None else "switch", "request"),
+        _edge("quote_input", "priced" if batch_path is None else "switch", "request"),
         _edge("rates", "priced"),
-        _edge("priced", "out"),
+        _edge("priced", "quote_response"),
     ]
     if batch_path is not None:
         nodes += [
@@ -357,7 +357,10 @@ def test_cached_node_output_not_shipped(project: Path) -> None:
     cached_folder = cached.generation.metadata_path.parent.resolve()
     editor_run = resolve_seed_plan(
         SeedPlanRequest(
-            graph=graph, target_node_id="out", source="live", profile=ExecutionProfile.TRAINING_PREP
+            graph=graph,
+            target_node_id="quote_response",
+            source="live",
+            profile=ExecutionProfile.TRAINING_PREP,
         ),
         store=store,
     )

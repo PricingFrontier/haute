@@ -46,9 +46,12 @@ import hypothesis.strategies as st
 import pytest
 from hypothesis import HealthCheck, given, settings
 
+from haute._api_input_schema import columns_from_sidecar
 from haute._banding_config import expand_banding_config_from_sidecar
 from haute._config_io import collect_node_configs
 from haute._graph_utils import _sanitize_func_name
+from haute._polars_steps import STEPS_FROM_CODE, PolarsStepError
+from haute._polars_steps_lift import StepLiftError, canonical_steps, lift_steps
 from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code_multi
@@ -190,7 +193,7 @@ def _capstone_root_graph(
             NodeType.DATA_INPUT,
             _opaque(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "parquet",
                     "mode": "scan",
                     "path": r"data\raw {quotes}\left (gross).parquet",
@@ -200,9 +203,12 @@ def _capstone_root_graph(
             ),
             description=description,
         ),
+        # A Quote Input, Quote Response, Workbench Input and Workbench Output are named by
+        # their type (READ-46): the unicode label is the Model Score's, and braces the
+        # Constant's and the wide Data Input and Output's.
         _node(
             api,
-            "API Input \u6771\u4eac",
+            "quote_input",
             NodeType.API_INPUT,
             _opaque(
                 {
@@ -236,7 +242,7 @@ def _capstone_root_graph(
         # neither; unconnected, since a round trip never runs it.
         _node(
             workbench,
-            "Workbench Input {Brace}",
+            "workbench_input",
             NodeType.WORKBENCH_INPUT,
             _opaque({}),
             description="workbench " + description,
@@ -245,7 +251,7 @@ def _capstone_root_graph(
         # trip never runs it.
         _node(
             workbench_output,
-            "Workbench Output {Brace}",
+            "workbench_output",
             NodeType.WORKBENCH_OUTPUT,
             _opaque({}),
             description="workbench output " + description,
@@ -271,12 +277,12 @@ def _capstone_root_graph(
             _opaque(
                 {
                     "how": "left",
-                    "leftOn": ["quote_id"],
-                    "rightOn": ["quote_id"],
+                    "left_on": ["quote_id"],
+                    "right_on": ["quote_id"],
                     "suffix": "_joined",
                     "coalesce": True,
                     "validate": "m:1",
-                    "maintainOrder": "left",
+                    "maintain_order": "left",
                 }
             ),
             description="C1 raw id remap " + description,
@@ -295,11 +301,11 @@ def _capstone_root_graph(
         ),
         _node(
             score,
-            "Model Score",
+            "Model Score \u6771\u4eac",
             NodeType.MODEL_SCORE,
             _opaque(
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run-{abc}(1)",
                     "run_name": 'best "run"',
                     "artifact_path": r"models\score {v1}.cbm",
@@ -320,7 +326,7 @@ def _capstone_root_graph(
                         {
                             "banding": "breakpoints",
                             "column": "prediction (gross)",
-                            "outputColumn": "score_band",
+                            "output_column": "score_band",
                             "rules": [{"boundary": "100", "label": "{low}"}],
                             "default": "other",
                         }
@@ -338,16 +344,16 @@ def _capstone_root_graph(
                     "tables": [
                         {
                             "factors": ["score_band"],
-                            "outputColumn": "rate_factor",
-                            "defaultValue": "1.0",
+                            "output_column": "rate_factor",
+                            "default_value": "1.0",
                             "entries": [{"score_band": "{low}", "value": "1.25"}],
                         }
                     ],
-                    "combinedOutputs": [
+                    "combined_outputs": [
                         {
-                            "outputColumn": "rated premium",
+                            "output_column": "rated premium",
                             "operation": "multiply",
-                            "baseValue": 1.0,
+                            "base_value": 1.0,
                         }
                     ],
                     "code": _simple_user_code(user_text),
@@ -365,7 +371,7 @@ def _capstone_root_graph(
                     "column_name": "scenario (value)",
                     "min_value": 0.0,
                     "max_value": 1.0,
-                    "stepCount": 3,
+                    "step_count": 3,
                     "step_column": "step_index",
                     "code": _simple_user_code(user_text),
                 }
@@ -396,7 +402,7 @@ def _capstone_root_graph(
             NodeType.OPTIMISER_APPLY,
             _opaque(
                 {
-                    "sourceType": "file",
+                    "source_type": "file",
                     "artifact_path": r"artifacts\optimiser {v1}.json",
                     "version_column": "__optimiser_version__",
                     "optimised_value_column": "selected (price)",
@@ -422,13 +428,13 @@ def _capstone_root_graph(
         ),
         _node(
             output,
-            "Output Node",
+            "quote_response",
             NodeType.OUTPUT,
             # A response path names a JSON key, so each adversarial column fills an
             # identifier-named field.
             _opaque(
                 {
-                    "outputMapping": [
+                    "output_mapping": [
                         {
                             "source_port": "in",
                             "source_column": column,
@@ -451,7 +457,7 @@ def _capstone_root_graph(
             NodeType.DATA_OUTPUT,
             _opaque(
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "csv",
                     "mode": "sink",
                     "path": "outputs/final (gross).csv",
@@ -485,7 +491,7 @@ def _capstone_root_graph(
             _opaque(
                 {
                     "path": r"models\external {quote}.pkl",
-                    "fileType": "pickle",
+                    "file_type": "pickle",
                     "code": _simple_user_code(user_text),
                 }
             ),
@@ -497,7 +503,7 @@ def _capstone_root_graph(
             NodeType.DATA_INPUT,
             _opaque(
                 {
-                    "inputType": "file",
+                    "input_type": "file",
                     "format": "csv",
                     "mode": "scan",
                     "path": r"data\wide {quotes}\input (raw).csv",
@@ -518,7 +524,7 @@ def _capstone_root_graph(
             NodeType.DATA_OUTPUT,
             _opaque(
                 {
-                    "outputType": "file",
+                    "output_type": "file",
                     "format": "ndjson",
                     "mode": "sink",
                     "path": "outputs/wide (result).jsonl",
@@ -641,6 +647,20 @@ def _canonical_value(value: Any) -> Any:
     return value
 
 
+def _steps_as_reloaded(node_type: NodeType, config: dict[str, Any]) -> dict[str, Any]:
+    """A frame surface's *config* with the steps its saved code loads back as (READ-44)."""
+    steps = config.get("steps")
+    try:
+        if isinstance(steps, list):
+            return {**config, "steps": canonical_steps(node_type, steps)}
+        if config.get("code"):
+            return {**config, "steps": lift_steps(node_type, str(config["code"]))}
+    except (PolarsStepError, StepLiftError):
+        # An unfinished list waits in .haute.json; code that does not rebuild stays code.
+        return config
+    return {**config, "steps": []}
+
+
 def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[str, str]) -> Any:
     normalized = dict(config)
     if normalized.get("code") == "":
@@ -654,6 +674,14 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
         normalized = expand_banding_config_from_sidecar(normalized)
     if node_type == NodeType.RATING_STEP:
         normalized = normalise_rating_step_config(normalized)
+    if node_type == NodeType.API_INPUT:
+        # A column's sidecar leaves out the settings inference gives it, and the load gives
+        # them back (READ-42).
+        normalized = columns_from_sidecar(normalized)
+    if node_type in STEPS_FROM_CODE and node_type != NodeType.POLARS:
+        # A frame surface's code is the only copy of its steps (READ-44): they come back as
+        # its code rebuilds them, and a declaration's as none yet.
+        normalized = _steps_as_reloaded(node_type, normalized)
     for field in _NODE_REFERENCE_CONFIG_FIELDS.get(node_type, frozenset()):
         value = normalized.get(field)
         if isinstance(value, str):
@@ -849,7 +877,7 @@ def test_inline_nodes_canonicalize_only_empty_column_selection(
 def test_frame_named_api_parameters_are_a_byte_identical_roundtrip_fixpoint() -> None:
     api = _node(
         "api-source",
-        "Request Bundle",
+        "quote_input",
         NodeType.API_INPUT,
         _opaque(
             {

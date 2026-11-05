@@ -93,7 +93,7 @@ function parentOccurrenceHandlesAreResolved(result: SubmodelBoundaryEditResult):
   return result.parentNodes.every((node) => {
     if (node.data.nodeType !== "submodel") return true
     const config = node.data.config
-    if (!isSubmodelInstanceConfig(config) || config.definitionId !== result.definitionId) {
+    if (!isSubmodelInstanceConfig(config) || config.definition_id !== result.definitionId) {
       return true
     }
     const mapping = node.data._sourceHandleInputNames

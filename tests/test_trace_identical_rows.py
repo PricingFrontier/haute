@@ -270,7 +270,7 @@ def test_a_multi_frame_parent_keeps_the_winning_frames_identical_row_count() -> 
                 nodeType=NodeType.EDGE_JOIN,
                 config={
                     "how": "inner",
-                    "maintainOrder": "left_right",
+                    "maintain_order": "left_right",
                     "on": ["policy_id"],
                     "suffix": "_right",
                 },

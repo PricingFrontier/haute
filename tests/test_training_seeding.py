@@ -97,7 +97,7 @@ def store(project: Path) -> NodeSnapshotStore:
 
 
 def _data_input(project: Path, name: str) -> dict[str, Any]:
-    return {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(project / name)}
+    return {"input_type": "file", "format": "parquet", "mode": "scan", "path": str(project / name)}
 
 
 def _graph(
@@ -450,7 +450,7 @@ def test_training_behind_batch_model_score_scores_once(
                 "M",
                 "modelScore",
                 {
-                    "sourceType": "run",
+                    "source_type": "run",
                     "run_id": "run-1",
                     "artifact_path": "model.pyfunc",
                     "task": "regression",
@@ -900,7 +900,7 @@ def _csv_chain(project: Path) -> dict[str, Any]:
     pl.read_parquet(project / "quotes.parquet").write_csv(project / "quotes.csv")
     graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('id')")
     graph["nodes"][0]["data"]["config"] = {
-        "inputType": "file",
+        "input_type": "file",
         "format": "csv",
         "path": str(project / "quotes.csv"),
     }
@@ -1177,7 +1177,7 @@ def test_no_bounded_caller_creates_a_checkpoint_directory(
                         "label": "out",
                         "nodeType": "dataOutput",
                         "config": {
-                            "outputType": "file",
+                            "output_type": "file",
                             "format": "parquet",
                             "path": str(project / "out.parquet"),
                         },

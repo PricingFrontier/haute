@@ -55,7 +55,7 @@ def _external_file_node(path: str) -> object:
                 "nodeType": "externalFile",
                 "config": {
                     "path": path,
-                    "fileType": "json",
+                    "file_type": "json",
                     "code": "df = df.with_columns(y=pl.col('x') * obj['multiplier'])",
                 },
             },

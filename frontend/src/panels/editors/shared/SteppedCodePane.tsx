@@ -5,7 +5,7 @@ import type { NodeEditorState } from "../../../types/node"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import PolarsStepsEditor from "../polarsSteps/PolarsStepsEditor"
 import { readSteps } from "../polarsSteps/types"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
+import type { InputSource, OnUpdateConfig } from "../_shared"
 import PolarsCodePanel from "./PolarsCodePanel"
 
 type ColumnInfo = { name: string; dtype: string }
@@ -13,7 +13,6 @@ type ColumnInfo = { name: string; dtype: string }
 export type SteppedCodePaneProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-  onReplaceConfig?: OnReplaceConfig
   /** The input chips on display. */
   inputSources: InputSource[]
   /** The input names the steps may reference: the surface's eligibility, not the chips. */
@@ -48,7 +47,6 @@ export type SteppedCodePaneProps = {
 export default function SteppedCodePane({
   config,
   onUpdate,
-  onReplaceConfig,
   inputSources,
   inputNames,
   onDeleteInput,
@@ -70,7 +68,6 @@ export default function SteppedCodePane({
       <PolarsStepsEditor
         config={config}
         onUpdate={onUpdate}
-        onReplaceConfig={onReplaceConfig}
         inputSources={inputSources}
         inputNames={inputNames}
         onDeleteInput={onDeleteInput}

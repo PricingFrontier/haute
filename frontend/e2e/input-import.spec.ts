@@ -21,7 +21,7 @@ function writeProject(): void {
   writeFileSync(
     configPath,
     `${JSON.stringify({
-      inputType: "file",
+      input_type: "file",
       format: "csv",
       mode: "scan",
       path: "data/import_rows.csv",

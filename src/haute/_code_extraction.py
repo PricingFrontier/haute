@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import io
+import textwrap
 import tokenize
 from collections.abc import Callable
 from typing import NamedTuple
@@ -43,6 +44,7 @@ __all__ = [
     "INCOMPLETE_STEPS_MESSAGE",
     "INCOMPLETE_TRANSFORM_BODY",
     "INCOMPLETE_TRANSFORM_MESSAGE",
+    "holds_incomplete_steps_placeholder",
     "POLARS_OUTPUT_DECLARATION",
     "BoilerplateMatcher",
     "MatcherResult",
@@ -430,6 +432,20 @@ def _is_incomplete_transform_placeholder(source: str) -> bool:
         return False
     argument = call.args[0]
     return isinstance(argument, ast.Constant) and argument.value in _PLACEHOLDER_MESSAGES
+
+
+def holds_incomplete_steps_placeholder(body: str) -> bool:
+    """Whether a function *body* holds the placeholder an unfinished step list is saved with:
+    its code is then not the user's, and its steps wait in the pipeline's ``.haute.json``."""
+    try:
+        module = ast.parse(textwrap.dedent(body))
+    except SyntaxError:
+        return False
+    return any(
+        _is_incomplete_transform_placeholder(ast.unparse(statement))
+        and INCOMPLETE_STEPS_MESSAGE in ast.unparse(statement)
+        for statement in module.body
+    )
 
 
 def _is_polars_output_declaration(source: str) -> bool:

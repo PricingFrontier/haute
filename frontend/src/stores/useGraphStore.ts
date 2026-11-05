@@ -277,6 +277,22 @@ export function captureGraphSnapshot(
  * Apply an updater that may be a direct replacement value or a functional
  * updater (matches React's useState / React Flow's useNodesState signature).
  */
+/**
+ * `nodes` with every position on whole pixels (READ-11): a node placed or dragged lands on
+ * one, so a save writes the position the canvas compares, and a nudge smaller than a pixel
+ * moves nothing. Nodes already whole keep their identity, and so does the array.
+ */
+export function wholePositions<N extends { position: { x: number; y: number } }>(nodes: N[]): N[] {
+  let changed = false
+  const next = nodes.map((node) => {
+    const { x, y } = node.position
+    if (Number.isInteger(x) && Number.isInteger(y)) return node
+    changed = true
+    return { ...node, position: { ...node.position, x: Math.round(x), y: Math.round(y) } }
+  })
+  return changed ? next : nodes
+}
+
 function applyUpdater<T>(current: T, updater: T | ((prev: T) => T)): T {
   return typeof updater === "function" ? (updater as (prev: T) => T)(current) : updater
 }
@@ -775,7 +791,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     // ── History-aware actions ────────────────────────────────────────────
 
     setNodes: (updater) => {
-      set((state) => commitGraphChange(state, { nodes: applyUpdater(state.nodes, updater) }, true))
+      set((state) => commitGraphChange(state, { nodes: wholePositions(applyUpdater(state.nodes, updater)) }, true))
     },
 
     setEdges: (updater) => {
@@ -786,14 +802,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       // Both updaters in this single set(), so nodes and edges never render in
       // an inconsistent in-between state, and a single undo restores both.
       set((state) => commitGraphChange(state, {
-        nodes: applyUpdater(state.nodes, nodesUpdater),
+        nodes: wholePositions(applyUpdater(state.nodes, nodesUpdater)),
         edges: applyUpdater(state.edges, edgesUpdater),
       }, true))
     },
 
     setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
       set((state) => commitGraphChange(state, {
-        nodes: applyUpdater(state.nodes, nodesUpdater),
+        nodes: wholePositions(applyUpdater(state.nodes, nodesUpdater)),
         edges: applyUpdater(state.edges, edgesUpdater),
         submodels,
         ...(preamble === undefined ? {} : { preamble }),
@@ -808,7 +824,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     setNodesRaw: (updater) => {
       set((state) => {
-        const nodes = applyUpdater(state.nodes, updater)
+        const nodes = wholePositions(applyUpdater(state.nodes, updater))
         const sameStructural = hasSameNodeStructureByReference(state.nodes, nodes)
         if (hasOnlyNodeUiFieldChanges(state.nodes, nodes)) {
           return { nodes }

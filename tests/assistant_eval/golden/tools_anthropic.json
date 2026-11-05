@@ -596,7 +596,7 @@
                       "output_name": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Optional new response output graph node connected after the recipe node."
+                        "description": "Optional new response output graph node connected after the recipe node: always \"quote_response\", the one name a pipeline's response node has."
                       },
                       "output_columns": {
                         "type": "array",
@@ -766,7 +766,7 @@
                       "output_name": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Optional new response output graph node connected after the recipe node."
+                        "description": "Optional new response output graph node connected after the recipe node: always \"quote_response\", the one name a pipeline's response node has."
                       },
                       "output_columns": {
                         "type": "array",
@@ -873,7 +873,7 @@
                       "output_name": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Optional new response output graph node connected after the recipe node."
+                        "description": "Optional new response output graph node connected after the recipe node: always \"quote_response\", the one name a pipeline's response node has."
                       },
                       "output_columns": {
                         "type": "array",
@@ -936,7 +936,7 @@
                       "output_name": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Optional new response output graph node connected after the recipe node."
+                        "description": "Optional new response output graph node connected after the recipe node: always \"quote_response\", the one name a pipeline's response node has."
                       },
                       "output_columns": {
                         "type": "array",

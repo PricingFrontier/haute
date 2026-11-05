@@ -35,7 +35,7 @@ test.describe("workbench", () => {
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await buildWorkbenchPipeline(page)
     await page.reload()
-    await expect(page.getByRole("button", { name: /Workbench Input node: quote/i })).toBeVisible()
+    await expect(page.getByRole("button", { name: /Workbench Input node: workbench_input/i })).toBeVisible()
 
     // The view, with the schema the sheets work with in its pane over the sheet.
     await page.getByTestId("view-switcher-workbench").click()
@@ -65,7 +65,7 @@ test.describe("workbench", () => {
     await page.getByRole("checkbox", { name: "Show pricing premium" }).check()
 
     // Building, the sheet is a new quote's: nothing typed, nothing priced, its cells inert.
-    const premium = page.getByTestId("priced-t_pricing:c_premium")
+    const premium = page.getByTestId("priced-pricing:premium")
     const builtLimit = collection.getByRole("textbox", { name: "Limit", includeHidden: true })
     await expect(premium).toHaveText("—")
     await expect(builtLimit).toHaveValue("")
@@ -102,8 +102,8 @@ test.describe("workbench", () => {
     // The quote's reference and option lead the table without being written in its file.
     expect(readFormFile("schema/policy.json").columns.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
     // The column is in the form folder alone: neither workbench node's config file holds a copy.
-    expect(readNodeConfig("workbench_input", "quote")).toEqual({})
-    expect(readNodeConfig("workbench_output", "response")).toEqual({})
+    expect(readNodeConfig("workbench_input", "workbench_input")).toEqual({})
+    expect(readNodeConfig("workbench_output", "workbench_output")).toEqual({})
     // The Collection in the sheet's file, its fields by name, and its place in the sheet's layout.
     const savedSheet = readFormFile("sheets/sheet_1.json")
     expect(savedSheet.sections[0].components).toHaveLength(1)
@@ -112,7 +112,7 @@ test.describe("workbench", () => {
       fields: ["policy.limit", "policy.region", "pricing.premium"],
     })
     const savedLayout = readFormFile("sheets/sheet_1.layout.json")
-    expect(Object.keys(savedLayout.sections.section_1.components)).toEqual([savedSheet.sections[0].components[0].id])
+    expect(Object.keys(savedLayout.sections["Section 1"].components)).toEqual([String(savedSheet.sections[0].components[0].number)])
     expect(readFormFile("sample/policy.json")).toEqual([{ limit: "1000", region: "north" }])
   })
 })

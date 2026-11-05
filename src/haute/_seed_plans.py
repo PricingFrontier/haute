@@ -1144,7 +1144,7 @@ class SeedPlan:
                     update=dict(
                         nodeType=NodeType.DATA_INPUT,
                         config={
-                            "inputType": "file",
+                            "input_type": "file",
                             "format": "parquet",
                             "mode": "scan",
                             # Every part, so a seed's estimate counts all of

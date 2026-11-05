@@ -38,7 +38,7 @@ def _graph(project: Path, length: int) -> PipelineGraph:
             data=NodeData(
                 label=node_id,
                 nodeType=NodeType.DATA_INPUT,
-                config={"inputType": "file", "format": "parquet", "mode": "scan", "path": file},
+                config={"input_type": "file", "format": "parquet", "mode": "scan", "path": file},
             ),
         )
 

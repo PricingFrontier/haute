@@ -40,6 +40,7 @@ import {
   aggregationTakes,
   canonicalStep,
   castTargetsFor,
+  continuesChain,
   defaultArgFor,
   defaultCondition,
   defaultLiteral,
@@ -613,10 +614,12 @@ function FormulaField({
 
 function StructuredFormula({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const operandProps = anyOperand(ctx, depth + 1)
+  // A left side continuing a chain of one operator opens at this depth, as the renderer counts it.
+  const leftProps = continuesChain(expr) ? anyOperand(ctx, depth) : operandProps
   return (
     <>
       <Field label="Left">
-        <OperandField value={expr.left} onChange={(left) => onChange({ ...expr, left })} ariaLabel="Left operand" {...operandProps} />
+        <OperandField value={expr.left} onChange={(left) => onChange({ ...expr, left })} ariaLabel="Left operand" {...leftProps} />
       </Field>
       <Field label="Operator">
         <SelectField value={expr.op} options={BINARY_OPERATORS} onChange={(op) => onChange({ ...expr, op })} ariaLabel="Operator" />
@@ -819,8 +822,8 @@ function ConditionalEditor({
 function WindowEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "window" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
   const schema = useStepSchema()
   const isRank = expr.agg === "rank" || expr.agg === "dense_rank"
-  const orderBy = expr.orderBy ?? []
-  const setOrder = (next: typeof orderBy) => onChange(next.length ? { ...expr, orderBy: next } : omitKeys(expr, ["orderBy"]))
+  const orderBy = expr.order_by ?? []
+  const setOrder = (next: typeof orderBy) => onChange(next.length ? { ...expr, order_by: next } : omitKeys(expr, ["order_by"]))
   const ofType = expr.of?.kind === "column" && expr.of.name ? schema.typeOf(expr.of.name) : null
   const setAggregate = (agg: WindowAggregation) => {
     // A positional aggregate keeps one value per row, so a row filter cannot
@@ -1166,7 +1169,7 @@ function SortForm({ step, onChange, ctx }: FormProps<SortStep>) {
           </>
         )}
       />
-      <ConfigCheckbox checked={step.nullsLast} onChange={(nullsLast) => onChange({ ...step, nullsLast })} label="Missing values last" />
+      <ConfigCheckbox checked={step.nulls_last} onChange={(nullsLast) => onChange({ ...step, nulls_last: nullsLast })} label="Missing values last" />
     </>
   )
 }
@@ -1398,11 +1401,11 @@ function UnpivotForm({ step, onChange, ctx }: FormProps<UnpivotStep>) {
       <Sentence>
         <Words>Into</Words>
         <span className="flex-1 basis-24 min-w-0">
-          <TextField value={step.variableName} onCommit={(variableName) => onChange({ ...step, variableName })} ariaLabel="Unpivot name column" mono />
+          <TextField value={step.variable_name} onCommit={(variableName) => onChange({ ...step, variable_name: variableName })} ariaLabel="Unpivot name column" mono />
         </span>
         <Words>and</Words>
         <span className="flex-1 basis-24 min-w-0">
-          <TextField value={step.valueName} onCommit={(valueName) => onChange({ ...step, valueName })} ariaLabel="Unpivot value column" mono />
+          <TextField value={step.value_name} onCommit={(valueName) => onChange({ ...step, value_name: valueName })} ariaLabel="Unpivot value column" mono />
         </span>
       </Sentence>
       <Hint>Row order after unpivoting is not guaranteed; add a sort step if later steps depend on it.</Hint>
@@ -1455,12 +1458,12 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
     () => schemaFor({ columns: right.map((c) => ({ name: c.name, dtype: c.dtype, made: false })), complete: right.length > 0, exact: right.length > 0 }),
     [right],
   )
-  const pairCount = Math.max(1, step.leftOn.length, step.rightOn.length)
-  const pairs = Array.from({ length: pairCount }, (_, i) => [step.leftOn[i] ?? "", step.rightOn[i] ?? ""] as [string, string])
-  const setPairs = (next: Array<[string, string]>) => onChange({ ...step, leftOn: next.map((p) => p[0]), rightOn: next.map((p) => p[1]) })
+  const pairCount = Math.max(1, step.left_on.length, step.right_on.length)
+  const pairs = Array.from({ length: pairCount }, (_, i) => [step.left_on[i] ?? "", step.right_on[i] ?? ""] as [string, string])
+  const setPairs = (next: Array<[string, string]>) => onChange({ ...step, left_on: next.map((p) => p[0]), right_on: next.map((p) => p[1]) })
   const setPair = (index: number, pair: [string, string]) => setPairs(pairs.map((p, i) => (i === index ? pair : p)))
   const nothingToJoin = step.input === "" && ctx.inputNames.length <= 1
-  const used = step.validate !== undefined || step.maintainOrder !== DEFAULT_JOIN_ORDER[step.how] || step.suffix !== "_right"
+  const used = step.validate !== undefined || step.maintain_order !== DEFAULT_JOIN_ORDER[step.how] || step.suffix !== "_right"
   return (
     <>
       <Sentence>
@@ -1470,10 +1473,10 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
             value={step.how}
             options={JOIN_HOW_OPTIONS}
             onChange={(how) => {
-              const maintainOrder = joinOrderAfterHowChange(step.maintainOrder, step.how, how)
-              const reordered = { ...step, how, maintainOrder }
+              const maintainOrder = joinOrderAfterHowChange(step.maintain_order, step.how, how)
+              const reordered = { ...step, how, maintain_order: maintainOrder }
               const next = JOIN_VALIDATED_HOW.has(how) ? reordered : omitKeys(reordered, ["validate"])
-              onChange(how === "cross" ? { ...next, leftOn: [], rightOn: [] } : next)
+              onChange(how === "cross" ? { ...next, left_on: [], right_on: [] } : next)
             }}
             ariaLabel="Join type"
           />
@@ -1530,9 +1533,9 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
         )}
         <Field label="Output row order">
           <SelectField
-            value={step.maintainOrder}
+            value={step.maintain_order}
             options={JOIN_MAINTAIN_ORDER}
-            onChange={(order) => onChange({ ...step, maintainOrder: order as JoinMaintainOrder })}
+            onChange={(order) => onChange({ ...step, maintain_order: order as JoinMaintainOrder })}
             ariaLabel="Join row order"
           />
         </Field>

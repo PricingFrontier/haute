@@ -60,20 +60,49 @@ describe("step forms only build schema-valid payloads", () => {
     }
     render(<Stateful initial={{ id: "w", kind: "with_column", name: "total", expr }} spy={spy} />)
     const field = screen.getByRole("combobox", { name: "Formula" })
-    const tooDeep = Array(MAX_EXPR_DEPTH + 2 - enclosing).fill("premium").join(" + ")
+    // Alternating operators: a chain of one operator would be one level however long.
+    const nested = (terms: number) => Array.from({ length: terms }, (_, i) => (i === 0 ? "premium" : `${i % 2 ? "-" : "+"} premium`)).join(" ")
+    const tooDeep = nested(MAX_EXPR_DEPTH + 2 - enclosing)
     fireEvent.change(field, { target: { value: tooDeep } })
     fireEvent.blur(field)
     expect(spy).not.toHaveBeenCalled()
     expect(field).toHaveValue(tooDeep)
     expect(screen.getByRole("alert")).toHaveTextContent(/12 levels/)
 
-    const atLimit = Array(MAX_EXPR_DEPTH + 1 - enclosing).fill("premium").join(" + ")
+    const atLimit = nested(MAX_EXPR_DEPTH + 1 - enclosing)
     fireEvent.change(field, { target: { value: atLimit } })
     fireEvent.keyDown(field, { key: "Enter" })
     expect(spy).toHaveBeenCalledTimes(1)
     expect(stepProblem(spy.mock.calls[0][0])).toBeNull()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(field).toHaveValue(atLimit)
+  })
+
+  it.each([0, MAX_EXPR_DEPTH - 1])("commits a twenty-term sum as one level under %i enclosing expressions", (enclosing) => {
+    const spy = vi.fn()
+    let expr: Expr = parseFormula("premium + 1")
+    for (let i = 0; i < enclosing; i += 1) {
+      expr = { type: "function", fn: "abs", operand: { kind: "expr", expr }, args: [] }
+    }
+    render(<Stateful initial={{ id: "w", kind: "with_column", name: "total", expr }} spy={spy} />)
+    const field = screen.getByRole("combobox", { name: "Formula" })
+    const sum = Array(20).fill("premium").join(" + ")
+    fireEvent.change(field, { target: { value: sum } })
+    fireEvent.keyDown(field, { key: "Enter" })
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(stepProblem(spy.mock.calls[0][0])).toBeNull()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("keeps a step's comment through an edit, with no control for it", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "l", kind: "limit", n: 5, comment: "# keep five\n" }
+    render(<Stateful initial={step} spy={spy} />)
+    expect(screen.queryByDisplayValue("# keep five\n")).not.toBeInTheDocument()
+    const rows = screen.getByLabelText("Row limit")
+    fireEvent.change(rows, { target: { value: "7" } })
+    fireEvent.blur(rows)
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ n: 7, comment: "# keep five\n" }))
   })
 
   it("variable definitions offer plain values of number, text or true/false only", () => {
@@ -262,7 +291,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add order column" }))
     fireEvent.change(screen.getByLabelText("Window order direction"), { target: { value: "desc" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
-    expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"], orderBy: [{ column: "", descending: true }] })
+    expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"], order_by: [{ column: "", descending: true }] })
     fireEvent.click(screen.getByRole("button", { name: "Remove window order 1" }))
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(latest.expr).toEqual({ type: "window", agg: "row_number", over: ["region"] })
@@ -429,40 +458,40 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("join validation is optional and cleared for a cross join; the row order is always stated", () => {
     const spy = vi.fn()
-    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_r", maintainOrder: "left_right" }
+    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", left_on: ["region"], right_on: ["region"], suffix: "_r", maintain_order: "left_right" }
     render(<Stateful initial={step} spy={spy} />)
     expect(within(screen.getByLabelText("Join row order")).queryByRole("option", { name: /engine default/ })).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "m:1" } })
     fireEvent.change(screen.getByLabelText("Join row order"), { target: { value: "left" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest).toEqual({ ...step, validate: "m:1", maintainOrder: "left" })
+    expect(latest).toEqual({ ...step, validate: "m:1", maintain_order: "left" })
     fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "off" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest).toEqual({ ...step, maintainOrder: "left" })
+    expect(latest).toEqual({ ...step, maintain_order: "left" })
     fireEvent.change(screen.getByLabelText("Join validation"), { target: { value: "1:1" } })
     fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "inner" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest).toEqual({ ...step, how: "inner", validate: "1:1", maintainOrder: "left" })
+    expect(latest).toEqual({ ...step, how: "inner", validate: "1:1", maintain_order: "left" })
     fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "cross" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest).toEqual({ ...step, how: "cross", leftOn: [], rightOn: [], maintainOrder: "left" })
+    expect(latest).toEqual({ ...step, how: "cross", left_on: [], right_on: [], maintain_order: "left" })
     expect(screen.queryByLabelText("Join validation")).not.toBeInTheDocument()
   })
 
   it("a join's default row order follows its type, and a chosen order stays", () => {
     const spy = vi.fn()
-    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: ["region"], rightOn: ["region"], suffix: "_r", maintainOrder: "left_right" }
+    const step: Step = { id: "j", kind: "join", input: "rates", how: "left", left_on: ["region"], right_on: ["region"], suffix: "_r", maintain_order: "left_right" }
     render(<Stateful initial={step} spy={spy} />)
     fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "right" } })
     let latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest.maintainOrder).toBe("right_left")
+    expect(latest.maintain_order).toBe("right_left")
     fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "semi" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest.maintainOrder).toBe("left")
+    expect(latest.maintain_order).toBe("left")
     fireEvent.change(screen.getByLabelText("Join row order"), { target: { value: "none" } })
     fireEvent.change(screen.getByLabelText("Join type"), { target: { value: "full" } })
     latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "join" }>
-    expect(latest.maintainOrder).toBe("none")
+    expect(latest.maintain_order).toBe("none")
   })
 
   it("an operand can become a nested expression with its own editor", () => {
@@ -860,7 +889,7 @@ describe("step forms only build schema-valid payloads", () => {
   })
 
   it("unpivot keeps index suggestions apart from the stacked columns", () => {
-    const step: Step = { id: "u", kind: "unpivot", on: ["premium"], index: [], variableName: "measure", valueName: "value" }
+    const step: Step = { id: "u", kind: "unpivot", on: ["premium"], index: [], variable_name: "measure", value_name: "value" }
     render(<StepForm step={step} onChange={vi.fn()} ctx={ctx} />)
     expect(screen.getByLabelText("Unpivot name column")).toHaveValue("measure")
     expect(screen.getByText(/Row order after unpivoting is not guaranteed/)).toBeInTheDocument()
@@ -950,15 +979,15 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("sort keys take a direction and nulls-last, and can be added and removed", () => {
     const spy = vi.fn()
-    render(<Stateful initial={{ id: "s", kind: "sort", keys: [{ column: "premium", descending: false }], nullsLast: false }} spy={spy} />)
+    render(<Stateful initial={{ id: "s", kind: "sort", keys: [{ column: "premium", descending: false }], nulls_last: false }} spy={spy} />)
     fireEvent.change(screen.getByLabelText("Sort key 1 direction"), { target: { value: "desc" } })
-    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nullsLast: false })
+    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nulls_last: false })
     fireEvent.click(screen.getByLabelText("Missing values last"))
-    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nullsLast: true })
+    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nulls_last: true })
     fireEvent.click(screen.getByRole("button", { name: "Add sort column" }))
     expect(screen.getByRole("group", { name: "Sort key 2" })).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Remove sort key 2" }))
-    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nullsLast: true })
+    expect(spy).toHaveBeenLastCalledWith({ id: "s", kind: "sort", keys: [{ column: "premium", descending: true }], nulls_last: true })
   })
 
   it("unique takes its key columns as chips and a keep policy", () => {
@@ -1265,7 +1294,7 @@ describe("a join", () => {
     inputNames: ["quotes", "rates"],
     inputColumns: { quotes: [{ name: "premium", dtype: "Float64" }, { name: "region", dtype: "String" }], rates: [{ name: "region", dtype: "String" }, { name: "factor", dtype: "Float64" }] },
   }
-  const fresh: Step = { id: "j", kind: "join", input: "rates", how: "left", leftOn: [], rightOn: [], suffix: "_right", maintainOrder: "left_right" }
+  const fresh: Step = { id: "j", kind: "join", input: "rates", how: "left", left_on: [], right_on: [], suffix: "_right", maintain_order: "left_right" }
 
   it("completes right keys from the joined input, and pairs a key with the same name there", () => {
     const spy = vi.fn()
@@ -1276,7 +1305,7 @@ describe("a join", () => {
     const left = screen.getByRole("combobox", { name: "Join key 1 left" })
     fireEvent.change(left, { target: { value: "region" } })
     fireEvent.keyDown(left, { key: "Enter" })
-    expect(spy).toHaveBeenLastCalledWith({ ...fresh, leftOn: ["region"], rightOn: ["region"] })
+    expect(spy).toHaveBeenLastCalledWith({ ...fresh, left_on: ["region"], right_on: ["region"] })
     fireEvent.click(screen.getByRole("button", { name: "Add key" }))
     expect(screen.getByRole("group", { name: "Join key 2" })).toBeInTheDocument()
   })
@@ -1293,7 +1322,7 @@ describe("a join", () => {
   })
 
   it("marks a right key the joined input does not have", () => {
-    render(<StepForm step={{ ...fresh, leftOn: ["region"], rightOn: ["regoin"] }} onChange={vi.fn()} ctx={joining} />)
+    render(<StepForm step={{ ...fresh, left_on: ["region"], right_on: ["regoin"] }} onChange={vi.fn()} ctx={joining} />)
     expect(screen.getByRole("button", { name: "Use region" })).toBeInTheDocument()
   })
 
@@ -1317,7 +1346,7 @@ describe("forms read as sentences", () => {
     expect(precedes(screen.getByLabelText("Rename 1 from"), screen.getByText("to"))).toBe(true)
     expect(precedes(screen.getByText("to"), screen.getByLabelText("Rename 1 to"))).toBe(true)
     cleanup()
-    render(<StepForm step={{ id: "s", kind: "sort", keys: [{ column: "premium", descending: false }], nullsLast: false }} onChange={vi.fn()} ctx={ctx} />)
+    render(<StepForm step={{ id: "s", kind: "sort", keys: [{ column: "premium", descending: false }], nulls_last: false }} onChange={vi.fn()} ctx={ctx} />)
     expect(precedes(screen.getByText("Sort by"), screen.getByLabelText("Sort key 1 column"))).toBe(true)
     expect(precedes(screen.getByLabelText("Sort key 1 column"), screen.getByLabelText("Sort key 1 direction"))).toBe(true)
   })
@@ -1593,7 +1622,7 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
 
     const next = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
-    expect(next.conditions[0]).toEqual({ column: "claims", operator: "is_in", values: [{ kind: "literal", type: "number", value: 2 }], numberType: "integer" })
+    expect(next.conditions[0]).toEqual({ column: "claims", operator: "is_in", values: [{ kind: "literal", type: "number", value: 2 }], number_type: "integer" })
   })
 
   it("a membership list refuses a value a Decimal column can never match", () => {
@@ -1615,11 +1644,11 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
   it("a membership list keeps its kind of number when a value is removed", () => {
     const spy = vi.fn()
     const values = [100, 200].map((value) => ({ kind: "literal" as const, type: "number" as const, value }))
-    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values, numberType: "decimal" }] }
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values, number_type: "decimal" }] }
     render(<StatefulIn initial={step} spy={spy} context={ctx} />)
 
     fireEvent.click(screen.getByRole("button", { name: "Remove 100" }))
-    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "premium", operator: "is_in", values: [values[1]], numberType: "decimal" })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "premium", operator: "is_in", values: [values[1]], number_type: "decimal" })
 
     fireEvent.click(screen.getByRole("button", { name: "Remove 200" }))
     expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "premium", operator: "is_in", values: [] })
@@ -1628,24 +1657,24 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
   it("a membership list keeps its values and kind of number from is one of to is not one of", () => {
     const spy = vi.fn()
     const values = [{ kind: "literal" as const, type: "number" as const, value: 2 }]
-    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "claims", operator: "is_in", values, numberType: "integer" }] }
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "claims", operator: "is_in", values, number_type: "integer" }] }
     render(<StatefulIn initial={step} spy={spy} context={ctx} />)
 
     fireEvent.change(screen.getByLabelText("Filter condition 1 operator"), { target: { value: "not_in" } })
-    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "claims", operator: "not_in", values, numberType: "integer" })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).toEqual({ column: "claims", operator: "not_in", values, number_type: "integer" })
 
     fireEvent.change(screen.getByLabelText("Filter condition 1 operator"), { target: { value: "eq" } })
-    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).not.toHaveProperty("numberType")
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0]).not.toHaveProperty("number_type")
   })
 
   it("a membership list asks for the number type while its column's type is unknown", () => {
     const spy = vi.fn()
-    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values: [{ kind: "literal", type: "number", value: 100 }], numberType: "float" }] }
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values: [{ kind: "literal", type: "number", value: 100 }], number_type: "float" }] }
     render(<StatefulIn initial={step} spy={spy} context={ctx} />)
 
     fireEvent.change(screen.getByLabelText("Filter condition 1 values number type"), { target: { value: "decimal" } })
     const next = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
-    expect(next.conditions[0].numberType).toBe("decimal")
+    expect(next.conditions[0].number_type).toBe("decimal")
   })
 
   it("a formula refuses a cast Polars 2 does not make, naming the parse to use", () => {

@@ -129,7 +129,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     vi.clearAllMocks()
   })
 
-  it("renames an occurrence, sending alias in identity request, committing label and alias, and rebinding downstream inputMapping without editing code", async () => {
+  it("renames an occurrence, sending alias in identity request, committing label and alias, and rebinding downstream input_mapping without editing code", async () => {
     const submodelNode: Node = {
       id: "sub_1",
       type: "submodel",
@@ -137,7 +137,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       data: {
         label: "pricing",
         nodeType: "submodel",
-        config: { definitionId: "def_pricing", alias: "pricing" },
+        config: { definition_id: "def_pricing", alias: "pricing" },
         _functionName: "pricing",
         _sourceHandleInputNames: { out__rates: "pricing" },
       },
@@ -152,7 +152,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
         nodeType: "polars",
         config: {
           code: "df = pricing.with_columns()",
-          inputMapping: { pricing: "pricing" },
+          input_mapping: { pricing: "pricing" },
         },
         _functionName: "calculator",
       },
@@ -213,7 +213,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     expect(updatedSubmodel.data.config.alias).toBe("pricing_v2")
 
     const updatedTransform = committedNodes.find((n: Node) => n.id === "tx_1")
-    expect(updatedTransform.data.config.inputMapping).toEqual({ pricing: "pricing_v2" })
+    expect(updatedTransform.data.config.input_mapping).toEqual({ pricing: "pricing_v2" })
     expect(updatedTransform.data.config.code).toBe("df = pricing.with_columns()")
 
     const updatedEdge = committedEdges.find((e: Edge) => e.id === "e1")
@@ -228,7 +228,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       data: {
         label: "pricing",
         nodeType: "submodel",
-        config: { definitionId: "def_pricing", alias: "pricing" },
+        config: { definition_id: "def_pricing", alias: "pricing" },
         _functionName: "pricing",
         _sourceHandleInputNames: { out__rates: "pricing" },
       },

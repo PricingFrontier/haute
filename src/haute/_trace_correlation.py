@@ -1774,7 +1774,7 @@ def trace_edge_alignment(
     """Classify one incoming edge of *child* for limited-preview tracing.
 
     *input_names* are the child's edge input names; *input_aliases* adds the
-    logical names its code may use for them (``inputMapping``).
+    logical names its code may use for them (``input_mapping``).
     """
     return _row_rule(child.data.nodeType).alignment(
         _AlignmentEdge(

@@ -44,7 +44,7 @@ _TABLE = "workspace.pricing-dev.scored"
 
 def _config(**overrides: Any) -> dict[str, Any]:
     return {
-        "outputType": "databricks",
+        "output_type": "databricks",
         "http_path": _HTTP_PATH,
         "table": _TABLE,
         "write_mode": "overwrite",
@@ -537,7 +537,7 @@ def test_missing_credentials_name_the_data_output_node(monkeypatch: pytest.Monke
 def test_pipeline_write_reports_the_table_and_row_count(haute_scratch: Path, files: _Files) -> None:
     source = haute_scratch / "in.parquet"
     pl.DataFrame({"policy_id": ["p1", "p2"], "premium": [1.0, 2.0]}).write_parquet(source)
-    input_config = {"inputType": "file", "format": "parquet", "path": str(source)}
+    input_config = {"input_type": "file", "format": "parquet", "path": str(source)}
     build_test_input_snapshot(input_config)
     graph = PipelineGraph(
         nodes=[

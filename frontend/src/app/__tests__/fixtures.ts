@@ -29,7 +29,7 @@ export const release: WorkbenchAppReleaseResponse = {
   edit_role: null,
   can_edit: true,
 }
-export const VALUES = { policy: [{ "policy.state": "NY" }] }
+export const VALUES = { policy: [{ state: "NY" }] }
 export const TABLES = { premiums: [{ item: "Crane", premium: 120 }] }
 
 export function appQuote(overrides: Partial<WorkbenchAppQuote> = {}): WorkbenchAppQuote {

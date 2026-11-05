@@ -1049,7 +1049,7 @@ class TestDeployScorerOffset:
                             "label": "ms",
                             "nodeType": "modelScore",
                             "config": {
-                                "sourceType": "run",
+                                "source_type": "run",
                                 "run_id": "run_offset",
                                 "artifact_path": "glm_offset.rsglm",
                                 "feature_contract_path": str(contract_path),

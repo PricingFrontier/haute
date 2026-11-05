@@ -88,7 +88,7 @@ def test_a_data_output_refuses_one_in_a_format_written_through_arrow(
     tmp_path: Path, format_name: str, suffix: str
 ) -> None:
     config = {
-        "outputType": "file",
+        "output_type": "file",
         "format": format_name,
         "mode": "sink",
         "path": f"out.{suffix}",
@@ -106,7 +106,7 @@ def test_a_data_output_refuses_one_in_a_format_written_through_arrow(
 
 def test_a_data_output_keeps_one_in_a_format_polars_writes_itself(tmp_path: Path) -> None:
     config = {
-        "outputType": "file",
+        "output_type": "file",
         "format": "csv",
         "mode": "sink",
         "path": "out.csv",

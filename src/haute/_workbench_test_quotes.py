@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from haute._json_files import render_json_bytes
 from haute._output_assembler import render_output_document
 from haute._workbench_compare import (
     Move,
@@ -28,7 +29,7 @@ from haute._workbench_compare import (
     is_number,
 )
 from haute._workbench_config import WorkbenchError
-from haute._workbench_form import QUOTE_DETAILS_ID, FormSpec, SchemaColumn, SchemaTable
+from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec, SchemaColumn, SchemaTable
 from haute._workbench_input import IDENTITY_SHAPE, with_stand_in
 from haute._workbench_tables import (
     finite_document,
@@ -251,7 +252,7 @@ def test_quote_bytes(
     if tolerance is not None:
         row["tolerance_pct"] = tolerance
     row.update(metadata or {})
-    return (json.dumps([row], indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return render_json_bytes([row])
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +480,7 @@ def _row_values(
         return cells
     for name, value in row.items():
         column = columns.get(name)
-        if table.id == QUOTE_DETAILS_ID and name in _IDENTITY:
+        if table.name == QUOTE_DETAILS_NAME and name in _IDENTITY:
             continue
         if column is None:
             not_opened.append(f"{where}.{name}")
@@ -491,7 +492,7 @@ def _row_values(
             continue
         cell = _cell(value)
         if cell is not None:
-            cells[column.id] = cell
+            cells[column.name] = cell
     return cells
 
 
@@ -519,7 +520,7 @@ def opened_values(
             _row_values(table, row, name if table.rows == "one" else f"{name}[{place}]", not_opened)
             for place, row in enumerate(rows, 1)
         ]
-        values[table.id] = [dict(row) for row in preset_rows(table, cells)]
+        values[table.name] = [dict(row) for row in preset_rows(table, cells)]
     return values, not_opened
 
 

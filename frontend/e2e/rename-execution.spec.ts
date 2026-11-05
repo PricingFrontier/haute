@@ -53,7 +53,7 @@ test.describe("rename execution stability", () => {
     const mainPyPath = resolve(e2eProjectRoot, "rating", "main.py")
     const mainPyContent = readFileSync(mainPyPath, "utf-8")
     expect(mainPyContent).toMatch(/def enriched\(raw_rows:\s*pl\.LazyFrame\)/)
-    expect(mainPyContent).toMatch(/inputMapping\s*=\s*\{['"]raw_rows['"]:\s*['"]raw_rows_browser['"]\}/)
+    expect(mainPyContent).toMatch(/input_mapping\s*=\s*\{['"]raw_rows['"]:\s*['"]raw_rows_browser['"]\}/)
     expect(mainPyContent).toContain("df = raw_rows.with_columns")
 
     // 5. Reload the page, click enriched, Refresh, assert value_doubled, 22, and node properties trace text

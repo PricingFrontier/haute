@@ -63,7 +63,7 @@ def _file_input_config(path: str) -> dict:
         ".parquet": ("parquet", "scan"),
     }.get(Path(path).suffix.lower(), ("parquet", "scan"))
     return {
-        "inputType": "file",
+        "input_type": "file",
         "format": format_name,
         "mode": mode,
         "path": path,
@@ -74,7 +74,7 @@ def _file_input_config(path: str) -> dict:
 def _file_output_config(path: str, format_name: str) -> dict:
     """Build an explicit canonical file Data Output config."""
     return {
-        "outputType": "file",
+        "output_type": "file",
         "format": format_name,
         "mode": "sink" if format_name in {"csv", "parquet"} else "write",
         "path": path,
@@ -250,7 +250,7 @@ class TestTripleQuoteInjection:
                         {
                             "banding": "breakpoints",
                             "column": "x",
-                            "outputColumn": "x_f",
+                            "output_column": "x_f",
                             "rules": [],
                         }
                     ]
@@ -258,7 +258,7 @@ class TestTripleQuoteInjection:
             ),
             (
                 "ratingStep",
-                {"tables": [{"factors": ["x"], "outputColumn": "f", "entries": []}]},
+                {"tables": [{"factors": ["x"], "output_column": "f", "entries": []}]},
             ),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
             ("output", make_output_config(["a"])),
@@ -266,7 +266,7 @@ class TestTripleQuoteInjection:
             ("optimiser", {}),
             ("optimiserApply", {}),
             ("modelling", {}),
-            ("externalFile", {"path": "model.pkl", "fileType": "pickle", "code": ""}),
+            ("externalFile", {"path": "model.pkl", "file_type": "pickle", "code": ""}),
             ("liveSwitch", {"input_scenario_map": {"live": "live"}}),
         ],
         ids=lambda x: x if isinstance(x, str) else "",
@@ -390,7 +390,7 @@ class TestTripleQuoteInjection:
         node = _make_node(
             "modelScore",
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "abc",
                 "artifact_path": "model",
                 "task": "regression",
@@ -408,7 +408,7 @@ class TestTripleQuoteInjection:
         node = _make_node(
             "modelScore",
             {
-                "sourceType": "run",
+                "source_type": "run",
                 "run_id": "abc",
                 "artifact_path": "model",
                 "task": "regression",
@@ -606,7 +606,7 @@ class TestCurlyBracesInValues:
         """External file with {braces} in path."""
         config = {
             "path": "models/{version}/model.pkl",
-            "fileType": "pickle",
+            "file_type": "pickle",
             "code": "",
         }
         node = _make_node(
@@ -634,7 +634,7 @@ class TestCurlyBracesInValues:
         node = _make_node(
             "dataInput",
             {
-                "inputType": "databricks",
+                "input_type": "databricks",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.{env}.table",
                 "arguments": {},
@@ -694,7 +694,7 @@ class TestCurlyBracesInValues:
             "externalFile",
             {
                 "path": "model.pkl",
-                "fileType": "pickle",
+                "file_type": "pickle",
                 "code": 'result = {"key": obj.predict(df)}',
             },
         )

@@ -1234,7 +1234,7 @@ def _brief_port(
             node_type=node.data.nodeType,
             label=node.data.label,
             source_handle=source_handle,
-            instance_of=node.data.config.get("instanceOf")
+            instance_of=node.data.config.get("instance_of")
             if node_spec(node.data.nodeType).structural_role == "occurrence"
             else None,
             source_handles=source_handles,

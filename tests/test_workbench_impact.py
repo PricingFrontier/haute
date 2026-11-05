@@ -44,24 +44,19 @@ def _table(
 ) -> dict[str, Any]:
     """An output table as a form document holds it."""
     return {
-        "id": f"t_{name}",
         "name": name,
         "role": "output",
         "rows": rows,
-        "columns": [
-            {"id": f"c_{column}", "name": column, "type": "float", "key": column in keys}
-            for column in columns
-        ],
+        "columns": [{"name": column, "type": "float", "key": column in keys} for column in columns],
     }
 
 
 def _form(*tables: dict[str, Any]) -> dict[str, Any]:
     policy = {
-        "id": "t1",
         "name": "policy_details",
         "role": "input",
         "rows": "one",
-        "columns": [{"id": "c_exposure", "name": "exposure", "type": "float"}],
+        "columns": [{"name": "exposure", "type": "float"}],
     }
     return {"version": 1, "name": "x", "schema": {"tables": [policy, *tables]}}
 
@@ -137,7 +132,7 @@ class FakeApp:
                 return _refused(409, "This page was drawn for another release of the app")
             if self.pricing is not None:
                 return self.pricing(body["values"])
-            exposure = body["values"]["t1"][0]["c_exposure"]
+            exposure = body["values"]["policy_details"][0]["exposure"]
             return _ok({"tables": {"pricing_output": [{"premium": exposure / 2}]}, "request": {}})
         raise AssertionError(f"unexpected request {method} {path}")
 
@@ -225,7 +220,7 @@ class FakeClock:
 
 
 def _values(exposure: float) -> dict[str, Any]:
-    return {"t1": [{"c_exposure": exposure}], "quote_details": [{"qd_insured": "Acme Ltd"}]}
+    return {"policy_details": [{"exposure": exposure}], "quote_details": [{"insured": "Acme Ltd"}]}
 
 
 def _apps(count: int = 2, **staging: Any) -> Apps:
@@ -240,7 +235,11 @@ def _apps(count: int = 2, **staging: Any) -> Apps:
     staging.setdefault(
         "pricing",
         lambda values: _ok(
-            {"tables": {"pricing_output": [{"premium": values["t1"][0]["c_exposure"] / 4}]}}
+            {
+                "tables": {
+                    "pricing_output": [{"premium": values["policy_details"][0]["exposure"] / 4}]
+                }
+            }
         ),
     )
     return Apps(prod, FakeApp("s1", **staging))

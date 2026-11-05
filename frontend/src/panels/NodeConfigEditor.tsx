@@ -185,7 +185,7 @@ export function NodeConfigEditor({
       if (activeExplorePane === "code") {
         return (
           <div id="explore-code-pane" role="tabpanel" aria-labelledby="explore-code-tab" data-testid="explore-code-pane" className="h-full min-h-0 flex flex-col">
-            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} errorRevision={errorRevision} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} editor={(node.data as HauteNodeData).editor} />
+            <ExploreCodeEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} errorRevision={errorRevision} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} editor={(node.data as HauteNodeData).editor} />
           </div>
         )
       }
@@ -228,7 +228,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} errorRevision={errorRevision} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} editor={(node.data as HauteNodeData).editor} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} errorRevision={errorRevision} runError={runError} upstreamColumns={upstreamColumns} nodeId={node.id} nodeColumns={nodeColumns} editor={(node.data as HauteNodeData).editor} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />

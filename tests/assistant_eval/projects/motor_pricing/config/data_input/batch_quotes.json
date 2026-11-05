@@ -1,8 +1,6 @@
 {
-  "arguments": {},
   "format": "parquet",
-  "inputType": "file",
+  "input_type": "file",
   "mode": "scan",
-  "path": "data/batch_quotes.parquet",
-  "steps": []
+  "path": "data/batch_quotes.parquet"
 }

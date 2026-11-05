@@ -25,7 +25,7 @@
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
 | `src/haute/_polars_environment.py` | The Polars settings every process Haute starts runs under (see "Polars process settings" below): `polars_process_environment`, `polars_spill_root`, `apply_polars_process_environment`, `release_polars_spill_dir`, which every worker path calls beside its private-cgroup cleanup once the child has ended, and `reap_polars_spill_dirs`, which removes the folders of ended processes. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` collects on the engine its caller names, `streaming` or `in-memory` (a required argument; every collect in `src/haute/` names one), and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract; `execution_collect` and `streaming_collect` take optional Polars `optimizations` that replace Polars' defaults for that one query. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`), whose exceptions reach every seam as themselves. |
-| `src/haute/_node_apply.py` | Config-driven implementations of External File object loading (`load_external_object_from_config`, after `validate_external_file_config` refuses an empty `path` or a missing or unsupported `fileType` with a `ConfigSettingError` naming the setting, the check Recover reports too), `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, output response-document assembly (`assemble_output_from_config`), and a Workbench Input's frames and a Workbench Output's tables (`resolve_workbench_input_from_config`, `assemble_workbench_output_from_config`: given a config, the one a run gives the node with its tables; given a sidecar path, as generated code passes it, the sidecar read and given the tables of the form folder of the project holding `base_dir`, through `_workbench_node_config`, and `workbench_input_ports_from_config` the ports alone, the sample unread) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. `optimiser_apply_source` classifies an Apply Optimisation's source once (`OptimiserApplySource`) for every caller. |
+| `src/haute/_node_apply.py` | Config-driven implementations of External File object loading (`load_external_object_from_config`, after `validate_external_file_config` refuses an empty `path` or a missing or unsupported `file_type` with a `ConfigSettingError` naming the setting, the check Recover reports too), `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, output response-document assembly (`assemble_output_from_config`), and a Workbench Input's frames and a Workbench Output's tables (`resolve_workbench_input_from_config`, `assemble_workbench_output_from_config`: given a config, the one a run gives the node with its tables; given a sidecar path, as generated code passes it, the sidecar read and given the tables of the form folder of the project holding `base_dir`, through `_workbench_node_config`, and `workbench_input_ports_from_config` the ports alone, the sample unread) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. `optimiser_apply_source` classifies an Apply Optimisation's source once (`OptimiserApplySource`) for every caller. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY` (each type's recompute cost, slice transparency and behavioural flag are its specification entry's, `src/haute/_node_specs.py::NODE_SPECS`); `_build_node_fn` holds each node's config to its node type's config model before dispatching (`validate_node_config(..., persisted=False, require_complete=False)`, [pipeline config](../pipeline-config/low-level.md)), so a request graph's malformed config fails on its node with a `src/haute/errors.py::NodeConfigError` and a builder reads only a config its model accepts; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge`, which states the incoming edge a pass-through node's built function returns (the pass-through types are `src/haute/_node_specs.py::PASS_THROUGH_NODE_TYPES`, the edge `src/haute/_config_validation.py::selected_input_index`'s). A node built without an input (an unconnected Rating Step, Banding, Scenario Expander, Model Score or Optimiser Apply, an unsaved Data Input, and the deploy scorer's external and model placeholders) starts from `pl.LazyFrame()`, which has no rows, and so returns none: a constant it adds gives no row either (Polars 1 invented one). It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). A stepped Polars transform's function carries `transform_fn.failed_step`, which replays the schemas of the steps' prefixes on the run's input frames to name the step a run failed on and, for something Polars 2 refuses only on rows, what to change (`_failed_step`, `StepFailure`). `_SCENARIO_FANOUT` gives the types whose rows a Model Scoring's input fanout multiplies (the Expander's step count). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | Strict `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `canonical_topological_order` (the same graphlib sorter driven lexically: the smallest ready node id always comes next, so it is independent of input order; projection diagnostics rank nodes by it), and `ancestors` (a node and its ancestors over reversed edges, walked by `upstream_node_ids`). The default sorter never silently ignores an unknown endpoint. It is the one topological sort; `_find_cycle_nodes` peels in-degrees only to report every node in a cycle. |
@@ -708,7 +708,7 @@ hands over its write's digests the same way:
   once and joined with each driving slice (28.3 s against 19.3 s native at one million ×
   1,000 rows, 0.46 s against 0.20 s at one million × 12): a scenario expander's small lookup
   stays within 2.5 times native.
-  Every join states its order (`maintainOrder` is required), and so does every frame join
+  Every join states its order (`maintain_order` is required), and so does every frame join
   in `src/haute/`, the assistant's examples included: `"none"` where nothing reads the
   order (a count, a table keyed by id, a sort after it), held by `tests/test_join_orders.py`.
   An order naming the driving side keeps Polars' order: each part is sunk on the streaming engine, which keeps a
@@ -1792,7 +1792,7 @@ present a structural or schema result as execution evidence.
   opens no scan of its own, so its demand is never forced full width the way a source scan's
   is. With a known demand the planner analyses the code with the same compositional column
   lineage as a Polars node, over the same incoming-edge bindings (edge input names and
-  `inputMapping` aliases) plus `df`, which the builder binds to the first incoming frame.
+  `input_mapping` aliases) plus `df`, which the builder binds to the first incoming frame.
   `obj` is the node's declared value name: the artifact comes from JSON, the restricted
   unpickler, or a model loader, so it is never a Polars expression or a frame. Code that uses
   `obj` as a scalar or a literal inside provable expressions (`pl.col('premium') *
@@ -1994,7 +1994,7 @@ present a structural or schema result as execution evidence.
   lookup is a distinct identity and an entry cached after one failure is never
   served during another, and execution reports the failure.
 - **File-sourced Model Score nodes sign their model and contract.** A
-  `MODEL_SCORE` node with `sourceType: "file"` lists `model_path` among its
+  `MODEL_SCORE` node with `source_type: "file"` lists `model_path` among its
   local runtime input path fields (beside `feature_contract_path`), so
   `canonical_dataframe_execution_graph` contains and resolves it like any
   other local input and `_runtime_file_signature_paths` signs it. Without an
@@ -2041,9 +2041,9 @@ present a structural or schema result as execution evidence.
   validates the config's `keyword_parameters` (pipeline-config's keyword-only parameters),
   and `_exec_user_code` binds their scalar values (`keyword_parameter_values`) after the
   input frames, over the preamble and global constants, so the code reads a parameter, not a
-  same-named preamble value or the physical name an `inputMapping` renamed, as the generated
+  same-named preamble value or the physical name an `input_mapping` renamed, as the generated
   function does. A binding named like a logical input is a `ConfigError` naming the node.
-- **A Transform or Load File `inputMapping` preserves authored input identity across
+- **A Transform or Load File `input_mapping` preserves authored input identity across
   parent replacement.** Both are the surfaces whose code names its inputs
   (`stepped_surface_allows_input_references`). `resolve_orig_source_names` derives the current input names
   from the node's incoming edges, validates the mapping as a one-to-one
@@ -2053,8 +2053,8 @@ present a structural or schema result as execution evidence.
   input frames together, so swapping two logical names cannot overwrite either
   frame before the other alias is bound. Stale, malformed, or colliding
   mappings raise `ConfigError`; they never fall back positionally. No node carries
-  `instanceOf`: an instance is a submodel occurrence, expanded before execution, and
-  flattening records the `inputMapping` its nodes need when a bound frame's name differs
+  `instance_of`: an instance is a submodel occurrence, expanded before execution, and
+  flattening records the `input_mapping` its nodes need when a bound frame's name differs
   from the public input their code reads.
 - **An instance's missing-column warnings compare the frames its edges carry.** For
   each public input that an instance occurrence and its owner both bind (flattening

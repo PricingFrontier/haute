@@ -5,11 +5,11 @@
     "factors": "One entry per banded column; each reads one input column and writes one new output column. Several factors in one node band several columns.",
     "factors[].banding": "\"breakpoints\" for a number or date column, \"categorical\" for a string column or an integer code column (vehicle group, NCD years). There is no default type.",
     "factors[].column": "The input column to band.",
-    "factors[].outputColumn": "The new column the band labels go to; it must not already exist.",
+    "factors[].output_column": "The new column the band labels go to; it must not already exist.",
     "factors[].rules (breakpoints)": "Ordered {boundary, label} rows. Each boundary is a string holding the band's inclusive upper end: a number (\"25\") or a date (\"2024-06-30\"), all of one kind per factor. Bands are (previous boundary, boundary]. One last row with boundary \"\" is the open-ended band above the highest boundary; without it values above the highest boundary get the default.",
     "factors[].rules (categorical)": "{value, assignment} rows: value is the exact input string to match, assignment the band label. Values are strings even for codes that look numeric.",
     "factors[].default": "The label for a value no rule matches, including null; null leaves those rows null.",
-    "factors[].rightClosed": "Optional, default true. false makes breakpoint bands [previous boundary, boundary) instead."
+    "factors[].right_closed": "Optional, default true. false makes breakpoint bands [previous boundary, boundary) instead."
   },
   "inputs": [
     {
@@ -32,7 +32,7 @@
           {
             "banding": "breakpoints",
             "column": "driver_age",
-            "outputColumn": "age_band",
+            "output_column": "age_band",
             "rules": [
               {"boundary": "24", "label": "17-24"},
               {"boundary": "59", "label": "25-59"},
@@ -52,7 +52,7 @@
           {
             "banding": "breakpoints",
             "column": "vehicle_value",
-            "outputColumn": "value_band",
+            "output_column": "value_band",
             "rules": [
               {"boundary": "5000", "label": "up to 5k"},
               {"boundary": "15000", "label": "5k-15k"},
@@ -63,7 +63,7 @@
           {
             "banding": "breakpoints",
             "column": "inception_date",
-            "outputColumn": "inception_half",
+            "output_column": "inception_half",
             "rules": [
               {"boundary": "2024-06-30", "label": "2024 H1"},
               {"boundary": "2024-12-31", "label": "2024 H2"},
@@ -74,7 +74,7 @@
           {
             "banding": "categorical",
             "column": "region_code",
-            "outputColumn": "region",
+            "output_column": "region",
             "rules": [
               {"value": "NE", "assignment": "North"},
               {"value": "NW", "assignment": "North"},

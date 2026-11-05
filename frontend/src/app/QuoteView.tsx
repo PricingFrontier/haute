@@ -33,7 +33,7 @@ import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStor
 import { canonicalJson } from "../utils/canonicalJson"
 import { relativeTime } from "../utils/relativeTime"
 import { basisOf, quoteEligible } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_ID } from "../utils/workbenchForm"
+import { QUOTE_DETAILS, QUOTE_DETAILS_NAME } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
@@ -237,7 +237,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const unpriceable = !priced && error !== null
   const closed = reason !== null
   // The quote's name is its quote_details.quote_name cell, on the sheets or not.
-  const name = values[QUOTE_DETAILS_ID]?.[0]?.[NAME_COLUMN]
+  const name = values[QUOTE_DETAILS_NAME]?.[0]?.[NAME_COLUMN]
   // A saved quote whose values are as saved, priced as saved on this release, or unpriced as
   // saved, has nothing new to save; a price made since, or one of another release, has.
   const samePrice = priced
@@ -356,7 +356,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           placeholder={quote === null ? "Name this quote" : quote.title}
           disabled={!ready || closed}
           title="The quote's name, saved with it"
-          onCommit={(text) => setCell(QUOTE_DETAILS_ID, 0, NAME_COLUMN, text.trim())}
+          onCommit={(text) => setCell(QUOTE_DETAILS_NAME, 0, NAME_COLUMN, text.trim())}
           maxLength={200}
           className="focus-ring w-full rounded px-1 py-0.5 text-[12px]"
           style={{ background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-primary)" }}

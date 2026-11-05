@@ -81,68 +81,68 @@ def every_type_form(**show_when: Any) -> FormSpec:
 @pytest.mark.parametrize("op", ["equals", "one_of", "at_least"])
 def test_a_tick_in_a_column_no_longer_true_false_is_never_a_number_or_a_value(op: str) -> None:
     # Python counts True as 1; a box ticked before its column became an Integer is neither.
-    condition = {"table": "t_in", "column": "c_int", "op": op, "values": ["1"]}
+    condition = {"table": "inputs", "column": "count", "op": op, "values": ["1"]}
     spec = every_type_form(match="all", conditions=[condition])
 
-    assert visibility(spec, {"t_in": [{"c_int": True}]}).pages == {"p_main"}
-    assert visibility(spec, {"t_in": [{"c_int": "1"}]}).pages == {"p_main", "p_target"}
+    assert visibility(spec, {"inputs": [{"count": True}]}).pages == {"p_main"}
+    assert visibility(spec, {"inputs": [{"count": "1"}]}).pages == {"p_main", "p_target"}
 
 
 @pytest.mark.parametrize(
     ("column", "op", "values", "fits"),
     [
-        ("c_choice", "not_one_of", ["A", "B"], True),
-        ("c_choice", "not_one_of", ["A", " "], False),
-        ("c_num", "at_most", ["£1,000.50"], True),
-        ("c_int", "equals", ["1e3"], True),
-        ("c_int", "equals", ["nan"], False),
-        ("c_day", "at_least", ["2024-02-29"], True),
-        ("c_day", "at_least", ["2023-02-29"], False),
-        ("c_day", "at_least", ["２０２６-01-01"], False),
-        ("c_tick", "not_ticked", [], True),
+        ("choice", "not_one_of", ["A", "B"], True),
+        ("choice", "not_one_of", ["A", " "], False),
+        ("amount", "at_most", ["£1,000.50"], True),
+        ("count", "equals", ["1e3"], True),
+        ("count", "equals", ["nan"], False),
+        ("day", "at_least", ["2024-02-29"], True),
+        ("day", "at_least", ["2023-02-29"], False),
+        ("day", "at_least", ["２０２６-01-01"], False),
+        ("tick", "not_ticked", [], True),
     ],
 )
 def test_a_condition_fits_while_its_values_are_ones_its_column_could_hold(
     column: str, op: str, values: list[str], fits: bool
 ) -> None:
     condition = Condition.model_validate(
-        {"table": "t_in", "column": column, "op": op, "values": values}
+        {"table": "inputs", "column": column, "op": op, "values": values}
     )
 
     assert condition_fits(every_type_form(), condition) is fits
 
 
-def against(column: str, table: str = "t_in") -> dict[str, str]:
+def against(column: str, table: str = "inputs") -> dict[str, str]:
     return {"table": table, "column": column}
 
 
 @pytest.mark.parametrize(
     ("condition", "fits"),
     [
-        ({"column": "c_text", "op": "contains", "field": against("c_choice")}, True),
-        ({"column": "c_day", "op": "above", "field": against("c_day"), "days": -30}, True),
-        ({"column": "c_num", "op": "at_most", "field": against("c_num")}, True),
+        ({"column": "text", "op": "contains", "field": against("choice")}, True),
+        ({"column": "day", "op": "above", "field": against("day"), "days": -30}, True),
+        ({"column": "amount", "op": "at_most", "field": against("amount")}, True),
         # A field gives one value, in place of values typed, of the column's type.
-        ({"column": "c_text", "op": "one_of", "field": against("c_choice")}, False),
-        ({"column": "c_text", "op": "filled", "field": against("c_choice")}, False),
+        ({"column": "text", "op": "one_of", "field": against("choice")}, False),
+        ({"column": "text", "op": "filled", "field": against("choice")}, False),
         (
-            {"column": "c_text", "op": "equals", "values": ["A"], "field": against("c_choice")},
+            {"column": "text", "op": "equals", "values": ["A"], "field": against("choice")},
             False,
         ),
-        ({"column": "c_num", "op": "equals", "field": against("c_int")}, False),
+        ({"column": "amount", "op": "equals", "field": against("count")}, False),
         # The field is a one-row input table's.
-        ({"column": "c_text", "op": "equals", "field": against("c_key", "t_many")}, False),
-        ({"column": "c_num", "op": "equals", "field": against("c_o", "t_out")}, False),
-        ({"column": "c_text", "op": "equals", "field": against("c_gone")}, False),
+        ({"column": "text", "op": "equals", "field": against("key", "lines")}, False),
+        ({"column": "amount", "op": "equals", "field": against("o", "outputs")}, False),
+        ({"column": "text", "op": "equals", "field": against("gone")}, False),
         # Days go to another Date alone.
-        ({"column": "c_num", "op": "above", "field": against("c_num"), "days": 1}, False),
-        ({"column": "c_day", "op": "above", "values": ["2026-01-01"], "days": 1}, False),
+        ({"column": "amount", "op": "above", "field": against("amount"), "days": 1}, False),
+        ({"column": "day", "op": "above", "values": ["2026-01-01"], "days": 1}, False),
     ],
 )
 def test_a_condition_against_another_field_fits_while_that_field_can_give_its_value(
     condition: dict[str, Any], fits: bool
 ) -> None:
-    single = Condition.model_validate({"table": "t_in", **condition})
+    single = Condition.model_validate({"table": "inputs", **condition})
 
     assert condition_fits(every_type_form(), single) is fits
 
@@ -151,9 +151,9 @@ def test_a_condition_against_another_field_fits_while_that_field_can_give_its_va
     ("condition", "fits"),
     [
         # The price's columns are tested as typed values are, against values typed alone.
-        ({"table": "t_out", "column": "c_o", "op": "above", "values": ["1"]}, True),
-        ({"table": "t_out", "column": "c_o", "op": "ticked"}, False),
-        ({"table": "t_out", "column": "c_o", "op": "above", "field": against("c_num")}, False),
+        ({"table": "outputs", "column": "o", "op": "above", "values": ["1"]}, True),
+        ({"table": "outputs", "column": "o", "op": "ticked"}, False),
+        ({"table": "outputs", "column": "o", "op": "above", "field": against("amount")}, False),
     ],
 )
 def test_a_condition_on_the_price_fits_as_a_typed_value_s_does_against_values_typed_alone(
@@ -162,61 +162,64 @@ def test_a_condition_on_the_price_fits_as_a_typed_value_s_does_against_values_ty
     assert condition_fits(every_type_form(), Condition.model_validate(condition)) is fits
 
 
-FILLED_V = {"column": "c_v", "op": "filled"}
+FILLED_V = {"column": "v", "op": "filled"}
 
 
 def total(**changed: Any) -> dict[str, Any]:
-    """A sum of t_many's numbers above 1,000, *changed* as given."""
-    condition = {"table": "t_many", "total": "sum", "column": "c_v", "where": []}
+    """A sum of the lines' numbers above 1,000, *changed* as given."""
+    condition = {"table": "lines", "total": "sum", "column": "v", "where": []}
     return {**condition, "op": "above", "value": "£1,000", **changed}
 
 
 @pytest.mark.parametrize(
     ("condition", "fits"),
     [
-        ({"table": "t_many", "rows": "every", "where": [FILLED_V]}, True),
-        ({"table": "t_in", "rows": "any", "where": [{"column": "c_num", "op": "filled"}]}, False),
-        ({"table": "t_many", "column": "c_v", "op": "filled"}, False),
-        ({"table": "t_many", "where": [], "op": "at_least", "count": 2}, True),
+        ({"table": "lines", "rows": "every", "where": [FILLED_V]}, True),
+        (
+            {"table": "inputs", "rows": "any", "where": [{"column": "amount", "op": "filled"}]},
+            False,
+        ),
+        ({"table": "lines", "column": "v", "op": "filled"}, False),
+        ({"table": "lines", "where": [], "op": "at_least", "count": 2}, True),
         (
             {
-                "table": "t_many",
-                "where": [{"column": "c_gone", "op": "filled"}],
+                "table": "lines",
+                "where": [{"column": "gone", "op": "filled"}],
                 "op": "at_least",
                 "count": 2,
             },
             False,
         ),
-        ({"table": "t_in", "where": [], "op": "at_least", "count": 2}, False),
-        ({"table": "t_out", "where": [], "op": "at_least", "count": 2}, False),
+        ({"table": "inputs", "where": [], "op": "at_least", "count": 2}, False),
+        ({"table": "outputs", "where": [], "op": "at_least", "count": 2}, False),
         (total(), True),
-        (total(where=[FILLED_V, {"column": "c_key", "op": "equals", "values": ["A"]}]), True),
-        (total(column="c_key"), False),
-        (total(column="c_gone"), False),
+        (total(where=[FILLED_V, {"column": "key", "op": "equals", "values": ["A"]}]), True),
+        (total(column="key"), False),
+        (total(column="gone"), False),
         (total(value="lots"), False),
-        (total(where=[{"column": "c_key", "op": "ticked"}]), False),
+        (total(where=[{"column": "key", "op": "ticked"}]), False),
         # A test of a row against another column of the same row, of its type.
         (
             {
-                "table": "t_many",
+                "table": "lines",
                 "rows": "any",
-                "where": [{**FILLED_V, "op": "above", "field": "c_v"}],
+                "where": [{**FILLED_V, "op": "above", "field": "v"}],
             },
             True,
         ),
         (
             {
-                "table": "t_many",
+                "table": "lines",
                 "rows": "any",
-                "where": [{**FILLED_V, "op": "above", "field": "c_key"}],
+                "where": [{**FILLED_V, "op": "above", "field": "key"}],
             },
             False,
         ),
         (
             {
-                "table": "t_many",
+                "table": "lines",
                 "rows": "any",
-                "where": [{**FILLED_V, "op": "above", "field": "c_gone"}],
+                "where": [{**FILLED_V, "op": "above", "field": "gone"}],
             },
             False,
         ),

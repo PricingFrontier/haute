@@ -10,15 +10,15 @@ success, with no log and no counter.  Repro evidence (HEAD):
 
 These tests pin the new contract:
 
-* DEFAULT: a miss with no usable ``defaultValue`` raises
+* DEFAULT: a miss with no usable ``default_value`` raises
   ``RatingTableMissError`` at materialisation, naming the table, the
   missing key(s) (capped) and the affected row count — in both the
   in-memory and streaming engines.
-* OPT-IN: ``"onMissing": "neutral"`` accepts misses explicitly — the
+* OPT-IN: ``"on_missing": "neutral"`` accepts misses explicitly — the
   table output stays null, combined outputs fill the operation's neutral
   element exactly as before, and every miss is counted and logged
   (WARNING with table + count).  Visible, never silent.
-* ``defaultValue`` still wins when usable: misses fill the default with
+* ``default_value`` still wins when usable: misses fill the default with
   no error and no warning (explicit config, surfaced in traces).
 
 This is a breaking behaviour change with a planned release note
@@ -60,7 +60,7 @@ def _age_region_config(**age_table_extra: Any) -> dict[str, Any]:
         "tables": [
             {
                 "factors": ["age_band"],
-                "outputColumn": "age_factor",
+                "output_column": "age_factor",
                 "entries": [
                     {"age_band": "18-25", "value": 1.5},
                     {"age_band": "26-40", "value": 1.1},
@@ -69,15 +69,15 @@ def _age_region_config(**age_table_extra: Any) -> dict[str, Any]:
             },
             {
                 "factors": ["region"],
-                "outputColumn": "region_factor",
+                "output_column": "region_factor",
                 "entries": [
                     {"region": "North", "value": 1.2},
                     {"region": "South", "value": 0.9},
                 ],
             },
         ],
-        "combinedOutputs": [
-            {"outputColumn": "premium", "operation": "multiply", "baseValue": 100.0}
+        "combined_outputs": [
+            {"output_column": "premium", "operation": "multiply", "base_value": 100.0}
         ],
     }
 
@@ -108,8 +108,8 @@ class TestMissFailsLoudByDefault:
         assert "26-39" in message
         assert re.search(r"\b1 of 2 row", message)
         # The error must teach the fix, not just complain.
-        assert "defaultValue" in message
-        assert "onMissing" in message
+        assert "default_value" in message
+        assert "on_missing" in message
 
     def test_raises_through_executor_builder(self) -> None:
         node = _rating_node("r1", _age_region_config())
@@ -128,7 +128,7 @@ class TestMissFailsLoudByDefault:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "out",
+                    "output_column": "out",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ]
@@ -139,15 +139,15 @@ class TestMissFailsLoudByDefault:
 
     def test_add_operation_miss_raises(self) -> None:
         config = _age_region_config()
-        config["combinedOutputs"] = [
-            {"outputColumn": "total", "operation": "add", "baseValue": 100.0}
+        config["combined_outputs"] = [
+            {"output_column": "total", "operation": "add", "base_value": 100.0}
         ]
         with pytest.raises(RatingTableMissError):
             streaming_collect(apply_rating_step_from_config(_renamed_band_frame(), config))
 
     def test_missing_keys_capped_in_message(self) -> None:
         entries = [{"k": f"present_{i}", "value": 1.0} for i in range(3)]
-        config = {"tables": [{"factors": ["k"], "outputColumn": "out", "entries": entries}]}
+        config = {"tables": [{"factors": ["k"], "output_column": "out", "entries": entries}]}
         frame_keys = [f"absent_{i:02d}" for i in range(25)]
         lf = pl.DataFrame({"k": frame_keys}).lazy()
         with pytest.raises(RatingTableMissError) as excinfo:
@@ -165,7 +165,7 @@ class TestMissFailsLoudByDefault:
             "tables": [
                 {
                     "factors": ["region", "tier"],
-                    "outputColumn": "out",
+                    "output_column": "out",
                     "entries": [{"region": "North", "tier": "gold", "value": 1.0}],
                 }
             ]
@@ -183,8 +183,8 @@ class TestMissFailsLoudByDefault:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "out",
-                    "defaultValue": "N/A",
+                    "output_column": "out",
+                    "default_value": "N/A",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ]
@@ -198,7 +198,7 @@ class TestMissFailsLoudByDefault:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "vehicle_factor",
+                    "output_column": "vehicle_factor",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ]
@@ -218,7 +218,7 @@ class TestMissFailsLoudByDefault:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "out",
+                    "output_column": "out",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ]
@@ -250,7 +250,7 @@ class TestNoMissNoNoise:
         assert out.height == 0
 
     def test_usable_default_fills_without_error_or_warning(self) -> None:
-        config = _age_region_config(defaultValue="1.0")
+        config = _age_region_config(default_value="1.0")
         with structlog.testing.capture_logs() as logs:
             out = apply_rating_step_from_config(_renamed_band_frame(), config).collect()
         assert out["age_factor"].to_list() == [1.5, 1.0]
@@ -259,13 +259,13 @@ class TestNoMissNoNoise:
 
 
 # ---------------------------------------------------------------------------
-# Opt-in: onMissing = "neutral"
+# Opt-in: on_missing = "neutral"
 # ---------------------------------------------------------------------------
 
 
 class TestOptInNeutral:
     def test_neutral_fills_multiply_and_warns_with_count(self) -> None:
-        config = _age_region_config(onMissing="neutral")
+        config = _age_region_config(on_missing="neutral")
         with structlog.testing.capture_logs() as logs:
             out = apply_rating_step_from_config(_renamed_band_frame(), config).collect()
         # Old numeric behaviour, now explicit: null table output, neutral combine.
@@ -281,9 +281,9 @@ class TestOptInNeutral:
         assert {"age_band": "26-39"} in log["missing_keys"]
 
     def test_neutral_add_contributes_zero(self) -> None:
-        config = _age_region_config(onMissing="neutral")
-        config["combinedOutputs"] = [
-            {"outputColumn": "total", "operation": "add", "baseValue": 100.0}
+        config = _age_region_config(on_missing="neutral")
+        config["combined_outputs"] = [
+            {"output_column": "total", "operation": "add", "base_value": 100.0}
         ]
         with structlog.testing.capture_logs() as logs:
             out = apply_rating_step_from_config(_renamed_band_frame(), config).collect()
@@ -292,9 +292,9 @@ class TestOptInNeutral:
 
     @pytest.mark.parametrize("operation", ["min", "max"])
     def test_neutral_min_max_skip_nulls(self, operation: str) -> None:
-        config = _age_region_config(onMissing="neutral")
-        config["combinedOutputs"] = [
-            {"outputColumn": "combined", "operation": operation, "baseValue": 1.0}
+        config = _age_region_config(on_missing="neutral")
+        config["combined_outputs"] = [
+            {"output_column": "combined", "operation": operation, "base_value": 1.0}
         ]
         out = apply_rating_step_from_config(_renamed_band_frame(), config).collect()
         # Horizontal min/max ignore nulls: the missed factor has no effect.
@@ -306,8 +306,8 @@ class TestOptInNeutral:
             "tables": [
                 {
                     "factors": ["band"],
-                    "outputColumn": "out",
-                    "onMissing": "neutral",
+                    "output_column": "out",
+                    "on_missing": "neutral",
                     "entries": [{"band": "A", "value": 2.0}],
                 }
             ]
@@ -319,36 +319,36 @@ class TestOptInNeutral:
         assert any(log["event"] == MISS_EVENT for log in logs)
 
     def test_neutral_with_no_misses_does_not_warn(self) -> None:
-        config = _age_region_config(onMissing="neutral")
+        config = _age_region_config(on_missing="neutral")
         lf = pl.DataFrame({"age_band": ["18-25", "26-40"], "region": ["North", "South"]}).lazy()
         with structlog.testing.capture_logs() as logs:
             apply_rating_step_from_config(lf, config).collect()
         assert [log for log in logs if log["event"] == MISS_EVENT] == []
 
     def test_usable_default_wins_over_neutral(self) -> None:
-        """defaultValue fills before the miss guard sees anything."""
-        config = _age_region_config(defaultValue="1.0", onMissing="neutral")
+        """default_value fills before the miss guard sees anything."""
+        config = _age_region_config(default_value="1.0", on_missing="neutral")
         with structlog.testing.capture_logs() as logs:
             out = apply_rating_step_from_config(_renamed_band_frame(), config).collect()
         assert out["age_factor"].to_list() == [1.5, 1.0]
         assert [log for log in logs if log["event"] == MISS_EVENT] == []
 
     def test_invalid_on_missing_value_raises(self) -> None:
-        config = _age_region_config(onMissing="zebra")
-        with pytest.raises(ValueError, match="onMissing"):
+        config = _age_region_config(on_missing="zebra")
+        with pytest.raises(ValueError, match="on_missing"):
             apply_rating_step_from_config(_renamed_band_frame(), config)
 
     def test_explicit_error_value_is_accepted(self) -> None:
-        config = _age_region_config(onMissing="error")
+        config = _age_region_config(on_missing="error")
         with pytest.raises(RatingTableMissError):
             streaming_collect(apply_rating_step_from_config(_renamed_band_frame(), config))
 
     def test_on_missing_round_trips_through_sidecar(self) -> None:
         """The opt-in key must survive canonical normalisation and JSON round-trip."""
-        config = _age_region_config(onMissing="neutral")
+        config = _age_region_config(on_missing="neutral")
         compacted = normalise_rating_step_config(config)
         rehydrated = normalise_rating_step_config(json.loads(json.dumps(compacted)))
-        assert rehydrated["tables"][0]["onMissing"] == "neutral"
+        assert rehydrated["tables"][0]["on_missing"] == "neutral"
         with structlog.testing.capture_logs() as logs:
             out = apply_rating_step_from_config(_renamed_band_frame(), rehydrated).collect()
         assert out["premium"].to_list() == [pytest.approx(180.0), pytest.approx(90.0)]
@@ -364,7 +364,7 @@ class TestApplyRatingTableMissGuard:
     def test_direct_call_raises_on_miss(self) -> None:
         table = {
             "factors": ["k"],
-            "outputColumn": "out",
+            "output_column": "out",
             "entries": [{"k": "a", "value": 1.0}],
         }
         lf = pl.DataFrame({"k": ["a", "b"]}).lazy()
@@ -374,8 +374,8 @@ class TestApplyRatingTableMissGuard:
     def test_direct_call_neutral_keeps_null(self) -> None:
         table = {
             "factors": ["k"],
-            "outputColumn": "out",
-            "onMissing": "neutral",
+            "output_column": "out",
+            "on_missing": "neutral",
             "entries": [{"k": "a", "value": 1.0}],
         }
         lf = pl.DataFrame({"k": ["a", "b"]}).lazy()

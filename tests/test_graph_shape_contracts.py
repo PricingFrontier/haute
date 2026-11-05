@@ -61,6 +61,9 @@ def _normalize_value(value: Any) -> Any:
             normalized_value = _normalize_value(value[key])
             if key == "code" and normalized_value == "":
                 continue
+            # A stepped node declared with no code loads with no steps yet (READ-44).
+            if key == "steps" and normalized_value == []:
+                continue
             normalized[key] = normalized_value
         return normalized
     if isinstance(value, list):
@@ -134,7 +137,7 @@ class TestSingleNodeVariants:
                                 "label": "src",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": "data/input.parquet",
@@ -171,7 +174,7 @@ class TestSingleNodeVariants:
                                 "label": "sink",
                                 "nodeType": "dataOutput",
                                 "config": {
-                                    "outputType": "file",
+                                    "output_type": "file",
                                     "format": "parquet",
                                     "mode": "sink",
                                     "path": "outputs/result",
@@ -203,7 +206,7 @@ class TestExploreGraphShape:
                                 "label": "Source",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": "data/input.parquet",
@@ -256,7 +259,7 @@ class TestExploreGraphShape:
                                 "label": "A",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": "a.parquet",
@@ -272,7 +275,7 @@ class TestExploreGraphShape:
                                 "label": "B",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": "b.parquet",
@@ -306,7 +309,7 @@ class TestExploreGraphShape:
                                 "label": "Source",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": "data.parquet",
@@ -353,7 +356,7 @@ class TestExploreGraphShape:
                                 "label": "Source",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": str(path),
@@ -420,7 +423,7 @@ class TestExploreGraphShape:
                                 "label": "Source",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": str(data_path),
@@ -479,7 +482,7 @@ class TestExploreGraphShape:
                                 "label": "First",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": str(first),
@@ -495,7 +498,7 @@ class TestExploreGraphShape:
                                 "label": "Second",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": str(second),
@@ -566,7 +569,7 @@ class TestRoundTripDrift:
                                 "label": "src",
                                 "nodeType": "dataInput",
                                 "config": {
-                                    "inputType": "file",
+                                    "input_type": "file",
                                     "format": "parquet",
                                     "mode": "scan",
                                     "path": "data/input.parquet",

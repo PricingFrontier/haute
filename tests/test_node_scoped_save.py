@@ -18,7 +18,7 @@ from haute._types import NodeType
 from tests._project import use_project
 
 BROKEN_INPUT = {
-    "inputType": "file",
+    "input_type": "file",
     "format": "parquet",
     "mode": "scan",
     "path": "",
@@ -136,9 +136,7 @@ def test_scoped_save_rejects_unavailable_target_and_shared_config(tmp_path):
         '@pipeline.constant(config="custom.json")\ndef second(): ...\n'
     )
     (shared_root / "x.json").write_text(json.dumps(BROKEN_INPUT))
-    (shared_root / "custom.json").write_text(
-        json.dumps({"values": [{"name": "constant_1", "value": "1.0"}]})
-    )
+    (shared_root / "custom.json").write_text(json.dumps({"values": {"constant_1": 1.0}}))
     document = load_pipeline_editor_document(shared_root / "main.py", project_root=shared_root)
     assert document.load_status == "degraded"
     for node in document.nodes:
@@ -167,17 +165,95 @@ def test_scoped_save_edits_blocked_node_downstream_of_broken_input(tmp_path):
     transform = next(node for node in document.nodes if node.authored_id == "transform")
     assert transform.availability == "blocked"
     assert transform.scoped_editable is True
+    # Its code rebuilds as steps (READ-22); the editor adds one.
+    config = transform.config or {}
+    assert [step["kind"] for step in config["steps"]] == ["source"]
+    limit = {"id": "limit-2", "kind": "limit", "n": 1}
 
-    request = _save_request(
-        tmp_path,
-        "transform",
-        {**(transform.config or {}), "code": "df = source_a\ndf = df.head(1)\nreturn df"},
-    )
+    request = _save_request(tmp_path, "transform", {**config, "steps": [*config["steps"], limit]})
     saved = apply_scoped_node_save(project_root=tmp_path, request=request)
     node = next(item for item in saved.nodes if item.authored_id == "transform")
     assert node.availability == "blocked"
     assert "df.head(1)" in main.read_text()
     assert json.loads((tmp_path / "a.json").read_text()) == BROKEN_INPUT
+
+
+def test_scoped_save_keeps_an_unfinished_step_list_until_it_is_complete(tmp_path):
+    """Saved with an unfinished step, a transform's body is the raising placeholder, so its
+    steps are kept in the canvas sidecar (READ-22): the degraded document opens the node
+    with them, and completing them moves them into the code and out of the sidecar."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    main = tmp_path / "main.py"
+    main.write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        "@pipeline.polars\ndef transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df: pl.LazyFrame\n    df = source_a\n    return df\n"
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    config = next(node for node in document.nodes if node.authored_id == "transform").config
+    assert config is not None
+    unfinished = [*config["steps"], {"id": "filter-2", "kind": "filter", "match": "all"}]
+
+    saved = apply_scoped_node_save(
+        project_root=tmp_path,
+        request=_save_request(tmp_path, "transform", {**config, "steps": unfinished}),
+    )
+
+    assert "raise NotImplementedError" in main.read_text()
+    sidecar = main.with_suffix(".haute.json")
+    assert json.loads(sidecar.read_text())["unfinished_steps"] == {"transform": unfinished}
+    assert saved.load_status == "degraded"
+    opened = next(node for node in saved.nodes if node.authored_id == "transform")
+    assert opened.config is not None
+    assert opened.config["steps"] == unfinished
+    assert opened.editor.steps_error is not None
+
+    complete = [*config["steps"], {"id": "limit-2", "kind": "limit", "n": 1}]
+    apply_scoped_node_save(
+        project_root=tmp_path,
+        request=_save_request(tmp_path, "transform", {**config, "steps": complete}),
+    )
+
+    assert "df.head(1)" in main.read_text()
+    assert "unfinished_steps" not in json.loads(sidecar.read_text())
+
+
+def test_scoped_save_of_unfinished_steps_refuses_a_sidecar_the_editor_refuses(tmp_path):
+    """The steps' one copy would go to a sidecar the editor reads as corrupt, so the next
+    load would drop it: the save is refused and neither file changes."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    main = tmp_path / "main.py"
+    main.write_text(
+        "import haute\nimport polars as pl\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        "@pipeline.polars\ndef transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df: pl.LazyFrame\n    df = source_a\n    return df\n"
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    sidecar = main.with_suffix(".haute.json")
+    sidecar.write_text('{"sources": ["live"], "active_source": "batch"}\n')
+    request_config = next(
+        node
+        for node in load_pipeline_editor_document(main, project_root=tmp_path).nodes
+        if node.authored_id == "transform"
+    ).config
+    assert request_config is not None
+    unfinished = [*request_config["steps"], {"id": "filter-2", "kind": "filter", "match": "all"}]
+    request = _save_request(tmp_path, "transform", {**request_config, "steps": unfinished})
+    before = {path: path.read_bytes() for path in (main, sidecar)}
+
+    with pytest.raises(PipelineRepairError, match="cannot be read"):
+        apply_scoped_node_save(project_root=tmp_path, request=request)
+
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings(tmp_path):
@@ -210,17 +286,19 @@ def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings
     factor = {
         "banding": "breakpoints",
         "column": "age",
-        "outputColumn": "age_band",
+        "output_column": "age_band",
         "rules": [{"boundary": "25", "label": "young"}],
         "default": None,
     }
-    (tmp_path / "band.json").write_text(json.dumps({"factors": [factor]}))
+    # The sidecar writes the factor's bands as a list (READ-27); the editor holds rows.
+    sidecar_factor = {**factor, "rules": [{"upper": 25, "label": "young"}]}
+    (tmp_path / "band.json").write_text(json.dumps({"factors": [sidecar_factor]}))
     document = load_pipeline_editor_document(main, project_root=tmp_path)
     band = next(node for node in document.nodes if node.authored_id == "band")
     assert band.scoped_editable is True
     assert (band.config or {})["contract"] == {"inputs": ["age"], "outputs": ["age_band"]}
 
-    renamed = {**(band.config or {}), "factors": [{**factor, "outputColumn": "age_group"}]}
+    renamed = {**(band.config or {}), "factors": [{**factor, "output_column": "age_group"}]}
     saved = apply_scoped_node_save(
         project_root=tmp_path, request=_save_request(tmp_path, "band", renamed)
     )
@@ -253,14 +331,17 @@ def test_scoped_save_that_adds_code_imports_polars_for_the_hook(tmp_path):
         newline="\n",
     )
     (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
-    (tmp_path / "rate.json").write_text(json.dumps({"tables": [], "combinedOutputs": []}))
+    (tmp_path / "rate.json").write_text(json.dumps({"tables": [], "combined_outputs": []}))
     document = load_pipeline_editor_document(main, project_root=tmp_path)
     rate = next(node for node in document.nodes if node.authored_id == "rate")
     assert rate.scoped_editable is True
 
+    # The declaration loads with no steps yet (READ-44); the save adds one.
+    assert (rate.config or {})["steps"] == []
+    added = [{"id": "logic", "kind": "free_code", "code": "df = df.head(1)"}]
     apply_scoped_node_save(
         project_root=tmp_path,
-        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "code": "df = df.head(1)"}),
+        request=_save_request(tmp_path, "rate", {**(rate.config or {}), "steps": added}),
     )
 
     saved = main.read_text(encoding="utf-8")
@@ -343,8 +424,8 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
     target = next(node for node in document.nodes if node.authored_id == "source_b")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for config in (
-        {**target.config, "inputType": ["file"]},
-        {**target.config, "inputType": {"kind": "file"}},
+        {**target.config, "input_type": ["file"]},
+        {**target.config, "input_type": {"kind": "file"}},
     ):
         response = client.post(
             "/api/pipeline/node/save",
@@ -359,7 +440,7 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "repair_action_unsupported"
         message = response.json()["detail"]["message"]
-        assert "setting 'inputType'" in message
+        assert "setting 'input_type'" in message
         assert "does not match any of the expected tags" in message
     assert {p: p.read_bytes() for p in before} == before
 
@@ -392,7 +473,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
                         "step_column": "scenario_index",
                         "min_value": 0.1,
                         "max_value": 0.3,
-                        "stepCount": 3,
+                        "step_count": 3,
                         "steps": [],
                     },
                 ),
@@ -416,7 +497,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
     target = next(node for node in document.nodes if node.authored_id == "grid")
     assert target.scoped_editable is True
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    config = {key: value for key, value in (target.config or {}).items() if key != "stepCount"}
+    config = {key: value for key, value in (target.config or {}).items() if key != "step_count"}
 
     response = client.post(
         "/api/pipeline/node/save",
@@ -433,7 +514,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
     detail = response.json()["detail"]
     assert detail["code"] == "repair_action_unsupported"
     assert "not loadable" in detail["message"]
-    assert "requires stepCount" in detail["message"]
+    assert "requires step_count" in detail["message"]
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
@@ -511,7 +592,7 @@ def test_scoped_save_refuses_an_undeclared_key_without_writing(
         pytest.param(
             NodeType.OUTPUT,
             {
-                "outputMapping": [
+                "output_mapping": [
                     {
                         "source_port": "in",
                         "source_column": "id",
@@ -531,27 +612,29 @@ def test_scoped_save_refuses_a_config_error_as_not_loadable(
     """A setting the validator refuses with a ``ConfigError`` (not a ``ValueError``)
     gets the same structured not-loadable refusal, never an unhandled 500."""
     from haute._config_io import config_path_for_node, node_config_json, palette_default_config
-    from haute._node_specs import NODE_TYPE_TO_DECORATOR
+    from haute._node_specs import NODE_TYPE_TO_DECORATOR, SINGLETON_NODE_NAMES
 
     config = palette_default_config(node_type)
     if node_type is NodeType.MODEL_SCORE:
         config["registered_model"] = "motor"
-    sidecar = config_path_for_node(node_type, "target").as_posix()
+    # A Quote Response is named by its type (READ-46).
+    name = SINGLETON_NODE_NAMES.get(node_type, "target")
+    sidecar = config_path_for_node(node_type, name).as_posix()
     decorator = NODE_TYPE_TO_DECORATOR[node_type]
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     # A broken sibling makes the document degraded, where the scoped save applies.
     (tmp_path / "main.py").write_text(
         "import haute\n"
         'pipeline = haute.Pipeline("demo")\n'
-        f'@pipeline.{decorator}(config="{sidecar}")\ndef target(): ...\n'
+        f'@pipeline.{decorator}(config="{sidecar}")\ndef {name}(): ...\n'
         '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
     )
     (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
     (tmp_path / sidecar).parent.mkdir(parents=True)
-    (tmp_path / sidecar).write_text(node_config_json(node_type, config, node_label="target"))
+    (tmp_path / sidecar).write_text(node_config_json(node_type, config, node_label=name))
     use_project(tmp_path)
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
-    target = next(node for node in document.nodes if node.authored_id == "target")
+    target = next(node for node in document.nodes if node.authored_id == name)
     assert target.scoped_editable is True
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
@@ -574,44 +657,26 @@ def test_scoped_save_refuses_a_config_error_as_not_loadable(
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
-def _stepped_transform(
-    root: Path,
-    folder: str = "",
-    *,
-    sharer_reference: str | None = None,
-    sharer_keywords: str = "",
-) -> Path:
-    """A degraded pipeline (broken input) whose blocked transform owns a steps sidecar.
+def _stepped_transform(root: Path, folder: str = "") -> Path:
+    """A degraded pipeline (broken input) whose blocked transform is built from steps.
 
-    *sharer_reference* adds a second transform naming the same sidecar in another
-    spelling, so each node's reference is unique but both resolve to one file.
+    The steps live in its code alone (READ-22): the load rebuilds them from the body.
     """
     (root / "haute.toml").write_text('[project]\nname="demo"\n')
     pipeline_root = root / folder
     pipeline_root.mkdir(parents=True, exist_ok=True)
     (pipeline_root / "a.json").write_text(json.dumps(BROKEN_INPUT))
-    steps = [
-        {"id": "s", "kind": "source", "input": "source_a"},
-        {"id": "l", "kind": "limit", "n": 5},
-    ]
-    sidecar = pipeline_root / "config" / "polars" / "transform.json"
-    sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(json.dumps({"steps": steps}), encoding="utf-8")
     body = "    df: pl.LazyFrame\n    df = source_a\n    df = df.head(5)\n    return df\n"
     source = (
         "import haute\nimport polars as pl\n"
         'pipeline = haute.Pipeline("demo")\n'
         '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
-        '@pipeline.polars(config="config/polars/transform.json")\n'
+        "@pipeline.polars\n"
         f"def transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}"
     )
-    if sharer_reference is not None:
-        source += (
-            f'@pipeline.polars(config="{sharer_reference}"{sharer_keywords})\n'
-            f"def sharer(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}"
-        )
-    (pipeline_root / "main.py").write_text(source, encoding="utf-8")
-    return sidecar
+    main = pipeline_root / "main.py"
+    main.write_text(source, encoding="utf-8")
+    return main
 
 
 def _save_in_code_mode(root: Path, main: Path, *, apply=None):
@@ -634,71 +699,67 @@ def _save_in_code_mode(root: Path, main: Path, *, apply=None):
     return (apply or apply_scoped_node_save)(project_root=root, request=request)
 
 
+def _files(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
 @pytest.mark.parametrize("folder", ["", "subdir"], ids=["root-pipeline", "nested-pipeline"])
-def test_code_mode_save_deletes_the_transforms_own_sidecar(tmp_path, folder):
-    """Leaving step mode drops the decorator's sidecar reference, so the sidecar
-    it named is deleted with the rewrite, beside the pipeline that owns it."""
-    sidecar = _stepped_transform(tmp_path, folder)
-    main = tmp_path / folder / "main.py"
+def test_code_mode_save_rewrites_only_the_transforms_code(tmp_path, folder):
+    """Leaving step mode rewrites the function and nothing else: a transform has no
+    sidecar to retire, beside a root or a nested pipeline (READ-22)."""
+    main = _stepped_transform(tmp_path, folder)
+    others = {path: data for path, data in _files(tmp_path).items() if path != main}
 
     _save_in_code_mode(tmp_path, main)
 
-    assert not sidecar.exists()
     saved = main.read_text(encoding="utf-8")
-    assert 'config="config/polars/transform.json"' not in saved
+    assert "polars(config" not in saved
     assert "df = source_a.head(2)" in saved
+    assert {path: data for path, data in _files(tmp_path).items() if path != main} == others
+    assert not (tmp_path / folder / "config" / "polars").exists()
     reloaded = load_pipeline_editor_document(main, project_root=tmp_path)
     node = next(item for item in reloaded.nodes if item.authored_id == "transform")
+    # Code that does not start from its input does not rebuild as steps.
     assert "steps" not in node.config
 
 
-@pytest.mark.parametrize(
-    "sharer_keywords",
-    [
-        pytest.param("", id="readable-sharer"),
-        # The parse cannot evaluate COLUMNS, but the sharer still names the file.
-        pytest.param(", selected_columns=COLUMNS", id="sharer-with-an-unreadable-keyword"),
-    ],
-)
-def test_code_mode_save_keeps_a_sidecar_another_node_reads(tmp_path, sharer_keywords):
-    sidecar = _stepped_transform(
-        tmp_path,
-        sharer_reference="./config/polars/transform.json",
-        sharer_keywords=sharer_keywords,
-    )
-    before = sidecar.read_bytes()
+def test_code_mode_save_leaves_a_file_in_the_old_polars_folder_alone(tmp_path):
+    """A ``config/polars/`` file left from before READ-22 belongs to no node, so a save
+    neither reads nor retires it."""
+    main = _stepped_transform(tmp_path)
+    leftover = tmp_path / "config" / "polars" / "transform.json"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_text('{"steps": []}', encoding="utf-8")
+    before = leftover.read_bytes()
 
-    _save_in_code_mode(tmp_path, tmp_path / "main.py")
+    _save_in_code_mode(tmp_path, main)
 
-    assert sidecar.read_bytes() == before
-    assert 'config="./config/polars/transform.json"' in (tmp_path / "main.py").read_text(
-        encoding="utf-8"
-    )
+    assert leftover.read_bytes() == before
+    assert "df = source_a.head(2)" in main.read_text(encoding="utf-8")
 
 
-def test_a_failed_code_mode_save_restores_the_deleted_sidecar(tmp_path, monkeypatch):
-    """The deletion is staged in the repair transaction: a failure after it puts
-    the sidecar and the pipeline file back."""
+def test_a_failed_code_mode_save_restores_the_pipeline_file(tmp_path, monkeypatch):
+    """The rewrite is staged in the repair transaction: a failure after it puts the
+    pipeline file back."""
     import haute.routes._save_pipeline as save_pipeline
 
-    sidecar = _stepped_transform(tmp_path)
-    main = tmp_path / "main.py"
-    before = {path: path.read_bytes() for path in (sidecar, main)}
-    real_delete = save_pipeline._stage_artifact_delete
-    deleted: list[Path] = []
+    main = _stepped_transform(tmp_path)
+    before = _files(tmp_path)
+    real_write = save_pipeline._stage_artifact_write_bytes
+    written: list[Path] = []
 
-    def delete_then_fail(target: Path, touched: list) -> None:
-        real_delete(target, touched)
-        deleted.append(target)
+    def write_then_fail(target: Path, payload: bytes, touched: list) -> None:
+        real_write(target, payload, touched)
+        written.append(target)
         raise PermissionError("the disk went away")
 
-    monkeypatch.setattr(save_pipeline, "_stage_artifact_delete", delete_then_fail)
+    monkeypatch.setattr(save_pipeline, "_stage_artifact_write_bytes", write_then_fail)
 
     with pytest.raises(PermissionError):
         _save_in_code_mode(tmp_path, main)
 
-    assert deleted == [sidecar]
-    assert {path: path.read_bytes() for path in before} == before
+    assert written == [main]
+    assert _files(tmp_path) == before
 
 
 @pytest.mark.parametrize(
@@ -717,6 +778,8 @@ def test_scoped_save_refuses_a_binding_the_file_cannot_carry(
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "priced")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    # Bindings belong to a transform written as code, which the editor sends without steps.
+    code_mode = {key: value for key, value in target.config.items() if key != "steps"}
 
     response = client.post(
         "/api/pipeline/node/save",
@@ -725,7 +788,7 @@ def test_scoped_save_refuses_a_binding_the_file_cannot_carry(
             "source_revision": document.source_revision,
             "target_source_file": target.source_file,
             "target_recovery_id": target.recovery_id,
-            "config": {**target.config, "keyword_parameters": parameters},
+            "config": {**code_mode, "keyword_parameters": parameters},
         },
     )
 
