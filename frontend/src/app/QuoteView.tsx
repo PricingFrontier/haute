@@ -1,28 +1,14 @@
 /**
  * A quote in the underwriter app (specs/workbench): the sheets under the quote's bar (back
- * to Quotes, its reference and option, name and stage, Save and Mark final or Amend, a menu
- * of what else it takes, History, the zoom, and why it has no price), a line of who saved it,
+ * to Quotes, its reference and option, name and stage, Save and Mark final or Amend,
+ * History, the zoom, and why it has no price), a line of who saved it,
  * the release that priced it, where it came from and who it is with, and the notices of
  * anything that stands in the way. The quote is priced as it is typed. Values not saved are
  * kept in the browser and leaving with them asks first.
  */
-import {
-  Archive,
-  ArchiveRestore,
-  ArrowLeft,
-  BadgeCheck,
-  Copy,
-  GitBranchPlus,
-  History,
-  Link2,
-  LockOpen,
-  MoreHorizontal,
-  RefreshCcw,
-} from "lucide-react"
+import { ArrowLeft, BadgeCheck, History, LockOpen } from "lucide-react"
 import { Fragment, useEffect, useRef, useState } from "react"
-import { changeAppQuote, type QuoteRelation, type QuoteSource } from "../api/app"
-import { apiErrorMessage } from "../api/errors"
-import type { WorkbenchAppQuote } from "../api/types"
+import type { QuoteSource } from "../api/app"
 import { CommittedTextField } from "../components/form"
 import { ToolbarButton, ToolbarColumn, ZoomInOut } from "../haute-ui"
 import { hasModifier, inModalDialog, saveCommittingField } from "../hooks/keyboardTargets"
@@ -38,9 +24,9 @@ import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { fullTime, sameQuote, valuesKey } from "./quoteValues"
-import { followLink, navigate, newQuotePath, quotePath, setLeaveGuard, type AppRoute } from "./route"
-import { BUTTON, Menu, Notice, ReleaseNotice, StageChip, type MenuItem } from "./ui"
+import { fullTime, valuesKey } from "./quoteValues"
+import { followLink, navigate, quotePath, setLeaveGuard, type AppRoute } from "./route"
+import { BUTTON, Notice, ReleaseNotice, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
@@ -67,20 +53,6 @@ async function makeAsked(from: QuoteSource): Promise<void> {
   const made = await useOpenQuoteStore.getState().openNew(from)
   if (made === null || window.location.href !== asked) return
   await navigate(quotePath(made.reference, made.option), { replace: true, force: true })
-}
-
-/** Restore `archived`, as its archive left it: through the open quote while it is open, else on its own. */
-async function undoArchive(archived: WorkbenchAppQuote): Promise<void> {
-  const open = useOpenQuoteStore.getState()
-  if (open.quote !== null && sameQuote(open.quote, archived)) {
-    await open.change("restore", {}, archived)
-    return
-  }
-  try {
-    await changeAppQuote(archived.reference, archived.option, "restore", archived.version, {})
-  } catch (reason: unknown) {
-    useToastStore.getState().addToast("error", `Could not restore ${archived.label}: ${apiErrorMessage(reason)}`)
-  }
 }
 
 export default function QuoteView({ route }: { route: QuoteRoute }) {
@@ -289,42 +261,6 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     if (answer !== null && (await change("amend", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.label} is a draft again`)
   }
 
-  const archive = async () => {
-    if (quote === null) return
-    const archived = await change("archive", {}, quote)
-    if (archived === null) return
-    addToast("success", `Archived ${quote.label}`, { label: "Undo", run: () => void undoArchive(archived) })
-  }
-
-  const derive = (relation: QuoteRelation) => {
-    if (quote === null) return
-    const from = { reference: quote.reference, option: quote.option }
-    // An alternative is made at once under this reference; a duplicate or a renewal takes one
-    // keyed in the New quote window, over this quote, which it leaves as it is.
-    if (relation === "alternative") void navigate(newQuotePath({ ...from, relation }))
-    else void useNewQuoteStore.getState().openDerived({ ...from, relation }, { label: quote.label })
-  }
-
-  const copyLink = async () => {
-    if (quote === null) return
-    try {
-      await navigator.clipboard.writeText(`${window.location.origin}${quotePath(quote.reference, quote.option)}`)
-      addToast("success", `Link to ${quote.label} copied`)
-    } catch {
-      addToast("error", "This browser would not copy the link")
-    }
-  }
-
-  const items: MenuItem[] = [
-    { label: "Duplicate", icon: Copy, run: () => derive("duplicate"), disabled: quote === null || !editor, title: "A new quote with this quote's values" },
-    { label: "Renew", icon: RefreshCcw, run: () => derive("renewal"), disabled: quote === null || !editor, title: "A new quote renewing this one, from its values" },
-    { label: "Create alternative", icon: GitBranchPlus, run: () => derive("alternative"), disabled: quote === null || !editor, title: "A new option under this reference, from this quote's values" },
-    quote?.archived
-      ? { label: "Restore", icon: ArchiveRestore, run: () => void change("restore", {}, quote), disabled: working || !editor }
-      : { label: "Archive", icon: Archive, run: () => void archive(), disabled: quote === null || working || !editor },
-    { label: "Copy link", icon: Link2, run: () => void copyLink(), disabled: quote === null },
-  ]
-
   return (
     <AppHeader label="Quote toolbar">
       <a
@@ -376,8 +312,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
           </ToolbarButton>
         )}
       </ToolbarColumn>
-      <ToolbarColumn role="group" aria-label="More">
-        <Menu label="More" icon={MoreHorizontal} items={items} testId="quote-more" />
+      <ToolbarColumn role="group" aria-label="History">
         <ToolbarButton icon={History} onClick={() => setHistoryOpen(!historyOpen)} aria-pressed={historyOpen} disabled={quote === null} title="The quote's note, activity and related quotes">
           History
         </ToolbarButton>

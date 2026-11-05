@@ -3,9 +3,10 @@
  * lists (My work, Team, Archived) and the stages of the one showing, each with its count;
  * above the list its name, the search, in Team an assignee, the order and New quote, which
  * opens the New quote window over the list as it is; the list itself a table at Haute's
- * density, a page at a time, each row opening its quote and offering Open, Duplicate (the
- * window again, filled from the quote), and Archive or Restore on hover or focus. The list
- * showing is in the page's address.
+ * density, a page at a time, each row opening its quote and offering, on hover or focus,
+ * Open and a menu of what is done to the quote as a whole: Duplicate and Renew (the window
+ * again, filled from the quote), Create alternative, Archive or Restore, and Copy link. The
+ * list showing is in the page's address.
  */
 import {
   Archive,
@@ -15,7 +16,11 @@ import {
   Copy,
   FileText,
   FolderOpen,
+  GitBranchPlus,
+  Link2,
+  MoreHorizontal,
   Plus,
+  RefreshCcw,
   RotateCw,
   Search,
   UserRound,
@@ -31,7 +36,7 @@ import useToastStore from "../stores/useToastStore"
 import { relativeTime } from "../utils/relativeTime"
 import { fullTime, listColumns, listValue } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
-import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, StageChip } from "./ui"
+import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, Menu, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 import useQuoteListStore from "./useQuoteListStore"
@@ -173,6 +178,31 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
     } catch (reason: unknown) {
       addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`)
     }
+  }
+
+  const copyLink = async (quote: WorkbenchAppQuote) => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}${quotePath(quote.reference, quote.option)}`)
+      addToast("success", `Link to ${quote.label} copied`)
+    } catch {
+      addToast("error", "This browser would not copy the link")
+    }
+  }
+
+  /** What is done to `quote` as a whole, from its row: for one who may only read quotes, Copy link alone. */
+  const actions = (quote: WorkbenchAppQuote): MenuItem[] => {
+    const from = { reference: quote.reference, option: quote.option }
+    const derive = (relation: "duplicate" | "renewal") => () => void useNewQuoteStore.getState().openDerived({ ...from, relation }, { label: quote.label })
+    const changing: MenuItem[] = !editor
+      ? []
+      : [
+          { label: "Duplicate", icon: Copy, run: derive("duplicate"), title: "A new quote with this quote's values" },
+          { label: "Renew", icon: RefreshCcw, run: derive("renewal"), title: "A new quote renewing this one, from its values" },
+          // Made at once under this reference, at its own address.
+          { label: "Create alternative", icon: GitBranchPlus, run: () => void navigate(newQuotePath({ ...from, relation: "alternative" })), title: "A new option under this reference, from this quote's values" },
+          quote.archived ? { label: "Restore", icon: ArchiveRestore, run: () => void restore(quote) } : { label: "Archive", icon: Archive, run: () => void archive(quote) },
+        ]
+    return [...changing, { label: "Copy link", icon: Link2, run: () => void copyLink(quote) }]
   }
 
   const view = VIEWS.find((each) => each.view === query.view) ?? VIEWS[0]
@@ -364,30 +394,11 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
                       {relativeTime(new Date(quote.saved_at))}
                     </td>
                     <td className="px-2" onClick={(event) => event.stopPropagation()}>
-                      <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100">
+                      <span className="flex justify-end gap-0.5 opacity-0 group-focus-within/row:opacity-100 group-hover/row:opacity-100 has-[[aria-expanded=true]]:opacity-100">
                         <button type="button" className={ICON_BUTTON} onClick={() => void navigate(quotePath(quote.reference, quote.option))} title={`Open ${quote.label}`} aria-label={`Open ${quote.label}`}>
                           <FolderOpen size={12} />
                         </button>
-                        {editor && (
-                        <button
-                          type="button"
-                          className={ICON_BUTTON}
-                          onClick={() => void useNewQuoteStore.getState().openDerived({ reference: quote.reference, option: quote.option, relation: "duplicate" }, { label: quote.label })}
-                          title={`Duplicate ${quote.label} as a new quote`}
-                          aria-label={`Duplicate ${quote.label}`}
-                        >
-                          <Copy size={12} />
-                        </button>
-                        )}
-                        {!editor ? null : !quote.archived ? (
-                          <button type="button" className={ICON_BUTTON} onClick={() => void archive(quote)} title={`Archive ${quote.label}`} aria-label={`Archive ${quote.label}`}>
-                            <Archive size={12} />
-                          </button>
-                        ) : (
-                          <button type="button" className={ICON_BUTTON} onClick={() => void restore(quote)} title={`Restore ${quote.label}`} aria-label={`Restore ${quote.label}`}>
-                            <ArchiveRestore size={12} />
-                          </button>
-                        )}
+                        <Menu label={`Actions for ${quote.label}`} icon={MoreHorizontal} items={actions(quote)} testId={`quote-actions-${quote.label}`} />
                       </span>
                     </td>
                   </tr>

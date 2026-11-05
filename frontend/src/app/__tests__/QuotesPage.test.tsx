@@ -1,9 +1,10 @@
 /**
  * The Quotes page (specs/workbench): the lists and the stages, Draft and Final, with their
  * counts, the list as a table of the quote list's columns, the search and filters in the
- * address, a page at a time, each row's actions on the quote it names by reference and
- * option, New quote and a row's Duplicate opening the New quote window over the list, the
- * order by Reference, and what an empty, loading or failed list says.
+ * address, a page at a time, each row's menu of actions on the quote it names by reference
+ * and option, New quote and a row's Duplicate and Renew opening the New quote window over the
+ * list, its Create alternative going to the alternative's address, its Copy link, the order
+ * by Reference, and what an empty, loading or failed list says.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -37,6 +38,12 @@ const page = (quotes: WorkbenchAppQuote[], next: string | null = null): Workbenc
   counts: { mine: quotes.length, team: 5, archived: 1, draft: 2, final: 3 },
 })
 
+/** Pick `item` from the menu of the row of the quote labelled `label`. */
+async function pick(label: string, item: string) {
+  fireEvent.click(await screen.findByRole("button", { name: `Actions for ${label}` }))
+  fireEvent.click(screen.getByRole("menuitem", { name: item }))
+}
+
 function show(query: QuotesQuery = MINE) {
   return render(
     <>
@@ -62,6 +69,7 @@ describe("QuotesPage", () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
     setLeaveGuard(null)
     window.sessionStorage.clear()
   })
@@ -168,13 +176,56 @@ describe("QuotesPage", () => {
     fireEvent.click(await screen.findByTestId("quote-row-ABC 1/2"))
     expect(window.location.pathname).toBe("/quotes/ABC%201/2")
     await navigate("/", { force: true })
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate ABC 1/2" }))
+    await pick("ABC 1/2", "Duplicate")
 
     const window_ = await screen.findByRole("dialog", { name: "Duplicate ABC 1/2" })
     await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
     expect(openAppQuote).toHaveBeenCalledWith("ABC 1", 2)
     expect(window.location.pathname).toBe("/")
     expect(screen.getByTestId("quote-row-ABC 1/2")).toBeInTheDocument()
+  })
+
+  it("starts a renewal in the window over the list, filled from the quote and ticked as one", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { quote_details: [{ insured: "Acme" }] } }))
+    show()
+
+    await pick("Q-000001/1", "Renew")
+
+    const window_ = await screen.findByRole("dialog", { name: "Renew Q-000001/1" })
+    await vi.waitFor(() => expect(within(window_).getByRole("textbox", { name: "Insured" })).toHaveValue("Acme"))
+    expect(within(window_).getByRole("checkbox", { name: "Is renewal" })).toBeChecked()
+    expect(within(window_).getByRole("textbox", { name: "Quote reference" })).toHaveValue("")
+    expect(window.location.pathname).toBe("/")
+  })
+
+  it("makes an alternative at its own address, and copies a quote's link", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote({ reference: "ABC 1", option: 2 })]))
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } })
+    show()
+
+    await pick("ABC 1/2", "Copy link")
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/quotes/ABC%201/2`))
+    expect(await screen.findByText("Link to ABC 1/2 copied")).toBeInTheDocument()
+
+    await pick("ABC 1/2", "Create alternative")
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/quotes/new?from=ABC+1&option=2&as=alternative")
+  })
+
+  it("closes a row's menu on Escape, giving the focus back to its button", async () => {
+    vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
+    show()
+    const button = await screen.findByRole("button", { name: "Actions for Q-000001/1" })
+
+    fireEvent.click(button)
+    expect(screen.getByRole("menu", { name: "Actions for Q-000001/1" })).toBeInTheDocument()
+    expect(screen.getByRole("menuitem", { name: "Duplicate" })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole("menuitem", { name: "Duplicate" }), { key: "Escape" })
+
+    expect(screen.queryByRole("menu")).toBeNull()
+    expect(button).toHaveFocus()
+    expect(window.location.pathname).toBe("/")
   })
 
   it("starts a new quote in the window over the list from New quote, and orders the list by Reference", async () => {
@@ -197,7 +248,7 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
     show()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
+    await pick("Q-000001/1", "Archive")
     fireEvent.click(await screen.findByRole("button", { name: "Undo" }))
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledTimes(2))
@@ -211,7 +262,7 @@ describe("QuotesPage", () => {
     vi.mocked(fetchAppQuotes).mockResolvedValue(page([appQuote()]))
     vi.mocked(changeAppQuote).mockResolvedValueOnce({ quote: appQuote({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", version: 2 }) }).mockResolvedValueOnce({ quote: appQuote({ version: 3 }) })
     const view = show()
-    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
+    await pick("Q-000001/1", "Archive")
     const undo = await screen.findByRole("button", { name: "Undo" })
 
     const team = quotesQueryOf("?view=team")
@@ -238,7 +289,7 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockImplementation(() => new Promise((resolve) => (answered = resolve)))
     const team = quotesQueryOf("?view=team")
     const view = show(team)
-    fireEvent.click(await screen.findByRole("button", { name: `${action} ${label}` }))
+    await pick(label, action)
 
     // While it is waited for, the underwriter moves to My work.
     view.rerender(
@@ -264,7 +315,7 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "moved", {}, { message: "Q-000001 has changed" }))
     show()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Archive Q-000001/1" }))
+    await pick("Q-000001/1", "Archive")
 
     expect(await screen.findByText("Could not archive Q-000001/1: Q-000001 has changed")).toBeInTheDocument()
   })
@@ -275,7 +326,7 @@ describe("QuotesPage", () => {
     vi.mocked(changeAppQuote).mockResolvedValue({ quote: appQuote({ version: 2 }) })
     show(quotesQueryOf("?view=archived"))
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restore Q-000001/1" }))
+    await pick("Q-000001/1", "Restore")
 
     await vi.waitFor(() => expect(changeAppQuote).toHaveBeenCalledWith("Q-000001", 1, "restore", 1, {}))
     expect(await screen.findByText("Restored Q-000001/1")).toBeInTheDocument()
@@ -318,9 +369,10 @@ describe("QuotesPage", () => {
 
     await screen.findByTestId("quote-row-Q-000001/1")
     expect(screen.queryByTestId("new-quote")).toBeNull()
-    expect(screen.queryByRole("button", { name: "Archive Q-000001/1" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "Duplicate Q-000001/1" })).toBeNull()
     expect(screen.getByRole("button", { name: "Open Q-000001/1" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Q-000001/1" }))
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy link"])
+    fireEvent.keyDown(document.body, { key: "Escape" })
     fireEvent.keyDown(document.body, { key: "n" })
     expect(window.location.pathname).toBe("/")
     expect(screen.queryByTestId("new-quote-window")).toBeNull()

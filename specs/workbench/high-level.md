@@ -1663,8 +1663,11 @@ Out of scope:
   relative, with the time on hover. Relative times in the app read as everywhere in Haute:
   "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
   ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open, Duplicate, and Archive or Restore, each reloading,
-  once answered, the list showing then, whichever list the underwriter has moved to. The list,
+  own; on hover or focus it offers Open and a menu of what is done to the quote as a whole:
+  Duplicate, Renew, Create alternative, Archive or Restore, and Copy link, Copy link alone
+  for one who may only read quotes. Archive and Restore reload, once answered, the list
+  showing then, whichever list the underwriter has moved to. These are the list's, not the
+  quote's: a quote open is for working on it. The list,
   stage, search, assignee and order are in the page's address, so Back returns to the
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
@@ -1674,8 +1677,7 @@ Out of scope:
   `quote_details.quote_name`, typed in the bar as on the sheets and saved with the next
   Save), its stage, Draft or Final, and, when archived, Archived, who it is with (reassigned
   from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
-  Amend, which asks why, a menu of Duplicate, Renew, Create alternative, Archive or Restore
-  and Copy link, History, and why the quote has no price. Beneath are who saved it and when,
+  Amend, which asks why, History, and why the quote has no price. Beneath are who saved it and when,
   the release that priced it and the quote it came from. The quote is priced as it is
   typed, and as it opens while it may change and has no price of this release, unpriced or
   priced on an earlier one. Save waits for that pricing to settle, a value entered while it
@@ -1705,10 +1707,10 @@ Out of scope:
   that landed and was changed since by someone else is let go as done, the page offering
   the newest. While a save or a change is being made, Save and every control that changes
   the quote are off. The cells of the columns the app sets take no typing; assigning,
-  archiving, restoring, marking final and amending each change the quote's details, its
+  restoring, marking final and amending each change the quote's details, its
   values and prices kept, which the sheets take on, what was typed kept. A new quote is
   keyed in a window before it is made. New quote opens it over the Quotes page, its list as
-  it was; Duplicate and Renew over the quote or the Quotes page they are pressed on; and
+  it was; Duplicate and Renew over the Quotes page they are pressed on; and
   Save as new, after a save conflict, over the quote, its unsaved values kept. The window
   holds the quote's reference and the other columns of `quote_details` the underwriter types
   (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date` and `is_renewal`) in
