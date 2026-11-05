@@ -1,0 +1,19 @@
+{
+  "type": "table",
+  "title": "Layers",
+  "fields": [
+    "layers.layer",
+    {
+      "field": "layers.limit",
+      "width": 120
+    },
+    "layers.layer_name"
+  ],
+  "show_when": {
+    "match": "any",
+    "conditions": [
+      {"table": "layers", "rows": "any", "where": [{"column": "limit", "op": "above", "values": ["0"]}]}
+    ]
+  },
+  "rows": 5
+}

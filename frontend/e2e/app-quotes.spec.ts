@@ -20,17 +20,16 @@ import { buildWorkbenchPipeline, enableWorkbench, FORM_FILES, readFormFile, writ
 const SHEET_FILES: Record<string, unknown> = {
   "sheets/sheet_1.json": {
     title: "Sheet 1",
+    width: 1280,
     sections: [
       {
         title: "Section 1",
-        components: [{ number: 1, type: "collection", fields: ["policy.limit", "policy.region", "pricing.premium"] }],
+        height: 560,
+        components: [{ component: "policy", x: 184, y: 112, w: 720, h: 120 }],
       },
     ],
   },
-  "sheets/sheet_1.layout.json": {
-    width: 1280,
-    sections: { "Section 1": { height: 560, components: { "1": { x: 184, y: 112, w: 720, h: 120 } } } },
-  },
+  "components/policy.json": { type: "collection", fields: ["policy.limit", "policy.region", "pricing.premium"] },
 }
 
 /**

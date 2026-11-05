@@ -1181,7 +1181,7 @@ describe("WidgetBody", () => {
   it("shows a Table of output columns alone as its starting rows of dashes until priced, then a row for each of the answer's rows, taking no typing", () => {
     const form = sheetForm()
     const results = {
-      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }),
+      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }, form),
       id: "w_results",
       title: "Premiums",
       fields: [
@@ -1224,7 +1224,7 @@ describe("WidgetBody", () => {
       table("fees", { role: "output", rows: "many", columns: [column("item", { key: true }), column("fee", { type: "float" })] }),
     )
     addTo(form, {
-      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }),
+      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }, form),
       id: "w_results",
       title: "Premiums",
       fields: [premium, { table: "fees", column: "item" }, { table: "fees", column: "fee" }],
@@ -1425,8 +1425,8 @@ describe("WidgetBody", () => {
 
   it("draws an Import or an Export as a disabled button, its format's mark beside its label, faded in Preview", () => {
     const form = sheetForm()
-    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }), id: "w_in", label: "Import schedule" })
-    addTo(form, { ...createWidget("export", { x: 192, y: 380, w: 160, h: 40 }), id: "w_out", label: "" })
+    addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_in", label: "Import schedule" })
+    addTo(form, { ...createWidget("export", { x: 192, y: 380, w: 160, h: 40 }, form), id: "w_out", label: "" })
     loadForm(form)
     const { rerender } = renderBody("w_in")
 

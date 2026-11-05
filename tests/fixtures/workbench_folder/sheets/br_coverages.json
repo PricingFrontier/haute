@@ -1,65 +1,19 @@
 {
   "title": "BR Coverages",
+  "width": 1280,
   "sections": [
     {
       "title": "Cover",
+      "height": 400,
       "components": [
-        {
-          "number": 1,
-          "type": "collection",
-          "title": "Policy",
-          "fields": [
-            {
-              "field": "policy.state",
-              "header_color": "#2563EB",
-              "bold": true,
-              "show_when": {
-                "conditions": [
-                  {"table": "layers", "where": [{"column": "limit", "op": "filled"}], "op": "at_least", "count": 1}
-                ]
-              }
-            },
-            null,
-            "policy.exposure",
-            "pricing.premium"
-          ],
-          "columns": 2,
-          "labels": "beside"
-        },
-        {
-          "number": 2,
-          "type": "table",
-          "title": "Layers",
-          "fields": [
-            "layers.layer",
-            {
-              "field": "layers.limit",
-              "width": 120
-            },
-            "layers.layer_name"
-          ],
-          "show_when": {
-            "match": "any",
-            "conditions": [
-              {"table": "layers", "rows": "any", "where": [{"column": "limit", "op": "above", "values": ["0"]}]}
-            ]
-          },
-          "rows": 5
-        },
-        {
-          "number": 3,
-          "type": "chart",
-          "title": "Limits",
-          "fields": [
-            "layers.limit"
-          ],
-          "category": "layers.layer_name",
-          "chart_type": "line"
-        }
+        {"component": "policy", "x": 16, "y": 16, "w": 720, "h": 120},
+        {"component": "layers", "x": 16, "y": 152, "w": 720, "h": 200},
+        {"component": "limits", "x": 760, "y": 16, "w": 480, "h": 280}
       ]
     },
     {
       "title": "Perils",
+      "height": 240,
       "show_when": {
         "at_least": 1,
         "conditions": [
@@ -67,65 +21,10 @@
         ]
       },
       "components": [
-        {
-          "number": 1,
-          "type": "heading",
-          "text": "Équipement",
-          "description": "By peril",
-          "size": "large"
-        },
-        {
-          "number": 2,
-          "type": "table",
-          "title": "Perils",
-          "fields": [
-            "BR_Perils.peril",
-            "BR_Perils.rate"
-          ]
-        },
-        {
-          "number": 3,
-          "type": "import",
-          "label": "Import perils",
-          "source": {
-            "format": "sql",
-            "connection": "rating_db",
-            "query": "select * from perils where state = :state",
-            "parameters": [
-              {
-                "name": "state",
-                "column": "policy.state"
-              }
-            ]
-          },
-          "table": "BR_Perils",
-          "mode": "update",
-          "column_names": [
-            {
-              "column": "rate",
-              "name": "Rate %"
-            }
-          ]
-        },
-        {
-          "number": 4,
-          "type": "export",
-          "label": "Export",
-          "target": {
-            "format": "sql",
-            "connection": "warehouse",
-            "table_names": [
-              {
-                "table": "layers",
-                "name": "quote_layers"
-              }
-            ]
-          },
-          "tables": [
-            "layers",
-            "pricing"
-          ]
-        }
+        {"component": "equipment", "x": 16, "y": 8, "w": 480, "h": 40},
+        {"component": "Perils", "x": 16, "y": 56, "w": 720, "h": 160},
+        {"component": "import_perils", "x": 760, "y": 56, "w": 160, "h": 32},
+        {"component": "export", "x": 760, "y": 104, "w": 160, "h": 32}
       ]
     }
   ]

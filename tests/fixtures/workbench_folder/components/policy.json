@@ -1,0 +1,21 @@
+{
+  "type": "collection",
+  "title": "Policy",
+  "fields": [
+    {
+      "field": "policy.state",
+      "header_color": "#2563EB",
+      "bold": true,
+      "show_when": {
+        "conditions": [
+          {"table": "layers", "where": [{"column": "limit", "op": "filled"}], "op": "at_least", "count": 1}
+        ]
+      }
+    },
+    null,
+    "policy.exposure",
+    "pricing.premium"
+  ],
+  "columns": 2,
+  "labels": "beside"
+}

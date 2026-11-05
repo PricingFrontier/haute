@@ -1,8 +1,8 @@
-"""A sheet and its parts are identified by file name, title and number (READ-24).
+"""A sheet and its parts are identified by file name, title and name (READ-24).
 
-Spec: specs/workbench/low-level.md, the form folder's sheet and layout files. Neither holds a
-random id: a section is known by its title, a component by its number in its section, one
-more than the highest when it was made, which keys its box in the layout file.
+Spec: specs/workbench/low-level.md, the form folder's sheet and component files. Neither holds
+a random id: a section is known by its title on its sheet, a component by its name, the
+builder's, which names its file and places it in its sheet's file.
 """
 
 from __future__ import annotations
@@ -18,10 +18,9 @@ from haute._workbench_config import WorkbenchError
 from haute._workbench_folder import FormFolderNameError, read_form_document
 from haute._workbench_form import FormSpec, render_form
 from tests._workbench_helpers import enable, form_folder, write_files
-from tests.test_workbench_folder import FORM, config, files_of, put, spec_of
+from tests.test_workbench_folder import FORM, changes, config, files_of, put, spec_of, text
 
 SHEET = "sheets/br_coverages.json"
-LAYOUT = "sheets/br_coverages.layout.json"
 
 
 @pytest.fixture()
@@ -37,22 +36,28 @@ def _read(project: Path, form: dict[str, Any] | FormSpec) -> tuple[FormSpec, dic
     return read_form_document(config(project)).spec, files
 
 
-def test_a_sheet_and_its_layout_hold_no_random_ids(project: Path) -> None:
+def test_a_sheet_and_its_components_hold_no_random_ids(project: Path) -> None:
     spec, files = _read(project, FORM)
 
-    sheet, layout = json.loads(files[SHEET]), json.loads(files[LAYOUT])
+    sheet = json.loads(files[SHEET])
     assert "id" not in sheet
     for section in sheet["sections"]:
         assert "id" not in section
-        numbers = [component["number"] for component in section["components"]]
-        assert numbers == list(range(1, len(numbers) + 1))
-        assert all("id" not in component for component in section["components"])
-        assert sorted(layout["sections"][section["title"]]["components"]) == sorted(
-            str(number) for number in numbers
-        )
+        assert all("id" not in placed for placed in section["components"])
+    for path in (path for path in files if path.startswith("components/")):
+        assert not {"id", "name"} & set(json.loads(files[path])), path
+    # Read, each part takes its id from its sheet's file name, its section's title and its
+    # name, as the sheet's file places it.
     page = next(page for page in spec.pages if page.title == sheet["title"])
     assert page.id == "br_coverages"
-    assert page.sections[0].widgets[0].id == f"br_coverages/{page.sections[0].title}/1"
+    assert [[widget.id for widget in section.widgets] for section in page.sections] == [
+        [
+            f"br_coverages/{section['title']}/{placed['component']}"
+            for placed in section["components"]
+        ]
+        for section in sheet["sections"]
+    ]
+    assert page.sections[0].widgets[0].id == "br_coverages/Cover/policy"
 
 
 def test_a_release_holds_no_part_ids_and_builds_the_same_twice(project: Path) -> None:
@@ -78,66 +83,50 @@ def test_two_sections_titled_alike_are_refused_on_save_and_on_load(project: Path
 
     _read(project, FORM)
     sheet = json.loads((form_folder(project) / SHEET).read_bytes())
-    sheet["sections"].append(copy.deepcopy(sheet["sections"][0]))
+    # Its components sit in the first: the second places none.
+    sheet["sections"].append({**copy.deepcopy(sheet["sections"][0]), "components": []})
     write_files(form_folder(project), {SHEET: json.dumps(sheet).encode()})
     with pytest.raises(WorkbenchError, match="two sections titled"):
         read_form_document(config(project))
 
 
-def test_two_components_numbered_alike_in_a_section_are_refused_on_load(project: Path) -> None:
-    _read(project, FORM)
-    sheet = json.loads((form_folder(project) / SHEET).read_bytes())
-    components = sheet["sections"][0]["components"]
-    components[1]["number"] = components[0]["number"]
-    write_files(form_folder(project), {SHEET: json.dumps(sheet).encode()})
-    with pytest.raises(WorkbenchError, match="two components numbered 1"):
-        read_form_document(config(project))
-
-
-def test_adding_a_component_changes_one_entry_in_each_file(project: Path) -> None:
+def test_adding_a_component_adds_its_file_and_one_placement_line(project: Path) -> None:
     spec, before = _read(project, FORM)
     data = spec.model_dump(mode="json")
     section = data["pages"][0]["sections"][0]
-    added = {**copy.deepcopy(section["widgets"][0]), "id": "new", "number": None, "x": 0, "y": 0}
+    # Named as the editor names a copy: its original's name and the first free number.
+    added = {**copy.deepcopy(section["widgets"][0]), "id": "new", "name": "policy_2"}
+    added.update(x=760, y=312, w=480, h=80)
     section["widgets"].append(added)
 
     _after_spec, after = _read(project, data)
 
-    layout_before = json.loads(before[LAYOUT])["sections"][section["title"]]["components"]
-    layout_after = json.loads(after[LAYOUT])["sections"][section["title"]]["components"]
-    assert set(layout_after) - set(layout_before) == {str(len(layout_before) + 1)}
-    assert {k: v for k, v in layout_after.items() if k in layout_before} == layout_before
+    assert changes(before, after) == (["components/policy_2.json", SHEET], [])
+    # A copy shows what its original shows: its file is the original's.
+    assert after["components/policy_2.json"] == before["components/policy.json"]
+    placed = '        {"component": "policy_2", "x": 760, "y": 312, "w": 480, "h": 80}\n'
+    last = '{"component": "limits", "x": 760, "y": 16, "w": 480, "h": 280}'
+    assert text(after, SHEET) == text(before, SHEET).replace(f"{last}\n", f"{last},\n{placed}")
 
 
-def test_renaming_a_section_keeps_its_layout(project: Path) -> None:
+def test_retitling_a_section_changes_its_title_and_its_components_ids_alone(
+    project: Path,
+) -> None:
     spec, before = _read(project, FORM)
     data = spec.model_dump(mode="json")
     old = data["pages"][0]["sections"][0]["title"]
     data["pages"][0]["sections"][0]["title"] = "Renamed"
 
-    _renamed, after = _read(project, data)
+    renamed, after = _read(project, data)
 
-    assert (
-        json.loads(after[LAYOUT])["sections"]["Renamed"]
-        == json.loads(before[LAYOUT])["sections"][old]
+    # The section's placements stay as they were, under its new title; no component's file
+    # changes.
+    assert changes(before, after) == ([SHEET], [])
+    assert text(after, SHEET) == text(before, SHEET).replace(
+        f'"title": "{old}"', '"title": "Renamed"'
     )
-
-
-def test_a_component_moved_between_sections_keeps_its_box_and_takes_the_next_number(
-    project: Path,
-) -> None:
-    spec, _ = _read(project, FORM)
-    data = spec.model_dump(mode="json")
-    page = data["pages"][0]
-    assert len(page["sections"]) >= 2, "the test form's first sheet needs two sections"
-    source, target = page["sections"][0], page["sections"][1]
-    moved = source["widgets"].pop(0)
-    box = {key: moved[key] for key in ("x", "y", "w", "h")}
-    target["height"] = max(target["height"], moved["y"] + moved["h"])
-    target["widgets"].append({**moved, "number": None})
-
-    read, _ = _read(project, data)
-
-    placed = read.pages[0].sections[1].widgets[-1]
-    assert {key: getattr(placed, key) for key in box} == box
-    assert placed.number == max(widget.number or 0 for widget in read.pages[0].sections[1].widgets)
+    assert [widget.id for widget in renamed.pages[0].sections[0].widgets] == [
+        "br_coverages/Renamed/policy",
+        "br_coverages/Renamed/layers",
+        "br_coverages/Renamed/limits",
+    ]

@@ -519,7 +519,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -558,7 +558,7 @@
                 },
                 {
                   "id": "w_premium",
-                  "number": 2,
+                  "name": "w_premium",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -592,7 +592,7 @@
                 },
                 {
                   "id": "w_chart",
-                  "number": 3,
+                  "name": "w_chart",
                   "x": 0,
                   "y": 320,
                   "w": 480,
@@ -610,7 +610,7 @@
                 },
                 {
                   "id": "w_heading",
-                  "number": 4,
+                  "name": "w_heading",
                   "x": 0,
                   "y": 616,
                   "w": 480,
@@ -643,7 +643,7 @@
               "widgets": [
                 {
                   "id": "w_bi",
-                  "number": 1,
+                  "name": "w_bi",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -696,7 +696,7 @@
               "widgets": [
                 {
                   "id": "w_ext",
-                  "number": 1,
+                  "name": "w_ext",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -746,7 +746,7 @@
               "widgets": [
                 {
                   "id": "w_items",
-                  "number": 1,
+                  "name": "w_items",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -789,7 +789,7 @@
                 },
                 {
                   "id": "w_fleet",
-                  "number": 2,
+                  "name": "w_fleet",
                   "x": 0,
                   "y": 240,
                   "w": 720,
@@ -1242,7 +1242,7 @@
               "widgets": [
                 {
                   "id": "w_in",
-                  "number": 1,
+                  "name": "w_in",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -1283,7 +1283,7 @@
                 },
                 {
                   "id": "w_many",
-                  "number": 2,
+                  "name": "w_many",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -1319,7 +1319,7 @@
                 },
                 {
                   "id": "w_out",
-                  "number": 3,
+                  "name": "w_out",
                   "x": 0,
                   "y": 400,
                   "w": 720,
@@ -1369,7 +1369,7 @@
               "widgets": [
                 {
                   "id": "w_target",
-                  "number": 1,
+                  "name": "w_target",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -1772,7 +1772,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -1811,7 +1811,7 @@
                 },
                 {
                   "id": "w_premium",
-                  "number": 2,
+                  "name": "w_premium",
                   "type": "collection",
                   "x": 0,
                   "y": 136,
@@ -1858,7 +1858,7 @@
               "widgets": [
                 {
                   "id": "w_flood_heading",
-                  "number": 1,
+                  "name": "w_flood_heading",
                   "type": "heading",
                   "x": 0,
                   "y": 0,
@@ -1872,7 +1872,7 @@
                 },
                 {
                   "id": "w_flood",
-                  "number": 2,
+                  "name": "w_flood",
                   "type": "collection",
                   "x": 0,
                   "y": 56,
@@ -1909,7 +1909,7 @@
                 },
                 {
                   "id": "w_flood_extra",
-                  "number": 3,
+                  "name": "w_flood_extra",
                   "type": "collection",
                   "x": 0,
                   "y": 192,
@@ -1968,7 +1968,7 @@
               "widgets": [
                 {
                   "id": "w_barrier",
-                  "number": 1,
+                  "name": "w_barrier",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -2018,7 +2018,7 @@
               "widgets": [
                 {
                   "id": "w_note",
-                  "number": 1,
+                  "name": "w_note",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -2073,7 +2073,7 @@
               "widgets": [
                 {
                   "id": "w_other",
-                  "number": 1,
+                  "name": "w_other",
                   "type": "collection",
                   "x": 0,
                   "y": 0,
@@ -2664,7 +2664,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -2702,7 +2702,7 @@
                 },
                 {
                   "id": "w_drivers",
-                  "number": 2,
+                  "name": "w_drivers",
                   "x": 0,
                   "y": 120,
                   "w": 720,
@@ -2742,7 +2742,7 @@
                 },
                 {
                   "id": "w_perils",
-                  "number": 3,
+                  "name": "w_perils",
                   "x": 0,
                   "y": 280,
                   "w": 720,
@@ -2789,7 +2789,7 @@
               "widgets": [
                 {
                   "id": "w_occupations",
-                  "number": 1,
+                  "name": "w_occupations",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -2825,7 +2825,7 @@
                 },
                 {
                   "id": "w_claims",
-                  "number": 2,
+                  "name": "w_claims",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -2877,7 +2877,7 @@
               "widgets": [
                 {
                   "id": "w_target",
-                  "number": 1,
+                  "name": "w_target",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3240,7 +3240,7 @@
               "widgets": [
                 {
                   "id": "w_rating",
-                  "number": 1,
+                  "name": "w_rating",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3281,7 +3281,7 @@
                 },
                 {
                   "id": "w_perils",
-                  "number": 2,
+                  "name": "w_perils",
                   "x": 0,
                   "y": 140,
                   "w": 720,
@@ -3321,7 +3321,7 @@
                 },
                 {
                   "id": "w_summary",
-                  "number": 3,
+                  "name": "w_summary",
                   "x": 740,
                   "y": 0,
                   "w": 520,
@@ -3363,7 +3363,7 @@
               "widgets": [
                 {
                   "id": "w_note",
-                  "number": 1,
+                  "name": "w_note",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3773,7 +3773,7 @@
               "widgets": [
                 {
                   "id": "w_policy",
-                  "number": 1,
+                  "name": "w_policy",
                   "x": 0,
                   "y": 0,
                   "w": 720,
@@ -3815,7 +3815,7 @@
                 },
                 {
                   "id": "w_items",
-                  "number": 2,
+                  "name": "w_items",
                   "x": 0,
                   "y": 160,
                   "w": 720,
@@ -3867,7 +3867,7 @@
               "widgets": [
                 {
                   "id": "w_target",
-                  "number": 1,
+                  "name": "w_target",
                   "x": 0,
                   "y": 0,
                   "w": 720,

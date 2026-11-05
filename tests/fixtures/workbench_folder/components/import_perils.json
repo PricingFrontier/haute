@@ -1,0 +1,23 @@
+{
+  "type": "import",
+  "label": "Import perils",
+  "source": {
+    "format": "sql",
+    "connection": "rating_db",
+    "query": "select * from perils where state = :state",
+    "parameters": [
+      {
+        "name": "state",
+        "column": "policy.state"
+      }
+    ]
+  },
+  "table": "BR_Perils",
+  "mode": "update",
+  "column_names": [
+    {
+      "column": "rate",
+      "name": "Rate %"
+    }
+  ]
+}

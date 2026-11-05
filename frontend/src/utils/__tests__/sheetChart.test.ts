@@ -108,9 +108,9 @@ const motorForm = (): FormSpec => ({
           height: 700,
           show_when: always,
           widgets: [
-            { number: null, id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
-            { number: null, id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, ...COLLECTION_OPTIONS, fields: [field("policy", "excess")], show_when: whileCovered },
-            { number: null,
+            { name: "w_policy", id: "w_policy", type: "collection", x: 0, y: 0, w: 400, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [field("policy", "state"), field("policy", "sum_insured"), field("policy", "cover")], show_when: always },
+            { name: "w_excess", id: "w_excess", type: "collection", x: 0, y: 140, w: 400, h: 120, title: "Excess", columns: 1, ...COLLECTION_OPTIONS, fields: [field("policy", "excess")], show_when: whileCovered },
+            { name: "w_equipment",
               id: "w_equipment",
               type: "tableInput",
               x: 0,
@@ -123,7 +123,7 @@ const motorForm = (): FormSpec => ({
               fields: [field("equipment", "row_number"), field("equipment", "item"), field("equipment", "value"), field("equipment", "count"), field("equipment", "new")],
               show_when: always,
             },
-            { number: null, id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
+            { name: "w_notes", id: "w_notes", type: "tableInput", x: 0, y: 500, w: 720, h: 200, title: "Notes", rows: 3, ...TABLE_OPTIONS, fields: [field("equipment", "note")], show_when: whileCovered },
           ],
         },
       ],
@@ -134,7 +134,7 @@ const motorForm = (): FormSpec => ({
 
 /** A Chart of `fields`, with `options`, placed in the motor form's section beside its other components. */
 function charted(fields: FieldRef[], options: Partial<ChartWidget> = {}): { spec: FormSpec; widget: ChartWidget } {
-  const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", fields, ...options }
+  const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }, motorForm()) as ChartWidget), title: "Chart", fields, ...options }
   return { spec: addWidget(motorForm(), "s1", widget), widget }
 }
 
@@ -202,7 +202,7 @@ describe("a Chart of many-row tables", () => {
   it("counts a row typed into any of its input tables keyed alike, the others' values gaps on it", () => {
     const form = motorForm()
     form.schema.tables.push(table("cover", { rows: "many", columns: [column("item", { key: true }), column("excess", pounds)] }))
-    const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
+    const widget = { ...(createWidget("chart", { x: 760, y: 0, w: 480, h: 280 }, motorForm()) as ChartWidget), title: "Chart", fields: [field("equipment", "value"), field("cover", "excess")] }
     const spec = addWidget(form, "s1", widget)
     // Row 1 is typed into equipment alone, row 2 into cover alone, side by side as a Table's grid has them.
     const data = sheetChartData(spec.schema, widget, valuesOf(spec, { equipment: [{ item: "Crane", value: "5" }, {}], cover: [{}, { item: "Crane", excess: "250" }] }))
@@ -383,7 +383,7 @@ const points: ChartData = {
   stale: false,
 }
 
-const chartOf = (options: Partial<ChartWidget> = {}): ChartWidget => ({ ...(createWidget("chart", { x: 0, y: 0, w: 480, h: 280 }) as ChartWidget), title: "Chart", ...options })
+const chartOf = (options: Partial<ChartWidget> = {}): ChartWidget => ({ ...(createWidget("chart", { x: 0, y: 0, w: 480, h: 280 }, motorForm()) as ChartWidget), title: "Chart", ...options })
 
 const draw = (options: Partial<ChartWidget>, data: ChartData, reducedMotion = false): Drawn =>
   sheetChartOptions(chartOf(options), data, tokens, reducedMotion) as unknown as Drawn

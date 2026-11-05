@@ -359,6 +359,68 @@ def test_a_save_over_a_folder_holding_a_file_not_the_forms_deletes_nothing(
     assert files_of(project) == before
 
 
+def _heading(name: str) -> dict[str, Any]:
+    return {
+        "id": name,
+        "name": name,
+        "type": "heading",
+        "x": 0,
+        "y": 0,
+        "w": 200,
+        "h": 40,
+        "text": "Cover",
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "detail"),
+    [
+        pytest.param(
+            lambda folder: (folder / "sheets" / "sheet_1.json").unlink(),
+            "rating/workbench/form.json names sheets/sheet_1.json, but the folder does not hold "
+            "sheets/sheet_1.json",
+            id="a sheet file missing",
+        ),
+        pytest.param(
+            lambda folder: (folder / "sheets" / "sheet_1.json").rename(
+                folder / "sheets" / "Sheet_1.json"
+            ),
+            "rating/workbench/sheets/Sheet_1.json must be named in lower case: rename it "
+            "sheet_1.json",
+            id="a sheet file named in capitals",
+        ),
+        pytest.param(
+            lambda folder: (folder / "components" / "cover.json").rename(
+                folder / "components" / "Cover.json"
+            ),
+            "rating/workbench/components/Cover.json must be named in lower case: rename it "
+            "cover.json",
+            id="a component file named in capitals",
+        ),
+    ],
+)
+def test_a_save_over_a_folder_not_holding_a_named_file_as_named_changes_nothing(
+    project: Path, change: Any, detail: str
+) -> None:
+    # A save writes each file by its name in lower case and deletes those the form does not
+    # have: over a file named in capitals, on a disk that ignores case, it would delete the
+    # file it had written. Refused as a read refuses the folder, nothing is written.
+    enable(project)
+    placed = form(POLICY)
+    placed["pages"][0]["sections"][0]["widgets"] = [_heading("cover")]
+    write_form(project, placed)
+    body = served()
+    change(project / FORM)
+    before = files_of(project)
+
+    refused = save(body["form"], folder_revision(before))
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == detail
+    assert client().get("/api/workbench/form").json()["detail"] == detail
+    assert files_of(project) == before
+
+
 def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) -> None:
     """A section too short for a component in it, as a merge can leave it, is grown as the
     form is read and said; the files are as they were until a save writes the form as read."""
@@ -367,6 +429,7 @@ def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) 
     tall["pages"][0]["sections"][0]["widgets"] = [
         {
             "id": "heading_t1t1",
+            "name": "heading_1",
             "type": "heading",
             "x": 0,
             "y": 0,
@@ -380,10 +443,10 @@ def test_a_form_grown_to_open_says_what_grew_and_a_save_keeps_it(project: Path) 
         }
     ]
     write_form(project, tall)
-    layout_path = project / FORM / "sheets" / "sheet_1.layout.json"
-    layout = json.loads(layout_path.read_bytes())
-    layout["sections"]["s"]["height"] = 40
-    layout_path.write_bytes((json.dumps(layout) + "\n").encode())
+    sheet_path = project / FORM / "sheets" / "sheet_1.json"
+    sheet = json.loads(sheet_path.read_bytes())
+    sheet["sections"][0]["height"] = 40
+    sheet_path.write_bytes((json.dumps(sheet) + "\n").encode())
 
     body = served()
 
@@ -547,6 +610,7 @@ def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
     state = {"table": "policy_details", "column": "state"}
     looks = {
         "id": "collection_c1c1",
+        "name": "collection_1",
         "type": "collection",
         "x": 0,
         "y": 0,
@@ -568,7 +632,7 @@ def test_a_form_whose_files_would_not_read_back_is_refused_writing_nothing(
     detail = refused.json()["detail"]
     assert detail.startswith(
         "its files would not read back as a form: rating/workbench is not a workbench form: "
-        "sheets/sheet_1.json: "
+        "components/collection_1.json: "
     ), detail
     assert "two looks for policy_details.state" in detail, detail
     assert files_of(project) == before
@@ -890,7 +954,15 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
     enable(project)
     policy = {**POLICY, "columns": [*POLICY["columns"], column("bi_cover", "bool")]}
     # The second sheet shows only while the box on the first is ticked.
-    shown = {"id": "w_policy", "type": "collection", "x": 0, "y": 0, "w": 720, "h": 120}
+    shown = {
+        "id": "w_policy",
+        "name": "w_policy",
+        "type": "collection",
+        "x": 0,
+        "y": 0,
+        "w": 720,
+        "h": 120,
+    }
     typed = {"state": "CA", "exposure": "1,000", "bi_cover": False}
     unsaved = {
         **form(policy, sample={"policy_details": [typed]}),
@@ -927,6 +999,7 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
                         {
                             **shown,
                             "id": "w_bi",
+                            "name": "w_bi",
                             "fields": [{"table": "policy_details", "column": "exposure"}],
                         },
                     )

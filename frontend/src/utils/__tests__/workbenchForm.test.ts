@@ -21,7 +21,9 @@ import {
   chartGrain,
   COLLECTION_OPTIONS,
   conditionText,
+  componentNameProblem,
   conditionUses,
+  copyName,
   createIndexColumn,
   createPage,
   createSchemaColumn,
@@ -50,6 +52,7 @@ import {
   moveSchemaTable,
   moveSection,
   moveWidget,
+  nextWidgetName,
   newQuoteSample,
   orderItems,
   pageProblems,
@@ -71,6 +74,7 @@ import {
   sampleHolds,
   renamePage,
   renameSection,
+  renameWidget,
   rowsShown,
   schemaProblems,
   sectionName,
@@ -327,7 +331,7 @@ describe("problems", () => {
     const index = createIndexColumn(spec, "t")
     spec = addSchemaColumn(spec, "t", index, 0)
     spec = withSampleCell(spec, "t", 0, "item", "x")
-    spec = addWidget(spec, "s", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }), fields: [{ table: "t", column: index.name }] })
+    spec = addWidget(spec, "s", { ...createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }, spec), fields: [{ table: "t", column: index.name }] })
 
     spec = setSchemaTableRows(spec, "t", "one")
     expect(spec.schema.tables[0].columns.map((c) => [c.name, c.key])).toEqual([["item", false], ["value", false]])
@@ -597,8 +601,8 @@ describe("what the sheets show", () => {
           show_when: { match: "all", conditions: [] },
           sections: [
             section("s", "Section 1", 560, [
-              { number: null, id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "state" }], show_when: { match: "all", conditions: [] } },
-              { number: null,
+              { name: "w_boxes", id: "w_boxes", type: "collection", x: 0, y: 0, w: 720, h: 120, title: "Policy", columns: 3, ...COLLECTION_OPTIONS, fields: [{ table: "policy", column: "state" }], show_when: { match: "all", conditions: [] } },
+              { name: "w_grid",
                 id: "w_grid",
                 type: "tableInput",
                 x: 0,
@@ -664,7 +668,7 @@ describe("what the sheets show", () => {
     const value = { table: "equipment", column: "value" }
     let spec = setColumnLook(sheet(), "w_grid", value, { bold: true })
     spec = setSectionShowWhen(spec, "s", { match: "all", conditions: [{ ...state, op: "equals", values: ["NY"], field: null, days: 0 }] })
-    spec = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 120 }), id: "w_chart", fields: [value], category: { table: "equipment", column: "item" } })
+    spec = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 120 }, spec), id: "w_chart", fields: [value], category: { table: "equipment", column: "item" } })
     const grid = (form: FormSpec) => findWidget(form, "w_grid")!.widget as Extract<Widget, { type: "tableInput" }>
     const charted = (form: FormSpec) => findWidget(form, "w_chart")!.widget as ChartWidget
     const shown = (form: FormSpec) => form.pages[0].sections[0].show_when.conditions
@@ -740,8 +744,8 @@ describe("what the sheets show", () => {
 
   it("adds, updates, duplicates and removes components, each kind with its own layout setting", () => {
     let spec = blank()
-    const grid = createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 })
-    const boxes = createWidget("collection", { x: 0, y: 240, w: 720, h: 120 })
+    const grid = createWidget("tableInput", { x: 0, y: 0, w: 720, h: 200 }, blank())
+    const boxes = createWidget("collection", { x: 0, y: 240, w: 720, h: 120 }, blank())
     // A Table as the server's defaults have it: numbered, compact, lined between rows, striped, not
     // fixed, its header as written and framed; a Collection labelled above its boxes, comfortable
     // and framed.
@@ -782,7 +786,7 @@ describe("what the sheets show", () => {
     // In the file's order, so a component the view made compares equal to it saved.
     expect(Object.keys(grid)).toEqual([
       "id",
-      "number",
+      "name",
       "x",
       "y",
       "w",
@@ -820,7 +824,7 @@ describe("what the sheets show", () => {
     expect(grid.column_looks).not.toBe(TABLE_OPTIONS.column_looks)
     expect(Object.keys(boxes)).toEqual([
       "id",
-      "number",
+      "name",
       "x",
       "y",
       "w",
@@ -908,13 +912,13 @@ describe("what the sheets show", () => {
   })
 
   it("creates a Chart with its own options, which only a Chart takes, and duplicates it with them", () => {
-    const chart = createWidget("chart", { x: 0, y: 0, w: 480, h: 280 })
-    const grid = createWidget("tableInput", { x: 0, y: 320, w: 720, h: 200 })
-    const boxes = createWidget("collection", { x: 0, y: 560, w: 720, h: 120 })
+    const chart = createWidget("chart", { x: 0, y: 0, w: 480, h: 280 }, blank())
+    const grid = createWidget("tableInput", { x: 0, y: 320, w: 720, h: 200 }, blank())
+    const boxes = createWidget("collection", { x: 0, y: 560, w: 720, h: 120 }, blank())
     // Its rows numbered, of columns, upright, unstacked, its legend at the bottom and no data labels.
     expect(CHART_OPTIONS).toEqual({ category: null, chart_type: "column", orientation: "vertical", stacked: false, legend: "bottom", data_labels: false })
     expect(chart).toMatchObject({ type: "chart", title: "", fields: [], ...CHART_OPTIONS })
-    expect(Object.keys(chart)).toEqual(["id", "number", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
+    expect(Object.keys(chart)).toEqual(["id", "name", "x", "y", "w", "h", "type", "title", "fields", "show_when", "category", "chart_type", "orientation", "stacked", "legend", "data_labels"])
     expect(chart).not.toHaveProperty("rows")
     expect(chart).not.toHaveProperty("density")
     expect(chart).not.toHaveProperty("columns")
@@ -937,12 +941,12 @@ describe("what the sheets show", () => {
   })
 
   it("creates a Heading of its text, description, size and alignment alone, which only a Heading takes, showing no fields", () => {
-    const heading = createWidget("heading", { x: 0, y: 0, w: 480, h: 40 })
-    const grid = createWidget("tableInput", { x: 0, y: 80, w: 720, h: 200 })
+    const heading = createWidget("heading", { x: 0, y: 0, w: 480, h: 40 }, blank())
+    const grid = createWidget("tableInput", { x: 0, y: 80, w: 720, h: 200 }, blank())
     // Medium and aligned left, with no text or description yet, and no title or fields, in the file's order.
     expect(HEADING_OPTIONS).toEqual({ size: "medium", align: "left" })
     expect(heading).toMatchObject({ type: "heading", text: "", description: "", ...HEADING_OPTIONS })
-    expect(Object.keys(heading)).toEqual(["id", "number", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
+    expect(Object.keys(heading)).toEqual(["id", "name", "x", "y", "w", "h", "type", "text", "description", "show_when", "size", "align"])
     expect([showsFields(heading), showsFields(grid)]).toEqual([false, true])
 
     let spec = [heading, grid].reduce((current, widget) => addWidget(current, "s", widget), blank())
@@ -965,7 +969,7 @@ describe("what the sheets show", () => {
   })
 
   it("names a Heading by its text, says when it has none, and passes it by when a column goes", () => {
-    let spec = addWidget(sheet(), "s", { ...createWidget("heading", { x: 0, y: 400, w: 480, h: 40 }), id: "w_head" })
+    let spec = addWidget(sheet(), "s", { ...createWidget("heading", { x: 0, y: 400, w: 480, h: 40 }, sheet()), id: "w_head" })
     const head = (form: FormSpec) => widgetsOf(form)[2]
     expect(widgetName(head(spec))).toBe("A Heading")
     expect(widgetProblems(spec)).toEqual([{ widgetId: "w_head", message: "A Heading has no text" }])
@@ -1036,7 +1040,7 @@ describe("what the sheets show", () => {
     expect(boxes(toggleField(boxed, "w_boxes", state)).column_looks).toEqual([])
 
     // Only a Table's columns and a Collection's fields have looks, and only those it shows.
-    const charted = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 280 }), id: "w_chart", fields: [value] })
+    const charted = addWidget(spec, "s", { ...createWidget("chart", { x: 0, y: 400, w: 480, h: 280 }, spec), id: "w_chart", fields: [value] })
     expect(() => setColumnLook(charted, "w_chart", value, { bold: true })).toThrow("Only a Table or a Collection has column looks")
     expect(() => setColumnLook(unticked, "w_grid", value, { bold: true })).toThrow("The Table does not show equipment.value")
     expect(() => setColumnLook(spec, "w_boxes", value, { bold: true })).toThrow("The Collection does not show equipment.value")
@@ -1100,7 +1104,7 @@ describe("what the sheets show", () => {
     // The year removed after the copy: pasted, the copy is as the original is now.
     const lost = removeSchemaColumn(spec, "policy", "year")
     const pasted = pasteWidget(lost, copied, "s")
-    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, number: 1, x: 16, y: 16 })
+    expect(findWidget(pasted.spec, pasted.id)?.widget).toEqual({ ...findWidget(lost, "w_boxes")!.widget, id: pasted.id, name: "w_boxes_2", x: 16, y: 16 })
     expect(findWidget(pasted.spec, pasted.id)?.widget).toMatchObject({
       fields: [{ table: "policy", column: "state" }, { table: "policy", column: "region" }],
       spacers: [1],
@@ -1269,8 +1273,8 @@ describe("sections", () => {
       {
         ...blank().pages[0],
         sections: [
-          section("s_policy", "Policy", 136, [{ ...createWidget("collection", { x: 16, y: 16, w: 400, h: 120 }), id: "w_boxes" }]),
-          section("s_equipment", "Equipment", 232, [{ ...createWidget("tableInput", { x: 16, y: 16, w: 720, h: 200 }), id: "w_grid" }]),
+          section("s_policy", "Policy", 136, [{ ...createWidget("collection", { x: 16, y: 16, w: 400, h: 120 }, blank()), id: "w_boxes" }]),
+          section("s_equipment", "Equipment", 232, [{ ...createWidget("tableInput", { x: 16, y: 16, w: 720, h: 200 }, blank()), id: "w_grid" }]),
           section("s_notes", "Notes", 48),
         ],
       },
@@ -1278,7 +1282,7 @@ describe("sections", () => {
   })
   /** `stacked` with Equipment 272 tall, holding a note under its Table, 232 to 272. */
   const noted = (): FormSpec =>
-    addWidget(setSectionHeight(stacked(), "s_equipment", 272), "s_equipment", { ...createWidget("heading", { x: 16, y: 232, w: 480, h: 40 }), id: "w_note" })
+    addWidget(setSectionHeight(stacked(), "s_equipment", 272), "s_equipment", { ...createWidget("heading", { x: 16, y: 232, w: 480, h: 40 }, blank()), id: "w_note" })
   const titles = (spec: FormSpec) => spec.pages[0].sections.map((s) => s.title)
   const heights = (spec: FormSpec) => spec.pages[0].sections.map((s) => s.height)
   /** The ids of the components in each of the first sheet's sections, in its order. */
@@ -1297,30 +1301,64 @@ describe("sections", () => {
     expect(createSection(createPage(spec)).title).toBe("Section 2")
   })
 
-  it("numbers a component one more than the highest in the section it enters, added, duplicated, moved or pasted", () => {
-    const numbers = (spec: FormSpec) => spec.pages[0].sections.map((s) => s.widgets.map((widget) => widget.number))
-    // As a file numbers them: Policy's and Equipment's one component each 1, Notes empty.
+  /** The names of the components in each of the first sheet's sections, in its order. */
+  const names = (spec: FormSpec) => spec.pages[0].sections.map((s) => s.widgets.map((widget) => widget.name))
+
+  it("names a new component by its kind and the first free number, whatever the case of the names taken", () => {
     let spec = stacked()
-    for (const s of spec.pages[0].sections) s.widgets.forEach((widget, index) => (widget.number = index + 1))
-    spec = addWidget(spec, "s_notes", { ...createWidget("heading", nowhere), id: "w_a" })
-    spec = addWidget(spec, "s_notes", { ...createWidget("heading", { ...nowhere, y: 24 }), id: "w_b" })
-    expect(numbers(spec)).toEqual([[1], [1], [1, 2]])
-    // A copy sits after its original, numbered after the highest.
-    spec = duplicateWidget(spec, "w_a").spec
-    expect(numbers(spec)[2]).toEqual([1, 3, 2])
-    // Moved to another section, it takes the next number there; its old one is not reused.
-    spec = placeWidget(spec, "w_a", "s_policy", { x: 440, y: 16, w: 80, h: 24 })
-    expect(numbers(spec)).toEqual([[1, 2], [1], [3, 2]])
+    expect(names(spec)).toEqual([["collection_1"], ["table_1"], []])
+    expect(createWidget("tableInput", nowhere, spec).name).toBe("table_2")
+    expect(nextWidgetName(spec, "heading")).toBe("heading_1")
+    // A number taken only in another case is taken too: the name is its file's in lower case.
+    spec = renameWidget(spec, "w_grid", "TABLE_2")
+    expect(nextWidgetName(spec, "tableInput")).toBe("table_1")
+    spec = addWidget(spec, "s_notes", { ...createWidget("tableInput", nowhere, spec), id: "w_a" })
+    expect(names(spec)[2]).toEqual(["table_1"])
+    expect(nextWidgetName(spec, "tableInput")).toBe("table_3")
+    expect(addWidgetInFreePlace(spec, "s_notes", "export", { w: 160, h: 40 }).spec.pages[0].sections[2].widgets[1].name).toBe("export_1")
+  })
+
+  it("names a copy after its original and the first free number from 2", () => {
+    let spec = renameWidget(stacked(), "w_grid", "layers")
+    expect(copyName(spec, "layers")).toBe("layers_2")
+    expect(copyName(spec, "collection_1")).toBe("collection_2")
+    const duplicated = duplicateWidget(spec, "w_grid")
+    spec = duplicated.spec
+    expect(findWidget(spec, duplicated.id)?.widget.name).toBe("layers_2")
+    // A copy of a copy: its original's name without its number, then the first free one.
+    spec = renameWidget(spec, "w_boxes", "Layers_3")
+    expect(copyName(spec, "layers_2")).toBe("layers_4")
     const pasted = pasteWidget(spec, findWidget(spec, "w_grid")!.widget, "s_notes")
-    spec = pasted.spec
-    expect(numbers(spec)[2]).toEqual([3, 2, 4])
-    // Moved within its section, it keeps its number.
-    spec = placeWidget(spec, "w_b", "s_notes", { x: 200, y: 0, w: 80, h: 24 })
-    expect(numbers(spec)[2]).toEqual([3, 2, 4])
-    // Once the highest is deleted, its number can come back, its box gone with it.
-    spec = removeWidget(spec, pasted.id)
-    spec = addWidget(spec, "s_notes", { ...createWidget("heading", nowhere), id: "w_c" })
-    expect(numbers(spec)[2]).toEqual([3, 2, 4])
+    expect(findWidget(pasted.spec, pasted.id)?.widget.name).toBe("layers_4")
+    // Pasted on another sheet, it is named as a copy too: names are the form's, not a sheet's.
+    const other = addPage(pasted.spec, createPage(pasted.spec))
+    const elsewhere = pasteWidget(other, findWidget(other, "w_grid")!.widget, other.pages[1].sections[0].id)
+    expect(findWidget(elsewhere.spec, elsewhere.id)?.widget.name).toBe("layers_5")
+  })
+
+  it("keeps a component's name wherever it is moved", () => {
+    let spec = renameWidget(stacked(), "w_boxes", "policy")
+    spec = placeWidget(spec, "w_boxes", "s_policy", { x: 440, y: 16, w: 400, h: 120 })
+    expect(names(spec)[0]).toEqual(["policy"])
+    spec = placeWidget(spec, "w_boxes", "s_notes", { x: 0, y: 0, w: 400, h: 120 })
+    expect(names(spec)).toEqual([[], ["table_1"], ["policy"]])
+    spec = moveWidget(spec, "w_boxes", { x: 32, y: 0 })
+    expect(names(spec)[2]).toEqual(["policy"])
+  })
+
+  it("renames a component to an identifier no other component has, whatever its case", () => {
+    const spec = stacked()
+    expect(names(renameWidget(spec, "w_grid", "Equipment_rows"))[1]).toEqual(["Equipment_rows"])
+    // Renaming a component to its own name in another case is no clash.
+    expect(componentNameProblem(spec, "w_grid", "TABLE_1")).toBeNull()
+    expect(componentNameProblem(spec, "w_grid", "")).toBe("Use letters, digits and _, not starting with a digit")
+    expect(componentNameProblem(spec, "w_grid", "2nd")).toBe("Use letters, digits and _, not starting with a digit")
+    expect(componentNameProblem(spec, "w_grid", "rows-2")).toBe("Use letters, digits and _, not starting with a digit")
+    expect(componentNameProblem(spec, "w_grid", "con")).toBe("con is a name Windows keeps for itself")
+    expect(componentNameProblem(spec, "w_grid", "COM1")).toBe("COM1 is a name Windows keeps for itself")
+    expect(componentNameProblem(spec, "w_grid", "Collection_1")).toBe("Another component is named collection_1")
+    expect(() => renameWidget(spec, "w_grid", "collection_1")).toThrow("Another component is named collection_1")
+    expect(() => renameWidget(spec, "w_grid", "con")).toThrow("con is a name Windows keeps for itself")
   })
 
   it("adds a section at a place on its sheet, or at the end", () => {
@@ -1512,7 +1550,7 @@ describe("sections", () => {
 
   it("adds a component to a section kept inside it, growing the section only for a component taller than it", () => {
     const spec = stacked()
-    const note = { ...createWidget("heading", { x: 16, y: 16, w: 480, h: 48 }), id: "w_note" }
+    const note = { ...createWidget("heading", { x: 16, y: 16, w: 480, h: 48 }, blank()), id: "w_note" }
 
     // 16 + 48 would reach 64, past the empty section's 48: it sits at the top, and Notes stays 48.
     const added = addWidget(spec, "s_notes", note)
@@ -1603,7 +1641,7 @@ describe("sections", () => {
   })
 
   it("places a component in its own section keeping its place in the order, kept inside it, growing it only for a component taller than it and never shrinking it", () => {
-    const spec = addWidget(stacked(), "s_policy", { ...createWidget("heading", { x: 432, y: 16, w: 200, h: 48 }), id: "w_title" })
+    const spec = addWidget(stacked(), "s_policy", { ...createWidget("heading", { x: 432, y: 16, w: 200, h: 48 }, stacked()), id: "w_title" })
 
     // Policy is 136 tall: the boxes, 120 tall, dropped 64 down, stop at its bottom, 16 down.
     const lower = placeWidget(spec, "w_boxes", "s_policy", { x: 24, y: 64, w: 400, h: 120 })
@@ -1622,7 +1660,7 @@ describe("sections", () => {
   })
 
   it("moves a component within its section, kept inside it and off the sheet's left edge, never growing it", () => {
-    const spec = addWidget(stacked(), "s_policy", { ...createWidget("heading", { x: 432, y: 16, w: 200, h: 48 }), id: "w_title" })
+    const spec = addWidget(stacked(), "s_policy", { ...createWidget("heading", { x: 432, y: 16, w: 200, h: 48 }, stacked()), id: "w_title" })
 
     // Within Policy, 136 tall: where it fits it goes, keeping its size and its place in the order.
     const moved = moveWidget(spec, "w_boxes", { x: 40, y: 8 })
@@ -1642,7 +1680,7 @@ describe("sections", () => {
   it("moves a component taller than its section to its top, the section growing to hold it", () => {
     // Notes, 48 tall, written holding a note 80 tall.
     const spec = stacked()
-    spec.pages[0].sections[2] = section("s_notes", "Notes", 48, [{ ...createWidget("heading", { x: 16, y: 16, w: 480, h: 80 }), id: "w_note" }])
+    spec.pages[0].sections[2] = section("s_notes", "Notes", 48, [{ ...createWidget("heading", { x: 16, y: 16, w: 480, h: 80 }, blank()), id: "w_note" }])
 
     const moved = moveWidget(spec, "w_note", { x: 24, y: 24 })
     expect(findWidget(moved, "w_note")?.widget).toMatchObject({ x: 24, y: 0, h: 80 })
@@ -1695,7 +1733,7 @@ describe("sections", () => {
 
     // Into its own section, over its original: 16 right, and as far down as Policy's 136 lets it, last there.
     const once = pasteWidget(spec, boxes, "s_policy")
-    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, number: 1, x: 32, y: 16 } })
+    expect(at(once)).toMatchObject({ section: { id: "s_policy" }, index: 1, widget: { ...boxes, id: once.id, name: "collection_2", x: 32, y: 16 } })
     expect(once.id).not.toBe("w_boxes")
     expect(findWidget(once.spec, "w_boxes")?.widget).toEqual(boxes)
     expect(heights(once.spec)).toEqual([136, 232, 48])
@@ -1725,7 +1763,7 @@ describe("sections", () => {
     // 1280 wide.
     const spec = stacked()
     const width = (form: FormSpec) => form.pages[0].width
-    const note = { ...createWidget("heading", { x: 1000, y: 0, w: 480, h: 48 }), id: "w_note" }
+    const note = { ...createWidget("heading", { x: 1000, y: 0, w: 480, h: 48 }, blank()), id: "w_note" }
 
     // Past the right edge it stops there, 1280 less its width across, and the sheet keeps its width.
     expect(findWidget(addWidget(spec, "s_notes", note), "w_note")?.widget.x).toBe(800)
@@ -1774,7 +1812,7 @@ describe("sections", () => {
     expect(setPageHeight(spec, "p", 416)).toBe(spec)
     expect(setPageHeight(spec, "p", NaN)).toBe(spec)
     // A component in the last section keeps it as tall as it reaches, 100 + 40.
-    const noting = addWidget(setSectionHeight(spec, "s_notes", 200), "s_notes", { ...createWidget("heading", { x: 16, y: 100, w: 480, h: 40 }), id: "w_note" })
+    const noting = addWidget(setSectionHeight(spec, "s_notes", 200), "s_notes", { ...createWidget("heading", { x: 16, y: 100, w: 480, h: 40 }, blank()), id: "w_note" })
     expect(heights(setPageHeight(noting, "p", 400))).toEqual([136, 232, 140])
     expect(() => setPageHeight(spec, "missing", 1000)).toThrow("The form has no sheet missing")
   })
@@ -1791,7 +1829,7 @@ describe("sections", () => {
     moveSection(before, "p", 0, 2)
     splitSection(before, "s_equipment", 8, createSection(before.pages[0]))
     removeSection(before, "s_notes")
-    addWidget(before, "s_notes", { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 480 }), id: "w_note" })
+    addWidget(before, "s_notes", { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 480 }, blank()), id: "w_note" })
     updateWidget(before, "w_boxes", { y: 400 })
     placeWidget(before, "w_boxes", "s_notes", { x: 0, y: 400, w: 400, h: 120 })
     moveWidget(before, "w_boxes", { x: 0, y: 400 })
@@ -1808,7 +1846,7 @@ describe("when sheets and components show", () => {
   const always = (): ShowWhen => ({ match: "all", conditions: [] })
   const ticked: Condition = { table: "policy", column: "bi", op: "ticked", values: [], field: null, days: 0 }
   const collection = (id: string, title: string, columns: [string, string][], showWhen: ShowWhen = always()) => ({
-    number: null,
+    name: id,
     id,
     type: "collection" as const,
     x: 0,
@@ -1850,9 +1888,9 @@ describe("when sheets and components show", () => {
     const spec = covered()
     expect(createPage(spec).show_when).toEqual(always())
     expect(createSection(spec.pages[0]).show_when).toEqual(always())
-    const first = createWidget("collection", { x: 0, y: 0, w: 200, h: 100 })
-    const second = createWidget("tableInput", { x: 0, y: 0, w: 200, h: 100 })
-    const third = createWidget("heading", { x: 0, y: 0, w: 200, h: 40 })
+    const first = createWidget("collection", { x: 0, y: 0, w: 200, h: 100 }, blank())
+    const second = createWidget("tableInput", { x: 0, y: 0, w: 200, h: 100 }, blank())
+    const third = createWidget("heading", { x: 0, y: 0, w: 200, h: 40 }, blank())
     expect([first.show_when, second.show_when, third.show_when]).toEqual([always(), always(), always()])
     expect(first.show_when).not.toBe(second.show_when)
   })
@@ -1950,7 +1988,7 @@ describe("when sheets and components show", () => {
 
   it("counts a Heading's conditions as any component's, and takes them out with their column or table", () => {
     const onClass: Condition = { table: "policy", column: "class", op: "equals", values: ["Fleet"], field: null, days: 0 }
-    const heading = { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 40 }), id: "w_head", text: "Fleet", show_when: { match: "all" as const, conditions: [onClass] } }
+    const heading = { ...createWidget("heading", { x: 0, y: 0, w: 480, h: 40 }, blank()), id: "w_head", text: "Fleet", show_when: { match: "all" as const, conditions: [onClass] } }
     const spec = addWidget(covered(), "s_main", heading)
     expect(conditionUses(spec, "policy", "class").map((holder) => holder.id)).toEqual(["w_head"])
 
@@ -1981,7 +2019,7 @@ describe("when sheets and components show", () => {
     ])
     // A Chart only plots, so a column only a Chart plots is on no Table or Collection either.
     const plotted = addWidget(changeSchemaColumnType(spec, "policy", "extra", "float"), "s_main", {
-      ...createWidget("chart", { x: 0, y: 240, w: 480, h: 280 }),
+      ...createWidget("chart", { x: 0, y: 240, w: 480, h: 280 }, blank()),
       fields: [{ table: "policy", column: "extra" }],
     })
     expect(pageProblems(setPageShowWhen(plotted, "p_bi", { match: "all", conditions: [{ table: "policy", column: "extra", op: "filled", values: [], field: null, days: 0 }] })).map((p) => p.message)).toEqual([
@@ -1989,7 +2027,7 @@ describe("when sheets and components show", () => {
     ])
     // A Heading's conditions are checked as any component's, and it is named by its text.
     const headed = addWidget(spec, "s_bi", {
-      ...createWidget("heading", { x: 0, y: 160, w: 480, h: 40 }),
+      ...createWidget("heading", { x: 0, y: 160, w: 480, h: 40 }, blank()),
       text: "Business interruption",
       show_when: { match: "all", conditions: [{ table: "policy", column: "gone", op: "filled", values: [], field: null, days: 0 }] },
     })
@@ -2007,7 +2045,7 @@ describe("when sheets and components show", () => {
     expect(widgetProblems(updateWidget(spec, "w_policy", { show_when: { match: "all", conditions: [referred] } })).map((p) => p.message)).toEqual([`Collection "Policy" ${never}`])
 
     // A Heading takes nothing typed: there it is no problem.
-    const note = { ...createWidget("heading", { x: 0, y: 0, w: 200, h: 40 }), id: "w_note", text: "Refer", show_when: { match: "all" as const, conditions: [referred] } }
+    const note = { ...createWidget("heading", { x: 0, y: 0, w: 200, h: 40 }, blank()), id: "w_note", text: "Refer", show_when: { match: "all" as const, conditions: [referred] } }
     const noted = addWidget(spec, "s_bi", note)
     expect(widgetProblems(noted).filter((p) => p.widgetId === "w_note")).toEqual([])
   })
@@ -2055,7 +2093,7 @@ describe("when sheets and components show", () => {
     const spec = covered()
     const columns = [column("age", { type: "int", label: "Age" }), column("cover", { options: ["Full", "Partial"] })]
     spec.schema.tables.push(table("drivers", { rows: "many", columns }))
-    return addWidget(spec, sectionId, { number: null,
+    return addWidget(spec, sectionId, { name: "w_drivers",
       id: "w_drivers",
       type: "tableInput",
       x: 0,
@@ -2233,7 +2271,7 @@ describe("charts", () => {
   const ref = (tableId: string, columnId: string): FieldRef => ({ table: tableId, column: columnId })
   const chart = (fields: FieldRef[], options: Partial<ChartWidget> = {}): ChartWidget => ({
     id: "w_chart",
-    number: null,
+    name: "w_chart",
     type: "chart",
     x: 0,
     y: 0,
@@ -2409,8 +2447,8 @@ describe("Imports and Exports", () => {
   const buttons = (): FormSpec => {
     let spec = blank()
     for (const added of [details, layers, premiums]) spec = addSchemaTable(spec, added)
-    spec = addWidget(spec, "s", { ...createWidget("import", rect), id: "w_in" })
-    return addWidget(spec, "s", { ...createWidget("export", { ...rect, x: 192 }), id: "w_out" })
+    spec = addWidget(spec, "s", { ...createWidget("import", rect, spec), id: "w_in" })
+    return addWidget(spec, "s", { ...createWidget("export", { ...rect, x: 192 }, spec), id: "w_out" })
   }
   const imported = (spec: FormSpec) => findWidget(spec, "w_in")!.widget as ImportWidget
   const exported = (spec: FormSpec) => findWidget(spec, "w_out")!.widget as ExportWidget
@@ -2422,7 +2460,7 @@ describe("Imports and Exports", () => {
 
     expect(imported(spec)).toEqual({
       id: "w_in",
-      number: 1,
+      name: "import_1",
       ...rect,
       type: "import",
       label: "Import",
@@ -2439,7 +2477,7 @@ describe("Imports and Exports", () => {
     expect(problems(spec, "w_out")).toEqual(['Export "Export" exports no tables'])
     expect(problems(updateWidget(spec, "w_in", { label: "  " }), "w_in")).toEqual(["An Import has no label", "An Import fills no table"])
     expect(() => updateWidget(spec, "w_in", { title: "x" })).toThrow("An Import has no title")
-    const withHeading = addWidget(spec, "s", { ...createWidget("heading", { ...rect, y: 80 }), id: "w_head" })
+    const withHeading = addWidget(spec, "s", { ...createWidget("heading", { ...rect, y: 80 }, spec), id: "w_head" })
     expect(() => updateWidget(withHeading, "w_head", { label: "x" })).toThrow("Only an Import or an Export has label")
   })
 

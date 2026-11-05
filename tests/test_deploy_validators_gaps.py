@@ -479,25 +479,25 @@ class TestValidateDeployWorkbenchForm:
 
         _workbench_project(tmp_path)
         # A field on a column one branch dropped, which another's merge kept showing.
-        sheet = tmp_path / "rating" / "workbench" / "sheets" / "sheet_1.json"
-        layout = tmp_path / "rating" / "workbench" / "sheets" / "sheet_1.layout.json"
+        folder = tmp_path / "rating" / "workbench"
+        sheet = folder / "sheets" / "sheet_1.json"
         held = json.loads(sheet.read_bytes())
         held["sections"][0]["components"] = [
-            {
-                "number": 1,
-                "type": "collection",
-                "title": "Cover",
-                "fields": ["policy.gone"],
-            }
+            {"component": "cover", "x": 0, "y": 0, "w": 200, "h": 100}
         ]
         sheet.write_bytes((json.dumps(held) + "\n").encode())
-        placed = json.loads(layout.read_bytes())
-        placed["sections"]["s"]["components"] = {"1": {"x": 0, "y": 0, "w": 200, "h": 100}}
-        layout.write_bytes((json.dumps(placed) + "\n").encode())
+        (folder / "components").mkdir()
+        (folder / "components" / "cover.json").write_bytes(
+            (
+                json.dumps({"type": "collection", "title": "Cover", "fields": ["policy.gone"]})
+                + "\n"
+            ).encode()
+        )
 
+        # Named in the component's own file, whichever sheet places it.
         assert _form_check_errors(tmp_path) == [
-            'rating/workbench/sheets/sheet_1.json, the Collection "Cover" names policy.gone, '
-            "which the schema does not hold."
+            "rating/workbench/components/cover.json names policy.gone, which the schema does "
+            "not hold."
         ]
 
     def test_a_pipeline_without_a_workbench_node_reads_no_form(self, tmp_path: Path) -> None:

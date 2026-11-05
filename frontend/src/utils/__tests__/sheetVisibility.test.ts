@@ -142,7 +142,7 @@ const valued: SchemaTable = {
 }
 const premium: SchemaTable = { name: "premium", role: "output", rows: "one", columns: [column("premium", { type: "float" })] }
 
-const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({ number: null,
+const collection = (id: string, fields: [string, string][], showWhen: ShowWhen = ALWAYS): Widget => ({ name: id,
   id,
   type: "collection",
   title: id,
@@ -189,9 +189,9 @@ describe("withPrice", () => {
   })
   const referred = on({})
   const rect = { x: 0, y: 0, w: 400, h: 120 }
-  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect), id, fields: [{ table: "reasons", column: "reason" }], show_when: showWhen })
+  const grid = (id: string, showWhen: ShowWhen = ALWAYS): Widget => ({ ...createWidget("tableInput", rect, formOf([])), id, fields: [{ table: "reasons", column: "reason" }], show_when: showWhen })
   const anyReason: ShowWhen = { match: "all", conditions: [{ table: "reasons", rows: "any", where: [{ column: "reason", op: "filled", values: [], field: null, days: 0 }] }] }
-  const heading = (id: string, showWhen: ShowWhen): Widget => ({ ...createWidget("heading", { ...rect, h: 40 }), id, text: "Check the rate", show_when: showWhen })
+  const heading = (id: string, showWhen: ShowWhen): Widget => ({ ...createWidget("heading", { ...rect, h: 40 }, formOf([])), id, text: "Check the rate", show_when: showWhen })
   const summary: Widget = {
     ...(collection("w_summary", [["premium", "referral_count"], ["premium", "rate_adequacy"]]) as Extract<Widget, { type: "collection" }>),
     column_looks: [{ table: "premium", column: "rate_adequacy", ...PLAIN_COLUMN_LOOK, show_when: referred }],
@@ -268,8 +268,8 @@ describe("withPrice", () => {
     expect(takesNothingTyped(form, main)).toBe(false)
     expect(takesNothingTyped(form, inputs)).toBe(false)
     expect(takesNothingTyped(form, inputs.sections[0])).toBe(false)
-    expect(takesNothingTyped(form, { ...createWidget("chart", rect), fields: [{ table: "policy", column: "sum_insured" }] })).toBe(true)
-    expect(takesNothingTyped(form, { ...createWidget("export", rect) })).toBe(false)
+    expect(takesNothingTyped(form, { ...createWidget("chart", rect, form), fields: [{ table: "policy", column: "sum_insured" }] })).toBe(true)
+    expect(takesNothingTyped(form, { ...createWidget("export", rect, form) })).toBe(false)
   })
 })
 

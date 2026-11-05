@@ -192,13 +192,14 @@ def sheet_name(title: str) -> str:
 
 
 class _Placed(_Strict):
-    """A widget's place in its section, in pixels from the section's top-left corner, and
-    its number in the section (READ-24): one more than the highest when it entered it, kept
-    in the sheet's file and keying its box in the layout file. The editor numbers a component
-    as it enters a section; one sent without a number, None, is numbered by the save."""
+    """A widget's name and its place in its section, in pixels from the section's top-left
+    corner. The name is the builder's, which the editor gives it as it adds or copies it and
+    changes in its panel: it names the component's file and places it in its sheet's file,
+    and the folder holds it to an identifier no other component has whatever its case
+    (``haute._workbench_folder.folder_name_problems``)."""
 
     id: str
-    number: int | None = Field(default=None, ge=1)
+    name: str
     x: int = Field(ge=0)
     y: int = Field(ge=0)
     w: int = Field(gt=0)
@@ -713,13 +714,6 @@ class Section(_Strict):
 
     @model_validator(mode="after")
     def _holds_its_widgets(self) -> Section:
-        numbers = [widget.number for widget in self.widgets if widget.number is not None]
-        twice = next((n for n in numbers if numbers.count(n) > 1), None)
-        if twice is not None:
-            raise ValueError(
-                f"section {self.title!r} holds two components numbered {twice}: give one of "
-                "them another number"
-            )
         for widget in self.widgets:
             if widget.y + widget.h > self.height:
                 raise ValueError(
@@ -852,8 +846,8 @@ class FormSpec(_Strict):
     @classmethod
     def _gives_each_part_an_id(cls, data: Any) -> Any:
         """A sheet, a section and a component read from a file or a release hold no id: each
-        is given one from what identifies it (READ-24), its sheet's file name, its section's
-        title and its number, so the editor can select and move it. An id a part holds, one
+        is given one from what identifies it, its sheet's file name, its section's title and
+        its name, so the editor can select and move it. An id a part holds, one
         the editor made, is kept. The caller's data is left as it was."""
         pages = data.get("pages") if isinstance(data, dict) else None
         if not isinstance(pages, list) or all(
@@ -873,7 +867,7 @@ class FormSpec(_Strict):
                     continue
                 section_id = section.get("id") or f"{page_id}/{section.get('title', '')}"
                 widgets = [
-                    {**widget, "id": f"{section_id}/{widget.get('number')}"}
+                    {**widget, "id": f"{section_id}/{widget.get('name')}"}
                     if isinstance(widget, dict) and "id" not in widget
                     else widget
                     for widget in section.get("widgets") or []
@@ -1164,7 +1158,7 @@ def render_form(spec: FormSpec) -> str:
     it: every field, defaults included, indented, ending in a newline."""
     # Non-ASCII text as typed, a label or an allowed value, as the node configs keep it. A
     # sheet's, a section's and a component's ids are the editor's, never the release's
-    # (READ-24): a release gives them from the sheet's name, the title and the number.
+    # (READ-24): a release gives them from the sheet's name, the title and the name.
     no_ids = {"__all__": {"id": True}}
     data = spec.model_dump(
         mode="json",

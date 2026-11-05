@@ -1,5 +1,6 @@
 {
   "title": "Quote & Summary!",
+  "width": 960,
   "show_when": {
     "conditions": [
       {"column": "policy.state", "op": "equals", "values": ["NY"]}
@@ -8,14 +9,9 @@
   "sections": [
     {
       "title": "Summary",
+      "height": 160,
       "components": [
-        {
-          "number": 1,
-          "type": "collection",
-          "fields": [
-            "pricing.premium"
-          ]
-        }
+        {"component": "summary", "x": 16, "y": 16, "w": 400, "h": 96}
       ]
     }
   ]

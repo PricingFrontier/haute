@@ -1258,11 +1258,10 @@ class TestInitWorkbench:
             "form.json",
             "schema/quote_details.json",
             "sheets/sheet_1.json",
-            "sheets/sheet_1.layout.json",
         ]
         # Written as the folder's own saves write them: LF, so a first save rewrites nothing.
         assert b"\r\n" not in (folder / "form.json").read_bytes()
-        # Sheet parts are known by title and number, not their ids (READ-24).
+        # Sheet parts are known by title and name, not their ids (READ-24).
         assert render_form(self._form(project_dir).spec) == render_form(blank_form("motor"))
         for reported in (
             "rating/workbench/",

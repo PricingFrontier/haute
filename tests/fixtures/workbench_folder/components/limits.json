@@ -1,0 +1,9 @@
+{
+  "type": "chart",
+  "title": "Limits",
+  "fields": [
+    "layers.limit"
+  ],
+  "category": "layers.layer_name",
+  "chart_type": "line"
+}

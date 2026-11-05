@@ -1,0 +1,18 @@
+{
+  "type": "export",
+  "label": "Export",
+  "target": {
+    "format": "sql",
+    "connection": "warehouse",
+    "table_names": [
+      {
+        "table": "layers",
+        "name": "quote_layers"
+      }
+    ]
+  },
+  "tables": [
+    "layers",
+    "pricing"
+  ]
+}

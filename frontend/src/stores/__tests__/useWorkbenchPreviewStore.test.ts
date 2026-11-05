@@ -53,7 +53,7 @@ const form: FormSpec = {
 
 /** A Collection of the policy's columns, always shown. */
 const boxes = (id: string, columns: string[]): CollectionWidget => ({
-  id, number: null, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, show_when: { match: "all", conditions: [] },
+  id, name: id, type: "collection", x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, show_when: { match: "all", conditions: [] },
   fields: columns.map((name) => ({ table: "policy_details", column: name })),
 })
 /** The schema with a box, cover, and a name beside the policy's required exposure. */

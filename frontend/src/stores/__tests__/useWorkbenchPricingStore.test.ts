@@ -248,7 +248,7 @@ describe("useWorkbenchPricingStore", () => {
     }
     // The exposure's box on a sheet that shows only once it is 0: hidden, it is nothing typed.
     const hiding = { match: "all" as const, conditions: [{ table: "policy_details", column: "exposure", op: "equals" as const, values: ["0"], field: null, days: 0 }] }
-    const exposure = { id: "w", number: null, type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy_details", column: "exposure" }], show_when: { match: "all" as const, conditions: [] } }
+    const exposure = { id: "w", name: "w", type: "collection" as const, x: 0, y: 0, w: 400, h: 100, title: "", columns: 2, ...COLLECTION_OPTIONS, fields: [{ table: "policy_details", column: "exposure" }], show_when: { match: "all" as const, conditions: [] } }
     const [sheet] = form.pages
     useWorkbenchFormStore.setState({ form: { ...form, pages: [{ ...sheet, show_when: hiding, sections: [{ ...sheet.sections[0], widgets: [exposure] }] }] } })
     await useWorkbenchPricingStore.getState().priceNow()

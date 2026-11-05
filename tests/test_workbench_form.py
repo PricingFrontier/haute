@@ -77,7 +77,7 @@ IDENTITY: list[dict[str, Any]] = [column("quote_reference"), column("quote_optio
 # table, a Collection, a Table and a Chart in one section and a Heading in a second, the
 # Table and the second section each shown while a condition holds, and a sample typed into
 # the Collection; as a release ships it and the quote store keeps it, each table and column
-# known by its name and each component by its number in its section, with no id.
+# known by its name and each component by its own, with no id.
 ALWAYS: dict[str, Any] = {"match": "all", "conditions": []}
 FORM: dict[str, Any] = {
     "version": 1,
@@ -150,7 +150,7 @@ FORM: dict[str, Any] = {
                     "show_when": ALWAYS,
                     "widgets": [
                         {
-                            "number": 1,
+                            "name": "policy",
                             "type": "collection",
                             "x": 16,
                             "y": 16,
@@ -220,7 +220,7 @@ FORM: dict[str, Any] = {
                             "spacers": [1],
                         },
                         {
-                            "number": 2,
+                            "name": "layers",
                             "type": "tableInput",
                             "x": 16,
                             "y": 160,
@@ -289,7 +289,7 @@ FORM: dict[str, Any] = {
                             ],
                         },
                         {
-                            "number": 3,
+                            "name": "limits",
                             "type": "chart",
                             "x": 760,
                             "y": 16,
@@ -328,7 +328,7 @@ FORM: dict[str, Any] = {
                     },
                     "widgets": [
                         {
-                            "number": 1,
+                            "name": "equipment",
                             "type": "heading",
                             "x": 16,
                             "y": 8,
@@ -363,23 +363,24 @@ def read_document(document: dict[str, Any]) -> FormSpec:
     return with_quote_details(FormSpec.model_validate(document))
 
 
-#: The sheet the test form's folder files, by its title "Sheet 1".
-LAYOUT = "sheets/sheet_1.layout.json"
+#: The sheet the test form's folder files, by its title "Sheet 1": its width, its sections'
+#: heights and where each component sits.
+SHEET = "sheets/sheet_1.json"
 
 
-def read_after_layout_edit(
+def read_after_sheet_edit(
     project: Path, form: dict[str, Any], change: Any
 ) -> tuple[FormDocument, bytes]:
-    """*form* saved as its folder, its one sheet's layout file then changed by *change*, as a
-    merge or a hand edit can, and the folder read back; with the layout file's bytes."""
+    """*form* saved as its folder, its one sheet's file then changed by *change*, as a merge
+    or a hand edit can, and the folder read back; with the sheet file's bytes."""
     folder = project / "rating" / "workbench"
     files = form_files(form, folder)
-    layout = json.loads(files[LAYOUT])
-    change(layout)
-    files[LAYOUT] = (json.dumps(layout, indent=2) + "\n").encode("utf-8")
+    sheet = json.loads(files[SHEET])
+    change(sheet)
+    files[SHEET] = (json.dumps(sheet, indent=2) + "\n").encode("utf-8")
     write_files(folder, files)
     config = WorkbenchConfig(enabled=True, project_root=project, form="rating/workbench")
-    return read_form_document(config), files[LAYOUT]
+    return read_form_document(config), files[SHEET]
 
 
 @pytest.mark.meta
@@ -476,15 +477,15 @@ def test_a_form_round_trips_as_one_document_with_its_revision() -> None:
 
     assert json.loads(data) == FORM
     # Read, it holds Haute's quote_details table first, as every form read whole does, and
-    # each part takes the id its sheet's name, its section's title and its number give it.
+    # each part takes the id its sheet's name, its section's title and its name give it.
     document = read_document(json.loads(data))
     assert document == with_quote_details(spec)
     assert document.data_schema.tables[0].name == QUOTE_DETAILS_NAME
     assert [widget.id for section in document.pages[0].sections for widget in section.widgets] == [
-        "sheet_1/Cover/1",
-        "sheet_1/Cover/2",
-        "sheet_1/Cover/3",
-        "sheet_1/Equipment/1",
+        "sheet_1/Cover/policy",
+        "sheet_1/Cover/layers",
+        "sheet_1/Cover/limits",
+        "sheet_1/Equipment/equipment",
     ]
     # The revision is the document's content hash: the same text, the same revision.
     assert form_revision(data) == form_revision(render_form(spec).encode("utf-8"))
@@ -704,7 +705,7 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
     }
     # No text or description yet, of medium size and aligned left, in the file's order.
     heading = widgets(written)[3]
-    assert list(heading) == "number x y w h type text description show_when size align".split()
+    assert list(heading) == "name x y w h type text description show_when size align".split()
     assert [heading[field] for field in ("text", "description", "size", "align")] == [
         "",
         "",
@@ -820,7 +821,7 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
         # none past its last field; only a Collection has them.
         (
             lambda f: widgets(f)[0].update(spacers=[2, 1]),
-            "sheet_1/Cover/1's spacers are out of order",
+            "sheet_1/Cover/policy's spacers are out of order",
         ),
         (lambda f: widgets(f)[0].update(spacers=[3]), "a spacer after 3 fields, but shows 2"),
         (lambda f: widgets(f)[0].update(spacers=[-1]), "spacers.0"),
@@ -934,8 +935,9 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
         (lambda f: f.update(sample={"policy_details": [{"state": 1}]}), "sample"),
         (lambda f: f.update(sample={"policy_details": [{"state": None}]}), "sample"),
         # A sheet is known by its name, a section by its title on its sheet and a component
-        # by its number in its section (READ-24): a block copied by hand or by a merge, two of
-        # one, is refused, naming it.
+        # by its name (READ-24): a block copied by hand or by a merge, two of one, is
+        # refused, naming it. Two of one name in two sections are the folder's to refuse,
+        # their files being one (tests/test_workbench_folder.py).
         (
             lambda f: f["pages"].append(json.loads(json.dumps(f["pages"][0]))),
             "Two sheets have the id 'sheet_1': each needs one of its own",
@@ -945,9 +947,13 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
             "Two sections have the id 'sheet_1/Cover'",
         ),
         (
-            lambda f: widgets(f)[1].update(number=1),
-            "section 'Cover' holds two components numbered 1",
+            lambda f: widgets(f)[1].update(name="policy"),
+            "Two components have the id 'sheet_1/Cover/policy'",
         ),
+        # Every component has a name, the builder's, which names its file; version 1's
+        # number is no field of the form.
+        (lambda f: widgets(f)[3].pop("name"), "widgets.0.heading.name\n  Field required"),
+        (lambda f: widgets(f)[0].update(number=1), "widgets.0.collection.number\n  Extra inputs"),
     ],
 )
 def test_an_unknown_field_or_a_value_outside_the_shape_is_refused(change: Any, where: str) -> None:
@@ -992,12 +998,11 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
     width: the form reads, each grown to hold it as a resize past the edge would, nothing
     moved, the file as it was."""
 
-    def shrink(layout: dict[str, Any]) -> None:
-        # The layout keys a section by its title (READ-24).
-        layout["sections"]["Equipment"]["height"] = 40
-        layout["width"] = 1000
+    def shrink(sheet: dict[str, Any]) -> None:
+        sheet["sections"][1]["height"] = 40
+        sheet["width"] = 1000
 
-    document, written = read_after_layout_edit(tmp_path, FORM, shrink)
+    document, written = read_after_sheet_edit(tmp_path, FORM, shrink)
 
     assert document.spec.pages[0].sections[1].height == 48
     assert document.spec.pages[0].width == 1240
@@ -1006,15 +1011,17 @@ def test_a_section_or_sheet_too_small_for_a_component_is_grown_as_it_is_read_and
         '"Équipement des entrepreneurs".',
         'Sheet "Sheet 1" grew from 1000px to 1240px wide to hold the Chart "Limits".',
     )
-    assert (tmp_path / "rating" / "workbench" / LAYOUT).read_bytes() == written
+    assert (tmp_path / "rating" / "workbench" / SHEET).read_bytes() == written
     # The form's own checks still refuse such geometry, so a save of it is refused.
     merged = json.loads(json.dumps(FORM))
     merged["pages"][0]["sections"][1]["height"] = 40
-    with pytest.raises(ValidationError, match="widget sheet_1/Equipment/1 reaches 48px down"):
+    with pytest.raises(
+        ValidationError, match="widget sheet_1/Equipment/equipment reaches 48px down"
+    ):
         FormSpec.model_validate(merged)
     narrow = json.loads(json.dumps(FORM))
     narrow["pages"][0]["width"] = 1239
-    with pytest.raises(ValidationError, match="widget sheet_1/Cover/3 reaches 1240px across"):
+    with pytest.raises(ValidationError, match="widget sheet_1/Cover/limits reaches 1240px across"):
         FormSpec.model_validate(narrow)
 
 
@@ -1076,11 +1083,18 @@ EXPORTS: dict[str, dict[str, Any]] = {
 
 
 def _with_buttons(*buttons: dict[str, Any]) -> dict[str, Any]:
-    """The test form with a third section holding *buttons*, side by side, numbered in
-    turn."""
+    """The test form with a third section holding *buttons*, side by side, each named by its
+    kind and its place in turn."""
     form = json.loads(json.dumps(FORM))
     placed = [
-        {"number": at + 1, "x": 16 + 176 * at, "y": 8, "w": 160, "h": 40, **button}
+        {
+            "name": f"{button['type']}_{at + 1}",
+            "x": 16 + 176 * at,
+            "y": 8,
+            "w": 160,
+            "h": 40,
+            **button,
+        }
         for at, button in enumerate(buttons)
     ]
     form["pages"][0]["sections"].append(

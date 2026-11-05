@@ -61,9 +61,18 @@ def column(name: str, type_: str = "str", **rules: object) -> dict[str, Any]:
 
 
 def widget(id_: str, type_: str, *fields: str) -> dict[str, Any]:
-    """A component showing *fields*, each ``table.column`` by name."""
+    """A component showing *fields*, each ``table.column`` by name, named as its id."""
     refs = [dict(zip(("table", "column"), field.split("."), strict=True)) for field in fields]
-    return {"id": id_, "type": type_, "x": 0, "y": 0, "w": 720, "h": 120, "fields": refs}
+    return {
+        "id": id_,
+        "name": id_,
+        "type": type_,
+        "x": 0,
+        "y": 0,
+        "w": 720,
+        "h": 120,
+        "fields": refs,
+    }
 
 
 def dumped(tables: tuple[WorkbenchTable, ...]) -> list[dict[str, Any]]:

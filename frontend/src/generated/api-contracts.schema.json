@@ -2363,18 +2363,9 @@
           "title": "Legend",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "orientation": {
           "default": "vertical",
@@ -2421,7 +2412,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -2683,18 +2674,9 @@
           "title": "Labels",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -2735,7 +2717,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -9955,18 +9937,9 @@
           "title": "Label",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -10015,7 +9988,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -12302,18 +12275,9 @@
           "title": "Id",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -12356,7 +12320,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -12404,18 +12368,9 @@
           "title": "Mode",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "show_when": {
           "$ref": "#/$defs/ShowWhen"
@@ -12468,7 +12423,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
@@ -23851,18 +23806,9 @@
           "title": "Id",
           "type": "string"
         },
-        "number": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Number"
+        "name": {
+          "title": "Name",
+          "type": "string"
         },
         "row_numbers": {
           "default": true,
@@ -23917,7 +23863,7 @@
       },
       "required": [
         "id",
-        "number",
+        "name",
         "x",
         "y",
         "w",
