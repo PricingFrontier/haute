@@ -179,10 +179,10 @@ describe("SchemaEditor", () => {
 
     expect(columnNames("policy_details")).toEqual(["state", "exposure"])
     expect(blockNames("policy_details", "Inputs")).toEqual(["state", "exposure"])
-    expect(blockNames("layers", "Inputs")).toEqual([])
+    expect(within(tableNamed("layers")).queryByRole("group", { name: "layers Inputs" })).toBeNull()
     expect(blockNames("layers", "Outputs")).toEqual(["layer", "limit"])
-    // A heading over no column of its own shows Add column alone.
-    expect(within(blockOf("policy_details", "Outputs")).getByRole("button", { name: "Add column" })).toBeInTheDocument()
+    // A side with no ordinary column offers its Add action without a heading.
+    expect(within(tableNamed("policy_details")).getByRole("button", { name: "Add outputs" })).toBeInTheDocument()
     expect(screen.getByRole("combobox", { name: "Type of exposure" })).toHaveValue("float")
     expect(screen.queryByRole("combobox", { name: "Role of layers" })).toBeNull()
     expect(screen.getByRole("combobox", { name: "Rows of layers" })).toHaveValue("many")
@@ -240,6 +240,15 @@ describe("SchemaEditor", () => {
     expect(current().schema.tables.map((t) => t.name)).toEqual(["policy_details", "layers", "table"])
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
     expect(useWorkbenchFormStore.getState().dirty).toBe(true)
+    expect(within(added).queryByRole("group", { name: "table Inputs" })).toBeNull()
+    expect(within(added).queryByText("Inputs", { exact: true })).toBeNull()
+    expect(within(added).queryByText("Outputs", { exact: true })).toBeNull()
+    expect(within(added).getByRole("button", { name: "Add outputs" })).toBeInTheDocument()
+    fireEvent.click(within(added).getByRole("button", { name: "Add inputs" }))
+    expect(everyName("table", "Inputs")).toEqual(["quote_reference", "quote_option", "column"])
+    expect(within(added).getByDisplayValue("column")).toHaveFocus()
+    expect(current().schema.tables[2].inputs.at(-1)).toMatchObject({ name: "column", type: "str" })
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
   })
 
   it("renames a table once its field commits, as one undo step", () => {
@@ -297,7 +306,7 @@ describe("SchemaEditor", () => {
     expect(within(screen.getByTestId("schema-column-state")).queryByRole("img", { name: /key/ })).toBeNull()
 
     // Gaining its first input moves the same typed index to the inputs.
-    fireEvent.click(within(blockOf("layers", "Inputs")).getByRole("button", { name: "Add column" }))
+    fireEvent.click(within(tableNamed("layers")).getByRole("button", { name: "Add inputs" }))
     expect(own(current().schema.tables[1].inputs).map((c) => c.name)).toEqual(["layer", "column"])
     expect(own(current().schema.tables[1].outputs).map((c) => c.name)).toEqual(["limit"])
     expect(screen.queryByRole("button", { name: /^Key: / })).toBeNull()
@@ -339,7 +348,7 @@ describe("SchemaEditor", () => {
   it("adds a column to either block with its own Add column, an output taking no input's rules", () => {
     render(<SchemaEditor />)
 
-    fireEvent.click(within(blockOf("policy_details", "Outputs")).getByRole("button", { name: "Add column" }))
+    fireEvent.click(within(tableNamed("policy_details")).getByRole("button", { name: "Add outputs" }))
     expect(blockNames("policy_details", "Outputs")).toEqual(["column"])
     expect(current().schema.tables[0].outputs.map((c) => [c.name, c.type])).toEqual([["column", "str"]])
     // Named apart from every column of the table, whichever block holds it.
@@ -395,7 +404,7 @@ describe("SchemaEditor", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
 
     // Moving an output to the inputs brings its table's typed index with it.
-    dragOnto(columnGrip("limit")!, headingOf("layers", "Inputs"))
+    dragOnto(columnGrip("limit")!, within(tableNamed("layers")).getByRole("button", { name: "Add inputs" }))
     expect(own(current().schema.tables[1].inputs).map((c) => [c.name, c.index])).toEqual([["layer", "typed"], ["limit", null]])
   })
 
@@ -410,7 +419,7 @@ describe("SchemaEditor", () => {
     const [items] = current().schema.tables
     expect(items.inputs).toEqual([])
     expect(items.outputs.map((c) => c.name)).toEqual(["quote_reference", "quote_option", "item_number", "premium", "value"])
-    expect(blockNames("items", "Inputs")).toEqual([])
+    expect(within(tableNamed("items")).queryByRole("group", { name: "items Inputs" })).toBeNull()
     expect(everyName("items", "Outputs")).toEqual(["quote_reference", "quote_option", "item_number", "premium", "value"])
     expect(screen.queryByRole("button", { name: /^Key:/ })).toBeNull()
     // The identity, now heading the outputs, is still Haute's: no key of it; the index is marked grey, never a key.
@@ -432,7 +441,7 @@ describe("SchemaEditor", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
 
     // An input added takes it, with the identity, back to the inputs' head.
-    fireEvent.click(within(blockOf("items", "Inputs")).getByRole("button", { name: "Add column" }))
+    fireEvent.click(within(tableNamed("items")).getByRole("button", { name: "Add inputs" }))
     expect(everyName("items", "Inputs")).toEqual(["quote_reference", "quote_option", "line_number", "column"])
     expect(blockNames("items", "Outputs")).toEqual(["premium", "value"])
     expect(screen.queryByRole("button", { name: /^Key: / })).toBeNull()
@@ -776,7 +785,7 @@ describe("SchemaEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of exposure" }))
     fireEvent.click(screen.getByRole("checkbox", { name: "exposure is required" }))
     commit(screen.getByTestId("schema-column-exposure-min"), "0")
-    dragOnto(columnGrip("exposure")!, headingOf("policy_details", "Outputs"))
+    dragOnto(columnGrip("exposure")!, within(tableNamed("policy_details")).getByRole("button", { name: "Add outputs" }))
     expect(current().schema.tables[0].outputs[0]).toMatchObject({ name: "exposure", required: true, min: null })
     expect(screen.getByRole("checkbox", { name: "exposure is required" })).toBeChecked()
     expect(screen.queryByTestId("schema-column-exposure-min")).toBeNull()
@@ -971,7 +980,7 @@ describe("SchemaEditor", () => {
     // No index control: the operations give and take it.
     expect(screen.queryByRole("checkbox", { name: /^Add index/ })).toBeNull()
 
-    fireEvent.click(within(blockOf("layers", "Inputs")).getByRole("button", { name: "Add column" }))
+    fireEvent.click(within(tableNamed("layers")).getByRole("button", { name: "Add inputs" }))
 
     expect(blockNames("layers", "Inputs")).toEqual(["table_index", "column"])
     expect(own(current().schema.tables[1].inputs)[0]).toMatchObject({ name: "table_index", type: "int", index: "numbered" })
@@ -990,7 +999,9 @@ describe("SchemaEditor", () => {
     expect(blockNames("layers", "Inputs")).toEqual(["table_index", "column"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove column column" }))
-    expect(blockNames("layers", "Inputs")).toEqual(["table_index"])
+    expect(columnNames("layers")).toEqual(["table_index"])
+    expect(within(tableNamed("layers")).queryByRole("group", { name: "layers Inputs" })).toBeNull()
+    expect(within(tableNamed("layers")).getByRole("button", { name: "Add inputs" })).toBeInTheDocument()
     expect(own(current().schema.tables[1].inputs)).toEqual([expect.objectContaining({ name: "table_index", index: "numbered" })])
   })
 
@@ -1002,15 +1013,19 @@ describe("SchemaEditor", () => {
     expect(screen.queryByRole("button", { name: "Remove column table_index" })).toBeNull()
   })
 
-  it("adds a table leading with the quote's reference and option under Inputs, locked, its index after them", () => {
+  it("keeps a new table's keys neutral until either side is chosen, including output-first and undo", () => {
     render(<SchemaEditor />)
 
     fireEvent.click(screen.getByRole("button", { name: "Add table" }))
     fireEvent.change(screen.getByRole("combobox", { name: "Rows of table" }), { target: { value: "many" } })
 
     // Many rows give it its index at once, though it holds no column of its own yet.
-    expect(everyName("table", "Inputs")).toEqual(["quote_reference", "quote_option", "table_index"])
-    expect(blockNames("table", "Outputs")).toEqual([])
+    const added = tableNamed("table")
+    expect(nameFields(added)).toEqual(["quote_reference", "quote_option", "table_index"])
+    expect(within(added).queryByRole("group", { name: "table Inputs" })).toBeNull()
+    expect(within(added).queryByRole("group", { name: "table Outputs" })).toBeNull()
+    expect(within(added).getByRole("button", { name: "Add inputs" })).toBeInTheDocument()
+    expect(within(added).getByRole("button", { name: "Add outputs" })).toBeInTheDocument()
     for (const [id, name] of [["quote_reference", "quote_reference"], ["quote_option", "quote_option"]]) {
       const row = screen.getByTestId(`schema-column-${id}`)
       // Not moved, retyped, renamed, keyed, given details or removed.
@@ -1023,8 +1038,29 @@ describe("SchemaEditor", () => {
       expect(within(row).getByRole("textbox", { name: "Column name" })).toHaveAttribute("title", "Haute's column")
     }
 
-    fireEvent.click(within(blockOf("table", "Inputs")).getByRole("button", { name: "Add column" }))
-    expect(everyName("table", "Inputs")).toEqual(["quote_reference", "quote_option", "table_index", "column"])
+    // Renaming the index with Enter does not choose Inputs implicitly.
+    const indexName = within(within(added).getByTestId("schema-column-table_index")).getByRole("textbox", { name: "Column name" })
+    fireEvent.change(indexName, { target: { value: "line_number" } })
+    fireEvent.keyDown(indexName, { key: "Enter" })
+    expect(nameFields(added)).toEqual(["quote_reference", "quote_option", "line_number"])
+    expect(within(added).getByRole("button", { name: "Add inputs" })).toBeInTheDocument()
+    const edits = useWorkbenchFormStore.getState().undoStack.length
+
+    fireEvent.click(within(added).getByRole("button", { name: "Add outputs" }))
+    expect(current().schema.tables[2].inputs).toEqual([])
+    expect(everyName("table", "Outputs")).toEqual(["quote_reference", "quote_option", "line_number", "column"])
+    expect(current().schema.tables[2].outputs.at(-1)).toMatchObject({ name: "column", type: "str" })
+    expect(within(added).getByDisplayValue("column")).toHaveFocus()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(edits + 1)
+    expect(within(added).getByRole("button", { name: "Add inputs" })).toBeInTheDocument()
+
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(nameFields(added)).toEqual(["quote_reference", "quote_option", "line_number"])
+    expect(within(added).queryByRole("group", { name: "table Outputs" })).toBeNull()
+    expect(within(added).getByRole("button", { name: "Add outputs" })).toBeInTheDocument()
+    fireEvent.click(within(added).getByRole("button", { name: "Add inputs" }))
+    expect(everyName("table", "Inputs")).toEqual(["quote_reference", "quote_option", "line_number", "column"])
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(edits + 1)
   })
 
   it("takes the index away with what shows it as its table switches to one row", () => {
@@ -1261,6 +1297,7 @@ describe("SchemaEditor", () => {
 
     expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()
     expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(screen.queryByRole("button", { name: /^Add (inputs|outputs)$/ })).toBeNull()
     expect(tableGrip("layers")).toBeNull()
     expect(columnGrip("limit")).toBeNull()
     const last = within(layers).getAllByRole("textbox", { name: "Column name" })[1]
@@ -1286,6 +1323,7 @@ describe("SchemaEditor", () => {
     expect(within(layers).queryByRole("button", { name: "Delete table layers" })).toBeNull()
     expect(within(layers).queryByRole("button", { name: /^Remove column/ })).toBeNull()
     expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
+    expect(screen.queryByRole("button", { name: /^Add (inputs|outputs)$/ })).toBeNull()
     // A block holding no column shows no heading while nothing can be added to it.
     expect(within(layers).queryByRole("group", { name: "layers Inputs" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Add table" })).toBeNull()

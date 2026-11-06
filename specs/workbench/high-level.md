@@ -834,8 +834,20 @@ Out of scope:
     again.
 - **The schema editor.** The form's tables, each with its name, its rows (One row per quote,
   or Many rows) and its columns under two headings, Inputs (sent to the pricing engine) and
-  Outputs (returned by it), each with its own Add column, a heading over no column of its
-  own showing Add column alone; each column with its type, drawn as the step editor's marker for
+  Outputs (returned by it), each populated block with its own Add column. A block with
+  no ordinary columns offers Add inputs or Add outputs instead of a heading and Add column.
+  A new table therefore offers both choices, with its automatic identity and any index
+  visible above them without an Inputs heading. Choosing a side adds its first Text
+  column, focuses its name, and places the keys with the chosen block in one undo step;
+  the other side stays available through its Add action. Removing or moving away the last
+  ordinary column restores that side's Add action. The automatic keys alone never enable
+  a block, and Enter in an index name only commits while neither side has ordinary columns.
+  An Add inputs or Add outputs action also accepts a column dragged from the other side,
+  using the same move operation as dropping on a populated heading. Preview and search
+  offer none of these Add actions, and quote_details keeps its fixed Inputs block.
+  This changes only the presentation: the canonical schema still places an empty table's
+  keys among its inputs until the existing column operations place them with its blocks.
+  Each column has its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, and its name. The name cells of `quote_reference`, `quote_option` and the table's
   index have a thin light blue outline, including the identity in `quote_details` and
@@ -877,7 +889,7 @@ Out of scope:
   places when chosen, and "no separators" when they are off.
   Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in the last column's name
-  adds the next column in its block, and in any other only commits it, a new column, by
+  of a populated block adds the next column there, and in any other only commits it, a new column, by
   Enter or its block's Add column, taking the type of the column above it, Text first in
   its block or under its index; a column is dragged by its grip within its block or into
   the other block of its table, or moved by Alt+Up and Alt+Down in its name within its

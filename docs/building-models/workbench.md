@@ -109,7 +109,13 @@ equipment schedule) and its columns under two headings: **Inputs**, which the un
 types and the pricing engine is sent, and **Outputs**, which pricing returns. A table can
 have either or both: an equipment schedule's inputs are each item's details and its outputs
 each item's premium, so the sheets, the saved quotes and your reports keep an item and its
-price on one row. Each heading has its own **Add column**, and a column dragged from one
+price on one row. **Add table** starts with **Add inputs** and **Add outputs**, so you choose
+which side to create first. The automatic key fields remain visible without an Inputs
+heading until you choose. Either action adds the first column and focuses its name;
+that side then has its heading and **Add column**. The other side remains available
+through its Add action, which also accepts a column dragged from the other side.
+Removing or moving away a side's last ordinary column restores its Add action.
+Each populated heading has its own **Add column**, and a column dragged from one
 heading to the other moves there. Each column has a type (Text, Integer, Decimal, True/false
 or Date, drawn as the step editor draws a value of that kind and changed from its marker)
 and a name. **Label, help, rules and
@@ -130,7 +136,8 @@ shown in its format, its allowed values, and a number's format and decimal place
 Every table but `quote_details` starts with two columns Haute keeps for the quote,
 **quote_reference** and **quote_option**, which say which quote a row belongs to once rows of many
 quotes are put together, in the app's saved quotes, in exports and in joins. They come
-first, under Inputs, or under Outputs in a table with no inputs, and are locked, their
+first, under Inputs, or under Outputs in a table with no inputs; in an empty table they
+show without a block heading above the Add choices. They are locked, their
 names on grey: they cannot be renamed, retyped, moved or removed, take no label,
 group, help, rules, default or format, and are not offered to the sheets, where
 `quote_details`' own stand for them. They key every table: a one-row table's row is the
@@ -205,7 +212,7 @@ sample you type in Preview, and a quote made from another quote, keep their own 
 quote holding nothing but its defaults is not priced, marked or saved until something is
 typed, and a value typed equal to its default counts as the default.
 
-- Enter in the last column's name adds the next column under the same heading; in any other
+- Enter in the last column's name under a populated heading adds the next column there; in any other
   column's name it just keeps what you typed. A column added, by Enter or **Add column**,
   takes the type of the column above it: Text when it is the first under its heading or
   comes under the index.

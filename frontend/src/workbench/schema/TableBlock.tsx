@@ -1,6 +1,7 @@
 /**
  * A schema table's block: its name and rows, its problems, its columns under two headings,
- * Inputs and Outputs, each with its own Add column, a column dragged within its block or into
+ * Inputs and Outputs, each with Add column once populated, or Add inputs/Add outputs before
+ * its first column, a column dragged within its block or into
  * the other, or moved within its block; those the quote store keeps in it, locked, under its
  * own columns; and, at the head of a table's Outputs, what the Workbench Output carries ahead
  * of them (specs/workbench).
@@ -245,21 +246,24 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
           {BLOCKS.map(({ block: own, title, color }) => {
             const columns = table[own].map((column, at) => ({ column, at })).filter(({ column }) => matched === null || matched.has(column.name))
+            const populated = own === "inputs" ? hasInputs(table) : hasOutputs(table)
             // quote_details holds inputs alone and is given no column; in Preview or while searched nothing is added.
             const adding = !fixed && !filtering
             if (columns.length === 0 && !adding) return null
             const landed = crossing(own) && landing?.block === own && landing.at === table[own].length
             return (
-              <div key={own} role="group" aria-label={`${table.name} ${title}`} className="flex flex-col gap-1">
-                <p
-                  className="px-1 text-[11px] font-semibold"
-                  style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
-                  onDragOver={carryOver(own, table[own].length)}
-                  onDrop={carryIn(own, table[own].length)}
-                  data-drop-target={landed ? "true" : undefined}
-                >
-                  {title}
-                </p>
+              <div key={own} role={populated ? "group" : undefined} aria-label={populated ? `${table.name} ${title}` : undefined} className="flex flex-col gap-1">
+                {populated && (
+                  <p
+                    className="px-1 text-[11px] font-semibold"
+                    style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
+                    onDragOver={carryOver(own, table[own].length)}
+                    onDrop={carryIn(own, table[own].length)}
+                    data-drop-target={landed ? "true" : undefined}
+                  >
+                    {title}
+                  </p>
+                )}
                 {own === "outputs" && !filtering && outputLead.map((column) => <CarriedColumnRow key={column.name} column={column} isIndex={!isIdentityColumn(table, column)} />)}
                 {columns.map(({ column, at }) => (
                   <ColumnRow
@@ -273,7 +277,9 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
                     fresh={fresh(columnKey(table.name, column.name))}
                     open={details === columnKey(table.name, column.name)}
                     onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
-                    onInsertAfter={() => insertAt(own, at + 1)}
+                    onInsertAfter={() => {
+                      if (populated) insertAt(own, at + 1)
+                    }}
                     locked={locked}
                     readOnly={readOnly}
                     filtering={filtering}
@@ -282,8 +288,15 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
                   />
                 ))}
                 {adding && (
-                  <QuietAction onClick={() => insertAt(own, table[own].length)} className="justify-self-start">
-                    Add column
+                  <QuietAction
+                    onClick={() => insertAt(own, table[own].length)}
+                    onDragOver={carryOver(own, table[own].length)}
+                    onDrop={carryIn(own, table[own].length)}
+                    data-drop-target={landed ? "true" : undefined}
+                    style={{ boxShadow: landed ? "0 2px 0 0 var(--accent)" : undefined }}
+                    className="self-start"
+                  >
+                    {populated ? "Add column" : `Add ${own}`}
                   </QuietAction>
                 )}
               </div>
