@@ -241,7 +241,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // the key that puts each output row on its input row and Preview's twin of the pricing's
 // check of it, and the schema pane's layout bring it to 1,781.6 KiB (the initial bundle
 // 293.2 KiB); 1,783 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1783
+// Numbered, typed and params-based indexes (6 November 2026): schema controls, validation,
+// and index-based row alignment in Tables and Charts bring the complete bundle to
+// 1,783.3 KiB, up 1.7 KiB from the table-block baseline above. 1,785 KiB restores about
+// 1.7 KiB headroom; the initial bundle is 293.7 KiB, within the unchanged 300 KiB cap,
+// and the separate single-chunk and chart-vendor caps stay unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1785
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
