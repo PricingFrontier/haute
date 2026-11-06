@@ -1,17 +1,19 @@
 # Workbench Output
 
-When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its output tables. The Workbench Output is the pipeline's response for those quotes. Its tables are the workbench's output tables, read from the workbench's files wherever the pipeline runs, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and the filled tables are the response.
+When your quotes are keyed in through the project's workbench, its schema also defines what a priced quote fills in: its tables' outputs. The Workbench Output is the pipeline's response for those quotes. Its tables are the outputs of the workbench's tables, read from the workbench's files wherever the pipeline runs, and each one is an input you connect a frame to. When the pipeline runs, each table is filled from its frame, and the filled tables are the response.
 
 !!! info "When to use"
     While the project's workbench is enabled, the palette offers the Workbench Output in place of the [Quote Response](output.md). Use it as the response for live pricing of keyed-in quotes. Without a workbench, use the Quote Response and map its columns yourself.
 
-A Workbench Output has no outputs. Each table of the workbench's schema that has a column is a separate input, named by the table's name: drag a connection from the node whose frame fills the table onto that input. A table takes one connection, and a node fills one table; to fill two tables from the same data, give each its own node. A pipeline has only one Quote Response or Workbench Output: once it has either, the palette entry is greyed out with "Only one Quote Response or Workbench Output allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Response for a Workbench Output, delete it and drag in the other.
+A Workbench Output has no outputs. Each table of the workbench's schema that has outputs is a separate input, named by the table's name with `_output` (`ce_equipment_output`): drag a connection from the node whose frame fills the table onto that input. A table takes one connection, and a node fills one table; to fill two tables from the same data, give each its own node. A pipeline has only one Quote Response or Workbench Output: once it has either, the palette entry is greyed out with "Only one Quote Response or Workbench Output allowed per pipeline". Enabling or disabling the workbench changes only what the palette offers; to swap a Quote Response for a Workbench Output, delete it and drag in the other.
 
 ## Filling the tables
 
 Each table is filled from the frame connected to it. Each of the table's columns is filled from the frame's column of exactly the same name, capitals included; the frame's other columns are left out. Each column takes the type the workbench declares: an integer column can fill a Decimal one, and a categorical column a Text one.
 
 A column the frame doesn't have, or has with a type that doesn't fit (a Text column for a Decimal one, say), is left empty: its values are null, and the panel flags it (see below). A table nothing is connected to is left empty too: a table with one row per quote gets one row of nulls, and a table with many rows gets none. None of these stops the run, so the pipeline previews and prices while you are still building it. To fill a column, give the frame a column of its name and type before the Workbench Output, for example in a [Transform](transform.md) node.
+
+A many-row table that also has inputs takes its key column too, `row_number` or the column giving the table its rows, under its name: keep it on the frame from the Workbench Input's table through to here, since each output row is put on the quote's row holding its key. When the quote is priced, an output row with no key, a key given twice, or a key no row of the quote holds stops the pricing with a message naming the table and the keys, such as "ce_equipment_output does not fit ce_equipment's rows: item_number 3 is given twice."; the node's own preview shows the rows as they are. A row of the quote the pipeline returns nothing for has empty outputs.
 
 A table's **quote_reference** and **quote_option** are left empty in the node's own tables, whatever its frame holds: the response gives every row the quote's (see below), so a pipeline need not carry them through.
 
@@ -23,12 +25,12 @@ In Preview, the workbench prices the sample live and shows the answer in its out
 
 ## The response
 
-When the pipeline answers a request, through a deployment's `/quote` or `pipeline.run()` and `pipeline.score()` in code, the tables become the response for one quote: each one-row table is an object under its name and each many-row table a list of objects under its name, every row holding the quote's **quote_reference** and **quote_option**, for example:
+When the pipeline answers a request, through a deployment's `/quote` or `pipeline.run()` and `pipeline.score()` in code, the tables become the response for one quote: each one-row table is an object under the table's name (without `_output`) and each many-row table a list of objects under it, every row holding the quote's **quote_reference** and **quote_option**, for example:
 
 ```json
 [
   {
-    "pricing_output": { "quote_reference": "Q-000123", "quote_option": 2, "model_premium": 1250.0, "charged_premium": 1300.0 },
+    "pricing": { "quote_reference": "Q-000123", "quote_option": 2, "model_premium": 1250.0, "charged_premium": 1300.0 },
     "layers": [
       { "quote_reference": "Q-000123", "quote_option": 2, "layer": 1, "premium": 800.0 },
       { "quote_reference": "Q-000123", "quote_option": 2, "layer": 2, "premium": 500.0 }
@@ -45,16 +47,16 @@ A Workbench Output answers one quote per request. A deployed pipeline refuses a 
 
 ## TABLES FROM THE WORKBENCH
 
-The panel lists the workbench's output tables and shows how the frames connected to them fill them. Nothing in it can be changed here:
+The panel lists the outputs of the workbench's tables and shows how the frames connected to them fill them. Nothing in it can be changed here:
 
 | Shown | What it means |
 |---|---|
-| The table's name | The input's name. |
+| The table's name with `_output` | The input's name. |
 | **one per quote** or **many per quote** | Whether a quote has one row of the table or a list of them. |
 | **From** ... or **Not connected** | The node whose frame fills the table, or that nothing does yet. |
 | Each column's name and type, in a box | The box's border is **red** when the column is missing: the connected frame has no column of exactly that name, or nothing is connected to the table. It is **orange** when the frame has the column but of a type that doesn't fit; hold the pointer over the box to see the frame's type. Either way the column is left empty when the pipeline runs. The borders follow the frame as the node it comes from was last previewed, so preview that node to bring them up to date. A table's **quote_reference** and **quote_option**, which the response fills, are never red or orange. |
 | A warning under the name | The name can't be an input: it isn't an identifier, or another table has it. Rename the table in the workbench. |
-| **No columns yet, so no port.** | The table has no columns, so there is nothing to fill. Add its columns in the workbench. |
+| **No columns yet, so no port.** | The table has no outputs, so there is nothing to fill. Add its outputs in the workbench. |
 
 The tables are the workbench's schema, edited in the Workbench view: **Edit in Workbench** in this section opens it, and the switcher at the bottom of the node palette brings you back to **Pricing**. When you save (**Save**, or Ctrl+S, from either view), the workbench's files are saved first, the editor fetches the tables again and the node's inputs follow, then the pipeline is saved. Connections follow table names: a connection to a table that keeps its name stays, and one to a table that was renamed or removed is removed, with a message; an undo never brings it back. Changes not yet saved in the Workbench are priced on the Workbench's own sheets but don't reach the pipeline until saved.
 

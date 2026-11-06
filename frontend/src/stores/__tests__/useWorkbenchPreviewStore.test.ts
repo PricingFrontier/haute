@@ -37,11 +37,11 @@ const column = (name: string, overrides: Partial<SchemaColumn> = {}): SchemaColu
 })
 const policy: SchemaTable = {
   name: "policy_details",
-  role: "input",
   rows: "one",
-  columns: [column("exposure", { type: "float", required: true, min: 0 })],
+  inputs: [column("exposure", { type: "float", required: true, min: 0 })],
+  outputs: [],
 }
-const pricing: SchemaTable = { name: "pricing_output", role: "output", rows: "one", columns: [column("model_premium", { type: "float" })] }
+const pricing: SchemaTable = { name: "pricing_output", rows: "one", inputs: [], outputs: [column("model_premium", { type: "float" })] }
 const form: FormSpec = {
   version: 1,
   name: "t",
@@ -57,7 +57,7 @@ const boxes = (id: string, columns: string[]): CollectionWidget => ({
   fields: columns.map((name) => ({ table: "policy_details", column: name })),
 })
 /** The schema with a box, cover, and a name beside the policy's required exposure. */
-const covered: FormSchema = { tables: [{ ...policy, columns: [...policy.columns, column("cover", { type: "bool" }), column("name")] }, pricing] }
+const covered: FormSchema = { tables: [{ ...policy, inputs: [...policy.inputs, column("cover", { type: "bool" }), column("name")] }, pricing] }
 /** Shown only while cover is ticked. */
 const whileCovered: ShowWhen = { match: "all", conditions: [{ table: "policy_details", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
 
@@ -160,7 +160,7 @@ describe("useWorkbenchPreviewStore", () => {
     const quotePricer = vi.fn<QuotePricer>(() => Promise.resolve(answered(1)))
     useWorkbenchPricingStore.setState({ quotePricer })
     const defaulted: FormSchema = {
-      tables: [{ ...covered.tables[0], columns: covered.tables[0].columns.map((c) => (c.name === "cover" ? { ...c, default_value: true } : c.name === "name" ? { ...c, default_value: "Acme" } : c)) }, pricing],
+      tables: [{ ...covered.tables[0], inputs: covered.tables[0].inputs.map((c) => (c.name === "cover" ? { ...c, default_value: true } : c.name === "name" ? { ...c, default_value: "Acme" } : c)) }, pricing],
     }
     useWorkbenchFormStore.setState({ form: { ...form, schema: defaulted } })
     store().open({ policy_details: [{ cover: true, name: "Acme" }] }, null, false)

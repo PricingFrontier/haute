@@ -77,21 +77,56 @@ class _FormTable:
 
 
 def _output_tables(form: Mapping[str, Any]) -> dict[str, _FormTable]:
-    """The output tables of a form document, by name: read from the document as it stands,
-    so a form another Haute version wrote reads alike."""
+    """The output tables of a form document, by name, each with the columns its answer
+    holds and its key columns: read from the document as it stands, so a form another Haute
+    version wrote reads alike. An input table's answer holds the quote's identity, its key
+    column and its outputs, keyed by that column; a table of outputs alone's its outputs,
+    keyed by those marked so."""
     schema = form.get("schema")
     tables = schema.get("tables") if isinstance(schema, Mapping) else None
     found: dict[str, _FormTable] = {}
     for table in tables if isinstance(tables, list) else []:
-        if not isinstance(table, Mapping) or table.get("role", "input") != "output":
+        if not isinstance(table, Mapping):
             continue
-        columns = [each for each in table.get("columns") or [] if isinstance(each, Mapping)]
-        found[str(table.get("name"))] = _FormTable(
-            many=table.get("rows", "one") == "many",
-            columns=tuple(str(column.get("name")) for column in columns),
-            keys=frozenset(str(column.get("name")) for column in columns if column.get("key")),
-        )
+        inputs = [each for each in table.get("inputs") or [] if isinstance(each, Mapping)]
+        outputs = [each for each in table.get("outputs") or [] if isinstance(each, Mapping)]
+        own_outputs = [each for each in outputs if each.get("name") not in _IDENTITY]
+        if not own_outputs:
+            continue
+        many = table.get("rows", "one") == "many"
+        typed = [
+            each for each in inputs if each.get("name") not in _IDENTITY and not each.get("index")
+        ]
+        names = [str(column.get("name")) for column in outputs]
+        keys: frozenset[str]
+        if typed:
+            key = _input_key(inputs) if many else None
+            held = [name for name in _IDENTITY if any(c.get("name") == name for c in inputs)]
+            names = [*held, *([key] if key else []), *names]
+            keys = frozenset({key} if key else set())
+        else:
+            keys = frozenset(str(column.get("name")) for column in outputs if column.get("key"))
+        found[str(table.get("name"))] = _FormTable(many=many, columns=tuple(names), keys=keys)
     return found
+
+
+#: The quote's identity, which leads a table's first block.
+_IDENTITY = ("quote_reference", "quote_option")
+
+
+def _input_key(inputs: Sequence[Mapping[str, Any]]) -> str | None:
+    """A many-row input table's key column as a form document holds it: its preset column
+    while one gives its rows, else its index (``haute._workbench_tables.table_key``)."""
+    preset = next(
+        (
+            column
+            for column in inputs
+            if column.get("row_per_value") and not column.get("index") and column.get("options")
+        ),
+        None,
+    )
+    chosen = preset or next((column for column in inputs if column.get("index")), None)
+    return None if chosen is None else str(chosen.get("name"))
 
 
 def shared_fields(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> SharedFields:

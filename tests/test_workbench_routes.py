@@ -50,15 +50,13 @@ def section(id_: str, *widgets: dict[str, Any]) -> dict[str, Any]:
 
 POLICY = {
     "name": "policy_details",
-    "role": "input",
     "rows": "one",
-    "columns": [column("state", options=["CA", "NY"]), column("exposure", "float")],
+    "inputs": [column("state", options=["CA", "NY"]), column("exposure", "float")],
 }
 PRICING = {
     "name": "pricing_output",
-    "role": "output",
     "rows": "one",
-    "columns": [column("premium", "float")],
+    "outputs": [column("premium", "float")],
 }
 
 
@@ -66,12 +64,16 @@ PRICING = {
 #: quote_details as the Workbench Input takes it: without the columns the store keeps alone.
 DETAILS = {
     "name": "quote_details",
+    "side": "input",
+    "port": "quote_details_input",
     "rows": "one",
     "columns": [
         {"name": name, "type": type_}
         for name, type_ in QUOTE_DETAILS_COLUMNS
         if name not in QUOTE_DETAILS_STORE_ONLY
     ],
+    "key": None,
+    "null_key": None,
 }
 
 
@@ -183,6 +185,8 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
         DETAILS,
         {
             "name": "policy_details",
+            "side": "input",
+            "port": "policy_details_input",
             "rows": "one",
             "columns": [
                 {"name": "quote_reference", "type": "str"},
@@ -190,6 +194,8 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
                 {"name": "state", "type": "str"},
                 {"name": "exposure", "type": "float"},
             ],
+            "key": None,
+            "null_key": None,
         },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}
@@ -245,7 +251,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     assert body["form"]["schema"]["tables"][0]["name"] == "quote_details"
     # A table and a column are known by their names: neither holds an id (READ-23).
     assert "id" not in body["form"]["schema"]["tables"][1]
-    assert body["form"]["schema"]["tables"][1]["columns"][3] == {
+    assert body["form"]["schema"]["tables"][1]["inputs"][3] == {
         "name": "exposure",
         "type": "float",
         "label": "",
@@ -554,10 +560,10 @@ def test_a_file_the_rollback_cannot_put_back_is_named_by_its_path_in_the_folder(
     monkeypatch.setattr(routes, "_stage_artifact_write_bytes", write_fails)
     monkeypatch.setattr(routes, "_rollback_artifacts", lambda touched: tried)
     policy = body["form"]["schema"]["tables"][1]
-    labelled = {**policy["columns"][2], "label": "State"}
+    labelled = {**policy["inputs"][2], "label": "State"}
     tables = [
         body["form"]["schema"]["tables"][0],
-        {**policy, "columns": [*policy["columns"][:2], labelled, *policy["columns"][3:]]},
+        {**policy, "inputs": [*policy["inputs"][:2], labelled, *policy["inputs"][3:]]},
     ]
     failed = save({**body["form"], "schema": {"tables": tables}}, body["revision"])
 
@@ -773,7 +779,7 @@ def test_a_refused_form_is_answered_with_where_and_why_never_the_form_again(
     before = files_of(project)
     # The analyst names a table of their own quote_details: a table is known by its name
     # (READ-23), so it is taken for Haute's, whose structure it does not have.
-    theirs = {"name": "quote_details", "role": "output", "columns": [column("premium", "float")]}
+    theirs = {"name": "quote_details", "outputs": [column("premium", "float")]}
     sent = {**form(POLICY), "schema": {"tables": [POLICY, theirs]}}
 
     refused = save(sent, body["revision"])
@@ -915,15 +921,21 @@ def test_a_misshapen_file_and_a_bad_table_answer_409_naming_what_to_fix(project:
 
 def test_a_table_the_pipeline_cannot_take_answers_the_structured_422(project: Path) -> None:
     enable(project)
-    write_form(project, form({**POLICY, "name": "class"}))
+    write_form(project, form(POLICY))
+    # A save refuses every name the pipeline would; a hand edit of the folder can still give
+    # a table a column whose name the quote store keeps for its own.
+    path = project / FORM / "schema" / "policy_details.json"
+    written = json.loads(path.read_bytes())
+    written["inputs"].append({"name": "haute_x", "type": "int"})
+    path.write_bytes((json.dumps(written, indent=2) + "\n").encode("utf-8"))
 
     response = client().get("/api/workbench/tables")
 
     assert response.status_code == 422
     assert response.json()["detail"] == {
         "error_code": "workbench_tables_invalid",
-        "message": "The Workbench Input's table 'class' cannot be a port: a table's name is "
-        "letters, digits and underscores, not starting with a digit and not a Python keyword.",
+        "message": "The Workbench Input's table 'policy_details' has a column 'haute_x', and a "
+        "name starting haute_ is the quote store's own.",
     }
 
 
@@ -952,7 +964,7 @@ def test_a_value_typed_on_a_sheet_that_does_not_show_is_left_out_of_the_sample(
     project: Path,
 ) -> None:
     enable(project)
-    policy = {**POLICY, "columns": [*POLICY["columns"], column("bi_cover", "bool")]}
+    policy = {**POLICY, "inputs": [*POLICY["inputs"], column("bi_cover", "bool")]}
     # The second sheet shows only while the box on the first is ticked.
     shown = {
         "id": "w_policy",
@@ -1021,12 +1033,12 @@ def test_an_unsaved_form_the_pipeline_cannot_take_answers_the_structured_422(
     enable(project)
 
     refused = client().post(
-        "/api/workbench/tables", json={"form": form({**POLICY, "name": "class"})}
+        "/api/workbench/tables", json={"form": form({**POLICY, "name": "haute_policy"})}
     )
     misshapen = client().post("/api/workbench/tables", json={"form": {**form(), "pages": []}})
 
     assert refused.status_code == 422
-    assert "table 'class' cannot be a port" in refused.json()["detail"]["message"]
+    assert "table 'haute_policy' starts haute_" in refused.json()["detail"]["message"]
     assert misshapen.status_code == 422
     assert not (project / FORM).exists()
 
@@ -1143,7 +1155,7 @@ def _store_sql(spec: dict[str, Any], start: str = "branch") -> Any:
 def _exposure_named(name: str) -> dict[str, Any]:
     """POLICY with its exposure column renamed *name*: to the quote store, a column removed
     and another added, as a column is known by its name (READ-23)."""
-    return {**POLICY, "columns": [POLICY["columns"][0], column(name, "float")]}
+    return {**POLICY, "inputs": [POLICY["inputs"][0], column(name, "float")]}
 
 
 def test_the_tables_sql_starts_from_the_form_the_default_branch_holds(project: Path) -> None:
@@ -1226,7 +1238,7 @@ def test_the_tables_sql_refuses_a_body_that_is_not_a_form_and_a_disabled_workben
     assert _store_sql({"schema": "no"}).status_code == 422
     assert client().post("/api/workbench/store-sql", json={"form": form(POLICY)}).status_code == 422
     # A name no table may hold is refused as the tables refuse it, never written into SQL.
-    hostile = {**POLICY, "columns": [column("a\nDELETE FROM policy_details;\n--", "float")]}
+    hostile = {**POLICY, "inputs": [column("a\nDELETE FROM policy_details;\n--", "float")]}
     refused = _store_sql(form(hostile))
     assert refused.status_code == 422, refused.text
     assert refused.json()["detail"]["error_code"] == "workbench_tables_invalid"

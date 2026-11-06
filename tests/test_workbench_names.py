@@ -55,9 +55,8 @@ def _form(*, limit: str = "limit", extra: list[dict[str, Any]] | None = None) ->
                     "tables": [
                         {
                             "name": "policy",
-                            "role": "input",
                             "rows": "one",
-                            "columns": [
+                            "inputs": [
                                 {"name": "region", "type": "str"},
                                 {"name": limit, "type": "float"},
                                 *(extra or []),
@@ -65,9 +64,8 @@ def _form(*, limit: str = "limit", extra: list[dict[str, Any]] | None = None) ->
                         },
                         {
                             "name": "premium",
-                            "role": "output",
                             "rows": "one",
-                            "columns": [{"name": "total", "type": "float"}],
+                            "outputs": [{"name": "total", "type": "float"}],
                         },
                     ]
                 },
@@ -137,7 +135,7 @@ def test_no_table_or_column_holds_an_id_in_the_model_the_files_or_a_release(
     released = json.loads(render_form(_read(project)))
     for table in released["schema"]["tables"]:
         assert "id" not in table
-        assert all("id" not in column for column in table["columns"])
+        assert all("id" not in column for column in [*table["inputs"], *table["outputs"]])
     assert released["sample"] == {"policy": [{"region": "north", "limit": "1000"}]}
 
 
@@ -197,9 +195,8 @@ def test_two_columns_differing_only_in_case_are_refused_on_save_and_on_read(
     with pytest.raises(ValidationError, match="whatever its case"):
         TableFile.model_validate(
             {
-                "role": "input",
                 "rows": "one",
-                "columns": [{"name": "region", "type": "str"}, {"name": "REGION", "type": "str"}],
+                "inputs": [{"name": "region", "type": "str"}, {"name": "REGION", "type": "str"}],
             }
         )
 
@@ -217,7 +214,7 @@ def test_a_tables_own_column_named_as_the_identity_is_kept_and_named_a_clash(
     ]
     files = write_form(project, form)
     written = json.loads(files["schema/policy.json"])
-    assert [column["name"] for column in written["columns"]] == ["region", "limit", "quote_option"]
+    assert [column["name"] for column in written["inputs"]] == ["region", "limit", "quote_option"]
 
 
 # -- The quote store ------------------------------------------------------------------------

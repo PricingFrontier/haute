@@ -9,9 +9,8 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -172,13 +171,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "business_interruption",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -259,13 +258,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "extensions",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -326,13 +325,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "items",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -398,7 +397,7 @@
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": true,
+                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
@@ -433,13 +432,14 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "pricing",
-            "role": "output",
             "rows": "one",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -839,9 +839,8 @@
         "tables": [
           {
             "name": "inputs",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -1002,13 +1001,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "lines",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -1050,11 +1049,31 @@
                 "use_grouping": true
               },
               {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
                 "name": "key",
                 "type": "str",
                 "label": "",
                 "group": "",
-                "key": true,
+                "key": false,
                 "required": false,
                 "min": null,
                 "max": null,
@@ -1089,13 +1108,14 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "outputs",
-            "role": "output",
             "rows": "one",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -1160,9 +1180,8 @@
           },
           {
             "name": "target",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -1223,7 +1242,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -1416,9 +1436,8 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -1599,13 +1618,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "flood",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -1686,13 +1705,14 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "out",
-            "role": "output",
             "rows": "one",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2127,9 +2147,8 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2230,13 +2249,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "drivers",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2357,13 +2376,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "perils",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2405,6 +2424,26 @@
                 "use_grouping": true
               },
               {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
                 "name": "peril",
                 "type": "str",
                 "label": "",
@@ -2413,7 +2452,10 @@
                 "required": false,
                 "min": null,
                 "max": null,
-                "options": ["Fire", "Flood"],
+                "options": [
+                  "Fire",
+                  "Flood"
+                ],
                 "options_source": null,
                 "row_per_value": true,
                 "index": false,
@@ -2444,13 +2486,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "claims",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2492,6 +2534,26 @@
                 "use_grouping": true
               },
               {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
                 "name": "amount",
                 "type": "float",
                 "label": "",
@@ -2511,13 +2573,14 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "quotes",
-            "role": "output",
             "rows": "many",
-            "columns": [
+            "inputs": [],
+            "outputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2582,9 +2645,8 @@
           },
           {
             "name": "target",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -2645,7 +2707,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -2931,9 +2994,8 @@
         "tables": [
           {
             "name": "rating",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -3114,13 +3176,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "perils",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -3154,6 +3216,26 @@
                 "options_source": null,
                 "row_per_value": false,
                 "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3221,7 +3303,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -3417,9 +3500,8 @@
         "tables": [
           {
             "name": "policy",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -3600,13 +3682,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "items",
-            "role": "input",
             "rows": "many",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -3640,6 +3722,26 @@
                 "options_source": null,
                 "row_per_value": false,
                 "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
                 "help": "",
                 "placeholder": "",
                 "default_value": "",
@@ -3687,13 +3789,13 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           },
           {
             "name": "target",
-            "role": "input",
             "rows": "one",
-            "columns": [
+            "inputs": [
               {
                 "name": "quote_reference",
                 "type": "str",
@@ -3754,7 +3856,8 @@
                 "decimal_places": null,
                 "use_grouping": true
               }
-            ]
+            ],
+            "outputs": []
           }
         ]
       },
@@ -3876,6 +3979,358 @@
                   "title": "",
                   "fields": [{"table": "target", "column": "x"}],
                   "show_when": {"match": "all", "conditions": []},
+                  "columns": 3,
+                  "labels": "above",
+                  "density": "comfortable",
+                  "frame": true,
+                  "font_size": 12,
+                  "header": "plain",
+                  "header_font_size": null,
+                  "header_bold": false,
+                  "header_wrap": false,
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "label_width": null,
+                  "box_style": "solid",
+                  "box_weight": "thin",
+                  "box_color": null,
+                  "box_align": "auto",
+                  "box_width": null,
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": [],
+                  "spacers": []
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sample": {}
+    },
+    "blocks": {
+      "version": 1,
+      "name": "blocks",
+      "theme": {
+        "sheet_color": null,
+        "background_color": null,
+        "border_color": null,
+        "font_color": null,
+        "input_cell_color": null,
+        "output_cell_color": null
+      },
+      "schema": {
+        "tables": [
+          {
+            "name": "equipment",
+            "rows": "many",
+            "inputs": [
+              {
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "item",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "value",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ],
+            "outputs": [
+              {
+                "name": "premium",
+                "type": "float",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "rows": "one",
+            "inputs": [
+              {
+                "name": "quote_reference",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "quote_option",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
+                "name": "x",
+                "type": "str",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": false,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              }
+            ],
+            "outputs": []
+          }
+        ]
+      },
+      "pages": [
+        {
+          "id": "p_main",
+          "title": "Main",
+          "width": 1280,
+          "show_when": {
+            "match": "all",
+            "conditions": []
+          },
+          "sections": [
+            {
+              "id": "s_main",
+              "title": "Section 1",
+              "height": 520,
+              "show_when": {
+                "match": "all",
+                "conditions": []
+              },
+              "widgets": [
+                {
+                  "id": "w_equipment",
+                  "name": "w_equipment",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 160,
+                  "type": "tableInput",
+                  "title": "",
+                  "fields": [
+                    {
+                      "table": "equipment",
+                      "column": "item"
+                    },
+                    {
+                      "table": "equipment",
+                      "column": "value"
+                    },
+                    {
+                      "table": "equipment",
+                      "column": "premium"
+                    }
+                  ],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": []
+                  },
+                  "rows": 3,
+                  "row_numbers": true,
+                  "density": "compact",
+                  "gridlines": "rows",
+                  "striped": true,
+                  "fixed_rows": false,
+                  "header": "plain",
+                  "frame": true,
+                  "transposed": false,
+                  "groups": false,
+                  "font_size": 12,
+                  "header_font_size": null,
+                  "header_bold": true,
+                  "header_wrap": false,
+                  "header_orientation": "horizontal",
+                  "header_color": null,
+                  "header_font_color": null,
+                  "header_align": "auto",
+                  "grid_color": null,
+                  "grid_weight": "thin",
+                  "grid_style": "solid",
+                  "frame_color": null,
+                  "frame_weight": "thin",
+                  "column_looks": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p_target",
+          "title": "Target",
+          "width": 1280,
+          "show_when": {
+            "match": "all",
+            "conditions": []
+          },
+          "sections": [
+            {
+              "id": "s_target",
+              "title": "Section 1",
+              "height": 160,
+              "show_when": {
+                "match": "all",
+                "conditions": []
+              },
+              "widgets": [
+                {
+                  "id": "w_target",
+                  "name": "w_target",
+                  "x": 0,
+                  "y": 0,
+                  "w": 720,
+                  "h": 120,
+                  "type": "collection",
+                  "title": "",
+                  "fields": [
+                    {
+                      "table": "target",
+                      "column": "x"
+                    }
+                  ],
+                  "show_when": {
+                    "match": "all",
+                    "conditions": []
+                  },
                   "columns": 3,
                   "labels": "above",
                   "density": "comfortable",
@@ -8083,6 +8538,264 @@
       "hidden_sections": ["s_extra", "s_target"],
       "hidden_widgets": ["w_claims", "w_occupations", "w_target"],
       "hidden_columns": [["claims", "amount"], ["drivers", "occupation"], ["target", "x"]]
+    },
+    {
+      "name": "a condition on the inputs of a table of both blocks tests what is typed: none above",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "value",
+                  "op": "above",
+                  "values": [
+                    "1000"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane",
+            "value": "500"
+          }
+        ]
+      },
+      "hidden_pages": [
+        "p_target"
+      ],
+      "hidden_sections": [
+        "s_target"
+      ],
+      "hidden_widgets": [
+        "w_target"
+      ],
+      "hidden_columns": [
+        [
+          "target",
+          "x"
+        ]
+      ]
+    },
+    {
+      "name": "a condition on the inputs of a table of both blocks tests what is typed: one above",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "value",
+                  "op": "above",
+                  "values": [
+                    "1000"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane",
+            "value": "500"
+          },
+          {
+            "item": "Digger",
+            "value": "5000"
+          }
+        ]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on the outputs of a table of both blocks tests the price, which never decides what is priced",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "premium",
+                  "op": "above",
+                  "values": [
+                    "0"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane",
+            "value": "500"
+          }
+        ]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
+    },
+    {
+      "name": "a condition on rows naming both inputs and outputs never holds",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "rows": "any",
+              "where": [
+                {
+                  "column": "value",
+                  "op": "above",
+                  "values": [
+                    "1000"
+                  ],
+                  "field": null,
+                  "days": 0
+                },
+                {
+                  "column": "premium",
+                  "op": "above",
+                  "values": [
+                    "0"
+                  ],
+                  "field": null,
+                  "days": 0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Digger",
+            "value": "5000"
+          }
+        ]
+      },
+      "hidden_pages": [
+        "p_target"
+      ],
+      "hidden_sections": [
+        "s_target"
+      ],
+      "hidden_widgets": [
+        "w_target"
+      ],
+      "hidden_columns": [
+        [
+          "target",
+          "x"
+        ]
+      ]
+    },
+    {
+      "name": "a count without tests of a table of both blocks counts its typed rows: too few",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "where": [],
+              "op": "at_least",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane"
+          },
+          {}
+        ]
+      },
+      "hidden_pages": [
+        "p_target"
+      ],
+      "hidden_sections": [
+        "s_target"
+      ],
+      "hidden_widgets": [
+        "w_target"
+      ],
+      "hidden_columns": [
+        [
+          "target",
+          "x"
+        ]
+      ]
+    },
+    {
+      "name": "a count without tests of a table of both blocks counts its typed rows: enough",
+      "form": "blocks",
+      "show_when": {
+        "p_target": {
+          "match": "all",
+          "conditions": [
+            {
+              "table": "equipment",
+              "where": [],
+              "op": "at_least",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "values": {
+        "equipment": [
+          {
+            "item": "Crane"
+          },
+          {
+            "value": "10"
+          }
+        ]
+      },
+      "hidden_pages": [],
+      "hidden_sections": [],
+      "hidden_widgets": [],
+      "hidden_columns": []
     }
   ]
 }

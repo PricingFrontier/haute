@@ -144,9 +144,20 @@ function epoch(): number {
   return useNodeDataStore.getState().epoch
 }
 
+/** A side of a schema table as a fetch gives it, its port the table's name and its side. */
+const side = (name: string, which: WorkbenchTable["side"], rows: WorkbenchTable["rows"], columns: WorkbenchTable["columns"]): WorkbenchTable => ({
+  name,
+  side: which,
+  port: `${name}_${which}`,
+  rows,
+  columns,
+  key: null,
+  null_key: null,
+})
+
 const WORKBENCH_TABLES: WorkbenchTable[] = [
-  { name: "pricing_output", rows: "one", columns: [{ name: "premium", type: "float" }] },
-  { name: "layers", rows: "many", columns: [{ name: "layer", type: "int" }] },
+  side("pricing", "output", "one", [{ name: "premium", type: "float" }]),
+  side("layers", "output", "many", [{ name: "layer", type: "int" }]),
 ]
 
 /** A Workbench Output, which holds none of its tables. */
@@ -308,7 +319,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
 
   it("previews the table chosen in a Workbench Output's preview on Refresh and selecting it again", async () => {
     mockPreview.mockImplementation(async ({ nodeId, portLabel }) =>
-      envelope(nodeId, [], portLabel === "layers" ? "layer" : "premium"),
+      envelope(nodeId, [], portLabel === "layers_output" ? "layer" : "premium"),
     )
     const other = makeNode("other")
     const { result } = await renderLoaded([workbenchOutput(), other])
@@ -317,21 +328,21 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
       _columns: [{ name: "premium", dtype: "f64" }],
       _frameColumns: {
         pricing_output: [{ name: "premium", dtype: "f64" }],
-        layers: [{ name: "layer", dtype: "i64" }],
+        layers_output: [{ name: "layer", dtype: "i64" }],
       },
       _columnsSource: "live",
       _columnsStructuralVersion: useGraphStore.getState().structuralVersion,
     })
 
-    act(() => result.current.previewNodeFrame("response", "layers"))
-    await waitFor(() => expect(result.current.previewData?.selected_frame).toBe("layers"))
+    act(() => result.current.previewNodeFrame("response", "layers_output"))
+    await waitFor(() => expect(result.current.previewData?.selected_frame).toBe("layers_output"))
     await settle(result)
 
     act(() => result.current.fetchPreview(other, { debounceMs: 0 }))
     await waitFor(() => expect(result.current.previewData?.nodeId).toBe("other"))
     await settle(result)
     act(() => result.current.fetchPreview(response, { debounceMs: 0 }))
-    expect(result.current.previewData).toMatchObject({ nodeId: "response", selected_frame: "layers" })
+    expect(result.current.previewData).toMatchObject({ nodeId: "response", selected_frame: "layers_output" })
     await settle(result)
     expect(mockPreview).toHaveBeenCalledTimes(2)
 
@@ -339,11 +350,11 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(3), { timeout: STEP_TIMEOUT_MS })
     expect(mockPreview.mock.calls[2][0]).toMatchObject({
       nodeId: "response",
-      portLabel: "layers",
+      portLabel: "layers_output",
       requestedPreviewColumns: ["layer"],
     })
     await settle(result)
-    expect(result.current.previewData?.selected_frame).toBe("layers")
+    expect(result.current.previewData?.selected_frame).toBe("layers_output")
   })
 
   it.each([
@@ -357,6 +368,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
           _sourceHandleInputNames: { quotes: "quotes", claims: "claims" },
         },
       }),
+      "claims",
     ],
     [
       "a Workbench Input",
@@ -364,8 +376,8 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
         useWorkbenchStore.setState({
           tables: {
             tables: [
-              { name: "quotes", rows: "one", columns: [{ name: "premium", type: "float" }] },
-              { name: "claims", rows: "many", columns: [{ name: "premium", type: "float" }] },
+              side("quotes", "input", "one", [{ name: "premium", type: "float" }]),
+              side("claims", "input", "many", [{ name: "premium", type: "float" }]),
             ],
             sample: {},
             responseTables: [],
@@ -376,28 +388,30 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
           data: { label: "quote", nodeType: "workbenchInput", config: {}, _sourceHandleInputNames: {} },
         })
       },
+      // A Workbench Input's port is its table's input side.
+      "claims_input",
     ],
-  ] as const)("previews the table chosen in %s's preview on Refresh and selecting it again", async (_label, make) => {
+  ] as const)("previews the table chosen in %s's preview on Refresh and selecting it again", async (_label, make, frame) => {
     mockPreview.mockImplementation(async ({ nodeId }) => envelope(nodeId))
     const quote = make()
     const other = makeNode("other")
     const { result } = await renderLoaded([quote, other])
 
-    act(() => result.current.previewNodeFrame("quote", "claims"))
+    act(() => result.current.previewNodeFrame("quote", frame))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "quote", portLabel: "claims" })
+    expect(mockPreview.mock.calls[0][0]).toMatchObject({ nodeId: "quote", portLabel: frame })
     await settle(result)
 
     act(() => result.current.refreshPreview(quote))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "quote", portLabel: "claims" })
+    expect(mockPreview.mock.calls[1][0]).toMatchObject({ nodeId: "quote", portLabel: frame })
     await settle(result)
 
     act(() => result.current.fetchPreview(other, { debounceMs: 0 }))
     await waitFor(() => expect(result.current.previewData?.nodeId).toBe("other"))
     await settle(result)
     act(() => result.current.fetchPreview(quote, { debounceMs: 0 }))
-    expect(result.current.previewData).toMatchObject({ nodeId: "quote", selected_frame: "claims" })
+    expect(result.current.previewData).toMatchObject({ nodeId: "quote", selected_frame: frame })
     await settle(result)
   })
 
@@ -405,7 +419,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     mockPreview.mockResolvedValue(envelope("response"))
     const { result } = await renderLoaded([workbenchOutput()])
 
-    act(() => result.current.previewNodeFrame("response", "layers"))
+    act(() => result.current.previewNodeFrame("response", "layers_output"))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
     await settle(result)
 
@@ -419,11 +433,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   it("asks for none of the columns it recorded before a fetch that changes the workbench's tables, which may have taken one away", async () => {
     // A form saved without a column changes what a node below a Workbench Input holds,
     // though nothing in the graph changes: the columns recorded before are no projection.
-    const policy = (...names: string[]): WorkbenchTable => ({
-      name: "policy",
-      rows: "one",
-      columns: names.map((name) => ({ name, type: "float" as const })),
-    })
+    const policy = (...names: string[]): WorkbenchTable => side("policy", "input", "one", names.map((name) => ({ name, type: "float" as const })))
     await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [], store_columns: {} })
     mockPreview.mockResolvedValue(envelope("priced", [], "exposure"))
     const { result } = await renderLoaded([makeNode("priced")])
@@ -455,14 +465,14 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
   it("fetches the displayed preview again after a fetch that changes the workbench's tables or sample, never after one that brings the same", async () => {
     // What a Workbench Input is given changes what everything below it previews, though
     // nothing in the graph changes with it.
-    const policy: WorkbenchTable = { name: "policy", rows: "one", columns: [{ name: "exposure", type: "float" }] }
+    const policy: WorkbenchTable = side("policy", "input", "one", [{ name: "exposure", type: "float" }])
     await fetchTables({ tables: [policy], sample: {}, response_tables: [], store_columns: {} })
     mockPreview.mockResolvedValue(envelope("priced"))
     const quote = makeNode("quote", "workbenchInput", {
       data: { label: "quote", nodeType: "workbenchInput", config: {}, _sourceHandleInputNames: {} },
     })
     const priced = makeNode("priced")
-    const edges: Edge[] = [{ id: "e_policy", source: "quote", sourceHandle: "policy", target: "priced", targetHandle: null }]
+    const edges: Edge[] = [{ id: "e_policy", source: "quote", sourceHandle: "policy_input", target: "priced", targetHandle: null }]
     const { result } = await renderLoaded([quote, priced], edges)
     act(() => result.current.fetchPreview(priced, { debounceMs: 0 }))
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))

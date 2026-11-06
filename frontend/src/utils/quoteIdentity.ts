@@ -1,10 +1,11 @@
 /**
  * The quote's identity at the head of every schema table but quote_details (specs/workbench):
- * its reference and option, which Haute adds and keeps locked, a request gives in
- * quote_details alone, and the sheets never show or test; and Haute's quote_details columns,
- * by name, with those the app sets, which every request holds whatever the sheets hide. A
- * table and a column are known by their names (READ-23). Imported by `workbenchForm` and
- * `sheetVisibility` alike, which import each other, so it imports neither.
+ * its reference and option, which Haute adds and keeps locked at the head of a table's first
+ * block, a request gives in quote_details alone, and the sheets never show or test; a table's
+ * two blocks, its inputs and its outputs, as the server's `SchemaTable` reads them; and Haute's
+ * quote_details columns, by name, with those the app sets, which every request holds whatever
+ * the sheets hide. A table and a column are known by their names (READ-23). Imported by
+ * `workbenchForm` and `sheetVisibility` alike, which import each other, so it imports neither.
  */
 import type { SchemaColumn, SchemaTable } from "../api/types"
 
@@ -119,21 +120,82 @@ const asHauteMakesIt = (column: SchemaColumn, at: number): boolean => {
   return (Object.keys(blank) as (keyof SchemaColumn)[]).every((key) => JSON.stringify(column[key]) === JSON.stringify(blank[key]))
 }
 
-/**
- * How many of the quote's identity columns lead `table`: both when its first two are the
- * identity as Haute makes it (`holds_identity`), else none, as in quote_details. A column of
- * either name anywhere else, or changed, is the table's own: a clash the schema's problems
- * name, which the analyst renames.
- */
-export function identityCount(table: Pick<SchemaTable, "name" | "columns">): number {
-  if (table.name === QUOTE_DETAILS_NAME) return 0
-  const held = IDENTITY_COLUMNS.every((_, at) => table.columns[at] !== undefined && asHauteMakesIt(table.columns[at], at))
-  return held ? IDENTITY_COLUMNS.length : 0
+/** A table's two blocks: its inputs, which an underwriter types, and its outputs, which pricing fills. */
+export type Block = "inputs" | "outputs"
+/** A table as the block helpers read it: its name and its two blocks. */
+type Blocks = Pick<SchemaTable, "name" | "inputs" | "outputs">
+
+/** How many of the quote's identity columns lead `block`, a block of the table named `name`: both as Haute makes them, else none. */
+const blockIdentity = (name: string, block: readonly SchemaColumn[]): number =>
+  name !== QUOTE_DETAILS_NAME && IDENTITY_COLUMNS.every((_, at) => block[at] !== undefined && asHauteMakesIt(block[at], at)) ? IDENTITY_COLUMNS.length : 0
+
+/** A table's columns, its inputs then its outputs: what a reader of every column takes (`SchemaTable.columns`). */
+export const tableColumns = (table: Pick<SchemaTable, "inputs" | "outputs">): SchemaColumn[] => [...table.inputs, ...table.outputs]
+
+/** Whether `table`'s column of that name is one of its outputs (`SchemaTable.is_output`). */
+export const isOutputColumn = (table: Pick<SchemaTable, "outputs">, column: Pick<SchemaColumn, "name"> | string): boolean => {
+  const name = typeof column === "string" ? column : column.name
+  return table.outputs.some((held) => held.name === name)
 }
 
-/** Whether `column` of `table` is one of the quote's identity columns Haute keeps at its head. */
-export const isIdentityColumn = (table: Pick<SchemaTable, "name" | "columns">, column: Pick<SchemaColumn, "name">): boolean =>
-  table.columns.slice(0, identityCount(table)).some((held) => held.name === column.name)
+/** The block holding `table`'s column of that name: its inputs, else its outputs. */
+export const blockOf = (table: Pick<SchemaTable, "outputs">, column: Pick<SchemaColumn, "name"> | string): Block =>
+  isOutputColumn(table, column) ? "outputs" : "inputs"
 
-/** A table's columns the sheets can show and test: all but the quote's identity. */
-export const sheetColumns = (table: Pick<SchemaTable, "name" | "columns">): SchemaColumn[] => table.columns.slice(identityCount(table))
+/** A table's inputs but the quote's identity Haute leads them with (`own_inputs`). */
+export const ownInputs = (table: Blocks): SchemaColumn[] => table.inputs.slice(blockIdentity(table.name, table.inputs))
+
+/** A table's outputs but the quote's identity Haute leads them with (`own_outputs`). */
+export const ownOutputs = (table: Blocks): SchemaColumn[] => table.outputs.slice(blockIdentity(table.name, table.outputs))
+
+/** A table's own inputs but the index: what an underwriter types into it (`typed_inputs`). */
+export const typedInputs = (table: Blocks): SchemaColumn[] => ownInputs(table).filter((column) => !column.index)
+
+/** Whether a table is an input table: it holds an input an underwriter types (`has_inputs`). */
+export const hasInputs = (table: Blocks): boolean => typedInputs(table).length > 0
+
+/** Whether a table is an output table: it holds an output of its own (`has_outputs`). */
+export const hasOutputs = (table: Blocks): boolean => ownOutputs(table).length > 0
+
+/**
+ * How many of the quote's identity columns lead `table`'s first block: both when the first
+ * two of its inputs, or of its outputs, are the identity as Haute makes it (`holds_identity`),
+ * else none, as in quote_details. A column of either name anywhere else, or changed, is the
+ * table's own: a clash the schema's problems name, which the analyst renames.
+ */
+export function identityCount(table: Blocks): number {
+  return Math.max(blockIdentity(table.name, table.inputs), blockIdentity(table.name, table.outputs))
+}
+
+/** Whether `column` of `table` is one of the quote's identity columns Haute keeps at the head of a block. */
+export const isIdentityColumn = (table: Blocks, column: Pick<SchemaColumn, "name">): boolean =>
+  [...table.inputs.slice(0, blockIdentity(table.name, table.inputs)), ...table.outputs.slice(0, blockIdentity(table.name, table.outputs))].some(
+    (held) => held.name === column.name,
+  )
+
+/** A table's columns the sheets can show and test: its own inputs then its own outputs, the quote's identity left out. */
+export const sheetColumns = (table: Blocks): SchemaColumn[] => [...ownInputs(table), ...ownOutputs(table)]
+
+/** The quote's identity as Haute makes it, a fresh copy for a table's head. */
+const identityColumns = (): SchemaColumn[] => IDENTITY_COLUMNS.map(([name, type]) => blankColumn(name, type))
+
+/**
+ * `table` with the quote's identity at the head of its first block, as the server's
+ * before-validator places it (`_gives_every_table_the_quote_identity`): taken from the head of
+ * either block, then given at the head of its inputs while it has inputs of its own or no
+ * outputs, else at the head of its outputs; a table holding a column of its own under either
+ * name goes without it, and quote_details is left as it is. The table itself while nothing moves.
+ */
+export function withIdentityPlaced<T extends Blocks>(table: T): T {
+  if (table.name === QUOTE_DETAILS_NAME) return table
+  const inputs = table.inputs.slice(blockIdentity(table.name, table.inputs))
+  const outputs = table.outputs.slice(blockIdentity(table.name, table.outputs))
+  const placed =
+    [...inputs, ...outputs].some((column) => IDENTITY_NAMES.has(column.name))
+      ? { inputs, outputs }
+      : inputs.length > 0 || outputs.length === 0
+        ? { inputs: [...identityColumns(), ...inputs], outputs }
+        : { inputs, outputs: [...identityColumns(), ...outputs] }
+  const same = (a: readonly SchemaColumn[], b: readonly SchemaColumn[]) => a.length === b.length && a.every((column, at) => column.name === b[at].name)
+  return same(placed.inputs, table.inputs) && same(placed.outputs, table.outputs) ? table : { ...table, ...placed }
+}

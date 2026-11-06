@@ -5,7 +5,7 @@ id, and the SQL that carries it out.
 A plan (:func:`plan`) is made from what the database holds, as an earlier form's structure
 (:func:`offline_plan`) or as its own catalogue read into one (:mod:`._compare`), or from none,
 for a database that holds no store yet. It keeps what the form removed, which its SQL drops
-only in a comment, makes each change of a type, rows or role a step its SQL notes, and refuses
+only in a comment, makes each change of a type or rows a step its SQL notes, and refuses
 a table or column taking a removed one's name. Given the quotes holding values in each table
 and column (from a database's catalogue), each note on one says how many. :func:`render_sql`
 writes it for an engine, one transaction holding nothing of Haute's beyond the tables, for the
@@ -124,7 +124,7 @@ def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
 
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
     """The tables and columns of *recorded* a plan to *form* says the quotes of: those the
-    form removed, and those whose type, rows or role it changed."""
+    form removed, and those whose type or rows it changed."""
     new = _by_key(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
@@ -133,7 +133,7 @@ def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[K
             # A table removed is counted whole.
             wanted.add((table["key"], None))
             continue
-        if (table["rows"], table["role"]) != (after["rows"], after["role"]):
+        if table["rows"] != after["rows"]:
             wanted.add((table["key"], None))
         columns = _by_key(after["columns"])
         for column in table["columns"]:
@@ -199,11 +199,11 @@ def _plan(
             steps.append(Step("create table", table["name"], table["key"]))
             recorded_after.append(table)
             continue
-        if (before["rows"], before["role"]) != (table["rows"], table["role"]):
-            # A table of other rows or another role: a step the SQL notes, whatever it holds.
+        if before["rows"] != table["rows"]:
+            # A table of other rows: a step the SQL notes, whatever it holds.
             quotes = _count(counts, (table["key"], None))
             if table["key"] == QUOTE_DETAILS_NAME:
-                refusals.append("quote_details takes no change of its rows or role")
+                refusals.append("quote_details takes no change of its rows")
                 recorded_after.append(before)
             else:
                 steps.append(
@@ -450,15 +450,14 @@ def _retype_in_place(operations: Operations, plan: Plan, schema: StoreSchema, st
 
 
 def _reshape_note(operations: Operations, plan: Plan, step: Step) -> None:
-    """A script's note on a table whose rows or role the form changed, which no statement
+    """A script's note on a table whose rows the form changed, which no statement
     changes: what the table was and is, and what it needs."""
     was = _structure_table(plan.before, step.table_key)
     now = _structure_table(plan.recorded, step.table_key)
     _note(
         operations,
-        f"{step.table}{held(step.quotes, 'rows')} changes from an {was['role']} table of "
-        f"{_ROWS[was['rows']]} to an "
-        f"{now['role']} table of {_ROWS[now['rows']]},\n"
+        f"{step.table}{held(step.quotes, 'rows')} changes from a table of "
+        f"{_ROWS[was['rows']]} to a table of {_ROWS[now['rows']]},\n"
         "which no statement here makes: make the table again as the form has it and move its\n"
         "rows into it.",
     )
@@ -506,7 +505,7 @@ def render_sql(plan: Plan, form: FormSpec, dialect: str, *, sql_schema: str | No
     run: Alembic's offline rendering for *dialect*, every value written in, each name in the
     SQL schema *sql_schema* when one is named, the whole of it one transaction, so a
     statement that fails leaves nothing changed. Each refusal and each of the plan's notes
-    heads it, and each change of a type, rows or role and each table or column the form does
+    heads it, and each change of a type or rows and each table or column the form does
     not have is noted where it falls, the latter's DROP commented out. Nothing of Haute's is in
     it beyond the tables, and nothing reads it back."""
     buffer = io.StringIO()

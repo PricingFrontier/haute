@@ -71,9 +71,6 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
               <div className="min-w-0 flex-1 font-mono">
                 <ConfigCheckbox label={table.name} checked={exported} onChange={() => change((spec) => toggleExportTable(spec, widget.id, table.name))} />
               </div>
-              <span className="text-[11px] font-semibold" style={{ color: table.role === "input" ? "var(--accent)" : "var(--success)" }}>
-                {table.role === "input" ? "Input" : "Output"}
-              </span>
               {target.format === "sql" && exported && (
                 <CommittedTextField
                   aria-label={`${table.name} is written to`}

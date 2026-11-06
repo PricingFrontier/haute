@@ -3,6 +3,7 @@ import { useId } from "react"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
 import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE, ValidatedTextField } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { isOutputColumn, tableColumns } from "../../utils/quoteIdentity"
 import { setRowPerValue } from "../../utils/workbenchForm"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../../panels/explore/pivotNumberFormat"
@@ -35,12 +36,12 @@ export function ColumnDetails({
 }) {
   const change = useWorkbenchFormStore((s) => s.change)
   // The index takes no rules, nor does a column the app sets: nothing is typed into them.
-  const input = table.role === "input" && !column.index && !managed
-  // Required, which marking a quote final checks, an output column takes too.
+  const input = !isOutputColumn(table, column) && !column.index && !managed
+  // Required, which marking a quote final checks, an output takes too.
   const requirable = !column.index && !managed
   // The groups the table's columns are in, offered as one is typed.
   const groupsId = useId()
-  const groups = [...new Set(table.columns.map((other) => other.group).filter((group) => group !== ""))]
+  const groups = [...new Set(tableColumns(table).map((other) => other.group).filter((group) => group !== ""))]
   // General with automatic decimal places shows a number as it is, separators and all.
   const grouped = column.number_format !== "general" || column.decimal_places !== null
   const numberOrNothing = (text: string): string | null =>
@@ -49,7 +50,7 @@ export function ColumnDetails({
   return (
     <fieldset
       disabled={readOnly}
-      className="mr-12 ml-7 grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
+      className="mr-12 ml-7 grid max-w-[32rem] min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
       style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}
     >
       <span style={{ color: "var(--text-muted)" }}>Label</span>

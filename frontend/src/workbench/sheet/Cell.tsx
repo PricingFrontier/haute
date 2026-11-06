@@ -5,14 +5,14 @@ import { CommittedTextField, INPUT_STYLE } from "../../components/form"
 import { formattedNumber } from "../../utils/sheetValues"
 import { type SampleValue } from "../../utils/workbenchForm"
 import { isNumeric } from "../columnTypes"
-import { BOX_CLASS, type Fillable, type Found, GRID_CELL_CLASS, PROBLEM_STYLE, fieldLabel } from "./fieldCells"
+import { BOX_CLASS, type Fillable, type Found, GRID_CELL_CLASS, PROBLEM_STYLE, fieldLabel, isOutputField } from "./fieldCells"
 
 /** A field's label, with a star when an input must be filled in and a mark naming its help. */
 export function FieldLabel({ found }: { found: Found }) {
   return (
     <>
       {fieldLabel(found)}
-      {found?.table.role === "input" && found.column.required && <span style={{ color: "var(--danger)" }}> *</span>}
+      {found !== null && !isOutputField(found) && found.column.required && <span style={{ color: "var(--danger)" }}> *</span>}
       {found?.column.help && (
         <span title={found.column.help} className="ml-1 inline-flex align-[-1px] normal-case" style={{ color: "var(--text-secondary)" }}>
           <Info size={11} aria-hidden="true" />

@@ -1,6 +1,6 @@
 """The quote store's tables, derived from the form (specs/workbench): each schema table a SQL
 table of its name and its columns' types, keyed by the quote's identity and, in a many-row
-table, by ``quote_row``, with the store's own columns on ``quote_details`` and Haute's
+table, by ``table_index``, with the store's own columns on ``quote_details`` and Haute's
 activity beside them."""
 
 from __future__ import annotations
@@ -48,18 +48,24 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 POLICY = {
     "name": "policy",
     "rows": "one",
-    "columns": [column("region"), column("drivers", "int"), column("start", "date")],
+    "inputs": [column("region"), column("drivers", "int"), column("start", "date")],
 }
+#: A table of inputs and outputs: each vehicle typed and its premium priced on its row.
 VEHICLES = {
     "name": "vehicles",
     "rows": "many",
-    "columns": [column("reg", key=True), column("value", "float"), column("garaged", "bool")],
+    "inputs": [
+        column("vehicle", "int", index=True),
+        column("reg"),
+        column("value", "float"),
+        column("garaged", "bool"),
+    ],
+    "outputs": [column("vehicle_premium", "float")],
 }
 PREMIUM = {
     "name": "premium",
-    "role": "output",
     "rows": "one",
-    "columns": [column("total_premium", "float")],
+    "outputs": [column("total_premium", "float")],
 }
 
 
@@ -89,6 +95,17 @@ def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() ->
         "start": Date,
     }
     vehicles = schema.by_name("vehicles").table
+    # A table of inputs and outputs is one SQL table, its inputs then its outputs.
+    assert [column.name for column in vehicles.columns] == [
+        "quote_reference",
+        "quote_option",
+        "vehicle",
+        "reg",
+        "value",
+        "garaged",
+        "vehicle_premium",
+        "table_index",
+    ]
     assert {column.name: type(column.type) for column in vehicles.columns}["value"] is Double
     assert {column.name: type(column.type) for column in vehicles.columns}["garaged"] is Boolean
     # Every column of the project's own may be null, so a draft saves with it empty; the
@@ -96,7 +113,7 @@ def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() ->
     assert [column.name for column in vehicles.columns if not column.nullable] == [
         "quote_reference",
         "quote_option",
-        "quote_row",
+        "table_index",
     ]
 
 
@@ -108,7 +125,7 @@ def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> N
 
     assert key("quote_details") == ["quote_reference", "quote_option"]
     assert key("policy") == ["quote_reference", "quote_option"]
-    assert key("vehicles") == ["quote_reference", "quote_option", "quote_row"]
+    assert key("vehicles") == ["quote_reference", "quote_option", "table_index"]
     assert key("premium") == ["quote_reference", "quote_option"]
     for name in ("policy", "vehicles", "premium"):
         [foreign] = schema.by_name(name).table.foreign_key_constraints
@@ -154,24 +171,29 @@ def test_each_tables_columns_the_form_does_not_hold_are_named_with_what_they_hol
     kept = store_columns(form(POLICY, VEHICLES, PREMIUM))
 
     assert list(kept) == ["quote_details", "vehicles"]
-    assert kept["vehicles"] == [("quote_row", "int")]
+    assert kept["vehicles"] == [("table_index", "int")]
     assert [name for name, _ in kept["quote_details"]] == [name for name, _, _ in STORE_COLUMNS]
     assert dict(kept["quote_details"])["note_at"] == "datetime"
 
 
-_REG, _VALUE, _GARAGED = VEHICLES["columns"]
+_INDEX, _REG, _VALUE, _GARAGED = VEHICLES["inputs"]
+_PREMIUM = VEHICLES["outputs"][0]
 
 
 @pytest.mark.parametrize(
     ("change", "differs"),
     [
         ({"name": "cars"}, True),
-        ({"rows": "one"}, True),
-        ({"columns": [_REG, _VALUE, _GARAGED, column("seats", "int")]}, True),
-        ({"columns": [_REG, {**_VALUE, "type": "int"}, _GARAGED]}, True),
+        ({"rows": "one", "inputs": [_REG, _VALUE, _GARAGED]}, True),
+        ({"inputs": [_INDEX, _REG, _VALUE, _GARAGED, column("seats", "int")]}, True),
+        ({"inputs": [_INDEX, _REG, {**_VALUE, "type": "int"}, _GARAGED]}, True),
+        ({"outputs": [_PREMIUM, column("loading", "float")]}, True),
         # A column's label and rules decide nothing in the store.
-        ({"columns": [{**_REG, "label": "Registration"}, _VALUE, _GARAGED]}, False),
-        ({"columns": [_REG, {**_VALUE, "required": True}, _GARAGED]}, False),
+        ({"inputs": [_INDEX, {**_REG, "label": "Registration"}, _VALUE, _GARAGED]}, False),
+        ({"inputs": [_INDEX, _REG, {**_VALUE, "required": True}, _GARAGED]}, False),
+        # Nor does its block: a table is one SQL table, its inputs then its outputs, so the
+        # last input made the first output stays the column it was.
+        ({"inputs": [_INDEX, _REG, _VALUE], "outputs": [_GARAGED, _PREMIUM]}, False),
     ],
 )
 def test_the_structure_records_what_decides_the_tables_and_nothing_else(

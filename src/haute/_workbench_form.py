@@ -796,13 +796,78 @@ class SchemaColumn(_Strict):
 
 
 class SchemaTable(_Strict):
+    """A table of the schema: its inputs, which an underwriter types and the pricing engine
+    is sent, and its outputs, which pricing fills, either or both. An equipment schedule's
+    items and each item's premium are one table, its outputs filled on the rows typed."""
+
     #: What identifies it in the form, no two differing only in case (READ-23).
     name: str
-    #: Sent to the pricing engine, or returned by it.
-    role: Literal["input", "output"] = "input"
     #: One row per quote, such as policy details, or many, such as an equipment schedule.
     rows: Literal["one", "many"] = "one"
-    columns: list[SchemaColumn] = Field(default_factory=list)
+    inputs: list[SchemaColumn] = Field(default_factory=list)
+    outputs: list[SchemaColumn] = Field(default_factory=list)
+
+    @property
+    def columns(self) -> list[SchemaColumn]:
+        """Its inputs, then its outputs: what a reader of every column takes."""
+        return [*self.inputs, *self.outputs]
+
+    @property
+    def own_inputs(self) -> list[SchemaColumn]:
+        """Its inputs but the quote's identity Haute gives it."""
+        return _without_identity(self.name, self.inputs)
+
+    @property
+    def own_outputs(self) -> list[SchemaColumn]:
+        """Its outputs but the quote's identity Haute gives it."""
+        return _without_identity(self.name, self.outputs)
+
+    @property
+    def typed_inputs(self) -> list[SchemaColumn]:
+        """Its own inputs but the index: what an underwriter types into it."""
+        return [column for column in self.own_inputs if not column.index]
+
+    @property
+    def has_inputs(self) -> bool:
+        """Whether it is an input table: it holds an input an underwriter types."""
+        return bool(self.typed_inputs)
+
+    @property
+    def has_outputs(self) -> bool:
+        """Whether it is an output table: it holds an output of its own."""
+        return bool(self.own_outputs)
+
+    def is_output(self, column: str) -> bool:
+        """Whether its column of that name is one of its outputs."""
+        return any(held.name == column for held in self.outputs)
+
+    @model_validator(mode="after")
+    def _check_keys(self) -> SchemaTable:
+        """A table's key is never typed: a many-row input table has exactly one index, among
+        its inputs, and a ``key`` marks only an output of a many-row table with no inputs."""
+        for column in self.outputs:
+            if column.index:
+                raise ValueError(f"{self.name}.{column.name} is an index among the outputs")
+        indexes = [column for column in self.inputs if column.index]
+        for column in indexes:
+            if self.rows == "one" or not self.has_inputs:
+                raise ValueError(
+                    f"{self.name}.{column.name} is an index, which only a many-row table with "
+                    "inputs has"
+                )
+        if self.rows == "many" and self.has_inputs and len(indexes) != 1:
+            raise ValueError(
+                f"{self.name} has many rows and inputs, so it needs one index among its inputs"
+            )
+        for column in self.columns:
+            if column.key and (
+                self.rows == "one" or self.has_inputs or not self.is_output(column.name)
+            ):
+                raise ValueError(
+                    f"{self.name}.{column.name} is a key, which only an output of a table of "
+                    "outputs alone with many rows can be"
+                )
+        return self
 
 
 class FormSchema(_Strict):
@@ -893,7 +958,7 @@ class FormSpec(_Strict):
         for index, table in enumerate(tables):
             if not isinstance(table, dict) or table.get("name") != QUOTE_DETAILS_NAME:
                 continue
-            columns = table.get("columns")
+            columns = table.get("inputs", [])
             if not isinstance(columns, list) or not all(
                 isinstance(column, dict) for column in columns
             ):
@@ -913,7 +978,7 @@ class FormSpec(_Strict):
                 for name, column_type in QUOTE_DETAILS_COLUMNS
             ]
             others = [column for column in renamed if column.get("name") not in QUOTE_DETAILS_NAMES]
-            upgraded = {**table, "columns": [*known, *others]}
+            upgraded = {**table, "inputs": [*known, *others]}
             return {
                 **data,
                 "schema": {**schema, "tables": [*tables[:index], upgraded, *tables[index + 1 :]]},
@@ -923,28 +988,42 @@ class FormSpec(_Strict):
     @model_validator(mode="before")
     @classmethod
     def _gives_every_table_the_quote_identity(cls, data: Any) -> Any:
-        """Every table but ``quote_details`` leads with the quote's identity
-        (``IDENTITY_COLUMNS``), added at its head when it has none, the caller's data left as
-        it was. A table with a column of its own under either name is left without it: the
-        clash is the project's to resolve (:func:`identity_clashes`)."""
+        """Every table but ``quote_details`` leads its first block with the quote's identity
+        (``IDENTITY_COLUMNS``): its inputs, or its outputs while its inputs hold none of its
+        own. The identity as Haute makes it at the head of either block is taken from there
+        and given at that head, so an edit that gave a table its first input or took its last
+        moves it. A table with a column of its own under either name is left without it: the
+        clash is the project's to resolve (:func:`identity_clashes`). The caller's data is
+        left as it was."""
         schema = data.get("schema") if isinstance(data, dict) else None
         if not isinstance(schema, dict) or not isinstance(schema.get("tables"), list):
             return data
         held: list[Any] = []
         for table in schema["tables"]:
-            columns = table.get("columns", []) if isinstance(table, dict) else None
+            blocks = (
+                (table.get("inputs", []), table.get("outputs", []))
+                if isinstance(table, dict)
+                else None
+            )
             if (
-                not isinstance(columns, list)
+                blocks is None
+                or not all(isinstance(block, list) for block in blocks)
                 or table.get("name") == QUOTE_DETAILS_NAME
-                or any(
-                    isinstance(column, dict) and column.get("name") in IDENTITY_NAMES
-                    for column in columns
-                )
             ):
                 held.append(table)
                 continue
+            inputs, outputs = (_without_raw_identity(block) for block in blocks)
+            if any(
+                isinstance(column, dict) and column.get("name") in IDENTITY_NAMES
+                for column in [*inputs, *outputs]
+            ):
+                held.append({**table, "inputs": inputs, "outputs": outputs})
+                continue
             identity = [{"name": name, "type": kind} for name, kind in IDENTITY_COLUMNS]
-            held.append({**table, "columns": [*identity, *columns]})
+            if inputs or not outputs:
+                held.append({**table, "inputs": [*identity, *inputs], "outputs": outputs})
+            else:
+                held.append({**table, "inputs": inputs, "outputs": [*identity, *outputs]})
         return {**data, "schema": {**schema, "tables": held}}
 
     @model_validator(mode="after")
@@ -1053,9 +1132,8 @@ def quote_details_table() -> SchemaTable:
     """Haute's table of a quote's details, as a form holds it when nothing of it is set."""
     return SchemaTable(
         name=QUOTE_DETAILS_NAME,
-        role="input",
         rows="one",
-        columns=[
+        inputs=[
             SchemaColumn(name=name, type=column_type) for name, column_type in QUOTE_DETAILS_COLUMNS
         ],
     )
@@ -1067,7 +1145,7 @@ def _check_quote_details(table: SchemaTable) -> None:
     defaults of the columns the app does not set."""
     shape = [(column.name, column.type) for column in table.columns]
     if (
-        table.role != "input"
+        table.outputs
         or table.rows != "one"
         or shape != list(QUOTE_DETAILS_COLUMNS)
         or any(column.key or column.index or column.row_per_value for column in table.columns)
@@ -1099,13 +1177,47 @@ IDENTITY_SCHEMA_COLUMNS: tuple[SchemaColumn, ...] = tuple(
 
 
 def holds_identity(table: SchemaTable) -> bool:
-    """Whether *table* leads with the quote's identity as Haute makes it (READ-23): a column
-    of either name anywhere else, or changed, is the project's own, a clash
-    (:func:`identity_clashes`)."""
-    return (
-        table.name != QUOTE_DETAILS_NAME
-        and tuple(table.columns[: len(IDENTITY_SCHEMA_COLUMNS)]) == IDENTITY_SCHEMA_COLUMNS
+    """Whether *table*'s first block leads with the quote's identity as Haute makes it
+    (READ-23): a column of either name anywhere else, or changed, is the project's own, a
+    clash (:func:`identity_clashes`)."""
+    if table.name == QUOTE_DETAILS_NAME:
+        return False
+    return any(
+        tuple(block[: len(IDENTITY_SCHEMA_COLUMNS)]) == IDENTITY_SCHEMA_COLUMNS
+        for block in (table.inputs, table.outputs)
     )
+
+
+def _without_identity(table: str, block: list[SchemaColumn]) -> list[SchemaColumn]:
+    """*block* of the table named *table* without the quote's identity Haute leads it with."""
+    if (
+        table != QUOTE_DETAILS_NAME
+        and tuple(block[: len(IDENTITY_SCHEMA_COLUMNS)]) == IDENTITY_SCHEMA_COLUMNS
+    ):
+        return block[len(IDENTITY_SCHEMA_COLUMNS) :]
+    return block
+
+
+def _without_raw_identity(block: list[Any]) -> list[Any]:
+    """*block*, a table's columns as data, without the quote's identity as Haute makes it at
+    its head."""
+    count = len(IDENTITY_SCHEMA_COLUMNS)
+    head = block[:count]
+    if len(head) == count and all(
+        _is_identity_column(column, made)
+        for column, made in zip(head, IDENTITY_SCHEMA_COLUMNS, strict=True)
+    ):
+        return block[count:]
+    return block
+
+
+def _is_identity_column(column: Any, made: SchemaColumn) -> bool:
+    if not isinstance(column, dict) or column.get("name") != made.name:
+        return False
+    try:
+        return SchemaColumn.model_validate(column) == made
+    except ValueError:
+        return False
 
 
 def identity_clashes(spec: FormSpec) -> list[str]:

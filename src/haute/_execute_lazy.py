@@ -1761,7 +1761,7 @@ def _declared_api_input_frame_schema_items(
         from haute._workbench_input import workbench_input_tables
 
         return {
-            table.name: [(name, str(dtype)) for name, dtype in table.frame_schema.items()]
+            table.port: [(name, str(dtype)) for name, dtype in table.frame_schema.items()]
             for table in workbench_input_tables(node.data.config)
         }
     from haute._json_shred._shred import _declared_frame_schema, _emitting_table_specs

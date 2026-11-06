@@ -51,6 +51,7 @@ from haute._quote_store._rows import (
     input_rows,
     output_rows,
     rendered_outputs,
+    with_outputs,
 )
 from haute._quote_store._schema import (
     NAME_LENGTH,
@@ -75,7 +76,7 @@ from haute._workbench_form import (
     QUOTE_DETAILS_NAME,
     FormSpec,
 )
-from haute._workbench_tables import QUOTE_ROW
+from haute._workbench_tables import TABLE_INDEX
 
 #: A quote's stage: draft, which takes saves, or final.
 Stage = Literal["draft", "final"]
@@ -533,7 +534,7 @@ class QuoteBook:
                 table.c.quote_reference == reference, table.c.quote_option == option
             )
             if stored.many:
-                query = query.order_by(table.c[QUOTE_ROW])
+                query = query.order_by(table.c[TABLE_INDEX])
             rows[stored.form.name] = [dict(row._mapping) for row in connection.execute(query)]
         return rows
 
@@ -935,12 +936,15 @@ class QuoteBook:
         current = self.get(reference, option)
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)
-        rows = {
-            **input_rows(self._form, written, (reference, option), self._schema.kept),
-            **output_rows(
-                self._form, None if priced is None else priced.document, (reference, option)
-            ),
-        }
+        document = None if priced is None else priced.document
+        rows = with_outputs(
+            self._form,
+            {
+                **input_rows(self._form, written, (reference, option), self._schema.kept),
+                **output_rows(self._form, document, (reference, option)),
+            },
+            document,
+        )
         details = rows.pop(QUOTE_DETAILS_NAME)[0]
         try:
             with writing(self._engine) as connection:
@@ -1222,7 +1226,7 @@ class QuoteBook:
                 for column in required:
                     if _blank(row.get(column.name)):
                         where = (
-                            f"{table.name} row {row[QUOTE_ROW]}"
+                            f"{table.name} row {row[TABLE_INDEX]}"
                             if table.rows == "many"
                             else table.name
                         )

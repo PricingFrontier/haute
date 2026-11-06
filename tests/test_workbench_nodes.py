@@ -24,7 +24,7 @@ from tests._project import project_app, use_project, work_elsewhere
 from tests._workbench_helpers import tables_form, workbench_project
 from tests.test_workbench_output import FORM_SAMPLE, FORM_TABLES, _priced, _write
 
-#: The sample quote's policy as the Workbench Input's `policy` port gives it, priced under
+#: The sample quote's policy as the Workbench Input's `policy_input` port gives it, priced under
 #: the stand-in identity.
 _POLICY = {"quote_reference": "PREVIEW", "quote_option": 1, "state": "NY", "limit": 1000}
 
@@ -60,7 +60,7 @@ def _preview_policy(client: TestClient, **body: Any) -> Any:
         json={
             "graph": _editor_graph().model_dump(mode="json"),
             "node_id": "workbench_input",
-            "port_label": "policy",
+            "port_label": "policy_input",
             **body,
         },
     )
@@ -322,8 +322,8 @@ def test_score_holds_a_seeded_workbench_input_to_its_form(project: Path) -> None
             sys.modules.pop("scored_main", None)
         return module.pipeline.score(
             {
-                "policy": pl.DataFrame({"state": ["TX"], "limit": [500]}),
-                "items": pl.DataFrame({"item_id": ["Z"], "value": [7.0]}),
+                "policy_input": pl.DataFrame({"state": ["TX"], "limit": [500]}),
+                "items_input": pl.DataFrame({"row_number": [1], "item_id": ["Z"], "value": [7.0]}),
             }
         )
 
@@ -331,7 +331,9 @@ def test_score_holds_a_seeded_workbench_input_to_its_form(project: Path) -> None
 
     # The form drops a table a connection takes.
     workbench_project(project, [table for table in FORM_TABLES if table["name"] != "items"])
-    with pytest.raises(ExecutionError, match="is connected on 'items', which the workbench's"):
+    with pytest.raises(
+        ExecutionError, match="is connected on 'items_input', which the workbench's"
+    ):
         score()
 
     # A sidecar an earlier Haute wrote, its copies in it, is refused as a run refuses it.

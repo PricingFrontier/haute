@@ -22766,26 +22766,25 @@
     },
     "SchemaTable": {
       "additionalProperties": false,
+      "description": "A table of the schema: its inputs, which an underwriter types and the pricing engine\nis sent, and its outputs, which pricing fills, either or both. An equipment schedule's\nitems and each item's premium are one table, its outputs filled on the rows typed.",
       "properties": {
-        "columns": {
+        "inputs": {
           "items": {
             "$ref": "#/$defs/SchemaColumn"
           },
-          "title": "Columns",
+          "title": "Inputs",
           "type": "array"
         },
         "name": {
           "title": "Name",
           "type": "string"
         },
-        "role": {
-          "default": "input",
-          "enum": [
-            "input",
-            "output"
-          ],
-          "title": "Role",
-          "type": "string"
+        "outputs": {
+          "items": {
+            "$ref": "#/$defs/SchemaColumn"
+          },
+          "title": "Outputs",
+          "type": "array"
         },
         "rows": {
           "default": "one",
@@ -22799,9 +22798,9 @@
       },
       "required": [
         "name",
-        "role",
         "rows",
-        "columns"
+        "inputs",
+        "outputs"
       ],
       "title": "SchemaTable",
       "type": "object"
@@ -28464,7 +28463,7 @@
     },
     "WorkbenchTable": {
       "additionalProperties": false,
-      "description": "A table: a port of the node, one row per quote or many, and its columns.",
+      "description": "A side of a schema table: its inputs or its outputs, a port of the node, one row per\nquote or many, its columns, and, for a many-row input table, its key.",
       "properties": {
         "columns": {
           "items": {
@@ -28473,8 +28472,42 @@
           "title": "Columns",
           "type": "array"
         },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
         "name": {
           "title": "Name",
+          "type": "string"
+        },
+        "null_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Null Key"
+        },
+        "port": {
+          "title": "Port",
           "type": "string"
         },
         "rows": {
@@ -28484,12 +28517,24 @@
           ],
           "title": "Rows",
           "type": "string"
+        },
+        "side": {
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Side",
+          "type": "string"
         }
       },
       "required": [
         "name",
+        "side",
+        "port",
         "rows",
-        "columns"
+        "columns",
+        "key",
+        "null_key"
       ],
       "title": "WorkbenchTable",
       "type": "object"

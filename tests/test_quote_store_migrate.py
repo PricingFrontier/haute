@@ -45,7 +45,8 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
 
 
 def table(name: str, *columns: dict[str, Any], rows: str = "one") -> dict[str, Any]:
-    return {"name": name, "rows": rows, "columns": list(columns)}
+    """A schema table of inputs."""
+    return {"name": name, "rows": rows, "inputs": list(columns)}
 
 
 POLICY = table("policy", column("region"), column("value", "float"))
@@ -148,7 +149,9 @@ def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None
 
 
 def test_the_sql_from_none_makes_every_table_and_the_activity(url: str) -> None:
-    release = form(POLICY, table("vehicles", column("reg"), rows="many"))
+    release = form(
+        POLICY, table("vehicles", column("vehicle", "int", index=True), column("reg"), rows="many")
+    )
 
     written = script(None, release)
 
@@ -232,7 +235,9 @@ def test_a_refusal_naming_a_name_of_many_lines_stays_a_comment() -> None:
 
 
 def test_what_the_sql_cannot_make_is_a_note() -> None:
-    base = form(POLICY, table("vehicles", column("reg"), rows="many"))
+    base = form(
+        POLICY, table("vehicles", column("vehicle", "int", index=True), column("reg"), rows="many")
+    )
 
     # A table whose rows change is noted, never made again; a new column taking the name of
     # one the form removes, whatever its case, is not written, its refusal noted.
@@ -246,8 +251,8 @@ def test_what_the_sql_cannot_make_is_a_note() -> None:
         "-- Not written: the new column policy.Value takes the name of a column the form removes"
     )
     assert (
-        "-- vehicles changes from an input table of many rows per quote to an input table of "
-        in written
+        "-- vehicles changes from a table of many rows per quote to a table of one row per "
+        "quote,\n" in written
     )
     assert "CREATE TABLE vehicles" not in written
 

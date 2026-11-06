@@ -115,8 +115,8 @@ interface NewQuoteState {
 export function windowFields(form: FormSpec): ShownField[] {
   const table = form.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
   if (table === undefined) return []
-  const reference = table.columns.find((column) => column.name === REFERENCE_COLUMN)
-  const typed = table.columns.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.name))
+  const reference = table.inputs.find((column) => column.name === REFERENCE_COLUMN)
+  const typed = table.inputs.filter((column) => !QUOTE_DETAILS_MANAGED.has(column.name))
   const columns = [...(reference === undefined ? [] : [{ ...reference, required: true }]), ...typed]
   return columns.map((column) => ({ key: columnKey(table.name, column.name), found: { table, column } }))
 }

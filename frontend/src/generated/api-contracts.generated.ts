@@ -5456,12 +5456,17 @@ export interface WorkbenchTablesResponse {
   tables: WorkbenchTable[];
 }
 /**
- * A table: a port of the node, one row per quote or many, and its columns.
+ * A side of a schema table: its inputs or its outputs, a port of the node, one row per
+ * quote or many, its columns, and, for a many-row input table, its key.
  */
 export interface WorkbenchTable {
   columns: WorkbenchColumn[];
+  key: string | null;
   name: string;
+  null_key: string | number | null;
+  port: string;
   rows: 'one' | 'many';
+  side: 'input' | 'output';
 }
 /**
  * A column of a table: its name in the frame and its type.
@@ -5916,10 +5921,15 @@ export interface TableName {
 export interface FormSchema {
   tables: SchemaTable[];
 }
+/**
+ * A table of the schema: its inputs, which an underwriter types and the pricing engine
+ * is sent, and its outputs, which pricing fills, either or both. An equipment schedule's
+ * items and each item's premium are one table, its outputs filled on the rows typed.
+ */
 export interface SchemaTable {
-  columns: SchemaColumn[];
+  inputs: SchemaColumn[];
   name: string;
-  role: 'input' | 'output';
+  outputs: SchemaColumn[];
   rows: 'one' | 'many';
 }
 export interface SchemaColumn {

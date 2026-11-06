@@ -1,8 +1,8 @@
 /**
  * A form for the sheet tests (specs/workbench): policy details (one row) shown by a
- * Collection, equipment (many rows, keyed by item) shown by a Table, and premiums (many
- * rows, keyed by item, an output), in the one section of one sheet, with a second sheet
- * whose one section is empty.
+ * Collection, equipment (many rows of inputs, keyed by its index, row_number) shown by a
+ * Table, and premiums (many rows of outputs alone, keyed by row_number like it), in the one
+ * section of one sheet, with a second sheet whose one section is empty.
  */
 import { vi } from "vitest"
 import type { ChartWidget, FieldRef, FormSpec, HeadingWidget, Page, SchemaColumn, SchemaTable, Section, ShowWhen } from "../../api/types"
@@ -84,19 +84,22 @@ export const column = (name: string, overrides: Partial<SchemaColumn> = {}): Sch
   ...overrides,
 })
 
-/** A one-row input table known by `name` in the form (READ-23), holding no columns unless `overrides` says otherwise. */
+/** A one-row table known by `name` in the form (READ-23), holding no inputs or outputs unless `overrides` says otherwise. */
 export const table = (name: string, overrides: Partial<SchemaTable> = {}): SchemaTable => ({
   name,
-  role: "input",
   rows: "one",
-  columns: [],
+  inputs: [],
+  outputs: [],
   ...overrides,
 })
+
+/** A many-row input table's index, `row_number` unless named otherwise: each row's number, from 1. */
+export const indexColumn = (name = "row_number"): SchemaColumn => column(name, { type: "int", index: true })
 
 /** Haute's quote_details table, as every form holds it, its columns labelled by name in `labels`. */
 export const detailsTable = (labels: Record<string, string> = {}): SchemaTable =>
   table(QUOTE_DETAILS_NAME, {
-    columns: QUOTE_DETAILS_COLUMNS.map(([name, type]) => column(name, { type, label: labels[name] ?? "" })),
+    inputs: QUOTE_DETAILS_COLUMNS.map(([name, type]) => column(name, { type, label: labels[name] ?? "" })),
   })
 
 export const sheetForm = (): FormSpec => ({
@@ -105,15 +108,14 @@ export const sheetForm = (): FormSpec => ({
   theme: { ...BLANK_THEME },
   schema: {
     tables: [
-      table("policy", { columns: [column("state", { options: ["CA", "NY"], required: true }), column("year", { type: "int" })] }),
+      table("policy", { inputs: [column("state", { options: ["CA", "NY"], required: true }), column("year", { type: "int" })] }),
       table("equipment", {
         rows: "many",
-        columns: [column("item", { key: true }), column("value", { type: "float" })],
+        inputs: [indexColumn(), column("item"), column("value", { type: "float" })],
       }),
       table("premiums", {
-        role: "output",
         rows: "many",
-        columns: [column("item", { key: true }), column("premium", { type: "float" })],
+        outputs: [column("row_number", { type: "int", key: true }), column("premium", { type: "float" })],
       }),
     ],
   },
@@ -150,8 +152,9 @@ export const hiddenPerilsForm = (): FormSpec => {
   form.schema.tables.push(
     table("coverage", {
       rows: "many",
-      columns: [
-        column("peril", { key: true, options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
+      inputs: [
+        indexColumn(),
+        column("peril", { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, row_per_value: true }),
         column("limit", { type: "float" }),
       ],
     }),
@@ -214,7 +217,7 @@ export const headingWidget = (id: string, text: string, overrides: Partial<Headi
  */
 export const coverForm = (): FormSpec => {
   const form = sheetForm()
-  form.schema.tables[0].columns.push(column("cover", { type: "bool" }))
+  form.schema.tables[0].inputs.push(column("cover", { type: "bool" }))
   fieldsWidget(form, "w_boxes").fields.push({ table: "policy", column: "cover" })
   form.pages[1] = sheet(
     "p2",

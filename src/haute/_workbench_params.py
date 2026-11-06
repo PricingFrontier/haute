@@ -181,9 +181,9 @@ def with_param_options(spec: FormSpec, project_root: Path) -> FormSpec:
     tables = []
     for table in spec.data_schema.tables:
         columns = []
-        for column in table.columns:
+        for column in table.inputs:
             source = column.options_source
-            if table.role == "input" and source is not None:
+            if source is not None:
                 try:
                     values = read_param_file(project_root, source.file, source.column).values
                 except ParamFileError as exc:
@@ -194,7 +194,7 @@ def with_param_options(spec: FormSpec, project_root: Path) -> FormSpec:
                     ) from exc
                 column = column.model_copy(update={"options": values})
             columns.append(column)
-        tables.append(table.model_copy(update={"columns": columns}))
+        tables.append(table.model_copy(update={"inputs": columns}))
     return spec.model_copy(
         update={"data_schema": spec.data_schema.model_copy(update={"tables": tables})}
     )
@@ -221,14 +221,12 @@ def _fits(value: str, kind: str) -> bool:
 
 
 def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> None:
-    """Give each input column whose allowed values come from a params file those values, as
+    """Give each input whose allowed values come from a params file those values, as
     *read* finds them at the revision the form is read at (READ-25): a schema file writes only
     the column's ``options_source``. A file or column that cannot give them, or a value the
     column's type does not hold, is refused, naming the file and the column."""
     for table in tables:
-        if table.get("role", "input") != "input":
-            continue
-        for column in table.get("columns", []):
+        for column in table.get("inputs", []):
             source = column.get("options_source")
             if not isinstance(source, dict):
                 continue

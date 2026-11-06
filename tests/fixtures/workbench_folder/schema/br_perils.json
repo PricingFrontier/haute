@@ -1,8 +1,8 @@
 {
-  "role": "input",
   "rows": "many",
-  "columns": [
-    {"name": "peril", "type": "str", "key": true, "options": ["Fire", "Flood"], "row_per_value": true},
+  "inputs": [
+    {"name": "row_number", "type": "int", "index": true},
+    {"name": "peril", "type": "str", "options": ["Fire", "Flood"], "row_per_value": true},
     {"name": "rate", "type": "float"}
   ]
 }

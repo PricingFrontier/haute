@@ -54,7 +54,7 @@ const options = (select: HTMLElement) => within(select).getAllByRole("option").m
 describe("ShowWhenEditor", () => {
   beforeEach(() => {
     const form = coverForm()
-    form.schema.tables[0].columns.push(column("name"), column("start", { type: "date" }))
+    form.schema.tables[0].inputs.push(column("name"), column("start", { type: "date" }))
     loadForm(form)
   })
   afterEach(cleanup)
@@ -73,7 +73,7 @@ describe("ShowWhenEditor", () => {
 
   it("never tests the quote's reference or option, leading a table: a new condition takes the column after them", () => {
     const form = currentForm()
-    form.schema.tables[0].columns.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
+    form.schema.tables[0].inputs.unshift(column("quote_reference"), column("quote_option", { type: "int" }))
     loadForm(form)
     render(<Editor />)
 
@@ -185,7 +185,7 @@ describe("ShowWhenEditor", () => {
 
   it("tests a column against another field of its type, a Date's with days added, and goes back to a value", () => {
     const form = coverForm()
-    form.schema.tables[0].columns.push(column("name"), column("start", { type: "date" }), column("end", { type: "date" }))
+    form.schema.tables[0].inputs.push(column("name"), column("start", { type: "date" }), column("end", { type: "date" }))
     loadForm(form)
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
@@ -228,7 +228,7 @@ describe("ShowWhenEditor", () => {
 
   it("tests a row's column against another column of the same row", () => {
     const form = coverForm()
-    form.schema.tables.find((each) => each.name === "equipment")?.columns.push(column("limit", { type: "float" }))
+    form.schema.tables.find((each) => each.name === "equipment")?.inputs.push(column("limit", { type: "float" }))
     loadForm(form)
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
@@ -258,8 +258,8 @@ describe("ShowWhenEditor", () => {
     expect(within(columns).getByRole("option", { name: "Rows of premiums" })).toBeInTheDocument()
 
     fireEvent.change(columns, { target: { value: "premiums#rows" } })
-    const item = { column: "item", op: "equals", values: [], field: null, days: 0 }
-    expect(widgetsOf(currentForm())[at].show_when.conditions[0]).toEqual({ table: "premiums", rows: "any", where: [item] })
+    const key = { column: "row_number", op: "equals", values: [], field: null, days: 0 }
+    expect(widgetsOf(currentForm())[at].show_when.conditions[0]).toEqual({ table: "premiums", rows: "any", where: [key] })
     // Tested on the price, it takes a value typed, never another field.
     expect(screen.queryByRole("combobox", { name: "Condition 1 where 1 against" })).not.toBeInTheDocument()
     view.unmount()
@@ -268,9 +268,66 @@ describe("ShowWhenEditor", () => {
     render(<Editor />)
     fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
     expect(within(screen.getByRole("combobox", { name: "Condition 1 column" })).queryByRole("option", { name: "Rows of premiums" })).not.toBeInTheDocument()
-    const crane = { ...item, op: "equals" as const, values: ["Crane"] }
-    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [{ table: "premiums", rows: "any", where: [crane] }] } })))
+    const first = { ...key, op: "equals" as const, values: ["1"] }
+    act(() => useWorkbenchFormStore.getState().change((spec) => updateWidget(spec, "w_boxes", { show_when: { match: "all", conditions: [{ table: "premiums", rows: "any", where: [first] }] } })))
     expect(within(condition(1)).getByText("Tests the rows of premiums, a part of the price, which hides only what takes nothing typed: here it is never applied")).toBeInTheDocument()
+  })
+
+  it("offers a table's inputs, and its outputs only where the price is tested, a test of a row then from the block its other tests name", () => {
+    // Equipment's items and each item's premium are one table; the policy has a referral flag pricing fills.
+    const form = coverForm()
+    const [policy, equipment] = form.schema.tables
+    policy.outputs.push(column("referral", { type: "bool" }))
+    equipment.outputs.push(column("premium", { type: "float" }))
+    addTo(form, headingWidget("w_note", "Refer"))
+    loadForm(form)
+
+    // The policy's boxes take values typed: inputs alone.
+    const typed = render(<Editor />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 column" }))).not.toContain("Referral")
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 column" }), { target: { value: "equipment#rows" } })
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 where 1 column" }))).toEqual(["Item", "Value"])
+    typed.unmount()
+
+    // A Heading takes nothing typed: the outputs too, tested on the price.
+    const at = widgetsOf(form).length - 1
+    render(<EditorOf at={at} />)
+    fireEvent.click(screen.getByRole("button", { name: "Add condition" }))
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 column" }))).toContain("Referral")
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition 1 column" }), { target: { value: "equipment#rows" } })
+    const where1 = () => screen.getByRole("combobox", { name: "Condition 1 where 1 column" })
+    expect(options(where1())).toEqual(["Item", "Value", "Premium"])
+    fireEvent.change(where1(), { target: { value: "premium" } })
+    // A second test of the row is of the first's block, and the first is then held to it.
+    fireEvent.click(screen.getByRole("button", { name: "Add test to condition 1" }))
+    const conditions = () => widgetsOf(currentForm())[at].show_when.conditions
+    expect(conditions()[0]).toMatchObject({ table: "equipment", where: [{ column: "premium" }, { column: "premium" }] })
+    expect(options(screen.getByRole("combobox", { name: "Condition 1 where 2 column" }))).toEqual(["Premium"])
+    expect(options(where1())).toEqual(["Premium"])
+  })
+
+  it("names a condition on rows that tests both a table's inputs and its outputs, which never holds", () => {
+    const form = coverForm()
+    form.schema.tables[1].outputs.push(column("premium", { type: "float" }))
+    addTo(form, headingWidget("w_note", "Refer"))
+    const at = widgetsOf(form).length - 1
+    widgetsOf(form)[at].show_when = {
+      match: "all",
+      conditions: [
+        {
+          table: "equipment",
+          rows: "any",
+          where: [
+            { column: "item", op: "filled", values: [], field: null, days: 0 },
+            { column: "premium", op: "filled", values: [], field: null, days: 0 },
+          ],
+        },
+      ],
+    }
+    loadForm(form)
+    render(<EditorOf at={at} />)
+    expect(within(condition(1)).getByText("Tests both inputs and outputs of equipment: a condition on its rows tests one or the other")).toBeInTheDocument()
   })
 
   it("removes a condition, and with two or more asks whether all or any must hold", () => {
@@ -459,7 +516,7 @@ describe("ShowWhenEditor", () => {
 
   it("adds nothing while no input table has a column to test, saying why", () => {
     const form = currentForm()
-    form.schema.tables = [table("equipment", { rows: "many", columns: [column("row", { type: "int", index: true })] })]
+    form.schema.tables = [table("equipment", { rows: "many", outputs: [column("premium", { type: "float" })] })]
     loadForm(form)
     render(<Editor />)
 

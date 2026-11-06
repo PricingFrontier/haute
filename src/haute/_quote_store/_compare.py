@@ -47,7 +47,7 @@ from haute._quote_store._store import (
     reaching,
 )
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
-from haute._workbench_tables import QUOTE_ROW
+from haute._workbench_tables import TABLE_INDEX
 
 #: Each catalogue kind a form's column type is held as.
 _FORM_TYPES: Mapping[str, str] = {
@@ -294,9 +294,7 @@ def compare(
             continue
         key = f"{_THE_DATABASE_S}{found.name}"
         matcher.extras.append(Extra(found.name, None, None, found.quotes))
-        matcher.tables.append(
-            {"key": key, "name": found.name, "role": "", "rows": "one", "columns": []}
-        )
+        matcher.tables.append({"key": key, "name": found.name, "rows": "one", "columns": []})
         matcher.count((key, None), found.quotes)
     activity = catalogue.table(ACTIVITY_TABLE)
     if activity is None:
@@ -367,8 +365,8 @@ def _match_table(
         matched[column["key"]] = (found_column, held_as)
         claimed.add(held_as)
         taken.append(pairing)
-    # The store's own columns, quote_row among them whatever the table's rows, are no extras.
-    own = ({column.name for column in expected.columns} - form_columns) | {QUOTE_ROW}
+    # The store's own columns, table_index among them whatever the table's rows, are no extras.
+    own = ({column.name for column in expected.columns} - form_columns) | {TABLE_INDEX}
     uncounted = not set(IDENTITY) <= {column.name for column in found.columns}
     live: list[dict[str, Any]] = []
     for column in table["columns"]:
@@ -400,7 +398,7 @@ def _match_table(
             f"{found.name}.{found_column.name}",
             quotes=quotes,
         )
-    many = found.column(QUOTE_ROW) is not None
+    many = found.column(TABLE_INDEX) is not None
     rows_differ = many != (table["rows"] == "many")
     for found_column in found.columns:
         if found_column.name in claimed or found_column.name in own:
@@ -412,7 +410,7 @@ def _match_table(
         live.append(_live_column(found_column, key))
         matcher.count((table["key"], key), UNCOUNTED if uncounted else found_column.quotes)
     matcher.own_columns(
-        table["key"], expected, found, form_columns | ({QUOTE_ROW} if rows_differ else set())
+        table["key"], expected, found, form_columns | ({TABLE_INDEX} if rows_differ else set())
     )
     matcher.not_null_extras(table["key"], found, claimed | own)
     for kind, said in table_problems(expected, found, refers=table["key"] != QUOTE_DETAILS_NAME):
@@ -422,7 +420,6 @@ def _match_table(
         {
             "key": table["key"],
             "name": found.name,
-            "role": table["role"],
             "rows": "many" if many else "one",
             "columns": live,
         }

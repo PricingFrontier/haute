@@ -4,8 +4,8 @@ Each table of the form's schema is a SQL table of the same name: ``quote_details
 input table and every output table, its columns the schema's under their names and in their
 types. Every column of the project's own is nullable, so a draft saves with any of them
 empty. Each row holds the quote's identity, ``quote_reference`` and ``quote_option``, and a
-row of a many-row table holds ``quote_row`` too, the store's number for it. The identity,
-with ``quote_row`` in a many-row table, is each table's primary key, and each table's
+row of a many-row table holds ``table_index`` too, the store's number for it. The identity,
+with ``table_index`` in a many-row table, is each table's primary key, and each table's
 identity refers to its quote's ``quote_details`` row. Beside the form's tables the store
 keeps ``haute_activity``, a row for each thing done to a quote; a database records nothing of
 its tables' shape. ``quote_details`` holds the store's own columns besides the form's
@@ -50,7 +50,7 @@ from haute._workbench_form import (
     FormSpec,
     SchemaTable,
 )
-from haute._workbench_tables import QUOTE_ROW
+from haute._workbench_tables import TABLE_INDEX
 
 #: Haute's own table: what was done to each quote.
 ACTIVITY_TABLE = "haute_activity"
@@ -218,13 +218,11 @@ class StoreSchema:
                 return stored
         raise KeyError(name)
 
-    def of_role(self, role: str) -> tuple[StoredTable, ...]:
-        return tuple(stored for stored in self.tables if stored.form.role == role)
-
 
 def structure(form: FormSpec) -> dict[str, Any]:
-    """What of *form* decides the store's tables: each table's name, role and rows, and each
-    column's name, type and whether it is the index, as the SQL Haute writes plans from it,
+    """What of *form* decides the store's tables: each table's name and rows, and each
+    column's name, type and whether it is the index, whatever its block, as the SQL Haute
+    writes plans from it,
     each table and column under the ``key`` it is planned by, its name in the form (READ-23).
     Labels, rules and the sheets decide nothing there."""
     return {
@@ -232,7 +230,6 @@ def structure(form: FormSpec) -> dict[str, Any]:
             {
                 "key": table.name,
                 "name": table.name,
-                "role": table.role,
                 "rows": table.rows,
                 "columns": [
                     {
@@ -258,13 +255,13 @@ def _kind(sql_type: TypeEngine[Any]) -> StoreColumnKind:
 def store_columns(form: FormSpec) -> dict[str, list[tuple[str, StoreColumnKind]]]:
     """The columns the store keeps in each of *form*'s tables that the form does not, by
     table name, each by its name and what it holds: ``quote_details``' own
-    (:data:`STORE_COLUMNS`), and a many-row table's ``quote_row``."""
+    (:data:`STORE_COLUMNS`), and a many-row table's ``table_index``."""
     kept: dict[str, list[tuple[str, StoreColumnKind]]] = {}
     for table in form.data_schema.tables:
         if table.name == QUOTE_DETAILS_NAME:
             kept[table.name] = [(name, _kind(made())) for name, made, _ in STORE_COLUMNS]
         elif table.rows == "many":
-            kept[table.name] = [(QUOTE_ROW, "int")]
+            kept[table.name] = [(TABLE_INDEX, "int")]
     return kept
 
 
@@ -296,12 +293,13 @@ def with_kept_columns(
 
     A column leaves the form but the SQL Haute writes keeps it, so a saved quote's values stay
     in it. A save deletes a quote's rows and writes them again, so its rows carry those values
-    back. ``quote_details`` is updated in place, and the output tables are written afresh by
-    each pricing, so neither carries any; nor does a column of a kind Haute never writes.
+    back, a former output's of an input table among them. ``quote_details`` is updated in
+    place, and a table of outputs alone is written afresh by each pricing, so neither carries
+    any; nor does a column of a kind Haute never writes.
     """
     kept: dict[str, tuple[tuple[str, str], ...]] = {}
     for stored in schema.tables:
-        if stored.form.role != "input" or stored.form.name == QUOTE_DETAILS_NAME:
+        if not stored.form.has_inputs or stored.form.name == QUOTE_DETAILS_NAME:
             continue
         carried = tuple(
             (name, kind)
@@ -334,8 +332,8 @@ def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:
             Column(name, kind(), nullable=nullable) for name, kind, nullable in STORE_COLUMNS
         )
     elif table.rows == "many":
-        columns.append(Column(QUOTE_ROW, BigInteger, nullable=False))
-        keys.append(QUOTE_ROW)
+        columns.append(Column(TABLE_INDEX, BigInteger, nullable=False))
+        keys.append(TABLE_INDEX)
     constraints: list[Any] = [PrimaryKeyConstraint(*keys, name=_named("pk", table.name))]
     if details:
         constraints.extend(

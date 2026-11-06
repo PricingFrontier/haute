@@ -590,15 +590,15 @@ def _workbench_output_trace_target(
     """
     config = graph.node_map[target_node_id].data.config
     tables = workbench_output_tables(config)
-    names = ", ".join(repr(table.name) for table in tables)
+    names = ", ".join(repr(table.port) for table in tables)
     if port_label is None:
         if len(tables) > 1:
             raise TraceTargetUnsupportedError(
                 f"Target node {target_node_id!r} is a Workbench Output: name the table the "
                 f"row is from, one of {names}."
             )
-        port_label = tables[0].name
-    table = next((table for table in tables if table.name == port_label), None)
+        port_label = tables[0].port
+    table = next((table for table in tables if table.port == port_label), None)
     if table is None:
         raise TraceTargetUnsupportedError(
             f"Target node {target_node_id!r} is a Workbench Output with no {port_label!r} "

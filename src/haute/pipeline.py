@@ -45,7 +45,7 @@ from haute._standalone_nodes import (
     is_configured,
     live_switch_routes,
     run_configured_node,
-    seeded_workbench_input_ports,
+    seeded_workbench_input_tables,
 )
 from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
@@ -57,7 +57,9 @@ from haute._types import (
     SubmodelInputPort,
     SubmodelOutputPort,
 )
-from haute._workbench_output import as_response, quote_identity
+from haute._workbench_input import check_request_keys
+from haute._workbench_output import as_response
+from haute._workbench_tables import WorkbenchTable
 from haute.errors import ConfigError, ExecutionError
 from haute.graph_utils import topo_sort_ids
 
@@ -1019,19 +1021,20 @@ class Pipeline(NodeRegistry):
 
                 response = as_response(
                     outputs[self._resolve_output_node(order).name],
-                    quote_identity(self._workbench_quote(order, outputs)),
+                    self._workbench_quote(order, outputs),
                 )
                 return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)
 
-    def _check_seeded_workbench_input(self, node: Node) -> None:
+    def _check_seeded_workbench_input(self, node: Node) -> tuple[WorkbenchTable, ...]:
         """Hold a Workbench Input :meth:`score` seeds with frames to its form, as a run holds
         it: its sidecar read, what it may not hold refused, the project's form read, and each
-        table a connection takes from it one the form has (specs/workbench)."""
-        tables = seeded_workbench_input_ports(
+        port a connection takes from it one the form has (specs/workbench). Its tables."""
+        seeded = seeded_workbench_input_tables(
             name=node.name, config=node.config, fn=node.fn, pipeline_dir=node.pipeline_dir
         )
+        tables = [table.port for table in seeded]
         taken = dict.fromkeys(
             edge.source_port
             for edge in self._edges
@@ -1044,8 +1047,9 @@ class Pipeline(NodeRegistry):
                 f"{', '.join(repr(port) for port in gone)}, which the workbench's form does "
                 "not have.",
                 node=node.name,
-                tables=list(tables),
+                tables=tables,
             )
+        return seeded
 
     def score(self, df: pl.DataFrame | dict[str, pl.DataFrame]) -> pl.DataFrame:
         """Run the pipeline on an input DataFrame, seeding the live input.
@@ -1100,9 +1104,12 @@ class Pipeline(NodeRegistry):
 
                 seed_nodes = deploy_inputs or sources
                 seed_names = {n.name for n in seed_nodes}
-                for n in seed_nodes:
-                    if _is_workbench_input(n.node_type):
-                        self._check_seeded_workbench_input(n)
+                seeded_tables = [
+                    table
+                    for n in seed_nodes
+                    if _is_workbench_input(n.node_type)
+                    for table in self._check_seeded_workbench_input(n)
+                ]
                 connected_ports = list(
                     dict.fromkeys(
                         edge.source_port
@@ -1140,6 +1147,11 @@ class Pipeline(NodeRegistry):
                             connected_ports=connected_ports,
                         )
                     seed_value = df
+                given = df if isinstance(df, dict) else dict.fromkeys(connected_ports[:1], df)
+                # A keyed table's rows each hold their own key before anything runs on them.
+                for table in seeded_tables:
+                    if isinstance(given.get(table.port), pl.DataFrame | pl.LazyFrame):
+                        check_request_keys(table, given[table.port])
                 for n in sources:
                     if n.name in seed_names:
                         outputs[n.name] = seed_value
@@ -1152,13 +1164,9 @@ class Pipeline(NodeRegistry):
                         continue
                     self._execute_transform(n, outputs, constants, inactive)
 
-                # The quote's identity is the quote_details frame given, by its port when one
-                # bare frame seeds the one port connected.
-                given = df if isinstance(df, dict) else dict.fromkeys(connected_ports[:1], df)
-                response = as_response(
-                    outputs[self._resolve_output_node(order).name],
-                    quote_identity(given),
-                )
+                # The quote is the frames given, by port, a bare frame under the one port
+                # connected: its identity and its keyed tables' rows the response holds to.
+                response = as_response(outputs[self._resolve_output_node(order).name], given)
                 return _collect_standalone_output(response)
         finally:
             _scenario_ctx.reset(_token)

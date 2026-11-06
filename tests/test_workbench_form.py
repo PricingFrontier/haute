@@ -32,6 +32,7 @@ from haute._workbench_form import (
     FormSpec,
     HeadingWidget,
     SchemaColumn,
+    SchemaTable,
     blank_form,
     form_revision,
     holds_identity,
@@ -96,9 +97,8 @@ FORM: dict[str, Any] = {
         "tables": [
             {
                 "name": "policy_details",
-                "role": "input",
                 "rows": "one",
-                "columns": [
+                "inputs": [
                     *IDENTITY,
                     column(
                         "state",
@@ -118,23 +118,24 @@ FORM: dict[str, Any] = {
                         decimal_places=0,
                     ),
                 ],
+                "outputs": [],
             },
             {
                 "name": "layers",
-                "role": "input",
                 "rows": "many",
-                "columns": [
+                "inputs": [
                     *IDENTITY,
-                    column("layer", "int", key=True, index=True),
+                    column("layer", "int", index=True),
                     column("limit", "float"),
                     column("layer_name"),
                 ],
+                "outputs": [],
             },
             {
                 "name": "pricing_output",
-                "role": "output",
                 "rows": "one",
-                "columns": [*IDENTITY, column("premium", "float")],
+                "inputs": [],
+                "outputs": [*IDENTITY, column("premium", "float")],
             },
         ]
     },
@@ -592,11 +593,11 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
     del sparse["sample"]
     del sparse["theme"]
     for table in sparse["schema"]["tables"]:
-        for col in table["columns"]:
+        for col in [*table["inputs"], *table["outputs"]]:
             del col["index"]
             for field in display:
                 del col[field]
-    sparse["schema"]["tables"][1]["columns"][2]["index"] = True
+    sparse["schema"]["tables"][1]["inputs"][2]["index"] = True
     for field in options:
         del widgets(sparse)[1][field]
     for field in collection_options:
@@ -621,9 +622,11 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
     ]
     written = json.loads(render_form(spec))
     assert written["sample"] == {}
-    assert all("index" in c for t in written["schema"]["tables"] for c in t["columns"])
-    assert written["schema"]["tables"][1]["columns"][3] == column("exposure", "float", min=0.0)
-    assert written["schema"]["tables"][1]["columns"][2]["default_value"] == ""
+    assert all(
+        "index" in c for t in written["schema"]["tables"] for c in [*t["inputs"], *t["outputs"]]
+    )
+    assert written["schema"]["tables"][1]["inputs"][3] == column("exposure", "float", min=0.0)
+    assert written["schema"]["tables"][1]["inputs"][2]["default_value"] == ""
     grid = widgets(written)[1]
     assert {field: grid[field] for field in options} == {
         "row_numbers": True,
@@ -856,21 +859,21 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
         (lambda f: widgets(f)[1].update(description="By layer"), "description"),
         (lambda f: widgets(f)[2].update(size="large"), "size"),
         (lambda f: widgets(f)[2].update(align="center"), "align"),
-        (lambda f: f["schema"]["tables"][0]["columns"][0].update(type="money"), "type"),
+        (lambda f: f["schema"]["tables"][0]["inputs"][0].update(type="money"), "type"),
         (
-            lambda f: f["schema"]["tables"][0]["columns"][1].update(default_value=250000),
+            lambda f: f["schema"]["tables"][0]["inputs"][1].update(default_value=250000),
             "default_value",
         ),
         (
-            lambda f: f["schema"]["tables"][0]["columns"][1].update(default_value=None),
+            lambda f: f["schema"]["tables"][0]["inputs"][1].update(default_value=None),
             "default_value",
         ),
         (
-            lambda f: f["schema"]["tables"][0]["columns"][1].update(number_format="yen"),
+            lambda f: f["schema"]["tables"][0]["inputs"][1].update(number_format="yen"),
             "number_format",
         ),
         (
-            lambda f: f["schema"]["tables"][0]["columns"][1].update(decimal_places=11),
+            lambda f: f["schema"]["tables"][0]["inputs"][1].update(decimal_places=11),
             "decimal_places",
         ),
         (lambda f: f.update(pages=[]), "pages"),
@@ -1162,16 +1165,16 @@ def _with_details_table(change: Any = None) -> dict[str, Any]:
 
 def test_a_form_holding_hautes_quote_details_reads_and_writes_as_it_is() -> None:
     held = _with_details_table(
-        lambda table: table["columns"][2].update(label="Quote", help="As the broker calls it")
+        lambda table: table["inputs"][2].update(label="Quote", help="As the broker calls it")
     )
     # Its broker's allowed values read from a params file, as any column it types can.
-    held["schema"]["tables"][0]["columns"][4].update(
+    held["schema"]["tables"][0]["inputs"][4].update(
         options=["Marsh", "Aon"],
         options_source={"file": "brokers.csv", "column": "name"},
         default_value="Marsh",
     )
-    held["schema"]["tables"][0]["columns"][0]["group"] = "Quote"
-    held["schema"]["tables"][0]["columns"][10]["default_value"] = False
+    held["schema"]["tables"][0]["inputs"][0]["group"] = "Quote"
+    held["schema"]["tables"][0]["inputs"][10]["default_value"] = False
 
     spec = read_document(held)
 
@@ -1207,7 +1210,7 @@ def _earlier(count: int) -> dict[str, Any]:
     columns = [{"name": name, "type": kind} for name, kind in EARLIER_DETAILS[:count]]
     columns[2]["label"] = "Insured name"
     columns[7].update(options=["GBP", "USD"], default_value="GBP")
-    return _with_details_table(lambda table: table.update(columns=columns))
+    return _with_details_table(lambda table: table.update(inputs=columns))
 
 
 @pytest.mark.parametrize("count", [11, 12, 13], ids=["before-is-renewal", "before-option", "wb30"])
@@ -1224,16 +1227,19 @@ def test_a_form_saved_by_an_earlier_haute_takes_todays_quote_details_by_name(cou
     assert [(c.name, c.type) for c in details.columns] == list(QUOTE_DETAILS_COLUMNS)
     assert details.columns[3].label == "Insured name"
     assert details.columns[15] == SchemaColumn(name="haute_version", type="str")
-    written = json.loads(render_form(spec))["schema"]["tables"][0]["columns"]
+    written = json.loads(render_form(spec))["schema"]["tables"][0]["inputs"]
     assert not {"valid_until", "currency"} & {column["name"] for column in written}
     # The data it was read from is left as it was.
     assert json.dumps(held) == as_saved
 
 
 def _without_identity() -> dict[str, Any]:
+    """The form as an earlier Haute wrote it: no table led by the quote's identity."""
     form = _with_details_table()
     for table in form["schema"]["tables"][1:]:
-        table["columns"] = table["columns"][2:]
+        for block in ("inputs", "outputs"):
+            if [c["name"] for c in table[block][:2]] == ["quote_reference", "quote_option"]:
+                table[block] = table[block][2:]
     return form
 
 
@@ -1266,10 +1272,22 @@ def test_every_table_but_quote_details_takes_the_quote_identity_at_its_head() ->
             ["quote_reference", "quote_option"],
         ),
         (lambda columns: columns[1].update(required=True), ["quote_reference", "quote_option"]),
-        (lambda columns: columns[0].update(key=True), ["quote_reference", "quote_option"]),
+        (
+            lambda columns: columns[0].update(placeholder="Q-"),
+            ["quote_reference", "quote_option"],
+        ),
         (lambda columns: columns.pop(1), ["quote_reference"]),
     ],
-    ids=["renamed", "retyped", "moved", "labelled", "given-help", "required", "keyed", "removed"],
+    ids=[
+        "renamed",
+        "retyped",
+        "moved",
+        "labelled",
+        "given-help",
+        "required",
+        "given-a-placeholder",
+        "removed",
+    ],
 )
 def test_a_quote_identity_changed_is_the_table_s_own_and_named_a_clash(
     change: Any, clashing: list[str]
@@ -1279,13 +1297,13 @@ def test_a_quote_identity_changed_is_the_table_s_own_and_named_a_clash(
     # columns of either name its own, kept as they are, which building the app and deploying
     # refuse until they are renamed.
     form = json.loads(json.dumps(FORM))
-    change(form["schema"]["tables"][1]["columns"])
+    change(form["schema"]["tables"][1]["inputs"])
 
     spec = FormSpec.model_validate(form)
 
     layers = spec.data_schema.tables[1]
     assert [c.name for c in layers.columns] == [
-        c["name"] for c in form["schema"]["tables"][1]["columns"]
+        c["name"] for c in form["schema"]["tables"][1]["inputs"]
     ]
     assert not holds_identity(layers)
     assert identity_clashes(spec) == [
@@ -1302,9 +1320,9 @@ def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_i
     policy = held["schema"]["tables"][1]
     # Its own quote_reference first, Text, as the identity's would be, and a quote_option
     # further on; a column of its own named reference or option is no clash.
-    policy["columns"].insert(0, column("quote_reference"))
-    policy["columns"].append(column("quote_option", "float"))
-    policy["columns"].append(column("option"))
+    policy["inputs"].insert(0, column("quote_reference"))
+    policy["inputs"].append(column("quote_option", "float"))
+    policy["inputs"].append(column("option"))
 
     spec = FormSpec.model_validate(held)
 
@@ -1325,8 +1343,8 @@ def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_i
     ]
     # Renamed, the table takes the identity at its head when the form is next read or
     # saved, its own columns after it under their new names.
-    policy["columns"][0]["name"] = "broker_reference"
-    policy["columns"][-2]["name"] = "option_load"
+    policy["inputs"][0]["name"] = "broker_reference"
+    policy["inputs"][-2]["name"] = "option_load"
     renamed = FormSpec.model_validate(held)
     assert [c.name for c in renamed.data_schema.tables[1].columns] == [
         "quote_reference",
@@ -1341,14 +1359,217 @@ def test_a_table_with_its_own_quote_reference_or_option_keeps_it_and_the_clash_i
     assert identity_clashes(renamed) == []
 
 
+def _one_table_form(table: dict[str, Any]) -> dict[str, Any]:
+    """A form of one blank sheet whose schema holds *table*, named t."""
+    return {
+        "name": "x",
+        "schema": {"tables": [{"name": "t", **table}]},
+        "pages": [
+            {
+                "title": "Sheet 1",
+                "width": 1280,
+                "sections": [{"title": "Section 1", "height": 560, "widgets": []}],
+            }
+        ],
+    }
+
+
+def _blocks(table: SchemaTable) -> tuple[list[str], list[str]]:
+    return [c.name for c in table.inputs], [c.name for c in table.outputs]
+
+
+@pytest.mark.parametrize(
+    ("table", "blocks"),
+    [
+        pytest.param(
+            {"inputs": [column("state")], "outputs": [column("premium", "float")]},
+            (["quote_reference", "quote_option", "state"], ["premium"]),
+            id="a table of both blocks: its inputs",
+        ),
+        pytest.param(
+            {"outputs": [column("premium", "float")]},
+            ([], ["quote_reference", "quote_option", "premium"]),
+            id="a table of outputs alone: its outputs",
+        ),
+        pytest.param(
+            {"inputs": [column("state")]},
+            (["quote_reference", "quote_option", "state"], []),
+            id="a table of inputs alone: its inputs",
+        ),
+        pytest.param(
+            {},
+            (["quote_reference", "quote_option"], []),
+            id="a table of neither: its inputs",
+        ),
+        # An edit gave a table of outputs alone its first input: the identity moves from the
+        # head of its outputs to the head of its inputs.
+        pytest.param(
+            {"inputs": [column("state")], "outputs": [*IDENTITY, column("premium", "float")]},
+            (["quote_reference", "quote_option", "state"], ["premium"]),
+            id="moved to the inputs as a table gains its first input",
+        ),
+        # An edit took a table's last input: the identity moves to the head of its outputs.
+        pytest.param(
+            {"inputs": [*IDENTITY], "outputs": [column("premium", "float")]},
+            ([], ["quote_reference", "quote_option", "premium"]),
+            id="moved to the outputs as a table loses its last input",
+        ),
+        # Held at both heads, as a merge of the two edits can leave it: given once.
+        pytest.param(
+            {"inputs": [*IDENTITY, column("state")], "outputs": [*IDENTITY, column("premium")]},
+            (["quote_reference", "quote_option", "state"], ["premium"]),
+            id="at both heads given once",
+        ),
+    ],
+)
+def test_the_quote_identity_heads_a_tables_first_block(
+    table: dict[str, Any], blocks: tuple[list[str], list[str]]
+) -> None:
+    data = _one_table_form(table)
+    as_given = json.dumps(data)
+
+    spec = FormSpec.model_validate(data)
+
+    (held,) = spec.data_schema.tables
+    assert _blocks(held) == blocks
+    assert holds_identity(held)
+    assert held.own_inputs + held.own_outputs == [
+        c for c in held.columns if c.name not in ("quote_reference", "quote_option")
+    ]
+    # The data it was read from is left as it was, and what is read reads the same again.
+    assert json.dumps(data) == as_given
+    assert FormSpec.model_validate(spec.model_dump(mode="json")) == spec
+
+
+#: A schema table's columns that are its key or its index where the table cannot have one,
+#: and what the refusal says.
+KEY_REFUSALS = [
+    pytest.param(
+        {"rows": "many", "inputs": [column("value", "float")]},
+        "t has many rows and inputs, so it needs one index among its inputs",
+        id="a many-row input table with no index",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [
+                column("line", "int", index=True),
+                column("row", "int", index=True),
+                column("value", "float"),
+            ],
+        },
+        "t has many rows and inputs, so it needs one index among its inputs",
+        id="a many-row input table with two",
+    ),
+    pytest.param(
+        {"rows": "one", "inputs": [column("line", "int", index=True), column("value", "float")]},
+        "t.line is an index, which only a many-row table with inputs has",
+        id="an index in a one-row table",
+    ),
+    pytest.param(
+        {"rows": "many", "inputs": [column("line", "int", index=True)]},
+        "t.line is an index, which only a many-row table with inputs has",
+        id="an index alone, no input typed",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [column("value", "float")],
+            "outputs": [column("line", "int", index=True)],
+        },
+        "t.line is an index among the outputs",
+        id="an index among the outputs",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [column("line", "int", index=True), column("item_id", key=True)],
+        },
+        "t.item_id is a key, which only an output of a table of outputs alone with many rows "
+        "can be",
+        id="a typed input marked key",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [column("line", "int", index=True, key=True), column("value", "float")],
+        },
+        "t.line is a key, which only an output of a table of outputs alone with many rows can be",
+        id="the index marked key",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [column("line", "int", index=True), column("value", "float")],
+            "outputs": [column("item_id", key=True), column("premium", "float")],
+        },
+        "t.item_id is a key, which only an output of a table of outputs alone with many rows "
+        "can be",
+        id="an output key in a table with inputs",
+    ),
+    pytest.param(
+        {"rows": "one", "outputs": [column("band", key=True), column("premium", "float")]},
+        "t.band is a key, which only an output of a table of outputs alone with many rows can be",
+        id="an output key in a one-row table",
+    ),
+]
+
+
+@pytest.mark.parametrize(("table", "says"), KEY_REFUSALS)
+def test_a_tables_key_is_never_typed_so_a_key_or_index_it_cannot_have_is_refused(
+    table: dict[str, Any], says: str
+) -> None:
+    data = _one_table_form(table)
+
+    with pytest.raises(ValidationError, match=re.escape(says)):
+        FormSpec.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        pytest.param(
+            {"rows": "many", "inputs": [column("line", "int", index=True), column("value")]},
+            id="a many-row input table by its index",
+        ),
+        pytest.param(
+            {
+                "rows": "many",
+                "inputs": [
+                    column("line", "int", index=True),
+                    column("peril", options=["Fire"], row_per_value=True),
+                ],
+                "outputs": [column("premium", "float")],
+            },
+            id="a table of both blocks by the column giving its rows",
+        ),
+        pytest.param(
+            {
+                "rows": "many",
+                "outputs": [column("layer", "int", key=True), column("premium", "float")],
+            },
+            id="a table of outputs alone by outputs marked key",
+        ),
+        pytest.param(
+            {"rows": "many", "outputs": [column("premium", "float")]},
+            id="a table of outputs alone marking none",
+        ),
+    ],
+)
+def test_a_table_keyed_as_its_kind_is_read(table: dict[str, Any]) -> None:
+    data = _one_table_form(table)
+
+    assert FormSpec.model_validate(data).data_schema.tables[0].rows == "many"
+
+
 def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Today's columns, some left out and some out of order, as a later Haute with one more
     # reads them: by name, in its order.
     today = _with_details_table()
-    fewer = _with_details_table(lambda table: table.update(columns=table["columns"][:9]))
-    swapped = _with_details_table(lambda table: table["columns"].insert(3, table["columns"].pop(9)))
+    fewer = _with_details_table(lambda table: table.update(inputs=table["inputs"][:9]))
+    swapped = _with_details_table(lambda table: table["inputs"].insert(3, table["inputs"].pop(9)))
     later = (*QUOTE_DETAILS_COLUMNS, ("renewal_of", "str"))
     monkeypatch.setattr("haute._workbench_form.QUOTE_DETAILS_COLUMNS", later)
 
@@ -1360,48 +1581,59 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (lambda t: t.update(rows="many"), "is Haute's: a one-row input table"),
-        (lambda t: t.update(role="output"), "is Haute's: a one-row input table"),
+        # Many rows, given the index a many-row table with inputs needs (alone, the table's
+        # own check refuses it for having none).
+        (
+            lambda t: t.update(
+                rows="many",
+                inputs=[{"name": "row_number", "type": "int", "index": True}, *t["inputs"]],
+            ),
+            "is Haute's: a one-row input table",
+        ),
+        (
+            lambda t: t.update(outputs=[{"name": "premium", "type": "float"}]),
+            "is Haute's: a one-row input table",
+        ),
         # A column Haute does not make is no Haute's: left as it is, and refused.
         (
-            lambda t: t["columns"].append({"name": "extra", "type": "str"}),
+            lambda t: t["inputs"].append({"name": "extra", "type": "str"}),
             "is Haute's: a one-row input table",
         ),
-        (lambda t: t["columns"][7].update(type="str"), "is Haute's: a one-row input table"),
-        (lambda t: t["columns"][2].update(name="title"), "is Haute's: a one-row input table"),
-        (lambda t: t["columns"][5].update(type="str"), "is Haute's: a one-row input table"),
+        (lambda t: t["inputs"][7].update(type="str"), "is Haute's: a one-row input table"),
+        (lambda t: t["inputs"][2].update(name="title"), "is Haute's: a one-row input table"),
+        (lambda t: t["inputs"][5].update(type="str"), "is Haute's: a one-row input table"),
         (
-            lambda t: t["columns"][2].update(row_per_value=True),
+            lambda t: t["inputs"][2].update(row_per_value=True),
             "is Haute's: a one-row input table",
         ),
         (
-            lambda t: t["columns"][0].update(required=True),
+            lambda t: t["inputs"][0].update(required=True),
             "quote_details.quote_reference is set by the underwriter app",
         ),
         (
-            lambda t: t["columns"][12].update(default_value="ana@example.com"),
+            lambda t: t["inputs"][12].update(default_value="ana@example.com"),
             "created_by is set by the underwriter app and takes no rules or default",
         ),
         (
-            lambda t: t["columns"][15].update(options=["1.0.0"]),
+            lambda t: t["inputs"][15].update(options=["1.0.0"]),
             "haute_version is set by the underwriter app",
         ),
         (
-            lambda t: t["columns"][8].update(options=["draft"]),
+            lambda t: t["inputs"][8].update(options=["draft"]),
             "stage is set by the underwriter app",
         ),
         (
-            lambda t: t["columns"][8].update(
+            lambda t: t["inputs"][8].update(
                 options_source={"file": "stages.csv", "column": "stage"}
             ),
             "stage is set by the underwriter app",
         ),
         (
-            lambda t: t["columns"][9].update(default_value="Underwriting"),
+            lambda t: t["inputs"][9].update(default_value="Underwriting"),
             "assignee is set by the underwriter app and takes no rules or default",
         ),
         (
-            lambda t: t["columns"][10].update(default_value=True),
+            lambda t: t["inputs"][10].update(default_value=True),
             "archived is set by the underwriter app and takes no rules or default",
         ),
     ],

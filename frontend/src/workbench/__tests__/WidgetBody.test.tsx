@@ -16,12 +16,12 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis } from "../../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { valuesBasis } from "../../utils/sheetValues"
-import { addSchemaColumn, addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExportFormat, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
+import { addSchemaTable, BLANK_THEME, createWidget, setColumnLook, setExportFormat, toggleField, updateSchemaColumn, updateWidget, type WidgetPatch } from "../../utils/workbenchForm"
 import SheetCanvas from "../SheetCanvas"
 import { SheetValuesContext, useNewQuoteValues, useQuoteValues, useSampleValues } from "../useSheetValues"
 import { everyField, spacersShown } from "../sheet/fieldCells"
 import WidgetBody from "../WidgetBody"
-import { addTo, column, coverForm, currentForm, headingWidget, hiddenPerilsForm, loadForm, releasePointer, sheetForm, stubLayout, table, widgetsOf } from "./fixtures"
+import { addTo, column, coverForm, currentForm, headingWidget, hiddenPerilsForm, indexColumn, loadForm, releasePointer, sheetForm, stubLayout, table, widgetsOf } from "./fixtures"
 
 const widget = (id: string) => {
   const found = widgetsOf(currentForm()).find((candidate) => candidate.id === id)
@@ -136,7 +136,7 @@ describe("WidgetBody", () => {
   })
 
   it("inserts rows above and below a row through its right-click menu, one or as many as typed, each as one undo step, and deletes it, in every table the grid shows", () => {
-    let form = addSchemaTable(sheetForm(), table("hire", { rows: "many", columns: [column("days", { type: "int" })] }))
+    let form = addSchemaTable(sheetForm(), table("hire", { rows: "many", inputs: [indexColumn(), column("days", { type: "int" })] }))
     form = toggleField(form, "w_grid", { table: "hire", column: "days" })
     form.sample = { equipment: [{ item: "Crane" }, { item: "Lift" }], hire: [{ days: "1" }, { days: "2" }] }
     loadForm(form)
@@ -304,10 +304,9 @@ describe("WidgetBody", () => {
       options_source: { file: "plant.csv", column: "item" },
       row_per_value: true,
     })
-    given = addSchemaTable(given, table("hire", { rows: "many", columns: [column("item", { key: true }), column("days", { type: "int" })] }))
+    given = addSchemaTable(given, table("hire", { rows: "many", inputs: [indexColumn(), column("item"), column("days", { type: "int" })] }))
     given = toggleField(given, "w_grid", { table: "hire", column: "days" })
     // The equipment's index, numbering its own rows alone.
-    given = addSchemaColumn(given, "equipment", { ...column("row_number", { type: "int" }), index: true }, 0)
     given = toggleField(given, "w_grid", { table: "equipment", column: "row_number" })
     given.sample = { hire: [{ days: "1" }, { days: "2" }, { days: "3" }] }
     loadForm(given)
@@ -766,7 +765,7 @@ describe("WidgetBody", () => {
     const note = { table: "extras", column: "note" }
     const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
     const base = coverForm()
-    base.schema.tables.push(table("extras", { rows: "many", columns: [column("item", { key: true }), column("note")] }))
+    base.schema.tables.push(table("extras", { rows: "many", inputs: [indexColumn(), column("item"), column("note")] }))
     let form = updateWidget(base, "w_grid", { fields: [{ table: "equipment", column: "item" }, value, note] })
     form = setColumnLook(setColumnLook(form, "w_grid", value, { show_when: covered }), "w_grid", note, { show_when: covered })
     loadForm({ ...form, sample: { equipment: [{ item: "Crane" }, { item: "Lift" }], extras: [{ note: "first" }, { note: "second" }] } })
@@ -797,7 +796,7 @@ describe("WidgetBody", () => {
     form.theme = { ...BLANK_THEME, background_color: "#059669", border_color: "#D97706", font_color: "#2563EB", input_cell_color: "#DC2626", output_cell_color: "#9333EA" }
     loadForm(form)
     useWorkbenchPricingStore.setState({
-      price: { basis: previewBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 10 }] } },
+      price: { basis: previewBasis(form), sample: { equipment: [{ row_number: 1, item: "Crane" }] }, tables: { premiums: [{ row_number: 1, premium: 10 }] } },
     })
     // The borders' #D97706 as the page holds it in a style.
     const border = "1px solid rgb(217, 119, 6)"
@@ -931,9 +930,8 @@ describe("WidgetBody", () => {
     // An index's numbers in its column's own font, which they take over their muted grey;
     // a group's name in the header's weight, as its labels are.
     const indexed = sheetForm()
-    indexed.schema.tables[1].columns.unshift(column("row", { type: "int", index: true }))
-    indexed.schema.tables[1].columns[1].group = "Asset"
-    const index = { table: "equipment", column: "row" }
+    indexed.schema.tables[1].inputs[1].group = "Asset"
+    const index = { table: "equipment", column: "row_number" }
     loadForm(updateWidget(setColumnLook(toggleField(indexed, "w_grid", index), "w_grid", index, { font_color: "#DC2626" }), "w_grid", { groups: true, header_bold: false }))
     renderBody("w_grid")
     expect(within(screen.getAllByRole("row")[2]).getAllByRole("cell")[3]).toHaveStyle({ color: "#DC2626" })
@@ -1024,7 +1022,7 @@ describe("WidgetBody", () => {
 
   it("gives a checkbox's cell in a grid its row's height at either density", () => {
     const form = sheetForm()
-    form.schema.tables[1].columns.push(column("insured", { type: "bool" }))
+    form.schema.tables[1].inputs.push(column("insured", { type: "bool" }))
     const grid = toggleField(form, "w_grid", { table: "equipment", column: "insured" })
     loadForm(grid)
     renderBody("w_grid")
@@ -1097,7 +1095,7 @@ describe("WidgetBody", () => {
     form.sample = { equipment: [{ item: "Crane", value: "1234567.4" }, {}, {}] }
     loadForm(form)
     useWorkbenchPricingStore.setState({
-      price: { basis: previewBasis(form), sample: { equipment: [{ item: "Crane" }] }, tables: { premiums: [{ item: "Crane", premium: 1234.5 }] } },
+      price: { basis: previewBasis(form), sample: { equipment: [{ row_number: 1, item: "Crane" }] }, tables: { premiums: [{ row_number: 1, premium: 1234.5 }] } },
     })
     const { rerender } = renderBody("w_grid")
 
@@ -1154,8 +1152,9 @@ describe("WidgetBody", () => {
     useWorkbenchPricingStore.setState({
       price: {
         basis: previewBasis(form),
-        sample: { equipment: [{ item: "Crane" }, { item: "Paver" }] },
-        tables: { premiums: [{ item: "Paver", premium: 20 }, { item: "Crane", premium: 10 }] },
+        // The index numbers the rows as they stand, the blank one counted.
+        sample: { equipment: [{ row_number: 1, item: "Crane" }, { row_number: 3, item: "Paver" }] },
+        tables: { premiums: [{ row_number: 3, premium: 20 }, { row_number: 1, premium: 10 }] },
       },
     })
     renderBody("w_grid")
@@ -1178,8 +1177,32 @@ describe("WidgetBody", () => {
     expect(cell(3)).toHaveTextContent("—")
   })
 
+  it("shows a table's own outputs on its rows by their key, whatever order the answer gives them in, a row the answer gives nothing empty", () => {
+    // Equipment's items and each item's premium are one table, keyed by its index.
+    const form = sheetForm()
+    form.schema.tables[1].outputs.push(column("premium", { type: "float" }))
+    const shown = toggleField(form, "w_grid", { table: "equipment", column: "premium" })
+    shown.sample = { equipment: [{ item: "Crane" }, { item: "Paver" }, { item: "Lift" }] }
+    loadForm(shown)
+    useWorkbenchPricingStore.setState({
+      price: {
+        basis: previewBasis(shown),
+        sample: { equipment: [{ row_number: 1, item: "Crane" }, { row_number: 2, item: "Paver" }, { row_number: 3, item: "Lift" }] },
+        tables: { equipment: [{ row_number: 3, premium: 30 }, { row_number: 1, premium: 10 }] },
+      },
+    })
+    renderBody("w_grid")
+    const cell = (row: number) => screen.getByTestId(`priced-equipment:premium-${row}`)
+
+    expect([1, 2, 3].map((row) => cell(row).textContent)).toEqual(["10", "—", "30"])
+    // An output of the table is lined off and tinted as any output is, and takes no typing.
+    expect(cell(1).style.background).toBe("var(--workbench-output-cell-bg)")
+    expect(screen.queryByRole("textbox", { name: "Premium row 1" })).toBeNull()
+  })
+
   it("shows a Table of output columns alone as its starting rows of dashes until priced, then a row for each of the answer's rows, taking no typing", () => {
     const form = sheetForm()
+    form.schema.tables[2].outputs.splice(1, 0, column("item"))
     const results = {
       ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }, form),
       id: "w_results",
@@ -1205,7 +1228,14 @@ describe("WidgetBody", () => {
         price: {
           basis: previewBasis(form),
           sample: {},
-          tables: { premiums: [{ item: "Crane", premium: 10 }, { item: "Paver", premium: 20 }, { item: "Dozer", premium: 30 }, { item: "Lift", premium: 40 }] },
+          tables: {
+            premiums: [
+              { row_number: 1, item: "Crane", premium: 10 },
+              { row_number: 2, item: "Paver", premium: 20 },
+              { row_number: 3, item: "Dozer", premium: 30 },
+              { row_number: 4, item: "Lift", premium: 40 },
+            ],
+          },
         },
       }),
     )
@@ -1221,7 +1251,7 @@ describe("WidgetBody", () => {
     const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }
     const form = coverForm()
     form.schema.tables.push(
-      table("fees", { role: "output", rows: "many", columns: [column("item", { key: true }), column("fee", { type: "float" })] }),
+      table("fees", { rows: "many", outputs: [column("row_number", { type: "int", key: true }), column("item"), column("fee", { type: "float" })] }),
     )
     addTo(form, {
       ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }, form),
@@ -1238,8 +1268,8 @@ describe("WidgetBody", () => {
           basis: previewBasis(currentForm()),
           sample: {},
           tables: {
-            premiums: [{ item: "Crane", premium: 10 }, { item: "Lift", premium: 20 }],
-            fees: [{ item: "Lift", fee: 200 }, { item: "Crane", fee: 100 }, { item: "Dozer", fee: 300 }],
+            premiums: [{ row_number: 1, premium: 10 }, { row_number: 2, premium: 20 }],
+            fees: [{ row_number: 2, item: "Lift", fee: 200 }, { row_number: 1, item: "Crane", fee: 100 }, { row_number: 3, item: "Dozer", fee: 300 }],
           },
         },
       }),
@@ -1376,7 +1406,7 @@ describe("WidgetBody", () => {
 
   it("while building draws a new quote holding its columns' defaults, Preview the sample as typed", () => {
     const form = sheetForm()
-    form.schema.tables[0].columns[0].default_value = "CA"
+    form.schema.tables[0].inputs[0].default_value = "CA"
     loadForm({ ...form, sample: { policy: [{ state: "NY" }] } })
     render(<SheetCanvas />)
 

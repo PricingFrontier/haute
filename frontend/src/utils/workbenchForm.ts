@@ -41,10 +41,29 @@ import {
   type Rect,
   type Size,
 } from "./sheetGeometry"
-import { blankColumn, IDENTITY_COLUMNS, IDENTITY_NAMES, identityCount, isIdentityColumn, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, sheetColumns } from "./quoteIdentity"
+import {
+  blankColumn,
+  type Block,
+  hasInputs,
+  hasOutputs,
+  IDENTITY_COLUMNS,
+  IDENTITY_NAMES,
+  identityCount,
+  isIdentityColumn,
+  isOutputColumn,
+  ownInputs,
+  ownOutputs,
+  QUOTE_DETAILS_NAME,
+  QUOTE_DETAILS_MANAGED,
+  sheetColumns,
+  tableColumns,
+  typedInputs,
+  withIdentityPlaced,
+} from "./quoteIdentity"
 import { canonicalJson } from "./canonicalJson"
 import { isDay } from "./isoDate"
 import { cellProblem, filled, newQuoteValues, parseTypedNumber, presetColumn, pricedRows, type PricedRows, type RowsByTable } from "./sheetValues"
+import { keyCollisions, keyTable } from "./workbenchTables"
 import {
   ALWAYS,
   basisOf,
@@ -278,40 +297,39 @@ function schemaTableOf(spec: FormSpec, id: string): SchemaTable {
 }
 
 function schemaColumnOf(table: SchemaTable, id: string): SchemaColumn {
-  const column = table.columns.find((candidate) => candidate.name === id)
+  const column = tableColumns(table).find((candidate) => candidate.name === id)
   if (column === undefined) throw new Error(`Table ${table.name} has no column ${id}`)
   return column
 }
 
 /**
- * A new table, leading with the quote's reference and option, as every table but
- * quote_details does, named apart from every other whatever their case (READ-23).
+ * A new table, its inputs leading with the quote's reference and option, as every table but
+ * quote_details does, and no column of its own, named apart from every other whatever their
+ * case (READ-23).
  */
 export const createSchemaTable = (spec: FormSpec): SchemaTable => ({
   name: uniqueName("table", spec.schema.tables.map((table) => table.name)),
-  role: "input",
   rows: "one",
-  columns: IDENTITY_COLUMNS.map(([name, type]) => blankColumn(name, type)),
+  inputs: IDENTITY_COLUMNS.map(([name, type]) => blankColumn(name, type)),
+  outputs: [],
 })
 
 /**
- * A new column for a table, to go at `at` among its columns (the end by default): of the
- * type of the column above it, or Text first in the table or under the quote's identity or
- * its index.
+ * A new column for a block of a table, to go at `at` in the block (its end by default): of
+ * the type of the column above it there, or Text first in the block or under the quote's
+ * identity or the index; named apart from every column of the table, in either block.
  */
-export const createSchemaColumn = (spec: FormSpec, tableId: string, at?: number): SchemaColumn => {
-  const { columns } = schemaTableOf(spec, tableId)
-  const above = columns[(at ?? columns.length) - 1]
+export const createSchemaColumn = (spec: FormSpec, tableId: string, block: Block, at?: number): SchemaColumn => {
   const table = schemaTableOf(spec, tableId)
+  const columns = table[block]
+  const above = columns[(at ?? columns.length) - 1]
   const type = above === undefined || above.index || isIdentityColumn(table, above) ? "str" : above.type
-  return blankColumn(uniqueName("column", columns.map((column) => column.name)), type)
+  return blankColumn(uniqueName("column", tableColumns(table).map((column) => column.name)), type)
 }
 
-/** A table's index: a column holding each row's number, from 1, as the rows stand. */
+/** A table's index: an input holding each row's number, from 1, as the rows stand, `row_number` until renamed. */
 export const createIndexColumn = (spec: FormSpec, tableId: string): SchemaColumn => ({
-  ...createSchemaColumn(spec, tableId),
-  name: uniqueName("row_number", schemaTableOf(spec, tableId).columns.map((column) => column.name)),
-  type: "int",
+  ...blankColumn(uniqueName("row_number", tableColumns(schemaTableOf(spec, tableId)).map((column) => column.name)), "int"),
   index: true,
 })
 
@@ -320,24 +338,71 @@ export const addSchemaTable = (spec: FormSpec, table: SchemaTable): FormSpec =>
     draft.schema.tables.push(table)
   })
 
-/**
- * A table's settings changed; a table made an output loses what only typing gives: the
- * rules only what is typed takes (`INPUT_ONLY_RULES`), Required aside, which marking a quote
- * final checks in an output too, and its sample rows, which the form folder writes for no
- * output table.
- */
-export const updateSchemaTable = (spec: FormSpec, id: string, patch: Partial<SchemaTable>): FormSpec =>
-  patch.name !== undefined && nameTaken(spec.schema.tables.map((table) => table.name), patch.name, id)
+/** A table renamed, each use of its name with it; neither its rows nor its blocks, which their own operations change. */
+export const updateSchemaTable = (spec: FormSpec, id: string, patch: Pick<SchemaTable, "name">): FormSpec =>
+  patch.name === id || nameTaken(spec.schema.tables.map((table) => table.name), patch.name, id)
     ? spec
     : edit(spec, (draft) => {
-        const table = schemaTableOf(draft, id)
-        Object.assign(table, patch)
-        if (patch.name !== undefined && patch.name !== id) renameTableUses(draft, id, patch.name)
-        if (patch.role === "output") {
-          table.columns = table.columns.map((column) => ({ ...column, ...INPUT_ONLY_RULES }))
-          delete draft.sample[table.name]
-        }
+        schemaTableOf(draft, id).name = patch.name
+        renameTableUses(draft, id, patch.name)
       })
+
+/**
+ * Take what shows or uses the column `columnId` of the table `tableId` out of the form: the
+ * widgets that show it, or label a Chart's rows by it, what the conditions test of it
+ * (`withoutColumn`), what Imports read of it or give a parameter, and its sample values.
+ */
+function dropColumnUses(draft: FormSpec, tableId: string, columnId: string): void {
+  const gone = (field: FieldRef) => field.table === tableId && field.column === columnId
+  dropFields(draft, gone)
+  dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
+  for (const widget of allWidgets(draft)) dropButtonUses(widget, () => false, gone)
+  for (const row of draft.sample[tableId] ?? []) delete row[columnId]
+}
+
+/**
+ * The table `tableId` given the index it needs and the keys it may hold, as the server's
+ * `_check_keys` holds them: a many-row table holding a typed input (`typedInputs`) gains its
+ * index (`createIndexColumn`) after the quote's identity, and a table holding none, or of one
+ * row, loses it with what shows it (`dropColumnUses`); an input table's outputs and every
+ * column of a one-row table lose `key`. quote_details is left as it is.
+ */
+function placeIndex(draft: FormSpec, tableId: string): void {
+  const table = schemaTableOf(draft, tableId)
+  if (isQuoteDetails(table)) return
+  const typed = hasInputs(table)
+  const index = table.inputs.find((column) => column.index)
+  if (table.rows === "many" && typed) {
+    if (index === undefined) table.inputs.splice(table.inputs.length - ownInputs(table).length, 0, createIndexColumn(draft, tableId))
+  } else if (index !== undefined) {
+    table.inputs = table.inputs.filter((column) => column !== index)
+    dropColumnUses(draft, tableId, index.name)
+  }
+  if (typed || table.rows === "one") for (const column of tableColumns(table)) column.key = false
+}
+
+/** The table `tableId` with the quote's identity at the head of its first block (`withIdentityPlaced`). */
+function placeIdentity(draft: FormSpec, tableId: string): void {
+  draft.schema.tables = draft.schema.tables.map((table) => (table.name === tableId ? withIdentityPlaced(table) : table))
+}
+
+/**
+ * The table `tableId` holding its index and keys as the server holds them (`placeIndex`):
+ * what every operation changing a table's rows or blocks ends with, before the identity is
+ * placed (`withIdentityPlaced`).
+ */
+export const withIndexAsNeeded = (spec: FormSpec, tableId: string): FormSpec => edit(spec, (draft) => placeIndex(draft, tableId))
+
+/**
+ * Within an edit: the index and keys placed, then the identity, as Control flow 18 orders
+ * them; and a table left with no inputs, its last moved to the outputs or removed, gives up
+ * its rows in the sample, which holds input tables' alone, as the form folder's save does.
+ */
+const settleBlocks = (draft: FormSpec, tableId: string): void => {
+  placeIndex(draft, tableId)
+  placeIdentity(draft, tableId)
+  if (!hasInputs(schemaTableOf(draft, tableId))) delete draft.sample[tableId]
+}
 
 /**
  * Each use of the table `from` made a use of `to`, its new name (READ-23): its columns shown,
@@ -541,61 +606,91 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
 /**
  * A table with one row per quote has no keys, which say which of many rows is which, no
  * index, which numbers them, and no row for each value: switching to one row drops them,
- * the index column with what shows it and its sample values, as removing a column does. A
- * many-row table's columns take no default: switching to many rows clears them.
+ * the index with what shows it, as removing a column does. A many-row table's columns take
+ * no default: switching to many rows clears them, and a table with inputs gains its index
+ * (`withIndexAsNeeded`).
  */
-export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec => {
-  const index = rows === "one" ? schemaTableOf(spec, id).columns.find((column) => column.index) : undefined
-  const without = index === undefined ? spec : removeSchemaColumn(spec, id, index.name)
-  return edit(without, (draft) => {
+export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec =>
+  edit(spec, (draft) => {
     const table = schemaTableOf(draft, id)
     table.rows = rows
-    for (const column of table.columns) {
+    for (const column of tableColumns(table)) {
       if (rows === "one") {
         column.key = false
         column.row_per_value = false
       } else column.default_value = ""
     }
+    settleBlocks(draft, id)
   })
-}
 
 /**
- * Give a table a row for each of a column's allowed values, unticking any other column of
+ * Give a table a row for each of an input's allowed values, unticking any other input of
  * the table that gave its rows, as only one does; or stop it.
  */
 export const setRowPerValue = (spec: FormSpec, tableId: string, columnId: string, on: boolean): FormSpec =>
   edit(spec, (draft) => {
-    for (const column of schemaTableOf(draft, tableId).columns) {
+    for (const column of schemaTableOf(draft, tableId).inputs) {
       if (column.name === columnId) column.row_per_value = on
       else if (on) column.row_per_value = false
     }
   })
 
-/** Add a column at `index`, or at the end. */
-export const addSchemaColumn = (spec: FormSpec, tableId: string, column: SchemaColumn, index?: number): FormSpec =>
+/**
+ * Add a column to a block of a table, at `at` in the block or at its end; a many-row table
+ * gaining its first input gains its index and its outputs lose their keys
+ * (`withIndexAsNeeded`), and the quote's identity heads the table's first block
+ * (`withIdentityPlaced`).
+ */
+export const addSchemaColumn = (spec: FormSpec, tableId: string, block: Block, column: SchemaColumn, at?: number): FormSpec =>
   edit(spec, (draft) => {
-    const { columns } = schemaTableOf(draft, tableId)
-    columns.splice(index ?? columns.length, 0, column)
+    const columns = schemaTableOf(draft, tableId)[block]
+    columns.splice(at ?? columns.length, 0, column)
+    settleBlocks(draft, tableId)
   })
 
+/** How many columns head a block and stay there: the quote's identity at its head, and after it the index of the inputs. */
+const fixedHead = (table: SchemaTable, block: Block): number => {
+  const identity = table[block].length - (block === "inputs" ? ownInputs(table) : ownOutputs(table)).length
+  return identity + (table[block][identity]?.index ? 1 : 0)
+}
+
 /**
- * Move a column to `to`. The quote's identity, first in its table, and the index after it
- * stay where they are, and nothing goes above them.
+ * Move a column to `at` in a block of its table, its own or the other. The quote's identity
+ * and the index after it stay where they are, nothing goes above them, and the index never
+ * leaves the inputs. A column reaching the outputs loses what only an input takes
+ * (`INPUT_ONLY_RULES`: its rules but Required, its row for each value and its default) and
+ * its values in the sample, which only what is typed takes; one reaching the inputs loses its
+ * key. Then the table holds its index and keys as the server holds them
+ * (`withIndexAsNeeded`), and the identity heads its first block (`withIdentityPlaced`), so a
+ * table whose last typed input moves to its outputs has no inputs left: Control flow 18.
  */
-export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, to: number): FormSpec => {
+export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, block: Block, at: number): FormSpec => {
   const table = schemaTableOf(spec, tableId)
-  const { columns } = table
-  const from = columns.findIndex((column) => column.name === columnId)
-  const head = identityCount(table) + (columns[identityCount(table)]?.index ? 1 : 0)
-  if (from === to || columns[from].index || from < head || to < head) return spec
+  const own: Block = isOutputColumn(table, columnId) ? "outputs" : "inputs"
+  const from = table[own].findIndex((column) => column.name === columnId)
+  if (from === -1 || table[own][from].index || from < fixedHead(table, own) || at < fixedHead(table, block)) return spec
+  if (own === block && (from === at || at >= table[own].length)) return spec
+  if (own !== block && at > table[block].length) return spec
   return edit(spec, (draft) => {
-    const moved = schemaTableOf(draft, tableId).columns
-    const [column] = moved.splice(from, 1)
-    moved.splice(to, 0, column)
+    const held = schemaTableOf(draft, tableId)
+    const [column] = held[own].splice(from, 1)
+    if (own !== block && block === "outputs") {
+      Object.assign(column, INPUT_ONLY_RULES)
+      for (const row of draft.sample[tableId] ?? []) delete row[columnId]
+    }
+    if (own !== block && block === "inputs") column.key = false
+    held[block].splice(at, 0, column)
+    settleBlocks(draft, tableId)
   })
 }
 
-/** Change a column; the quote's identity is Haute's, and nothing of it changes. */
+/** Whether a column can be marked `key`: an output of a many-row table of outputs alone, as the server's `_check_keys` holds it. */
+const keyable = (table: SchemaTable, columnId: string): boolean => table.rows === "many" && !hasInputs(table) && isOutputColumn(table, columnId)
+
+/**
+ * Change a column; the quote's identity is Haute's, and nothing of it changes, and a key is
+ * given only to a column that can be one (`keyable`).
+ */
 export const updateSchemaColumn = (
   spec: FormSpec,
   tableId: string,
@@ -603,9 +698,10 @@ export const updateSchemaColumn = (
   patch: Partial<SchemaColumn>,
 ): FormSpec =>
   isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId }) ||
+  (patch.key === true && !keyable(schemaTableOf(spec, tableId), columnId)) ||
   (patch.name !== undefined &&
     patch.name !== columnId &&
-    (nameTaken(schemaTableOf(spec, tableId).columns.map((column) => column.name), patch.name, columnId) || sampleHolds(spec, tableId, patch.name)))
+    (nameTaken(tableColumns(schemaTableOf(spec, tableId)).map((column) => column.name), patch.name, columnId) || sampleHolds(spec, tableId, patch.name)))
     ? spec
     : edit(spec, (draft) => {
         Object.assign(schemaColumnOf(schemaTableOf(draft, tableId), columnId), patch)
@@ -654,20 +750,19 @@ export const changeSchemaColumnType = (
 
 /**
  * Removing a column removes it from the widgets that show it, or label a Chart's rows,
- * and what the conditions test of it (`withoutColumn`), and its sample values. The quote's
- * identity stays.
+ * and what the conditions test of it (`withoutColumn`), and its sample values; a table
+ * losing its last typed input loses its index (`withIndexAsNeeded`), and the quote's
+ * identity, which stays, heads its first block (`withIdentityPlaced`).
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
   isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId })
     ? spec
     : edit(spec, (draft) => {
         const table = schemaTableOf(draft, tableId)
-        table.columns = table.columns.filter((column) => column.name !== columnId)
-        const gone = (field: FieldRef) => field.table === tableId && field.column === columnId
-        dropFields(draft, gone)
-        dropConditions(draft, (condition) => withoutColumn(condition, tableId, columnId))
-        for (const widget of allWidgets(draft)) dropButtonUses(widget, () => false, gone)
-        for (const row of draft.sample[tableId] ?? []) delete row[columnId]
+        table.inputs = table.inputs.filter((column) => column.name !== columnId)
+        table.outputs = table.outputs.filter((column) => column.name !== columnId)
+        dropColumnUses(draft, tableId, columnId)
+        settleBlocks(draft, tableId)
       })
 
 /** The widgets showing a schema table's columns, or just one of them, a Chart labelling its rows by one included. */
@@ -712,7 +807,7 @@ export const conditionUses = (spec: FormSpec, tableId: string, columnId?: string
 /** The schema table and column a field names, or null when it is no longer in the schema: of a form, or of the schema alone. */
 export function fieldColumn({ schema }: Pick<FormSpec, "schema">, field: FieldRef): { table: SchemaTable; column: SchemaColumn } | null {
   const table = schema.tables.find((candidate) => candidate.name === field.table)
-  const column = table?.columns.find((candidate) => candidate.name === field.column)
+  const column = table === undefined ? undefined : tableColumns(table).find((candidate) => candidate.name === field.column)
   return table && column ? { table, column } : null
 }
 
@@ -726,11 +821,15 @@ export interface ShownField {
 export const shownFields = (schema: FormSchema, widget: Widget): ShownField[] =>
   showsFields(widget) ? widget.fields.map((field) => ({ key: columnKey(field.table, field.column), found: fieldColumn({ schema }, field) })) : []
 
-/** The input tables a Table's grid takes rows of, in its order: those of the many-row columns it shows that are typed into. */
+/** The input tables a Table's grid takes rows of, in its order: those of the many-row inputs it shows that are typed into. */
 export const gridInputTables = (fields: readonly ShownField[]): SchemaTable[] => [
   ...new Map(
     fields.flatMap(({ found }) =>
-      found !== null && found.table.role === "input" && found.table.rows === "many" && !found.column.index && !isIdentityColumn(found.table, found.column)
+      found !== null &&
+      found.table.rows === "many" &&
+      !isOutputColumn(found.table, found.column) &&
+      !found.column.index &&
+      !isIdentityColumn(found.table, found.column)
         ? [[found.table.name, found.table] as const]
         : [],
     ),
@@ -1446,18 +1545,20 @@ export const rowsShown = (widget: { type: "tableInput" | "collection" }): Schema
   widget.type === "collection" ? "one" : "many"
 
 /**
- * Which rows a table's columns fill: one per quote, or many, lined up by the names of
- * their key columns. Columns can share a grid only when this matches.
+ * Which rows a table's columns fill: one per quote, or many, lined up by the names and
+ * types of its key columns (`keyTable`), a table without a key by its own name, so a table's
+ * inputs and outputs always line up and two tables keyed alike do. Columns can share a grid
+ * only when this matches.
  */
 export const tableGrain = (table: SchemaTable): string =>
   table.rows === "one"
     ? "one"
     : `many:${
-        table.columns
-          .filter((column) => column.key)
-          .map((column) => column.name)
+        keyTable(table)
+          // The index is each row's number, an Integer whatever the form holds for it.
+          .map((column) => `${column.name}=${column.index ? "int" : column.type}`)
           .sort()
-          .join(",") || table.name
+          .join(",") || `table=${table.name}`
       }`
 
 /**
@@ -1712,12 +1813,12 @@ export function bindParameter(spec: FormSpec, id: string, name: string, field: F
   })
 }
 
-/** The columns of a table an Import fills: those an underwriter types, neither the quote's identity nor its index, nor in quote_details a column the app sets. */
+/** The columns of a table an Import fills: the inputs an underwriter types, neither the quote's identity nor its index, nor an output, nor in quote_details a column the app sets. */
 export const importColumns = (table: SchemaTable): SchemaColumn[] =>
-  sheetColumns(table).filter((column) => !column.index && !(table.name === QUOTE_DETAILS_NAME && QUOTE_DETAILS_MANAGED.has(column.name)))
+  typedInputs(table).filter((column) => !(table.name === QUOTE_DETAILS_NAME && QUOTE_DETAILS_MANAGED.has(column.name)))
 
-/** The columns a query's parameter can be given: a one-row input table's. */
-export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.role === "input" && table.rows === "one" ? sheetColumns(table) : [])
+/** The columns a query's parameter can be given: a one-row table's inputs. */
+export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? typedInputs(table) : [])
 
 /** Whether an Export writes a file: a CSV or an Excel workbook. */
 const isFile = (target: ExportWidget["target"]): target is CsvExport | ExcelExport => target.format !== "sql"
@@ -1881,11 +1982,13 @@ interface Priced {
 }
 
 /**
- * Each many-row output table of `outputs` lined up with a grid's `count` rows, through the
- * first of `inputs` (the many-row input tables shown, in order) keyed alike: on each grid
- * row, the output row `pricedRows` finds for it, the input table read as the quote reads it
- * (`quoted`), so its filled rows are the typed rows the pricing answers with. An output
- * table no input table lines up with is left out, and every one while there is no price.
+ * Each many-row table of `outputs` (the tables whose outputs are shown) lined up with a
+ * grid's `count` rows by key, never by place: a table whose inputs the grid shows through its
+ * own typed rows, each answer row taken by its key value; any other through the first of
+ * `inputs` (the many-row input tables shown, in order) keyed alike. On each grid row, the
+ * answer row `pricedRows` finds for it, the input table read as the quote reads it
+ * (`quoted`), so its filled rows are the typed rows the pricing answers with. A table no
+ * input table lines up with is left out, and every one while there is no price.
  */
 export function linedUpOutputs(
   inputs: readonly SchemaTable[],
@@ -1898,12 +2001,13 @@ export function linedUpOutputs(
   const lined = new Map<string, (Record<string, unknown> | undefined)[]>()
   if (price === null) return lined
   for (const output of outputs) {
-    const input = inputs.find((table) => tableGrain(table) === tableGrain(output))
+    const input = inputs.find((table) => table.name === output.name) ?? inputs.find((table) => tableGrain(table) === tableGrain(output))
     const read = quoted.tables.find((table) => table.name === input?.name)
     if (input === undefined || read === undefined || lined.has(output.name)) continue
     const typed = price.sample[input.name]
     const grid = Array.from({ length: count }, (_, row) => held[input.name]?.[row])
-    lined.set(output.name, pricedRows(read, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
+    const keys = keyTable(read).map((column) => column.name)
+    lined.set(output.name, pricedRows(read, keys, grid, Array.isArray(typed) ? (typed as PricedRows) : [], price.tables[output.name] ?? []))
   }
   return lined
 }
@@ -1912,10 +2016,11 @@ export function linedUpOutputs(
 const keyedBy = (row: Record<string, unknown> | undefined, name: string): boolean => row?.[name] !== undefined && row[name] !== null
 
 /**
- * Output tables shown without an input table, lined up with the first one's answer: its
- * rows as pricing gave them, and each other table's row keyed like each of them by the
- * first's key columns (none without keys), as a Chart and a Table of output columns alone
- * show them. Nothing while there is no price.
+ * Tables whose outputs are shown without an input table, lined up with the first one's
+ * answer: its rows as pricing gave them, and each other table's row keyed like each of them
+ * by the first's key columns (`keyTable`'s, an input table's key carried in its answer; none
+ * without keys), as a Chart and a Table of output columns alone show them. Nothing while
+ * there is no price.
  */
 export function answeredOutputs(
   outputs: readonly SchemaTable[],
@@ -1925,7 +2030,7 @@ export function answeredOutputs(
   const [first] = outputs
   if (first === undefined || price === null) return lined
   const answer = price.tables[first.name] ?? []
-  const keys = first.columns.filter((column) => column.key).map((column) => column.name)
+  const keys = keyTable(first).map((column) => column.name)
   for (const table of outputs) {
     if (lined.has(table.name)) continue
     const own = price.tables[table.name] ?? []
@@ -1998,7 +2103,11 @@ export function widgetProblems(spec: FormSpec): WidgetProblem[] {
         // its rows must give each of them the same, in the same order.
         const given = new Set(
           found.flatMap((shown) =>
-            widget.type === "tableInput" && shown !== null && shown.table.role === "input" && shown.table.rows === "many" && !shown.column.index
+            widget.type === "tableInput" &&
+            shown !== null &&
+            !isOutputColumn(shown.table, shown.column) &&
+            shown.table.rows === "many" &&
+            !shown.column.index
               ? [JSON.stringify(presetColumn(shown.table)?.options ?? null)]
               : [],
           ),
@@ -2045,21 +2154,22 @@ function chartProblems(spec: FormSpec, widget: ChartWidget): string[] {
 }
 
 /**
- * What stops an Import doing what its settings say: no table, one gone or an output
- * table; a column named that is gone or that an underwriter does not type; replacing or
- * adding to the rows of a table with a row for each allowed value; and, from a database,
- * no connection or query, a parameter its query holds given no column, or a column gone
- * or of no one-row input table, or a column given a parameter its query does not hold.
+ * What stops an Import doing what its settings say: no table, one gone or a table with no
+ * inputs, which pricing fills; a column named that is gone or that an underwriter does not
+ * type, an output among them; replacing or adding to the rows of a table with a row for each
+ * allowed value; and, from a database, no connection or query, a parameter its query holds
+ * given no column, or a column gone or not an input of a one-row table, or a column given a
+ * parameter its query does not hold.
  */
 function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
   const problems: string[] = []
   const table = widget.table === null ? undefined : spec.schema.tables.find((candidate) => candidate.name === widget.table)
   if (widget.table === null) problems.push("fills no table")
   else if (table === undefined) problems.push("fills a table that is no longer in the schema")
-  else if (table.role === "output") problems.push("fills an output table, which pricing fills")
+  else if (!hasInputs(table)) problems.push("fills a table with no inputs, which pricing fills")
   else {
     const typed = new Set(importColumns(table).map((column) => column.name))
-    const named = widget.column_names.map((entry) => table.columns.find((column) => column.name === entry.column))
+    const named = widget.column_names.map((entry) => tableColumns(table).find((column) => column.name === entry.column))
     if (named.includes(undefined)) problems.push("reads into a column that is no longer in the schema")
     if (named.some((column) => column !== undefined && !typed.has(column.name))) problems.push("reads into a column an underwriter does not type")
     if (widget.mode !== "update" && presetColumn(table) !== null) {
@@ -2076,7 +2186,8 @@ function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
       const found = given === undefined ? undefined : fieldColumn(spec, given)
       if (found === undefined) problems.push(`gives :${name} no column`)
       else if (found === null) problems.push(`gives :${name} a column that is no longer in the schema`)
-      else if (parameterColumns(found.table).length === 0) problems.push(`gives :${name} a column of ${found.table.role === "output" ? "an output" : "a many-row"} table`)
+      else if (isOutputColumn(found.table, found.column)) problems.push(`gives :${name} an output, which pricing fills`)
+      else if (found.table.rows === "many") problems.push(`gives :${name} a column of a many-row table`)
     }
     for (const given of parameters) {
       if (!held.includes(given.name)) problems.push(`gives a column to :${given.name}, which its query does not hold`)
@@ -2103,7 +2214,7 @@ function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
   if (target.file_name.trim() === "") problems.push("has no file name")
   const details = spec.schema.tables.find((table) => table.name === QUOTE_DETAILS_NAME)
   for (const token of new Set(fileNameTokens(target.file_name))) {
-    if (!details?.columns.some((column) => column.name === token)) problems.push(`names its file by {${token}}, which is not a column of quote_details`)
+    if (details === undefined || !tableColumns(details).some((column) => column.name === token)) problems.push(`names its file by {${token}}, which is not a column of quote_details`)
   }
   return problems
 }
@@ -2191,7 +2302,7 @@ function conditionProblems(
     const table = schemaTableOf(spec, condition.table)
     const tests: ColumnTest[] = isListCondition(condition) ? condition.where : [condition]
     for (const test of tests) {
-      const column = table.columns.find((candidate) => candidate.name === test.column) as SchemaColumn
+      const column = tableColumns(table).find((candidate) => candidate.name === test.column) as SchemaColumn
       if (!column.options.length || !EQUALITY_TESTS.has(test.op)) continue
       for (const value of test.values) {
         if (!allowed(column, value)) problems.push(`tests ${column.name} against "${value}", which isn't one of its allowed values`)
@@ -2211,7 +2322,7 @@ function conditionProblems(
         .filter((column) => !column.index)
         .map((column) => columnKey(table.name, column.name))
       if (missing !== undefined) {
-        problems.push(`waits on ${(table.columns.find((column) => column.name === missing) as SchemaColumn).name}, which is on no Table`)
+        problems.push(`waits on ${(tableColumns(table).find((column) => column.name === missing) as SchemaColumn).name}, which is on no Table`)
       } else {
         problems.push(
           tested.length > 0 || entered(keys)
@@ -2269,7 +2380,7 @@ function testText(column: SchemaColumn | null | undefined, test: ColumnTest, oth
 function listText(spec: Pick<FormSpec, "schema">, condition: ListCondition): string {
   const table = spec.schema.tables.find((candidate) => candidate.name === condition.table)
   const name = table?.name ?? "a missing table"
-  const columnOf = (id: string) => table?.columns.find((column) => column.name === id)
+  const columnOf = (id: string) => (table === undefined ? undefined : tableColumns(table).find((column) => column.name === id))
   const tests = condition.where.map((test) => testText(columnOf(test.column), test, test.field === null ? null : columnOf(test.field))).join(" and ")
   if (isRowsCondition(condition)) return `${tests} in ${condition.rows} row of ${name}`
   const where = condition.where.length === 0 ? "" : ` where ${tests}`
@@ -2306,8 +2417,8 @@ export interface SchemaProblem {
 
 /** The longest table or column name the quote store keeps whole (`STORE_NAME_LENGTH`). */
 export const STORE_NAME_LENGTH = 63
-/** The quote store's number for each row of a many-row table, a column of its own there (`QUOTE_ROW`). */
-export const QUOTE_ROW = "quote_row"
+/** The quote store's number for each row of a many-row table, a column of its own there (`TABLE_INDEX`). */
+export const TABLE_INDEX = "table_index"
 /** What starts a name the quote store keeps for its own tables and columns. */
 const STORE_PREFIX = "haute_"
 
@@ -2339,7 +2450,7 @@ function storeColumnProblems(table: SchemaTable, column: SchemaColumn, folded: M
   if (column.name.startsWith(STORE_PREFIX) && !(isQuoteDetails(table) && column.name === "haute_version")) {
     problems.push(`starts ${STORE_PREFIX}, which the quote store keeps for its own names`)
   }
-  if (table.rows === "many" && column.name === QUOTE_ROW) problems.push("is the quote store's number for each row of a many-row table")
+  if (table.rows === "many" && column.name === TABLE_INDEX) problems.push("is the quote store's number for each row of a many-row table")
   return problems
 }
 
@@ -2356,47 +2467,66 @@ const isNumber = (text: string, whole: boolean): boolean => {
   return n !== null && (!whole || Number.isInteger(n))
 }
 
+/** A table's ports, as the pipeline's tables name them: `<name>_input` while it has inputs and `<name>_output` while it has outputs. */
+export const tablePorts = (table: SchemaTable): string[] => [
+  ...(hasInputs(table) ? [`${table.name}_input`] : []),
+  ...(hasOutputs(table) ? [`${table.name}_output`] : []),
+]
+
 /**
- * What would stop the schema being the pipeline's tables. A table's name is a port's
- * name, so it is held to the Quote Input's label rules (`apiInputLabelIssue`, with the
- * document's reserved labels); a column's name is an identifier, unique in its table; a
- * many-row table needs a key, and one column at most gives it a row for each value; an
- * input column's rules must make sense (a range that is not inverted, allowed values of its
- * type, read from a params file rather than typed in), and a one-row input column's
- * default must be a value they take. A table without the quote's identity whose own column
- * takes either of its names is named as the server names it (`identity_clashes`).
+ * What would stop the schema being the pipeline's tables. A table's name is an
+ * identifier, unique whatever its case, and its ports (`tablePorts`) are held to the Quote
+ * Input's label rules (`apiInputLabelIssue`, with the document's reserved labels); a
+ * column's name is an identifier, unique in its table across its blocks; a many-row table
+ * of outputs alone needs a key, and one input at most gives a table a row for each value,
+ * whose allowed values must stay distinct in its type (`keyCollisions`); an input's rules
+ * must make sense (a range that is not inverted, allowed values of its type, read from a
+ * params file rather than typed in), and a one-row table's input's default must be a value
+ * they take. A table without the quote's identity whose own column takes either of its
+ * names is named as the server names it (`identity_clashes`).
  */
 export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<string>): SchemaProblem[] {
   const problems: SchemaProblem[] = []
   const { tables } = spec.schema
+  const ports = tables.map(tablePorts)
   tables.forEach((table, index) => {
     const name = `Table "${table.name}"`
+    const others = tables.filter((_, other) => other !== index)
     const issue = apiInputLabelIssueMessage(
       apiInputLabelIssue(
         table.name,
-        tables.filter((_, other) => other !== index).map((other) => other.name),
-        reservedLabels,
+        others.map((other) => other.name),
+        new Set(),
       ),
     )
     if (issue !== null) problems.push({ tableId: table.name, message: `${name}: ${issue}` })
+    else {
+      const otherPorts = ports.filter((_, other) => other !== index).flat()
+      for (const port of ports[index]) {
+        const portIssue = apiInputLabelIssueMessage(apiInputLabelIssue(port, otherPorts, reservedLabels))
+        if (portIssue !== null) problems.push({ tableId: table.name, message: `${name}'s port ${port}: ${portIssue}` })
+      }
+    }
     for (const problem of storeTableProblems(table)) problems.push({ tableId: table.name, message: `${name} ${problem}` })
+    const columns = tableColumns(table)
     if (!isQuoteDetails(table) && identityCount(table) === 0) {
-      for (const column of table.columns) {
+      for (const column of columns) {
         if (IDENTITY_NAMES.has(column.name)) problems.push({ tableId: table.name, message: identityClash(table, column) })
       }
     }
-    if (table.rows === "many" && !table.columns.some((column) => column.key)) {
-      problems.push({ tableId: table.name, message: `${name} has many rows, so it needs a key column` })
+    if (table.rows === "many" && !hasInputs(table) && hasOutputs(table) && keyTable(table).length === 0) {
+      problems.push({ tableId: table.name, message: `${name} has many rows of outputs alone, so it needs a key column` })
     }
     const given = presetColumn(table)
-    for (const column of table.columns) {
+    for (const column of table.inputs) {
       if (given !== null && column !== given && column.row_per_value && !column.index && column.options.length > 0) {
         problems.push({ tableId: table.name, message: `${name} has a row for each value of ${given.name}, so ${column.name} gives it none` })
       }
     }
+    for (const collision of keyCollisions(table)) problems.push({ tableId: table.name, message: collision })
     const columnNames = new Set<string>()
     const folded = new Map<string, string>()
-    for (const column of table.columns) {
+    for (const column of columns) {
       const columnName = `Column "${column.name}" in ${name}`
       const nameProblem = columnNameProblem(column.name)
       if (nameProblem !== null) {
@@ -2406,7 +2536,7 @@ export function schemaProblems(spec: FormSpec, reservedLabels: ReadonlySet<strin
       }
       columnNames.add(column.name)
       for (const problem of storeColumnProblems(table, column, folded)) problems.push({ tableId: table.name, message: `${columnName} ${problem}` })
-      if (table.role !== "input" || column.index) continue
+      if (isOutputColumn(table, column) || column.index) continue
       if (!takesOptions(column.type) && column.options.length > 0) {
         const kind = column.type === "bool" ? "a tick box" : "a date"
         problems.push({ tableId: table.name, message: `${columnName} allows values, which ${kind} cannot` })

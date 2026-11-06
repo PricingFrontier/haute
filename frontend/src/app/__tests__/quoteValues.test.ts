@@ -170,7 +170,7 @@ describe("the Quotes page's columns", () => {
   })
 
   it("shows a value as its column formats it, a dash when blank and Yes or No for a tick", () => {
-    const column = { key: "k", label: "Premium", column: { ...sheetForm().schema.tables[0].columns[0], type: "float" as const, number_format: "currency_gbp" as const, decimal_places: 0 } }
+    const column = { key: "k", label: "Premium", column: { ...sheetForm().schema.tables[0].inputs[0], type: "float" as const, number_format: "currency_gbp" as const, decimal_places: 0 } }
     expect(listValue(column, 1234.4)).toBe("£1,234")
     expect(listValue(column, null)).toBe("—")
     expect(listValue({ ...column, column: null }, true)).toBe("Yes")

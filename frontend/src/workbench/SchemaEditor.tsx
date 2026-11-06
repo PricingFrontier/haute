@@ -23,6 +23,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import { tableColumns } from "../utils/quoteIdentity"
 import { addSchemaTable, createSchemaTable, isQuoteDetails, moveSchemaTable, schemaProblems } from "../utils/workbenchForm"
 import { columnMatches } from "./schema/schemaText"
 import { TableBlock } from "./schema/TableBlock"
@@ -62,7 +63,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
   const filtering = query !== ""
   // While searched, the columns of a table the search matches, by name; null while it is not.
   const matched = (table: SchemaTable): ReadonlySet<string> | null =>
-    filtering ? new Set(table.columns.filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
+    filtering ? new Set(tableColumns(table).filter((column) => columnMatches(column, query)).map((column) => column.name)) : null
   const shownTables = tables.map((table, index) => ({ table, index, shown: matched(table) })).filter(({ shown }) => shown === null || shown.size > 0)
 
   const addTable = () => {
@@ -82,7 +83,7 @@ export default function SchemaEditor({ readOnly = false }: { readOnly?: boolean 
         className="min-h-0 flex-1 overflow-auto"
         data-testid="schema-tables"
       >
-        <div className="flex max-w-[640px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
+        <div className="flex max-w-[896px] flex-col gap-1.5 px-4 pt-1.5 pb-3 text-xs">
           {tables.length === 0 && (
             <p className="px-1" style={{ color: "var(--text-muted)" }}>
               No tables yet. A table holds related columns, such as <code className="font-mono">policy_details</code>.

@@ -1223,8 +1223,11 @@ class TestOutputSchemaConservativeFallback:
         reads them there through its tables, so the float column is a float and the sum
         over it a float, not a null column, for a one-row and a many-row table alike.
         """
+        # The table's input side, its port quotes_input, which the shaping reads.
         table = {
             "name": "quotes",
+            "side": "input",
+            "port": "quotes_input",
             "rows": rows,
             "columns": [{"name": "segment", "type": "str"}, {"name": "premium", "type": "float"}],
         }
@@ -1243,9 +1246,27 @@ class TestOutputSchemaConservativeFallback:
                         }
                     )
                     if node.id == "quote_input"
+                    else node.model_copy(
+                        update={
+                            "data": node.data.model_copy(
+                                update={
+                                    "config": {
+                                        "code": "df = quotes_input.unpivot(index=['segment'])"
+                                    }
+                                }
+                            )
+                        }
+                    )
+                    if node.id == "shape"
                     else node
                     for node in conservative.nodes
-                ]
+                ],
+                "edges": [
+                    edge.model_copy(update={"sourceHandle": "quotes_input"})
+                    if edge.source == "quote_input"
+                    else edge
+                    for edge in conservative.edges
+                ],
             }
         )
         use_project(tmp_path)

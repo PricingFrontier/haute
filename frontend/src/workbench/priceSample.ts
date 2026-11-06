@@ -1,7 +1,9 @@
 /**
  * A sample priced on the pipeline open in the editor (specs/workbench): the Workbench
  * Output's tables as its preview shows them, every table from one run of the pipeline, in
- * one preview asking for them all. The document goes as the editor holds it, with the
+ * one preview asking for each by its port and answering it under its table's name, a table
+ * the preview cut short refused rather than priced from its first rows. The document goes
+ * as the editor holds it, with the
  * form the view holds, whose tables and sample every Workbench Input and Workbench Output
  * of that request takes, at the top level or inside a submodel, in place of the form
  * folder's. A pipeline without a Workbench Input, which alone is given the sheets' values,
@@ -42,7 +44,8 @@ export async function priceSample(
         : "The pipeline has no Workbench Input, so the sheets reach nothing: add one.",
     )
   }
-  const labels = workbenchTablePorts(workbench.response_tables)
+  const sides = workbench.response_tables.filter((table) => table.columns.length > 0)
+  const labels = workbenchTablePorts(sides)
   if (labels.length === 0) return { tables: {} }
   const result = await previewNode({
     graph,
@@ -59,10 +62,14 @@ export async function priceSample(
   if (result.status !== "ok") {
     throw new Error(result.error || "The Workbench Output's tables could not be previewed.")
   }
-  const tables = labels.map((label) => {
-    const table = result.port_previews?.[label]
-    if (table === undefined) throw new Error(`The Workbench Output's '${label}' table was not previewed.`)
-    return [label, table.preview] as const
+  // Each side's rows by its port, kept under its table's name, as a response holds them.
+  const tables = sides.map(({ name, port }) => {
+    const table = result.port_previews?.[port]
+    if (table === undefined) throw new Error(`The Workbench Output's '${port}' table was not previewed.`)
+    if (table.preview_truncated) {
+      throw new Error(`${port} answers more rows than Preview prices whole (${table.preview.length} shown): a quote's answer must fit.`)
+    }
+    return [name, table.preview] as const
   })
   return { tables: Object.fromEntries(tables) }
 }

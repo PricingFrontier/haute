@@ -28,7 +28,12 @@ def _without(form: FormSpec, removed: dict[str, set[str]]) -> FormSpec:
     for table in form.data_schema.tables:
         drop = removed.get(table.name, set())
         tables.append(
-            table.model_copy(update={"columns": [c for c in table.columns if c.name not in drop]})
+            table.model_copy(
+                update={
+                    "inputs": [c for c in table.inputs if c.name not in drop],
+                    "outputs": [c for c in table.outputs if c.name not in drop],
+                }
+            )
         )
     schema = form.data_schema.model_copy(update={"tables": tables})
     return form.model_copy(update={"data_schema": schema})
@@ -108,7 +113,7 @@ def _save(book: QuoteBook, identity: tuple[str, int], rows: Any, *, priced: bool
 
 
 def _mileages(store: Target) -> list[tuple[Any, ...]]:
-    return store.read("SELECT reg, mileage FROM vehicles ORDER BY quote_row")
+    return store.read("SELECT reg, mileage FROM vehicles ORDER BY table_index")
 
 
 def test_an_opened_quote_carries_its_kept_values_and_a_save_keeps_them(
@@ -176,11 +181,11 @@ def _preset(form: FormSpec, table: str, column: str, options: list[str]) -> Form
     tables = [
         each.model_copy(
             update={
-                "columns": [
+                "inputs": [
                     c.model_copy(update={"options": options, "row_per_value": True})
                     if c.name == column
                     else c
-                    for c in each.columns
+                    for c in each.inputs
                 ]
             }
         )

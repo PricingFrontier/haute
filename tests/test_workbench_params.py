@@ -160,8 +160,9 @@ def test_a_project_whose_pipeline_sits_at_its_root_has_no_params_folder(tmp_path
         read_param_file(tmp_path, "states.csv")
 
 
-def _spec(*columns: dict[str, Any], role: str = "input") -> FormSpec:
-    table = {"name": "policy", "role": role, "columns": list(columns)}
+def _spec(*columns: dict[str, Any], block: str = "inputs") -> FormSpec:
+    """A form whose one table, policy, holds *columns* in *block*, its inputs or outputs."""
+    table = {"name": "policy", block: list(columns)}
     page = {
         "id": "p",
         "title": "Sheet 1",
@@ -194,10 +195,10 @@ def test_a_column_s_values_are_read_again_from_its_file(project: Path) -> None:
 
 
 def test_an_output_column_s_values_are_not_read_again(project: Path) -> None:
-    # Output tables ignore the rules, so a file gone does not stop them.
+    # Outputs ignore the rules, so a file gone does not stop them.
     spec = _spec(
         {"name": "state", "options": ["NY"], "options_source": STATE_SOURCE},
-        role="output",
+        block="outputs",
     )
 
     assert with_param_options(spec, project) == spec

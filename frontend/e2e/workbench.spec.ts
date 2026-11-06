@@ -86,8 +86,8 @@ test.describe("workbench", () => {
     // A column added to the schema, unsaved: on the sheets alone until the save.
     await page.getByRole("button", { name: "Schema" }).click()
     const policy = page.getByRole("region", { name: "Table policy" })
-    await policy.getByRole("button", { name: "Add column" }).click()
-    // After the quote's reference and option, which lead every table, and the policy's two.
+    await policy.getByRole("group", { name: "policy Inputs" }).getByRole("button", { name: "Add column" }).click()
+    // After the quote's reference and option, which lead every table's inputs, and the policy's two.
     const added = policy.getByLabel("Column name").nth(4)
     await expect(added).toBeFocused()
     await added.fill("excess")
@@ -100,7 +100,7 @@ test.describe("workbench", () => {
     await expect(page.getByTestId("toast-notification").filter({ hasText: /Saved → rating[\\/]main\.py/ })).toBeVisible()
     expect(readFormFile("form.json").schema).toEqual(["quote_details", "policy", "pricing"])
     // The quote's reference and option lead the table without being written in its file.
-    expect(readFormFile("schema/policy.json").columns.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
+    expect(readFormFile("schema/policy.json").inputs.map((column: { name: string }) => column.name)).toEqual(["limit", "region", "excess"])
     // The column is in the form folder alone: neither workbench node's config file holds a copy.
     expect(readNodeConfig("workbench_input", "workbench_input")).toEqual({})
     expect(readNodeConfig("workbench_output", "workbench_output")).toEqual({})

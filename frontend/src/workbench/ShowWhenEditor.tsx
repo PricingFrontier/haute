@@ -1,7 +1,7 @@
 /**
  * When a sheet, a section or a component shows (specs/workbench): the conditions in its
  * panel, and the eye it carries on the sheet while building. Conditions test the values typed into
- * one-row input tables, each a row of its column, its test and its value, the control the
+ * the inputs of one-row tables, each a row of its column, its test and its value, the control the
  * column's cell is, or a many-row table's rows: which rows, any, every, how many or a total
  * of a column over them, and the tests a row must pass; a group holds conditions of its
  * own; with two or more, all of them must hold, any, or at least a number. Every change is
@@ -11,6 +11,7 @@ import { Eye, EyeOff, List, X } from "lucide-react"
 import type { CSSProperties } from "react"
 import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
+import { hasInputs, hasOutputs, isOutputColumn, ownOutputs, tableColumns, typedInputs } from "../utils/quoteIdentity"
 import { parseTypedNumber } from "../utils/sheetValues"
 import {
   columnKey,
@@ -26,7 +27,6 @@ import {
   newCondition,
   onPrice,
   priceProblem,
-  newRowTest,
   testableColumns,
   testFields,
   testLabel,
@@ -92,10 +92,35 @@ const listedNumbersValid = (text: string): string | null => {
 /** Values typed comma-separated, each trimmed, the blanks dropped. */
 const splitValues = (text: string): string[] => text.split(",").map((value) => value.trim()).filter((value) => value !== "")
 
-/** The tables a condition can test: the input tables with a column to test. */
-/** The tables a condition can test: the input tables with a column to test, and, on what takes nothing typed, the output tables too, tested on the price. */
+/** A one-row table's columns the column select offers: its inputs, and, on what takes nothing typed, its outputs too, tested on the price. */
+const offeredColumns = (table: SchemaTable, priced: boolean): SchemaColumn[] => [...typedInputs(table), ...(priced ? ownOutputs(table) : [])]
+
+/** Whether the column select offers a many-row table's rows: an input table's, and, on what takes nothing typed, a table of outputs alone's too. */
+const rowsOffered = (table: SchemaTable, priced: boolean): boolean => hasInputs(table) || (priced && hasOutputs(table))
+
+/** The tables a condition can test: those with an input to test, and, on what takes nothing typed, those with an output too, tested on the price. */
 const testable = (form: FormSpec, priced: boolean): SchemaTable[] =>
-  form.schema.tables.filter((table) => (priced || table.role === "input") && testableColumns(table).length > 0)
+  form.schema.tables.filter((table) => (table.rows === "many" ? rowsOffered(table, priced) : offeredColumns(table, priced).length > 0))
+
+/**
+ * The columns a test of a row, or a total, may name in its table: its inputs, and, where the
+ * price is tested or the table has no inputs, its outputs too, each but the index; once
+ * another of the condition's tests, or its total, names a column (`names`), those of that
+ * column's block alone, since a condition on rows tests one block.
+ */
+function rowColumns(table: SchemaTable, priced: boolean, names: readonly string[]): SchemaColumn[] {
+  const offered = priced || !hasInputs(table) ? testableColumns(table) : typedInputs(table)
+  const named = names.find((name) => tableColumns(table).some((column) => column.name === name))
+  if (named === undefined) return offered
+  const output = isOutputColumn(table, named)
+  return offered.filter((column) => isOutputColumn(table, column) === output)
+}
+
+/** The columns a condition on rows names but its test at `except`: its other tests' and its total's. */
+const namesBut = (condition: ListCondition, except: number): string[] => [
+  ...condition.where.filter((_, at) => at !== except).map((test) => test.column),
+  ...(isRowTotal(condition) ? [condition.column] : []),
+]
 
 /** Whether a Show when's or a group's match sentence shows: with two or more conditions, or one while its match is a number. */
 const sentenceShown = (match: Match, count: number) => count > 1 || (count === 1 && typeof match === "number")
@@ -331,7 +356,7 @@ function ConditionRow({
       choices.set(rowsKey(candidate.name), () => withConditionRowsOf(form, condition, candidate.name))
       continue
     }
-    for (const column of testableColumns(candidate)) {
+    for (const column of offeredColumns(candidate, priced)) {
       choices.set(columnKey(candidate.name, column.name), () => withConditionColumn(form, condition, candidate.name, column.name))
     }
   }
@@ -372,7 +397,7 @@ function ConditionRow({
               {candidate.rows === "many" ? (
                 <option value={rowsKey(candidate.name)}>Rows of {candidate.name}</option>
               ) : (
-                testableColumns(candidate).map((column) => (
+                offeredColumns(candidate, priced).map((column) => (
                   <option key={column.name} value={columnKey(candidate.name, column.name)}>
                     {label(column)}
                   </option>
@@ -388,7 +413,7 @@ function ConditionRow({
       <div className="flex items-start gap-1.5">
         <span className="size-4 shrink-0" aria-hidden="true" />
         {list ? (
-          <ListFields form={form} table={table} condition={condition} name={name} onChange={onChange} />
+          <ListFields form={form} priced={priced} table={table} condition={condition} name={name} onChange={onChange} />
         ) : (
           <div className="flex min-w-0 flex-1 flex-wrap items-start gap-1.5">
             <ColumnFields form={form} tableId={condition.table} column={found?.column ?? null} test={condition} name={name} onChange={(next: Condition) => onChange(next)} />
@@ -414,25 +439,31 @@ const ROWS_MARKER = { label: "Rows", icon: List, color: "" }
  */
 function ListFields({
   form,
+  priced,
   table,
   condition,
   name,
   onChange,
 }: {
   form: FormSpec
+  priced: boolean
   table: SchemaTable | undefined
   condition: ListCondition
   name: string
   onChange: (next: ListCondition) => void
 }) {
-  const columns = table === undefined ? [] : testableColumns(table)
-  const numbers = table === undefined ? [] : totalColumns(table)
+  // Its tests and its total name one block: the columns offered for another follow the first named.
+  const named = condition.where.map((test) => test.column)
+  const columns = table === undefined ? [] : rowColumns(table, priced, [...named, ...(isRowTotal(condition) ? [condition.column] : [])])
+  const totalled = new Set(table === undefined ? [] : totalColumns(table).map((column) => column.name))
+  const numbers = table === undefined ? [] : rowColumns(table, priced, named).filter((column) => totalled.has(column.name))
   const kind: ListKind = isRowsCondition(condition) ? condition.rows : isRowCount(condition) ? "count" : condition.total
   const setWhere = (where: RowTest[]) => onChange({ ...condition, where })
   // Any row and Every row need a test, a total a number column.
   const unavailable = (option: ListKind) =>
     option === "any" || option === "every" ? condition.where.length === 0 && columns.length === 0 : option !== "count" && !isRowTotal(condition) && numbers.length === 0
-  const fresh = table === undefined ? null : newRowTest(table)
+  const first = columns[0]
+  const fresh: RowTest | null = first === undefined ? null : { column: first.name, op: testsFor(first.type)[0], values: [], field: null, days: 0 }
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -462,7 +493,7 @@ function ListFields({
             >
               {!numbers.some((column) => column.name === condition.column) && (
                 <option value={condition.column} disabled>
-                  {table?.columns.find((column) => column.name === condition.column)?.name ?? "Missing column"}
+                  {(table === undefined ? undefined : tableColumns(table).find((column) => column.name === condition.column))?.name ?? "Missing column"}
                 </option>
               )}
               {numbers.map((column) => (
@@ -481,6 +512,7 @@ function ListFields({
           key={index}
           form={form}
           table={table}
+          columns={table === undefined ? [] : rowColumns(table, priced, namesBut(condition, index))}
           test={test}
           name={`${name} where ${index + 1}`}
           removable={!isRowsCondition(condition) || condition.where.length > 1}
@@ -542,10 +574,11 @@ function ListFields({
   )
 }
 
-/** A test a row must pass: its column, one of its table's but the index, its test and value, and a cross. */
+/** A test a row must pass: its column, one of `columns`, its test and value, and a cross. */
 function RowTestFields({
   form,
   table,
+  columns,
   test,
   name,
   removable,
@@ -554,14 +587,15 @@ function RowTestFields({
 }: {
   form: FormSpec
   table: SchemaTable | undefined
+  /** The columns it may name: its table's but the index, of the condition's block once another names one. */
+  columns: readonly SchemaColumn[]
   test: RowTest
   name: string
   removable: boolean
   onChange: (next: RowTest) => void
   onRemove: () => void
 }) {
-  const columns = table === undefined ? [] : testableColumns(table)
-  const column = table?.columns.find((candidate) => candidate.name === test.column) ?? null
+  const column = (table === undefined ? undefined : tableColumns(table).find((candidate) => candidate.name === test.column)) ?? null
   return (
     <div role="group" aria-label={name} className="flex flex-col gap-1 pl-2" style={{ borderLeft: "2px solid var(--border)" }}>
       <div className="flex items-center gap-1.5">

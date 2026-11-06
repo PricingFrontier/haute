@@ -122,11 +122,21 @@ def test_saving_twice_gives_identical_bytes() -> None:
 
 
 def test_a_workbench_schema_column_and_a_show_when_condition_sit_on_one_line() -> None:
-    from haute._workbench_folder import _SCHEMA_ONE_LINE, _a_condition
+    from haute._workbench_folder import _a_condition, _schema_one_line
 
-    schema = {"name": "policy", "columns": [{"name": "age", "type": "int"}]}
-    assert render_json(schema, one_line=_SCHEMA_ONE_LINE) == (
-        '{\n  "name": "policy",\n  "columns": [\n    {"name": "age", "type": "int"}\n  ]\n}\n'
+    # A table's inputs and outputs a column a line, and quote_details' columns.
+    schema = {
+        "rows": "one",
+        "inputs": [{"name": "age", "type": "int"}],
+        "outputs": [{"name": "premium", "type": "float"}],
+    }
+    assert render_json(schema, one_line=_schema_one_line) == (
+        '{\n  "rows": "one",\n  "inputs": [\n    {"name": "age", "type": "int"}\n  ],\n'
+        '  "outputs": [\n    {"name": "premium", "type": "float"}\n  ]\n}\n'
+    )
+    details = {"columns": [{"name": "insured", "label": "Insured"}]}
+    assert render_json(details, one_line=_schema_one_line) == (
+        '{\n  "columns": [\n    {"name": "insured", "label": "Insured"}\n  ]\n}\n'
     )
     sheet = {"show_when": {"match": "any", "conditions": [{"column": "p.x", "op": "ticked"}]}}
     assert render_json(sheet, one_line=_a_condition) == (

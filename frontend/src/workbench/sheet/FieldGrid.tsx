@@ -1,5 +1,6 @@
 /** A Table on a sheet: its fields as a grid of rows, or on its side, with its groups, drawn as its look says (specs/workbench). */
 import { useState, type CSSProperties, type MouseEvent } from "react"
+import { isOutputColumn } from "../../utils/quoteIdentity"
 import { cellKey, formattedNumber, presetColumn } from "../../utils/sheetValues"
 import { columnKey } from "../../utils/sheetVisibility"
 import {
@@ -69,10 +70,11 @@ function groupRuns(fields: ShownField[]): { group: string; start: number; size: 
  * shows that table's one value on every row. While its input tables hold no rows it shows
  * `rows` empty ones, which the first value typed into it keeps; once they hold rows it
  * shows every one, so rows can be deleted below `rows`, deleting the last starting it
- * again. An output column shows what pricing gave the row keyed like each grid row,
- * through the first input table the grid shows that is keyed alike, dimmed while the price
- * is for other values. Showing output columns alone, it shows `rows` rows of dashes until
- * there is a price, then a row for each of the first output table's answer, the others'
+ * again. An output column shows what pricing gave the row keyed like each grid row, by key
+ * and never by place: an output of a table whose inputs it shows through that table's own
+ * rows, any other through the first input table the grid shows that is keyed alike, dimmed
+ * while the price is for other values. Showing output columns alone, it shows `rows` rows of
+ * dashes until there is a price, then a row for each of its first output field's table's answer, the others'
  * matched by its keys (`answeredOutputs`), as a Chart of them plots them, none added or
  * deleted. Its options say whether the rows are numbered, how tall they are,
  * which lines it draws, whether every other row is shaded, whether its header's labels are
@@ -134,8 +136,12 @@ export function FieldGrid({
   )
   const given = givenRows.size > 0
   const holding = Math.max(0, ...inputTables.map((id) => held[id]?.length ?? 0))
-  // Each many-row output table of every field, whatever hides; showing no input table, their answer gives its rows once priced.
-  const outputs = rowFields.flatMap(({ found }) => (found !== null && found.table.role === "output" && found.table.rows === "many" ? [found.table] : []))
+  // Each many-row table of every output field, whatever hides; showing no input table, their answer gives its rows once priced.
+  const outputs = [
+    ...new Map(
+      rowFields.flatMap(({ found }) => (found !== null && isOutputColumn(found.table, found.column) && found.table.rows === "many" ? [[found.table.name, found.table] as const] : [])),
+    ).values(),
+  ]
   const answered = inputs.length === 0 ? answeredOutputs(outputs, price) : null
   const answer = outputs.length === 0 ? undefined : answered?.get(outputs[0].name)
   const count =
@@ -184,13 +190,13 @@ export function FieldGrid({
   // without gridlines, or at the grid's left edge.
   const ruleBefore = (found: Found, position: number): string | undefined => {
     if (gridlines === "none" || (position === 0 && !numbered)) return undefined
-    if (found?.table.role === "output") return outputLine
+    if (found !== null && isOutputColumn(found.table, found.column)) return outputLine
     return gridlines === "all" ? gridLine : undefined
   }
   // Transposed, the line above a field's line: an output's, but for the first, under the
   // header or at the grid's top edge; the lines between fields are the rows' as drawn.
   const ruleAbove = (found: Found, position: number): string | undefined =>
-    gridlines === "none" || position === 0 || found?.table.role !== "output" ? undefined : outputLine
+    gridlines === "none" || position === 0 || found === null || !isOutputColumn(found.table, found.column) ? undefined : outputLine
   // Transposed, the line before a row's column in a full grid, but for the first, after the labels.
   const columnLine = (row: number): string | undefined => (gridlines === "all" && row > 0 ? gridLine : undefined)
   const rowLine = gridlines === "none" ? undefined : gridLine
@@ -272,7 +278,7 @@ export function FieldGrid({
         </td>
       )
     }
-    if (fillable(found) && !past(found, row)) {
+    if (found !== null && fillable(found) && !past(found, row)) {
       const at = oneRow(found) ? 0 : row
       return (
         <td
@@ -303,7 +309,7 @@ export function FieldGrid({
         </td>
       )
     }
-    const output = found !== null && found.table.role === "output"
+    const output = found !== null && isOutputColumn(found.table, found.column)
     const priced = output ? pricedAt(found, row) : undefined
     return (
       <td

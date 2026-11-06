@@ -11,6 +11,7 @@ import { INPUT_STYLE } from "../components/form"
 import useStoreCompareStore, { currentComparison } from "../stores/useStoreCompareStore"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { tableColumns } from "../utils/quoteIdentity"
 import { IconButton } from "./schema/IconButton"
 import { CHIP_CLASS } from "./schema/schemaText"
 
@@ -104,7 +105,7 @@ function PairSelect({ extra }: { extra: WorkbenchStoreExtra & { form_table: stri
       .filter((each) => each.table === extra.form_table && each.kind === "missing" && each.column !== null)
       .map((each) => each.column),
   )
-  const candidates = table?.columns.filter((column) => missing.has(column.name)) ?? []
+  const candidates = table === undefined ? [] : tableColumns(table).filter((column) => missing.has(column.name))
   if (candidates.length === 0) return null
   return (
     <select
@@ -146,8 +147,10 @@ export function ComparePanel() {
   const answer = useStoreCompareStore((s) => currentComparison(s, form))
   if (environment === null) return null
   const own = answer?.differences.filter((each) => each.table === null) ?? []
-  const columnName = (table: string, column: string) =>
-    form?.schema.tables.find((each) => each.name === table)?.columns.find((each) => each.name === column)?.name ?? column
+  const columnName = (table: string, column: string) => {
+    const held = form?.schema.tables.find((each) => each.name === table)
+    return (held === undefined ? undefined : tableColumns(held).find((each) => each.name === column)?.name) ?? column
+  }
   return (
     <div data-testid="store-compare" className="flex flex-col gap-1.5 px-2 pt-2 text-[11px]">
       {read.status === "reading" ? (

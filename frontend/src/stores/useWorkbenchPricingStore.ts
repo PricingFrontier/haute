@@ -13,7 +13,8 @@ import { fetchWorkbenchFormTables } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import { quoteEligible } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
-import type { PricedSample } from "../utils/workbenchTables"
+import { IDENTITY_COLUMNS } from "../utils/quoteIdentity"
+import { carriesIdentity, holdsOutput, outputMisfit, type PricedSample } from "../utils/workbenchTables"
 import useDataEpochStore from "./useDataEpochStore"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
@@ -103,14 +104,36 @@ export interface SamplePrice extends PricedValues {
 }
 
 /**
+ * An answer's rows of each keyed response table held to the typed sample's rows of its
+ * table, as the server's `workbench_response` holds a quote's: a misfit (a row with no key,
+ * a key given twice, a key on no row priced) refused with its message (`outputMisfit`), then
+ * each row holding no output value (`holdsOutput`) left out, the identity and the key aside.
+ */
+function fitAnswer(workbench: WorkbenchTablesResponse, tables: PricedSample["tables"]): PricedSample["tables"] {
+  const fitted = { ...tables }
+  for (const table of workbench.response_tables) {
+    const key = table.key
+    const answer = tables[table.name]
+    if (key === null || answer === undefined) continue
+    const typed = workbench.sample[table.name]
+    const request = Array.isArray(typed) ? typed.map((row) => (row as Record<string, unknown>)[key]) : []
+    const misfit = outputMisfit(table, answer.map((row) => row[key]), request)
+    if (misfit !== null) throw new Error(misfit)
+    const outputs = table.columns.slice(carriesIdentity(table) ? IDENTITY_COLUMNS.length : 0).filter((column) => column.name !== key)
+    fitted[table.name] = answer.filter((row) => outputs.some((column) => holdsOutput(row[column.name])))
+  }
+  return fitted
+}
+
+/**
  * Price a form's values on the pipeline: the tables, sample and response tables the
  * server takes from the form (`POST /api/workbench/tables`), then the pricer on the form
- * and them.
+ * and them, the answer held to the rows priced (`fitAnswer`).
  */
 async function priceForm(form: FormSpec, pricer: Pricer): Promise<PricedValues> {
   const workbench = await fetchWorkbenchFormTables(form)
   const { tables } = await pricer(form, workbench)
-  return { tables, sample: workbench.sample }
+  return { tables: fitAnswer(workbench, tables), sample: workbench.sample }
 }
 
 /** How long the form stays unchanged before its sample is priced: a pause in typing. */

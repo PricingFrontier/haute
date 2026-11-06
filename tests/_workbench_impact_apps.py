@@ -45,8 +45,8 @@ def _form(policy: list[dict[str, Any]], pricing: list[dict[str, Any]]) -> dict[s
         "name": "motor",
         "schema": {
             "tables": [
-                {"name": "policy_details", "role": "input", "columns": policy},
-                {"name": "pricing_output", "role": "output", "columns": pricing},
+                {"name": "policy_details", "inputs": policy},
+                {"name": "pricing_output", "outputs": pricing},
             ]
         },
         "pages": [
@@ -67,7 +67,7 @@ PROD_FORM = _form(
     [_column("state"), _column("exposure", "float"), _column("vehicles"), _column("note")],
     [_column("premium", "float")],
 )
-PROD_CODE = "df = policy_details.select(premium=pl.col('exposure') / 2)"
+PROD_CODE = "df = policy_details_input.select(premium=pl.col('exposure') / 2)"
 #: Staging drops the note, adds an age, takes the vehicles as a number and prices a quarter
 #: of the exposure, with a fee beside the premium.
 STAGING_FORM = _form(
@@ -79,7 +79,7 @@ STAGING_FORM = _form(
     ],
     [_column("premium", "float"), _column("fee", "float")],
 )
-STAGING_CODE = "df = policy_details.select(premium=pl.col('exposure') / 4, fee=pl.lit(25.0))"
+STAGING_CODE = "df = policy_details_input.select(premium=pl.col('exposure') / 4, fee=pl.lit(25.0))"
 
 
 def _node(nid: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -103,8 +103,13 @@ def _graph(spec: dict[str, Any], code: str) -> PipelineGraph:
             ),
         ],
         edges=[
-            GraphEdge(id="e1", source="request", target="priced", sourceHandle="policy_details"),
-            GraphEdge(id="e2", source="priced", target="response", targetHandle="pricing_output"),
+            # Each side's port: the table's name and its side.
+            GraphEdge(
+                id="e1", source="request", target="priced", sourceHandle="policy_details_input"
+            ),
+            GraphEdge(
+                id="e2", source="priced", target="response", targetHandle="pricing_output_output"
+            ),
         ],
     )
 

@@ -3340,7 +3340,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockReset().mockImplementation(() => Promise.resolve({ tables: [], sample: {}, response_tables: [], store_columns: {} }))
   })
 
-  const policyTables = [{ name: "policy", rows: "one" as const, columns: [{ name: "state", type: "str" as const }] }]
+  const policyTables = [{ name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null }]
   /**
    * A pipeline whose Workbench Input feeds `priced` from its policy table, which the
    * workbench's tables hold when the editor first fetches them.
@@ -3348,7 +3348,7 @@ describe("App integration - the workbench view (specs/workbench)", () => {
   const withWorkbenchInput = () => {
     const input = makeNode("wb_in", "Workbench Input", "workbenchInput")
     const priced = makeNode("priced", "priced")
-    const fromPolicy = { id: "e_policy", source: "wb_in", sourceHandle: "policy", target: "priced", targetHandle: null, data: { _inputName: "policy" } }
+    const fromPolicy = { id: "e_policy", source: "wb_in", sourceHandle: "policy_input", target: "priced", targetHandle: null, data: { _inputName: "policy_input" } }
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({ nodes: [input, priced], edges: [fromPolicy], preamble: "", preserved_blocks: [], source_revision: "revision-test" }))
     vi.mocked(workbenchApi.fetchWorkbenchTables).mockResolvedValue({ tables: policyTables, sample: {}, response_tables: [], store_columns: {} })
   }

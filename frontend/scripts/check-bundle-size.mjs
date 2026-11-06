@@ -237,7 +237,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Readable output round 2 (READ-46, 4 November 2026): the fixed names of the request input
 // and response node in a new or pasted node, and the refusal of a rename or Edge Join that a
 // code step reads by name, bring it to 1,778.2 KiB (the initial bundle 290.4 KiB); 1,779 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1779
+// Tables of inputs and outputs (6 November 2026): a table's two blocks in the schema editor,
+// the key that puts each output row on its input row and Preview's twin of the pricing's
+// check of it, and the schema pane's layout bring it to 1,781.6 KiB (the initial bundle
+// 293.2 KiB); 1,783 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1783
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
