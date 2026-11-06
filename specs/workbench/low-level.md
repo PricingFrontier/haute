@@ -2414,7 +2414,8 @@ no longer has; and `InputSource` in
   keys held on every connection.
 - `tests/test_quote_store_migrate.py` covers a plan naming each step by key, a removed
   table kept; count discovery including table and column renames, so exactly the requested
-  counts suffice for a plan and appear on its rename steps; and the SQL Haute writes
+  counts suffice for a plan and appear on its rename steps, with a renamed row index
+  counted under its earlier key even when a new column reuses its old name; and the SQL Haute writes
   (`offline_plan` and `render_sql`): from none, every
   table with its keys and references and haute_activity; a column added taking a null; a rename, a change of case and a swap of two
   names through temporary names, never a drop and an add; a retype as the engine's ALTER in

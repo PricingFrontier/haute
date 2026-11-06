@@ -136,8 +136,11 @@ def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[K
         if table["rows"] != after["rows"] or table["name"] != after["name"]:
             wanted.add((table["key"], None))
         columns = _by_key(after["columns"])
+        index = next((column for column in after["columns"] if column.get("index")), None)
         for column in table["columns"]:
-            changed = columns.get(column["key"])
+            changed = (
+                index if column.get("index") and index is not None else columns.get(column["key"])
+            )
             if (
                 changed is None
                 or changed["type"] != column["type"]
@@ -309,7 +312,11 @@ def _plan_columns(
     name = table["name"]
     for column in table["columns"]:
         was = old.get(column["key"])
-        key: Key = (table["key"], column["key"])
+        # Index pairing changes its plan key, but counts still describe the earlier structure.
+        key: Key = (
+            table["key"],
+            earlier["key"] if column is index and earlier is not None else column["key"],
+        )
         if was is None:
             if column["name"].casefold() in removed_names:
                 refusals.append(
