@@ -511,7 +511,7 @@ Out of scope:
   `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
   `below` or `at_most`, with one, for a number or a Date column. A condition on a many-row
   table's rows names the table and the tests a row must pass, all in the same row
-  (`where`), each a column of the table other than its index by name, a test and its values,
+  (`where`), each a column of the table other than a numbered index by name, a test and its values,
   every test's column, and a total's, of one block, its inputs or its outputs,
   as a one-row table's condition has them; and which rows: `any` of them or `every` one
   (`rows`), with one test or more; how many, by a test (`op`, `equals`, `not_equals`,
@@ -1962,7 +1962,7 @@ Out of scope:
     average of none is empty and fails every test; a cell that is blank or not a number adds
     nothing to a total. A
     table's rows are those a grid showing it holds (an index of values gives every one of
-    those) with anything but a numbered index or an index of values typed in them, whatever
+    those) with anything but a numbered index in them, whatever
     the sheets hide: a row with nothing typed in it is no row, as the quote leaves it out.
   - **At least some.** A `show_when` or a group whose `match` is a number holds while at
     least that many of its conditions hold, a group counting as one: a section that shows
@@ -2476,9 +2476,12 @@ Out of scope:
   they were read: each typed value as the cell text it reads as (an Integer its digits, a
   Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
   none, and null a blank), a many-row table's rows in their places by its index (numbered,
-  each in its numbered place, a gap a blank row, and a row whose index is no number, as one
-  saved before the index was numbered, after them in the order it was stored; typed, in the
-  index's order, by number for
+  each in its numbered place, a gap a blank row, and a row whose index is no number or
+  repeats another's number (`"01"` beside `"1"`), as one saved before the index was
+  numbered holds, after them in the order it was stored, so no row is lost and each keeps
+  its kept values; its stored outputs line up with no grid row until the quote is priced
+  again, since they are held under the value it was saved with, which no grid number
+  matches; typed, in the index's order, by number for
   an Integer and by text for Text, since nothing else keeps the order they were typed in; of
   values, each in its value's place), and its outputs as the pricing answered them: a table
   with inputs gives a row of its answer, its index and its outputs, for each row holding an

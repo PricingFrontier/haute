@@ -80,7 +80,7 @@ Two naming notes:
 
 - **Heading (component)** — text naming a section of a sheet, or the sheet itself, large, medium or small, with an optional description under it (`heading` in the file). It shows no schema columns and takes nothing typed. Not a column's label.
 
-- **schema table** — a table of the workbench's schema: a name, one row per quote or many, and typed columns in two blocks, its inputs (sent to the pricing engine) and its outputs (returned by it), either or both. Its inputs are the Workbench Input's port `<table>_input` and its outputs the Workbench Output's `<table>_output`; the quote store keeps both in one table. A many-row table is keyed by its index or by the column giving it a row for each value, never by a value typed, a table of outputs alone by the outputs marked as its key.
+- **schema table** — a table of the workbench's schema: a name, one row per quote or many, and typed columns in two blocks, its inputs (sent to the pricing engine) and its outputs (returned by it), either or both. Its inputs are the Workbench Input's port `<table>_input` and its outputs the Workbench Output's `<table>_output`; the quote store keeps both in one table. A table is keyed by the quote's identity and, with many rows, by its index; no column is marked as a key.
 
 - **key** — what says which row of a schema table is which: the quote's identity, with the index in a many-row table; nothing else is a key, and no column is marked as one.
 
