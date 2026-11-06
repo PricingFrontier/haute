@@ -345,6 +345,59 @@ def test_a_renamed_index_is_paired_with_the_databases_key_column_unasked(target:
     ]
 
 
+def _vehicles_of(index: str, other: str) -> dict[str, Any]:
+    """A many-row input table keyed by its index *index*, with an Integer *other*."""
+    return table(
+        "vehicles",
+        {"name": index, "type": "int", "index": True},
+        column(other, "int"),
+        rows="many",
+    )
+
+
+def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "seats"))
+    made_from_sql(target, before)
+    reused = form(
+        table(
+            "vehicles",
+            {"name": "vehicle_no", "type": "int", "index": True},
+            column("seats", "int"),
+            column("row_number"),
+            rows="many",
+        )
+    )
+
+    comparison = compared(target, reused)
+
+    # The database's key column is the index, whatever the form now names it: no column of
+    # the form takes it by name.
+    assert kinds(comparison) == {
+        ("vehicles", "vehicle_no", "renamed"),
+        ("vehicles", "row_number", "missing"),
+    }
+    assert comparison.plan.refusals == ()
+    target.script(sql(target, reused, comparison))
+    opens(target, reused)
+
+
+def test_an_index_renamed_onto_another_columns_name_is_refused(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "item_number"))
+    made_from_sql(target, before)
+    swapped = form(_vehicles_of("item_number", "row_number"))
+
+    comparison = compared(target, swapped)
+
+    # Paired by what it is, the index's rename onto a name the database's other column holds
+    # is refused, and so is a column added under the name the index keeps: the SQL changes
+    # nothing but keep the database's column the form no longer names, and runs.
+    assert ("vehicles", "item_number", "renamed") in kinds(comparison)
+    assert [step.kind for step in comparison.plan.steps] == ["keep column"]
+    assert len(comparison.plan.refusals) == 2
+    target.script(sql(target, swapped, comparison))
+    assert target.read("SELECT row_number, item_number FROM vehicles") == []
+
+
 def test_a_tables_rows_are_read_from_its_key(target: Target) -> None:
     # Keyed by the identity alone, the database's table is one row a quote; by one more
     # column, many, whatever that column is named.

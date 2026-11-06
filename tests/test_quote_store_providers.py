@@ -617,6 +617,86 @@ def test_a_renamed_index_renames_its_column_keeping_its_values_and_the_tables_ke
     ).close()
 
 
+def _quote_with_two_vehicles(store: Target, index: str, other: str) -> None:
+    store.run(
+        "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, archived, "
+        "created_date, created_by, modified_date, modified_by, quote_version, saved_at, saved_by) "
+        "VALUES ('A-1', 1, 'draft', 'ana', 0, '2026-10-30', 'ana', '2026-10-30', 'ana', 1, "
+        "'2026-10-30 09:00:00', 'ana')",
+        f"INSERT INTO vehicles (quote_reference, quote_option, {index}, {other}) "
+        "VALUES ('A-1', 1, 1, 7), ('A-1', 1, 2, 8)",
+    )
+
+
+def test_an_index_renamed_its_old_name_given_a_new_column_is_a_rename_and_an_addition(
+    store: Target,
+) -> None:
+    base = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("row_number"), column("seats", "int")],
+        }
+    )
+    reused = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("vehicle_no"), column("seats", "int"), column("row_number")],
+        }
+    )
+    store.script(store.sql(base))
+    _quote_with_two_vehicles(store, "row_number", "seats")
+
+    # The index paired first: its old name is free for the new column, added after the rename.
+    plan = offline_plan(base, reused)
+    assert (plan.refusals, [step.kind for step in plan.steps]) == (
+        (),
+        ["rename column", "add column"],
+    )
+    store.script(store.sql(reused, base))
+
+    assert store.read("SELECT vehicle_no, seats, row_number FROM vehicles ORDER BY vehicle_no") == [
+        (1, 7, None),
+        (2, 8, None),
+    ]
+    open_book(store.url, reused, environment=TEST, haute_version="1", sign_in=store.sign_in).close()
+
+
+def test_an_index_renamed_onto_another_columns_name_is_refused_changing_nothing(
+    store: Target,
+) -> None:
+    base = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("row_number"), column("item_number", "int")],
+        }
+    )
+    # The two names swapped: whose values each name should hold is not the SQL's to guess.
+    swapped = form(
+        {
+            "name": "vehicles",
+            "rows": "many",
+            "inputs": [_index("item_number"), column("row_number", "int")],
+        }
+    )
+    store.script(store.sql(base))
+    _quote_with_two_vehicles(store, "row_number", "item_number")
+
+    plan = offline_plan(base, swapped)
+    assert plan.steps == ()
+    assert plan.refusals == (
+        "the index of vehicles, row_number, renamed item_number, takes the name of its column "
+        "item_number: rename that column to a name of its own first, or drop it",
+    )
+    store.script(store.sql(swapped, base))
+    assert store.read("SELECT row_number, item_number FROM vehicles ORDER BY row_number") == [
+        (1, 7),
+        (2, 8),
+    ]
+
+
 def _columns_in_order(server: Target, owner: str, table_name: str) -> str:
     """A catalogue query of *table_name*'s columns in their order."""
     if server.backend == "postgresql":

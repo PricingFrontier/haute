@@ -2519,9 +2519,12 @@ Out of scope:
   temporary names so a change of case or a swap of two names works, and a many-row table's
   index is paired by what it is, never left to the pane: with the earlier form's index of
   the table in a plan from the default branch's form, and with the database's key column
-  after the quote's identity in a plan from the database, so renaming the index renames
-  the column, its values and the table's primary key kept, and a plan never adds an index
-  beside the key column it keeps; a type change as the
+  after the quote's identity in a plan from the database, paired before any column is
+  matched by its name, so renaming the index renames the column, its values and the
+  table's primary key kept, its old name free for a new column, and a plan never adds an
+  index beside the key column it keeps; a rename of the index onto a name another of its
+  table's columns holds, as a swap of two names makes, is refused, and so is a column added
+  under the name a refused rename keeps; a type change as the
   engine's ALTER in place, with a note that a value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows as
   a note of what the table needs, and a column moved between a table's inputs and outputs

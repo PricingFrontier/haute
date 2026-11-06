@@ -254,28 +254,45 @@ def _plan_columns(
     after them."""
     old = _by_key(before["columns"])
     new = _by_key(table["columns"])
-    # A many-row table's index is paired by what it is: renamed, it is the earlier index under
-    # its new name, a rename keeping its values and the table's key, never a column added
-    # beside the one that keys the table.
+    # A many-row table's index is paired by what it is, before any column is matched by its
+    # name: renamed, it is the earlier index under its new name, a rename keeping its values
+    # and the table's key, never a column added beside the one that keys the table, and the
+    # earlier index's name is free for a column of the form's own. Its new name taken by
+    # another of the earlier columns, as a swap of two names makes it, is refused: whose
+    # values each name should hold is not the SQL's to guess.
     index = next((column for column in table["columns"] if column.get("index")), None)
     earlier = next((column for column in before["columns"] if column.get("index")), None)
-    if (
-        index is not None
-        and earlier is not None
-        and index["key"] not in old
-        and earlier["key"] not in new
-    ):
-        paired = {**earlier, "key": index["key"]}
-        old = {key: column for key, column in old.items() if key != earlier["key"]}
-        old[index["key"]] = paired
-        before = {
-            **before,
-            "columns": [paired if column is earlier else column for column in before["columns"]],
-        }
+    if index is not None and earlier is not None and index["key"] != earlier["key"]:
+        taken = old.get(index["key"])
+        if taken is not None:
+            refusals.append(
+                f"the index of {table['name']}, {earlier['name']}, renamed {index['name']}, takes "
+                f"the name of its column {taken['name']}: rename that column to a name of its "
+                "own first, or drop it"
+            )
+        else:
+            paired = {**earlier, "key": index["key"]}
+            old = {key: column for key, column in old.items() if column is not earlier}
+            old[index["key"]] = paired
+            before = {
+                **before,
+                "columns": [
+                    paired if column is earlier else column for column in before["columns"]
+                ],
+            }
     # The names this table's removed columns still hold, since the SQL drops none: no column of
     # the form may take one, added or renamed.
     removed_names = {
         column["name"].casefold() for column in before["columns"] if column["key"] not in new
+    }
+    # The names columns keep when their rename is refused, which no column may be added
+    # under either.
+    staying = {
+        old[column["key"]]["name"].casefold()
+        for column in table["columns"]
+        if column["key"] in old
+        and old[column["key"]]["name"] != column["name"]
+        and column["name"].casefold() in removed_names
     }
     after: list[dict[str, Any]] = []
     name = table["name"]
@@ -287,6 +304,12 @@ def _plan_columns(
                 refusals.append(
                     f"the new column {name}.{column['name']} takes the name of a column the form "
                     "removes, which the SQL keeps: rename one, or drop the removed column first"
+                )
+                continue
+            if column["name"].casefold() in staying:
+                refusals.append(
+                    f"the new column {name}.{column['name']} takes the name of a column whose "
+                    "rename is refused, which keeps it: resolve that rename first"
                 )
                 continue
             steps.append(Step("add column", name, table["key"], column["name"], column["key"]))

@@ -341,25 +341,25 @@ def _match_table(
     form_columns = {column["name"] for column in table["columns"]}
     claimed: set[str] = set()
     matched: dict[str, tuple[CatalogueColumn, str | None]] = {}
-    for column in table["columns"]:
-        found_column = found.column(column["name"])
-        if found_column is not None:
-            matched[column["key"]] = (found_column, None)
-            claimed.add(found_column.name)
-    # A many-row table's index the database holds under another name is its key column
-    # after the identity: paired with the form's index without the analyst, so renaming
-    # the index renames that column and never adds one beside it.
+    # A many-row table's index is the database's key column after the identity, whatever
+    # either is named: paired first, without the analyst, so renaming the index renames that
+    # column and never adds one beside it, and no other column of either takes it by name.
     index = next((column for column in table["columns"] if column["index"]), None)
     keyed = [name for name in found.primary_key if name not in IDENTITY]
-    if index is not None and index["key"] not in matched and len(keyed) == 1:
-        key_column = found.column(keyed[0])
+    key_column = found.column(keyed[0]) if index is not None and len(keyed) == 1 else None
+    if index is not None and key_column is not None:
+        renamed_from = None if key_column.name == index["name"] else key_column.name
+        matched[index["key"]] = (key_column, renamed_from)
+        claimed.add(key_column.name)
+    for column in table["columns"]:
+        found_column = found.column(column["name"])
         if (
-            key_column is not None
-            and key_column.name not in form_columns
-            and key_column.name not in claimed
+            column["key"] not in matched
+            and found_column is not None
+            and found_column.name not in claimed
         ):
-            matched[index["key"]] = (key_column, key_column.name)
-            claimed.add(key_column.name)
+            matched[column["key"]] = (found_column, None)
+            claimed.add(found_column.name)
     taken: list[Rename] = []
     paired = {each.column: each for each in renames if each.table == table["key"]}
     for column in table["columns"]:
