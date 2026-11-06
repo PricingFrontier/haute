@@ -131,17 +131,23 @@ describe("WorkbenchView", () => {
   })
 
   it("keeps the schema's pane within the sheet's area, its right edge and drag handle in view, on a window too narrow for its full stretch", () => {
-    // The sheet's area beside the palette, as a 1080px window leaves it.
+    // The sheet's area beside the palette, as a 1080px window leaves it, measured again as `resize` says.
+    let area = 900
+    let report: ResizeObserverCallback | null = null
+    const measure = () => report?.([{ contentRect: { width: area } } as ResizeObserverEntry], {} as ResizeObserver)
     class AreaObserver {
-      report: ResizeObserverCallback
-      constructor(report: ResizeObserverCallback) {
-        this.report = report
+      constructor(callback: ResizeObserverCallback) {
+        report = callback
       }
       observe() {
-        this.report([{ contentRect: { width: 900 } } as ResizeObserverEntry], this as unknown as ResizeObserver)
+        measure()
       }
       unobserve() {}
       disconnect() {}
+    }
+    const resize = (width: number) => {
+      area = width
+      act(() => measure())
     }
     vi.stubGlobal("ResizeObserver", AreaObserver)
     try {
@@ -162,6 +168,14 @@ describe("WorkbenchView", () => {
       fireEvent.mouseMove(window, { clientX: 1500, buttons: 1 })
       fireEvent.mouseUp(window)
       expect(useWorkbenchViewStore.getState().schemaWidth).toBe(900)
+
+      // An area narrower than the pane's least width wins over it, and a drag cannot pass it.
+      resize(300)
+      expect(pane.firstElementChild).toHaveStyle({ width: "300px" })
+      fireEvent.mouseDown(handle, { clientX: 300 })
+      fireEvent.mouseMove(window, { clientX: 900, buttons: 1 })
+      fireEvent.mouseUp(window)
+      expect(useWorkbenchViewStore.getState().schemaWidth).toBe(300)
     } finally {
       vi.unstubAllGlobals()
       useWorkbenchViewStore.setState({ schemaWidth: SCHEMA_FULL_WIDTH })

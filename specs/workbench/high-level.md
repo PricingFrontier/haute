@@ -849,7 +849,9 @@ Out of scope:
   new table's or column's name takes the focus. A column moved to the outputs loses what
   only an input takes, its rules but Required, its default and its row for each value, and
   its values in the sample, which only what is typed takes; one moved to the inputs loses
-  its key. Each change is one edit. A many-row input table has its index, a column first in
+  its key. A table left with no inputs, its last moved to the outputs or removed, loses its
+  rows in the sample, which holds input tables' alone and whose save refuses any other's.
+  Each change is one edit. A many-row input table has its index, a column first in
   its inputs after the quote's identity, `row_number` until renamed, an Integer whose type
   cannot change, numbering the rows from 1, which neither a drag nor Alt+Up and Alt+Down
   moves or passes and which has no remove: the editor gives a table its index, in the same

@@ -55,10 +55,11 @@ export default function SchemaPane() {
   )
   const room = useRoom(pane)
   // At most half the window, so the sheet stays in view beside it, but never short of the
-  // width its fields take at full stretch; and never past the sheet's area.
+  // width its fields take at full stretch; and never past the sheet's area, which wins over
+  // the pane's least width on a window too narrow for both.
   const widest = () => {
     const most = halfWindowWidth(SCHEMA_FULL_WIDTH)
-    return room === null ? most : Math.max(MIN_WIDTH, Math.min(most, room))
+    return room === null ? most : Math.min(most, room)
   }
   return (
     <div ref={register} className="absolute inset-y-0 left-0 z-20 flex shadow-2xl" data-testid="schema-pane">

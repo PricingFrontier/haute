@@ -393,10 +393,15 @@ function placeIdentity(draft: FormSpec, tableId: string): void {
  */
 export const withIndexAsNeeded = (spec: FormSpec, tableId: string): FormSpec => edit(spec, (draft) => placeIndex(draft, tableId))
 
-/** Within an edit: the index and keys placed, then the identity, as Control flow 18 orders them. */
+/**
+ * Within an edit: the index and keys placed, then the identity, as Control flow 18 orders
+ * them; and a table left with no inputs, its last moved to the outputs or removed, gives up
+ * its rows in the sample, which holds input tables' alone, as the form folder's save does.
+ */
 const settleBlocks = (draft: FormSpec, tableId: string): void => {
   placeIndex(draft, tableId)
   placeIdentity(draft, tableId)
+  if (!hasInputs(schemaTableOf(draft, tableId))) delete draft.sample[tableId]
 }
 
 /**

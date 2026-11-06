@@ -572,9 +572,11 @@ describe("columns", () => {
     spec = moveSchemaColumn(spec, "t", "peril", "outputs", 2)
     expect(spec.schema.tables[0].outputs.find((c) => c.name === "peril")).toMatchObject({ options: [], options_source: null, row_per_value: false })
 
-    // The last typed input gone to the outputs: no index, no input side, the identity heading the outputs, its keys offered.
+    // The last typed input gone to the outputs: no index, no input side, the identity heading the outputs, its keys offered,
+    // and no rows in the sample, which holds input tables' alone and whose save refuses any other's.
     expect(blocks()).toEqual([[], ["quote_reference", "quote_option", "limit", "premium", "peril"]])
     expect(tablePorts(spec.schema.tables[0])).toEqual(["t_output"])
+    expect(spec.sample).toEqual({})
     expect(messages(spec)).toEqual(['Table "t" has many rows of outputs alone, so it needs a key column'])
     spec = updateSchemaColumn(spec, "t", "peril", { key: true })
     expect(messages(spec)).toEqual([])
@@ -594,8 +596,11 @@ describe("columns", () => {
     expect(names()).toEqual(["quote_reference", "quote_option", "item"])
     spec = setSchemaTableRows(spec, "t", "many")
     expect(names()).toEqual(["quote_reference", "quote_option", "row_number", "item"])
+    spec = withSampleCell(spec, "t", 1, "item", "x")
     spec = removeSchemaColumn(spec, "t", "item")
     expect(names()).toEqual(["quote_reference", "quote_option"])
+    // Its rows go from the sample with its last input, so the form saves.
+    expect(spec.sample).toEqual({})
     // A table of no column of its own takes none; its outputs alone take none either.
     spec = addSchemaColumn(spec, "t", "outputs", column("premium"))
     expect(spec.schema.tables[0]).toMatchObject({ inputs: [], outputs: [{ name: "quote_reference" }, { name: "quote_option" }, { name: "premium" }] })

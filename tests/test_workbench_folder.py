@@ -2803,6 +2803,13 @@ NAME_REFUSALS = [
         ("COM1",),
         id="COM1 as a component's name",
     ),
+    # The sample holds input tables' rows alone: the editor drops a table's rows as it loses
+    # its last input, so a form still holding them is refused, never saved without them.
+    pytest.param(
+        lambda form: form["sample"].update(pricing=[{}]),
+        ("pricing",),
+        id="sample rows of a table of outputs alone",
+    ),
 ]
 
 
