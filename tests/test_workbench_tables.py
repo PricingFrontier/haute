@@ -9,6 +9,7 @@ import copy
 import json
 import re
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -599,6 +600,8 @@ def test_a_requests_keyed_rows_each_hold_their_own_key(keys: list[Any], says: st
         ("Équipe", '"Équipe"'),
         (date(2026, 1, 31), "2026-01-31"),
         (True, "true"),
+        # Any other value as its text.
+        (Decimal("1.50"), "1.50"),
     ],
 )
 def test_a_key_is_said_as_a_message_says_it(value: object, text: str) -> None:

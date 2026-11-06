@@ -1265,14 +1265,17 @@ def _keyed_response(
     return as_response(tables, quote)
 
 
-def test_an_input_tables_outputs_are_answered_under_its_name_with_their_key() -> None:
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_an_input_tables_outputs_are_answered_under_its_name_with_their_key(
+    engine: CollectEngine,
+) -> None:
     # Answered in another order than the quote's rows, and none for item 2: each row is
     # answered with its key, which puts it on its row, and item 2 is answered nothing.
     response = _keyed_response(
         {"item_number": [3, 1], "premium": [30.0, 10.0], "loading": [1.5, 1.0]}, [1, 2, 3]
     )
 
-    assert render_output_document(_collected(response)) == [
+    assert render_output_document(execution_collect(response, engine=engine)) == [
         {
             "equipment": [
                 {"item_number": 3, "premium": 30.0, "loading": 1.5},
@@ -1320,7 +1323,10 @@ def test_an_answer_misfitting_its_quotes_rows_fails_the_pricing(
         execution_collect(response, engine=engine)
 
 
-def test_an_answer_row_holding_no_output_value_is_left_out_as_a_row_answered_nothing() -> None:
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_an_answer_row_holding_no_output_value_is_left_out_as_a_row_answered_nothing(
+    engine: CollectEngine,
+) -> None:
     nan, inf = float("nan"), float("inf")
     response = _keyed_response(
         {
@@ -1335,7 +1341,7 @@ def test_an_answer_row_holding_no_output_value_is_left_out_as_a_row_answered_not
         layers={"layer": [1, 1, None], "premium": [None, nan, 2.0]},
     )
 
-    (answered,) = _collected(response).to_dicts()
+    (answered,) = execution_collect(response, engine=engine).to_dicts()
 
     (kept,) = answered["equipment"]
     assert (kept["item_number"], kept["premium"]) == (6, 5.0)
@@ -1359,11 +1365,12 @@ def test_a_table_of_outputs_alone_is_answered_as_it_comes_whatever_its_rows() ->
     ]
 
 
-def test_a_node_preview_answers_a_misfit_without_refusing() -> None:
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_a_node_preview_answers_a_misfit_without_refusing(engine: CollectEngine) -> None:
     # A node preview has no quote to hold the rows to: they are answered as they are.
     response = _keyed_response({"item_number": [None, 1, 1], "premium": [1.0, 2.0, None]})
 
-    assert render_output_document(_collected(response)) == [
+    assert render_output_document(execution_collect(response, engine=engine)) == [
         {
             "equipment": [
                 {"premium": 1.0},
