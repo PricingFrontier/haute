@@ -1,3 +1,10 @@
+# Local agent configuration
+
+Keep machine-specific and person-specific agent configuration out of this repository.
+Anything committed here reaches every downstream user and agent that checks it out, where it can have effects nobody intended.
+Put local configuration in your agent's global configuration (or somewhere it points, such as a provider-agnostic global configuration), or in an `AGENTS.md` in the folder that contains this checkout.
+If that parent-folder file exists, read it before starting work.
+
 # Engineering priorities
 
 - Prioritise user experience, correctness, maintainability, and engineering quality over quick fixes or band-aids.
