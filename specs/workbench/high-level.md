@@ -747,11 +747,11 @@ Out of scope:
     match". While it filters nothing is added, moved or collapsed (no Add column, Add table
     or index, no grips, no Alt+Up or Alt+Down, Enter in a name only committing it, the
     collapse toggles off), so each edit is to a column it shows; emptying it, by its clear
-    button or Escape, shows the whole schema again as it was. Its Compare, beside its SQL,
-    chooses one of the environments `haute.toml` declares, or none, and compares the form
+    button or Escape, shows the whole schema again as it was. Its environment strip
+    chooses one of the environments `haute.toml` declares and compares the form
     with the tables that environment's database holds: Haute reads them through the
-    environment's connection in `connections.toml` (the quote store, below) as Compare
-    chooses it and as its Read again is pressed, never as the form is edited, counting the
+    environment's connection in `connections.toml` (the quote store, below) as an unchecked
+    environment is chosen and as Check again is pressed, never as the form is edited, counting the
     quotes holding values in each table and column, and changes nothing; the form the view
     holds, saved or not, is compared with what was read as it changes. Each table and column
     of the form is marked where it differs there (missing, renamed from another name, of
@@ -770,7 +770,14 @@ Out of scope:
     An environment with no connection, one that cannot be read
     or a database that cannot be reached or refuses the sign-in is said, naming the file and
     the variables to set, never a server, a database, a user, a credential or a value read.
-    The comparison is the view's own, neither saved nor undone, and closes with the pane.
+    The comparison is the view's own, neither saved nor undone. Each environment keeps
+    its own last read and comparison while this project is open; closing the pane keeps
+    them. Explicit column rename choices are shared across these environments and checked
+    against each one's catalogue. A choice no longer applicable is reported, never silently
+    replaced by adding an empty column. A destination already present with its source absent
+    needs no rename, without claiming that a migration ran. Adopting another pipeline
+    document, reloading the form, or changing the configured environment list clears this
+    session state and ignores its outstanding answers.
     It stays open as the mode changes and as another
     sheet shows, and opening it keeps the selection and the properties panel. While building
     it edits the schema; in Preview it shows the schema read only: a table still collapses
@@ -778,15 +785,43 @@ Out of scope:
     select takes a choice, and no table or column is added, removed or moved. Keys pressed
     in it are its own, never the sheet's.
 
-  - **The tables' SQL.** While building, the schema's pane's SQL, beside its Close, opens a
-    window of the SQL that brings an environment's tables to the form the view holds, saved
-    or not (the quote store, below): a tab for each environment `haute.toml` declares, its
-    SQL in that environment's engine; what it starts from: the tables the database holds, on
-    the tab of the environment Compare shows, the first there, with its renames and the
-    quotes holding values in each table and column a change touches; the form as the
-    project's default branch holds it, the first elsewhere while that branch holds a form;
-    or none, for a database that holds no store yet; and Copy. With no environment declared
-    the window says so. In Preview, SQL is disabled.
+  - **Reviewing database changes.** The pane shows the configured environments with their
+    status: Not checked, Checking, Comparing, Compatible, Changes needed, Needs attention,
+    or Check failed. Choosing one reads it only if it has not been read; Check again reads
+    it afresh, and Check environments reads each declared environment. Editing the shared
+    schema compares it with those snapshots without rereading databases. A comparison is
+    current only for the form, rename choices and catalogue it was requested for. Each
+    successful read shows its date and time. Compatible means the tables support this
+    schema, including permitted retained columns; it does not establish compatibility with
+    a running app, permissions to run that app, or which migrations were executed.
+
+    Review changes opens the selected environment's readable plan above its SQL: SQL
+    changes, Manual work, and Retained in database. Additions name the new table or column,
+    with new ordinary columns initially empty; confirmed renames keep the existing values;
+    type changes require conversion review, SQLite type changes and row/key changes need
+    manual work. Planner refusals and unresolved rename choices prevent SQL export until
+    resolved; other manual work remains visible even when SQL for part of the plan can be
+    exported. Retained input-table columns say that supported values survive saves until
+    their row is deleted; retained output-only columns say that later saves clear their
+    values. Permanent database deletion is left to the database owner, never performed
+    by a schema edit. Renames, retyping and row/key changes say to coordinate with the app
+    release because a running app may still require the old structure; the pane does not
+    claim that release compatibility was checked.
+
+    The target is explicitly the current working schema, labelled as unsaved or with its
+    saved form revision, never presented as the deployed release. One environment selection
+    follows comparison, review, Copy SQL, Download SQL and Check again. SQL defaults to the
+    selected database snapshot; a pending or failed live comparison offers no substituted
+    SQL. Offline SQL is an explicit alternative, from the default branch or a new database,
+    labelled as not checked against the database. The existing SQL entry opens this same
+    window; with no selected environment it offers offline generation. Copy and download
+    failures are actionable errors. Download names the environment and planning source.
+    Neither export nor saving the schema changes the database or marks it compatible;
+    after the database owner runs the SQL, Check again verifies the actual tables. Changes
+    to the form, pairings or environment invalidate earlier displayed SQL until the current
+    answer arrives. With no environments declared the window says so. Review and SQL export
+    are disabled in Preview. Direct execution, saved migration packages and deployed-release
+    selection are outside this workflow.
 
   - **Save.** Save and Ctrl/Cmd+S save the project, the same from either toolbar, with a
     focused field's edit included: the form is saved first when it holds unsaved edits or

@@ -70,7 +70,6 @@ export default function SchemaPane() {
         onClose={() => setOpen(false)}
         actions={
           <>
-            <CompareControls />
             <button
               type="button"
               className="btn-ghost rounded px-1.5 py-0.5 text-[11px]"
@@ -86,7 +85,8 @@ export default function SchemaPane() {
         minWidth={MIN_WIDTH}
         maxWidth={widest}
       >
-        <ComparePanel />
+        <CompareControls />
+        <ComparePanel onReview={() => setStoreSqlOpen(true)} />
         <SchemaEditor readOnly={previewing} />
       </SidePanel>
       {storeSqlOpen && <StoreSqlWindow onClose={() => setStoreSqlOpen(false)} />}

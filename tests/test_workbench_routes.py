@@ -1389,6 +1389,98 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
     assert again["sql"] == "-- The tables already fit the form: nothing to change.\n"
 
 
+def test_store_review_adds_renames_and_retains_values_then_verifies_the_database(
+    project: Path,
+) -> None:
+    import sqlite3
+
+    from haute._quote_store import open_book, store_url
+    from haute._workbench_form import FormSpec, with_quote_details
+
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    old = form(
+        {**POLICY, "inputs": [*POLICY["inputs"], column("legacy")]},
+        {**PRICING, "outputs": [*PRICING["outputs"], column("old_premium", "float")]},
+    )
+    write_form(project, old)
+    database = _dev_database(project, old)
+    with open_book(
+        store_url(database),
+        with_quote_details(FormSpec.model_validate(old)),
+        environment="dev",
+        haute_version="1",
+    ) as book:
+        book.create(
+            operation="review-quote",
+            actor="ana",
+            at=book.now(),
+            reference="Q1",
+            values={"policy_details": [{"state": "CA", "exposure": "125", "legacy": "kept"}]},
+        )
+    proposed = form(
+        {
+            **POLICY,
+            "inputs": [column("territory"), column("exposure", "float"), column("flood_zone")],
+        },
+        PRICING,
+    )
+    pairing = {"table": "policy_details", "column": "territory", "was": "state"}
+    before = database.read_bytes()
+
+    response = _compare(proposed, _catalogue().json()["tables"], [pairing])
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    assert review["provider"] == "sqlite"
+    assert review["requires_maintenance"]
+    assert review["blocked"] == []
+    assert review["manual"] == []
+    changes = {(each["table"], each["column"]): each for each in review["changes"]}
+    added = changes["policy_details", "flood_zone"]
+    assert added["kind"] == "add column" and added["disposition"] == "sql"
+    assert "initially empty" in added["description"]
+    renamed = changes["policy_details", "territory"]
+    assert renamed["kind"] == "rename column" and renamed["was"] == "state"
+    assert renamed["quotes"] == 1
+    assert "existing values" in renamed["description"]
+    retained = changes["policy_details", "legacy"]
+    assert retained["disposition"] == "retained"
+    assert "until the row is deleted" in retained["description"]
+    output = changes["pricing_output", "old_premium"]
+    assert output["disposition"] == "retained"
+    assert "later saves clear" in output["description"]
+    assert not review["matches"]
+    assert database.read_bytes() == before
+
+    with sqlite3.connect(database) as raw:
+        raw.executescript(review["sql"])
+        assert raw.execute(
+            "SELECT territory, exposure, flood_zone, legacy FROM policy_details"
+        ).fetchone() == ("CA", 125.0, None, "kept")
+
+    verified = _compare(proposed, _catalogue().json()["tables"], [pairing]).json()
+    assert verified["matches"]
+    assert verified["blocked"] == []
+    assert all(each["disposition"] == "retained" for each in verified["changes"])
+
+
+def test_store_review_blocks_an_unresolved_rename_instead_of_suggesting_an_empty_replacement(
+    project: Path,
+) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    pairing = {"table": "policy_details", "column": "value", "was": "missing_source"}
+
+    response = _compare(form(_exposure_named("value")), _catalogue().json()["tables"], [pairing])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["blocked"] == [
+        "Cannot rename policy_details.missing_source to value in this database. "
+        "Remove or update the rename choice before exporting SQL."
+    ]
+
+
 def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

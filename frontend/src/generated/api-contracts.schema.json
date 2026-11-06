@@ -28209,6 +28209,86 @@
       "title": "WorkbenchStoreCatalogueResponse",
       "type": "object"
     },
+    "WorkbenchStoreChange": {
+      "description": "A readable operation from the same plan as the SQL, not an execution result.",
+      "properties": {
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Column"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "sql",
+            "manual",
+            "retained"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "create table",
+            "add column",
+            "rename table",
+            "rename column",
+            "keep table",
+            "keep column",
+            "retype column",
+            "reshape table"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Quotes"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "was": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Was"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "column",
+        "was",
+        "disposition",
+        "description",
+        "quotes"
+      ],
+      "title": "WorkbenchStoreChange",
+      "type": "object"
+    },
     "WorkbenchStoreColumn": {
       "description": "A column the quote store keeps in a table that the form does not, which the schema\neditor shows locked: its name and what it holds.",
       "properties": {
@@ -28236,6 +28316,20 @@
     "WorkbenchStoreCompareResponse": {
       "description": "The form compared with an environment's tables: each difference, each extra, the\npairings taken, whether the database matches the form, and the SQL that brings its tables\nto the form, from what they hold.",
       "properties": {
+        "blocked": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocked",
+          "type": "array"
+        },
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchStoreChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
         "differences": {
           "items": {
             "$ref": "#/$defs/WorkbenchStoreDifference"
@@ -28250,9 +28344,20 @@
           "title": "Extras",
           "type": "array"
         },
+        "manual": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Manual",
+          "type": "array"
+        },
         "matches": {
           "title": "Matches",
           "type": "boolean"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
         },
         "renames": {
           "items": {
@@ -28260,6 +28365,10 @@
           },
           "title": "Renames",
           "type": "array"
+        },
+        "requires_maintenance": {
+          "title": "Requires Maintenance",
+          "type": "boolean"
         },
         "sql": {
           "title": "Sql",
@@ -28271,7 +28380,12 @@
         "extras",
         "renames",
         "matches",
-        "sql"
+        "sql",
+        "provider",
+        "changes",
+        "manual",
+        "blocked",
+        "requires_maintenance"
       ],
       "title": "WorkbenchStoreCompareResponse",
       "type": "object"

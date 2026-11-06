@@ -226,7 +226,15 @@ def _plan(
             recorded_after.append(before)
             continue
         if before["name"] != table["name"]:
-            steps.append(Step("rename table", table["name"], table["key"], was=before["name"]))
+            steps.append(
+                Step(
+                    "rename table",
+                    table["name"],
+                    table["key"],
+                    was=before["name"],
+                    quotes=_count(counts, (table["key"], None)),
+                )
+            )
         columns_after = _plan_columns(table, before, counts, steps, refusals)
         recorded_after.append({**table, "columns": columns_after})
 
@@ -331,6 +339,7 @@ def _plan_columns(
                     column["name"],
                     column["key"],
                     was=was["name"],
+                    quotes=_count(counts, key),
                 )
             )
         if was["type"] != column["type"]:

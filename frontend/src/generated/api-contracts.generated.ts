@@ -6053,11 +6053,36 @@ export interface WorkbenchCatalogueColumn {
  * to the form, from what they hold.
  */
 export interface WorkbenchStoreCompareResponse {
+  blocked: string[];
+  changes: WorkbenchStoreChange[];
   differences: WorkbenchStoreDifference[];
   extras: WorkbenchStoreExtra[];
+  manual: string[];
   matches: boolean;
+  provider: string;
   renames: WorkbenchStoreRename[];
+  requires_maintenance: boolean;
   sql: string;
+}
+/**
+ * A readable operation from the same plan as the SQL, not an execution result.
+ */
+export interface WorkbenchStoreChange {
+  column: string | null;
+  description: string;
+  disposition: 'sql' | 'manual' | 'retained';
+  kind:
+    | 'create table'
+    | 'add column'
+    | 'rename table'
+    | 'rename column'
+    | 'keep table'
+    | 'keep column'
+    | 'retype column'
+    | 'reshape table';
+  quotes: number | null;
+  table: string;
+  was: string | null;
 }
 /**
  * A way the database differs from the form: the form's table and column by name (no table
