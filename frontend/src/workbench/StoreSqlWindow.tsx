@@ -67,7 +67,7 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   const readError = read.status === "failed" ? read.message : compared.status === "failed" ? compared.message : null
   const failure = source === "database" ? readError : answered?.status === "failed" ? answered.message : null
   const empty = source === "database" ? configured.length === 0 : answer?.environments.length === 0
-  const target = dirty ? "Working schema · Unsaved changes" : `Working schema · Saved revision ${revision ?? "not recorded"}`
+  const target = dirty ? "Working schema · Unsaved changes" : "Working schema · Saved"
 
   const exportSql = async (download: boolean) => {
     if (disabled || sql === undefined || environment === null) return
@@ -84,31 +84,21 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <ModalShell ariaLabel="Review database changes" onClose={onClose} width="w-[760px] max-w-[calc(100vw-24px)]" testId="store-sql-window">
-      <ModalFormHeader title="Review database changes"><span className="break-all">{target}</span></ModalFormHeader>
-      <div className="flex max-h-[75vh] flex-col gap-4 overflow-auto px-4 py-3 text-xs">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1">
+    <ModalShell ariaLabel="Export database changes" onClose={onClose} width="w-[560px] max-w-[calc(100vw-24px)]" testId="store-sql-window">
+      <ModalFormHeader title="Export SQL">{target}</ModalFormHeader>
+      <div className="flex max-h-[75vh] flex-col gap-4 overflow-auto px-5 py-4 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="flex items-center gap-2">
             <span>Environment</span>
             <select aria-label="Environment" value={environment ?? ""} onChange={(event) => choose(event.target.value, source === "database")} className="rounded border px-2 py-1" style={SELECT_STYLE}>
               {environment === null && <option value="">Choose environment</option>}
               {names.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </label>
-          <label className="flex flex-col gap-1">
-            <span>Compare from</span>
-            <select aria-label="Compare from" value={source} onChange={(event) => setSource(event.target.value as Source)} className="rounded border px-2 py-1" style={SELECT_STYLE}>
-              <option value="database">Database snapshot</option>
-              <option value="branch">Default branch (offline)</option>
-              <option value="none">New database (offline)</option>
-            </select>
-          </label>
           {source === "database" && environment !== null && (
-            <button type="button" className="btn-ghost rounded px-2 py-1" disabled={read.status === "reading"} onClick={readAgain}>Check {environment} again</button>
+            <button type="button" className="focus-ring hover-bg disabled:opacity-50 rounded px-2 py-1" disabled={read.status === "reading"} onClick={readAgain}>Check {environment} again</button>
           )}
-          {provider && <span style={QUIET_STYLE}>{provider}</span>}
         </div>
-        {source === "database" && read.status === "read" && <p style={QUIET_STYLE}>Database checked <time dateTime={new Date(read.checkedAt).toISOString()}>{new Date(read.checkedAt).toLocaleString()}</time></p>}
         {source !== "database" && <p style={{ color: "var(--warning)" }}>Offline SQL · Not checked against this database. {answer && (answer.branch === null ? "Starts from a new database." : `Starts from ${answer.branch}.`)}</p>}
         {stale && <p role="alert" style={{ color: "var(--danger-text)" }}>The schema changed on disk. Reload it before exporting SQL.</p>}
         {empty ? <p role="status">No hosted environments are declared.</p>
@@ -117,18 +107,35 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
               : sql === undefined ? <p role="status" style={QUIET_STYLE}>{source === "database" ? "Checking and comparing the database…" : "Writing the SQL…"}</p>
                 : <>
                   {source === "database" && comparison !== null && <StorePlanReview answer={comparison} />}
-                  <details open={source !== "database"}>
+                  <details>
                     <summary className="cursor-pointer py-1">View SQL</summary>
                     <pre data-testid="store-sql" className="mt-2 max-h-[35vh] overflow-auto rounded p-3 font-mono text-[11px] leading-relaxed" style={{ background: "var(--bg-base)", border: "1px solid var(--border)", color: "var(--text-primary)" }}>{sql}</pre>
+                    <button type="button" className="focus-ring hover-bg disabled:opacity-50 mt-2 rounded px-2 py-1" disabled={disabled} onClick={() => void exportSql(false)}>Copy SQL</button>
                   </details>
                 </>}
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn-primary rounded px-3 py-1.5" disabled={disabled} onClick={() => void exportSql(true)}>Download SQL</button>
-          <button type="button" className="btn-ghost rounded px-3 py-1.5" disabled={disabled} onClick={() => void exportSql(false)}>Copy SQL</button>
-          <button type="button" className="btn-ghost ml-auto rounded px-3 py-1.5" onClick={onClose}>Close</button>
+        <details style={QUIET_STYLE}>
+          <summary className="cursor-pointer py-1">SQL options</summary>
+          <div className="mt-2 flex flex-col gap-2 rounded border p-3" style={{ borderColor: "var(--border)" }}>
+            <label className="flex flex-wrap items-center gap-2">
+              <span>Compare from</span>
+              <select aria-label="Compare from" value={source} onChange={(event) => setSource(event.target.value as Source)} className="rounded border px-2 py-1" style={SELECT_STYLE}>
+                <option value="database">Database snapshot</option>
+                <option value="branch">Default branch (offline)</option>
+                <option value="none">New database (offline)</option>
+              </select>
+            </label>
+            <p className="break-all">Saved revision {revision ?? "not recorded"}{provider ? ` · ${provider}` : ""}</p>
+            {source === "database" && read.status === "read" && <p>Database checked <time dateTime={new Date(read.checkedAt).toISOString()}>{new Date(read.checkedAt).toLocaleString()}</time></p>}
+            {configured.length > 0 && <button type="button" className="focus-ring hover-bg disabled:opacity-50 self-start rounded px-2 py-1" onClick={() => state.checkAll(configured)}>Check environments</button>}
+          </div>
+        </details>
+        <div className="flex items-center justify-end gap-2 border-t pt-3" style={{ borderColor: "var(--border)" }}>
+          <button type="button" className="focus-ring hover-bg disabled:opacity-50 rounded px-3 py-1.5" onClick={onClose}>Close</button>
+          <button type="button" className="focus-ring rounded px-3 py-1.5 font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
+            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }} disabled={disabled} onClick={() => void exportSql(true)}>Download SQL</button>
         </div>
         {notice !== null && notice.sql === sql && <p role={notice.error ? "alert" : "status"} style={{ color: notice.error ? "var(--danger-text)" : "var(--text-secondary)" }}>{notice.text}</p>}
-        <p style={QUIET_STYLE}>Saving the schema and exporting SQL leave the database unchanged. After the database owner runs it, check again to verify its tables.</p>
+        <p style={QUIET_STYLE}>Exporting leaves the database unchanged. Your database owner runs the SQL.</p>
       </div>
     </ModalShell>
   )

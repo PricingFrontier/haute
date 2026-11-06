@@ -19,6 +19,7 @@ import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../.
 import { columnKey } from "../../utils/sheetVisibility"
 import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
+import { TableDatabaseDetails } from "../ColumnDatabaseDetails"
 import { ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
@@ -309,6 +310,7 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
             )
           })}
           {!filtering && kept.map((column) => <StoreColumnRow key={column.name} column={column} />)}
+          {!filtering && <TableDatabaseDetails table={table.name} />}
           {locked && (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.

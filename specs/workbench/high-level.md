@@ -785,18 +785,36 @@ Out of scope:
     select takes a choice, and no table or column is added, removed or moved. Keys pressed
     in it are its own, never the sheet's.
 
-  - **Reviewing database changes.** The pane shows the configured environments with their
-    status: Not checked, Checking, Comparing, Compatible, Changes needed, Needs attention,
-    or Check failed. Choosing one reads it only if it has not been read; Check again reads
-    it afresh, and Check environments reads each declared environment. Editing the shared
+  - **Reviewing database changes.** One compact Database selector replaces an environment
+    button strip and comparison panel. Its choices include each environment's status:
+    Not checked, Checking, Comparing, Compatible, Changes needed, Needs attention, or
+    Check failed. A refresh action checks the selected database again. Choosing one reads
+    it only if it has not been read; Check environments is available in the SQL options.
+    Editing the shared
     schema compares it with those snapshots without rereading databases. A comparison is
     current only for the form, rename choices and catalogue it was requested for. Each
     successful read shows its date and time. Compatible means the tables support this
     schema, including permitted retained columns; it does not establish compatibility with
     a running app, permissions to run that app, or which migrations were executed.
 
-    Review changes opens the selected environment's readable plan above its SQL: SQL
-    changes, Manual work, and Retained in database. Additions name the new table or column,
+    With a database selected, each field's usual configuration-summary area shows its
+    database status, including matches and pending/failed checks. Its status opens the
+    existing field details, where a Database section explains the difference (including
+    creation of a missing table) and accepts
+    the information needed to resolve it. A missing field offers Create a new column or
+    an explicit rename from an available database-only column of that table; a shared
+    rename can be changed or removed there. Pending comparisons never show an old match
+    or accept a new pairing. The ordinary label/rules controls remain available. Without
+    a database selected the normal configuration summaries return. Database-only fields
+    are listed in a collapsed section inside their table, with their retention behavior.
+    There is no standing comparison summary above the schema tables.
+
+    Export SQL opens a concise summary for the selected environment: short action rows,
+    with technical descriptions and retained items behind disclosures. Manual work and
+    blockers remain clearly identified. Rename choices whose field was removed are
+    removable in this window so no blocker loses its remedy. SQL, provider, checked time,
+    saved revision, alternative planning sources and Check environments are secondary
+    details; the selected environment and offline status remain visible. Additions name the new table or column,
     with new ordinary columns initially empty; confirmed renames keep the existing values;
     type changes require conversion review, SQLite type changes and row/key changes need
     manual work. Planner refusals and unresolved rename choices prevent SQL export until

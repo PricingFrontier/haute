@@ -6,6 +6,7 @@ import { isOutputColumn, tableColumns } from "../../utils/quoteIdentity"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../../panels/explore/pivotNumberFormat"
 import { isNumeric } from "../columnTypes"
+import { ColumnDatabaseDetails } from "../ColumnDatabaseDetails"
 import { AllowedField } from "./AllowedField"
 import { DefaultField } from "./DefaultField"
 import { IndexKindSelect } from "./IndexControl"
@@ -58,6 +59,7 @@ export function ColumnDetails({
       className="mr-12 ml-7 grid max-w-[32rem] min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
       style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}
     >
+      <ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} />
       {column.index !== null && (
         <>
           <span style={{ color: "var(--text-muted)" }}>Index values</span>

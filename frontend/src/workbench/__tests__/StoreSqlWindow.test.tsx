@@ -32,10 +32,9 @@ const LIVE: WorkbenchStoreCompareResponse = {
   manual: [], blocked: [], requires_maintenance: true,
 }
 
-function live(answer = LIVE) {
+function live(answer = LIVE, renames = answer.renames) {
   const form = useWorkbenchFormStore.getState().form!
   const read: CatalogueRead = { status: "read", tables: [], checkedAt: Date.UTC(2026, 10, 6, 10, 42) }
-  const renames = answer.renames
   useStoreCompareStore.setState({ environment: "prod", renames, environments: { prod: { read, compared: { status: "compared", form, renames, read, answer } } } })
 }
 
@@ -53,12 +52,24 @@ describe("StoreSqlWindow", () => {
   })
   afterEach(() => { cleanup(); vi.resetAllMocks(); useStoreCompareStore.getState().reset() })
 
+  it("keeps the export summary short and puts technical options and SQL behind disclosures", () => {
+    live()
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    expect(screen.getByRole("heading", { name: "Export SQL" })).toBeInTheDocument()
+    expect(screen.getByText("SQL options").closest("details")).not.toHaveAttribute("open")
+    expect(screen.getByText("View SQL").closest("details")).not.toHaveAttribute("open")
+    expect(screen.getByText("Rename region → policy.territory")).toBeInTheDocument()
+    expect(screen.getByText("Working schema · Saved")).toBeInTheDocument()
+  })
+
   it("opens the selected live environment and its readable plan without requesting offline SQL", async () => {
     live()
     render(<StoreSqlWindow onClose={vi.fn()} />)
     expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("prod")
     expect(screen.getByTestId("store-sql")).toHaveTextContent(LIVE.sql)
-    expect(screen.getByText("Working schema · Saved revision rev-1")).toBeInTheDocument()
+    expect(screen.getByText("Working schema · Saved")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("SQL options"))
+    expect(screen.getByText(/Saved revision rev-1/)).toBeInTheDocument()
     expect(within(screen.getByRole("region", { name: "SQL changes" })).getByText(/keeping existing values/)).toBeInTheDocument()
     expect(screen.getByText("3 quotes with values")).toBeInTheDocument()
     expect(screen.getByText(/Coordinate these changes with the app release/)).toBeInTheDocument()
@@ -88,7 +99,7 @@ describe("StoreSqlWindow", () => {
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...LIVE, changes: [], differences: [], matches: true, requires_maintenance: false })
     render(<StoreSqlWindow onClose={vi.fn()} />)
     expect(screen.getByRole("alert")).toHaveTextContent("Check connections.toml")
-    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Copy SQL" })).not.toBeInTheDocument()
     expect(fetchStoreSql).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole("button", { name: "Check prod again" }))
     expect(await screen.findByText("Compatible with this schema.")).toBeInTheDocument()
@@ -131,6 +142,26 @@ describe("StoreSqlWindow", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard permission denied")
     fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
     expect(await screen.findByRole("alert")).toHaveTextContent("SQL download is unavailable")
+  })
+
+  it("can remove a blocking rename after its field was removed from the schema", async () => {
+    live({ ...LIVE, blocked: ["Cannot rename policy.region to removed_field."] }, [{ table: "policy", column: "removed_field", was: "region" }])
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Remove rename choice" }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Download SQL" })).toBeEnabled())
+    expect(useStoreCompareStore.getState().renames).toEqual([])
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("checks all environments from the secondary SQL options", async () => {
+    live()
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    fireEvent.click(screen.getByText("SQL options"))
+    fireEvent.click(screen.getByRole("button", { name: "Check environments" }))
+    await waitFor(() => expect(fetchStoreCatalogue).toHaveBeenCalledTimes(2))
+    expect(fetchStoreCatalogue).toHaveBeenCalledWith("test")
+    expect(fetchStoreCatalogue).toHaveBeenCalledWith("prod")
   })
 
   it("blocks export for unresolved renames and exposes manual and retained work", () => {
@@ -194,7 +225,7 @@ describe("StoreSqlWindow", () => {
     act(() => useWorkbenchStore.setState({ environments: ["staging"] }))
     expect(screen.queryByTestId("store-sql")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Copy SQL" })).not.toBeInTheDocument()
     expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("staging")
 
     await act(async () => finish({ branch: "main", environments: [{ name: "staging", provider: "postgresql", sql: "-- current staging SQL" }] }))

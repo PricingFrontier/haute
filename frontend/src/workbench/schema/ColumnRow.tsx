@@ -13,6 +13,7 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import useStoreCompareStore from "../../stores/useStoreCompareStore"
 import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import {
   buttonUses,
@@ -28,7 +29,7 @@ import {
   updateSchemaColumn,
 } from "../../utils/workbenchForm"
 import { COLUMN_TYPES, COLUMN_TYPE_OPTIONS } from "../columnTypes"
-import { DatabaseMark } from "../StoreCompare"
+import { ColumnDatabaseDetails, ColumnDatabaseStatus } from "../ColumnDatabaseDetails"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
@@ -75,6 +76,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   const change = useWorkbenchFormStore((s) => s.change)
   const addToast = useToastStore((s) => s.addToast)
   const schemaColumnRenamed = useWorkbenchViewStore((s) => s.schemaColumnRenamed)
+  const database = useStoreCompareStore((s) => s.environment)
   const row = useRef<HTMLDivElement>(null)
   const shown = fieldUses(form, table.name, column.name).length
   const tested = conditionUses(form, table.name, column.name).length
@@ -170,7 +172,6 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           className={`${COMPACT_FIELD_CLASS} ${COLUMN_NAME_WIDTH} font-mono`}
           style={{ ...(identity ? LOCKED_FIELD_STYLE : INPUT_STYLE), border: keyColumn ? KEY_BORDER : INPUT_STYLE.border }}
         />
-        <DatabaseMark table={table.name} column={column.name} />
         {identity ? (
           // The quote's identity has no label or rules to open.
           <span className="size-5 shrink-0" aria-hidden="true" />
@@ -197,7 +198,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
             className="icon-danger-btn self-center"
           />
         )}
-        {summary && (
+        {database !== null ? <ColumnDatabaseStatus table={table.name} column={column.name} open={open} onOpen={onToggleDetails} /> : summary && (
           // To the right of the name and its buttons, on one line: cut short, whole in its title, as the pane narrows.
           <p
             className="min-w-0 flex-1 self-center truncate text-[11px]"
@@ -209,7 +210,9 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           </p>
         )}
       </div>
-      {open && !identity && <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />}
+      {open && (identity
+        ? <div className="mr-12 ml-7 max-w-[32rem] px-2 py-1.5 text-[11px]"><ColumnDatabaseDetails table={table} column={column} readOnly={readOnly} /></div>
+        : <ColumnDetails table={table} column={column} managed={managed} readOnly={readOnly} set={set} />)}
     </div>
   )
 }

@@ -31,7 +31,7 @@ describe("SchemaPane", () => {
     useWorkbenchViewStore.setState({ mode: "build", schemaOpen: true })
     render(<SchemaPane />)
 
-    fireEvent.click(screen.getByRole("button", { name: "SQL" }))
+    fireEvent.click(screen.getByRole("button", { name: "Export SQL" }))
 
     expect(await screen.findByTestId("store-sql-window")).toBeInTheDocument()
     expect(fetchStoreSql).toHaveBeenCalledTimes(1)
@@ -41,6 +41,6 @@ describe("SchemaPane", () => {
     useWorkbenchViewStore.setState({ mode: "preview", schemaOpen: true })
     render(<SchemaPane />)
 
-    expect(screen.getByRole("button", { name: "SQL" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Export SQL" })).toBeDisabled()
   })
 })
