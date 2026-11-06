@@ -687,6 +687,10 @@ describe("columns", () => {
     expect(messages(spec)).toEqual(["t.peril gives a row for each value, so it needs allowed values from a params file"])
     spec = updateSchemaColumn(spec, "t", "peril", values)
     expect(messages(spec)).toEqual([])
+    expect(messages(updateSchemaColumn(spec, "t", "peril", { options: ["\u{20000}".repeat(183)] }))).toEqual([])
+    expect(messages(updateSchemaColumn(spec, "t", "peril", { options: ["\u{20000}".repeat(184)] }))).toEqual([
+      `t.peril's allowed value "${"\u{20000}".repeat(40)}" is longer than 366 UTF-16 code units, the longest a Text index holds: correct the params file`,
+    ])
     expect(tableIndex(changeSchemaColumnType(spec, "t", "peril", "int").schema.tables[0])).toMatchObject({ ...values, type: "int", index: "values" })
     expect(changeSchemaColumnType(spec, "t", "peril", "date")).toBe(spec)
     spec = setIndexKind(spec, "t", "numbered")

@@ -382,8 +382,10 @@ Out of scope:
   The index is each row's own column in the quote store, whose key for a many-row table is
   the quote's identity with the index, so the project names it for what its rows are
   (`item_number`, `location_name`, `peril`) and the store's column takes that name; there is
-  no other row number. A Text index's values are at most 255 characters, the longest the
-  store keys a row by on every engine (SQL Server keys no row by longer text), a params
+  no other row number. A Text index's values are at most 255 Unicode characters and
+  366 UTF-16 code units (a supplementary Unicode character uses two units). Together
+  with the longest quote reference and its option this fits SQL Server's 900-byte
+  primary key: 160 bytes for the reference, 8 for the option and 732 for the index. A params
   file's value longer than that refused as the file is read. The index takes a label, a
   group, help and, an Integer, a number format as any column does, a typed one a
   placeholder, and the values kind its allowed values, which give its rows; it takes no
@@ -936,7 +938,7 @@ Out of scope:
   column's range must not be inverted and its allowed values must be of its type and
   read from a params file, not typed in, as an older form may hold them, True/false and
   Date columns can have none, an index of values must have allowed values that stay
-  distinct in its type, a Text one's each at most 255 characters, and a default must be a value its column
+  distinct in its type, a Text one's each within the character and UTF-16 limits above, and a default must be a value its column
   takes: a tick for True/false, else text of its type, within its range and one of its
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name and rows, its inputs alone and its columns' names,
@@ -1600,7 +1602,7 @@ Out of scope:
   table's one row is always checked, a many-row table's filled rows only, a cell the
   sheets hide never, a numbered index or one of values never, and a typed index when it
   is blank on a row holding anything else, holds a value another row holds or, a Text
-  one, a value longer than 255 characters. The other marks never stop the pricing, but a
+  one, a value beyond either Text index limit. The other marks never stop the pricing, but a
   typed index's stop it and a save, as the server refuses both (The quote store, below;
   The Workbench Input). Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
   fits the sheet, and Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y) undo and redo
@@ -2398,8 +2400,8 @@ Out of scope:
   place on its sheet, blank rows counted, so a grid opens as it was saved, and in a table of
   outputs alone its place in the pricing's answer; typed, the underwriter's value; of values,
   its row's value. The identity, with the index in a many-row table, is each table's primary
-  key, a Text index held as text of at most 255 characters, the longest every engine keys a
-  row by (Text elsewhere is unbounded, which SQL Server keys no row by), and each table's
+  key, a Text index held to the character and UTF-16 limits above
+  (Text elsewhere is unbounded, which SQL Server keys no row by), and each table's
   identity refers to its quote's `quote_details` row. A one-row table holds one row for each
   quote, null where nothing was typed. A table with inputs holds a row for each row the
   quote holds of it, its outputs those of its answer's row of the same index value, empty
@@ -2460,7 +2462,7 @@ Out of scope:
   request and the rows hold one instant. A save is refused, with nothing written, when a
   value is not of its column's type, naming each table, row (as the sheet numbers it) and
   column, and when a typed index is blank on a row holding anything else, holds one value
-  on two rows or, a Text one, a value longer than 255 characters, naming each table, row
+  on two rows or, a Text one, a value beyond either Text index limit, naming each table, row
   and value, the index keying the stored rows, before
   anything is priced; otherwise only when the quote has moved on since the
   page read it, naming who moved it, what they did and when, when it is final or archived,
@@ -2517,7 +2519,14 @@ Out of scope:
   values, each in its value's place), and its outputs as the pricing answered them: a table
   with inputs gives a row of its answer, its index and its outputs, for each row holding an
   output value, and a table of outputs alone its rows in its index's order as an input
-  table's are, a numbered one's by its numbers and one of values' by its value's place. A
+  table's are, a numbered one's by its numbers and one of values' by its value's place.
+  A numbered input grid may contain at most 10,000 blank gaps between its stored rows;
+  this does not limit the number of populated rows. Opening or saving a grid that would
+  exceed that allowance is refused before expanding the gaps, naming the table, index,
+  gap count and limit. The message directs the user to remove empty rows, restore a Typed
+  index, or migrate the stored keys to consecutive row numbers. In particular, changing
+  a typed business ID such as 1000000000 to Numbered never allocates a billion rows,
+  silently renumbers saved records, or changes stored data on a refused open or save. A
   value comes back as its value,
   so `£1,000` comes back as `1000`, which its column's format shows. A preset row whose
   value is no longer allowed is named as dropped. The app's lists read `quote_details`

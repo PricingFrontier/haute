@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -1189,3 +1189,94 @@ def test_a_numbered_index_reopens_a_value_no_number_after_the_numbered_rows(
 
     # "1" keeps place 1 whichever was stored first; the others follow, none lost.
     assert [row.get("item") for row in opened] == ["a", "b", "zero-one", "named"]
+
+
+@pytest.mark.parametrize("kind", ["int", "str"])
+def test_switching_a_sparse_typed_index_to_numbered_refuses_gap_expansion(
+    store: Target, kind: Literal["int", "str"]
+) -> None:
+    typed = KINDS.model_copy(deep=True)
+    sites = next(t for t in typed.data_schema.tables if t.name == "sites")
+    assert sites.index is not None
+    sites.index.type = kind
+    store.make(typed)
+    with open_book(
+        store.url, typed, environment=store.environment, haute_version=HAUTE, sign_in=store.sign_in
+    ) as book:
+        book.create(
+            operation=op(),
+            actor=ANA,
+            at=book.now(),
+            reference="SPARSE",
+            values={"sites": [{"site": "100000", "value": "12"}]},
+        )
+    before = store.read("SELECT site, value FROM sites")
+    sites.index.index = "numbered"
+    with open_book(
+        store.url, typed, environment=store.environment, haute_version=HAUTE, sign_in=store.sign_in
+    ) as book:
+        with pytest.raises(QuoteStoreError, match=r"sites.site.*99,999.*10,000.*Typed"):
+            book.read("SPARSE", 1)
+    assert store.read("SELECT site, value FROM sites") == before
+
+
+def test_numbered_grid_gap_limit_is_checked_on_save_and_does_not_limit_populated_rows(
+    kinds: QuoteBook,
+) -> None:
+    gap_rows = [{} for _ in range(10000)] + [{"item": "last"}]
+    quote = kinds.create(
+        operation=op(), actor=ANA, at=kinds.now(), reference="GAPS", values={"items": gap_rows}
+    )
+    assert kinds.read("GAPS", 1).values["items"] == gap_rows
+    with pytest.raises(QuoteStoreError, match=r"items.item_no.*10,001.*10,000"):
+        kinds.save(
+            "GAPS",
+            1,
+            operation=op(),
+            version=quote.quote.version,
+            actor=ANA,
+            values={"items": [{}, *gap_rows]},
+            priced=None,
+            at=kinds.now(),
+        )
+    assert kinds.read("GAPS", 1).values["items"] == gap_rows
+    dense = [{"item": "held"} for _ in range(10002)]
+    kinds.save(
+        "GAPS",
+        1,
+        operation=op(),
+        version=quote.quote.version,
+        actor=ANA,
+        values={"items": dense},
+        priced=None,
+        at=kinds.now(),
+    )
+    assert kinds.read("GAPS", 1).values["items"] == dense
+
+
+@pytest.mark.parametrize("value", ["x" * 255, "\U00020000" * 183])
+def test_text_index_portable_length_boundary_saves_and_reopens(
+    kinds: QuoteBook, value: str
+) -> None:
+    kinds.create(
+        operation=op(),
+        actor=ANA,
+        at=kinds.now(),
+        reference="\U00020000" * 40,
+        values={"sites": [{"site": value}]},
+    )
+    assert kinds.read("\U00020000" * 40, 1).values["sites"] == [{"site": value}]
+
+
+def test_a_text_index_exceeding_the_utf16_budget_is_refused_without_writes(
+    kinds: QuoteBook, store: Target
+) -> None:
+    with pytest.raises(QuoteValuesError, match="longer than 366 UTF-16 code units"):
+        kinds.create(
+            operation=op(),
+            actor=ANA,
+            at=kinds.now(),
+            reference="WIDE",
+            values={"sites": [{"site": "\U00020000" * 184}]},
+        )
+    assert store.read("SELECT site FROM sites") == []

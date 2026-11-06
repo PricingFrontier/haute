@@ -1560,6 +1560,22 @@ KEY_REFUSALS = [
                 column(
                     "peril",
                     index="values",
+                    options=["\U00020000" * 184],
+                    options_source={"file": "perils.csv", "column": "peril"},
+                ),
+                column("v"),
+            ],
+        },
+        "is longer than 366 UTF-16 code units",
+        id="an index of values exceeding the portable key byte budget",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [
+                column(
+                    "peril",
+                    index="values",
                     options=["x" * 256],
                     options_source={"file": "perils.csv", "column": "peril"},
                 ),

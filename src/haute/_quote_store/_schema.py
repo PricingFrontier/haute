@@ -47,6 +47,7 @@ from sqlalchemy.types import TypeDecorator, TypeEngine
 from haute._workbench_form import (
     IDENTITY_NAMES,
     INDEX_TEXT_LENGTH,
+    INDEX_TEXT_UTF16_LENGTH,
     QUOTE_DETAILS_NAME,
     ColumnType,
     FormSpec,
@@ -156,9 +157,10 @@ def _reference() -> TypeEngine[Any]:
 
 
 def _index_text() -> TypeEngine[Any]:
-    """A Text index: it keys its table's rows with the identity, and SQL Server keys no row
-    by unbounded text, so it is held to ``INDEX_TEXT_LENGTH`` characters, compared exactly."""
-    return _exact(INDEX_TEXT_LENGTH)
+    """An exact Text index within both the character and complete SQL Server key budgets."""
+    return String(INDEX_TEXT_LENGTH).with_variant(
+        mssql.NVARCHAR(INDEX_TEXT_UTF16_LENGTH, collation=EXACT_COLLATION), "mssql"
+    )
 
 
 #: The store's own columns of quote_details, in order: each one's name, type and whether it

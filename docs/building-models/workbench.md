@@ -170,7 +170,9 @@ config panel (open the sliders button beside the field):
   alone the pricing returns a row for each value it prices, none twice and none outside
   the list.
 
-A Text index's values are at most 255 characters. The index takes a label, a group, help,
+A Text index's values are at most 255 Unicode characters and 366 UTF-16 code units.
+Supplementary Unicode characters use two units each; the combined limits keep the
+index and quote identity within SQL Server's key size. The index takes a label, a group, help,
 an Integer's number format and a typed one's placeholder, but no Required, range or
 default, and it can be renamed but not moved or removed.
 
@@ -705,7 +707,7 @@ sample is priced whatever its cells hold. Once anything is typed, a cell that br
 column's rules (a required cell left empty, a number that is not one, a whole number that
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
 outlined, naming the problem when you hover, and priced all the same. A typed index left
-blank on a row holding anything, repeated, or longer than 255 characters is outlined too,
+blank on a row holding anything, repeated, or beyond either Text index length limit is outlined too,
 and stops the pricing until it is put right. When pricing fails —
 no Workbench Output on the pipeline, a value that does not fit its column — the toolbar
 says why, as it does when the pipeline returns output rows that do not fit their table's
@@ -980,8 +982,15 @@ double-precision number, Text text, True/false a boolean and a Date a date. Ever
 the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
 index too, under the name you gave it: a numbered one's place on its sheet, blank rows
 counted, or in a table of outputs alone its place in the pricing; a typed one's value; or
-the value its row is for. Read an
-item and its price from one table, and join tables on **quote_reference** and
+the value its row is for.
+
+A numbered input grid can have up to 10,000 empty gaps between its stored rows,
+independently of its populated row count. Saving or reopening more gaps is refused
+without changing the quote. If a typed business ID was switched to Numbered, restore
+Typed or migrate its stored keys to consecutive row numbers; large IDs are not expanded
+into enormous grids. Remove excessive empty rows from a new grid before saving it.
+
+Read an item and its price from one table, and join tables on **quote_reference** and
 **quote_option**:
 
 ```sql

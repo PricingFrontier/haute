@@ -68,12 +68,11 @@ import { isDay } from "./isoDate"
 import {
   cellProblem,
   filled,
-  INDEX_TEXT_LENGTH,
+  indexTextLimit,
   isTyping,
   newQuoteValues,
   parseTypedNumber,
   pricedRows,
-  textLength,
   valuesIndex,
   type PricedRows,
   type RowsByTable,
@@ -2548,7 +2547,7 @@ const INDEX_VALUE_SHOWN = 40
 /**
  * What keeps a table's index of values from giving its rows (`_check_index`, in the server's
  * words where it has them): allowed values read from a params file, each of the index's
- * type, a Text one's at most `INDEX_TEXT_LENGTH` characters. The operations hold what else
+ * type, a Text one's within `indexTextLimit`. The operations hold what else
  * an index may hold (`updateSchemaColumn`, `setIndexKind`).
  */
 function indexProblems(table: SchemaTable): string[] {
@@ -2559,10 +2558,10 @@ function indexProblems(table: SchemaTable): string[] {
   const problems: string[] = []
   const bad = index.type === "int" ? index.options.find((option) => !isNumber(option, true)) : undefined
   if (bad !== undefined) problems.push(`Column "${index.name}" in Table "${table.name}" allows "${bad}", which isn't a whole number`)
-  const long = index.type === "str" ? index.options.find((option) => textLength(option) > INDEX_TEXT_LENGTH) : undefined
+  const long = index.type === "str" ? index.options.find((option) => indexTextLimit(option) !== null) : undefined
   if (long !== undefined) {
     const shown = [...long].slice(0, INDEX_VALUE_SHOWN).join("")
-    problems.push(`${where}'s allowed value "${shown}" is longer than ${INDEX_TEXT_LENGTH} characters, the longest a Text index holds: correct the params file`)
+    problems.push(`${where}'s allowed value "${shown}" is longer than ${indexTextLimit(long)}, the longest a Text index holds: correct the params file`)
   }
   return problems
 }

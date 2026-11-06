@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
 from haute._json_values import JsonValueError, json_value
 from haute._output_assembler import prune_document
-from haute._quote_store._store import MisfitCell, QuoteValuesError
+from haute._quote_store._store import MisfitCell, QuoteStoreError, QuoteValuesError
 from haute._workbench_form import (
     IDENTITY_NAMES,
     QUOTE_DETAILS_NAME,
@@ -65,6 +65,21 @@ _IDENTITY_NAMES = ("quote_reference", "quote_option")
 KEPT_KEY = "$kept"
 #: Each input table's kept columns, by table name, each by its name and kind.
 KeptColumns = Mapping[str, Sequence[tuple[str, str]]]
+
+#: Bound empty-row expansion independently of the number of populated schedule rows.
+MAX_NUMBERED_GAPS = 10_000
+
+
+def _check_numbered_gaps(table: SchemaTable, positions: Collection[int]) -> None:
+    """Refuse sparse business IDs before treating them as numbered grid positions."""
+    gaps = max(positions, default=0) - len(positions)
+    if gaps > MAX_NUMBERED_GAPS:
+        assert table.index is not None
+        raise QuoteStoreError(
+            f"{table.name}.{table.index.name} would create {gaps:,} empty rows in its numbered "
+            f"grid (limit {MAX_NUMBERED_GAPS:,}). Remove empty rows, use a Typed index, or "
+            "migrate the stored keys to consecutive row numbers."
+        )
 
 
 def _carries_kept(row: Mapping[str, Any]) -> bool:
@@ -208,6 +223,8 @@ def input_rows(
         else:
             records = [part if isinstance(part, dict) else {}]
         sheet = numbers.get(table.name, [])
+        if table.index is not None and table.index.index == "numbered":
+            _check_numbered_gaps(table, sheet)
         written: Rows = []
         for place, record in enumerate(records):
             row: dict[str, Any] = {}
@@ -445,6 +462,7 @@ def cells(
                     after.append(cells_of)
                 else:
                     placed[number] = cells_of
+            _check_numbered_gaps(table, placed.keys())
             listed = [placed.get(number, {}) for number in range(1, max(placed, default=0) + 1)]
             listed.extend(after)
         else:

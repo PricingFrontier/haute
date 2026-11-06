@@ -33,12 +33,12 @@ from haute._json_safe import to_json_safe
 from haute._output_assembler import prune_document
 from haute._workbench_form import (
     IDENTITY_COLUMNS,
-    INDEX_TEXT_LENGTH,
     QUOTE_DETAILS_NAME,
     QUOTE_DETAILS_STORE_ONLY,
     ColumnType,
     IndexKind,
     holds_identity,
+    index_text_limit,
 )
 from haute.errors import HauteError
 
@@ -496,11 +496,8 @@ def request_key_problem(table: WorkbenchTable, keys: Sequence[Any]) -> str | Non
                 f"row's {table.key} is its own"
             )
     for place, value in enumerate(keys, 1):
-        if isinstance(value, str) and len(value) > INDEX_TEXT_LENGTH:
-            return (
-                f"{table.name}'s row {place} holds a {table.key} longer than "
-                f"{INDEX_TEXT_LENGTH} characters"
-            )
+        if isinstance(value, str) and (limit := index_text_limit(value)):
+            return f"{table.name}'s row {place} holds a {table.key} longer than {limit}"
     return None
 
 
@@ -556,17 +553,14 @@ def output_misfit(
                 "values"
             )
     else:
-        long = list(
-            dict.fromkeys(
-                value
-                for value in given
-                if isinstance(value, str) and len(value) > INDEX_TEXT_LENGTH
-            )
-        )
-        if long:
+        limits: dict[str, list[str]] = {}
+        for value in dict.fromkeys(given):
+            if isinstance(value, str) and (limit := index_text_limit(value)):
+                limits.setdefault(limit, []).append(value)
+        for limit, long in limits.items():
             parts.append(
                 f"{table.key} {_values([value[:40] for value in long])} "
-                f"{'is' if len(long) == 1 else 'are'} longer than {INDEX_TEXT_LENGTH} characters"
+                f"{'is' if len(long) == 1 else 'are'} longer than {limit}"
             )
     if not parts:
         return None
@@ -803,7 +797,7 @@ def typed_index_problems(
 ) -> list[IndexProblem]:
     """Each typed index of an input table whose rows, as the sheets number them, include one
     holding anything the request reads but the index blank, two holding one value (compared
-    as typed), or, a Text one, a value longer than ``INDEX_TEXT_LENGTH``: the store keys a
+    as typed), or, a Text one, a value beyond ``index_text_limit``: the store keys a
     quote's rows by the index, so a quote holding one is neither priced nor saved
     (``typedIndexProblems`` in the view). A row holding nothing but its *kept* field, values
     in columns the form no longer holds, holds something."""
@@ -824,7 +818,7 @@ def typed_index_problems(
         ]
         rows = values.get(table.name) or []
         blank: list[int] = []
-        long: list[int] = []
+        long: list[tuple[int, str]] = []
         places: dict[Any, list[int]] = {}
         for number, row in enumerate(rows, 1):
             raw = row.get(index.name)
@@ -835,8 +829,8 @@ def typed_index_problems(
                     blank.append(number)
                 continue
             value = _typed(index.type, raw.strip()) if isinstance(raw, str) else raw
-            if isinstance(value, str) and len(value) > INDEX_TEXT_LENGTH:
-                long.append(number)
+            if isinstance(value, str) and (limit := index_text_limit(value)):
+                long.append((number, limit))
             places.setdefault(value, []).append(number)
         label = index.name
         for number in blank:
@@ -859,14 +853,13 @@ def typed_index_problems(
                         f"each row's {label} is its own",
                     )
                 )
-        for number in long:
+        for number, limit in long:
             problems.append(
                 IndexProblem(
                     table.name,
                     index.name,
                     (number,),
-                    f"{table.name}'s row {number} holds a {label} longer than "
-                    f"{INDEX_TEXT_LENGTH} characters",
+                    f"{table.name}'s row {number} holds a {label} longer than {limit}",
                 )
             )
     return problems

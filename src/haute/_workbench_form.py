@@ -49,9 +49,21 @@ ColumnType = Literal["int", "float", "str", "bool", "date"]
 #: has a row for each of the index's allowed values, read from a params file's column.
 IndexKind = Literal["numbered", "typed", "values"]
 
-#: The longest a Text index's value is: the store keys a many-row table's rows by its index,
-#: and SQL Server keys no row by longer text.
+#: Portable Text index limits. SQL Server's complete primary key is at most 900 bytes:
+#: reserve 40 supplementary reference characters (160 bytes), and a BIGINT option (8).
 INDEX_TEXT_LENGTH = 255
+INDEX_TEXT_UTF16_LENGTH = 366
+
+
+def index_text_limit(value: str) -> str | None:
+    """The first Text index limit *value* exceeds, in the words used by validation."""
+    if len(value) > INDEX_TEXT_LENGTH:
+        return f"{INDEX_TEXT_LENGTH} characters"
+    units = sum(2 if ord(character) > 0xFFFF else 1 for character in value)
+    if units > INDEX_TEXT_UTF16_LENGTH:
+        return f"{INDEX_TEXT_UTF16_LENGTH} UTF-16 code units"
+    return None
+
 
 #: How a number column shows: the Explore pivot's number formats
 #: (``haute._explore_pivots.PIVOT_NUMBER_FORMATS``).
@@ -927,12 +939,12 @@ def _check_index(where: str, column: SchemaColumn) -> None:
             f"{where} gives a row for each value, so it needs allowed values from a params file"
         )
     if column.type == "str":
-        long = [value for value in column.options if len(value) > INDEX_TEXT_LENGTH]
-        if long:
-            raise ValueError(
-                f"{where}'s allowed value {long[0][:40]!r} is longer than {INDEX_TEXT_LENGTH} "
-                "characters, the longest a Text index holds: correct the params file"
-            )
+        for value in column.options:
+            if limit := index_text_limit(value):
+                raise ValueError(
+                    f"{where}'s allowed value {value[:40]!r} is longer than {limit}, "
+                    "the longest a Text index holds: correct the params file"
+                )
 
 
 class FormSchema(_Strict):

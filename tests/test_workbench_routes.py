@@ -246,6 +246,43 @@ def test_a_missing_folder_answers_409_pointing_to_version_history(project: Path)
         )
 
 
+def test_tables_serve_large_integer_indexes_exactly_without_retyping_pipeline_keys(
+    project: Path,
+) -> None:
+    from haute._workbench_form import FormSpec
+    from haute._workbench_tables import output_misfit, workbench_tables
+
+    enable(project)
+    keys = [9007199254740992, 9007199254740993]
+    index = column(
+        "product",
+        "int",
+        index="values",
+        options=list(map(str, keys)),
+        options_source={"file": "products.csv", "column": "id"},
+    )
+    spec = form(
+        {"name": "inputs", "rows": "many", "inputs": [index, column("value")]},
+        {"name": "products", "rows": "many", "outputs": [index, column("premium", "float")]},
+        sample={
+            "inputs": [
+                {"product": str(keys[0]), "value": "a"},
+                {"product": str(keys[1]), "value": "b"},
+            ]
+        },
+    )
+    response = client().post("/api/workbench/tables", json={"form": spec})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["response_tables"][0]["index_values"] == list(map(str, keys))
+    assert next(t for t in body["tables"] if t["name"] == "inputs")["null_key"] == str(keys[0])
+    assert [r["product"] for r in body["sample"]["inputs"]] == list(map(str, keys))
+    internal = workbench_tables(FormSpec.model_validate(spec))
+    side = internal.response_tables[0]
+    assert side.index_values == keys
+    assert output_misfit(side, keys, []) is None
+
+
 def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path) -> None:
     enable(project)
     write_form(project, form(POLICY, PRICING))

@@ -27,7 +27,7 @@ from haute._artifact_paths import ordinary_path_problem
 from haute._polars_utils import streaming_collect
 from haute._project_layout import pipeline_files_folder
 from haute._workbench_config import WorkbenchError
-from haute._workbench_form import INDEX_TEXT_LENGTH, FormSpec
+from haute._workbench_form import FormSpec, index_text_limit
 
 #: The folder of the pipeline's files a column's allowed values come from.
 PARAMS_FOLDER = "params"
@@ -249,13 +249,13 @@ def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> Non
                     path=source["file"],
                 )
             if column.get("index") == "values" and kind == "str":
-                long = next((value for value in values if len(value) > INDEX_TEXT_LENGTH), None)
-                if long is not None:
-                    raise ParamFileError(
-                        f"{source['file']} gives the index {where} the value {long[:40]!r}, "
-                        f"longer than the {INDEX_TEXT_LENGTH} characters a Text index holds.",
-                        path=source["file"],
-                    )
+                for value in values:
+                    if limit := index_text_limit(value):
+                        raise ParamFileError(
+                            f"{source['file']} gives the index {where} the value {value[:40]!r}, "
+                            f"longer than the {limit} a Text index holds.",
+                            path=source["file"],
+                        )
             column["options"] = values
 
 

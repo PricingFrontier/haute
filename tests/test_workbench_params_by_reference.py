@@ -176,11 +176,17 @@ def test_a_table_of_outputs_alones_index_of_values_is_written_by_reference_and_r
     assert products.index is not None and products.index.options == ["Fire", "Flood"]
 
 
+@pytest.mark.parametrize(
+    ("value", "limit"),
+    [("x" * 256, "255 characters"), ("\U00020000" * 184, "366 UTF-16 code units")],
+)
 def test_a_text_index_of_values_longer_than_a_key_is_refused_as_its_file_is_read(
     project: Path,
+    value: str,
+    limit: str,
 ) -> None:
     _write(project, copy.deepcopy(FORM))
-    (project / PARAMS / "perils.csv").write_bytes(b"peril\nFire\n" + b"x" * 256 + b"\n")
+    (project / PARAMS / "perils.csv").write_text(f"peril\nFire\n{value}\n", encoding="utf-8")
 
-    with pytest.raises(ParamFileError, match="longer than the 255 characters a Text index holds"):
+    with pytest.raises(ParamFileError, match=f"longer than the {limit} a Text index holds"):
         read_form_document(config(project))

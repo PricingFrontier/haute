@@ -242,9 +242,18 @@ export function quoteProblems(schema: FormSchema, rows: RowsByTable): Record<str
 
 /** The longest a Text index's value is, as the server's `INDEX_TEXT_LENGTH`: the store keys a many-row table's rows by its index. */
 export const INDEX_TEXT_LENGTH = 255
+/** The complete SQL Server key's remaining budget after the quote's identity (732 bytes). */
+export const INDEX_TEXT_UTF16_LENGTH = 366
 
 /** How many characters text holds as the server counts them: code points, not UTF-16 units. */
 export const textLength = (text: string): number => [...text].length
+
+/** The first portable Text index limit exceeded, as the server's `index_text_limit`. */
+export function indexTextLimit(value: string): string | null {
+  if (textLength(value) > INDEX_TEXT_LENGTH) return `${INDEX_TEXT_LENGTH} characters`
+  if (value.length > INDEX_TEXT_UTF16_LENGTH) return `${INDEX_TEXT_UTF16_LENGTH} UTF-16 code units`
+  return null
+}
 
 /** Items as a message lists them: "1", "1 and 01", "1, 01 and 001" (`_listed`). */
 export const listed = (items: readonly string[]): string => (items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`)
@@ -320,7 +329,7 @@ export function typedIndexProblems(schema: FormSchema, rows: RowsByTable, reads:
     if (index === null || index.index !== "typed" || !hasInputs(table)) continue
     const read = table.inputs.filter((column) => column !== index && reads(table, column))
     const blank: number[] = []
-    const long: number[] = []
+    const long: { number: number; limit: string }[] = []
     const places = new Map<string, { value: string | number | bigint | boolean; rows: number[] }>()
     ;(rows[table.name] ?? []).forEach((row, at) => {
       const number = at + 1
@@ -330,7 +339,8 @@ export function typedIndexProblems(schema: FormSchema, rows: RowsByTable, reads:
         return
       }
       const value = typeof raw === "string" ? typedIndexValue(index.type, raw.trim()) : true
-      if (typeof value === "string" && textLength(value) > INDEX_TEXT_LENGTH) long.push(number)
+      const limit = typeof value === "string" ? indexTextLimit(value) : null
+      if (limit !== null) long.push({ number, limit })
       const identity = indexIdentity(value)
       const place = places.get(identity)
       if (place === undefined) places.set(identity, { value, rows: [number] })
@@ -342,7 +352,7 @@ export function typedIndexProblems(schema: FormSchema, rows: RowsByTable, reads:
     for (const { value, rows: held } of places.values()) {
       if (held.length > 1) problem(held, `${table.name}'s rows ${listed(held.map(String))} hold ${name} ${keyText(value, "str")}; each row's ${name} is its own`)
     }
-    for (const number of long) problem([number], `${table.name}'s row ${number} holds a ${name} longer than ${INDEX_TEXT_LENGTH} characters`)
+    for (const { number, limit } of long) problem([number], `${table.name}'s row ${number} holds a ${name} longer than ${limit}`)
   }
   return problems
 }

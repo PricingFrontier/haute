@@ -171,6 +171,16 @@ def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> N
     }
 
 
+def test_sqlserver_text_index_primary_key_fits_its_complete_byte_budget() -> None:
+    from sqlalchemy.dialects import mssql
+
+    sites = store_schema(form(SITES)).by_name("sites").table
+    reference = sites.c.quote_reference.type.dialect_impl(mssql.dialect())
+    index = sites.c.site.type.dialect_impl(mssql.dialect())
+    assert index.length == 366
+    assert reference.length * 2 + 8 + index.length * 2 == 900
+
+
 def test_quote_details_holds_the_forms_columns_then_the_stores_own() -> None:
     details = store_schema(form()).details.table
     names = [column.name for column in details.columns]

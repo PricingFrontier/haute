@@ -107,7 +107,8 @@ export interface SamplePrice extends PricedValues {
  * An answer's rows of each keyed response table held to the typed sample's rows of its
  * table, as the server's `workbench_response` holds a quote's: a misfit (a row with no key,
  * a key given twice, a key on no row priced) refused with its message (`outputMisfit`), then
- * each row holding no output value (`holdsOutput`) left out, the identity and the key aside.
+ * each input table's row holding no output value (`holdsOutput`) left out, the identity
+ * and the key aside. Output-only tables keep every valid row, as the backend does.
  */
 function fitAnswer(workbench: WorkbenchTablesResponse, tables: PricedSample["tables"]): PricedSample["tables"] {
   const fitted = { ...tables }
@@ -119,6 +120,7 @@ function fitAnswer(workbench: WorkbenchTablesResponse, tables: PricedSample["tab
     const request = Array.isArray(typed) ? typed.map((row) => (row as Record<string, unknown>)[key]) : []
     const misfit = outputMisfit(table, answer.map((row) => row[key]), request)
     if (misfit !== null) throw new Error(misfit)
+    if (table.index_kind !== null) continue
     const outputs = table.columns.slice(carriesIdentity(table) ? IDENTITY_COLUMNS.length : 0).filter((column) => column.name !== key)
     fitted[table.name] = answer.filter((row) => outputs.some((column) => holdsOutput(row[column.name])))
   }

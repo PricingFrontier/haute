@@ -16,7 +16,7 @@ import type { SubmodelBoundaryEdgeData } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
 import { castFamily } from "./polarsDtypes"
 import { IDENTITY_COLUMNS, tableIndex } from "./quoteIdentity"
-import { INDEX_TEXT_LENGTH, keyText, listed, parseTypedNumber, parseTypedWhole, textLength } from "./sheetValues"
+import { indexTextLimit, keyText, listed, parseTypedNumber, parseTypedWhole } from "./sheetValues"
 
 /** The workbench's tables and sample quote from one fetch, numbered so that only the newest counts. */
 export interface WorkbenchTables {
@@ -197,9 +197,20 @@ export function outputMisfit(table: WorkbenchTable, answer: readonly unknown[], 
     const stray = onceEach(given, (value) => !allowed.has(keyIdentity(value)))
     if (stray.length > 0) parts.push(`${key} ${values(stray)} ${verb(stray)} none of its values`)
   } else {
-    const long = onceEach(given, (value) => typeof value === "string" && textLength(value) > INDEX_TEXT_LENGTH)
-    const cut = long.map((value) => [...(value as string)].slice(0, MISFIT_TEXT_SHOWN).join(""))
-    if (long.length > 0) parts.push(`${key} ${values(cut)} ${verb(long)} longer than ${INDEX_TEXT_LENGTH} characters`)
+    const limits = new Map<string, string[]>()
+    for (const value of onceEach(given, () => true)) {
+      if (typeof value !== "string") continue
+      const limit = indexTextLimit(value)
+      if (limit !== null) {
+        const long = limits.get(limit) ?? []
+        long.push(value)
+        limits.set(limit, long)
+      }
+    }
+    for (const [limit, long] of limits) {
+      const cut = long.map((value) => [...value].slice(0, MISFIT_TEXT_SHOWN).join(""))
+      parts.push(`${key} ${values(cut)} ${verb(long)} longer than ${limit}`)
+    }
   }
   return parts.length === 0 ? null : `${table.port} does not fit ${table.name}'s rows: ${parts.join("; ")}.`
 }

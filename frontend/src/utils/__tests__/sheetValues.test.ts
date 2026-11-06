@@ -314,13 +314,16 @@ describe("typedIndexProblems", () => {
     expect(typedIndexProblems(schema, { sites: [{ site_name: "Leeds" }, { site_name: "leeds" }] })).toEqual([])
   })
 
-  it("names a Text index longer than the store keys a row by, counted in characters", () => {
+  it("names a Text index beyond either portable character or UTF-16 limit", () => {
     const long = "x".repeat(256)
     expect(typedIndexProblems(schema, { sites: [{ site_name: "x".repeat(255) }, { site_name: long }] }).map((problem) => problem.message)).toEqual([
       "sites's row 2 holds a site_name longer than 255 characters",
     ])
-    // A character beyond the Basic Multilingual Plane is one character, as the server counts it.
-    expect(typedIndexProblems(schema, { sites: [{ site_name: "\u{1F600}".repeat(255) }] })).toEqual([])
+    // Supplementary characters use two of SQL Server's UTF-16 units apiece.
+    expect(typedIndexProblems(schema, { sites: [{ site_name: "\u{1F600}".repeat(183) }] })).toEqual([])
+    expect(typedIndexProblems(schema, { sites: [{ site_name: "\u{1F600}".repeat(184) }] }).map((problem) => problem.message)).toEqual([
+      "sites's row 1 holds a site_name longer than 366 UTF-16 code units",
+    ])
   })
 
   it("names each kind in the server's order, blank rows first, and none for an index Haute or the params file gives", () => {

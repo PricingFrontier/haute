@@ -786,6 +786,10 @@ def test_a_requests_text_index_is_held_to_the_length_the_store_keys_a_row_by() -
     )
 
     assert request_key_problem(table, ["Leeds", "x" * 255]) is None
+    assert request_key_problem(table, ["Leeds", "\U00020000" * 183]) is None
+    assert request_key_problem(table, ["\U00020000" * 184]) == (
+        "sites's row 1 holds a site longer than 366 UTF-16 code units"
+    )
     assert (
         request_key_problem(table, ["Leeds", "x" * 256])
         == "sites's row 2 holds a site longer than 255 characters"
