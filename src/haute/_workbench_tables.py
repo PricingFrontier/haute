@@ -169,7 +169,7 @@ class WorkbenchTable(_Strict):
         if self.null_key is not None and (self.side != "input" or self.key is None):
             raise ValueError(f"{self.port} holds a null key, which only a keyed input side does")
         if self.index is not None and (
-            self.side != "output"
+            self.side == "input"
             or self.one_row
             or not any(
                 column.name == self.index and column.type == "int" for column in self.columns
