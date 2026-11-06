@@ -360,16 +360,17 @@ Out of scope:
   automatic) and `use_grouping`. An output holds no rule but `required`, no
   `row_per_value`, no `default_value` and is the index only in a table of outputs alone.
 
-  A many-row table holding a column of its own has exactly one index, `row_number` until
-  renamed, an Integer numbering its rows within a quote from 1, straight after the quote's
-  identity at the head of its first block: among the inputs of an input table, numbered as
-  the sheets' grids number the rows, blank rows counted, and among the outputs of a table
-  of outputs alone, numbered in the order pricing gives its rows. Nobody types it and no
-  pipeline fills it: Haute numbers it. It is each row's own column in the quote store,
-  whose key for a many-row table is the quote's identity with the index, so the project
-  names it for what its rows are (`item_number`, `loc_no`) and the store's column takes
-  that name; there is no other row number. A one-row table has no index, nor does a table
-  holding no column of its own.
+  Every many-row table has exactly one index, `row_number` until renamed, an Integer
+  numbering its rows within a quote from 1, straight after the quote's identity: among the
+  outputs of a table of outputs alone (one holding outputs of its own and no typed input),
+  numbered in the order pricing gives its rows, and among the inputs of any other, an
+  input table's numbered as the sheets' grids number the rows, blank rows counted (a table
+  holding no column of its own yet, as one just switched to many rows, has its index among
+  its inputs and no rows). Nobody types it and no pipeline fills it: Haute numbers it. It is
+  each row's own column in the quote store, whose key for a many-row table is the quote's
+  identity with the index, so the project names it for what its rows are (`item_number`,
+  `loc_no`) and the store's column takes that name; there is no other row number. A
+  one-row table has no index.
 
   A table's key says which of its rows is which, and no underwriter types it. A one-row
   table needs none: the quote's identity is its row's. A many-row input table is keyed by
@@ -745,7 +746,11 @@ Out of scope:
     the quote's `quote_reference` and `quote_option`) and each column of the form's tables
     that the database holds and the form does not is listed with the quotes holding values
     in it, and such a column is paired with a column of its table that the form has and the
-    database lacks, chosen beside it, as a rename; the database matching the form is said.
+    database lacks, chosen beside it, as a rename; a many-row table's index the database
+    holds under another name, its key column after the quote's identity, is paired with
+    the form's index without being chosen, marked renamed, and the table's key compared
+    under the form's names; a table the database keys by the identity alone is one row, and
+    by one more column many; the database matching the form is said.
     An environment with no connection, one that cannot be read
     or a database that cannot be reached or refuses the sign-in is said, naming the file and
     the variables to set, never a server, a database, a user, a credential or a value read.
@@ -865,15 +870,15 @@ Out of scope:
   its values in the sample, which only what is typed takes; one moved to the inputs loses
   its key. A table left with no inputs, its last moved to the outputs or removed, loses its
   rows in the sample, which holds input tables' alone and whose save refuses any other's.
-  Each change is one edit. A many-row table's index (above) is first in its first block
-  after the quote's identity, `row_number` until renamed, an Integer whose type cannot
-  change, which neither a drag nor Alt+Up and Alt+Down moves or passes and which has no
-  remove; it is renamed as any column is, and its label is what the sheets show. The editor
-  gives a table its index, in the same edit, as a many-row table gains its first column of
-  its own or a table holding one switches to many rows; moves it with the identity, to the
-  head of the outputs as a table's last typed input goes and back to the inputs as it gains
-  one, its name kept; and takes it away as its last other column goes or it switches to one
-  row, with what shows it. A table gaining its first input loses its outputs' keys, and switching a
+  Each change is one edit. A many-row table's index (above) is first after the quote's
+  identity in the block it belongs to, `row_number` until renamed, an Integer whose type
+  cannot change, which neither a drag nor Alt+Up and Alt+Down moves or passes and which has
+  no remove; it is renamed as any column is, and its label is what the sheets show. The
+  editor gives a table its index, in the same edit, as it switches to many rows; moves it,
+  its name kept, to the head of the outputs after the identity as a table holding outputs
+  loses its last typed input, and back to the inputs as it gains one or loses its last
+  output of its own; and takes it away, with what shows it, as the table switches to one
+  row. A table gaining its first input loses its outputs' keys, and switching a
   table to one row clears them; switching it to many rows clears its columns' defaults.
   Removing a column or a table a sheet shows, a
   sheet's, a section's or a component's condition tests, or an Import or an Export uses,
@@ -959,8 +964,10 @@ Out of scope:
   landing at the nearer; resized past the right edge, it widens the sheet, as does
   a component dropped onto a sheet narrower than itself, and the sheet never narrows of
   its own accord. A component is drawn in its
-  section where the form places it: a Table as a grid of its rows with a column per field it shows, the index
-  column numbering the rows, under a header of its labels, as written unless `header` is
+  section where the form places it: a Table as a grid of its rows with a column per field it shows, an
+  input table's index column numbering the rows as the grid does, and a table of outputs
+  alone's index showing the value of the answer row the grid row lines up with, a dash
+  before a price and on a row no answer row reaches, under a header of its labels, as written unless `header` is
   `caps`, in capitals, that stays in view as
   the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
@@ -2508,7 +2515,12 @@ Out of scope:
   `haute_activity` with them; a column it gains added taking a null; a table or column
   the form renamed is one removed, which the SQL keeps, and one added, but a column paired
   in the pane with the database's is renamed through the engine's own rename, in two steps through
-  temporary names so a change of case or a swap of two names works; a type change as the
+  temporary names so a change of case or a swap of two names works, and a many-row table's
+  index is paired by what it is, never left to the pane: with the earlier form's index of
+  the table in a plan from the default branch's form, and with the database's key column
+  after the quote's identity in a plan from the database, so renaming the index renames
+  the column, its values and the table's primary key kept, and a plan never adds an index
+  beside the key column it keeps; a type change as the
   engine's ALTER in place, with a note that a value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows as
   a note of what the table needs, and a column moved between a table's inputs and outputs
@@ -3132,10 +3144,10 @@ Out of scope:
   message naming the place; an identity column is written, a table's file names two
   columns alike, in one block or one in each, `schema/quote_details.json`
   sets something Haute's, an output holds a rule but `required`, a default or
-  `row_per_value`, or is the index in a table with inputs; a `key` is on an input, on an
-  output of a table with inputs or of one row, or on the index; a many-row table holding a
-  column of its own has no index, or more than one; a one-row table, or one holding no
-  column of its own, has one; a
+  `row_per_value`; a `key` is on an input, on an output of a table with inputs or of one
+  row, or on the index; a many-row table has no index or more than one, or its index is in
+  the other block (among the inputs of a table of outputs alone, or among the outputs of
+  any other table); a one-row table has one; a
   sample file is for a table the schema does not hold or for a table with no inputs
   ("rename it after its table or remove it"), or holds no rows; the folder
   changed each of three times it was read ("<folder> changed while it was being read: try

@@ -139,7 +139,7 @@ Outputs too, on grey, with a many-row table's key column after them, since every
 pricing returns carries them.
 
 After them, a many-row table has its **index**, `row_number` until you rename it: Haute
-adds it as the table gets its first column and numbers the rows from 1, nobody types it,
+adds it as the table switches to **Many rows** and numbers the rows from 1, nobody types it,
 and the pipeline never fills it. In a table with inputs it is the first input and numbers
 the rows as the sheets do; in a table of outputs alone it is the first output and numbers
 the rows in the order pricing returns them. It is also each row's number in the saved
@@ -206,8 +206,7 @@ typed, and a value typed equal to its default counts as the default.
 - The index comes first under Inputs, or under Outputs in a table of outputs alone, after
   **quote_reference** and **quote_option**, and moves between them as the table gains or
   loses its inputs. It is an Integer that can be renamed but not moved or removed, is never
-  a key in a table of outputs alone, and goes when the table loses its last other column
-  or switches to one row.
+  a key in a table of outputs alone, and goes when the table switches to one row.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
   an identifier, unique whatever its case, and its pipeline names, the name with `_input`
   and `_output`, are held to the rules a Quote Input's labels follow, a column's name is an
