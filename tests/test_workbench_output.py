@@ -684,9 +684,10 @@ def test_generated_code_runs_a_workbench_output(project: Path) -> None:
     assert render_output_document(_collected(pipeline.run(source="live"))) == [
         {
             "pricing": {**_STAND_IN, "premium": 100.0, "limit": 1000.0, "referral": "none"},
+            # A table of outputs alone numbered by its index in the order it is answered.
             "item_prices": [
-                {**_STAND_IN, "item_id": "A", "premium": 20.0},
-                {**_STAND_IN, "item_id": "B", "premium": 60.0},
+                {**_STAND_IN, "row_number": 1, "item_id": "A", "premium": 20.0},
+                {**_STAND_IN, "row_number": 2, "item_id": "B", "premium": 60.0},
             ],
         }
     ]
@@ -700,7 +701,7 @@ def test_generated_code_runs_a_workbench_output(project: Path) -> None:
     assert render_output_document(_collected(scored)) == [
         {
             "pricing": {"premium": 50.0, "limit": 500.0, "referral": "none"},
-            "item_prices": [{"item_id": "Z", "premium": 14.0}],
+            "item_prices": [{"row_number": 1, "item_id": "Z", "premium": 14.0}],
         }
     ]
 
@@ -917,6 +918,7 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
     assert ran["item_prices"][0] == {
         "quote_reference": "PREVIEW",
         "quote_option": 1,
+        "row_number": 1,
         "item_id": "A",
     }
     scored = pipeline.score(
@@ -931,7 +933,7 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
         )
     )
     assert render_output_document(_collected(scored)) == [
-        {"pricing": {"premium": 7.0}, "item_prices": [{"item_id": "Z"}]}
+        {"pricing": {"premium": 7.0}, "item_prices": [{"row_number": 1, "item_id": "Z"}]}
     ]
 
 
@@ -1379,6 +1381,50 @@ def test_a_node_preview_answers_a_misfit_without_refusing(engine: CollectEngine)
             ]
         }
     ]
+
+
+#: A table of outputs alone whose index is renamed layer_no: the Workbench Output numbers it.
+_NUMBERED_LAYERS = {
+    **_table("layers", ("layer_no", "int"), ("layer", "int"), ("premium", "float"), many=True),
+    "index": "layer_no",
+}
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param({"layer": [3, 1, 2], "premium": [30.0, 10.0, 20.0]}, id="no index held"),
+        pytest.param(
+            {"layer_no": [9, 9, None], "layer": [3, 1, 2], "premium": [30.0, 10.0, 20.0]},
+            id="a misleading one held",
+        ),
+        pytest.param(
+            {"layer_no": ["x", "y", "z"], "layer": [3, 1, 2], "premium": [30.0, 10.0, 20.0]},
+            id="one of another type held",
+        ),
+    ],
+)
+@pytest.mark.parametrize("quoted", [False, True], ids=["a node preview", "a priced quote"])
+def test_a_table_of_outputs_alone_numbers_its_index_in_the_order_it_is_answered(
+    frame: dict[str, list[Any]], quoted: bool, engine: CollectEngine
+) -> None:
+    tables = assemble_workbench_output_from_config(
+        pl.LazyFrame(frame),
+        config={"tables": [copy.deepcopy(_NUMBERED_LAYERS)]},
+        ports=["layers_output"],
+    )
+    quote = {"layers_input": pl.LazyFrame({"layer": [1]})} if quoted else None
+
+    (answered,) = execution_collect(as_response(tables, quote), engine=engine).to_dicts()
+
+    # Numbered 1, 2, 3 as the rows come, whatever the frame held under its name.
+    assert [(row["layer_no"], row["layer"]) for row in answered["layers"]] == [
+        (1, 3),
+        (2, 1),
+        (3, 2),
+    ]
+    assert tables.tables[0].index == "layer_no"
 
 
 #: The project's equipment: a table of inputs and outputs keyed by its index, renamed

@@ -254,6 +254,24 @@ def _plan_columns(
     after them."""
     old = _by_key(before["columns"])
     new = _by_key(table["columns"])
+    # A many-row table's index is paired by what it is: renamed, it is the earlier index under
+    # its new name, a rename keeping its values and the table's key, never a column added
+    # beside the one that keys the table.
+    index = next((column for column in table["columns"] if column.get("index")), None)
+    earlier = next((column for column in before["columns"] if column.get("index")), None)
+    if (
+        index is not None
+        and earlier is not None
+        and index["key"] not in old
+        and earlier["key"] not in new
+    ):
+        paired = {**earlier, "key": index["key"]}
+        old = {key: column for key, column in old.items() if key != earlier["key"]}
+        old[index["key"]] = paired
+        before = {
+            **before,
+            "columns": [paired if column is earlier else column for column in before["columns"]],
+        }
     # The names this table's removed columns still hold, since the SQL drops none: no column of
     # the form may take one, added or renamed.
     removed_names = {

@@ -23,12 +23,14 @@ RELATIVE_CHANGE = 1e-8
 @dataclass(frozen=True, slots=True)
 class SharedTable:
     """An output table compared: its name, whether it has many rows, the columns compared
-    and the columns its rows are matched by."""
+    and the columns its rows are matched by; a table of outputs alone's index, which Haute
+    numbers and no move is ever of, by its name (*numbered*)."""
 
     name: str
     many: bool
     columns: tuple[str, ...]
     keys: tuple[str, ...]
+    numbered: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,7 @@ class _FormTable:
     many: bool
     columns: tuple[str, ...]
     keys: frozenset[str]
+    numbered: str | None = None
 
 
 def _output_tables(form: Mapping[str, Any]) -> dict[str, _FormTable]:
@@ -98,6 +101,12 @@ def _output_tables(form: Mapping[str, Any]) -> dict[str, _FormTable]:
             each for each in inputs if each.get("name") not in _IDENTITY and not each.get("index")
         ]
         names = [str(column.get("name")) for column in outputs]
+        # A table of outputs alone's index is Haute's numbering of the answer's rows, not
+        # something the pricing answered: listed, so an answer holding it holds no removed
+        # field, and never compared, so a reordered answer moves none of it.
+        numbered = next(
+            (str(column.get("name")) for column in outputs if column.get("index")), None
+        )
         keys: frozenset[str]
         if typed:
             key = _input_key(inputs) if many else None
@@ -106,7 +115,9 @@ def _output_tables(form: Mapping[str, Any]) -> dict[str, _FormTable]:
             keys = frozenset({key} if key else set())
         else:
             keys = frozenset(str(column.get("name")) for column in outputs if column.get("key"))
-        found[str(table.get("name"))] = _FormTable(many=many, columns=tuple(names), keys=keys)
+        found[str(table.get("name"))] = _FormTable(
+            many=many, columns=tuple(names), keys=keys, numbered=numbered
+        )
     return found
 
 
@@ -149,7 +160,11 @@ def shared_fields(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> 
         added.extend(f"{name}.{column}" for column in table.columns if column not in old.columns)
         removed.extend(f"{name}.{column}" for column in old.columns if column not in table.columns)
         keys = tuple(column for column in columns if column in table.keys and column in old.keys)
-        tables.append(SharedTable(name, table.many, columns, keys if table.many else ()))
+        tables.append(
+            SharedTable(
+                name, table.many, columns, keys if table.many else (), numbered=table.numbered
+            )
+        )
     return SharedFields(tuple(tables), tuple(added), tuple(removed), tuple(reshaped))
 
 
@@ -165,6 +180,7 @@ def form_fields(form: Mapping[str, Any]) -> SharedFields:
                 tuple(column for column in table.columns if column in table.keys)
                 if table.many
                 else (),
+                numbered=table.numbered,
             )
             for name, table in _output_tables(form).items()
         )
@@ -245,7 +261,7 @@ def _row_moves(
     return [
         Move(table.name, row, column, before.get(column), after.get(column))
         for column in table.columns
-        if moved(before.get(column), after.get(column), tolerance)
+        if column != table.numbered and moved(before.get(column), after.get(column), tolerance)
     ]
 
 

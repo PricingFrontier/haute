@@ -74,6 +74,7 @@ DETAILS = {
     ],
     "key": None,
     "null_key": None,
+    "index": None,
 }
 
 
@@ -196,6 +197,7 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
             ],
             "key": None,
             "null_key": None,
+            "index": None,
         },
     ]
     assert body["sample"] == {"policy_details": {"state": "NY", "exposure": 1000.0}}

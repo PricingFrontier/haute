@@ -167,9 +167,7 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
             names.add(column.name)
         # Each table is a table of its name in the quote store too, which also refuses two
         # columns whose names differ only in case: a column is known by its name (READ-23).
-        problems.extend(
-            store_name_problems(table.name, table.rows, [column.name for column in table.columns])
-        )
+        problems.extend(store_name_problems(table.name, [column.name for column in table.columns]))
     sheets: dict[str, str] = {}
     for page in spec.pages:
         name = sheet_name(page.title)
@@ -457,7 +455,7 @@ def _table_file_model(table: SchemaTable, problems: list[str]) -> TableFile:
     outputs: list[dict[str, Any]] = []
     for column in table.own_outputs:
         data = column.model_dump(mode="json")
-        for key in (*INPUT_ONLY, "index"):
+        for key in INPUT_ONLY:
             if data.pop(key) != SchemaColumn.model_fields[key].get_default(
                 call_default_factory=True
             ):

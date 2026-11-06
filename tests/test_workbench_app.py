@@ -687,8 +687,8 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     assert priced.json()["tables"] == {
         "pricing": [{**identity, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
         "item_prices": [
-            {**identity, "item_id": "A", "premium": 20.0},
-            {**identity, "item_id": "B", "premium": 60.0},
+            {**identity, "row_number": 1, "item_id": "A", "premium": 20.0},
+            {**identity, "row_number": 2, "item_id": "B", "premium": 60.0},
         ],
     }
 

@@ -1446,8 +1446,18 @@ def test_the_quote_identity_heads_a_tables_first_block(
 KEY_REFUSALS = [
     pytest.param(
         {"rows": "many", "inputs": [column("value", "float")]},
-        "t has many rows and inputs, so it needs one index among its inputs",
+        "t has many rows, so it needs one index",
         id="a many-row input table with no index",
+    ),
+    pytest.param(
+        {"rows": "many", "outputs": [column("premium", "float")]},
+        "t has many rows, so it needs one index",
+        id="a many-row table of outputs alone with no index",
+    ),
+    pytest.param(
+        {"rows": "many"},
+        "t has many rows, so it needs one index",
+        id="an empty many-row table with no index",
     ),
     pytest.param(
         {
@@ -1458,18 +1468,13 @@ KEY_REFUSALS = [
                 column("value", "float"),
             ],
         },
-        "t has many rows and inputs, so it needs one index among its inputs",
+        "t has many rows, so it needs one index",
         id="a many-row input table with two",
     ),
     pytest.param(
         {"rows": "one", "inputs": [column("line", "int", index=True), column("value", "float")]},
-        "t.line is an index, which only a many-row table with inputs has",
+        "t.line is an index, which only a many-row table has",
         id="an index in a one-row table",
-    ),
-    pytest.param(
-        {"rows": "many", "inputs": [column("line", "int", index=True)]},
-        "t.line is an index, which only a many-row table with inputs has",
-        id="an index alone, no input typed",
     ),
     pytest.param(
         {
@@ -1477,8 +1482,25 @@ KEY_REFUSALS = [
             "inputs": [column("value", "float")],
             "outputs": [column("line", "int", index=True)],
         },
-        "t.line is an index among the outputs",
-        id="an index among the outputs",
+        "t.line is an index among the outputs, which only a table of outputs alone holds its "
+        "index among",
+        id="an index among the outputs of a table with inputs",
+    ),
+    pytest.param(
+        {"rows": "many", "outputs": [column("line", "int", index=True)]},
+        "t.line is an index among the outputs, which only a table of outputs alone holds its "
+        "index among",
+        id="an index the only output",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [column("line", "int", index=True)],
+            "outputs": [column("premium", "float")],
+        },
+        "t.line is an index among the inputs of a table of outputs alone, whose index is among "
+        "its outputs",
+        id="an index among the inputs of a table of outputs alone",
     ),
     pytest.param(
         {
@@ -1494,8 +1516,16 @@ KEY_REFUSALS = [
             "rows": "many",
             "inputs": [column("line", "int", index=True, key=True), column("value", "float")],
         },
-        "t.line is a key, which only an output of a table of outputs alone with many rows can be",
+        "t.line is the index, which is never a key",
         id="the index marked key",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "outputs": [column("line", "int", index=True, key=True), column("premium", "float")],
+        },
+        "t.line is the index, which is never a key",
+        id="a table of outputs alone's index marked key",
     ),
     pytest.param(
         {
@@ -1546,13 +1576,24 @@ def test_a_tables_key_is_never_typed_so_a_key_or_index_it_cannot_have_is_refused
         pytest.param(
             {
                 "rows": "many",
-                "outputs": [column("layer", "int", key=True), column("premium", "float")],
+                "outputs": [
+                    column("layer_no", "int", index=True),
+                    column("layer", "int", key=True),
+                    column("premium", "float"),
+                ],
             },
-            id="a table of outputs alone by outputs marked key",
+            id="a table of outputs alone by outputs marked key, its index among them",
         ),
         pytest.param(
-            {"rows": "many", "outputs": [column("premium", "float")]},
+            {
+                "rows": "many",
+                "outputs": [column("line", "int", index=True), column("premium", "float")],
+            },
             id="a table of outputs alone marking none",
+        ),
+        pytest.param(
+            {"rows": "many", "inputs": [column("line", "int", index=True)]},
+            id="an empty many-row table, its index among its inputs",
         ),
     ],
 )
@@ -1560,6 +1601,39 @@ def test_a_table_keyed_as_its_kind_is_read(table: dict[str, Any]) -> None:
     data = _one_table_form(table)
 
     assert FormSpec.model_validate(data).data_schema.tables[0].rows == "many"
+
+
+@pytest.mark.parametrize(
+    ("table", "priced", "alone"),
+    [
+        # An empty table switched to many rows, its index renamed: no output side.
+        pytest.param({"inputs": [column("line", "int", index=True)]}, [], False, id="empty"),
+        # Given its first output, the index goes with the identity to the outputs.
+        pytest.param(
+            {"outputs": [column("line", "int", index=True), column("premium", "float")]},
+            ["premium"],
+            True,
+            id="a first output",
+        ),
+        # That output removed, the index is back among the inputs, the table no output table.
+        pytest.param(
+            {"inputs": [column("line", "int", index=True)], "outputs": []},
+            [],
+            False,
+            id="its output removed",
+        ),
+    ],
+)
+def test_the_index_never_makes_a_table_an_output_table(
+    table: dict[str, Any], priced: list[str], alone: bool
+) -> None:
+    (held,) = FormSpec.model_validate(_one_table_form({"rows": "many", **table})).data_schema.tables
+
+    assert [column.name for column in held.priced_outputs] == priced
+    assert held.has_outputs is bool(priced)
+    assert held.outputs_alone is alone
+    assert held.index is not None and held.index.name == "line"
+    assert held.is_output("line") is alone
 
 
 def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(

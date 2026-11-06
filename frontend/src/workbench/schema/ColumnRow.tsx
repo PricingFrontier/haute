@@ -80,8 +80,8 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   const fixed = locked || readOnly || identity
   const summary = columnSummary(table, column)
   const length = table[block].length
-  // A many-row table of outputs alone is keyed by the outputs marked so; a table with inputs by a column no one types.
-  const keyable = table.rows === "many" && block === "outputs" && !hasInputs(table) && !identity
+  // A many-row table of outputs alone is keyed by the outputs marked so, never its index; a table with inputs by a column no one types.
+  const keyable = table.rows === "many" && block === "outputs" && !hasInputs(table) && !identity && !column.index
   const keying = hasInputs(table) && keyTable(table).some((key) => key.name === column.name)
   const set = (patch: Partial<SchemaColumn>) => change((f) => updateSchemaColumn(f, table.name, column.name, patch))
 

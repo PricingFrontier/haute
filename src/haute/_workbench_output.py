@@ -121,19 +121,22 @@ def _unconnected(table: WorkbenchTable) -> pl.LazyFrame:
 def frame_columns(table: WorkbenchTable) -> list[WorkbenchColumn]:
     """The columns of *table* its frame fills, each where the frame holds it with a type that
     fits: every one but the quote's identity, which the response gives
-    (:func:`workbench_response`)."""
-    return request_columns(table)
+    (:func:`workbench_response`), and a table of outputs alone's index, which is numbered."""
+    return [column for column in request_columns(table) if column.name != table.index]
 
 
 def _filled(table: WorkbenchTable, frame: pl.LazyFrame) -> pl.LazyFrame:
     """*table*'s columns from *frame*, each from its column of the same name, cast to its
     declared type; nulls where the frame lacks it or holds it with a type that does not fit,
-    and in the quote's identity (:func:`frame_columns`)."""
+    and in the quote's identity (:func:`frame_columns`); a table of outputs alone's index
+    numbered 1, 2, 3 in the frame's order, whatever the frame holds under its name."""
     schema = frame.collect_schema()
     fillable = {column.name for column in frame_columns(table)}
     columns: list[pl.Expr] = []
     for column in table.columns:
-        if (
+        if column.name == table.index:
+            columns.append(pl.int_range(1, pl.len() + 1, dtype=pl.Int64).alias(column.name))
+        elif (
             column.name in fillable
             and column.name in schema
             and column_fits(column.type, schema[column.name])

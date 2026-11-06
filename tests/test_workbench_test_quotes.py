@@ -349,12 +349,16 @@ def test_keyed_rows_reordered_and_numbers_within_tolerance_are_unchanged(
 ) -> None:
     keyed = json.loads(json.dumps(FORM_TABLES))
     prices = next(t for t in keyed if t["name"] == "item_prices")
-    prices["outputs"][0]["key"] = True
+    next(c for c in prices["outputs"] if c["name"] == "item_id")["key"] = True
     _sheets(project, keyed)
     http = client()
     assert _save(http).status_code == 200
     [row] = _rows(project)
+    # Answered in the other order once, its index numbered as that answer ran: Haute's
+    # numbering of a table of outputs alone moves nothing.
     row["expected"]["item_prices"].reverse()
+    for number, each in enumerate(row["expected"]["item_prices"], 1):
+        each["row_number"] = number
     row["expected"]["pricing"][0]["premium"] = 101.0
     row["tolerance_pct"] = 0.05
     row["_note"] = "kept by hand"
@@ -383,7 +387,8 @@ def test_a_column_the_form_dropped_is_a_removed_field(project: Path) -> None:
 
 def test_a_key_held_twice_no_longer_compares(project: Path) -> None:
     keyed = json.loads(json.dumps(FORM_TABLES))
-    next(t for t in keyed if t["name"] == "item_prices")["outputs"][0]["key"] = True
+    prices = next(t for t in keyed if t["name"] == "item_prices")
+    next(c for c in prices["outputs"] if c["name"] == "item_id")["key"] = True
     _sheets(project, keyed)
     http = client()
     assert _save(http).status_code == 200

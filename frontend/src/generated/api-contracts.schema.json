@@ -28472,6 +28472,18 @@
           "title": "Columns",
           "type": "array"
         },
+        "index": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Index"
+        },
         "key": {
           "anyOf": [
             {
@@ -28534,7 +28546,8 @@
         "rows",
         "columns",
         "key",
-        "null_key"
+        "null_key",
+        "index"
       ],
       "title": "WorkbenchTable",
       "type": "object"

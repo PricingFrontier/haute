@@ -57,8 +57,6 @@ _NAME_RULE = "letters, digits and underscores, not starting with a digit and not
 #: The longest table or column name the quote store keeps: PostgreSQL's limit for an
 #: identifier, so no database shortens one and two long names never become one.
 STORE_NAME_LENGTH = 63
-#: The quote store's number for each row of a many-row table, a column of its own there.
-TABLE_INDEX = "table_index"
 #: What starts a name the quote store keeps for its own tables and columns.
 _STORE_PREFIX = "haute_"
 #: What starts a table name SQLite keeps for its own tables.
@@ -67,12 +65,11 @@ _SQLITE_PREFIX = "sqlite_"
 _HAUTE_COLUMNS = frozenset({(QUOTE_DETAILS_NAME, "haute_version")})
 
 
-def store_name_problems(table: str, rows: str, columns: Sequence[str]) -> list[str]:
+def store_name_problems(table: str, columns: Sequence[str]) -> list[str]:
     """What keeps *table*'s names from being the quote store's (specs/workbench), each said as
     ``table 'x' ...``: a name longer than ``STORE_NAME_LENGTH``, a name starting ``haute_``
-    (Haute's own ``quote_details.haute_version`` aside), a table starting ``sqlite_``, two
-    columns whose names differ only in case, which no database holds both of, and a column of
-    a many-row table named ``table_index``."""
+    (Haute's own ``quote_details.haute_version`` aside), a table starting ``sqlite_`` and two
+    columns whose names differ only in case, which no database holds both of."""
     problems: list[str] = []
     if len(table) > STORE_NAME_LENGTH:
         problems.append(
@@ -104,11 +101,6 @@ def store_name_problems(table: str, rows: str, columns: Sequence[str]) -> list[s
             problems.append(
                 f"table {table!r} has a column {name!r}, and a name starting {_STORE_PREFIX} is "
                 "the quote store's own"
-            )
-        if rows == "many" and name == TABLE_INDEX:
-            problems.append(
-                f"table {table!r} has a column {TABLE_INDEX!r}, the quote store's number for each "
-                "row of a many-row table"
             )
     return problems
 
@@ -161,6 +153,10 @@ class WorkbenchTable(_Strict):
     #: The value the null quote's row holds in the key column: on the input side of a
     #: many-row input table, 1 for the index, else the preset column's first allowed value.
     null_key: KeyValue | None = None
+    #: On the output side of a many-row table of outputs alone, its index's name: an Integer
+    #: column the Workbench Output numbers 1, 2, 3 in the order pricing gives the rows,
+    #: whatever the frame holds under its name.
+    index: str | None = None
 
     @model_validator(mode="after")
     def _holds_its_port_and_key(self) -> WorkbenchTable:
@@ -172,6 +168,16 @@ class WorkbenchTable(_Strict):
             raise ValueError(f"{self.port}'s key {self.key!r} is none of its many rows' columns")
         if self.null_key is not None and (self.side != "input" or self.key is None):
             raise ValueError(f"{self.port} holds a null key, which only a keyed input side does")
+        if self.index is not None and (
+            self.side != "output"
+            or self.one_row
+            or not any(
+                column.name == self.index and column.type == "int" for column in self.columns
+            )
+        ):
+            raise ValueError(
+                f"{self.port}'s index {self.index!r} is no Integer column of a many-row output side"
+            )
         return self
 
     @property
@@ -259,9 +265,7 @@ def check_tables(tables: Sequence[WorkbenchTable], *, owner: str) -> None:
                     f"The {owner}'s table {table.name!r} names a column {column.name!r} twice."
                 )
             names.add(column.name)
-        problems = store_name_problems(
-            table.name, table.rows, [column.name for column in table.columns]
-        )
+        problems = store_name_problems(table.name, [column.name for column in table.columns])
         if problems:
             raise WorkbenchTablesError(f"The {owner}'s {problems[0]}.")
 
@@ -362,6 +366,9 @@ def _output_side(table: SchemaTable) -> WorkbenchTable:
     key = _input_key(table)
     identity = list(IDENTITY_SCHEMA) if holds_identity(table) else []
     keyed = [] if key is None else [_column(key)]
+    # A table of outputs alone holds its index among its outputs, which the Workbench Output
+    # numbers; an input table's index stays with its inputs, its key carried here instead.
+    index = table.index if table.outputs_alone else None
     return WorkbenchTable(
         name=table.name,
         side="output",
@@ -369,6 +376,7 @@ def _output_side(table: SchemaTable) -> WorkbenchTable:
         rows=table.rows,
         columns=[*identity, *keyed, *(_column(column) for column in table.own_outputs)],
         key=None if key is None else key.name,
+        index=None if index is None else index.name,
     )
 
 

@@ -51,6 +51,7 @@ import {
   identityCount,
   isIdentityColumn,
   isOutputColumn,
+  outputsAlone,
   ownInputs,
   ownOutputs,
   QUOTE_DETAILS_NAME,
@@ -327,7 +328,7 @@ export const createSchemaColumn = (spec: FormSpec, tableId: string, block: Block
   return blankColumn(uniqueName("column", tableColumns(table).map((column) => column.name)), type)
 }
 
-/** A table's index: an input holding each row's number, from 1, as the rows stand, `row_number` until renamed. */
+/** A many-row table's index: an Integer holding each row's number, from 1, `row_number` until renamed. */
 export const createIndexColumn = (spec: FormSpec, tableId: string): SchemaColumn => ({
   ...blankColumn(uniqueName("row_number", tableColumns(schemaTableOf(spec, tableId)).map((column) => column.name)), "int"),
   index: true,
@@ -362,23 +363,35 @@ function dropColumnUses(draft: FormSpec, tableId: string, columnId: string): voi
 
 /**
  * The table `tableId` given the index it needs and the keys it may hold, as the server's
- * `_check_keys` holds them: a many-row table holding a typed input (`typedInputs`) gains its
- * index (`createIndexColumn`) after the quote's identity, and a table holding none, or of one
- * row, loses it with what shows it (`dropColumnUses`); an input table's outputs and every
- * column of a one-row table lose `key`. quote_details is left as it is.
+ * `_check_keys` holds them: every many-row table holds one index, the one it has under its
+ * name or a new one (`createIndexColumn`), never a key, first after the quote's identity in
+ * the block it belongs to: its outputs while it is a table of outputs alone (`outputsAlone`),
+ * reaching them without what only an input takes (`INPUT_ONLY_RULES`), and its inputs
+ * otherwise, an empty table's included, so it moves between the blocks as the table gains or
+ * loses its typed inputs or its last priced output. A one-row table loses it with what shows
+ * it (`dropColumnUses`). An input table's outputs and every column of a one-row table lose
+ * `key`. quote_details is left as it is.
  */
 function placeIndex(draft: FormSpec, tableId: string): void {
   const table = schemaTableOf(draft, tableId)
   if (isQuoteDetails(table)) return
-  const typed = hasInputs(table)
-  const index = table.inputs.find((column) => column.index)
-  if (table.rows === "many" && typed) {
-    if (index === undefined) table.inputs.splice(table.inputs.length - ownInputs(table).length, 0, createIndexColumn(draft, tableId))
+  const index = tableColumns(table).find((column) => column.index)
+  if (table.rows === "many") {
+    const held = index ?? createIndexColumn(draft, tableId)
+    const block: Block = outputsAlone(table) ? "outputs" : "inputs"
+    table.inputs = table.inputs.filter((column) => column !== held)
+    table.outputs = table.outputs.filter((column) => column !== held)
+    held.key = false
+    if (block === "outputs") Object.assign(held, INPUT_ONLY_RULES)
+    // First after the identity heading the block, as the block stands without it.
+    const own = block === "inputs" ? ownInputs(table) : ownOutputs(table)
+    table[block].splice(table[block].length - own.length, 0, held)
   } else if (index !== undefined) {
     table.inputs = table.inputs.filter((column) => column !== index)
+    table.outputs = table.outputs.filter((column) => column !== index)
     dropColumnUses(draft, tableId, index.name)
   }
-  if (typed || table.rows === "one") for (const column of tableColumns(table)) column.key = false
+  if (hasInputs(table) || table.rows === "one") for (const column of tableColumns(table)) column.key = false
 }
 
 /** The table `tableId` with the quote's identity at the head of its first block (`withIdentityPlaced`). */
@@ -607,8 +620,8 @@ export const removeSchemaTable = (spec: FormSpec, id: string): FormSpec =>
  * A table with one row per quote has no keys, which say which of many rows is which, no
  * index, which numbers them, and no row for each value: switching to one row drops them,
  * the index with what shows it, as removing a column does. A many-row table's columns take
- * no default: switching to many rows clears them, and a table with inputs gains its index
- * (`withIndexAsNeeded`).
+ * no default: switching to many rows clears them, and the table gains its index, an empty
+ * one too (`withIndexAsNeeded`).
  */
 export const setSchemaTableRows = (spec: FormSpec, id: string, rows: SchemaTable["rows"]): FormSpec =>
   edit(spec, (draft) => {
@@ -636,10 +649,10 @@ export const setRowPerValue = (spec: FormSpec, tableId: string, columnId: string
   })
 
 /**
- * Add a column to a block of a table, at `at` in the block or at its end; a many-row table
- * gaining its first input gains its index and its outputs lose their keys
- * (`withIndexAsNeeded`), and the quote's identity heads the table's first block
- * (`withIdentityPlaced`).
+ * Add a column to a block of a table, at `at` in the block or at its end; a many-row table's
+ * index goes to the head of the block it now belongs to, and a table gaining its first input
+ * loses its outputs' keys (`withIndexAsNeeded`), and the quote's identity heads the table's
+ * first block (`withIdentityPlaced`).
  */
 export const addSchemaColumn = (spec: FormSpec, tableId: string, block: Block, column: SchemaColumn, at?: number): FormSpec =>
   edit(spec, (draft) => {
@@ -648,7 +661,7 @@ export const addSchemaColumn = (spec: FormSpec, tableId: string, block: Block, c
     settleBlocks(draft, tableId)
   })
 
-/** How many columns head a block and stay there: the quote's identity at its head, and after it the index of the inputs. */
+/** How many columns head a block and stay there: the quote's identity at its head, and after it the index, in whichever block holds it. */
 const fixedHead = (table: SchemaTable, block: Block): number => {
   const identity = table[block].length - (block === "inputs" ? ownInputs(table) : ownOutputs(table)).length
   return identity + (table[block][identity]?.index ? 1 : 0)
@@ -656,13 +669,14 @@ const fixedHead = (table: SchemaTable, block: Block): number => {
 
 /**
  * Move a column to `at` in a block of its table, its own or the other. The quote's identity
- * and the index after it stay where they are, nothing goes above them, and the index never
- * leaves the inputs. A column reaching the outputs loses what only an input takes
- * (`INPUT_ONLY_RULES`: its rules but Required, its row for each value and its default) and
- * its values in the sample, which only what is typed takes; one reaching the inputs loses its
- * key. Then the table holds its index and keys as the server holds them
- * (`withIndexAsNeeded`), and the identity heads its first block (`withIdentityPlaced`), so a
- * table whose last typed input moves to its outputs has no inputs left: Control flow 18.
+ * and the index after it stay where they are, nothing goes above them, and the index is
+ * never moved by this, only with the blocks (`withIndexAsNeeded`). A column reaching the
+ * outputs loses what only an input takes (`INPUT_ONLY_RULES`: its rules but Required, its row
+ * for each value and its default) and its values in the sample, which only what is typed
+ * takes; one reaching the inputs loses its key. Then the table holds its index and keys as
+ * the server holds them (`withIndexAsNeeded`), and the identity heads its first block
+ * (`withIdentityPlaced`), so a table whose last typed input moves to its outputs has no
+ * inputs left, the identity and then its index heading its outputs: Control flow 18.
  */
 export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: string, block: Block, at: number): FormSpec => {
   const table = schemaTableOf(spec, tableId)
@@ -684,8 +698,12 @@ export const moveSchemaColumn = (spec: FormSpec, tableId: string, columnId: stri
   })
 }
 
-/** Whether a column can be marked `key`: an output of a many-row table of outputs alone, as the server's `_check_keys` holds it. */
-const keyable = (table: SchemaTable, columnId: string): boolean => table.rows === "many" && !hasInputs(table) && isOutputColumn(table, columnId)
+/** Whether the column `columnId` of `table` is its index, which is renamed but never moved, retyped, removed or a key. */
+const isIndex = (table: SchemaTable, columnId: string): boolean => tableColumns(table).some((column) => column.name === columnId && column.index)
+
+/** Whether a column can be marked `key`: an output of a many-row table of outputs alone but its index, as the server's `_check_keys` holds it. */
+const keyable = (table: SchemaTable, columnId: string): boolean =>
+  table.rows === "many" && !hasInputs(table) && isOutputColumn(table, columnId) && !isIndex(table, columnId)
 
 /**
  * Change a column; the quote's identity is Haute's, and nothing of it changes, and a key is
@@ -718,7 +736,7 @@ export const takesOptions = (type: SchemaColumn["type"]): boolean => type !== "b
  * otherwise still rule its cells; and the default of one that
  * becomes or stops being a tick box, a tick or text no longer its kind of value, or that
  * becomes a date while its default is not a day, which a date's box cannot show. The quote's
- * identity keeps its types.
+ * identity keeps its types, and the index stays an Integer.
  */
 export const changeSchemaColumnType = (
   spec: FormSpec,
@@ -726,7 +744,7 @@ export const changeSchemaColumnType = (
   columnId: string,
   type: SchemaColumn["type"],
 ): FormSpec =>
-  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId })
+  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId }) || isIndex(schemaTableOf(spec, tableId), columnId)
     ? spec
     : edit(spec, (draft) => {
         const column = schemaColumnOf(schemaTableOf(draft, tableId), columnId)
@@ -750,12 +768,13 @@ export const changeSchemaColumnType = (
 
 /**
  * Removing a column removes it from the widgets that show it, or label a Chart's rows,
- * and what the conditions test of it (`withoutColumn`), and its sample values; a table
- * losing its last typed input loses its index (`withIndexAsNeeded`), and the quote's
- * identity, which stays, heads its first block (`withIdentityPlaced`).
+ * and what the conditions test of it (`withoutColumn`), and its sample values; a many-row
+ * table's index, which is never removed, goes to the head of the block it now belongs to
+ * (`withIndexAsNeeded`), and the quote's identity, which stays, heads its first block
+ * (`withIdentityPlaced`).
  */
 export const removeSchemaColumn = (spec: FormSpec, tableId: string, columnId: string): FormSpec =>
-  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId })
+  isIdentityColumn(schemaTableOf(spec, tableId), { name: columnId }) || isIndex(schemaTableOf(spec, tableId), columnId)
     ? spec
     : edit(spec, (draft) => {
         const table = schemaTableOf(draft, tableId)
@@ -2417,8 +2436,6 @@ export interface SchemaProblem {
 
 /** The longest table or column name the quote store keeps whole (`STORE_NAME_LENGTH`). */
 export const STORE_NAME_LENGTH = 63
-/** The quote store's number for each row of a many-row table, a column of its own there (`TABLE_INDEX`). */
-export const TABLE_INDEX = "table_index"
 /** What starts a name the quote store keeps for its own tables and columns. */
 const STORE_PREFIX = "haute_"
 
@@ -2450,7 +2467,6 @@ function storeColumnProblems(table: SchemaTable, column: SchemaColumn, folded: M
   if (column.name.startsWith(STORE_PREFIX) && !(isQuoteDetails(table) && column.name === "haute_version")) {
     problems.push(`starts ${STORE_PREFIX}, which the quote store keeps for its own names`)
   }
-  if (table.rows === "many" && column.name === TABLE_INDEX) problems.push("is the quote store's number for each row of a many-row table")
   return problems
 }
 

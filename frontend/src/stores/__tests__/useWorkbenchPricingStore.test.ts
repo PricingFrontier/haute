@@ -311,9 +311,9 @@ describe("useWorkbenchPricingStore", () => {
       rows: "many",
       columns: [...identity, { name: "item_number", type: "int" }, { name: "final_premium", type: "float" }, { name: "referral", type: "str" }],
       key: "item_number",
-      null_key: null,
+      null_key: null, index: null,
     }
-    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null }
+    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null, index: null }
     /** What the server makes of the form: the schedule's typed rows, numbered by its index, and both output sides. */
     const keyedOf = (spec: FormSpec): WorkbenchTablesResponse => ({
       ...workbenchOf(spec),

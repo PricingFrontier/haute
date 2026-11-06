@@ -31,7 +31,7 @@ const side = (
   rows: WorkbenchTable["rows"],
   columns: WorkbenchColumn[],
   key: string | null = null,
-): WorkbenchTable => ({ name, side: which, port: `${name}_${which}`, rows, columns, key, null_key: null })
+): WorkbenchTable => ({ name, side: which, port: `${name}_${which}`, rows, columns, key, null_key: null, index: null })
 
 const table = side("policy_details", "input", "one", [{ name: "state", type: "str" }])
 const sample = { policy_details: { state: "NY" } }

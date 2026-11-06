@@ -1,7 +1,7 @@
 """The quote store's tables, derived from the form (specs/workbench): each schema table a SQL
 table of its name and its columns' types, keyed by the quote's identity and, in a many-row
-table, by ``table_index``, with the store's own columns on ``quote_details`` and Haute's
-activity beside them."""
+table, by its index under the project's name for it, with the store's own columns on
+``quote_details`` alone and Haute's activity beside them."""
 
 from __future__ import annotations
 
@@ -67,6 +67,16 @@ PREMIUM = {
     "rows": "one",
     "outputs": [column("total_premium", "float")],
 }
+#: A table of outputs alone: its index, renamed, numbered in the pricing's order.
+LAYERS = {
+    "name": "layers",
+    "rows": "many",
+    "outputs": [
+        column("layer_no", "int", index=True),
+        column("layer", "int", key=True),
+        column("layer_premium", "float"),
+    ],
+}
 
 
 def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() -> None:
@@ -104,30 +114,32 @@ def test_each_schema_table_is_a_sql_table_of_its_name_and_its_columns_types() ->
         "value",
         "garaged",
         "vehicle_premium",
-        "table_index",
     ]
     assert {column.name: type(column.type) for column in vehicles.columns}["value"] is Double
     assert {column.name: type(column.type) for column in vehicles.columns}["garaged"] is Boolean
     # Every column of the project's own may be null, so a draft saves with it empty; the
-    # identity and the row number never are.
+    # identity and the index never are.
     assert [column.name for column in vehicles.columns if not column.nullable] == [
         "quote_reference",
         "quote_option",
-        "table_index",
+        "vehicle",
     ]
 
 
 def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> None:
-    schema = store_schema(form(POLICY, VEHICLES, PREMIUM))
+    schema = store_schema(form(POLICY, VEHICLES, PREMIUM, LAYERS))
 
     def key(name: str) -> list[str]:
         return [column.name for column in schema.by_name(name).table.primary_key.columns]
 
     assert key("quote_details") == ["quote_reference", "quote_option"]
     assert key("policy") == ["quote_reference", "quote_option"]
-    assert key("vehicles") == ["quote_reference", "quote_option", "table_index"]
+    # A many-row table is keyed by its index under its name, among its inputs or, in a table
+    # of outputs alone, its outputs.
+    assert key("vehicles") == ["quote_reference", "quote_option", "vehicle"]
+    assert key("layers") == ["quote_reference", "quote_option", "layer_no"]
     assert key("premium") == ["quote_reference", "quote_option"]
-    for name in ("policy", "vehicles", "premium"):
+    for name in ("policy", "vehicles", "premium", "layers"):
         [foreign] = schema.by_name(name).table.foreign_key_constraints
         assert [element.target_fullname for element in foreign.elements] == [
             "quote_details.quote_reference",
@@ -140,6 +152,7 @@ def test_tables_are_keyed_by_the_quotes_identity_and_refer_to_its_details() -> N
         "policy",
         "vehicles",
         "premium",
+        "layers",
         ACTIVITY_TABLE,
     }
 
@@ -168,10 +181,11 @@ def test_a_tables_constraints_are_named_from_its_name_when_it_is_made() -> None:
 
 
 def test_each_tables_columns_the_form_does_not_hold_are_named_with_what_they_hold() -> None:
-    kept = store_columns(form(POLICY, VEHICLES, PREMIUM))
+    kept = store_columns(form(POLICY, VEHICLES, PREMIUM, LAYERS))
 
-    assert list(kept) == ["quote_details", "vehicles"]
-    assert kept["vehicles"] == [("table_index", "int")]
+    # No table but quote_details holds a column of the store's own: a many-row table's rows
+    # are numbered by its index.
+    assert list(kept) == ["quote_details"]
     assert [name for name, _ in kept["quote_details"]] == [name for name, _, _ in STORE_COLUMNS]
     assert dict(kept["quote_details"])["note_at"] == "datetime"
 

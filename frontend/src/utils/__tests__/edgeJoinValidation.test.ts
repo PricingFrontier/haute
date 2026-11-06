@@ -311,7 +311,7 @@ describe("edgeJoinValidation", () => {
         edge("e-lookup", "lookup", "join", "join"),
       ]
       const workbench = {
-        tables: [{ name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null }],
+        tables: [{ name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null, index: null }],
         sample: {},
         responseTables: [],
         fetch: 1,

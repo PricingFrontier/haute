@@ -2168,7 +2168,7 @@ describe("NodePanel", () => {
         id: "wb_in",
         data: { label: "Quote", description: "", nodeType: "workbenchInput", config: {} },
       })
-      const policy = { name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null }
+      const policy = { name: "policy", side: "input" as const, port: "policy_input", rows: "one" as const, columns: [{ name: "state", type: "str" as const }], key: null, null_key: null, index: null }
       useWorkbenchStore.setState({ tables: { tables: [policy], sample: {}, responseTables: [], fetch: 1 } })
       try {
         renderPanel({

@@ -2622,6 +2622,26 @@
                 "use_grouping": true
               },
               {
+                "name": "row_number",
+                "type": "int",
+                "label": "",
+                "group": "",
+                "key": false,
+                "required": false,
+                "min": null,
+                "max": null,
+                "options": [],
+                "options_source": null,
+                "row_per_value": false,
+                "index": true,
+                "help": "",
+                "placeholder": "",
+                "default_value": "",
+                "number_format": "general",
+                "decimal_places": null,
+                "use_grouping": true
+              },
+              {
                 "name": "price",
                 "type": "float",
                 "label": "",

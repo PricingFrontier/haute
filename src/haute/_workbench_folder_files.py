@@ -428,7 +428,7 @@ class TableFile(_File):
                 )
             names[folded] = column.name
         for column in self.outputs:
-            rules = [key for key in (*INPUT_ONLY, "index") if key in column.model_fields_set]
+            rules = [key for key in INPUT_ONLY if key in column.model_fields_set]
             if rules:
                 raise ValueError(
                     f"{column.name} is an output and holds {', '.join(rules)}, which only an "

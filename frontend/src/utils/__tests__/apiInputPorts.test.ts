@@ -858,7 +858,7 @@ describe("a Workbench Input's frames", () => {
     name: string,
     columns: { name: string; type: "int" | "str" | "float" }[] = [{ name: "c", type: "int" }],
     side: "input" | "output" = "input",
-  ) => ({ name, side, port: `${name}_${side}`, rows: "one" as const, columns, key: null, null_key: null })
+  ) => ({ name, side, port: `${name}_${side}`, rows: "one" as const, columns, key: null, null_key: null, index: null })
   const workbench = {
     tables: [
       workbenchTable("policy"),

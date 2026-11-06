@@ -328,7 +328,8 @@ export function FieldGrid({
         }}
         onContextMenu={menuHere}
       >
-        {found?.column.index ? (past(found, row) ? null : row + 1) : output ? shown(priced, found) : null}
+        {/* An input table's index is the grid's row number; a table of outputs alone's is its answer row's, as its other outputs are. */}
+        {output ? shown(priced, found) : found?.column.index ? (past(found, row) ? null : row + 1) : null}
       </td>
     )
   }

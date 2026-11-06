@@ -139,11 +139,16 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
                 ],
                 "outputs": [column("peril_premium", "float")],
             },
-            # A table of outputs alone: no key of its own unless one is marked.
+            # A table of outputs alone: no key of its own unless one is marked, its index
+            # among its outputs, which the Workbench Output numbers.
             {
                 "name": "layers",
                 "rows": "many",
-                "outputs": [column("layer", "int"), column("layer_premium", "float")],
+                "outputs": [
+                    index("layer_no"),
+                    column("layer", "int"),
+                    column("layer_premium", "float"),
+                ],
             },
             # A table of inputs alone: no output side.
             {
@@ -187,6 +192,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "item_number",
             "null_key": 1,
+            "index": None,
         },
         {
             "name": "perils",
@@ -201,6 +207,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "peril",
             "null_key": "Fire",
+            "index": None,
         },
         {
             "name": "policy_details",
@@ -214,6 +221,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": None,
             "null_key": None,
+            "index": None,
         },
         {
             "name": "pricing",
@@ -223,6 +231,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "columns": [*IDENTITY, {"name": "discount", "type": "float"}],
             "key": None,
             "null_key": None,
+            "index": None,
         },
     ]
     # Each output side is the identity, then a many-row input table's key column, then the
@@ -240,6 +249,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "item_number",
             "null_key": None,
+            "index": None,
         },
         {
             "name": "perils",
@@ -253,6 +263,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "peril",
             "null_key": None,
+            "index": None,
         },
         {
             "name": "layers",
@@ -261,11 +272,13 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "rows": "many",
             "columns": [
                 *IDENTITY,
+                {"name": "layer_no", "type": "int"},
                 {"name": "layer", "type": "int"},
                 {"name": "layer_premium", "type": "float"},
             ],
             "key": None,
             "null_key": None,
+            "index": "layer_no",
         },
         {
             "name": "pricing",
@@ -275,6 +288,7 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "columns": [*IDENTITY, {"name": "charged", "type": "float"}],
             "key": None,
             "null_key": None,
+            "index": None,
         },
     ]
     assert (equipment.one_row, policy.one_row) == (False, True)
@@ -308,7 +322,11 @@ def test_a_table_of_outputs_alone_leads_its_outputs_with_the_identity_and_keeps_
         {
             "name": "layer_premiums",
             "rows": "many",
-            "outputs": [column("layer", "int", key=True), column("premium", "float")],
+            "outputs": [
+                index("layer_no"),
+                column("layer", "int", key=True),
+                column("premium", "float"),
+            ],
         }
     )
 
@@ -317,13 +335,14 @@ def test_a_table_of_outputs_alone_leads_its_outputs_with_the_identity_and_keeps_
     assert [item.name for item in table.inputs] == []
     assert [item.name for item in table.outputs[:2]] == ["quote_reference", "quote_option"]
     assert input_tables(spec) == ()
-    # Its output side keeps its own columns, the one marked key among them, and no key of
-    # the side's: its rows are kept by table_index, as they come.
+    # Its output side keeps its own columns, its index and the one marked key among them,
+    # and no key of the side's: its rows are numbered by its index, as they come.
     (layers,) = output_tables(spec)
-    assert (layers.port, layers.key, [item.name for item in layers.columns]) == (
+    assert (layers.port, layers.key, layers.index, [item.name for item in layers.columns]) == (
         "layer_premiums_output",
         None,
-        ["quote_reference", "quote_option", "layer", "premium"],
+        "layer_no",
+        ["quote_reference", "quote_option", "layer_no", "layer", "premium"],
     )
 
 
@@ -369,6 +388,7 @@ def _keyed_table(name: str, **table: Any) -> SchemaTable:
             {
                 "rows": "many",
                 "outputs": [
+                    index("layer_no"),
                     column("layer", "int", key=True),
                     column("peril", key=True),
                     column("premium", "float"),
@@ -378,7 +398,7 @@ def _keyed_table(name: str, **table: Any) -> SchemaTable:
             id="a table of outputs alone by its outputs marked key",
         ),
         pytest.param(
-            {"rows": "many", "outputs": [column("premium", "float")]},
+            {"rows": "many", "outputs": [index("line"), column("premium", "float")]},
             [],
             id="a table of outputs alone marking none",
         ),
@@ -765,11 +785,6 @@ _REFUSED = {
         "The Workbench Input's table 'a' has a column 'haute_x', and a name starting haute_ is "
         "the quote store's own.",
     ),
-    "the store's row number in a many-row table": (
-        [side("a", "many", {"name": "table_index", "type": "int"})],
-        "The Workbench Input's table 'a' has a column 'table_index', the quote store's number "
-        "for each row of a many-row table.",
-    ),
     "a table SQLite keeps": (
         [side("sqlite_x")],
         "The Workbench Input's table 'sqlite_x' starts sqlite_, which SQLite keeps for its own "
@@ -850,7 +865,7 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
         {
             "name": "premiums",
             "rows": "many",
-            "outputs": [column("premium", "float")],
+            "outputs": [index("line"), column("premium", "float")],
         },
         {"name": "untouched", "rows": "one", "inputs": [column("x")]},
     )
@@ -1477,7 +1492,11 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
         {
             "name": "layer_premiums",
             "rows": "many",
-            "outputs": [column("layer", "int", key=True), column("premium", "float")],
+            "outputs": [
+                index("layer_no"),
+                column("layer", "int", key=True),
+                column("premium", "float"),
+            ],
         },
         {
             "name": "pricing_output",
@@ -1497,11 +1516,13 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
             "rows": "many",
             "columns": [
                 *IDENTITY,
+                {"name": "layer_no", "type": "int"},
                 {"name": "layer", "type": "int"},
                 {"name": "premium", "type": "float"},
             ],
             "key": None,
             "null_key": None,
+            "index": "layer_no",
         },
         {
             "name": "pricing_output",
@@ -1511,6 +1532,7 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
             "columns": [*IDENTITY, {"name": "charged_premium", "type": "float"}],
             "key": None,
             "null_key": None,
+            "index": None,
         },
     ]
     assert [table.port for table in input_tables(spec)] == ["policy_details_input"]

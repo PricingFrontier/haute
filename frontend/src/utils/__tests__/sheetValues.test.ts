@@ -24,7 +24,7 @@ import {
   withPresetRows,
 } from "../sheetValues"
 import { columnKey, quotedSchema } from "../sheetVisibility"
-import { BLANK_THEME, linedUpOutputs, pricingBasis, type SampleRow } from "../workbenchForm"
+import { answeredOutputs, BLANK_THEME, linedUpOutputs, pricingBasis, type SampleRow } from "../workbenchForm"
 import presetCases from "./fixtures/presetRows.json"
 import typedCases from "./fixtures/typedText.json"
 
@@ -366,6 +366,54 @@ describe("a table of both blocks lined up by its key", () => {
     expect(presetColumn(quoted.tables[0])?.name).toBe("peril")
     // The schema's basis, which a pricing is for, still holds the column.
     expect(pricingBasis(form([perils]))).toContain("peril")
+  })
+})
+
+describe("tables of outputs alone lined up in one Table", () => {
+  // Two breakdowns by peril, keyed alike by the peril pricing fills, each numbered by an index of its own among its outputs.
+  const identity = [column("quote_reference"), column("quote_option", { type: "int" })]
+  const perilPremiums: SchemaTable = {
+    name: "peril_premiums",
+    rows: "many",
+    inputs: [],
+    outputs: [...identity, column("premium_number", { type: "int", index: true }), column("peril", { key: true }), column("premium", { type: "float" })],
+  }
+  const perilShares: SchemaTable = {
+    name: "peril_shares",
+    rows: "many",
+    inputs: [],
+    outputs: [...identity, column("row_number", { type: "int", index: true }), column("peril", { key: true }), column("share", { type: "float" })],
+  }
+
+  it("lines each one's answer up with the first's rows by key, each row holding its own index whatever order the answers come in", () => {
+    const price = {
+      sample: {},
+      tables: {
+        peril_premiums: [
+          { premium_number: 1, peril: "EQ", premium: 20 },
+          { premium_number: 2, peril: "AOP", premium: 10 },
+        ],
+        peril_shares: [
+          { row_number: 1, peril: "AOP", share: 0.4 },
+          { row_number: 2, peril: "FL", share: 0.1 },
+          { row_number: 3, peril: "EQ", share: 0.6 },
+        ],
+      },
+    }
+    const lined = answeredOutputs([perilPremiums, perilShares], price)
+
+    // The first's rows as pricing gave them, its index its own numbers.
+    expect(lined.get("peril_premiums")?.map((row) => [row?.peril, row?.premium_number])).toEqual([
+      ["EQ", 1],
+      ["AOP", 2],
+    ])
+    // The other's rows matched by the peril, each holding its own index, never the first's.
+    expect(lined.get("peril_shares")?.map((row) => [row?.peril, row?.row_number, row?.share])).toEqual([
+      ["EQ", 3, 0.6],
+      ["AOP", 1, 0.4],
+    ])
+    // Before a price nothing is lined up, so the grid shows its dashes.
+    expect(answeredOutputs([perilPremiums, perilShares], null)).toEqual(new Map())
   })
 })
 

@@ -282,7 +282,8 @@ export const carriesIdentity = (table: WorkbenchTable): boolean =>
   IDENTITY_COLUMNS.every(([name, type], at) => table.columns[at]?.name === name && table.columns[at]?.type === type)
 
 /**
- * How *table*'s column at *at* is filled: `haute` for the quote's identity, `missing` while
+ * How *table*'s column at *at* is filled: `haute` for the quote's identity and for a table of
+ * outputs alone's index, which the Workbench Output numbers (`table.index`), `missing` while
  * nothing is connected to its table or the frame has no column of exactly its name,
  * `mistyped` when the frame's column is of a type that does not fit, else `filled`.
  * *frameColumns* are the connected frame's columns as its last preview recorded them,
@@ -296,6 +297,7 @@ export function columnFill(
 ): ColumnFill {
   const column = table.columns[at]
   if (at < IDENTITY_COLUMNS.length && carriesIdentity(table)) return { kind: "haute" }
+  if (column.name === table.index) return { kind: "haute" }
   if (!connected) return { kind: "missing" }
   if (frameColumns === undefined) return { kind: "unknown" }
   const held = frameColumns.find((each) => each.name === column.name)

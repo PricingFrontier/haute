@@ -312,6 +312,46 @@ def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target
     assert target.read("SELECT zone FROM policy") == [("north",)]
 
 
+def _vehicles(index: str) -> dict[str, Any]:
+    """A many-row input table keyed by its index, named *index*."""
+    return table(
+        "vehicles", {"name": index, "type": "int", "index": True}, column("reg"), rows="many"
+    )
+
+
+def test_a_renamed_index_is_paired_with_the_databases_key_column_unasked(target: Target) -> None:
+    before = form(_vehicles("row_number"))
+    made_from_sql(target, before)
+    quote(target, before, "A-1")
+    target.run(
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, reg) "
+        "VALUES ('A-1', 1, 1, 'AB12'), ('A-1', 1, 2, 'CD34')"
+    )
+    renamed = form(_vehicles("vehicle_no"))
+
+    comparison = compared(target, renamed)
+
+    # Paired by what it is, marked renamed, and the key compared under the form's names: no
+    # key difference, no column missing, and no extra. The analyst paired nothing.
+    assert kinds(comparison) == {("vehicles", "vehicle_no", "renamed")}
+    assert comparison.extras == ()
+    assert comparison.renames == ()
+    assert [step.kind for step in comparison.plan.steps] == ["rename column"]
+    target.script(sql(target, renamed, comparison))
+    opens(target, renamed)
+    assert target.read("SELECT vehicle_no, reg FROM vehicles ORDER BY vehicle_no") == [
+        (1, "AB12"),
+        (2, "CD34"),
+    ]
+
+
+def test_a_tables_rows_are_read_from_its_key(target: Target) -> None:
+    # Keyed by the identity alone, the database's table is one row a quote; by one more
+    # column, many, whatever that column is named.
+    made_from_sql(target, form(table("vehicles", column("reg"))))
+    assert ("vehicles", None, "rows") in kinds(compared(target, form(_vehicles("row_number"))))
+
+
 def test_a_pairing_the_database_no_longer_allows_is_not_taken(target: Target) -> None:
     made_from_sql(target, RELEASED)
     paired = form(table("policy", column("zone"), column("drivers")))

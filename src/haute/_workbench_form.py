@@ -828,14 +828,33 @@ class SchemaTable(_Strict):
         return [column for column in self.own_inputs if not column.index]
 
     @property
+    def priced_outputs(self) -> list[SchemaColumn]:
+        """Its own outputs but the index: what pricing fills."""
+        return [column for column in self.own_outputs if not column.index]
+
+    @property
     def has_inputs(self) -> bool:
         """Whether it is an input table: it holds an input an underwriter types."""
         return bool(self.typed_inputs)
 
     @property
     def has_outputs(self) -> bool:
-        """Whether it is an output table: it holds an output of its own."""
-        return bool(self.own_outputs)
+        """Whether it is an output table: it holds an output pricing fills. The index of a
+        table of outputs alone makes no table an output table."""
+        return bool(self.priced_outputs)
+
+    @property
+    def outputs_alone(self) -> bool:
+        """Whether it is a table of outputs alone: it holds an output pricing fills and no
+        input an underwriter types, so its index is among its outputs."""
+        return self.has_outputs and not self.has_inputs
+
+    @property
+    def index(self) -> SchemaColumn | None:
+        """Its index, the column numbering its rows within a quote, which every many-row
+        table has: among its outputs while it is a table of outputs alone, else among its
+        inputs. None for a one-row table."""
+        return next((column for column in self.columns if column.index), None)
 
     def is_output(self, column: str) -> bool:
         """Whether its column of that name is one of its outputs."""
@@ -843,22 +862,30 @@ class SchemaTable(_Strict):
 
     @model_validator(mode="after")
     def _check_keys(self) -> SchemaTable:
-        """A table's key is never typed: a many-row input table has exactly one index, among
-        its inputs, and a ``key`` marks only an output of a many-row table with no inputs."""
-        for column in self.outputs:
-            if column.index:
-                raise ValueError(f"{self.name}.{column.name} is an index among the outputs")
-        indexes = [column for column in self.inputs if column.index]
-        for column in indexes:
-            if self.rows == "one" or not self.has_inputs:
+        """A table's key is never typed: every many-row table has exactly one index, among
+        its outputs while it is a table of outputs alone and among its inputs otherwise, and
+        a ``key`` marks only an output of a many-row table with no inputs, never its index."""
+        indexes = [column for column in self.columns if column.index]
+        if self.rows == "one":
+            for column in indexes:
                 raise ValueError(
-                    f"{self.name}.{column.name} is an index, which only a many-row table with "
-                    "inputs has"
+                    f"{self.name}.{column.name} is an index, which only a many-row table has"
                 )
-        if self.rows == "many" and self.has_inputs and len(indexes) != 1:
-            raise ValueError(
-                f"{self.name} has many rows and inputs, so it needs one index among its inputs"
-            )
+        elif len(indexes) != 1:
+            raise ValueError(f"{self.name} has many rows, so it needs one index")
+        for column in indexes:
+            if self.is_output(column.name) and not self.outputs_alone:
+                raise ValueError(
+                    f"{self.name}.{column.name} is an index among the outputs, which only a "
+                    "table of outputs alone holds its index among"
+                )
+            if not self.is_output(column.name) and self.outputs_alone:
+                raise ValueError(
+                    f"{self.name}.{column.name} is an index among the inputs of a table of "
+                    "outputs alone, whose index is among its outputs"
+                )
+            if column.key:
+                raise ValueError(f"{self.name}.{column.name} is the index, which is never a key")
         for column in self.columns:
             if column.key and (
                 self.rows == "one" or self.has_inputs or not self.is_output(column.name)

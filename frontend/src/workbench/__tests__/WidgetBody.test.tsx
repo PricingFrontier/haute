@@ -1246,6 +1246,62 @@ describe("WidgetBody", () => {
     expect(screen.queryByRole("textbox")).toBeNull()
   })
 
+  it("shows each table of outputs alone's index from its own answer row, a dash before a price", () => {
+    const identity = [column("quote_reference"), column("quote_option", { type: "int" })]
+    const form = sheetForm()
+    form.schema.tables.push(
+      table("peril_premiums", {
+        rows: "many",
+        outputs: [...identity, indexColumn("premium_number"), column("peril", { key: true }), column("premium", { type: "float" })],
+      }),
+      table("peril_shares", { rows: "many", outputs: [...identity, indexColumn(), column("peril", { key: true }), column("share", { type: "float" })] }),
+    )
+    addTo(form, {
+      ...createWidget("tableInput", { x: 16, y: 380, w: 480, h: 160 }, form),
+      id: "w_perils",
+      title: "Perils",
+      fields: [
+        { table: "peril_premiums", column: "premium_number" },
+        { table: "peril_premiums", column: "peril" },
+        { table: "peril_shares", column: "row_number" },
+        { table: "peril_shares", column: "share" },
+      ],
+    })
+    loadForm(form)
+    const { rerender } = renderBody("w_perils")
+    const cell = (key: string, row: number) => screen.queryByTestId(`priced-${key}-${row}`)
+
+    // Nothing priced: the indexes are dashes too, never the grid's row numbers.
+    expect([1, 2, 3].map((row) => cell("peril_premiums:premium_number", row)?.textContent)).toEqual(["—", "—", "—"])
+    expect(cell("peril_shares:row_number", 1)).toHaveTextContent("—")
+
+    // Priced, the answers in other orders: each index is its own answer row's.
+    act(() =>
+      useWorkbenchPricingStore.setState({
+        price: {
+          basis: previewBasis(form),
+          sample: {},
+          tables: {
+            peril_premiums: [
+              { premium_number: 1, peril: "EQ", premium: 20 },
+              { premium_number: 2, peril: "AOP", premium: 10 },
+            ],
+            peril_shares: [
+              { row_number: 1, peril: "AOP", share: 0.4 },
+              { row_number: 2, peril: "FL", share: 0.1 },
+              { row_number: 3, peril: "EQ", share: 0.6 },
+            ],
+          },
+        },
+      }),
+    )
+    rerender(body("w_perils"))
+    expect([1, 2].map((row) => cell("peril_premiums:peril", row)?.textContent)).toEqual(["EQ", "AOP"])
+    expect([1, 2].map((row) => cell("peril_premiums:premium_number", row)?.textContent)).toEqual(["1", "2"])
+    expect([1, 2].map((row) => cell("peril_shares:row_number", row)?.textContent)).toEqual(["3", "1"])
+    expect(cell("peril_shares:row_number", 3)).toBeNull()
+  })
+
   it("keeps a Table of output columns alone on its first field's rows in Preview while that field hides", () => {
     const premium = { table: "premiums", column: "premium" }
     const covered: ShowWhen = { match: "all", conditions: [{ table: "policy", column: "cover", op: "ticked", values: [], field: null, days: 0 }] }

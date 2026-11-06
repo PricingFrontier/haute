@@ -84,7 +84,7 @@ describe("useWorkbenchStore", () => {
 describe("refreshTables", () => {
   /** A table's side as the route answers it: its port is the table's name and its side. */
   const sideOf = (name: string, side: "input" | "output", rows: "one" | "many" = "one", columns: { name: string; type: string }[] = []) =>
-    ({ name, side, port: `${name}_${side}`, rows, columns, key: null, null_key: null })
+    ({ name, side, port: `${name}_${side}`, rows, columns, key: null, null_key: null, index: null })
   const tables = (name: string, side: "input" | "output" = "input") => [sideOf(name, side)]
 
   /** Answers each fetch when the test says so, in whatever order it says. */
@@ -173,7 +173,7 @@ describe("refreshTables", () => {
     const held = heldResponses()
     const store = useWorkbenchStore.getState
     const sample = { policy: { state: "NY" } }
-    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }], t_items: [{ name: "table_index", kind: "int" }] }
+    const kept = { quote_details: [{ name: "quote_version", kind: "int" }, { name: "saved_at", kind: "datetime" }] }
 
     const fetch = store().refreshTables()
     held.answer(0, { tables: tables("policy"), sample, response_tables: tables("pricing", "output"), store_columns: kept })
@@ -200,7 +200,7 @@ describe("refreshTables", () => {
     const structural = structure()
 
     // The same, its keys written in another order.
-    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ null_key: null, key: null, columns, rows: "one", port: "policy_input", side: "input", name: "policy" }] })
+    await fetchedAs(1, { store_columns: {}, response_tables: [], sample: {}, tables: [{ null_key: null, index: null, key: null, columns, rows: "one", port: "policy_input", side: "input", name: "policy" }] })
     expect(epoch()).toBe(first)
     expect(structure()).toBe(structural)
 

@@ -181,7 +181,7 @@ export function FieldBoxes({
                     opacity: stale ? 0.5 : 1,
                   }}
                 >
-                  <span className="truncate">{found?.column.index ? "1" : shown(priced, found)}</span>
+                  <span className="truncate">{found?.column.index && !isOutputField(found) ? "1" : shown(priced, found)}</span>
                 </div>
               )}
             </div>

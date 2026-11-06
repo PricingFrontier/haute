@@ -39,7 +39,7 @@ from haute._quote_store import (
     open_book,
     resolve_store,
 )
-from haute._quote_store._migrate import plan
+from haute._quote_store._migrate import offline_plan, plan
 from haute._quote_store._providers import (
     PROVIDERS,
     SQL_COPT_SS_ACCESS_TOKEN,
@@ -56,7 +56,7 @@ from haute._workbench_app_store import StoreGate
 from haute._workbench_config import StoreEnvironment
 from haute._workbench_form import FormSpec, with_quote_details
 from tests._project import use_project
-from tests._store_servers import Target, configured, database
+from tests._store_servers import Target, backends, configured, database
 from tests.test_workbench_app_quotes import Page, _write_release
 
 PROJECT = "motor"
@@ -553,6 +553,68 @@ def test_tables_made_from_the_sql_take_each_later_form_keeping_every_value(
         row = book.read("A-1", 1).values["policy"][0]
         assert row["code"] == "42"
         assert json.loads(row[KEPT_KEY])["region"] == "north"
+
+
+@pytest.fixture(params=backends())
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own on SQLite and on each server the run has."""
+    with database(request.param, tmp_path) as target:
+        yield target
+
+
+def _index(name: str) -> dict[str, Any]:
+    return {"name": name, "type": "int", "index": True}
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "values"),
+    [
+        pytest.param(
+            {"name": "vehicles", "rows": "many", "inputs": [_index("row_number"), column("reg")]},
+            {"name": "vehicles", "rows": "many", "inputs": [_index("vehicle_no"), column("reg")]},
+            ("reg", "'AB12'", "'CD34'"),
+            id="an input table's index",
+        ),
+        pytest.param(
+            {
+                "name": "vehicles",
+                "rows": "many",
+                "outputs": [_index("row_number"), column("premium", "float")],
+            },
+            {
+                "name": "vehicles",
+                "rows": "many",
+                "outputs": [_index("vehicle_no"), column("premium", "float")],
+            },
+            ("premium", "10.5", "20.5"),
+            id="a table of outputs alone's index",
+        ),
+    ],
+)
+def test_a_renamed_index_renames_its_column_keeping_its_values_and_the_tables_key(
+    store: Target, before: dict[str, Any], after: dict[str, Any], values: tuple[str, str, str]
+) -> None:
+    base, renamed = form(before), form(after)
+    store.script(store.sql(base))
+    other, first, second = values
+    store.run(
+        "INSERT INTO quote_details (quote_reference, quote_option, stage, assignee, archived, "
+        "created_date, created_by, modified_date, modified_by, quote_version, saved_at, saved_by) "
+        "VALUES ('A-1', 1, 'draft', 'ana', 0, '2026-10-30', 'ana', '2026-10-30', 'ana', 1, "
+        "'2026-10-30 09:00:00', 'ana')",
+        f"INSERT INTO vehicles (quote_reference, quote_option, row_number, {other}) "
+        f"VALUES ('A-1', 1, 1, {first}), ('A-1', 1, 2, {second})",
+    )
+
+    # Paired by what it is: renamed, never a column added beside the one keying the table.
+    assert [step.kind for step in offline_plan(base, renamed).steps] == ["rename column"]
+    store.script(store.sql(renamed, base))
+
+    # Its values kept under the new name, which keys the table: the app opens it as it is.
+    assert store.read("SELECT vehicle_no FROM vehicles ORDER BY vehicle_no") == [(1,), (2,)]
+    open_book(
+        store.url, renamed, environment=TEST, haute_version="1", sign_in=store.sign_in
+    ).close()
 
 
 def _columns_in_order(server: Target, owner: str, table_name: str) -> str:

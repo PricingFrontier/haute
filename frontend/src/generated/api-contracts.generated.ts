@@ -5461,6 +5461,7 @@ export interface WorkbenchTablesResponse {
  */
 export interface WorkbenchTable {
   columns: WorkbenchColumn[];
+  index: string | null;
   key: string | null;
   name: string;
   null_key: string | number | null;

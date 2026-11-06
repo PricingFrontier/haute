@@ -152,7 +152,7 @@ const side = (name: string, which: WorkbenchTable["side"], rows: WorkbenchTable[
   rows,
   columns,
   key: null,
-  null_key: null,
+  null_key: null, index: null,
 })
 
 const WORKBENCH_TABLES: WorkbenchTable[] = [

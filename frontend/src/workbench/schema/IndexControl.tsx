@@ -1,8 +1,9 @@
 /**
- * A many-row input table's index and key as the schema editor marks them (specs/workbench).
- * Neither is a control: the operations give a table its index and take it away
- * (`withIndexAsNeeded`), and a table with inputs is keyed by the column giving its rows or by
- * its index (`keyTable`), which no underwriter types.
+ * A many-row table's index and key as the schema editor marks them (specs/workbench).
+ * Neither is a control: the operations give a table its index, move it between its blocks
+ * and take it away (`withIndexAsNeeded`), and a table with inputs is keyed by the column
+ * giving its rows or by its index (`keyTable`), which no underwriter types; a table of
+ * outputs alone's index is never a key.
  */
 import { KeyRound } from "lucide-react"
 import type { SchemaColumn } from "../../api/types"
@@ -20,8 +21,9 @@ export function IndexMarker() {
 }
 
 /**
- * Whether a column of a many-row table with inputs keys it, blue on the key (its index, or
- * the column giving its rows) and grey on every other column.
+ * Whether a column of a many-row table keys it, blue on the key of a table with inputs (its
+ * index, or the column giving its rows) and grey on every other column, a table of outputs
+ * alone's index among them.
  */
 export function KeyMark({ column, isKey }: { column: SchemaColumn; isKey: boolean }) {
   const title = !isKey ? "Not the key" : column.index ? "The key: each row's number" : "The key: a row for each value"

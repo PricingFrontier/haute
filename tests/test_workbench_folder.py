@@ -767,8 +767,9 @@ def test_the_keys_that_say_what_a_thing_is_are_written_at_their_default_value_to
     assert json.loads(files["form.json"])["version"] == 3
 
 
-#: A schema of each kind of table, as the editor holds it: inputs alone, outputs alone, both
-#: blocks keyed by an index renamed item_number, and a table of neither.
+#: A schema of each kind of table, as the editor holds it: inputs alone, outputs alone with
+#: its index renamed band_no first among them (as a table whose last typed input moved to its
+#: outputs is left), both blocks keyed by an index renamed item_number, and a table of neither.
 BLOCKS = {
     "name": "b",
     "schema": {
@@ -777,7 +778,11 @@ BLOCKS = {
             {
                 "name": "bands",
                 "rows": "many",
-                "outputs": [column("band", key=True), column("rate", "float", label="Rate")],
+                "outputs": [
+                    column("band_no", "int", index=True),
+                    column("band", key=True),
+                    column("rate", "float", label="Rate"),
+                ],
             },
             {
                 "name": "equipment",
@@ -804,6 +809,7 @@ def test_a_table_of_each_kind_round_trips_its_blocks_through_its_file(project: P
         "{",
         '  "rows": "many",',
         '  "outputs": [',
+        '    {"name": "band_no", "type": "int", "index": true},',
         '    {"name": "band", "type": "str", "key": true},',
         '    {"name": "rate", "type": "float", "label": "Rate"}',
         "  ]",
@@ -831,6 +837,7 @@ def test_a_table_of_each_kind_round_trips_its_blocks_through_its_file(project: P
     assert [c.name for c in held["bands"].outputs] == [
         "quote_reference",
         "quote_option",
+        "band_no",
         "band",
         "rate",
     ]
@@ -2063,7 +2070,6 @@ _OUTPUT_RULES = [
     ("options_source", '{"file": "rates.csv", "column": "premium"}'),
     ("row_per_value", "true"),
     ("default_value", '"1"'),
-    ("index", "true"),
 ]
 
 #: A table's file as version 2 of the folder wrote it: a role, and its columns in one list.
@@ -2737,7 +2743,7 @@ def _renamed_in_place(table: str, name: str, column: str = "") -> Callable[[dict
 NAME_REFUSALS = [
     pytest.param(
         lambda form: form["schema"]["tables"].append(
-            {"name": "Layers", "rows": "many", "inputs": []}
+            {"name": "Layers", "rows": "many", "inputs": [column("row_number", "int", index=True)]}
         ),
         ("layers", "Layers"),
         id="two tables of one name by case",

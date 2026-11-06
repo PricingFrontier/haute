@@ -113,7 +113,7 @@ def _save(book: QuoteBook, identity: tuple[str, int], rows: Any, *, priced: bool
 
 
 def _mileages(store: Target) -> list[tuple[Any, ...]]:
-    return store.read("SELECT reg, mileage FROM vehicles ORDER BY table_index")
+    return store.read("SELECT reg, mileage FROM vehicles ORDER BY row_number")
 
 
 def test_an_opened_quote_carries_its_kept_values_and_a_save_keeps_them(

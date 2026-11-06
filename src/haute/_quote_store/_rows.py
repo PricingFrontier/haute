@@ -31,7 +31,6 @@ from haute._workbench_form import (
     SchemaTable,
 )
 from haute._workbench_tables import (
-    TABLE_INDEX,
     WorkbenchTable,
     holds_output,
     input_tables,
@@ -198,7 +197,9 @@ def input_rows(
             row["quote_reference"] = reference
             row["quote_option"] = option
             if many:
-                row[TABLE_INDEX] = sheet[place]
+                # The index is the row's number on the sheet, and keys it in the store: set
+                # here too, since a row carried for its kept values gives the request none.
+                row[_index_name(table)] = sheet[place]
             if kept is not None and table.name != QUOTE_DETAILS_NAME:
                 # In the order the request's rows stand, a preset column's order included,
                 # so each row's kept field is its own.
@@ -223,6 +224,14 @@ def input_rows(
             cells=misfits,
         )
     return rows
+
+
+def _index_name(table: SchemaTable) -> str:
+    """The name of many-row *table*'s index, which numbers and keys its rows in the store."""
+    index = table.index
+    if index is None:
+        raise ValueError(f"{table.name} has many rows and no index")
+    return index.name
 
 
 def _finite(value: Any) -> Any:
@@ -255,7 +264,8 @@ def output_rows(
             else:
                 row.update(quote_reference=reference, quote_option=option)
             if table.rows == "many":
-                row[TABLE_INDEX] = place
+                # The Workbench Output numbered it so; the store keys the row by it.
+                row[_index_name(table)] = place
             written.append(row)
         rows[table.name] = written
     return rows
@@ -312,15 +322,18 @@ _OUTPUT_ASIDE = frozenset({"quote_reference", "quote_option"})
 
 def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
     """The outputs held in *rows* (by table name) rendered as the pricing rendered them:
-    each output table's rows by name, without the store's row numbers, pruned and JSON-safe.
-    An input table gives its output side's columns of each stored row holding an output
-    value, a one-row table its one row's; a table of outputs alone its rows in order."""
+    each output table's rows by name, pruned and JSON-safe. An input table gives its output
+    side's columns of each stored row holding an output value, a one-row table its one
+    row's; a table of outputs alone its rows in its index's order, the index among them."""
     sides = {table.name: table for table in output_tables(form)}
     document: dict[str, Any] = {}
     for table in form.data_schema.tables:
         if not table.has_outputs:
             continue
-        held = sorted(rows.get(table.name, []), key=lambda row: row.get(TABLE_INDEX, 0))
+        held = rows.get(table.name, [])
+        if table.rows == "many":
+            index = _index_name(table)
+            held = sorted(held, key=lambda row: row[index])
         if table.has_inputs:
             side = sides[table.name]
             names = [column.name for column in side.columns]
@@ -329,9 +342,7 @@ def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
                 held = [row for row in held if any(holds_output(row.get(n)) for n in outputs)]
             records = [{name: row.get(name) for name in names} for row in held]
         else:
-            records = [
-                {key: value for key, value in row.items() if key != TABLE_INDEX} for row in held
-            ]
+            records = [dict(row) for row in held]
         if table.rows == "many":
             document[table.name] = records
         elif records:
@@ -377,7 +388,7 @@ def cells(
     form: FormSpec, rows: Mapping[str, Rows], kept: KeptColumns | None = None
 ) -> tuple[Values, list[str]]:
     """The values *rows* (by table name) read back as on the sheets, and each row that no longer
-    fits them: a many-row table's rows in their places by ``table_index``, a gap a blank row;
+    fits them: a many-row table's rows in their places by its index, a gap a blank row;
     a preset row whose value is no longer allowed left out and named as ``table row N
     (value)``; each empty cell the sheets hide in a one-row table starting at its default
     (:func:`_hidden_defaults`). With *kept*, each row carries its values in the store's
@@ -395,9 +406,10 @@ def cells(
                 values[table.name] = [row]
             continue
         given = preset_column(table)
+        index = _index_name(table)
         placed: dict[int, dict[str, Cell]] = {}
         for row in held:
-            number = int(row[TABLE_INDEX])
+            number = int(row[index])
             if given is not None:
                 value = row.get(given.name)
                 if value is not None and value not in given.options:

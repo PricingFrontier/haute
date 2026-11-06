@@ -143,7 +143,7 @@
       "table": {
         "rows": "many",
         "inputs": [],
-        "outputs": [{ "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }]
+        "outputs": [{ "name": "row_number", "type": "int", "index": true }, { "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true }]
       },
       "rows": [],
       "read": []
