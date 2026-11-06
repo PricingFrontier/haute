@@ -722,7 +722,7 @@ the panel saves the project first when it has unsaved changes.
 - **Run all**, or **Run** with quotes ticked, prices each one again, one at a time, and
   marks it **Unchanged**, **Moved**, **No longer compares** or **Failed**. Click a quote to
   see what moved: each field, with the value it was accepted at beside the new one. A
-  schedule's rows are matched by the columns you mark as its keys. **Stop** ends a run after
+  schedule's rows are matched by its index's value. **Stop** ends a run after
   the quote being priced.
 - **Accept** (the tick beside a quote), or **Accept all**, prices it again and keeps the new
   answer as the one it is compared with. A quote changed since the run, or a pipeline
@@ -818,7 +818,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   - for each output field both releases have, how many quotes it moved in, and its largest
     rise and fall;
   - each quote whose prices moved, with production's value, staging's and the change; a
-    schedule's rows are matched by the columns both releases mark as keys;
+    schedule's rows are matched by its index in each release, even renamed, and a schedule
+    whose index gets its values another way in the new release no longer compares;
   - the quotes that no longer compare, those the new release refuses, and those production
     could not price.
 

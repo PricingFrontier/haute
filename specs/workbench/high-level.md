@@ -1624,16 +1624,19 @@ Out of scope:
     form as saved: a one-row table column by column, one answering more than one row
     no longer comparing; a many-row table's rows matched by
     its index's value (The form, above), a row only one side holds named as added or
-    removed, so a numbered index's rows, renumbered as each answer runs, are matched by
-    their places and a typed index's or an index of values' by their values; a
+    removed, so a table of outputs alone's numbered index, renumbered as each answer runs,
+    matches its rows by their places, and any other index, a table with inputs' numbered
+    one included, which its answer carries from the request, by their values, its rows
+    unchanged however the answer orders them; a
     number moved when it differs from the expected value by more than a millionth of a
     percent of it (from zero, by anything), or by more than the row's `tolerance_pct` (a
     fraction, as deploy reads it) when it gives one, and anything else when it differs; a
     table or column `expected` holds that the form no longer has is named as removed,
     and one the form has gained reads as empty in `expected`. Each quote shows
     unchanged, moved (each field and its row, the expected value beside the new), no
-    longer compares (an index value held twice or empty, or indexes that get their values
-    in different ways) or failed, with why.
+    longer compares (an index value held twice or empty) or failed, with why: the
+    quote is compared on the form as it is, so a change of how an index gets its values
+    is seen by `haute app impact` between two releases alone.
   - **Accepted.** Accepting a moved or no-longer-comparing quote, or all of them, prices it
     again on the server and writes that answer as its `expected`; Accept all names any it
     did not accept.
