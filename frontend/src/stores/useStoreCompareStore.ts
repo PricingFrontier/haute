@@ -34,6 +34,7 @@ export interface EnvironmentComparison {
 }
 
 interface StoreCompareState {
+  contextVersion: number
   environment: string | null
   environments: Record<string, EnvironmentComparison>
   renames: WorkbenchStoreRename[]
@@ -89,6 +90,7 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
   }
 
   return {
+    contextVersion: 0,
     environment: null,
     environments: {},
     renames: [],
@@ -123,7 +125,7 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
         })
       }
     },
-    reset: () => set({ environment: null, environments: {}, renames: [] }),
+    reset: () => set((state) => ({ contextVersion: state.contextVersion + 1, environment: null, environments: {}, renames: [] })),
   }
 })
 

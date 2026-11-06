@@ -819,7 +819,9 @@ Out of scope:
     Neither export nor saving the schema changes the database or marks it compatible;
     after the database owner runs the SQL, Check again verifies the actual tables. Changes
     to the form, pairings or environment invalidate earlier displayed SQL until the current
-    answer arrives. With no environments declared the window says so. Review and SQL export
+    answer arrives. Project/form adoption and changes to the configured environment list
+    invalidate offline answers too, including replies still in flight. With no environments
+    declared the window says so. Review and SQL export
     are disabled in Preview. Direct execution, saved migration packages and deployed-release
     selection are outside this workflow.
 

@@ -184,4 +184,22 @@ describe("StoreSqlWindow", () => {
     expect(screen.getByTestId("store-sql")).toHaveTextContent(OFFLINE.environments[0].sql)
     expect(screen.getByTestId("store-sql")).not.toHaveTextContent("stale branch")
   })
+
+  it("invalidates offline SQL when the configured environments change", async () => {
+    render(<StoreSqlWindow onClose={vi.fn()} />)
+    expect(await screen.findByTestId("store-sql")).toHaveTextContent(OFFLINE.environments[0].sql)
+    let finish!: (answer: typeof OFFLINE) => void
+    vi.mocked(fetchStoreSql).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+
+    act(() => useWorkbenchStore.setState({ environments: ["staging"] }))
+    expect(screen.queryByTestId("store-sql")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Download SQL" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Copy SQL" })).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("staging")
+
+    await act(async () => finish({ branch: "main", environments: [{ name: "staging", provider: "postgresql", sql: "-- current staging SQL" }] }))
+    fireEvent.click(screen.getByRole("button", { name: "Download SQL" }))
+    expect(downloadTextFile).toHaveBeenCalledWith("-- current staging SQL", "staging-branch-schema.sql", "application/sql")
+    expect(screen.queryByRole("option", { name: "test" })).not.toBeInTheDocument()
+  })
 })

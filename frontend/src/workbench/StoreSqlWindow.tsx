@@ -9,12 +9,11 @@ import useStoreCompareStore, { currentComparison, environmentState } from "../st
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
-import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import StorePlanReview from "./StorePlanReview"
 import useStoreComparison from "./useStoreComparison"
 
 type Source = "database" | "branch" | "none"
-type OfflineAnswer = { form: FormSpec; source: Source; generation: number } & (
+type OfflineAnswer = { form: FormSpec; source: Source; contextVersion: number } & (
   | { status: "ready"; answer: WorkbenchStoreSqlResponse }
   | { status: "failed"; message: string }
 )
@@ -28,10 +27,9 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   const dirty = useWorkbenchFormStore((s) => s.dirty)
   const stale = useWorkbenchFormStore((s) => s.stale)
   const previewing = useWorkbenchViewStore((s) => s.mode === "preview")
-  const generation = useDocumentStatusStore((s) => s.executionGeneration)
   const configured = useWorkbenchStore((s) => s.environments)
   const state = useStoreCompareStore()
-  const { environment, choose, readAgain } = state
+  const { contextVersion, environment, choose, readAgain } = state
   const { read, compared } = environmentState(state)
   const comparison = currentComparison(state, form)
   const [source, setSource] = useState<Source>(environment === null ? "branch" : "database")
@@ -43,14 +41,14 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
     if (form === null || source === "database") return
     let live = true
     void fetchStoreSql(form, source).then((answer) => {
-      if (live) setOffline({ form, source, generation, status: "ready", answer })
+      if (live) setOffline({ form, source, contextVersion, status: "ready", answer })
     }, (error: unknown) => {
-      if (live) setOffline({ form, source, generation, status: "failed", message: apiErrorMessage(error) })
+      if (live) setOffline({ form, source, contextVersion, status: "failed", message: apiErrorMessage(error) })
     })
     return () => { live = false }
-  }, [form, source, generation])
+  }, [form, source, contextVersion])
 
-  const answered = offline?.form === form && offline.source === source && offline.generation === generation ? offline : null
+  const answered = offline?.form === form && offline.source === source && offline.contextVersion === contextVersion ? offline : null
   const answer = answered?.status === "ready" ? answered.answer : null
   const names = source === "database" ? configured : answer?.environments.map((each) => each.name) ?? configured
   // Only an initially unselected environment chooses the first declared one. A missing
