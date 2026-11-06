@@ -725,6 +725,27 @@ _REFUSED = {
         [side("a", "many", {"name": "x", "type": "int"}, of="output", key="x", null_key=1)],
         "(tables[0]: Value error, a_output holds a null key, which only a keyed input side does)",
     ),
+    # The index the Workbench Output numbers is a many-row output side's Integer column alone.
+    "an index on an input side": (
+        [side("a", "many", {"name": "x", "type": "int"}, index="x")],
+        "(tables[0]: Value error, a_input's index 'x' is no Integer column of a many-row output "
+        "side)",
+    ),
+    "an index on a one-row output side": (
+        [side("a", "one", {"name": "x", "type": "int"}, of="output", index="x")],
+        "(tables[0]: Value error, a_output's index 'x' is no Integer column of a many-row output "
+        "side)",
+    ),
+    "an index naming none of the columns": (
+        [side("a", "many", {"name": "x", "type": "int"}, of="output", index="y")],
+        "(tables[0]: Value error, a_output's index 'y' is no Integer column of a many-row output "
+        "side)",
+    ),
+    "an index that is no Integer": (
+        [side("a", "many", {"name": "x", "type": "str"}, of="output", index="x")],
+        "(tables[0]: Value error, a_output's index 'x' is no Integer column of a many-row output "
+        "side)",
+    ),
     "a type that is not a column's": (
         [side("a", "one", {"name": "x", "type": "text"})],
         "(tables[0].columns[0].type: Input should be 'int', 'float', 'str', 'bool' or 'date')",
