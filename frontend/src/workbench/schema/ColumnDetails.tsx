@@ -8,6 +8,7 @@ import { NUMBER_FORMAT_LABELS } from "../../panels/explore/pivotNumberFormat"
 import { isNumeric } from "../columnTypes"
 import { AllowedField } from "./AllowedField"
 import { DefaultField } from "./DefaultField"
+import { IndexKindSelect } from "./IndexControl"
 
 const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, places) => places)
 
@@ -15,7 +16,7 @@ const DECIMAL_PLACES = Array.from({ length: PIVOT_DECIMAL_PLACES_MAX + 1 }, (_, 
  * A column's label, group and help; whether it needs a value before a quote is marked final,
  * in an input or an output table; in an input table, what a new quote starts with in it (in a
  * one-row table), what an empty cell shows and the other rules its value must meet; for a
- * number, how the sheets show it. The index, always filled, takes no Required, range or
+ * number, how the sheets show it. The index's kind is chosen here too. Always filled, it takes no Required, range or
  * default: a typed one among the inputs takes what an empty cell shows, an index of values
  * the allowed values that give its rows, and an Integer one other than numbered its format.
  * The boxes hold no hint text: the docs say what each is.
@@ -57,6 +58,12 @@ export function ColumnDetails({
       className="mr-12 ml-7 grid max-w-[32rem] min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-[11px]"
       style={{ border: "1px solid var(--border)", background: "var(--bg-base)" }}
     >
+      {column.index !== null && (
+        <>
+          <span style={{ color: "var(--text-muted)" }}>Index values</span>
+          <IndexKindSelect tableId={table.name} column={column} />
+        </>
+      )}
       <span style={{ color: "var(--text-muted)" }}>Label</span>
       <CommittedTextField
         aria-label={`Label of ${column.name}`}

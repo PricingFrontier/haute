@@ -266,8 +266,9 @@ describe("SchemaEditor", () => {
       ["state", null],
       ["exposure", null],
     ])
-    // The index has its kind control and no key mark.
+    // The index's kind is configured through its details, with no key mark.
     const index = screen.getByTestId("schema-column-table_index")
+    fireEvent.click(within(index).getByRole("button", { name: "Label and rules of table_index" }))
     expect(within(index).getByRole("combobox", { name: "How table_index gets its values" })).toHaveValue("numbered")
     expect(within(index).queryByRole("img", { name: /key/ })).toBeNull()
     expect(within(index).queryByRole("button", { name: /^Key:/ })).toBeNull()
@@ -300,10 +301,11 @@ describe("SchemaEditor", () => {
     expect(own(current().schema.tables[1].inputs).map((c) => c.name)).toEqual(["layer", "column"])
     expect(own(current().schema.tables[1].outputs).map((c) => c.name)).toEqual(["limit"])
     expect(screen.queryByRole("button", { name: /^Key: / })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of layer" }))
     expect(within(blockOf("layers", "Inputs")).getByRole("combobox", { name: "How layer gets its values" })).toHaveValue("typed")
   })
 
-  it("shows a values index's kind beside it and no key marks on any column", () => {
+  it("shows a values index's kind only through its config button and no key marks on any column", () => {
     const perils = { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" }, index: "values" as const }
     load(
       form(
@@ -316,7 +318,17 @@ describe("SchemaEditor", () => {
     )
     render(<SchemaEditor />)
 
+    const config = screen.getByRole("button", { name: "Label and rules of peril" })
+    expect(config).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("combobox", { name: "How peril gets its values" })).toBeNull()
+    fireEvent.click(config)
+    expect(config).toHaveAttribute("aria-expanded", "true")
     expect(screen.getByRole("combobox", { name: "How peril gets its values" })).toHaveValue("values")
+    expect(screen.getByRole("combobox", { name: "Where the allowed values of peril come from" })).toBeInTheDocument()
+    fireEvent.click(config)
+    expect(screen.queryByRole("combobox", { name: "How peril gets its values" })).toBeNull()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(0)
+    expect(current().schema.tables[0].inputs[2]).toMatchObject(perils)
     for (const name of ["peril", "limit", "premium"]) {
       expect(within(screen.getByTestId(`schema-column-${name}`)).queryByRole("img", { name: /key/ })).toBeNull()
     }
@@ -406,6 +418,7 @@ describe("SchemaEditor", () => {
     const index = screen.getByTestId("schema-column-item_number")
     expect(within(index).queryByRole("button", { name: /^Key:/ })).toBeNull()
     expect(within(index).queryByRole("img", { name: /key/ })).toBeNull()
+    fireEvent.click(within(index).getByRole("button", { name: "Label and rules of item_number" }))
     expect(within(index).getByRole("combobox", { name: "How item_number gets its values" })).toHaveValue("numbered")
     expect(within(index).getByRole("combobox", { name: "Type of item_number" })).toHaveValue("int")
     expect(columnGrip("item_number")).toBeNull()
@@ -591,7 +604,7 @@ describe("SchemaEditor", () => {
     expect(screen.queryByRole("combobox", { name: "Column the allowed values of state come from" })).toBeNull()
   })
 
-  it("changes the index's kind in one undo step and opens allowed values when choosing a row for each value", () => {
+  it("changes the index's kind in its config panel in one undo step and shows allowed values there", () => {
     const perils = { options: ["AOP", "EQ", "NW"], options_source: { file: "perils.csv", column: "peril" } }
     load(
       form(
@@ -605,11 +618,13 @@ describe("SchemaEditor", () => {
     render(<SchemaEditor />)
     const cover = tableNamed("coverage")
     expect(within(cover).getByText("3 values from perils.csv · a row each")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of peril" }))
     const kind = screen.getByRole("combobox", { name: "How peril gets its values" })
     fireEvent.change(kind, { target: { value: "numbered" } })
     expect(current().schema.tables[1].inputs[0]).toMatchObject({ index: "numbered", options: [], options_source: null })
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
-    expect(screen.queryByRole("textbox", { name: "Label of peril" })).toBeNull()
+    expect(screen.getByRole("textbox", { name: "Label of peril" })).toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Where the allowed values of peril come from" })).toBeNull()
     fireEvent.change(kind, { target: { value: "values" } })
     expect(current().schema.tables[1].inputs[0].index).toBe("values")
     expect(screen.getByRole("textbox", { name: "Label of peril" })).toBeInTheDocument()
@@ -617,6 +632,14 @@ describe("SchemaEditor", () => {
     expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(2)
     expect(within(cover).getByText("coverage.peril gives a row for each value, so it needs allowed values from a params file")).toBeInTheDocument()
     expect(screen.queryByRole("checkbox", { name: "A row for each" })).toBeNull()
+    fireEvent.change(kind, { target: { value: "typed" } })
+    expect(current().schema.tables[1].inputs[0].index).toBe("typed")
+    expect(screen.getByRole("textbox", { name: "Placeholder of peril" })).toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "Where the allowed values of peril come from" })).toBeNull()
+    expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(3)
+    act(() => useWorkbenchFormStore.getState().undo())
+    expect(kind).toHaveValue("values")
+    expect(screen.getByRole("combobox", { name: "Where the allowed values of peril come from" })).toBeInTheDocument()
   })
 
   it("returns an index of values to numbered when its source is cleared, in one edit", async () => {
@@ -1259,7 +1282,7 @@ describe("SchemaEditor", () => {
     expect(within(layers).getByRole("combobox", { name: "Rows of layers" })).toBeDisabled()
     expect(within(layers).queryByRole("combobox", { name: /^Type of/ })).toBeNull()
     for (const name of within(layers).getAllByRole("textbox", { name: "Column name" })) expect(name).toHaveAttribute("readonly")
-    expect(within(layers).getByRole("combobox", { name: "How layer gets its values" })).toBeDisabled()
+    expect(within(layers).queryByRole("combobox", { name: "How layer gets its values" })).toBeNull()
     expect(within(layers).queryByRole("button", { name: "Delete table layers" })).toBeNull()
     expect(within(layers).queryByRole("button", { name: /^Remove column/ })).toBeNull()
     expect(within(layers).queryByRole("button", { name: "Add column" })).toBeNull()
@@ -1278,6 +1301,9 @@ describe("SchemaEditor", () => {
     expect(tableNames()).toEqual(["policy_details", "layers"])
 
     // A column's label and rules open, each field in them disabled.
+    fireEvent.click(screen.getByRole("button", { name: "Label and rules of layer" }))
+    expect(within(layers).getByRole("combobox", { name: "How layer gets its values" })).toHaveValue("typed")
+    expect(within(layers).getByRole("combobox", { name: "How layer gets its values" })).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "Label and rules of limit" }))
     expect(screen.getByRole("textbox", { name: "Label of limit" })).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "Collapse policy_details" }))

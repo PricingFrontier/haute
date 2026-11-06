@@ -144,7 +144,8 @@ so no column is marked as one. In a table with inputs it is the first input; in 
 outputs alone it is the first output. It is also each row's key in the saved quotes (see
 [Reading quotes with SQL](#reading-quotes-with-sql)), so name it for what the rows are,
 such as `item_number`, `location_name` or `peril`; its label is what the sheets show. It is
-an **Integer** or **Text**, and gets its values one of three ways, chosen beside it:
+an **Integer** or **Text**, and gets its values one of three ways, chosen inside its
+config panel (open the sliders button beside the field):
 
 - **Numbered**, a new index's: Haute numbers the rows 1, 2, 3, as the sheets number them in
   a table with inputs, and in the order pricing returns them in a table of outputs alone.

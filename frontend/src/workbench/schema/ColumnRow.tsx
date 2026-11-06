@@ -33,7 +33,6 @@ import { DatabaseMark } from "../StoreCompare"
 import { ColumnDetails } from "./ColumnDetails"
 import { DragGrip } from "./DragGrip"
 import { IconButton } from "./IconButton"
-import { IndexKindSelect } from "./IndexControl"
 import { COLUMN_NAME_WIDTH, columnSummary, type Fresh, LOCKED_FIELD_STYLE, MARKER_STYLE, usedBy } from "./schemaText"
 
 /** What a column the quote store keeps holds, drawn as the marker of the column type nearest it. */
@@ -169,10 +168,6 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           style={identity ? LOCKED_FIELD_STYLE : INPUT_STYLE}
         />
         <DatabaseMark table={table.name} column={column.name} />
-        {column.index !== null && (
-          // How the index gets its values, chosen beside it; its details open on the values that give its rows.
-          <IndexKindSelect tableId={table.name} column={column} disabled={readOnly} onValues={() => !open && onToggleDetails()} />
-        )}
         {identity ? (
           // The quote's identity has no label or rules to open.
           <span className="size-5 shrink-0" aria-hidden="true" />

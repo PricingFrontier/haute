@@ -838,8 +838,8 @@ Out of scope:
   own showing Add column alone; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
   from it, and its name; nothing marks a key, every table's being the quote's identity and
-  a many-row table's its index too. A many-row table's index shows how it gets its values,
-  Numbered, Typed or A row for each value, chosen beside it, and its type is Integer or
+  a many-row table's its index too. A many-row table's index offers how it gets its values,
+  Numbered, Typed or A row for each value, inside its config panel, and its type is Integer or
   Text alone. A column's label, group
   and help open beside it, the group offered from those its table's columns have, the boxes
   holding no hint text; for an Integer or a Decimal other than the index, its format, decimal
@@ -886,9 +886,12 @@ Out of scope:
   identity in the block it belongs to, `table_index` until renamed, which neither a drag
   nor Alt+Up and Alt+Down moves or passes and which has no remove; it is renamed as any
   column is, its label is what the sheets show, its type is Integer or Text, and how it
-  gets its values is chosen beside it: Numbered, Typed (the underwriter's in an input
+  gets its values is chosen inside the panel opened by its config button: Numbered, Typed (the underwriter's in an input
   table, the pricing's in a table of outputs alone) or A row for each value, whose params
-  file and column are chosen as allowed values are and refreshed the same way. Taking its
+  file and column appear in that same panel, chosen as allowed values are and refreshed
+  the same way. The kind choice is shown only while the config panel is open, never
+  beside the field name; opening or closing it changes no schema or undo history, and
+  in Preview it opens with its controls disabled. Taking its
   values away, or choosing Numbered or Typed, leaves it numbered or typed, its allowed
   values gone; it takes no Required, range or default, and a placeholder while it is typed
   alone. The editor gives a table its index, numbered, in the same edit, as it switches to
