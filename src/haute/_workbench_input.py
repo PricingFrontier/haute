@@ -21,6 +21,7 @@ from typing import Any
 import polars as pl
 
 from haute._json_values import JsonValueError, json_value
+from haute._polars_utils import execution_collect
 from haute._workbench_form import QUOTE_DETAILS_NAME
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -122,7 +123,9 @@ def check_request_keys(table: WorkbenchTable, frame: pl.DataFrame | pl.LazyFrame
     is given, never prices a row whose outputs could not be put back on it."""
     if table.key is None:
         return
-    held = frame.lazy().select(table.key).collect().to_series().to_list()
+    held = (
+        execution_collect(frame.lazy().select(table.key), engine="streaming").to_series().to_list()
+    )
     problem = request_key_problem(table, held)
     if problem is not None:
         raise WorkbenchInputError(problem)
