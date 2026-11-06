@@ -133,30 +133,40 @@ quotes are put together, in the app's saved quotes, in exports and in joins. The
 first, under Inputs, or under Outputs in a table with no inputs, and are locked, their
 names on grey: they cannot be renamed, retyped, moved or removed, take no label,
 group, help, rules, default or format, and are not offered to the sheets, where
-`quote_details`' own stand for them. They are not a key: rows still line up by the table's
-own key. A table you add has them at once. A table with both headings shows them under
-Outputs too, on grey, with a many-row table's key column after them, since every row the
-pricing returns carries them.
+`quote_details`' own stand for them. They key every table: a one-row table's row is the
+quote's, and a many-row table's rows are told apart by its index. A table you add has them
+at once. A table with both headings shows them under Outputs too, on grey, with a
+many-row table's index after them, since every row the pricing returns carries them.
 
-After them, a many-row table has its **index**, `row_number` until you rename it: Haute
-adds it as the table switches to **Many rows** and numbers the rows from 1, nobody types it,
-and the pipeline never fills it. In a table with inputs it is the first input and numbers
-the rows as the sheets do; in a table of outputs alone it is the first output and numbers
-the rows in the order pricing returns them. It is also each row's number in the saved
-quotes (see [Reading quotes with SQL](#reading-quotes-with-sql)), so name it for what the
-rows are, such as `item_number`; its label is what the sheets show.
+After them, a many-row table has its **index**, `table_index` until you rename it. Haute
+adds it as the table switches to **Many rows**, and it is the only other key a table has,
+so no column is marked as one. In a table with inputs it is the first input; in a table of
+outputs alone it is the first output. It is also each row's key in the saved quotes (see
+[Reading quotes with SQL](#reading-quotes-with-sql)), so name it for what the rows are,
+such as `item_number`, `location_name` or `peril`; its label is what the sheets show. It is
+an **Integer** or **Text**, and gets its values one of three ways, chosen beside it:
 
-A many-row table's **key** says which of its rows is which, and the underwriter never types
-it. A table with inputs is keyed by its index; or, when a
-column gives the table a row for each of its allowed values (below), by that column. Its
-outputs belong to the row holding the same key, so the pipeline must carry the key column
-through to the rows it returns: pricing fails, saying which table and rows, when a row it
-returns has no key, repeats one, or has a key no row of the quote holds. A row the pricing
-returns nothing for shows dashes. A table of outputs alone, such as a premium broken down by
-peril, is keyed by the outputs you mark as its **key**, which the pricing fills. Every
-column of a many-row table shows a key, blue on the table's key and grey on the others;
-in a table of outputs alone, click it to mark or unmark the column. A one-row table shows
-none.
+- **Numbered**, a new index's: Haute numbers the rows 1, 2, 3, as the sheets number them in
+  a table with inputs, and in the order pricing returns them in a table of outputs alone.
+  Nobody types it and the pipeline never fills it. A Text index holds the numbers as text,
+  still in number order.
+- **Typed**: the underwriter types it on each row, such as each location's name. Every row
+  holding anything needs one and no two rows of a quote can share one; the cell is marked
+  and the quote is neither priced nor saved until it is put right. In a table of outputs
+  alone the pricing returns it instead, a value on each row and no two the same.
+- **A row for each value**: its allowed values come from a params file's column (below),
+  and the table has exactly one row for each of them, in their order. In a table of outputs
+  alone the pricing returns a row for each value it prices, none twice and none outside
+  the list.
+
+A Text index's values are at most 255 characters. The index takes a label, a group, help,
+an Integer's number format and a typed one's placeholder, but no Required, range or
+default, and it can be renamed but not moved or removed.
+
+Each output belongs to the row holding the same index value, so the pipeline must carry the
+index through to the rows it returns: pricing fails, saying which table and values, when a
+row it returns has no index value, repeats one, or has one no row of the quote holds. A row
+the pricing returns nothing for shows dashes.
 
 A column's **allowed values** come from a CSV in the pipeline's params folder
 (`rating/files/params/`, **params** in the Pipeline files panel); they are never typed in.
@@ -171,19 +181,17 @@ values (gone, unreadable, with no values or more than 5,000) says why under them
 an older form may hold, show beside **Allowed** as typed in and are named among the
 schema's problems until they are read from a params file or taken away.
 
-In a many-row input table, **Rows** under a column's allowed values gives the table **a row
-for each** of them, in their order. A `coverage` table whose `peril` column takes its values
-from `perils.csv` (AOP, EQ, NW, WD, SCS, FLD) then has exactly six rows, one for each peril,
-and the underwriter types the other columns on each. The Tables that show it have those rows
-and no rows can be inserted or deleted; the peril cells show the peril and take no typing. A Table showing
-it beside another table whose rows differ shows every row of both and says their rows do
-not line up. Every row goes
-to the pipeline once the quote is priced, a peril with nothing else typed included, but the
-perils alone are not typing: a quote holding nothing else is not priced, marked or saved.
-The rows follow the params file: refresh the values, or build the app, and a new peril gets
-a row, while what was typed for a peril stays with it. Only one column in a table gives its
-rows, so ticking another unticks the first. That column is the table's key, so each output
-row pricing returns lines up with its peril's row.
+An index that gives **a row for each value** takes its allowed values as any column does. A
+`coverage` table whose index, renamed `peril` and made Text, takes its values from
+`perils.csv` (AOP, EQ, NW, WD, SCS, FLD) has exactly six rows, one for each peril, and the
+underwriter types the other columns on each. The Tables that show it have those rows and no
+rows can be inserted or deleted; the peril cells show the peril and take no typing. A
+Table showing it beside another table whose rows differ shows every row of both and says
+their rows do not line up. Every row goes to the pipeline once the quote is priced, a peril
+with nothing else typed included, but the perils alone are not typing: a quote holding
+nothing else is not priced, marked or saved. The rows follow the params file: refresh the
+values, or build the app, and a new peril gets a row, while what was typed for a peril
+stays with it. Each output row pricing returns lines up with its peril's row.
 
 A column's **default** is the value a new quote starts with in it, as if the underwriter
 had typed it: ticked or not for a True/false, one of its allowed values when it has some,
@@ -205,21 +213,20 @@ typed, and a value typed equal to its default counts as the default.
   its row.
 - The index comes first under Inputs, or under Outputs in a table of outputs alone, after
   **quote_reference** and **quote_option**, and moves between them as the table gains or
-  loses its inputs. It is an Integer that can be renamed but not moved or removed, is never
-  a key in a table of outputs alone, and goes when the table switches to one row.
+  loses its inputs, keeping its name, type and how it gets its values. It goes when the
+  table switches to one row.
 - The editor says what would stop the schema being the pipeline's tables: a table's name is
   an identifier, unique whatever its case, and its pipeline names, the name with `_input`
   and `_output`, are held to the rules a Quote Input's labels follow, a column's name is an
-  identifier that is not a Python keyword, unique in its table across both headings, a
-  many-row table of outputs alone needs a key, an input column's range must not be inverted
-  and its allowed values must be of its type and read from a params file, a True/false or
-  Date column can have none, a default must be a value the column takes (of its type,
-  in its range, one of its allowed values), and only one column in a table gives it a row
-  for each value. Changing a column's type drops the rules and
-  the format the new type cannot have, a row for each value going with the allowed values,
-  and the default when it becomes or stops being
-  True/false, or becomes a Date while it is not a date; switching a table to many rows
-  clears its defaults, and to one row its keys and its row for each value.
+  identifier that is not a Python keyword, unique in its table across both headings, an
+  input column's range must not be inverted and its allowed values must be of its type and
+  read from a params file, a True/false or Date column can have none, an index that gives a
+  row for each value needs allowed values, distinct in its type, and a default must be a
+  value the column takes (of its type, in its range, one of its allowed values). Changing a
+  column's type drops the rules and the format the new type cannot have, and the default
+  when it becomes or stops being True/false, or becomes a Date while it is not a date;
+  switching a table to many rows clears its defaults and gives it its index, and to one
+  row takes the index away.
 - Removing a column or a table a sheet shows asks first, and takes it off the sheet.
 - A column of a table's own named **quote_reference** or **quote_option**, as a project saved before
   Haute kept those names may hold, keeps its place and its values, and the table goes
@@ -353,10 +360,11 @@ Alt+Up and Alt+Down), and its **fields**, ticked from the schema tables of its k
 Chart's settings are its **Type** (Column, Line, Area or Pie), **Rows** (what labels the
 rows of many-row tables, or Row number), its **Legend**, and whether it is **Stacked**,
 **Horizontal** and shows **Data labels**; its fields come from any table, number columns
-other than an index. A grid holds one kind of row, so once a Table or a Chart shows a
-field, tables whose rows do not line up with it (keyed differently) are greyed out; an
-table's inputs and outputs always line up, and two tables with the same key line up, so each row can show its
-premium. Output columns are shaded. A transposed Table turns its grid on its side: each
+other than a numbered index. A grid holds one kind of row, so once a Table or a Chart shows a
+field, tables whose rows do not line up with it are greyed out. A table's inputs and
+outputs always line up; a numbered index lines up with no other table, two typed indexes
+of the same name and type line up, and two indexes taking a row for each value of the same
+params file's column, of the same type, line up, so each row can show its premium. Output columns are shaded. A transposed Table turns its grid on its side: each
 field is a line, labelled at its left, and each row is a column, numbered along the top;
 its stripes and gridlines follow the lines as drawn. With **groups** ticked, the columns side by side
 in one schema group share a heading over their labels, as merged cells over a table's
@@ -383,8 +391,10 @@ though an Export keeps its file name, headers and values between CSV and Excel.
   **Parameters** for each `:name` in the query, where you choose the one-row input column
   whose value it takes. **Into** is the input table it fills. For a many-row table,
   **Rows** says whether the rows it brings **Replace** the table's rows, **Append** to
-  them, or **Update by key**, matching rows on the table's key. **Columns** lists the
-  table's columns an underwriter types; a column is read from the column of the same name
+  them, or **Update by key**, matching rows on the table's index; a table with a row for
+  each value only takes Update by key, and leaves out a row whose value is not one of its
+  values. **Columns** lists the table's columns an underwriter types, a typed index
+  included; a column is read from the column of the same name
   or label, whatever its case, unless you type the name it has in the file or the query's
   answer.
 - An Export tick-lists the **Tables** it writes, inputs and outputs alike. To a **CSV**
@@ -410,7 +420,7 @@ selected so you can drag it into place; a column deleted from the schema since y
 it is left out of the copy. Ctrl+1 fits the sheet to the
 window, and the zoom runs from 25% to 200%. A component with a problem — no fields, a
 Heading with no text, a column no longer in the schema, a table of the other kind, a
-Chart's field that is not a number or is an index, tables whose rows do not line up, a pie
+Chart's field that is not a number or is a numbered index, tables whose rows do not line up, a pie
 of many rows with more than one field, an Import or an Export with no label or missing
 what its format needs — gets a dashed frame that names the problem. Tab,
 and a screen reader, go through the sheet section by section, each section's bar and then
@@ -660,7 +670,7 @@ starts with its rows, empty; the first value you type keeps them, and from then 
 rows are yours to insert and delete, fewer than it started with too, though a Table of fixed
 rows never shows fewer. Change a Table's rows while building and Preview shows it: empty
 rows after the last one you typed into go, or more are added. A Table showing a table that
-has a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
+gives a row for each value (see [Schema](#schema)) shows those rows whatever its own rows
 say. Each cell is the control its
 column calls for: a tick box, a dropdown of the allowed values, a date picker, or a text
 field. An empty cell is blank, or shows its column's placeholder, a number column's in
@@ -683,10 +693,12 @@ its columns' defaults and nothing else; **Undo** brings back what it cleared. Th
 sample is priced whatever its cells hold. Once anything is typed, a cell that breaks its
 column's rules (a required cell left empty, a number that is not one, a whole number that
 is not whole, a date that is not one, a number outside its range, a value that is not one of the allowed ones) is
-outlined, naming the problem when you hover, and priced all the same. When pricing fails —
+outlined, naming the problem when you hover, and priced all the same. A typed index left
+blank on a row holding anything, repeated, or longer than 255 characters is outlined too,
+and stops the pricing until it is put right. When pricing fails —
 no Workbench Output on the pipeline, a value that does not fit its column — the toolbar
 says why, as it does when the pipeline returns output rows that do not fit their table's
-rows (a key missing, repeated or on no row). A table's outputs with nothing connected, or an
+rows (an index value missing, repeated or on no row). A table's outputs with nothing connected, or an
 output the pipeline doesn't fill, prices all the same and shows dashes (see [Workbench Output](nodes/workbench-output.md#filling-the-tables)). Ctrl+S still saves the project in Preview.
 
 ### Test quotes
@@ -954,8 +966,9 @@ schema's columns under their names, its inputs and then its outputs, so an item 
 price are one row: an Integer a 64-bit integer, a Decimal a
 double-precision number, Text text, True/false a boolean and a Date a date. Every row holds
 the quote's **quote_reference** and **quote_option**, and a row of a many-row table its
-index too, under the name you gave it: in a table with inputs its row's place on its
-sheet, blank rows counted, and in a table of outputs alone its place in the pricing. Read an
+index too, under the name you gave it: a numbered one's place on its sheet, blank rows
+counted, or in a table of outputs alone its place in the pricing; a typed one's value; or
+the value its row is for. Read an
 item and its price from one table, and join tables on **quote_reference** and
 **quote_option**:
 
