@@ -1,8 +1,8 @@
 /**
  * A many-row table's index as the schema editor offers it (specs/workbench): how it gets its
  * values, chosen in its config panel. The operations give a table its index, numbered, move it between
- * its blocks and take it away (`withIndexAsNeeded`); nothing marks it, or any column, as a
- * key, every table's key being the quote's identity and a many-row table's its index too.
+ * its blocks and take it away (`withIndexAsNeeded`); no key toggle is needed, every table's
+ * key being the quote's identity and a many-row table's its index too.
  */
 import type { SchemaColumn } from "../../api/types"
 import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"

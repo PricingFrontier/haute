@@ -392,8 +392,8 @@ Out of scope:
   or an Import fills; a typed index or one of values is a value like any column's.
 
   A table's key says which of its rows is which: the quote's identity is the key of every
-  table, and of a many-row table with its index; nothing else is a key, and nothing marks
-  one. A table with both blocks carries its index to its outputs: the pipeline's frame of
+  table, and of a many-row table with its index; nothing else is a key. The schema editor
+  outlines these key columns' name cells in light blue. A table with both blocks carries its index to its outputs: the pipeline's frame of
   its outputs holds the index, and each output row pricing gives belongs to the input row
   holding its index's value (The Workbench Output, below). Every schema holds Haute's own table of a quote's
   details, `quote_details`, first: one row, inputs alone, a quote's administration whatever the
@@ -837,8 +837,13 @@ Out of scope:
   Outputs (returned by it), each with its own Add column, a heading over no column of its
   own showing Add column alone; each column with its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
-  from it, and its name; nothing marks a key, every table's being the quote's identity and
-  a many-row table's its index too. A many-row table's index offers how it gets its values,
+  from it, and its name. The name cells of `quote_reference`, `quote_option` and the table's
+  index have a thin light blue outline, including the identity in `quote_details` and
+  the keys repeated under Outputs. The index is identified by its role, so a renamed
+  index keeps the outline and an ordinary column named `table_index` does not acquire it.
+  Ordinary fields and store-only columns keep their normal border. The outline remains
+  in Preview, preserves the existing fills, and leaves keyboard focus visible; there is
+  no key icon or toggle. A many-row table's index offers how it gets its values,
   Numbered, Typed or A row for each value, inside its config panel, and its type is Integer or
   Text alone. A column's label, group
   and help open beside it, the group offered from those its table's columns have, the boxes
@@ -3029,7 +3034,8 @@ Out of scope:
   outputs alone marked keys of its own. Every many-row table now has one index,
   `table_index` until renamed so its name says what the rows are (`item_number`, `peril`,
   `location_name`), and nothing else is a key: the quote's identity keys every table and
-  the index a many-row one, so no key is marked and none can be left off. The index is
+  the index a many-row one, so none can be left off; the schema editor outlines their
+  name cells in light blue without a key toggle. The index is
   numbered by Haute, takes a row for each value of a params file's column, or is typed by
   the underwriter, as a schedule of locations named by the broker is, which the sheets
   hold filled and unique as no column marked a key ever was. An input table's index is

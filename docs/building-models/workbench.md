@@ -137,10 +137,13 @@ group, help, rules, default or format, and are not offered to the sheets, where
 quote's, and a many-row table's rows are told apart by its index. A table you add has them
 at once. A table with both headings shows them under Outputs too, on grey, with a
 many-row table's index after them, since every row the pricing returns carries them.
+The name cells of `quote_reference`, `quote_option` and the table's index have a light
+blue outline, including the copies under Outputs and the identity in `quote_details`.
+An index keeps that outline when renamed.
 
 After them, a many-row table has its **index**, `table_index` until you rename it. Haute
 adds it as the table switches to **Many rows**, and it is the only other key a table has,
-so no column is marked as one. In a table with inputs it is the first input; in a table of
+with no key toggle to set. In a table with inputs it is the first input; in a table of
 outputs alone it is the first output. It is also each row's key in the saved quotes (see
 [Reading quotes with SQL](#reading-quotes-with-sql)), so name it for what the rows are,
 such as `item_number`, `location_name` or `peril`; its label is what the sheets show. It is

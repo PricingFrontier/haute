@@ -14,7 +14,7 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { type Block, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
+import { type Block, IDENTITY_NAMES, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
 import {
   buttonUses,
   changeSchemaColumnType,
@@ -44,6 +44,9 @@ const KEPT_KINDS: Record<WorkbenchStoreColumn["kind"], { label: string; icon: Lu
 
 /** The types the index can be given: Integer and Text alone. */
 const INDEX_TYPE_OPTIONS = COLUMN_TYPE_OPTIONS.filter((option) => INDEX_TYPES.has(option.value))
+
+/** Key name cells share a light blue border, including their read-only output copies. */
+const KEY_BORDER = "1px solid var(--text-accent)"
 
 interface ColumnRowProps {
   form: FormSpec
@@ -89,6 +92,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
   const managed = locked && QUOTE_DETAILS_MANAGED.has(column.name)
   // The quote's reference and option are Haute's: nothing of them changes.
   const identity = isIdentityColumn(table, column)
+  const keyColumn = IDENTITY_NAMES.has(column.name) || column.index !== null
   // Its name and type stay, and it stays: in quote_details, the quote's identity, and in Preview.
   const fixed = locked || readOnly || identity
   const summary = columnSummary(table, column)
@@ -165,7 +169,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
           onKeyDown={onKeyDown}
           title={identity ? "Haute's column" : undefined}
           className={`${COMPACT_FIELD_CLASS} ${COLUMN_NAME_WIDTH} font-mono`}
-          style={identity ? LOCKED_FIELD_STYLE : INPUT_STYLE}
+          style={{ ...(identity ? LOCKED_FIELD_STYLE : INPUT_STYLE), border: keyColumn ? KEY_BORDER : INPUT_STYLE.border }}
         />
         <DatabaseMark table={table.name} column={column.name} />
         {identity ? (
@@ -212,7 +216,7 @@ export function ColumnRow({ form, table, column, block, index, refocus, fresh, o
 }
 
 /** A row that is not one of the block's columns, its type marker and its name on grey, with nothing to change. */
-function LockedRow({ name, kind, title, testId }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string }) {
+function LockedRow({ name, kind, title, testId, keyColumn }: { name: string; kind: { label: string; icon: LucideIcon; color: string }; title: string; testId: string; keyColumn: boolean }) {
   const { label, icon: Icon, color } = kind
   return (
     <div className="flex items-stretch gap-1 rounded" data-testid={testId}>
@@ -222,7 +226,7 @@ function LockedRow({ name, kind, title, testId }: { name: string; kind: { label:
       </span>
       <span
         className={`${COLUMN_NAME_WIDTH} truncate rounded-md px-1.5 py-0.5 font-mono text-xs`}
-        style={{ ...LOCKED_FIELD_STYLE, color: "var(--text-muted)" }}
+        style={{ ...LOCKED_FIELD_STYLE, border: keyColumn ? KEY_BORDER : LOCKED_FIELD_STYLE.border, color: "var(--text-muted)" }}
         title={title}
       >
         {name}
@@ -233,7 +237,7 @@ function LockedRow({ name, kind, title, testId }: { name: string; kind: { label:
 
 /** A column the quote store keeps in a table that the form does not: what it holds and its name, locked, with nothing to change. */
 export function StoreColumnRow({ column }: { column: WorkbenchStoreColumn }) {
-  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} />
+  return <LockedRow name={column.name} kind={KEPT_KINDS[column.kind]} title="Kept by the quote store" testId={`schema-store-column-${column.name}`} keyColumn={false} />
 }
 
 /**
@@ -247,6 +251,7 @@ export function CarriedColumnRow({ column, isIndex }: { column: SchemaColumn; is
       kind={COLUMN_TYPES[column.type]}
       title={isIndex ? "The table's index, on every row the pricing returns" : "Haute's column, on every row the pricing returns"}
       testId={`schema-output-carried-${column.name}`}
+      keyColumn
     />
   )
 }
