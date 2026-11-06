@@ -52,14 +52,12 @@ def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
         "type": type_,
         "label": "",
         "group": "",
-        "key": False,
         "required": False,
         "min": None,
         "max": None,
         "options": [],
         "options_source": None,
-        "row_per_value": False,
-        "index": False,
+        "index": None,
         "help": "",
         "placeholder": "",
         "default_value": "",
@@ -125,7 +123,7 @@ FORM: dict[str, Any] = {
                 "rows": "many",
                 "inputs": [
                     *IDENTITY,
-                    column("layer", "int", index=True),
+                    column("layer", "int", index="numbered"),
                     column("limit", "float"),
                     column("layer_name"),
                 ],
@@ -597,7 +595,7 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
             del col["index"]
             for field in display:
                 del col[field]
-    sparse["schema"]["tables"][1]["inputs"][2]["index"] = True
+    sparse["schema"]["tables"][1]["inputs"][2]["index"] = "numbered"
     for field in options:
         del widgets(sparse)[1][field]
     for field in collection_options:
@@ -614,11 +612,11 @@ def test_every_field_is_written_so_the_document_has_one_spelling() -> None:
 
     assert spec.sample == {}
     assert [c.index for c in spec.data_schema.tables[2].columns] == [
-        False,
-        False,
-        True,
-        False,
-        False,
+        None,
+        None,
+        "numbered",
+        None,
+        None,
     ]
     written = json.loads(render_form(spec))
     assert written["sample"] == {}
@@ -1446,71 +1444,156 @@ def test_the_quote_identity_heads_a_tables_first_block(
 KEY_REFUSALS = [
     pytest.param(
         {"rows": "many", "inputs": [column("value", "float")]},
-        "t has many rows and inputs, so it needs one index among its inputs",
+        "t has many rows, so it needs one index",
         id="a many-row input table with no index",
+    ),
+    pytest.param(
+        {"rows": "many", "outputs": [column("premium", "float")]},
+        "t has many rows, so it needs one index",
+        id="a many-row table of outputs alone with no index",
+    ),
+    pytest.param(
+        {"rows": "many"},
+        "t has many rows, so it needs one index",
+        id="an empty many-row table with no index",
     ),
     pytest.param(
         {
             "rows": "many",
             "inputs": [
-                column("line", "int", index=True),
-                column("row", "int", index=True),
+                column("line", "int", index="numbered"),
+                column("row", "int", index="numbered"),
                 column("value", "float"),
             ],
         },
-        "t has many rows and inputs, so it needs one index among its inputs",
+        "t has many rows, so it needs one index",
         id="a many-row input table with two",
     ),
     pytest.param(
-        {"rows": "one", "inputs": [column("line", "int", index=True), column("value", "float")]},
-        "t.line is an index, which only a many-row table with inputs has",
+        {
+            "rows": "one",
+            "inputs": [column("line", "int", index="numbered"), column("value", "float")],
+        },
+        "t.line is an index, which only a many-row table has",
         id="an index in a one-row table",
-    ),
-    pytest.param(
-        {"rows": "many", "inputs": [column("line", "int", index=True)]},
-        "t.line is an index, which only a many-row table with inputs has",
-        id="an index alone, no input typed",
     ),
     pytest.param(
         {
             "rows": "many",
             "inputs": [column("value", "float")],
-            "outputs": [column("line", "int", index=True)],
+            "outputs": [column("line", "int", index="numbered")],
         },
-        "t.line is an index among the outputs",
-        id="an index among the outputs",
+        "t.line is an index among the outputs, which only a table of outputs alone holds its "
+        "index among",
+        id="an index among the outputs of a table with inputs",
+    ),
+    pytest.param(
+        {"rows": "many", "outputs": [column("line", "int", index="numbered")]},
+        "t.line is an index among the outputs, which only a table of outputs alone holds its "
+        "index among",
+        id="an index the only output",
     ),
     pytest.param(
         {
             "rows": "many",
-            "inputs": [column("line", "int", index=True), column("item_id", key=True)],
+            "inputs": [column("line", "int", index="numbered")],
+            "outputs": [column("premium", "float")],
         },
-        "t.item_id is a key, which only an output of a table of outputs alone with many rows "
-        "can be",
-        id="a typed input marked key",
+        "t.line is an index among the inputs of a table of outputs alone, whose index is among "
+        "its outputs",
+        id="an index among the inputs of a table of outputs alone",
+    ),
+    pytest.param(
+        {"rows": "many", "inputs": [column("line", "float", index="numbered"), column("v")]},
+        "t.line is the index, an Integer or Text",
+        id="an index of a Decimal type",
+    ),
+    pytest.param(
+        {"rows": "many", "inputs": [column("line", "date", index="typed"), column("v")]},
+        "t.line is the index, an Integer or Text",
+        id="an index of a Date type",
     ),
     pytest.param(
         {
             "rows": "many",
-            "inputs": [column("line", "int", index=True, key=True), column("value", "float")],
+            "inputs": [
+                column("line", "int", index="numbered", required=True, min=1, default_value="1"),
+                column("v"),
+            ],
         },
-        "t.line is a key, which only an output of a table of outputs alone with many rows can be",
-        id="the index marked key",
+        "t.line is the index, which takes no required, a range, a default",
+        id="an index holding Required, a range and a default",
     ),
     pytest.param(
         {
             "rows": "many",
-            "inputs": [column("line", "int", index=True), column("value", "float")],
-            "outputs": [column("item_id", key=True), column("premium", "float")],
+            "inputs": [column("line", "int", index="numbered", placeholder="No."), column("v")],
         },
-        "t.item_id is a key, which only an output of a table of outputs alone with many rows "
-        "can be",
-        id="an output key in a table with inputs",
+        "t.line is an index nobody types, so it shows no placeholder",
+        id="a placeholder on a numbered index",
     ),
     pytest.param(
-        {"rows": "one", "outputs": [column("band", key=True), column("premium", "float")]},
-        "t.band is a key, which only an output of a table of outputs alone with many rows can be",
-        id="an output key in a one-row table",
+        {
+            "rows": "many",
+            "inputs": [column("site", index="typed", options=["Leeds"]), column("v")],
+        },
+        "t.site is an index without a row for each value, so it takes no allowed values",
+        id="allowed values on a typed index",
+    ),
+    pytest.param(
+        {"rows": "many", "inputs": [column("peril", index="values"), column("v")]},
+        "t.peril gives a row for each value, so it needs allowed values from a params file",
+        id="an index of values without allowed values",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [column("peril", index="values", options=["Fire"]), column("v")],
+        },
+        "t.peril gives a row for each value, so it needs allowed values from a params file",
+        id="an index of values whose values are typed in",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [
+                column(
+                    "peril",
+                    index="values",
+                    options=["\U00020000" * 184],
+                    options_source={"file": "perils.csv", "column": "peril"},
+                ),
+                column("v"),
+            ],
+        },
+        "is longer than 366 UTF-16 code units",
+        id="an index of values exceeding the portable key byte budget",
+    ),
+    pytest.param(
+        {
+            "rows": "many",
+            "inputs": [
+                column(
+                    "peril",
+                    index="values",
+                    options=["x" * 256],
+                    options_source={"file": "perils.csv", "column": "peril"},
+                ),
+                column("v"),
+            ],
+        },
+        "is longer than 255 characters, the longest a Text index holds",
+        id="an index of values with a value too long",
+    ),
+    pytest.param(
+        {"rows": "many", "inputs": [column("line", "int", index="numbered", key=True)]},
+        "key",
+        id="a column marked key, which no form holds now",
+    ),
+    pytest.param(
+        {"rows": "many", "inputs": [column("line", "int", index=True)]},
+        "index",
+        id="an index flag of an earlier form",
     ),
 ]
 
@@ -1529,30 +1612,67 @@ def test_a_tables_key_is_never_typed_so_a_key_or_index_it_cannot_have_is_refused
     "table",
     [
         pytest.param(
-            {"rows": "many", "inputs": [column("line", "int", index=True), column("value")]},
+            {"rows": "many", "inputs": [column("line", "int", index="numbered"), column("value")]},
             id="a many-row input table by its index",
         ),
         pytest.param(
             {
                 "rows": "many",
                 "inputs": [
-                    column("line", "int", index=True),
-                    column("peril", options=["Fire"], row_per_value=True),
+                    column(
+                        "peril",
+                        options=["Fire"],
+                        index="values",
+                        options_source={"file": "perils.csv", "column": "peril"},
+                    ),
+                    column("limit", "float"),
                 ],
                 "outputs": [column("premium", "float")],
             },
-            id="a table of both blocks by the column giving its rows",
+            id="a table of both blocks by its index of values",
         ),
         pytest.param(
             {
                 "rows": "many",
-                "outputs": [column("layer", "int", key=True), column("premium", "float")],
+                "outputs": [
+                    column("layer", "int", index="typed"),
+                    column("premium", "float"),
+                ],
             },
-            id="a table of outputs alone by outputs marked key",
+            id="a table of outputs alone by the typed index the pricing gives",
         ),
         pytest.param(
-            {"rows": "many", "outputs": [column("premium", "float")]},
+            {
+                "rows": "many",
+                "outputs": [
+                    column(
+                        "peril",
+                        index="values",
+                        options=["Fire", "Flood"],
+                        options_source={"file": "perils.csv", "column": "peril"},
+                    ),
+                    column("premium", "float"),
+                ],
+            },
+            id="a table of outputs alone by an index of values among its outputs",
+        ),
+        pytest.param(
+            {
+                "rows": "many",
+                "inputs": [column("site", index="typed", placeholder="Site"), column("v")],
+            },
+            id="a typed Text index with a placeholder",
+        ),
+        pytest.param(
+            {
+                "rows": "many",
+                "outputs": [column("line", "int", index="numbered"), column("premium", "float")],
+            },
             id="a table of outputs alone marking none",
+        ),
+        pytest.param(
+            {"rows": "many", "inputs": [column("line", "int", index="numbered")]},
+            id="an empty many-row table, its index among its inputs",
         ),
     ],
 )
@@ -1560,6 +1680,39 @@ def test_a_table_keyed_as_its_kind_is_read(table: dict[str, Any]) -> None:
     data = _one_table_form(table)
 
     assert FormSpec.model_validate(data).data_schema.tables[0].rows == "many"
+
+
+@pytest.mark.parametrize(
+    ("table", "priced", "alone"),
+    [
+        # An empty table switched to many rows, its index renamed: no output side.
+        pytest.param({"inputs": [column("line", "int", index="numbered")]}, [], False, id="empty"),
+        # Given its first output, the index goes with the identity to the outputs.
+        pytest.param(
+            {"outputs": [column("line", "int", index="numbered"), column("premium", "float")]},
+            ["premium"],
+            True,
+            id="a first output",
+        ),
+        # That output removed, the index is back among the inputs, the table no output table.
+        pytest.param(
+            {"inputs": [column("line", "int", index="numbered")], "outputs": []},
+            [],
+            False,
+            id="its output removed",
+        ),
+    ],
+)
+def test_the_index_never_makes_a_table_an_output_table(
+    table: dict[str, Any], priced: list[str], alone: bool
+) -> None:
+    (held,) = FormSpec.model_validate(_one_table_form({"rows": "many", **table})).data_schema.tables
+
+    assert [column.name for column in held.priced_outputs] == priced
+    assert held.has_outputs is bool(priced)
+    assert held.outputs_alone is alone
+    assert held.index is not None and held.index.name == "line"
+    assert held.is_output("line") is alone
 
 
 def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
@@ -1586,7 +1739,7 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
         (
             lambda t: t.update(
                 rows="many",
-                inputs=[{"name": "row_number", "type": "int", "index": True}, *t["inputs"]],
+                inputs=[{"name": "row_number", "type": "int", "index": "numbered"}, *t["inputs"]],
             ),
             "is Haute's: a one-row input table",
         ),
@@ -1603,8 +1756,8 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
         (lambda t: t["inputs"][2].update(name="title"), "is Haute's: a one-row input table"),
         (lambda t: t["inputs"][5].update(type="str"), "is Haute's: a one-row input table"),
         (
-            lambda t: t["inputs"][2].update(row_per_value=True),
-            "is Haute's: a one-row input table",
+            lambda t: t["inputs"][2].update(index="typed"),
+            "quote_details.quote_name is an index, which only a many-row table has",
         ),
         (
             lambda t: t["inputs"][0].update(required=True),
@@ -1644,7 +1797,7 @@ def test_a_form_saved_by_any_earlier_haute_takes_on_the_columns_added_since(
         "is-renewal-retyped",
         "renamed",
         "retyped",
-        "row-per-value",
+        "an-index",
         "rule",
         "created-by-default",
         "haute-version-options",

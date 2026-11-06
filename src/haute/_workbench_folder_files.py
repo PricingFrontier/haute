@@ -66,9 +66,11 @@ INPUT_ONLY = (
     "max",
     "options",
     "options_source",
-    "row_per_value",
     "default_value",
 )
+#: What of ``INPUT_ONLY`` an output takes while it is a table of outputs alone's index of
+#: values: the allowed values that give its rows.
+INDEX_VALUES_SETTINGS = ("options", "options_source")
 #: The settings ``quote_details`` takes on any column, and on those the underwriter types.
 DETAILS_ANY = (
     "label",
@@ -352,7 +354,7 @@ else:
     QuoteDetailsColumnFile = _derived(
         "QuoteDetailsColumnFile",
         SchemaColumn,
-        drop=frozenset({"id", "type", "key", "row_per_value", "index"}),
+        drop=frozenset({"id", "type", "index"}),
         replace={"name": (Literal[DETAILS_NAMES], ...)},
     )
 
@@ -428,7 +430,10 @@ class TableFile(_File):
                 )
             names[folded] = column.name
         for column in self.outputs:
-            rules = [key for key in (*INPUT_ONLY, "index") if key in column.model_fields_set]
+            held = INDEX_VALUES_SETTINGS if column.index == "values" else ()
+            rules = [
+                key for key in INPUT_ONLY if key in column.model_fields_set and key not in held
+            ]
             if rules:
                 raise ValueError(
                     f"{column.name} is an output and holds {', '.join(rules)}, which only an "

@@ -8,11 +8,10 @@
 import type { Edge } from "@xyflow/react"
 import { describe, expect, it } from "vitest"
 import type { SchemaColumn, SchemaTable, WorkbenchColumn, WorkbenchTable } from "../../api/types"
-import { blankColumn, IDENTITY_COLUMNS } from "../quoteIdentity"
+import { blankColumn, IDENTITY_COLUMNS, tableIndex } from "../quoteIdentity"
 import {
   holdsOutput,
   keyCollisions,
-  keyTable,
   outputMisfit,
   workbenchDisconnections,
   workbenchNodePorts,
@@ -31,7 +30,7 @@ const side = (
   rows: WorkbenchTable["rows"],
   columns: WorkbenchColumn[],
   key: string | null = null,
-): WorkbenchTable => ({ name, side: which, port: `${name}_${which}`, rows, columns, key, null_key: null })
+): WorkbenchTable => ({ name, side: which, port: `${name}_${which}`, rows, columns, key, null_key: null, index_kind: null, index_values: [] })
 
 const table = side("policy_details", "input", "one", [{ name: "state", type: "str" }])
 const sample = { policy_details: { state: "NY" } }
@@ -161,7 +160,7 @@ describe("dtypeFits", () => {
   })
 })
 
-describe("keyTable", () => {
+describe("tableIndex", () => {
   const column = (name: string, type: SchemaColumn["type"] = "str", set: Partial<SchemaColumn> = {}): SchemaColumn => ({ ...blankColumn(name, type), ...set })
   const identity = IDENTITY_COLUMNS.map(([name, type]) => blankColumn(name, type))
   const schemaTable = (rows: SchemaTable["rows"], inputs: SchemaColumn[], outputs: SchemaColumn[] = []): SchemaTable => ({
@@ -170,28 +169,17 @@ describe("keyTable", () => {
     inputs: inputs.length > 0 || outputs.length === 0 ? [...identity, ...inputs] : inputs,
     outputs: inputs.length > 0 || outputs.length === 0 ? outputs : [...identity, ...outputs],
   })
-  const index = column("item_number", "int", { index: true })
-  const peril = column("peril", "str", { options: ["AOP", "EQ"], row_per_value: true })
-
   it("is none for a one-row table", () => {
-    expect(keyTable(schemaTable("one", [column("limit", "int")], [column("premium", "float")]))).toEqual([])
+    expect(tableIndex(schemaTable("one", [column("limit", "int")], [column("premium", "float")]))).toBeNull()
   })
 
-  it("is a many-row input table's index, which its outputs carry", () => {
-    expect(keyTable(schemaTable("many", [index, column("limit", "int")], [column("premium", "float")]))).toEqual([index])
-  })
-
-  it("is a many-row input table's column giving it a row for each value while it has one, not its index", () => {
-    expect(keyTable(schemaTable("many", [index, column("limit", "int"), peril]))).toEqual([peril])
-    // Ticked but with no allowed values, it gives no rows: the index keys the table.
-    expect(keyTable(schemaTable("many", [index, { ...peril, options: [] }]))).toEqual([index])
-  })
-
-  it("is a many-row table of outputs alone's outputs marked key, in order", () => {
-    const layer = column("layer", "int", { key: true })
-    const band = column("band", "str", { key: true })
-    expect(keyTable(schemaTable("many", [], [band, column("premium", "float"), layer]))).toEqual([band, layer])
-    expect(keyTable(schemaTable("many", [], [column("premium", "float")]))).toEqual([])
+  it.each(["numbered", "typed", "values"] as const)("finds the %s index by its kind, in either block and whatever its name or place", (kind) => {
+    const index = column("item", "str", {
+      index: kind,
+      ...(kind === "values" ? { options: ["AOP", "EQ"], options_source: { file: "perils.csv", column: "peril" } } : {}),
+    })
+    expect(tableIndex(schemaTable("many", [column("limit", "int"), index], [column("premium", "float")]))).toBe(index)
+    expect(tableIndex(schemaTable("many", [], [column("premium", "float"), index]))).toBe(index)
   })
 })
 
@@ -201,8 +189,8 @@ describe("keyCollisions", () => {
     rows: "many",
     inputs: [
       ...IDENTITY_COLUMNS.map(([name, kind]) => blankColumn(name, kind)),
-      { ...blankColumn("row_number", "int"), index: true },
-      { ...blankColumn("layer", type), options, row_per_value: true },
+      { ...blankColumn("layer", type), options, options_source: { file: "layers.csv", column: "layer" }, index: "values" },
+      blankColumn("limit", "int"),
     ],
     outputs: [],
   })
@@ -212,15 +200,14 @@ describe("keyCollisions", () => {
       "ce_layers.layer's allowed values 1 and 01 are one Integer, so they cannot key its rows: correct the params file",
       "ce_layers.layer's allowed values 2 and 2.0 are one Integer, so they cannot key its rows: correct the params file",
     ])
-    expect(keyCollisions(preset("float", ["1.5", "1.50", "001.5"]))).toEqual([
-      "ce_layers.layer's allowed values 1.5, 1.50 and 001.5 are one Decimal, so they cannot key its rows: correct the params file",
-    ])
   })
 
   it("names none for distinct values, for text, and for a table whose rows no column gives", () => {
     expect(keyCollisions(preset("int", ["1", "2", "10"]))).toEqual([])
     expect(keyCollisions(preset("str", ["a", "a ", "A"]))).toEqual([])
-    expect(keyCollisions({ ...preset("int", ["1", "01"]), rows: "one" })).toEqual([])
+    const numbered = preset("int", [])
+    numbered.inputs[2] = { ...blankColumn("layer", "int"), index: "numbered" }
+    expect(keyCollisions(numbered)).toEqual([])
   })
 })
 

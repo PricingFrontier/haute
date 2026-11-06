@@ -7,10 +7,21 @@
  * are held to the cases in __tests__/fixtures/sheetVisibility.json.
  */
 import type { Condition, ConditionGroup, FieldRef, FormSchema, FormSpec, Page, RowCount, RowsCondition, RowTest, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen } from "../api/types"
-import { hasInputs, isOutputColumn, QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns, tableColumns, typedInputs } from "./quoteIdentity"
+import { hasInputs, isOutputColumn, ownInputs, QUOTE_DETAILS_NAME, QUOTE_DETAILS_STORE_ONLY, sheetColumns, tableColumns, tableIndex, typedInputs } from "./quoteIdentity"
 import { isDay } from "./isoDate"
-import { filled, parseTypedNumber, parseTypedWhole, presetRows, quoteTyped, rowFilled, valuesBasis, withPresetRows, type RowsByTable } from "./sheetValues"
-import { keyTable } from "./workbenchTables"
+import {
+  filled,
+  type IndexProblem,
+  parseTypedNumber,
+  parseTypedWhole,
+  presetRows,
+  quoteTyped,
+  rowFilled,
+  typedIndexProblems,
+  valuesBasis,
+  withPresetRows,
+  type RowsByTable,
+} from "./sheetValues"
 
 export type ConditionTest = Condition["op"]
 export type CountTest = RowCount["op"]
@@ -283,11 +294,11 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
   for (const test of condition.where) {
     const column = columns.find((candidate) => candidate.name === test.column)
     if (column === undefined) return "tests a column that is no longer in the schema"
-    if (column.index) return `tests ${column.name}, the index, which nothing is typed into`
+    if (column.index === "numbered") return `tests ${column.name}, the index, which nothing is typed into`
     if (isOutputColumn(table, column) && test.field !== null) return `tests ${column.name}, a part of the price, against another column: the price is tested against values typed alone`
     const other = test.field === null ? null : columns.find((candidate) => candidate.name === test.field)
     if (other === undefined) return `tests ${column.name} against a column that is no longer in the schema`
-    if (other?.index) return `tests ${column.name} against ${other.name}, the index, which nothing is typed into`
+    if (other?.index === "numbered") return `tests ${column.name} against ${other.name}, the index, which nothing is typed into`
     if (other !== null && isOutputColumn(table, other)) return `tests ${column.name} against ${other.name}, which is an output`
     const fault = testFault(column, test, other)
     if (fault !== null) return fault
@@ -295,7 +306,7 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
   if (!isRowTotal(condition)) return null
   const column = columns.find((candidate) => candidate.name === condition.column)
   if (column === undefined) return "totals a column that is no longer in the schema"
-  if (column.index) return `totals ${column.name}, the index, which nothing is typed into`
+  if (column.index === "numbered") return `totals ${column.name}, the index, which nothing is typed into`
   if (column.type !== "int" && column.type !== "float") return `totals ${column.name}, which is not a number column`
   const value = condition.value.trim()
   if (value === "") return `needs a number to compare its total of ${column.name} with`
@@ -466,9 +477,10 @@ const showWhenPasses = (showWhen: ShowWhen, holds: (condition: SingleCondition) 
   matches(showWhen.match, showWhen.conditions, (entry) => (isGroup(entry) ? matches(entry.match, entry.conditions, holds) : holds(entry)))
 
 /**
- * A many-row table's rows as a grid holds them (`presetRows`), each with anything but the
- * index typed in it, whatever the sheets hide: counting only what shows would let hiding a
- * column drop a row and show something again (`_typed_rows` on the server).
+ * A many-row table's rows as a grid holds them (`presetRows`), each with anything but a
+ * numbered index in it (`rowFilled`), so every row an index of values gives is one, whatever
+ * the sheets hide: counting only what shows would let hiding a column drop a row and show
+ * something again (`_typed_rows` on the server).
  */
 const typedRows = (table: SchemaTable, rows: readonly Row[]): readonly Row[] => presetRows(table, rows).filter((row) => rowFilled(table, row))
 
@@ -510,7 +522,7 @@ function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]):
 }
 
 /** The keys of a counted table's inputs other than the index, any of which on a component that shows lets a count without tests hold. */
-const countedKeys = (table: SchemaTable): string[] => table.inputs.filter((column) => !column.index).map((column) => columnKey(table.name, column.name))
+const countedKeys = (table: SchemaTable): string[] => table.inputs.filter((column) => column.index !== "numbered").map((column) => columnKey(table.name, column.name))
 
 /**
  * Tests conditions on `rows`, each fitting once and each many-row table's typed rows read once:
@@ -778,15 +790,15 @@ export function withPrice(spec: FormSpec, rows: RowsByTable, visibility: SheetVi
 }
 
 /**
- * The schema without `columns` (by `columnKey`), each table's key column (`keyTable`'s) kept
+ * The schema without `columns` (by `columnKey`), each table's index (`tableIndex`) kept
  * whatever they hold, as it keys the table's rows: the schema itself when it holds none of them.
  */
 function withoutColumns(schema: FormSchema, columns: ReadonlySet<string>): FormSchema {
   if (columns.size === 0) return schema
   let removed = false
   const tables = schema.tables.map((table) => {
-    const keys = new Set(keyTable(table))
-    const keep = (column: SchemaColumn) => keys.has(column) || !columns.has(columnKey(table.name, column.name))
+    const index = tableIndex(table)
+    const keep = (column: SchemaColumn) => column === index || !columns.has(columnKey(table.name, column.name))
     const [inputs, outputs] = [table.inputs.filter(keep), table.outputs.filter(keep)]
     if (inputs.length === table.inputs.length && outputs.length === table.outputs.length) return table
     removed = true
@@ -805,8 +817,8 @@ const STORE_ONLY_KEYS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_STORE_ONL
  * The schema without the columns no request holds, the quote's tables as the server reads
  * them: the hidden columns of every table but quote_details, which a request holds whole
  * whatever the sheets hide, and the columns of quote_details the quote store keeps alone.
- * Each table's key column stays whatever the sheets hide, with its row for each value and its
- * allowed values, so `presetRows` and `keyTable` read the table as the server does.
+ * Each table's index stays whatever the sheets hide, an index of values with its allowed
+ * values, as the server sends it, so `presetRows` reads the table as the server does.
  */
 export function quotedSchema(schema: FormSchema, hidden: ReadonlySet<string>): FormSchema {
   return withoutColumns(schema, new Set([...[...hidden].filter((key) => !ofDetails(key)), ...STORE_ONLY_KEYS]))
@@ -817,13 +829,28 @@ const NO_COLUMNS: ReadonlySet<string> = new Set()
 /**
  * Whether a quote has anything typed to price or save, as the server counts it: a value in
  * a column the sheets show, other than a column the app sets (`locked`, by `columnKey`),
- * the index, the column giving a table its rows (`withPresetRows`) and the default a new
- * quote starts a column with (`quoteTyped`). Preview and the app's pricing and its Save
- * all ask this one rule, which the server's is held to by a shared fixture.
+ * a numbered index, an index of values (`withPresetRows`) and the default a new quote
+ * starts a column with (`quoteTyped`), a typed index's value counting. Preview and the
+ * app's pricing and its Save all ask this one rule, which the server's is held to by a
+ * shared fixture.
  */
 export function quoteEligible(form: FormSpec, values: RowsByTable, locked: ReadonlySet<string> = NO_COLUMNS): boolean {
   const { hidden } = sheetVisibility(form, values)
-  return quoteTyped(withoutColumns(quotedSchema(form.schema, hidden), locked), withPresetRows(form.schema, values))
+  return quoteTyped(form.schema, withPresetRows(form.schema, values), (table, column) => {
+    const key = columnKey(table.name, column.name)
+    return !locked.has(key) && !STORE_ONLY_KEYS.has(key)
+      && (ofDetails(key) || column.index !== null || !hidden.has(key))
+  })
+}
+
+/**
+ * A quote's typed indexes' problems (`typedIndexProblems`), its rows read as the server reads
+ * them, a column the sheets hide for these values holding nothing: while one stands, Preview
+ * and the app price nothing and the app saves nothing, as the server refuses both.
+ */
+export function quoteIndexProblems(form: FormSpec, values: RowsByTable): IndexProblem[] {
+  const { hidden } = sheetVisibility(form, values)
+  return typedIndexProblems(form.schema, values, (table, column) => !hidden.has(columnKey(table.name, column.name)))
 }
 
 /**
@@ -924,16 +951,16 @@ export function neverShown(spec: FormSpec): ReadonlyMap<string, SingleCondition>
 
 /**
  * The columns of a table a condition can test, its inputs then its outputs: an input, a
- * many-row table's but its index, which nothing is typed into, and an output, tested on the
- * price; never the quote's identity, which the sheets do not show.
+ * many-row table's but a numbered index, which only numbers its rows, and an output, tested
+ * on the price; never the quote's identity, which the sheets do not show.
  */
-export const testableColumns = (table: SchemaTable): SchemaColumn[] => sheetColumns(table).filter((column) => !column.index)
+export const testableColumns = (table: SchemaTable): SchemaColumn[] => sheetColumns(table).filter((column) => column.index !== "numbered")
 
-/** The columns of a many-row table a total takes: its number columns but the index. */
+/** The columns of a many-row table a total takes: its number columns but a numbered index. */
 export const totalColumns = (table: SchemaTable): SchemaColumn[] =>
   testableColumns(table).filter((column) => column.type === "int" || column.type === "float")
 
-/** A new test of a row for the editor: the table's first column but the index, its type's first test and no value; null without one. */
+/** A new test of a row for the editor: the table's first column but a numbered index, its type's first test and no value; null without one. */
 export function newRowTest(table: SchemaTable): RowTest | null {
   const column = testableColumns(table)[0]
   return column === undefined ? null : { column: column.name, op: testsFor(column.type)[0], values: [], field: null, days: 0 }
@@ -948,16 +975,16 @@ export interface TestField {
 /**
  * The fields a test of `column` in table `tableId` may be tested against, of its type and
  * never itself: for a one-row table's condition, the one-row tables' inputs; for a test of a
- * row, the other inputs of its table but the index. An output, tested on the price, is
- * tested against values typed alone.
+ * row, the other inputs of its table but a numbered index. An output, tested on the price,
+ * is tested against values typed alone.
  */
 export function testFields(schema: FormSchema, tableId: string, column: SchemaColumn): TestField[] {
   const own = tableOf(schema, tableId)
   if (own === undefined || isOutputColumn(own, column)) return []
   const tables = own.rows === "many" ? [own] : schema.tables.filter((table) => table.rows === "one")
   return tables.flatMap((table) =>
-    typedInputs(table)
-      .filter((other) => other.type === column.type && !(table.name === tableId && other.name === column.name))
+    ownInputs(table)
+      .filter((other) => other.index !== "numbered" && other.type === column.type && !(table.name === tableId && other.name === column.name))
       .map((other) => ({ table, column: other })),
   )
 }

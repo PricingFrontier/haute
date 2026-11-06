@@ -1229,6 +1229,8 @@ class TestOutputSchemaConservativeFallback:
             "side": "input",
             "port": "quotes_input",
             "rows": rows,
+            "key": "segment" if rows == "many" else None,
+            "null_key": "sample" if rows == "many" else None,
             "columns": [{"name": "segment", "type": "str"}, {"name": "premium", "type": "float"}],
         }
         conservative = _conservative_graph()

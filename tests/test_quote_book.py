@@ -6,12 +6,13 @@ environment names (tests/_store_servers.py)."""
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -65,7 +66,7 @@ FORM = with_quote_details(
                         "name": "vehicles",
                         "rows": "many",
                         "inputs": [
-                            column("row_number", "int", index=True),
+                            column("row_number", "int", index="numbered"),
                             column("reg"),
                             column("value", "float", label="Value", required=True),
                             column("garaged", "bool"),
@@ -83,7 +84,11 @@ FORM = with_quote_details(
                     {
                         "name": "vehicle_premium",
                         "rows": "many",
-                        "outputs": [column("reg"), column("premium", "float")],
+                        "outputs": [
+                            column("line", "int", index="numbered"),
+                            column("reg"),
+                            column("premium", "float"),
+                        ],
                     },
                 ]
             },
@@ -158,8 +163,9 @@ def document(total: Any = 512.4, referred: Any = False) -> dict[str, Any]:
     return {
         "premium": {"total_premium": total, "referred": referred},
         "vehicle_premium": [
-            {"reg": "AB12 CDE", "premium": 300.0},
-            {"reg": "XY34 ZZZ", "premium": 212.4},
+            # Numbered by the Workbench Output in the order it answers them.
+            {"line": 1, "reg": "AB12 CDE", "premium": 300.0},
+            {"line": 2, "reg": "XY34 ZZZ", "premium": 212.4},
         ],
     }
 
@@ -204,7 +210,7 @@ def test_a_saved_quote_is_rows_of_the_forms_own_tables_read_with_plain_sql(
     # Each vehicle under its row on the sheet, the blank row between them counted; an
     # unticked box in a filled row is false, as the request priced it.
     assert sql(
-        store, "SELECT table_index, reg, value, garaged, mileage FROM vehicles ORDER BY table_index"
+        store, "SELECT row_number, reg, value, garaged, mileage FROM vehicles ORDER BY row_number"
     ) == [(1, "AB12 CDE", 12500.0, 1, None), (3, "XY34 ZZZ", 8000.0, 0, 9007199254740993)]
     # The priced outputs sit beside the inputs, joined on the quote's identity.
     assert sql(
@@ -212,7 +218,8 @@ def test_a_saved_quote_is_rows_of_the_forms_own_tables_read_with_plain_sql(
         "SELECT d.insured, p.total_premium FROM quote_details d JOIN premium p "
         "ON p.quote_reference = d.quote_reference AND p.quote_option = d.quote_option",
     ) == [("Acme Haulage", 512.4)]
-    assert sql(store, "SELECT table_index, reg FROM vehicle_premium ORDER BY table_index") == [
+    # A table of outputs alone keyed by its index, renamed, numbered in the pricing's order.
+    assert sql(store, "SELECT line, reg FROM vehicle_premium ORDER BY line") == [
         (1, "AB12 CDE"),
         (2, "XY34 ZZZ"),
     ]
@@ -631,8 +638,12 @@ def test_a_preset_row_whose_value_is_no_longer_allowed_is_named_as_dropped(
                                 "name": "perils",
                                 "rows": "many",
                                 "inputs": [
-                                    column("row_number", "int", index=True),
-                                    column("peril", options=options, row_per_value=True),
+                                    column(
+                                        "peril",
+                                        options=options,
+                                        index="values",
+                                        options_source={"file": "perils.csv", "column": "peril"},
+                                    ),
                                     column("limit", "float"),
                                 ],
                             }
@@ -679,7 +690,7 @@ def _identity(quote: Any) -> tuple[str, int]:
 #: A quote's equipment and perils as tables of inputs and outputs, each item's or peril's
 #: premium priced onto its own row: the equipment keyed by its index renamed item_number,
 #: the perils by the peril giving each row; a one-row table of both blocks; and a table of
-#: outputs alone, kept by table_index as before.
+#: outputs alone, kept by its index in the pricing's order.
 BLOCKS = with_quote_details(
     FormSpec.model_validate(
         {
@@ -690,7 +701,7 @@ BLOCKS = with_quote_details(
                         "name": "equipment",
                         "rows": "many",
                         "inputs": [
-                            column("item_number", "int", index=True),
+                            column("item_number", "int", index="numbered"),
                             column("item", label="Item"),
                             column("value", "float"),
                         ],
@@ -700,8 +711,12 @@ BLOCKS = with_quote_details(
                         "name": "perils",
                         "rows": "many",
                         "inputs": [
-                            column("row_number", "int", index=True),
-                            column("peril", options=["Fire", "Flood"], row_per_value=True),
+                            column(
+                                "peril",
+                                options=["Fire", "Flood"],
+                                index="values",
+                                options_source={"file": "perils.csv", "column": "peril"},
+                            ),
                             column("limit", "float"),
                         ],
                         "outputs": [column("peril_premium", "float")],
@@ -715,7 +730,11 @@ BLOCKS = with_quote_details(
                     {
                         "name": "bands",
                         "rows": "many",
-                        "outputs": [column("band"), column("rate", "float")],
+                        "outputs": [
+                            column("band_no", "int", index="numbered"),
+                            column("band"),
+                            column("rate", "float"),
+                        ],
                     },
                 ]
             },
@@ -747,7 +766,10 @@ def blocks_document(**tables: Any) -> dict[str, Any]:
             {"peril": "Fire", "peril_premium": 7.5},
         ],
         "pricing": {"charged": 42.0},
-        "bands": [{"band": "B", "rate": 2.0}, {"band": "A", "rate": 1.0}],
+        "bands": [
+            {"band_no": 1, "band": "B", "rate": 2.0},
+            {"band_no": 2, "band": "A", "rate": 1.0},
+        ],
     }
     return {**base, **tables}
 
@@ -764,6 +786,41 @@ def blocks(store: Target) -> Iterator[QuoteBook]:
         sign_in=store.sign_in,
     ) as opened:
         yield opened
+
+
+def test_integer_params_indexes_reopen_without_losing_their_rows_values(store: Target) -> None:
+    spec = BLOCKS.model_copy(deep=True)
+    perils = next(table for table in spec.data_schema.tables if table.name == "perils")
+    assert perils.index is not None
+    perils.index.type = "int"
+    perils.index.options = ["02", "01"]
+    store.make(spec)
+    with open_book(
+        store.url,
+        spec,
+        environment=store.environment,
+        haute_version=HAUTE,
+        clock=Clock(),
+        sign_in=store.sign_in,
+    ) as book:
+        values = {"perils": [{"peril": "02", "limit": "200"}, {"peril": "01", "limit": "100"}]}
+        book.create(operation=op(), actor=ANA, at=book.now(), reference="I-1", values=values)
+
+        expected = [{"peril": "2", "limit": "200"}, {"peril": "1", "limit": "100"}]
+        opened = book.read("I-1", 1)
+        assert opened.values["perils"] == expected
+        assert opened.dropped == []
+        book.save(
+            "I-1",
+            1,
+            operation=op(),
+            version=opened.quote.version,
+            actor=ANA,
+            values=opened.values,
+            priced=None,
+            at=book.now(),
+        )
+        assert book.read("I-1", 1).values["perils"] == expected
 
 
 def save_blocks(book: QuoteBook, document: dict[str, Any] | None) -> Any:
@@ -791,18 +848,16 @@ def test_a_priced_tables_outputs_are_written_on_its_input_rows_by_key(
     # own outputs, found by its key whatever order the pricing gave them in.
     assert sql(
         store,
-        "SELECT table_index, item_number, item, value, premium, loading FROM equipment "
-        "ORDER BY table_index",
-    ) == [(1, 1, "Digger", 10.0, 10.0, None), (3, 3, "Crane", 30.0, 30.0, 1.5)]
-    assert sql(
-        store, "SELECT table_index, peril, peril_premium FROM perils ORDER BY table_index"
-    ) == [
-        (1, "Fire", 7.5),
-        (2, "Flood", 5.0),
+        "SELECT item_number, item, value, premium, loading FROM equipment ORDER BY item_number",
+    ) == [(1, "Digger", 10.0, 10.0, None), (3, "Crane", 30.0, 30.0, 1.5)]
+    # The perils are keyed by their index of values, each peril's row its own.
+    assert sql(store, "SELECT peril, peril_premium FROM perils ORDER BY peril") == [
+        ("Fire", 7.5),
+        ("Flood", 5.0),
     ]
     assert sql(store, "SELECT discount, charged FROM pricing") == [(0.1, 42.0)]
-    # A table of outputs alone is kept by table_index as the pricing gave its rows.
-    assert sql(store, "SELECT table_index, band, rate FROM bands ORDER BY table_index") == [
+    # A table of outputs alone is kept by its index as the pricing gave its rows.
+    assert sql(store, "SELECT band_no, band, rate FROM bands ORDER BY band_no") == [
         (1, "B", 2.0),
         (2, "A", 1.0),
     ]
@@ -825,12 +880,12 @@ def test_an_input_row_the_pricing_skipped_or_left_without_a_value_holds_no_outpu
 
     # A value that is not finite is kept empty, as the response leaves it out.
     assert sql(
-        store, "SELECT table_index, premium, loading FROM equipment ORDER BY table_index"
+        store, "SELECT item_number, premium, loading FROM equipment ORDER BY item_number"
     ) == [
         (1, None, None),
         (3, 30.0, None),
     ]
-    assert sql(store, "SELECT peril, peril_premium FROM perils ORDER BY table_index") == [
+    assert sql(store, "SELECT peril, peril_premium FROM perils ORDER BY peril") == [
         ("Fire", 7.5),
         ("Flood", None),
     ]
@@ -848,7 +903,7 @@ def test_an_unpriced_save_of_a_table_of_both_blocks_holds_no_outputs(
     save_blocks(blocks, None)
 
     assert sql(
-        store, "SELECT table_index, item, premium, loading FROM equipment ORDER BY table_index"
+        store, "SELECT item_number, item, premium, loading FROM equipment ORDER BY item_number"
     ) == [(1, "Digger", None, None), (3, "Crane", None, None)]
     assert sql(store, "SELECT discount, charged FROM pricing") == [(0.1, None)]
     assert sql(store, "SELECT * FROM bands") == []
@@ -888,8 +943,8 @@ def test_a_reopened_quote_answers_the_outputs_and_the_cells_it_was_saved_with(
             ],
             "pricing": {**identity, "charged": 42.0},
             "bands": [
-                {**identity, "band": "B", "rate": 2.0},
-                {**identity, "band": "A", "rate": 1.0},
+                {**identity, "band_no": 1, "band": "B", "rate": 2.0},
+                {**identity, "band_no": 2, "band": "A", "rate": 1.0},
             ],
         }
     )
@@ -969,3 +1024,259 @@ def test_a_quotes_activity_names_who_did_what_and_the_quotes_made_from_it(book: 
     # The people quotes are with, or were made, saved or changed by: a note's author alone
     # is none of them.
     assert book.people() == [ANA]
+
+
+# ── The index's kinds ──────────────────────────────────────────────────────
+
+
+#: Sites keyed by a typed Text index the underwriter names, each priced on its row; items
+#: numbered by a Text index; and products, a table of outputs alone keyed by the product
+#: the pricing gives.
+KINDS = with_quote_details(
+    FormSpec.model_validate(
+        {
+            "name": PROJECT,
+            "schema": {
+                "tables": [
+                    {
+                        "name": "sites",
+                        "rows": "many",
+                        "inputs": [column("site", index="typed"), column("value", "float")],
+                        "outputs": [column("site_premium", "float")],
+                    },
+                    {
+                        "name": "items",
+                        "rows": "many",
+                        "inputs": [column("item_no", index="numbered"), column("item")],
+                    },
+                    {
+                        "name": "products",
+                        "rows": "many",
+                        "outputs": [
+                            column("product", index="typed"),
+                            column("product_premium", "float"),
+                        ],
+                    },
+                ]
+            },
+            "pages": FORM.model_dump(by_alias=True)["pages"],
+        }
+    )
+)
+
+
+@pytest.fixture
+def kinds(store: Target) -> Iterator[QuoteBook]:
+    store.make(KINDS)
+    with open_book(
+        store.url,
+        KINDS,
+        environment=store.environment,
+        haute_version=HAUTE,
+        clock=Clock(),
+        sign_in=store.sign_in,
+    ) as opened:
+        yield opened
+
+
+def test_a_typed_index_keys_its_rows_and_they_reopen_in_its_order(
+    kinds: QuoteBook, store: Target
+) -> None:
+    typed = {
+        "sites": [
+            {"site": "York", "value": "3"},
+            {"site": "Leeds"},
+            {"site": "Bath", "value": "1"},
+        ],
+        "items": [{"item": "a"} for _ in range(10)],
+    }
+    quote = kinds.create(operation=op(), actor=ANA, at=kinds.now(), reference="T-1", values=typed)
+    document = {
+        "sites": [
+            {"site": "Bath", "site_premium": 10.0},
+            {"site": "York", "site_premium": 30.0},
+            {"site": "Leeds", "site_premium": 20.0},
+        ],
+        "products": [
+            {"product": "Fire", "product_premium": 5.0},
+            {"product": "Flood", "product_premium": 6.0},
+        ],
+    }
+    kinds.save(
+        "T-1",
+        1,
+        operation=op(),
+        version=quote.quote.version,
+        actor=ANA,
+        values=typed,
+        priced=PricedOutputs(RELEASE, document),
+        at=kinds.now(),
+    )
+
+    # Stored by its value, a row holding its typed index alone among them, each with its
+    # own outputs; a numbered Text index by each row's number as text; a table of outputs
+    # alone by the product the pricing gave.
+    assert sql(store, "SELECT site, value, site_premium FROM sites ORDER BY site") == [
+        ("Bath", 1.0, 10.0),
+        ("Leeds", None, 20.0),
+        ("York", 3.0, 30.0),
+    ]
+    assert sql(store, "SELECT product, product_premium FROM products ORDER BY product") == [
+        ("Fire", 5.0),
+        ("Flood", 6.0),
+    ]
+    opened = kinds.read("T-1", 1)
+    # Reopened, the typed rows in their index's order, nothing else keeping the order typed;
+    # the numbered Text rows by number, "10" after "9".
+    assert [row["site"] for row in opened.values["sites"]] == ["Bath", "Leeds", "York"]
+    assert len(opened.values["items"]) == 10
+    stored = sql(store, "SELECT item_no FROM items")
+    assert sorted(value for (value,) in stored) == sorted(str(n) for n in range(1, 11))
+    assert opened.outputs is not None
+    assert [row["product"] for row in opened.outputs["products"]] == ["Fire", "Flood"]
+
+
+@pytest.mark.parametrize(
+    ("sites", "says"),
+    [
+        pytest.param(
+            [{"site": "Leeds"}, {"value": "5"}], "sites's row 2 holds no site", id="blank"
+        ),
+        pytest.param(
+            [{"site": "Leeds"}, {"site": "Leeds "}],
+            "sites's rows 1 and 2 hold site \"Leeds\"; each row's site is its own",
+            id="twice",
+        ),
+        pytest.param(
+            [{"site": "x" * 256}],
+            "sites's row 1 holds a site longer than 255 characters",
+            id="too long",
+        ),
+    ],
+)
+def test_a_save_holding_a_typed_index_that_keys_no_row_of_its_own_is_refused(
+    kinds: QuoteBook, store: Target, sites: list[dict[str, Any]], says: str
+) -> None:
+    with pytest.raises(QuoteValuesError, match=re.escape(says)) as refused:
+        kinds.create(
+            operation=op(), actor=ANA, at=kinds.now(), reference="T-2", values={"sites": sites}
+        )
+
+    assert {(cell.table, cell.column) for cell in refused.value.cells} == {("sites", "site")}
+    assert sql(store, "SELECT site FROM sites") == []
+
+
+def test_a_numbered_index_reopens_a_value_no_number_after_the_numbered_rows(
+    kinds: QuoteBook, store: Target
+) -> None:
+    kinds.create(
+        operation=op(),
+        actor=ANA,
+        at=kinds.now(),
+        reference="T-3",
+        values={"items": [{"item": "a"}, {"item": "b"}]},
+    )
+    # Rows a typed index saved before the index was numbered: "01" beside "1", and a name.
+    store.run(
+        *(
+            "INSERT INTO items (quote_reference, quote_option, item_no, item) "
+            f"VALUES ('T-3', 1, '{item_no}', '{item}')"
+            for item_no, item in (("01", "zero-one"), ("Leeds", "named"))
+        )
+    )
+
+    opened = kinds.read("T-3", 1).values["items"]
+
+    # "1" keeps place 1 whichever was stored first; the others follow, none lost.
+    assert [row.get("item") for row in opened] == ["a", "b", "zero-one", "named"]
+
+
+@pytest.mark.parametrize("kind", ["int", "str"])
+def test_switching_a_sparse_typed_index_to_numbered_refuses_gap_expansion(
+    store: Target, kind: Literal["int", "str"]
+) -> None:
+    typed = KINDS.model_copy(deep=True)
+    sites = next(t for t in typed.data_schema.tables if t.name == "sites")
+    assert sites.index is not None
+    sites.index.type = kind
+    store.make(typed)
+    with open_book(
+        store.url, typed, environment=store.environment, haute_version=HAUTE, sign_in=store.sign_in
+    ) as book:
+        book.create(
+            operation=op(),
+            actor=ANA,
+            at=book.now(),
+            reference="SPARSE",
+            values={"sites": [{"site": "100000", "value": "12"}]},
+        )
+    before = store.read("SELECT site, value FROM sites")
+    sites.index.index = "numbered"
+    with open_book(
+        store.url, typed, environment=store.environment, haute_version=HAUTE, sign_in=store.sign_in
+    ) as book:
+        with pytest.raises(QuoteStoreError, match=r"sites.site.*99,999.*10,000.*Typed"):
+            book.read("SPARSE", 1)
+    assert store.read("SELECT site, value FROM sites") == before
+
+
+def test_numbered_grid_gap_limit_is_checked_on_save_and_does_not_limit_populated_rows(
+    kinds: QuoteBook,
+) -> None:
+    gap_rows = [{} for _ in range(10000)] + [{"item": "last"}]
+    quote = kinds.create(
+        operation=op(), actor=ANA, at=kinds.now(), reference="GAPS", values={"items": gap_rows}
+    )
+    assert kinds.read("GAPS", 1).values["items"] == gap_rows
+    with pytest.raises(QuoteStoreError, match=r"items.item_no.*10,001.*10,000"):
+        kinds.save(
+            "GAPS",
+            1,
+            operation=op(),
+            version=quote.quote.version,
+            actor=ANA,
+            values={"items": [{}, *gap_rows]},
+            priced=None,
+            at=kinds.now(),
+        )
+    assert kinds.read("GAPS", 1).values["items"] == gap_rows
+    dense = [{"item": "held"} for _ in range(10002)]
+    kinds.save(
+        "GAPS",
+        1,
+        operation=op(),
+        version=quote.quote.version,
+        actor=ANA,
+        values={"items": dense},
+        priced=None,
+        at=kinds.now(),
+    )
+    assert kinds.read("GAPS", 1).values["items"] == dense
+
+
+@pytest.mark.parametrize("value", ["x" * 255, "\U00020000" * 183])
+def test_text_index_portable_length_boundary_saves_and_reopens(
+    kinds: QuoteBook, value: str
+) -> None:
+    kinds.create(
+        operation=op(),
+        actor=ANA,
+        at=kinds.now(),
+        reference="\U00020000" * 40,
+        values={"sites": [{"site": value}]},
+    )
+    assert kinds.read("\U00020000" * 40, 1).values["sites"] == [{"site": value}]
+
+
+def test_a_text_index_exceeding_the_utf16_budget_is_refused_without_writes(
+    kinds: QuoteBook, store: Target
+) -> None:
+    with pytest.raises(QuoteValuesError, match="longer than 366 UTF-16 code units"):
+        kinds.create(
+            operation=op(),
+            actor=ANA,
+            at=kinds.now(),
+            reference="WIDE",
+            values={"sites": [{"site": "\U00020000" * 184}]},
+        )
+    assert store.read("SELECT site FROM sites") == []

@@ -97,14 +97,12 @@ export const blankColumn = (name: string, type: SchemaColumn["type"]): SchemaCol
   type,
   label: "",
   group: "",
-  key: false,
   required: false,
   min: null,
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   default_value: "",
@@ -145,17 +143,37 @@ export const blockOf = (table: Pick<SchemaTable, "outputs">, column: Pick<Schema
 /** A table's inputs but the quote's identity Haute leads them with (`own_inputs`). */
 export const ownInputs = (table: Blocks): SchemaColumn[] => table.inputs.slice(blockIdentity(table.name, table.inputs))
 
-/** A table's outputs but the quote's identity Haute leads them with (`own_outputs`). */
+/** A table's outputs but the quote's identity Haute leads them with, a table of outputs alone's index among them (`own_outputs`). */
 export const ownOutputs = (table: Blocks): SchemaColumn[] => table.outputs.slice(blockIdentity(table.name, table.outputs))
 
-/** A table's own inputs but the index: what an underwriter types into it (`typed_inputs`). */
+/** How a many-row table's index gets its values: numbered by Haute, typed, or a row for each of its allowed values (`IndexKind`). */
+export type IndexKind = NonNullable<SchemaColumn["index"]>
+
+/**
+ * A table's index, the one column after the quote's identity keying a many-row table's rows,
+ * whatever its kind: among its outputs while it is a table of outputs alone, else among its
+ * inputs; null for a one-row table (`SchemaTable.index`).
+ */
+export const tableIndex = (table: Pick<SchemaTable, "inputs" | "outputs">): SchemaColumn | null =>
+  tableColumns(table).find((column) => column.index !== null) ?? null
+
+/** A table's own inputs but the index, whatever its kind: what an underwriter types into it beside the rows' keys (`typed_inputs`). */
 export const typedInputs = (table: Blocks): SchemaColumn[] => ownInputs(table).filter((column) => !column.index)
+
+/** A table's own outputs but the index: what pricing fills (`priced_outputs`). */
+export const pricedOutputs = (table: Blocks): SchemaColumn[] => ownOutputs(table).filter((column) => !column.index)
 
 /** Whether a table is an input table: it holds an input an underwriter types (`has_inputs`). */
 export const hasInputs = (table: Blocks): boolean => typedInputs(table).length > 0
 
-/** Whether a table is an output table: it holds an output of its own (`has_outputs`). */
-export const hasOutputs = (table: Blocks): boolean => ownOutputs(table).length > 0
+/** Whether a table is an output table: it holds an output pricing fills, the index never one (`has_outputs`). */
+export const hasOutputs = (table: Blocks): boolean => pricedOutputs(table).length > 0
+
+/**
+ * Whether a table is one of outputs alone: it holds an output pricing fills and no input an
+ * underwriter types, so a many-row one holds its index among its outputs (`outputs_alone`).
+ */
+export const outputsAlone = (table: Blocks): boolean => hasOutputs(table) && !hasInputs(table)
 
 /**
  * How many of the quote's identity columns lead `table`'s first block: both when the first
@@ -182,9 +200,10 @@ const identityColumns = (): SchemaColumn[] => IDENTITY_COLUMNS.map(([name, type]
 /**
  * `table` with the quote's identity at the head of its first block, as the server's
  * before-validator places it (`_gives_every_table_the_quote_identity`): taken from the head of
- * either block, then given at the head of its inputs while it has inputs of its own or no
- * outputs, else at the head of its outputs; a table holding a column of its own under either
- * name goes without it, and quote_details is left as it is. The table itself while nothing moves.
+ * either block, then given at the head of its inputs while it has inputs of its own (its
+ * index among them) or no outputs, else at the head of its outputs; a table holding a column
+ * of its own under either name goes without it, and quote_details is left as it is. The table
+ * itself while nothing moves.
  */
 export function withIdentityPlaced<T extends Blocks>(table: T): T {
   if (table.name === QUOTE_DETAILS_NAME) return table

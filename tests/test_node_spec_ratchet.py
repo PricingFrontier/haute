@@ -213,6 +213,12 @@ SINGLE_TYPE_ENDPOINTS: Mapping[tuple[str, str], tuple[str, str]] = {
 #: Node-type-looking strings that are not about node types:
 #: ``(module, qualname, value, context) -> (count, reason)``.
 NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
+    (
+        "_workbench_tables.py",
+        "WorkbenchTable._holds_its_port_and_key",
+        "output",
+        "compare:self.side",
+    ): (1, "a workbench table's output side, not a pipeline node type"),
     ("projection.py", "_node_selector_roots", "polars", "compare:node.module"): (
         1,
         "the polars module name in an import",

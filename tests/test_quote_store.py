@@ -47,7 +47,7 @@ POLICY = {"name": "policy", "rows": "one", "inputs": [column("region")]}
 VEHICLES = {
     "name": "vehicles",
     "rows": "many",
-    "inputs": [column("vehicle", "int", index=True), column("reg"), column("value", "float")],
+    "inputs": [column("vehicle", "int", index="numbered"), column("reg"), column("value", "float")],
 }
 
 
@@ -132,15 +132,17 @@ def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
         "DROP TABLE policy",
         "DROP TABLE vehicles",
         "CREATE TABLE vehicles (quote_reference VARCHAR(40) NOT NULL, quote_option BIGINT "
-        "NOT NULL, table_index BIGINT NOT NULL, vehicle BIGINT, reg TEXT, value TEXT, "
+        "NOT NULL, vehicle BIGINT, reg TEXT, value TEXT, "
         "PRIMARY KEY (quote_reference, quote_option))",
     )
 
+    # The index keys the table's rows with the identity, so it never takes a null.
     assert _refusal(url).differences == [
         "the table policy is missing",
+        "vehicles.vehicle takes a null, unlike the store's",
         "vehicles.value holds string, not float",
         "vehicles is keyed by quote_reference, quote_option, not quote_reference, quote_option, "
-        "table_index",
+        "vehicle",
         "vehicles does not refer to its quote's quote_details row",
     ]
 
@@ -184,7 +186,7 @@ def test_foreign_keys_are_held_on_every_connection(url: str) -> None:
         with pytest.raises(Exception, match="FOREIGN KEY"), writing(engine) as connection:
             connection.execute(
                 text(
-                    "INSERT INTO vehicles (quote_reference, quote_option, table_index) "
+                    "INSERT INTO vehicles (quote_reference, quote_option, vehicle) "
                     "VALUES ('NONE', 1, 1)"
                 )
             )

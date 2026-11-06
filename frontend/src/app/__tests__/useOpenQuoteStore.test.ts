@@ -27,6 +27,7 @@ import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { type QuotePricer } from "../../stores/useWorkbenchPricingStore"
 import { detailsTable, sectionedForm, sheetForm } from "../../workbench/__tests__/fixtures"
 import { basisOf } from "../../utils/sheetVisibility"
+import { setIndexKind } from "../../utils/workbenchForm"
 import { draftKey, readDraft, valuesKey, writeDraft, type PendingWrite } from "../quoteValues"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore, { openDraftKey, readOnlyReason } from "../useOpenQuoteStore"
@@ -126,6 +127,28 @@ describe("useOpenQuoteStore", () => {
     expect(body).toMatchObject({ form_revision: "rev-9", release: "rel-1", values: VALUES, shown: TABLES })
     expect(store()).toMatchObject({ saving: false, pending: null, base: 2 })
     expect(store().quote?.version).toBe(2)
+  })
+
+  it("does not send a save while a typed index is duplicated, then saves the corrected values", async () => {
+    form = setIndexKind(form, "equipment", "typed")
+    useAppStore.setState({ form })
+    useWorkbenchFormStore.setState({ form })
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }))
+    await store().openQuote("Q-000001", 1)
+    preview().setRows({ equipment: [{ row_number: "1", item: "Crane" }, { row_number: "1", item: "Truck" }] })
+
+    expect(await store().save()).toBeNull()
+    expect(saveAppQuote).not.toHaveBeenCalled()
+    expect(store().base).toBe(1)
+
+    preview().setCell("equipment", 1, "row_number", "2")
+    await store().save()
+    expect(saveAppQuote).toHaveBeenCalledOnce()
+    expect(vi.mocked(saveAppQuote).mock.calls[0][2].values.equipment).toEqual([
+      { row_number: "1", item: "Crane" }, { row_number: "2", item: "Truck" },
+    ])
+    expect(store().base).toBe(2)
   })
 
   it("saves a quote unpriced when its price is for other values, and says when the server's price moved", async () => {

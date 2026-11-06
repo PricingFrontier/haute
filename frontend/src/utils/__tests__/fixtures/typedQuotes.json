@@ -49,8 +49,7 @@
           "name": "perils",
           "rows": "many",
           "inputs": [
-            { "name": "line", "type": "int", "index": true },
-            { "name": "peril", "options": ["AOP", "EQ"], "row_per_value": true },
+            { "name": "peril", "options": ["AOP", "EQ"], "index": "values", "options_source": { "file": "perils.csv", "column": "peril" } },
             { "name": "peril_limit", "type": "float" }
           ],
           "outputs": []
@@ -65,11 +64,20 @@
           "name": "equipment",
           "rows": "many",
           "inputs": [
-            { "name": "row_number", "type": "int", "index": true },
+            { "name": "row_number", "type": "int", "index": "numbered" },
             { "name": "item" },
             { "name": "value", "type": "float" }
           ],
           "outputs": [{ "name": "premium", "type": "float" }]
+        },
+        {
+          "name": "sites",
+          "rows": "many",
+          "inputs": [
+            { "name": "site_name", "type": "str", "index": "typed" },
+            { "name": "site_value", "type": "float" }
+          ],
+          "outputs": []
         },
         {
           "name": "extras",
@@ -162,6 +170,30 @@
                 "fields": [{ "table": "equipment", "column": "item" }, { "table": "equipment", "column": "value" }, { "table": "equipment", "column": "premium" }]
               },
               {
+                "id": "w_sites_index",
+                "name": "w_sites_index",
+                "x": 760,
+                "y": 500,
+                "w": 480,
+                "h": 80,
+                "type": "tableInput",
+                "fields": [{ "table": "sites", "column": "site_name" }]
+              },
+              {
+                "id": "w_sites_value",
+                "name": "w_sites_value",
+                "x": 760,
+                "y": 560,
+                "w": 480,
+                "h": 80,
+                "type": "tableInput",
+                "fields": [{ "table": "sites", "column": "site_value" }],
+                "show_when": {
+                  "match": "all",
+                  "conditions": [{ "table": "policy", "column": "flood_cover", "op": "ticked", "values": [], "field": null, "days": 0 }]
+                }
+              },
+              {
                 "id": "w_on_inputs",
                 "name": "w_on_inputs",
                 "x": 760,
@@ -250,6 +282,55 @@
     { "name": "a value a condition on a table's inputs hides, nothing typed there", "values": { "extras": [{ "on_inputs": "x" }] }, "locked": [], "typed": false },
     { "name": "a value a condition on a table's outputs leaves shown: the price never decides what is priced", "values": { "extras": [{ "on_outputs": "x" }] }, "locked": [], "typed": true },
     { "name": "a value a condition naming inputs and outputs hides: it never holds", "values": { "extras": [{ "on_both": "x" }] }, "locked": [], "typed": false },
-    { "name": "a value a count without tests hides while its table has no typed row", "values": { "extras": [{ "on_count": "x" }] }, "locked": [], "typed": false }
+    { "name": "a value a count without tests hides while its table has no typed row", "values": { "extras": [{ "on_count": "x" }] }, "locked": [], "typed": false },
+    {
+      "name": "a typed index alone while every ordinary input in its table is hidden",
+      "values": { "sites": [{ "site_name": "Leeds" }] },
+      "locked": [],
+      "typed": true,
+      "index_problems": []
+    },
+    {
+      "name": "duplicate typed indexes while every ordinary input in their table is hidden",
+      "values": { "policy": [{ "state": "NY" }], "sites": [{ "site_name": "Leeds" }, { "site_name": "Leeds" }] },
+      "locked": [],
+      "typed": true,
+      "index_problems": ["sites's rows 1 and 2 hold site_name \"Leeds\"; each row's site_name is its own"]
+    },
+    {
+      "name": "a blank typed index beside an ordinary input that is hidden",
+      "values": { "sites": [{ "site_value": "100" }] },
+      "locked": [],
+      "typed": false,
+      "index_problems": []
+    },
+    {
+      "name": "a typed index of 183 supplementary Unicode characters",
+      "values": {
+        "sites": [
+          {
+            "site_name": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+          }
+        ]
+      },
+      "locked": [],
+      "typed": true,
+      "index_problems": []
+    },
+    {
+      "name": "a typed index of 184 supplementary Unicode characters",
+      "values": {
+        "sites": [
+          {
+            "site_name": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+          }
+        ]
+      },
+      "locked": [],
+      "typed": true,
+      "index_problems": [
+        "sites's row 1 holds a site_name longer than 366 UTF-16 code units"
+      ]
+    }
   ]
 }

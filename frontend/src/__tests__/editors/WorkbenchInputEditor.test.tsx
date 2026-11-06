@@ -21,6 +21,8 @@ const inputSide = (name: string, rows: WorkbenchTable["rows"], columns: Workbenc
   columns,
   key,
   null_key: key === null ? null : 1,
+  index_kind: null,
+  index_values: [],
 })
 const tables: WorkbenchTable[] = [
   inputSide("policy_details", "one", [column("state", "str"), column("inception_date", "date")]),

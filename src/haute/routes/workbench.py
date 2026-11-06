@@ -30,6 +30,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._git_lock import repository_mutation
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._workbench_app import ResolvedRelease, resolve_release
@@ -48,6 +49,7 @@ from haute._workbench_folder import (
 from haute._workbench_form import FormDocument, FormSpec, WorkbenchFormError, with_quote_details
 from haute._workbench_params import read_param_file
 from haute._workbench_tables import (
+    WorkbenchTable,
     WorkbenchTablesError,
     input_tables,
     output_tables,
@@ -137,6 +139,16 @@ async def _enabled_config() -> WorkbenchConfig:
     return config
 
 
+def _browser_table(table: WorkbenchTable) -> WorkbenchTable:
+    """Match preview rows' exact integer wire encoding without retyping pipeline configs."""
+    return table.model_copy(
+        update={
+            "null_key": to_json_safe(table.null_key),
+            "index_values": to_json_safe(table.index_values),
+        }
+    )
+
+
 def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
     """The tables, sample and response tables of *spec*, holding Haute's ``quote_details``
     as every form read or saved does, the tables checked as the pipeline's, and the columns
@@ -152,9 +164,9 @@ def _tables_response(spec: FormSpec) -> WorkbenchTablesResponse:
     # Not checked against the tables here: a sample that doesn't fit fails the previews
     # that read it, and never stops the tables updating.
     return WorkbenchTablesResponse(
-        tables=list(tables.tables),
-        sample=tables.sample,
-        response_tables=list(tables.response_tables),
+        tables=[_browser_table(table) for table in tables.tables],
+        sample=to_json_safe(tables.sample),
+        response_tables=[_browser_table(table) for table in tables.response_tables],
         store_columns={
             table_name: [WorkbenchStoreColumn(name=name, kind=kind) for name, kind in kept]
             for table_name, kept in store_columns(spec).items()

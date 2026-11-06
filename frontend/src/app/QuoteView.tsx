@@ -18,7 +18,7 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { relativeTime } from "../utils/relativeTime"
-import { basisOf, quoteEligible } from "../utils/sheetVisibility"
+import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_NAME } from "../utils/workbenchForm"
 import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
@@ -204,6 +204,8 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
   const ready = status === "ready" && form !== null
   // As the server counts typing: what the sheets show, the details the app sets and the defaults aside.
   const typed = form !== null && quoteEligible(form, values, appSet)
+  // A typed index blank, repeated or too long keys no row, so the quote is not saved.
+  const unkeyed = typed ? (quoteIndexProblems(form, values)[0]?.message ?? null) : null
   const priced = form !== null && price !== null && price.basis === basisOf(form, values)
   const closed = reason !== null
   // The quote's name is its quote_details.quote_name cell, on the sheets or not.
@@ -215,7 +217,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
     : savedTables === null
   const nothingNew = quote !== null && !dirty && samePrice
 
-  const saveTitle = closed ? "This quote does not take changes as it is" : !typed ? "Type the quote first" : "Save the quote (Ctrl+S)"
+  const saveTitle = closed ? "This quote does not take changes as it is" : !typed ? "Type the quote first" : (unkeyed ?? "Save the quote (Ctrl+S)")
 
   // Whether each required field holds a value is the server's to say as the quote is marked final.
   const finalBlock = !editor
@@ -291,7 +293,7 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
         />
       </div>
       <ToolbarColumn role="group" aria-label="Save">
-        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
+        <button type="button" className="toolbar-fill toolbar-fill-save" onClick={() => void saveOpen()} disabled={!ready || working || closed || !typed || unkeyed !== null || nothingNew} title={nothingNew ? "Nothing has changed since the quote was saved" : saveTitle} data-testid="save-quote">
           {saving ? "Saving…" : "Save"}
         </button>
         {quote?.stage === "final" ? (

@@ -115,7 +115,7 @@ LAYERS = {
     "name": "layers",
     "rows": "many",
     "inputs": [
-        column("layer", "int", index=True),
+        column("layer", "int", index="numbered"),
         column("limit", "float"),
         column("layer_name"),
     ],
@@ -124,8 +124,12 @@ PERILS = {
     "name": "BR_Perils",
     "rows": "many",
     "inputs": [
-        column("row_number", "int", index=True),
-        column("peril", options=["Fire", "Flood"], row_per_value=True),
+        column(
+            "peril",
+            options=["Fire", "Flood"],
+            index="values",
+            options_source={"file": "perils.csv", "column": "peril"},
+        ),
         column("rate", "float"),
     ],
 }
@@ -521,8 +525,16 @@ MINIMAL_FILES = {
 def project(tmp_path: Path) -> Path:
     """A project whose workbench is enabled, its pipeline in ``rating/``, so its form folder
     is ``rating/workbench``, which nothing has written yet."""
-    root = tmp_path / "p"
+    return folder_project(tmp_path / "p")
+
+
+def folder_project(root: Path) -> Path:
+    """Enable a project with the params source the golden form's values index reads."""
     enable(root)
+    # The perils' index of values reads its values from its params file.
+    params = root / "rating" / "files" / "params"
+    params.mkdir(parents=True, exist_ok=True)
+    (params / "perils.csv").write_bytes(b"peril\nFire\nFlood\n")
     return root
 
 
@@ -767,8 +779,10 @@ def test_the_keys_that_say_what_a_thing_is_are_written_at_their_default_value_to
     assert json.loads(files["form.json"])["version"] == 3
 
 
-#: A schema of each kind of table, as the editor holds it: inputs alone, outputs alone, both
-#: blocks keyed by an index renamed item_number, and a table of neither.
+#: A schema of each kind of table, as the editor holds it: inputs alone, outputs alone with
+#: its index renamed band first among them, typed, the pricing giving it (as a table whose
+#: last typed input moved to its outputs is left), both blocks keyed by an index renamed
+#: item_number, and a table of neither.
 BLOCKS = {
     "name": "b",
     "schema": {
@@ -777,12 +791,18 @@ BLOCKS = {
             {
                 "name": "bands",
                 "rows": "many",
-                "outputs": [column("band", key=True), column("rate", "float", label="Rate")],
+                "outputs": [
+                    column("band", index="typed"),
+                    column("rate", "float", label="Rate"),
+                ],
             },
             {
                 "name": "equipment",
                 "rows": "many",
-                "inputs": [column("item_number", "int", index=True), column("value", "float")],
+                "inputs": [
+                    column("item_number", "int", index="numbered"),
+                    column("value", "float"),
+                ],
                 "outputs": [column("premium", "float", required=True)],
             },
             {"name": "empty"},
@@ -804,7 +824,7 @@ def test_a_table_of_each_kind_round_trips_its_blocks_through_its_file(project: P
         "{",
         '  "rows": "many",',
         '  "outputs": [',
-        '    {"name": "band", "type": "str", "key": true},',
+        '    {"name": "band", "type": "str", "index": "typed"},',
         '    {"name": "rate", "type": "float", "label": "Rate"}',
         "  ]",
         "}",
@@ -813,7 +833,7 @@ def test_a_table_of_each_kind_round_trips_its_blocks_through_its_file(project: P
         "{",
         '  "rows": "many",',
         '  "inputs": [',
-        '    {"name": "item_number", "type": "int", "index": true},',
+        '    {"name": "item_number", "type": "int", "index": "numbered"},',
         '    {"name": "value", "type": "float"}',
         "  ],",
         '  "outputs": [',
@@ -961,7 +981,7 @@ def test_a_managed_quote_details_column_keeps_its_number_format(project: Path) -
 def test_an_output_column_s_file_holds_no_rule_but_required(project: Path) -> None:
     files = files_of(FORM, project)
 
-    rules = {"min", "max", "options", "options_source", "row_per_value"}
+    rules = {"min", "max", "options", "options_source"}
     for written in json.loads(files["schema/pricing.json"])["outputs"]:
         assert not set(written) & (rules | {"default_value", "index"})
     # A form whose output column holds a rule is one the folder cannot hold: refused naming
@@ -1574,15 +1594,11 @@ def test_a_sample_keeps_its_rows_places_so_an_index_and_a_preset_give_them_as_be
     ]
     spec = read_form_document(config(project)).spec
     assert spec.sample == spec_of(FORM).sample
-    # The value after the empty row keeps its row's number in the indexed table, and its
-    # row's preset value in the table a column gives a row for each value, which the index
-    # numbers.
+    # The value after the empty row keeps its row's number in the numbered table, and its
+    # row's value in the table whose index gives a row for each value.
     priced = {
         "layers": [{"layer": 2, "limit": 1000000.0, "layer_name": "Primary"}],
-        "BR_Perils": [
-            {"row_number": 1, "peril": "Fire"},
-            {"row_number": 2, "peril": "Flood", "rate": 2.5},
-        ],
+        "BR_Perils": [{"peril": "Fire"}, {"peril": "Flood", "rate": 2.5}],
     }
     for quote in (sample_quote(spec_of(FORM)), sample_quote(spec)):
         assert {name: quote[name] for name in priced} == priced
@@ -1592,10 +1608,7 @@ def test_a_sample_keeps_its_rows_places_so_an_index_and_a_preset_give_them_as_be
         dropped["sample"][table] = dropped["sample"][table][1:]
     quote = sample_quote(spec_of(dropped))
     assert quote["layers"] == [{"layer": 1, "limit": 1000000.0, "layer_name": "Primary"}]
-    assert quote["BR_Perils"] == [
-        {"row_number": 1, "peril": "Fire", "rate": 2.5},
-        {"row_number": 2, "peril": "Flood"},
-    ]
+    assert quote["BR_Perils"] == [{"peril": "Fire", "rate": 2.5}, {"peril": "Flood"}]
 
 
 def test_a_sample_value_under_an_unknown_column_is_kept_through_a_save_and_priced_nowhere(
@@ -2061,9 +2074,7 @@ _OUTPUT_RULES = [
     ("max", "1"),
     ("options", '["a"]'),
     ("options_source", '{"file": "rates.csv", "column": "premium"}'),
-    ("row_per_value", "true"),
     ("default_value", '"1"'),
-    ("index", "true"),
 ]
 
 #: A table's file as version 2 of the folder wrote it: a role, and its columns in one list.
@@ -2737,7 +2748,11 @@ def _renamed_in_place(table: str, name: str, column: str = "") -> Callable[[dict
 NAME_REFUSALS = [
     pytest.param(
         lambda form: form["schema"]["tables"].append(
-            {"name": "Layers", "rows": "many", "inputs": []}
+            {
+                "name": "Layers",
+                "rows": "many",
+                "inputs": [column("row_number", "int", index="numbered")],
+            }
         ),
         ("layers", "Layers"),
         id="two tables of one name by case",

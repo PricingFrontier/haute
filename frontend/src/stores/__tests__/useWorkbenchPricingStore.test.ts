@@ -14,9 +14,9 @@ vi.mock("../../api/workbench", async (importOriginal) => ({
 
 import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchTable, WorkbenchTablesResponse } from "../../api/types"
 import { fetchWorkbenchFormTables } from "../../api/workbench"
-import { BLANK_THEME, COLLECTION_OPTIONS, withSampleCell } from "../../utils/workbenchForm"
+import { BLANK_THEME, COLLECTION_OPTIONS, setIndexKind, withSampleCell } from "../../utils/workbenchForm"
 import type { PricedSample } from "../../utils/workbenchTables"
-import { hiddenPerilsForm } from "../../workbench/__tests__/fixtures"
+import { hiddenPerilsForm, sheetForm } from "../../workbench/__tests__/fixtures"
 import useDataEpochStore from "../useDataEpochStore"
 import useDocumentStatusStore from "../useDocumentStatusStore"
 import useGraphStore from "../useGraphStore"
@@ -28,8 +28,7 @@ const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   name,
   type,
   label: "",
-  key: false,
-  index: false,
+  index: null,
   help: "",
   placeholder: "",
   group: "",
@@ -42,7 +41,6 @@ const column = (name: string, type: SchemaColumn["type"]): SchemaColumn => ({
   max: null,
   options: [],
   options_source: null,
-  row_per_value: false,
 })
 const policy: SchemaTable = { name: "policy_details", rows: "one", inputs: [column("exposure", "float")], outputs: [] }
 const pricing: SchemaTable = { name: "pricing_output", rows: "one", inputs: [], outputs: [column("model_premium", "float")] }
@@ -125,6 +123,70 @@ describe("useWorkbenchPricingStore", () => {
     const spec = useWorkbenchFormStore.getState().form!
     expect(pricer).toHaveBeenCalledWith(spec, workbenchOf(spec))
     expect(premium()).toEqual({ value: 2000, stale: false })
+    expect(useWorkbenchPricingStore.getState().error).toBeNull()
+  })
+
+  it.each(["numbered", "typed", "values"] as const)("keeps output-only rows with empty outputs for a %s index", async (kind) => {
+    const output: WorkbenchTable = {
+      name: "products", side: "output", port: "products_output", rows: "many",
+      columns: [{ name: "product", type: "str" }, { name: "premium", type: "float" }],
+      key: "product", null_key: null, index_kind: kind, index_values: kind === "values" ? ["1", "2", "3"] : [],
+    }
+    vi.mocked(fetchWorkbenchFormTables).mockResolvedValue({ ...workbenchOf(form), response_tables: [output] })
+    const rows = [{ product: "1", premium: 10 }, { product: "2", premium: null },
+      { product: "3", premium: { __haute_type__: "non_finite_float", value: "nan" } }]
+    useWorkbenchPricingStore.getState().setPricer(async () => ({ tables: { products: rows } }))
+
+    await useWorkbenchPricingStore.getState().priceNow()
+
+    expect(useWorkbenchPricingStore.getState().error).toBeNull()
+    expect(useWorkbenchPricingStore.getState().price?.tables.products).toEqual(rows)
+    if (kind !== "numbered") {
+      useWorkbenchPricingStore.setState({ price: null })
+      useWorkbenchPricingStore.getState().setPricer(async () => ({ tables: { products: [rows[1], rows[1]] } }))
+      await useWorkbenchPricingStore.getState().priceNow()
+      expect(useWorkbenchPricingStore.getState().error).toContain('product "2" is given twice')
+      expect(useWorkbenchPricingStore.getState().price).toBeNull()
+    }
+  })
+
+  it("prices exact large Integer params keys from the tables HTTP response", async () => {
+    // The wire format uses decimal strings beyond JavaScript's safe integer range.
+    const keys = ["9007199254740992", "9007199254740993"]
+    const output: WorkbenchTable = {
+      name: "products", side: "output", port: "products_output", rows: "many",
+      columns: [{ name: "product", type: "int" }, { name: "premium", type: "float" }],
+      key: "product", null_key: null, index_kind: "values", index_values: keys,
+    }
+    vi.mocked(fetchWorkbenchFormTables).mockResolvedValue({ ...workbenchOf(form), response_tables: [output] })
+    const rows = keys.map((product, at) => ({ product, premium: at + 10 }))
+    useWorkbenchPricingStore.getState().setPricer(async () => ({ tables: { products: rows } }))
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(useWorkbenchPricingStore.getState().error).toBeNull()
+    expect(useWorkbenchPricingStore.getState().price?.tables.products).toEqual(rows)
+
+    useWorkbenchPricingStore.setState({ price: null })
+    useWorkbenchPricingStore.getState().setPricer(async () => ({ tables: { products: [{ product: "9007199254740994", premium: 10 }] } }))
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(useWorkbenchPricingStore.getState().error).toContain("9007199254740994 is none of its values")
+  })
+
+  it("blocks a sample with duplicate typed indexes until the offending cell is corrected", async () => {
+    const indexed = setIndexKind(sheetForm(), "equipment", "typed")
+    indexed.sample = { equipment: [{ row_number: "1", item: "Crane" }, { row_number: "1", item: "Truck" }] }
+    useWorkbenchFormStore.setState({ form: indexed })
+    const pricer = vi.fn(() => Promise.resolve(priced(2000)))
+    useWorkbenchPricingStore.getState().setPricer(pricer)
+
+    await useWorkbenchPricingStore.getState().priceNow()
+
+    expect(fetchWorkbenchFormTables).not.toHaveBeenCalled()
+    expect(pricer).not.toHaveBeenCalled()
+    expect(useWorkbenchPricingStore.getState()).toMatchObject({ price: null, error: expect.stringContaining("equipment's rows 1 and 2") })
+
+    useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "equipment", 1, "row_number", "2"))
+    await useWorkbenchPricingStore.getState().priceNow()
+    expect(pricer).toHaveBeenCalledOnce()
     expect(useWorkbenchPricingStore.getState().error).toBeNull()
   })
 
@@ -311,9 +373,9 @@ describe("useWorkbenchPricingStore", () => {
       rows: "many",
       columns: [...identity, { name: "item_number", type: "int" }, { name: "final_premium", type: "float" }, { name: "referral", type: "str" }],
       key: "item_number",
-      null_key: null,
+      null_key: null, index_kind: null, index_values: [],
     }
-    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null }
+    const unkeyed: WorkbenchTable = { name: "pricing_output", side: "output", port: "pricing_output_output", rows: "one", columns: [{ name: "model_premium", type: "float" }], key: null, null_key: null, index_kind: null, index_values: [] }
     /** What the server makes of the form: the schedule's typed rows, numbered by its index, and both output sides. */
     const keyedOf = (spec: FormSpec): WorkbenchTablesResponse => ({
       ...workbenchOf(spec),

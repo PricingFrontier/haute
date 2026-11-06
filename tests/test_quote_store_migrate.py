@@ -150,7 +150,8 @@ def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None
 
 def test_the_sql_from_none_makes_every_table_and_the_activity(url: str) -> None:
     release = form(
-        POLICY, table("vehicles", column("vehicle", "int", index=True), column("reg"), rows="many")
+        POLICY,
+        table("vehicles", column("vehicle", "int", index="numbered"), column("reg"), rows="many"),
     )
 
     written = script(None, release)
@@ -208,6 +209,38 @@ def test_a_retype_is_the_engines_alter_in_place_with_its_note() -> None:
     assert "ALTER COLUMN" not in sqlite
 
 
+@pytest.mark.parametrize("index_name", ["site", "location_name"])
+def test_an_index_retyped_is_a_note_and_a_change_of_its_kind_no_step(index_name: str) -> None:
+    numbered = form(
+        table(
+            "sites", column("site", "int", index="numbered"), column("value", "float"), rows="many"
+        )
+    )
+    # Retyped, the index changes the key its rows are held by: a note, never an ALTER.
+    retyped = form(
+        table(
+            "sites",
+            column(index_name, "str", index="numbered"),
+            column("value", "float"),
+            rows="many",
+        )
+    )
+    for dialect in ("postgresql", "mssql", "sqlite"):
+        written = script(numbered, retyped, dialect)
+        assert (
+            f"-- sites has its index {index_name} change from an Integer to Text,\n"
+            "-- which changes the key its rows are held by" in written
+        )
+        assert "ALTER COLUMN" not in written
+        if index_name != "site":
+            assert "location_name" in written and "haute_tmp_" in written
+    # Typed instead of numbered: the key column and its SQL type stay, so nothing to write.
+    typed = form(
+        table("sites", column("site", "int", index="typed"), column("value", "float"), rows="many")
+    )
+    assert offline_plan(numbered, typed).steps == ()
+
+
 def test_a_removed_table_or_column_is_a_drop_left_commented_out() -> None:
     base = form(POLICY, table("extras", column("notes")))
 
@@ -236,7 +269,8 @@ def test_a_refusal_naming_a_name_of_many_lines_stays_a_comment() -> None:
 
 def test_what_the_sql_cannot_make_is_a_note() -> None:
     base = form(
-        POLICY, table("vehicles", column("vehicle", "int", index=True), column("reg"), rows="many")
+        POLICY,
+        table("vehicles", column("vehicle", "int", index="numbered"), column("reg"), rows="many"),
     )
 
     # A table whose rows change is noted, never made again; a new column taking the name of

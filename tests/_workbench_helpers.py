@@ -120,17 +120,22 @@ def form_table(
 ) -> dict[str, Any]:
     """A schema table of a form, known by its *name*: its *inputs*, which an underwriter
     types, and its *outputs*, which pricing fills, each column by its name and type or as
-    the column itself. A many-row table with inputs leads them with its index, *index*, an
-    Integer numbering its rows, as the editor gives it one: None gives none, for inputs
-    holding their own."""
+    the column itself. A many-row table leads with its index, *index*, an Integer numbering
+    its rows, as the editor gives it one: its outputs while it has outputs and no inputs,
+    else its inputs. None gives none, for columns holding their own."""
     columns = [_form_column(column) for column in inputs]
-    if many and columns and index is not None:
-        columns = [{"name": index, "type": "int", "index": True}, *columns]
+    produced = [_form_column(column) for column in outputs]
+    if many and index is not None:
+        numbered = {"name": index, "type": "int", "index": "numbered"}
+        if produced and not columns:
+            produced = [numbered, *produced]
+        else:
+            columns = [numbered, *columns]
     return {
         "name": name,
         "rows": "many" if many else "one",
         "inputs": columns,
-        "outputs": [_form_column(column) for column in outputs],
+        "outputs": produced,
     }
 
 

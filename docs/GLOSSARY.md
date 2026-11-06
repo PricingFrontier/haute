@@ -80,11 +80,11 @@ Two naming notes:
 
 - **Heading (component)** — text naming a section of a sheet, or the sheet itself, large, medium or small, with an optional description under it (`heading` in the file). It shows no schema columns and takes nothing typed. Not a column's label.
 
-- **schema table** — a table of the workbench's schema: a name, one row per quote or many, and typed columns in two blocks, its inputs (sent to the pricing engine) and its outputs (returned by it), either or both. Its inputs are the Workbench Input's port `<table>_input` and its outputs the Workbench Output's `<table>_output`; the quote store keeps both in one table. A many-row table is keyed by its index or by the column giving it a row for each value, never by a value typed, a table of outputs alone by the outputs marked as its key.
+- **schema table** — a table of the workbench's schema: a name, one row per quote or many, and typed columns in two blocks, its inputs (sent to the pricing engine) and its outputs (returned by it), either or both. Its inputs are the Workbench Input's port `<table>_input` and its outputs the Workbench Output's `<table>_output`; the quote store keeps both in one table. A table is keyed by the quote's identity and, with many rows, by its index; no column is marked as a key.
 
-- **key** — a column of a many-row schema table that, with the table's other keys, says which row is which; how a Table's output rows are matched to its input rows.
+- **key** — what says which row of a schema table is which: the quote's identity, with the index in a many-row table; nothing else is a key, and no column is marked as one.
 
-- **index** — a many-row schema table's row-number column, `row_number` until renamed, an Integer numbering the rows from 1.
+- **index** — a many-row schema table's one key column, `table_index` until renamed, an Integer or Text that is numbered by Haute, typed by the underwriter, or gives the table a row for each value of a params file's column; also each row's key in the saved quotes.
 
 - **the sample** — the quote typed into the sheets in Preview: saved with the sheets, priced live, and what the Workbench Input's previews run on, read as a request is read.
 

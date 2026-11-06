@@ -27,7 +27,7 @@ from haute._artifact_paths import ordinary_path_problem
 from haute._polars_utils import streaming_collect
 from haute._project_layout import pipeline_files_folder
 from haute._workbench_config import WorkbenchError
-from haute._workbench_form import FormSpec
+from haute._workbench_form import FormSpec, index_text_limit
 
 #: The folder of the pipeline's files a column's allowed values come from.
 PARAMS_FOLDER = "params"
@@ -222,11 +222,13 @@ def _fits(value: str, kind: str) -> bool:
 
 def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> None:
     """Give each input whose allowed values come from a params file those values, as
-    *read* finds them at the revision the form is read at (READ-25): a schema file writes only
-    the column's ``options_source``. A file or column that cannot give them, or a value the
-    column's type does not hold, is refused, naming the file and the column."""
+    *read* finds them at the revision the form is read at (READ-25), and a table of outputs
+    alone's index of values too: a schema file writes only the column's ``options_source``.
+    A file or column that cannot give them, a value the column's type does not hold, or a
+    Text index's value longer than the store keys a row by, is refused, naming the file and
+    the column."""
     for table in tables:
-        for column in table.get("inputs", []):
+        for column in [*table.get("inputs", []), *table.get("outputs", [])]:
             source = column.get("options_source")
             if not isinstance(source, dict):
                 continue
@@ -246,6 +248,14 @@ def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> Non
                     "column does not hold.",
                     path=source["file"],
                 )
+            if column.get("index") == "values" and kind == "str":
+                for value in values:
+                    if limit := index_text_limit(value):
+                        raise ParamFileError(
+                            f"{source['file']} gives the index {where} the value {value[:40]!r}, "
+                            f"longer than the {limit} a Text index holds.",
+                            path=source["file"],
+                        )
             column["options"] = values
 
 

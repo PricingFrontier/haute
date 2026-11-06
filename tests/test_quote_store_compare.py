@@ -312,6 +312,121 @@ def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target
     assert target.read("SELECT zone FROM policy") == [("north",)]
 
 
+def _vehicles(index: str) -> dict[str, Any]:
+    """A many-row input table keyed by its index, named *index*."""
+    return table(
+        "vehicles", {"name": index, "type": "int", "index": "numbered"}, column("reg"), rows="many"
+    )
+
+
+def test_a_renamed_index_is_paired_with_the_databases_key_column_unasked(target: Target) -> None:
+    before = form(_vehicles("row_number"))
+    made_from_sql(target, before)
+    quote(target, before, "A-1")
+    target.run(
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, reg) "
+        "VALUES ('A-1', 1, 1, 'AB12'), ('A-1', 1, 2, 'CD34')"
+    )
+    renamed = form(_vehicles("vehicle_no"))
+
+    comparison = compared(target, renamed)
+
+    # Paired by what it is, marked renamed, and the key compared under the form's names: no
+    # key difference, no column missing, and no extra. The analyst paired nothing.
+    assert kinds(comparison) == {("vehicles", "vehicle_no", "renamed")}
+    assert comparison.extras == ()
+    assert comparison.renames == ()
+    assert [step.kind for step in comparison.plan.steps] == ["rename column"]
+    target.script(sql(target, renamed, comparison))
+    opens(target, renamed)
+    assert target.read("SELECT vehicle_no, reg FROM vehicles ORDER BY vehicle_no") == [
+        (1, "AB12"),
+        (2, "CD34"),
+    ]
+
+
+def _vehicles_of(index: str, other: str) -> dict[str, Any]:
+    """A many-row input table keyed by its index *index*, with an Integer *other*."""
+    return table(
+        "vehicles",
+        {"name": index, "type": "int", "index": "numbered"},
+        column(other, "int"),
+        rows="many",
+    )
+
+
+@pytest.mark.parametrize("index_name", ["row_number", "vehicle_name"])
+def test_live_comparison_renders_an_index_type_change_with_its_previous_column(
+    target: Target, index_name: str
+) -> None:
+    made_from_sql(target, form(_vehicles("row_number")))
+    changed = form(
+        table(
+            "vehicles",
+            {"name": index_name, "type": "str", "index": "typed"},
+            column("reg"),
+            rows="many",
+        )
+    )
+    comparison = compared(target, changed)
+
+    written = sql(target, changed, comparison)
+
+    assert f"vehicles has its index {index_name} change from an Integer to Text" in written
+    assert "make the table again as the form has it" in written
+    assert "ALTER COLUMN" not in written
+
+
+def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "seats"))
+    made_from_sql(target, before)
+    reused = form(
+        table(
+            "vehicles",
+            {"name": "vehicle_no", "type": "int", "index": "numbered"},
+            column("seats", "int"),
+            column("row_number"),
+            rows="many",
+        )
+    )
+
+    comparison = compared(target, reused)
+
+    # The database's key column is the index, whatever the form now names it: no column of
+    # the form takes it by name.
+    assert kinds(comparison) == {
+        ("vehicles", "vehicle_no", "renamed"),
+        ("vehicles", "row_number", "missing"),
+    }
+    assert comparison.plan.refusals == ()
+    target.script(sql(target, reused, comparison))
+    opens(target, reused)
+
+
+def test_an_index_renamed_onto_another_columns_name_is_refused(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "item_number"))
+    made_from_sql(target, before)
+    swapped = form(_vehicles_of("item_number", "row_number"))
+
+    comparison = compared(target, swapped)
+
+    # Paired by what it is, the index's rename onto a name the database's other column holds
+    # is refused, and so is a column added under the name the index keeps: the SQL changes
+    # nothing but keep the database's column the form no longer names, and runs.
+    assert ("vehicles", "item_number", "renamed") in kinds(comparison)
+    assert [step.kind for step in comparison.plan.steps] == ["keep column"]
+    assert len(comparison.plan.refusals) == 2
+    target.script(sql(target, swapped, comparison))
+    assert target.read("SELECT row_number, item_number FROM vehicles") == []
+
+
+def test_a_tables_rows_are_read_from_its_key(target: Target) -> None:
+    # Keyed by the identity alone, the database's table is one row a quote; by one more
+    # column, many, whatever that column is named.
+    made_from_sql(target, form(table("vehicles", column("reg"))))
+    assert ("vehicles", None, "rows") in kinds(compared(target, form(_vehicles("row_number"))))
+
+
 def test_a_pairing_the_database_no_longer_allows_is_not_taken(target: Target) -> None:
     made_from_sql(target, RELEASED)
     paired = form(table("policy", column("zone"), column("drivers")))

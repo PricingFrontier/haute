@@ -19,7 +19,10 @@ import pytest
 from haute._json_shred._shred import _POLARS_TYPE_MAP
 from haute._workbench_form import FormSpec, SchemaColumn, SchemaTable, with_quote_details
 from haute._workbench_input import (
+    WorkbenchInputError,
     null_quote,
+    read_quote,
+    with_stand_in,
     workbench_request_frames,
     workbench_table_frames,
 )
@@ -31,10 +34,12 @@ from haute._workbench_tables import (
     _typed,
     check_tables,
     holds_output,
+    index_order,
     input_tables,
     key_collisions,
     key_text,
-    null_key,
+    null_index,
+    numbered_value,
     output_misfit,
     output_tables,
     parse_workbench_tables,
@@ -45,7 +50,7 @@ from haute._workbench_tables import (
     request_key_problem,
     request_schema,
     sample_quote,
-    table_key,
+    typed_index_problems,
     workbench_tables,
 )
 
@@ -97,7 +102,7 @@ def dumped(tables: tuple[WorkbenchTable, ...]) -> list[dict[str, Any]]:
 
 def index(name: str = "row_number") -> dict[str, Any]:
     """A many-row input table's index: an Integer numbering its rows, as the editor gives it."""
-    return column(name, "int", index=True)
+    return column(name, "int", index="numbered")
 
 
 def side(
@@ -128,22 +133,31 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
                 ],
                 "outputs": [column("premium", "float")],
             },
-            # Keyed by the column giving its rows, though it has an index.
+            # Keyed by its index of values, a row for each peril.
             {
                 "name": "perils",
                 "rows": "many",
                 "inputs": [
-                    index(),
-                    column("peril", options=["Fire", "Flood"], row_per_value=True),
+                    column(
+                        "peril",
+                        options=["Fire", "Flood"],
+                        index="values",
+                        options_source={"file": "perils.csv", "column": "peril"},
+                    ),
                     column("rate", "float"),
                 ],
                 "outputs": [column("peril_premium", "float")],
             },
-            # A table of outputs alone: no key of its own unless one is marked.
+            # A table of outputs alone: its numbered index among its outputs, which the
+            # Workbench Output numbers.
             {
                 "name": "layers",
                 "rows": "many",
-                "outputs": [column("layer", "int"), column("layer_premium", "float")],
+                "outputs": [
+                    index("layer_no"),
+                    column("layer", "int"),
+                    column("layer_premium", "float"),
+                ],
             },
             # A table of inputs alone: no output side.
             {
@@ -187,6 +201,8 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "item_number",
             "null_key": 1,
+            "index_kind": None,
+            "index_values": [],
         },
         {
             "name": "perils",
@@ -195,12 +211,13 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "rows": "many",
             "columns": [
                 *IDENTITY,
-                {"name": "row_number", "type": "int"},
                 {"name": "peril", "type": "str"},
                 {"name": "rate", "type": "float"},
             ],
             "key": "peril",
             "null_key": "Fire",
+            "index_kind": None,
+            "index_values": [],
         },
         {
             "name": "policy_details",
@@ -214,6 +231,8 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": None,
             "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
         {
             "name": "pricing",
@@ -223,10 +242,13 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "columns": [*IDENTITY, {"name": "discount", "type": "float"}],
             "key": None,
             "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
     ]
-    # Each output side is the identity, then a many-row input table's key column, then the
-    # table's outputs; a table of outputs alone has no key, and one of inputs alone no side.
+    # Each output side is the identity, then a many-row input table's index, then the
+    # table's outputs; a table of outputs alone keys its rows by its own index, and one of
+    # inputs alone has no side.
     assert dumped(output_tables(spec)) == [
         {
             "name": "equipment",
@@ -240,6 +262,8 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "item_number",
             "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
         {
             "name": "perils",
@@ -253,6 +277,8 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             ],
             "key": "peril",
             "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
         {
             "name": "layers",
@@ -261,11 +287,14 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "rows": "many",
             "columns": [
                 *IDENTITY,
+                {"name": "layer_no", "type": "int"},
                 {"name": "layer", "type": "int"},
                 {"name": "layer_premium", "type": "float"},
             ],
-            "key": None,
+            "key": "layer_no",
             "null_key": None,
+            "index_kind": "numbered",
+            "index_values": [],
         },
         {
             "name": "pricing",
@@ -275,6 +304,8 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
             "columns": [*IDENTITY, {"name": "charged", "type": "float"}],
             "key": None,
             "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
     ]
     assert (equipment.one_row, policy.one_row) == (False, True)
@@ -303,12 +334,33 @@ def test_each_input_table_gives_an_input_side_and_each_output_table_an_output_si
     )
 
 
-def test_a_table_of_outputs_alone_leads_its_outputs_with_the_identity_and_keeps_its_keys() -> None:
+@pytest.mark.parametrize(
+    ("index_column", "kind", "values"),
+    [
+        pytest.param(index("layer_no"), "numbered", [], id="numbered"),
+        pytest.param(column("layer_no", "int", index="typed"), "typed", [], id="typed"),
+        pytest.param(
+            column(
+                "layer_no",
+                "int",
+                index="values",
+                options=["2", "1"],
+                options_source={"file": "layers.csv", "column": "layer"},
+            ),
+            "values",
+            [2, 1],
+            id="of values",
+        ),
+    ],
+)
+def test_output_only_table_leads_with_identity_and_keys_its_rows_by_its_index(
+    index_column: dict[str, Any], kind: str, values: list[Any]
+) -> None:
     spec = form(
         {
             "name": "layer_premiums",
             "rows": "many",
-            "outputs": [column("layer", "int", key=True), column("premium", "float")],
+            "outputs": [index_column, column("layer", "int"), column("premium", "float")],
         }
     )
 
@@ -317,93 +369,151 @@ def test_a_table_of_outputs_alone_leads_its_outputs_with_the_identity_and_keeps_
     assert [item.name for item in table.inputs] == []
     assert [item.name for item in table.outputs[:2]] == ["quote_reference", "quote_option"]
     assert input_tables(spec) == ()
-    # Its output side keeps its own columns, the one marked key among them, and no key of
-    # the side's: its rows are kept by table_index, as they come.
+    # Its output side keeps its own columns, its index among them, which keys its rows and
+    # says how the Workbench Output takes them.
     (layers,) = output_tables(spec)
-    assert (layers.port, layers.key, [item.name for item in layers.columns]) == (
+    assert (
+        layers.port,
+        layers.key,
+        layers.index_kind,
+        layers.index_values,
+        [item.name for item in layers.columns],
+    ) == (
         "layer_premiums_output",
-        None,
-        ["quote_reference", "quote_option", "layer", "premium"],
+        "layer_no",
+        kind,
+        values,
+        ["quote_reference", "quote_option", "layer_no", "layer", "premium"],
     )
 
 
-def _keyed_table(name: str, **table: Any) -> SchemaTable:
-    return form({"name": name, **table}).data_schema.tables[0]
-
-
 @pytest.mark.parametrize(
-    ("table", "key"),
+    ("given", "says"),
     [
-        pytest.param({"rows": "one", "inputs": [column("state")]}, [], id="a one-row table"),
+        pytest.param({"key": None}, "has many rows, so its key names its index", id="no key"),
         pytest.param(
-            {"rows": "one", "inputs": [column("state")], "outputs": [column("premium")]},
-            [],
-            id="a one-row table of both blocks",
+            {"key": "premium"}, "has many rows, so its key names its index", id="a Decimal key"
         ),
         pytest.param(
-            {"rows": "many", "inputs": [index("item_number"), column("value", "float")]},
-            ["item_number"],
-            id="a many-row input table by its index",
+            {"key": "line", "index_kind": "values"},
+            "holds its index's values exactly when its index gives a row for each value",
+            id="values without its values",
         ),
         pytest.param(
-            {
-                "rows": "many",
-                "inputs": [
-                    index(),
-                    column("peril", options=["Fire", "Flood"], row_per_value=True),
-                ],
-                "outputs": [column("premium", "float")],
-            },
-            ["peril"],
-            id="a many-row input table by the column giving its rows",
+            {"key": "line", "index_kind": "typed", "index_values": [1]},
+            "holds its index's values exactly when its index gives a row for each value",
+            id="values on a typed index",
         ),
         pytest.param(
-            {
-                "rows": "many",
-                "inputs": [index(), column("peril", row_per_value=True)],
-            },
-            ["row_number"],
-            id="by its index while the column giving its rows has no values",
-        ),
-        pytest.param(
-            {
-                "rows": "many",
-                "outputs": [
-                    column("layer", "int", key=True),
-                    column("peril", key=True),
-                    column("premium", "float"),
-                ],
-            },
-            ["layer", "peril"],
-            id="a table of outputs alone by its outputs marked key",
-        ),
-        pytest.param(
-            {"rows": "many", "outputs": [column("premium", "float")]},
-            [],
-            id="a table of outputs alone marking none",
+            {"key": "line", "null_key": 1},
+            "holds a null key, which only an input side does",
+            id="a null key on an output side",
         ),
     ],
 )
-def test_a_tables_key_is_never_typed(table: dict[str, Any], key: list[str]) -> None:
-    assert [item.name for item in table_key(_keyed_table("t", **table))] == key
-
-
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        pytest.param(index("item_number"), 1, id="an index"),
-        pytest.param(column("peril", options=["Fire", "Flood"]), "Fire", id="a Text column"),
-        pytest.param(column("layer", "int", options=["03", "1"]), 3, id="an Integer column"),
-        pytest.param(column("band", "float", options=["2.5", "1"]), 2.5, id="a Decimal column"),
-    ],
-)
-def test_the_null_quotes_key_is_one_for_an_index_else_the_first_allowed_value(
-    key: dict[str, Any], value: object
+def test_a_many_row_side_that_does_not_name_its_index_as_its_kind_takes_is_refused(
+    given: dict[str, Any], says: str
 ) -> None:
-    assert null_key(SchemaColumn.model_validate(key)) == value
+    columns = [{"name": "line", "type": "int"}, {"name": "premium", "type": "float"}]
+    with pytest.raises(WorkbenchTablesError, match=re.escape(says)):
+        parse_workbench_tables(
+            [side("t", "many", *columns, of="output", **given)], owner="Workbench Output"
+        )
 
 
-def test_the_null_quote_gives_a_keyed_tables_row_its_key_and_nothing_else() -> None:
+def test_an_input_side_says_nothing_of_how_its_index_gets_its_values() -> None:
+    with pytest.raises(WorkbenchTablesError, match="only the output side of a table of outputs"):
+        parse_workbench_tables(
+            [side("t", "many", {"name": "line", "type": "int"}, key="line", index_kind="typed")],
+            owner="Workbench Input",
+        )
+
+
+def test_a_one_row_side_has_no_index() -> None:
+    with pytest.raises(WorkbenchTablesError, match="has one row, so it has no index"):
+        parse_workbench_tables(
+            [side("t", "one", {"name": "line", "type": "int"}, key="line")],
+            owner="Workbench Input",
+        )
+
+
+@pytest.mark.parametrize(
+    ("given", "value"),
+    [
+        pytest.param(index("item_number"), 1, id="a numbered Integer"),
+        pytest.param(column("item_no", "str", index="numbered"), "1", id="a numbered Text"),
+        pytest.param(column("site", "str", index="typed"), "1", id="a typed Text"),
+        pytest.param(
+            column(
+                "peril",
+                index="values",
+                options=["Fire", "Flood"],
+                options_source={"file": "perils.csv", "column": "peril"},
+            ),
+            "Fire",
+            id="a Text of values",
+        ),
+        pytest.param(
+            column(
+                "layer",
+                "int",
+                index="values",
+                options=["03", "1"],
+                options_source={"file": "layers.csv", "column": "layer"},
+            ),
+            3,
+            id="an Integer of values",
+        ),
+    ],
+)
+def test_the_null_quotes_index_is_the_first_value_else_the_first_rows_number(
+    given: dict[str, Any], value: object
+) -> None:
+    assert null_index(SchemaColumn.model_validate(given)) == value
+
+
+def test_a_numbered_index_holds_the_rows_number_as_its_type_holds_it() -> None:
+    assert numbered_value(SchemaColumn.model_validate(index("n")), 3) == 3
+    assert numbered_value(SchemaColumn.model_validate(column("n", index="numbered")), 3) == "3"
+
+
+@pytest.mark.parametrize(
+    ("given", "stored", "order"),
+    [
+        pytest.param(
+            column("n", index="numbered"), ["10", "9", "x", "1"], [3, 1, 0, 2], id="numbered Text"
+        ),
+        pytest.param(index("n"), [3, 1, 2], [1, 2, 0], id="numbered Integer"),
+        pytest.param(
+            column("site", index="typed"), ["York", "Leeds", "Bath"], [2, 1, 0], id="typed Text"
+        ),
+        pytest.param(column("no", "int", index="typed"), [20, 3, 100], [1, 0, 2], id="typed int"),
+        pytest.param(
+            column("no", "int", index="typed"),
+            ["manual-z", 10, "manual-a", 2],
+            [3, 1, 0, 2],
+            id="typed Integer, hand-edited text follows numbers in its original order",
+        ),
+        pytest.param(
+            column(
+                "peril",
+                index="values",
+                options=["Fire", "Flood", "Hail"],
+                options_source={"file": "perils.csv", "column": "peril"},
+            ),
+            ["Hail", "Gone", "Fire"],
+            [2, 0, 1],
+            id="of values, a value no longer allowed after the rest",
+        ),
+    ],
+)
+def test_a_quotes_rows_open_in_their_indexs_order(
+    given: dict[str, Any], stored: list[Any], order: list[int]
+) -> None:
+    assert index_order(SchemaColumn.model_validate(given), stored) == order
+
+
+def test_the_null_quote_gives_a_many_row_tables_row_its_index_and_nothing_else() -> None:
     spec = with_quote_details(
         form(
             {
@@ -416,8 +526,13 @@ def test_the_null_quote_gives_a_keyed_tables_row_its_key_and_nothing_else() -> N
                 "name": "coverage",
                 "rows": "many",
                 "inputs": [
-                    index(),
-                    column("layer", "int", options=["2", "1"], row_per_value=True),
+                    column(
+                        "layer",
+                        "int",
+                        options=["2", "1"],
+                        index="values",
+                        options_source={"file": "layers.csv", "column": "layer"},
+                    ),
                     column("limit", "float"),
                 ],
             },
@@ -427,13 +542,13 @@ def test_the_null_quote_gives_a_keyed_tables_row_its_key_and_nothing_else() -> N
 
     quote = null_quote(input_tables(spec))
 
-    # The index numbers the one row 1; the column giving the rows holds its first value,
-    # typed as the column; the rest is null, and a one-row table holds no key.
+    # A numbered index numbers the one row 1; an index of values holds its first value,
+    # typed as the index; the rest is null, and a one-row table holds no index.
     assert quote["equipment"] == [{"item_number": 1, "value": None}]
-    assert quote["coverage"] == [{"row_number": None, "layer": 2, "limit": None}]
+    assert quote["coverage"] == [{"layer": 2, "limit": None}]
     assert quote["policy"] == {"state": None}
     assert quote["quote_details"]["quote_reference"] == "PREVIEW"
-    # Read, it is a quote whose keyed rows each hold their own key.
+    # Read, it is a quote whose rows each hold their own index value.
     frames = workbench_table_frames(
         {"tables": dumped(input_tables(spec)), "sample": {}},
     )
@@ -441,11 +556,11 @@ def test_the_null_quote_gives_a_keyed_tables_row_its_key_and_nothing_else() -> N
         {**_STAND_IN, "item_number": 1, "value": None}
     ]
     assert frames["coverage_input"].collect().to_dicts() == [
-        {**_STAND_IN, "row_number": None, "layer": 2, "limit": None}
+        {**_STAND_IN, "layer": 2, "limit": None}
     ]
 
 
-def test_a_tables_key_column_is_sent_though_the_sheets_hide_it() -> None:
+def test_a_tables_index_is_sent_though_the_sheets_hide_it() -> None:
     spec = form(
         {
             "name": "policy",
@@ -456,8 +571,12 @@ def test_a_tables_key_column_is_sent_though_the_sheets_hide_it() -> None:
             "name": "perils",
             "rows": "many",
             "inputs": [
-                index(),
-                column("peril", options=["Fire", "Flood"], row_per_value=True),
+                column(
+                    "peril",
+                    options=["Fire", "Flood"],
+                    index="values",
+                    options_source={"file": "perils.csv", "column": "peril"},
+                ),
                 column("rate", "float"),
             ],
             "outputs": [column("premium", "float")],
@@ -495,17 +614,85 @@ def test_a_tables_key_column_is_sent_though_the_sheets_hide_it() -> None:
         "perils": [{"peril": "Flood", "rate": "2.5"}],
     }
 
-    # The perils' sheet hides: the rate typed on it is left out, but each row keeps the peril
-    # giving it, its key, so its outputs can be put back on it.
-    assert sample_quote(spec)["perils"] == [
-        {"row_number": 1, "peril": "Fire"},
-        {"row_number": 2, "peril": "Flood"},
-    ]
+    # The perils' sheet hides: the rate typed on it is left out, but each row keeps its
+    # index, the peril giving it, so its outputs can be put back on it.
+    assert sample_quote(spec)["perils"] == [{"peril": "Fire"}, {"peril": "Flood"}]
     spec.sample["policy"][0]["bi_cover"] = True
-    assert sample_quote(spec)["perils"] == [
-        {"row_number": 1, "peril": "Fire"},
-        {"row_number": 2, "peril": "Flood", "rate": 2.5},
-    ]
+    assert sample_quote(spec)["perils"] == [{"peril": "Fire"}, {"peril": "Flood", "rate": 2.5}]
+
+
+def _sites(*rows: dict[str, Any], kind: str = "str") -> FormSpec:
+    spec = form(
+        {
+            "name": "sites",
+            "rows": "many",
+            "inputs": [column("site", kind, index="typed"), column("value", "float")],
+        }
+    )
+    spec.sample = {"sites": list(rows)}
+    return spec
+
+
+@pytest.mark.parametrize("site", ["", "   "])
+def test_a_request_refuses_a_blank_text_index(site: str) -> None:
+    tables = input_tables(with_quote_details(_sites()))
+    quote = with_stand_in(tables, {"sites": [{"site": site, "value": 1}]})
+
+    with pytest.raises(WorkbenchInputError, match="sites's row 1 holds no site"):
+        read_quote(tables, quote)
+
+
+def test_a_typed_index_is_typing_and_held_as_typed() -> None:
+    # A row holding its typed index alone is typed, and sent; a numbered Text index's
+    # rows are numbered as text.
+    assert sample_quote(_sites({"site": " Leeds "})) == {"sites": [{"site": "Leeds"}]}
+    assert sample_quote(_sites({"site": "7"}, kind="int")) == {"sites": [{"site": 7}]}
+    numbered = form(
+        {"name": "items", "rows": "many", "inputs": [column("no", index="numbered"), column("v")]}
+    )
+    numbered.sample = {"items": [{"v": "a"}, {}, {"v": "b"}]}
+    assert sample_quote(numbered) == {"items": [{"no": "1", "v": "a"}, {"no": "3", "v": "b"}]}
+
+
+@pytest.mark.parametrize(
+    ("rows", "says"),
+    [
+        pytest.param(
+            [{"site": "Leeds", "value": "1"}, {}, {"site": "York"}],
+            [],
+            id="each its own, a blank row",
+        ),
+        pytest.param(
+            [{"site": "Leeds"}, {"value": "5"}],
+            ["sites's row 2 holds no site"],
+            id="blank on a row holding something",
+        ),
+        pytest.param(
+            [{"site": "Leeds"}, {"site": "York"}, {"site": " Leeds"}],
+            ["sites's rows 1 and 3 hold site \"Leeds\"; each row's site is its own"],
+            id="a value twice, compared as typed",
+        ),
+        pytest.param(
+            [{"site": "x" * 256}],
+            ["sites's row 1 holds a site longer than 255 characters"],
+            id="too long",
+        ),
+    ],
+)
+def test_a_typed_indexs_rows_each_hold_their_own_value(
+    rows: list[dict[str, Any]], says: list[str]
+) -> None:
+    spec = _sites(*rows)
+
+    assert [problem.message for problem in typed_index_problems(spec, spec.sample)] == says
+
+
+def test_an_integer_typed_index_is_compared_as_its_numbers() -> None:
+    spec = _sites({"site": "7"}, {"site": "007"}, kind="int")
+
+    (problem,) = typed_index_problems(spec, spec.sample)
+
+    assert (problem.table, problem.column, problem.rows) == ("sites", "site", (1, 2))
 
 
 def _keyed_side(key: str = "item_number", kind: str = "int") -> WorkbenchTable:
@@ -516,10 +703,19 @@ def _keyed_side(key: str = "item_number", kind: str = "int") -> WorkbenchTable:
     return table
 
 
-def test_an_answer_of_no_rows_fits_and_a_side_without_a_key_never_misfits() -> None:
+def test_an_answer_of_no_rows_fits_and_a_numbered_index_of_outputs_alone_never_misfits() -> None:
     assert output_misfit(_keyed_side(), [], [1, 2]) is None
     (table,) = parse_workbench_tables(
-        [side("layers", "many", {"name": "layer", "type": "int"}, of="output")],
+        [
+            side(
+                "layers",
+                "many",
+                {"name": "layer", "type": "int"},
+                of="output",
+                key="layer",
+                index_kind="numbered",
+            )
+        ],
         owner="Workbench Output",
     )
 
@@ -581,12 +777,23 @@ def test_a_requests_keyed_rows_each_hold_their_own_key(keys: list[Any], says: st
     )
 
     assert request_key_problem(table, keys) == says
-    # A side with no key takes any rows.
-    (unkeyed,) = parse_workbench_tables(
-        [side("ce_equipment", "many", {"name": "item_number", "type": "int"})],
+
+
+def test_a_requests_text_index_is_held_to_the_length_the_store_keys_a_row_by() -> None:
+    (table,) = parse_workbench_tables(
+        [side("sites", "many", {"name": "site", "type": "str"}, key="site")],
         owner="Workbench Input",
     )
-    assert request_key_problem(unkeyed, keys) is None
+
+    assert request_key_problem(table, ["Leeds", "x" * 255]) is None
+    assert request_key_problem(table, ["Leeds", "\U00020000" * 183]) is None
+    assert request_key_problem(table, ["\U00020000" * 184]) == (
+        "sites's row 1 holds a site longer than 366 UTF-16 code units"
+    )
+    assert (
+        request_key_problem(table, ["Leeds", "x" * 256])
+        == "sites's row 2 holds a site longer than 255 characters"
+    )
 
 
 @pytest.mark.parametrize(
@@ -626,16 +833,23 @@ def test_an_output_value_is_held_unless_null_or_not_finite(value: object, held: 
     assert holds_output(value) is held
 
 
-def _preset_table(kind: str, *options: str, row_per_value: bool = True) -> SchemaTable:
-    return _keyed_table(
-        "layers",
-        rows="many",
-        inputs=[
-            index(),
-            column("layer", kind, options=list(options), row_per_value=row_per_value),
-            column("limit", "float"),
-        ],
+def _keyed_table(name: str, **table: Any) -> SchemaTable:
+    return form({"name": name, **table}).data_schema.tables[0]
+
+
+def _preset_table(kind: str, *options: str, values: bool = True) -> SchemaTable:
+    layer = (
+        column(
+            "layer",
+            kind,
+            options=list(options),
+            index="values",
+            options_source={"file": "layers.csv", "column": "layer"},
+        )
+        if values
+        else column("layer", kind, index="typed")
     )
+    return _keyed_table("layers", rows="many", inputs=[layer, column("limit", "float")])
 
 
 def test_allowed_values_reading_as_one_value_cannot_key_a_tables_rows() -> None:
@@ -645,15 +859,11 @@ def test_allowed_values_reading_as_one_value_cannot_key_a_tables_rows() -> None:
         "layers.layer's allowed values 2 and +2 are one Integer, so they cannot key its rows: "
         "correct the params file",
     ]
-    assert key_collisions(_preset_table("float", "2.5", "2.50", "1")) == [
-        "layers.layer's allowed values 2.5 and 2.50 are one Decimal, so they cannot key its "
-        "rows: correct the params file"
-    ]
-    # Text keeps each value its own, as do values each reading as their own number, and a
-    # column giving no rows keys nothing.
+    # Text keeps each value its own, as do values each reading as their own number, and an
+    # index giving no rows keys nothing by its values.
     assert key_collisions(_preset_table("str", "1", "01", "A", "a")) == []
     assert key_collisions(_preset_table("int", "1", "2", "10")) == []
-    assert key_collisions(_preset_table("int", "1", "01", row_per_value=False)) == []
+    assert key_collisions(_preset_table("int", values=False)) == []
 
 
 def test_each_column_type_is_the_quote_inputs_dtype() -> None:
@@ -665,7 +875,7 @@ def test_a_table_without_columns_is_not_a_port() -> None:
     tables = parse_workbench_tables(
         [
             side("bare"),
-            side("items", "many", {"name": "value", "type": "int"}),
+            side("items", "many", {"name": "value", "type": "int"}, key="value"),
         ],
         owner="Workbench Input",
     )
@@ -695,15 +905,49 @@ _REFUSED = {
     ),
     "a key that is none of its columns": (
         [side("a", "many", {"name": "x", "type": "int"}, key="y")],
-        "(tables[0]: Value error, a_input's key 'y' is none of its many rows' columns)",
+        "(tables[0]: Value error, a_input has many rows, so its key names its index, an Integer "
+        "or Text column it holds)",
+    ),
+    "a many-row side without a key": (
+        [side("a", "many", {"name": "x", "type": "int"})],
+        "(tables[0]: Value error, a_input has many rows, so its key names its index, an Integer "
+        "or Text column it holds)",
+    ),
+    "a key of a Decimal": (
+        [side("a", "many", {"name": "x", "type": "float"}, key="x")],
+        "(tables[0]: Value error, a_input has many rows, so its key names its index, an Integer "
+        "or Text column it holds)",
     ),
     "a key on a one-row table": (
         [side("a", "one", {"name": "x", "type": "int"}, key="x")],
-        "(tables[0]: Value error, a_input's key 'x' is none of its many rows' columns)",
+        "(tables[0]: Value error, a_input has one row, so it has no index)",
     ),
     "a null key on an output side": (
         [side("a", "many", {"name": "x", "type": "int"}, of="output", key="x", null_key=1)],
-        "(tables[0]: Value error, a_output holds a null key, which only a keyed input side does)",
+        "(tables[0]: Value error, a_output holds a null key, which only an input side does)",
+    ),
+    # How the index gets its values is said on a table of outputs alone's output side alone.
+    "an index kind on an input side": (
+        [side("a", "many", {"name": "x", "type": "int"}, key="x", index_kind="numbered")],
+        "(tables[0]: Value error, a_input says how its index gets its values, which only the "
+        "output side of a table of outputs alone does)",
+    ),
+    "an index kind on a one-row output side": (
+        [side("a", "one", {"name": "x", "type": "int"}, of="output", index_kind="numbered")],
+        "(tables[0]: Value error, a_output has one row, so it has no index)",
+    ),
+    "an index of values without its values": (
+        [
+            side(
+                "a", "many", {"name": "x", "type": "str"}, of="output", key="x", index_kind="values"
+            )
+        ],
+        "(tables[0]: Value error, a_output holds its index's values exactly when its index "
+        "gives a row for each value)",
+    ),
+    "the old index field": (
+        [side("a", "many", {"name": "x", "type": "int"}, of="output", key="x", index="x")],
+        "(tables[0].index: Extra inputs are not permitted)",
     ),
     "a type that is not a column's": (
         [side("a", "one", {"name": "x", "type": "text"})],
@@ -720,7 +964,7 @@ _REFUSED = {
         "digits and underscores, not starting with a digit.",
     ),
     "a name used twice": (
-        [side("a"), side("a", "many")],
+        [side("a"), side("a", "many", {"name": "x", "type": "int"}, key="x")],
         "The Workbench Input's tables name 'a' twice.",
     ),
     # The editor binds a port by its name compared without case.
@@ -764,11 +1008,6 @@ _REFUSED = {
         [side("a", "one", {"name": "haute_x", "type": "int"})],
         "The Workbench Input's table 'a' has a column 'haute_x', and a name starting haute_ is "
         "the quote store's own.",
-    ),
-    "the store's row number in a many-row table": (
-        [side("a", "many", {"name": "table_index", "type": "int"})],
-        "The Workbench Input's table 'a' has a column 'table_index', the quote store's number "
-        "for each row of a many-row table.",
     ),
     "a table SQLite keeps": (
         [side("sqlite_x")],
@@ -850,7 +1089,7 @@ def test_the_sample_typed_while_building_is_one_quote_by_table_and_column_names(
         {
             "name": "premiums",
             "rows": "many",
-            "outputs": [column("premium", "float")],
+            "outputs": [index("line"), column("premium", "float")],
         },
         {"name": "untouched", "rows": "one", "inputs": [column("x")]},
     )
@@ -971,13 +1210,16 @@ def test_a_sample_with_an_empty_many_row_table_prices_as_its_quote_would_when_de
     ]
 
 
-def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() -> None:
+@pytest.mark.parametrize(("kind", "first", "third"), [("int", 1, 3), ("str", "1", "3")])
+def test_a_numbered_index_numbers_the_rows_as_they_stand_in_its_type(
+    kind: str, first: object, third: object
+) -> None:
     spec = form(
         {
             "name": "equipment",
             "rows": "many",
             "inputs": [
-                {**column("line", "str"), "index": True},
+                {**column("line", kind), "index": "numbered"},
                 column("item_id"),
                 column("value", "float"),
             ],
@@ -987,12 +1229,15 @@ def test_a_tables_index_is_an_integer_column_numbering_the_rows_as_they_stand() 
 
     (table,) = input_tables(spec)
 
-    # The index is an Integer, whatever type the form holds for it, and the table's key.
-    assert table.columns[2].model_dump() == {"name": "line", "type": "int"}
+    # The index is of the type the form holds for it, and the table's key.
+    assert table.columns[2].model_dump() == {"name": "line", "type": kind}
     assert table.key == "line"
     # Each row's number as the rows stand: the empty second row is not sent.
     assert sample_quote(spec) == {
-        "equipment": [{"line": 1, "item_id": "A"}, {"line": 3, "item_id": "B", "value": 5.0}]
+        "equipment": [
+            {"line": first, "item_id": "A"},
+            {"line": third, "item_id": "B", "value": 5.0},
+        ]
     }
 
 
@@ -1047,6 +1292,10 @@ def test_a_quote_is_typed_by_the_rule_the_view_applies(case: dict[str, Any]) -> 
     sample = spec.model_copy(update={"sample": case["values"]})
 
     assert (sample_quote(sample, untyped=locked) != {}) is case["typed"]
+    if "index_problems" in case:
+        assert [problem.message for problem in typed_index_problems(spec, case["values"])] == case[
+            "index_problems"
+        ]
 
 
 def test_a_whole_number_past_a_double_is_kept_exactly() -> None:
@@ -1072,14 +1321,18 @@ def test_the_rows_a_column_gives_a_table_are_read_by_the_rule_the_view_applies(
     assert preset_rows(table, case["rows"]) == case["read"]
 
 
-def test_the_sample_sends_every_row_a_column_gives_once_anything_else_is_typed() -> None:
+def test_the_sample_sends_every_row_an_index_of_values_gives_once_anything_else_is_typed() -> None:
     spec = form(
         {
             "name": "coverage",
             "rows": "many",
             "inputs": [
-                {**column("line", "str"), "index": True},
-                column("peril", options=["AOP", "EQ", "NW"], row_per_value=True),
+                column(
+                    "peril",
+                    options=["AOP", "EQ", "NW"],
+                    index="values",
+                    options_source={"file": "perils.csv", "column": "peril"},
+                ),
                 column("limit", "float"),
             ],
         }
@@ -1087,13 +1340,9 @@ def test_the_sample_sends_every_row_a_column_gives_once_anything_else_is_typed()
     # A value typed for NW alone, its row held first, and a row for a peril no longer allowed.
     spec.sample = {"coverage": [{"peril": "NW", "limit": "3"}, {"peril": "WD", "limit": "9"}]}
 
-    # Every peril's row is sent, a row holding its peril alone included, numbered as they stand.
+    # Every peril's row is sent, a row holding its peril alone included, in the values' order.
     assert sample_quote(spec) == {
-        "coverage": [
-            {"line": 1, "peril": "AOP"},
-            {"line": 2, "peril": "EQ"},
-            {"line": 3, "peril": "NW", "limit": 3.0},
-        ]
+        "coverage": [{"peril": "AOP"}, {"peril": "EQ"}, {"peril": "NW", "limit": 3.0}]
     }
     # The perils are not typing, nor is a value in a row left out: such a quote is empty, as
     # a blank one is, so the app's pricing and saving refuse it.
@@ -1119,7 +1368,7 @@ def test_a_value_in_a_column_the_sheets_hide_is_left_out_of_the_sample() -> None
             "name": "equipment",
             "rows": "many",
             "inputs": [
-                {**column("line", "int"), "index": True},
+                {**column("line", "int"), "index": "numbered"},
                 column("item_id"),
                 column("value", "float"),
                 column("leased", "bool"),
@@ -1477,7 +1726,11 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
         {
             "name": "layer_premiums",
             "rows": "many",
-            "outputs": [column("layer", "int", key=True), column("premium", "float")],
+            "outputs": [
+                index("layer_no"),
+                column("layer", "int"),
+                column("premium", "float"),
+            ],
         },
         {
             "name": "pricing_output",
@@ -1497,11 +1750,14 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
             "rows": "many",
             "columns": [
                 *IDENTITY,
+                {"name": "layer_no", "type": "int"},
                 {"name": "layer", "type": "int"},
                 {"name": "premium", "type": "float"},
             ],
-            "key": None,
+            "key": "layer_no",
             "null_key": None,
+            "index_kind": "numbered",
+            "index_values": [],
         },
         {
             "name": "pricing_output",
@@ -1511,6 +1767,8 @@ def test_output_tables_become_the_workbench_outputs_tables_in_schema_order() -> 
             "columns": [*IDENTITY, {"name": "charged_premium", "type": "float"}],
             "key": None,
             "null_key": None,
+            "index_kind": None,
+            "index_values": [],
         },
     ]
     assert [table.port for table in input_tables(spec)] == ["policy_details_input"]

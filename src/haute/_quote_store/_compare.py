@@ -47,7 +47,6 @@ from haute._quote_store._store import (
     reaching,
 )
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
-from haute._workbench_tables import TABLE_INDEX
 
 #: Each catalogue kind a form's column type is held as.
 _FORM_TYPES: Mapping[str, str] = {
@@ -308,7 +307,8 @@ def compare(
     made = plan(wanted, {"tables": matcher.tables}, matcher.counts, provider=provider)
     made = replace(made, activity=activity is None, notes=tuple(matcher.notes))
     for step in made.steps:
-        if step.kind == "reshape table":
+        # A retyped index is marked with its column's type, as any column's is.
+        if step.kind == "reshape table" and step.column_key is None:
             rows = next(
                 table["rows"] for table in wanted["tables"] if table["key"] == step.table_key
             )
@@ -342,9 +342,23 @@ def _match_table(
     form_columns = {column["name"] for column in table["columns"]}
     claimed: set[str] = set()
     matched: dict[str, tuple[CatalogueColumn, str | None]] = {}
+    # A many-row table's index is the database's key column after the identity, whatever
+    # either is named: paired first, without the analyst, so renaming the index renames that
+    # column and never adds one beside it, and no other column of either takes it by name.
+    index = next((column for column in table["columns"] if column["index"]), None)
+    keyed = [name for name in found.primary_key if name not in IDENTITY]
+    key_column = found.column(keyed[0]) if index is not None and len(keyed) == 1 else None
+    if index is not None and key_column is not None:
+        renamed_from = None if key_column.name == index["name"] else key_column.name
+        matched[index["key"]] = (key_column, renamed_from)
+        claimed.add(key_column.name)
     for column in table["columns"]:
         found_column = found.column(column["name"])
-        if found_column is not None:
+        if (
+            column["key"] not in matched
+            and found_column is not None
+            and found_column.name not in claimed
+        ):
             matched[column["key"]] = (found_column, None)
             claimed.add(found_column.name)
     taken: list[Rename] = []
@@ -365,8 +379,8 @@ def _match_table(
         matched[column["key"]] = (found_column, held_as)
         claimed.add(held_as)
         taken.append(pairing)
-    # The store's own columns, table_index among them whatever the table's rows, are no extras.
-    own = ({column.name for column in expected.columns} - form_columns) | {TABLE_INDEX}
+    # The store's own columns are no extras.
+    own = {column.name for column in expected.columns} - form_columns
     uncounted = not set(IDENTITY) <= {column.name for column in found.columns}
     live: list[dict[str, Any]] = []
     for column in table["columns"]:
@@ -398,7 +412,8 @@ def _match_table(
             f"{found.name}.{found_column.name}",
             quotes=quotes,
         )
-    many = found.column(TABLE_INDEX) is not None
+    # A table keyed by the identity alone is one row per quote, by one more column many.
+    many = len(keyed) > 0
     rows_differ = many != (table["rows"] == "many")
     for found_column in found.columns:
         if found_column.name in claimed or found_column.name in own:
@@ -409,11 +424,18 @@ def _match_table(
         )
         live.append(_live_column(found_column, key))
         matcher.count((table["key"], key), UNCOUNTED if uncounted else found_column.quotes)
-    matcher.own_columns(
-        table["key"], expected, found, form_columns | ({TABLE_INDEX} if rows_differ else set())
-    )
+    matcher.own_columns(table["key"], expected, found, form_columns)
     matcher.not_null_extras(table["key"], found, claimed | own)
-    for kind, said in table_problems(expected, found, refers=table["key"] != QUOTE_DETAILS_NAME):
+    # The key compared under the form's names: a column paired as renamed keys as its new name.
+    renamed = {
+        known_as: column["name"]
+        for column in table["columns"]
+        if column["key"] in matched and (known_as := matched[column["key"]][1]) is not None
+    }
+    as_named = replace(
+        found, primary_key=tuple(renamed.get(name, name) for name in found.primary_key)
+    )
+    for kind, said in table_problems(expected, as_named, refers=table["key"] != QUOTE_DETAILS_NAME):
         if not rows_differ:
             matcher.note(table["key"], None, kind, f"{found.name} {said}")
     matcher.tables.append(

@@ -323,7 +323,7 @@ _FORM_TABLES: list[dict[str, Any]] = [
         "name": "items",
         "rows": "many",
         "inputs": [
-            {"name": "row_number", "type": "int", "index": True},
+            {"name": "row_number", "type": "int", "index": "numbered"},
             {"name": "value", "type": "float"},
         ],
     },
@@ -478,18 +478,21 @@ class TestValidateDeployWorkbenchForm:
             "name": "layers",
             "rows": "many",
             "inputs": [
-                {"name": "row_number", "type": "int", "index": True},
                 {
                     "name": "layer",
                     "type": "int",
                     "options": ["1", "01", "2"],
-                    "row_per_value": True,
+                    "options_source": {"file": "layers.csv", "column": "layer"},
+                    "index": "values",
                 },
                 {"name": "limit", "type": "float"},
             ],
             "outputs": [{"name": "layer_premium", "type": "float"}],
         }
         _workbench_project(tmp_path, [*_FORM_TABLES, layers])
+        params = tmp_path / "rating" / "files" / "params"
+        params.mkdir(parents=True)
+        (params / "layers.csv").write_text("layer\n1\n01\n2\n", encoding="utf-8")
 
         assert _form_check_errors(tmp_path) == [
             "rating/workbench: layers.layer's allowed values 1 and 01 are one Integer, so they "

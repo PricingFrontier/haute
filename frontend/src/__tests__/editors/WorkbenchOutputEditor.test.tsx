@@ -21,6 +21,8 @@ const outputSide = (name: string, rows: WorkbenchTable["rows"], columns: Workben
   columns,
   key,
   null_key: null,
+  index_kind: null,
+  index_values: [],
 })
 const responseTables: WorkbenchTable[] = [
   outputSide("pricing", "one", [column("premium", "float"), column("referral", "str")]),

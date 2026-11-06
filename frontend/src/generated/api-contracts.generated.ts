@@ -5457,10 +5457,12 @@ export interface WorkbenchTablesResponse {
 }
 /**
  * A side of a schema table: its inputs or its outputs, a port of the node, one row per
- * quote or many, its columns, and, for a many-row input table, its key.
+ * quote or many, its columns, and, for a many-row table, its index, which keys its rows.
  */
 export interface WorkbenchTable {
   columns: WorkbenchColumn[];
+  index_kind: 'numbered' | 'typed' | 'values' | null;
+  index_values: (string | number)[];
   key: string | null;
   name: string;
   null_key: string | number | null;
@@ -5937,8 +5939,7 @@ export interface SchemaColumn {
   default_value: string | boolean;
   group: string;
   help: string;
-  index: boolean;
-  key: boolean;
+  index: 'numbered' | 'typed' | 'values' | null;
   label: string;
   max: number | null;
   min: number | null;
@@ -5948,7 +5949,6 @@ export interface SchemaColumn {
   options_source: OptionsSource | null;
   placeholder: string;
   required: boolean;
-  row_per_value: boolean;
   type: 'int' | 'float' | 'str' | 'bool' | 'date';
   use_grouping: boolean;
 }

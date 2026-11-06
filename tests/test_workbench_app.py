@@ -687,8 +687,8 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     assert priced.json()["tables"] == {
         "pricing": [{**identity, "premium": 100.0, "limit": 1000.0, "referral": "none"}],
         "item_prices": [
-            {**identity, "item_id": "A", "premium": 20.0},
-            {**identity, "item_id": "B", "premium": 60.0},
+            {**identity, "row_number": 1, "item_id": "A", "premium": 20.0},
+            {**identity, "row_number": 2, "item_id": "B", "premium": 60.0},
         ],
     }
 
@@ -872,22 +872,6 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
     )
     write_sheets(project, PROJECT_TABLES)
 
-    # Allowed values giving a table its rows that read as one Integer cannot key them: a
-    # layer's premium could not be put back on its row.
-    layers = form_table(
-        "layers",
-        {"name": "layer", "type": "int", "options": ["1", "01", "2"], "row_per_value": True},
-        ("limit", "float"),
-        outputs=[("layer_premium", "float")],
-        many=True,
-    )
-    write_sheets(project, [*PROJECT_TABLES, layers])
-    assert refused() == (
-        "The pipeline did not validate:\n  - workbench: layers.layer's allowed values 1 and 01 "
-        "are one Integer, so they cannot key its rows: correct the params file."
-    )
-    write_sheets(project, PROJECT_TABLES)
-
     # A folder gone is restored from version history, never built from a blank form.
     import shutil
 
@@ -897,6 +881,47 @@ def test_a_release_is_refused_for_what_the_project_cannot_ship(project: Path) ->
 
     (project / "haute.toml").write_text("[workbench]\nenabled = false\n", encoding="utf-8")
     assert "has no workbench" in refused()
+
+
+def test_a_release_refuses_index_values_that_read_as_one_integer(project: Path) -> None:
+    # Allowed values giving a table its rows that read as one Integer cannot key them: a
+    # layer's premium could not be put back on its row.
+    layers = form_table(
+        "layers",
+        {
+            "name": "layer",
+            "type": "int",
+            "options": ["1", "01", "2"],
+            "options_source": {"file": "layers.csv", "column": "layer"},
+            "index": "values",
+        },
+        ("limit", "float"),
+        outputs=[("layer_premium", "float")],
+        many=True,
+        index=None,
+    )
+    write_sheets(project, [*PROJECT_TABLES, layers])
+    # A params source belongs to a pipeline in its own folder.
+    rating = project / "rating"
+    rating.mkdir()
+    for name in ("main.py", "workbench", "config"):
+        (project / name).rename(rating / name)
+    toml = project / "haute.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            'pipeline = "main.py"', 'pipeline = "rating/main.py"'
+        ),
+        encoding="utf-8",
+    )
+    params = rating / "files" / "params"
+    params.mkdir(parents=True)
+    (params / "layers.csv").write_text("layer\n1\n01\n2\n", encoding="utf-8")
+    with pytest.raises(WorkbenchAppError) as refused:
+        build_release(project, project / "build" / "app")
+    assert str(refused.value) == (
+        "The pipeline did not validate:\n  - rating/workbench: layers.layer's allowed values "
+        "1 and 01 are one Integer, so they cannot key its rows: correct the params file."
+    )
 
 
 def test_a_build_replaces_only_a_release_it_made(project: Path) -> None:

@@ -485,7 +485,8 @@ def _row_values(
         if column is None:
             not_opened.append(f"{where}.{name}")
             continue
-        if column.index:
+        if column.index == "numbered":
+            # The sheets number the rows; a typed index or an index of values is a value.
             continue
         if value is not None and not _fits(column, value):
             not_opened.append(f"{where}.{name}")

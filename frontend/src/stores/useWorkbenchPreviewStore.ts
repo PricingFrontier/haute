@@ -9,7 +9,7 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import { basisOf, columnKey, quoteEligible } from "../utils/sheetVisibility"
+import { basisOf, columnKey, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import { pricingLoop } from "./pricingLoop"
@@ -50,9 +50,10 @@ interface WorkbenchPreviewState {
    * Price the quote as it is now, through the quote pricer the host set, the underwriter
    * app's, unless it is read only, already priced for these values, or holds nothing typed
    * in the cells the sheets show, the details the app sets and the defaults aside, when it has no price and
-   * nothing to say: a deployed request never holds a blank quote. The quote is read as the
-   * server makes it, the cells the sheets hide left out, and priced whatever its cells
-   * hold. One pricing runs at a time: asked again meanwhile, it prices once more when it
+   * nothing to say: a deployed request never holds a blank quote. While a typed index has a
+   * problem (`quoteIndexProblems`) it has no price and its first message as the error. The
+   * quote is read as the server makes it, the cells the sheets hide left out, and priced
+   * whatever else its cells hold. One pricing runs at a time: asked again meanwhile, it prices once more when it
    * finishes, on the quote as it is then. An answer that arrives after another quote was
    * opened, or after the host dropped its pricer, is nobody's.
    */
@@ -79,6 +80,12 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     if (readOnly || form === null || status !== "ready" || quotePricer === null) return
     if (!quoteEligible(form, quote, locked)) {
       set({ price: null, error: null })
+      return
+    }
+    // A typed index blank, repeated or too long keys no row: the server refuses the quote.
+    const [unkeyed] = quoteIndexProblems(form, quote)
+    if (unkeyed !== undefined) {
+      set({ price: null, error: unkeyed.message })
       return
     }
     const basis = basisOf(form, quote)

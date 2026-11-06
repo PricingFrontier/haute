@@ -80,10 +80,13 @@ def _table(
     many: bool = False,
     side: str = "output",
     key: str | None = None,
+    index_kind: str | None = None,
 ) -> dict[str, Any]:
     """A side of a table in the shape the workbench supplies: the Workbench Output's, or the
-    Workbench Input's, its port ``<name>_<side>``, keyed by *key* when it is a many-row input
-    table's (the null quote's row numbered 1, as an index numbers it)."""
+    Workbench Input's, its port ``<name>_<side>``. A many-row side is keyed by its index,
+    *key*, its first column of its own unless given: an input side's null quote row numbered
+    1, as a numbered index numbers it; an output side given without *key* is a table of
+    outputs alone's, its index the pipeline's (*index_kind* ``typed``) unless said."""
     table: dict[str, Any] = {
         "name": name,
         "side": side,
@@ -91,10 +94,16 @@ def _table(
         "rows": "many" if many else "one",
         "columns": [_column(column, kind) for column, kind in columns],
     }
-    if key is not None:
+    if many:
+        alone = key is None and side == "output"
+        own = [column for column, _ in columns if column not in ("quote_reference", "quote_option")]
+        key = key if key is not None else own[0]
         table["key"] = key
+        kind = dict(columns)[key]
         if side == "input":
-            table["null_key"] = 1
+            table["null_key"] = 1 if kind == "int" else "1"
+        elif alone or index_kind is not None:
+            table["index_kind"] = index_kind or "typed"
     return table
 
 
@@ -684,9 +693,10 @@ def test_generated_code_runs_a_workbench_output(project: Path) -> None:
     assert render_output_document(_collected(pipeline.run(source="live"))) == [
         {
             "pricing": {**_STAND_IN, "premium": 100.0, "limit": 1000.0, "referral": "none"},
+            # A table of outputs alone numbered by its index in the order it is answered.
             "item_prices": [
-                {**_STAND_IN, "item_id": "A", "premium": 20.0},
-                {**_STAND_IN, "item_id": "B", "premium": 60.0},
+                {**_STAND_IN, "row_number": 1, "item_id": "A", "premium": 20.0},
+                {**_STAND_IN, "row_number": 2, "item_id": "B", "premium": 60.0},
             ],
         }
     ]
@@ -700,7 +710,7 @@ def test_generated_code_runs_a_workbench_output(project: Path) -> None:
     assert render_output_document(_collected(scored)) == [
         {
             "pricing": {"premium": 50.0, "limit": 500.0, "referral": "none"},
-            "item_prices": [{"item_id": "Z", "premium": 14.0}],
+            "item_prices": [{"row_number": 1, "item_id": "Z", "premium": 14.0}],
         }
     ]
 
@@ -917,6 +927,7 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
     assert ran["item_prices"][0] == {
         "quote_reference": "PREVIEW",
         "quote_option": 1,
+        "row_number": 1,
         "item_id": "A",
     }
     scored = pipeline.score(
@@ -931,7 +942,7 @@ def test_generated_code_answers_under_the_quote_details_frame_it_has(project: Pa
         )
     )
     assert render_output_document(_collected(scored)) == [
-        {"pricing": {"premium": 7.0}, "item_prices": [{"item_id": "Z"}]}
+        {"pricing": {"premium": 7.0}, "item_prices": [{"row_number": 1, "item_id": "Z"}]}
     ]
 
 
@@ -974,7 +985,9 @@ def _no_tables(graph: PipelineGraph) -> None:
 
 def _no_columns(graph: PipelineGraph) -> None:
     for table in graph.node_map["workbench_output"].data.config["tables"]:
-        table["columns"] = []
+        # A table of no columns has none to key many rows by.
+        table.update(columns=[], rows="one", key=None, null_key=None, index_kind=None)
+        table["index_values"] = []
     graph.edges = [edge for edge in graph.edges if edge.target != "workbench_output"]
 
 
@@ -1230,7 +1243,16 @@ _EQUIPMENT_OUTPUT = _table(
 )
 
 
-_LAYERS_OUTPUT = _table("layers", ("layer", "int"), ("premium", "float"), many=True)
+#: A table of outputs alone numbered by the Workbench Output, its rows taken as they come.
+_LAYERS_OUTPUT = _table(
+    "layers",
+    ("layer_no", "int"),
+    ("layer", "int"),
+    ("premium", "float"),
+    many=True,
+    key="layer_no",
+    index_kind="numbered",
+)
 
 
 _KEYED_PORTS = ["equipment_output", "layers_output"]
@@ -1346,14 +1368,18 @@ def test_an_answer_row_holding_no_output_value_is_left_out_as_a_row_answered_not
     (kept,) = answered["equipment"]
     assert (kept["item_number"], kept["premium"]) == (6, 5.0)
     assert math.isnan(kept["loading"])
-    assert [row["layer"] for row in answered["layers"]] == [1, 1, None]
+    assert [(row["layer_no"], row["layer"]) for row in answered["layers"]] == [
+        (1, 1),
+        (2, 1),
+        (3, None),
+    ]
     assert answered["layers"][0]["premium"] is None
     assert math.isnan(answered["layers"][1]["premium"])
     assert answered["layers"][2]["premium"] == 2.0
 
 
-def test_a_table_of_outputs_alone_is_answered_as_it_comes_whatever_its_rows() -> None:
-    # Two rows of one layer: a table of outputs alone has no key to hold them to.
+def test_a_numbered_table_of_outputs_alone_is_answered_as_it_comes_whatever_its_rows() -> None:
+    # Two rows of one layer: a numbered index is Haute's, so nothing holds the rows to it.
     response = _keyed_response(
         {"item_number": [], "premium": []},
         [1],
@@ -1361,7 +1387,12 @@ def test_a_table_of_outputs_alone_is_answered_as_it_comes_whatever_its_rows() ->
     )
 
     assert render_output_document(_collected(response)) == [
-        {"layers": [{"layer": 2, "premium": 5.0}, {"layer": 2, "premium": 6.0}]}
+        {
+            "layers": [
+                {"layer_no": 1, "layer": 2, "premium": 5.0},
+                {"layer_no": 2, "layer": 2, "premium": 6.0},
+            ]
+        }
     ]
 
 
@@ -1379,6 +1410,55 @@ def test_a_node_preview_answers_a_misfit_without_refusing(engine: CollectEngine)
             ]
         }
     ]
+
+
+#: A table of outputs alone whose index is renamed layer_no: the Workbench Output numbers it.
+_NUMBERED_LAYERS = _table(
+    "layers",
+    ("layer_no", "int"),
+    ("layer", "int"),
+    ("premium", "float"),
+    many=True,
+    key="layer_no",
+    index_kind="numbered",
+)
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param({"layer": [3, 1, 2], "premium": [30.0, 10.0, 20.0]}, id="no index held"),
+        pytest.param(
+            {"layer_no": [9, 9, None], "layer": [3, 1, 2], "premium": [30.0, 10.0, 20.0]},
+            id="a misleading one held",
+        ),
+        pytest.param(
+            {"layer_no": ["x", "y", "z"], "layer": [3, 1, 2], "premium": [30.0, 10.0, 20.0]},
+            id="one of another type held",
+        ),
+    ],
+)
+@pytest.mark.parametrize("quoted", [False, True], ids=["a node preview", "a priced quote"])
+def test_a_table_of_outputs_alone_numbers_its_index_in_the_order_it_is_answered(
+    frame: dict[str, list[Any]], quoted: bool, engine: CollectEngine
+) -> None:
+    tables = assemble_workbench_output_from_config(
+        pl.LazyFrame(frame),
+        config={"tables": [copy.deepcopy(_NUMBERED_LAYERS)]},
+        ports=["layers_output"],
+    )
+    quote = {"layers_input": pl.LazyFrame({"layer": [1]})} if quoted else None
+
+    (answered,) = execution_collect(as_response(tables, quote), engine=engine).to_dicts()
+
+    # Numbered 1, 2, 3 as the rows come, whatever the frame held under its name.
+    assert [(row["layer_no"], row["layer"]) for row in answered["layers"]] == [
+        (1, 3),
+        (2, 1),
+        (3, 2),
+    ]
+    assert (tables.tables[0].key, tables.tables[0].index_kind) == ("layer_no", "numbered")
 
 
 #: The project's equipment: a table of inputs and outputs keyed by its index, renamed
@@ -1502,19 +1582,15 @@ def test_a_pipeline_dropping_the_key_column_fails_every_priced_quote(project: Pa
             [
                 form_table(
                     "equipment",
-                    {
-                        "name": "layer",
-                        "type": "int",
-                        "options": ["2", "1"],
-                        "row_per_value": True,
-                    },
+                    {"name": "layer", "type": "int", "index": "typed"},
                     ("value", "float"),
                     outputs=[("premium", "float")],
                     many=True,
+                    index=None,
                 )
             ],
             "layer",
-            id="an Integer preset column",
+            id="a typed Integer index",
         ),
     ],
 )
@@ -1525,8 +1601,8 @@ def test_with_no_sample_the_null_quote_prices_a_pipeline_carrying_the_key_throug
     main = _write(_equipment_pipeline(code), project, "main")
     spec = workbench_project(project, form)
 
-    # Run with no sample, as Preview prices it: the null quote's one row holds its key, 1
-    # or the first allowed value, and the answer carrying it through fits; its premium is
+    # Run with no sample, as Preview prices it: the null quote's one row holds its index, 1
+    # for a numbered or typed Integer one, and the answer carrying it through fits; its premium is
     # null, so the row holds no output.
     assert render_output_document(_collected(_import(main).pipeline.run(source="live"))) == [{}]
     # Deploy's dry run reads the null quote too, and fits.
@@ -1567,3 +1643,95 @@ def test_a_pipeline_has_one_response_node(project: Path) -> None:
         resolve_config(DeployConfig(pipeline_file=main, model_name="m"))
     with pytest.raises(ExecutionError, match="multiple response nodes"):
         _import(main).pipeline.run(source="live")
+
+
+def _products(kind: str, values: list[str] | None = None) -> dict[str, Any]:
+    """A table of outputs alone keyed by the product, its index the pipeline's."""
+    table = _table(
+        "products",
+        ("product", "str"),
+        ("premium", "float"),
+        many=True,
+        key="product",
+        index_kind=kind,
+    )
+    if values is not None:
+        table["index_values"] = values
+    return table
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+@pytest.mark.parametrize(
+    ("table", "frame", "says"),
+    [
+        pytest.param(
+            _products("typed"),
+            {"product": ["Fire", "Flood"], "premium": [1.0, 2.0]},
+            None,
+            id="typed, each its own",
+        ),
+        pytest.param(
+            _products("typed"),
+            {
+                "product": ["Fire", None, "Fire", "x" * 300, "", "   "],
+                "premium": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            },
+            "products_output does not fit products's rows: 3 rows have no product; product "
+            f'"Fire" is given twice; product "{"x" * 40}" is longer than 255 characters.',
+            id="typed, missing, twice and too long",
+        ),
+        pytest.param(
+            _products("values", ["Fire", "Flood", "Hail"]),
+            {"product": ["Hail", "Fire"], "premium": [1.0, 2.0]},
+            None,
+            id="of values, one not answered",
+        ),
+        pytest.param(
+            _products("values", ["Fire", "Flood"]),
+            {"product": ["Fire", "Fire", "Hail"], "premium": [1.0, 2.0, 3.0]},
+            'products_output does not fit products\'s rows: product "Fire" is given twice; '
+            'product "Hail" is none of its values.',
+            id="of values, twice and none of them",
+        ),
+    ],
+)
+def test_a_table_of_outputs_alone_takes_its_index_from_the_pipeline_by_its_kinds_rules(
+    table: dict[str, Any], frame: dict[str, list[Any]], says: str | None, engine: CollectEngine
+) -> None:
+    tables = assemble_workbench_output_from_config(
+        pl.LazyFrame(frame, schema={"product": pl.String, "premium": pl.Float64}),
+        config={"tables": [table]},
+        ports=["products_output"],
+    )
+    # A priced quote holds the rows to the index's rules; a node preview takes them as they
+    # are, checking nothing.
+    quote = {"policy_input": pl.LazyFrame({"x": [1]})}
+    preview = execution_collect(as_response(tables), engine=engine).to_dicts()
+    assert [row["product"] for row in preview[0]["products"]] == frame["product"]
+    if says is None:
+        (answered,) = execution_collect(as_response(tables, quote), engine=engine).to_dicts()
+        assert [row["product"] for row in answered["products"]] == frame["product"]
+    else:
+        with pytest.raises(WorkbenchOutputError, match=re.escape(says)):
+            execution_collect(as_response(tables, quote), engine=engine)
+
+
+@pytest.mark.parametrize("engine", ["streaming", "in-memory"])
+def test_a_numbered_text_index_of_outputs_alone_is_numbered_as_text(engine: CollectEngine) -> None:
+    table = _table(
+        "layers",
+        ("layer_no", "str"),
+        ("premium", "float"),
+        many=True,
+        key="layer_no",
+        index_kind="numbered",
+    )
+    tables = assemble_workbench_output_from_config(
+        pl.LazyFrame({"layer_no": [7, 7], "premium": [1.0, 2.0]}),
+        config={"tables": [table]},
+        ports=["layers_output"],
+    )
+
+    (answered,) = execution_collect(as_response(tables), engine=engine).to_dicts()
+
+    assert [row["layer_no"] for row in answered["layers"]] == ["1", "2"]

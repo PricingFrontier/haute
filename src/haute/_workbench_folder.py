@@ -60,6 +60,7 @@ from haute._workbench_folder_files import (
     COMPONENT_FILES,
     DETAILS_ANY,
     DETAILS_TYPED,
+    INDEX_VALUES_SETTINGS,
     INPUT_ONLY,
     NAME_PATTERN,
     NOT_IN_COMPONENT_FILE,
@@ -167,9 +168,7 @@ def folder_name_problems(spec: FormSpec, folder: Path) -> list[str]:
             names.add(column.name)
         # Each table is a table of its name in the quote store too, which also refuses two
         # columns whose names differ only in case: a column is known by its name (READ-23).
-        problems.extend(
-            store_name_problems(table.name, table.rows, [column.name for column in table.columns])
-        )
+        problems.extend(store_name_problems(table.name, [column.name for column in table.columns]))
     sheets: dict[str, str] = {}
     for page in spec.pages:
         name = sheet_name(page.title)
@@ -457,7 +456,14 @@ def _table_file_model(table: SchemaTable, problems: list[str]) -> TableFile:
     outputs: list[dict[str, Any]] = []
     for column in table.own_outputs:
         data = column.model_dump(mode="json")
-        for key in (*INPUT_ONLY, "index"):
+        # A table of outputs alone's index of values holds its allowed values as an input
+        # does, written as its params file's reference alone.
+        held = INDEX_VALUES_SETTINGS if column.index == "values" else ()
+        if column.index == "values":
+            data["options"] = []
+        for key in INPUT_ONLY:
+            if key in held:
+                continue
             if data.pop(key) != SchemaColumn.model_fields[key].get_default(
                 call_default_factory=True
             ):

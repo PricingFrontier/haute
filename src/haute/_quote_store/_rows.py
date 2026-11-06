@@ -4,24 +4,25 @@ A save's input rows come from one path: the cells, with the app's details set ov
 built into the request a pricing builds (:func:`haute._workbench_tables.quote_request_rows`:
 hidden cells left out, preset rows placed, numbers typed), each value then read by the rule
 a request is read by (:func:`haute._json_values.json_value`), with the quote's identity on
-every row and a many-row table's rows numbered as the sheet numbers them. A value its
-column's type does not hold refuses the save, naming every such cell. Output rows are the
+every row and a many-row table's rows keyed by its index, a numbered one holding each row's
+number on the sheet. A value its column's type does not hold, or a typed index blank,
+repeated or too long, refuses the save, naming every such cell. Output rows are the
 pricing's typed document's, a value that is not finite kept as null. Read back, each value is
-the cell text it reads as, a many-row table's rows in their places on the sheet, and the
-output tables are rendered as the pricing route renders them.
+the cell text it reads as, a many-row table's rows in its index's order, and the output
+tables are rendered as the pricing route renders them.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
 from haute._json_values import JsonValueError, json_value
 from haute._output_assembler import prune_document
-from haute._quote_store._store import MisfitCell, QuoteValuesError
+from haute._quote_store._store import MisfitCell, QuoteStoreError, QuoteValuesError
 from haute._workbench_form import (
     IDENTITY_NAMES,
     QUOTE_DETAILS_NAME,
@@ -31,17 +32,20 @@ from haute._workbench_form import (
     SchemaTable,
 )
 from haute._workbench_tables import (
-    TABLE_INDEX,
     WorkbenchTable,
     holds_output,
+    index_number,
+    index_order,
+    index_values,
     input_tables,
+    numbered_value,
     output_tables,
-    preset_column,
     preset_rows,
     priced_tables,
     quote_request_rows,
     request_columns,
     starting_value,
+    typed_index_problems,
 )
 from haute._workbench_visibility import visibility
 
@@ -61,6 +65,21 @@ _IDENTITY_NAMES = ("quote_reference", "quote_option")
 KEPT_KEY = "$kept"
 #: Each input table's kept columns, by table name, each by its name and kind.
 KeptColumns = Mapping[str, Sequence[tuple[str, str]]]
+
+#: Bound empty-row expansion independently of the number of populated schedule rows.
+MAX_NUMBERED_GAPS = 10_000
+
+
+def _check_numbered_gaps(table: SchemaTable, positions: Collection[int]) -> None:
+    """Refuse sparse business IDs before treating them as numbered grid positions."""
+    gaps = max(positions, default=0) - len(positions)
+    if gaps > MAX_NUMBERED_GAPS:
+        assert table.index is not None
+        raise QuoteStoreError(
+            f"{table.name}.{table.index.name} would create {gaps:,} empty rows in its numbered "
+            f"grid (limit {MAX_NUMBERED_GAPS:,}). Remove empty rows, use a Typed index, or "
+            "migrate the stored keys to consecutive row numbers."
+        )
 
 
 def _carries_kept(row: Mapping[str, Any]) -> bool:
@@ -158,9 +177,32 @@ def input_rows(
 ) -> dict[str, Rows]:
     """Each input table's rows for *values*, by table name, as the store writes them: a one-row
     table its one row, nulls where nothing is typed; a many-row table its typed rows, each
-    under its number on the sheet. Refused (:class:`QuoteValuesError`), naming each cell, when
-    any value is not of its column's type. With *kept*, the store's columns outside the form,
-    each row also writes back the values its kept field carries (READ-05)."""
+    under its index's value, a numbered one's its number on the sheet. Refused
+    (:class:`QuoteValuesError`), naming each cell, when a typed index is blank on a row holding
+    anything, repeated or too long (:func:`typed_index_problems`), or any value is not of its
+    column's type. With *kept*, the store's columns outside the form, each row also writes back
+    the values its kept field carries (READ-05)."""
+    problems = typed_index_problems(form, values, kept=None if kept is None else KEPT_KEY)
+    if problems:
+        index_labels = {
+            (table.name, column.name): _label(column)
+            for table in form.data_schema.tables
+            for column in table.columns
+        }
+        raise QuoteValuesError(
+            "The rows' keys are not their own, so the quote was not saved: "
+            + "; ".join(problem.message for problem in problems)
+            + ".",
+            cells=[
+                MisfitCell(
+                    table=problem.table,
+                    row=row,
+                    column=index_labels.get((problem.table, problem.column), problem.column),
+                )
+                for problem in problems
+                for row in problem.rows
+            ],
+        )
     request, numbers = quote_request_rows(
         form, values, carried=None if kept is None else _carries_kept
     )
@@ -181,6 +223,8 @@ def input_rows(
         else:
             records = [part if isinstance(part, dict) else {}]
         sheet = numbers.get(table.name, [])
+        if table.index is not None and table.index.index == "numbered":
+            _check_numbered_gaps(table, sheet)
         written: Rows = []
         for place, record in enumerate(records):
             row: dict[str, Any] = {}
@@ -197,10 +241,13 @@ def input_rows(
                     )
             row["quote_reference"] = reference
             row["quote_option"] = option
-            if many:
-                row[TABLE_INDEX] = sheet[place]
+            numbered = table.index
+            if numbered is not None and numbered.index == "numbered":
+                # A numbered index is the row's number on the sheet, and keys it in the store:
+                # set here too, since a row carried for its kept values gives the request none.
+                row[numbered.name] = numbered_value(numbered, sheet[place])
             if kept is not None and table.name != QUOTE_DETAILS_NAME:
-                # In the order the request's rows stand, a preset column's order included,
+                # In the order the request's rows stand, an index of values' order included,
                 # so each row's kept field is its own.
                 typed = preset_rows(table, values.get(table.name) or [])
                 index = sheet[place] - 1 if many else 0
@@ -235,8 +282,8 @@ def output_rows(
 ) -> dict[str, Rows]:
     """Each output table's rows from the pricing's typed *document*, by table name: none when
     the quote is saved unpriced; a value that is not finite as null; the quote's identity on
-    every row of a table leading with it; a many-row table's rows numbered in the pricing's
-    order."""
+    every row of a table leading with it; a many-row table's numbered index numbered in the
+    pricing's order, any other holding the answer's values."""
     by_name = {table.name: table for table in output_tables(form)}
     reference, option = identity
     rows: dict[str, Rows] = {}
@@ -254,8 +301,10 @@ def output_rows(
                 row["quote_option"] = option
             else:
                 row.update(quote_reference=reference, quote_option=option)
-            if table.rows == "many":
-                row[TABLE_INDEX] = place
+            index = table.index
+            if index is not None and index.index == "numbered":
+                # The Workbench Output numbered it so; the store keys the row by it.
+                row[index.name] = numbered_value(index, place)
             written.append(row)
         rows[table.name] = written
     return rows
@@ -312,15 +361,19 @@ _OUTPUT_ASIDE = frozenset({"quote_reference", "quote_option"})
 
 def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
     """The outputs held in *rows* (by table name) rendered as the pricing rendered them:
-    each output table's rows by name, without the store's row numbers, pruned and JSON-safe.
-    An input table gives its output side's columns of each stored row holding an output
-    value, a one-row table its one row's; a table of outputs alone its rows in order."""
+    each output table's rows by name, pruned and JSON-safe. An input table gives its output
+    side's columns of each stored row holding an output value, a one-row table its one
+    row's; a table of outputs alone its rows in its index's order, the index among them."""
     sides = {table.name: table for table in output_tables(form)}
     document: dict[str, Any] = {}
     for table in form.data_schema.tables:
         if not table.has_outputs:
             continue
-        held = sorted(rows.get(table.name, []), key=lambda row: row.get(TABLE_INDEX, 0))
+        held = rows.get(table.name, [])
+        index = table.index
+        if index is not None:
+            order = index_order(index, [row.get(index.name) for row in held])
+            held = [held[place] for place in order]
         if table.has_inputs:
             side = sides[table.name]
             names = [column.name for column in side.columns]
@@ -329,9 +382,7 @@ def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
                 held = [row for row in held if any(holds_output(row.get(n)) for n in outputs)]
             records = [{name: row.get(name) for name in names} for row in held]
         else:
-            records = [
-                {key: value for key, value in row.items() if key != TABLE_INDEX} for row in held
-            ]
+            records = [dict(row) for row in held]
         if table.rows == "many":
             document[table.name] = records
         elif records:
@@ -362,7 +413,7 @@ def _row_cells(
     details = table.name == QUOTE_DETAILS_NAME
     cells: dict[str, Cell] = {}
     for column in table.inputs:
-        if column.index or (not details and column.name in IDENTITY_NAMES):
+        if column.index == "numbered" or (not details and column.name in IDENTITY_NAMES):
             continue
         cell = _cell(row.get(column.name))
         if cell is not None:
@@ -377,10 +428,11 @@ def cells(
     form: FormSpec, rows: Mapping[str, Rows], kept: KeptColumns | None = None
 ) -> tuple[Values, list[str]]:
     """The values *rows* (by table name) read back as on the sheets, and each row that no longer
-    fits them: a many-row table's rows in their places by ``table_index``, a gap a blank row;
-    a preset row whose value is no longer allowed left out and named as ``table row N
-    (value)``; each empty cell the sheets hide in a one-row table starting at its default
-    (:func:`_hidden_defaults`). With *kept*, each row carries its values in the store's
+    fits them: a many-row table's rows in its index's order (:func:`index_order`), a numbered
+    index's in their places, a gap a blank row and a row whose index is no number after them;
+    a row of an index of values whose value is no longer allowed left out and named as
+    ``table row N (value)``; each empty cell the sheets hide in a one-row table starting at its
+    default (:func:`_hidden_defaults`). With *kept*, each row carries its values in the store's
     columns outside the form in its kept field (:data:`KEPT_KEY`)."""
     kept = kept or {}
     values: Values = {}
@@ -394,19 +446,46 @@ def cells(
             if row:
                 values[table.name] = [row]
             continue
-        given = preset_column(table)
-        placed: dict[int, dict[str, Cell]] = {}
-        for row in held:
-            number = int(row[TABLE_INDEX])
-            if given is not None:
-                value = row.get(given.name)
-                if value is not None and value not in given.options:
-                    dropped.append(f"{table.name} row {number} ({value})")
+        index = table.index
+        if index is None:
+            raise ValueError(f"{table.name} has many rows and no index")
+        stored = [row.get(index.name) for row in held]
+        ordered = [held[place] for place in index_order(index, stored)]
+        columns = kept.get(table.name, ())
+        if index.index == "numbered":
+            placed: dict[int, dict[str, Cell]] = {}
+            after: list[dict[str, Cell]] = []
+            for row in ordered:
+                number = _row_number(row.get(index.name))
+                cells_of = _row_cells(table, row, columns)
+                if number is None or number in placed:
+                    after.append(cells_of)
+                else:
+                    placed[number] = cells_of
+            _check_numbered_gaps(table, placed.keys())
+            listed = [placed.get(number, {}) for number in range(1, max(placed, default=0) + 1)]
+            listed.extend(after)
+        else:
+            allowed = set(index_values(index)) if index.index == "values" else None
+            listed = []
+            for place, row in enumerate(ordered, 1):
+                value = row.get(index.name)
+                if allowed is not None and value not in allowed:
+                    dropped.append(f"{table.name} row {place} ({value})")
                     continue
-            placed[number] = _row_cells(table, row, kept.get(table.name, ()))
-        if placed:
-            values[table.name] = [placed.get(number, {}) for number in range(1, max(placed) + 1)]
+                listed.append(_row_cells(table, row, columns))
+        if listed:
+            values[table.name] = listed
     return _hidden_defaults(form, values, rows), dropped
+
+
+def _row_number(value: Any) -> int | None:
+    """A numbered index's stored *value* as the row's number on the sheet, from 1, written as
+    Haute writes one; None for any other value, as one saved before the index was numbered
+    holds (``"01"`` or ``"Leeds"``), so a row stored as ``"1"`` keeps place 1 whatever else
+    reads as 1."""
+    number = index_number(value)
+    return number if number is not None and number >= 1 else None
 
 
 def _hidden_defaults(form: FormSpec, values: Values, rows: Mapping[str, Rows]) -> Values:

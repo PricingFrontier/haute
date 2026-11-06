@@ -297,19 +297,20 @@ Out of scope:
   one release has one row per quote and the other many (not compared), are listed once, at
   the head of the report, never against each quote. A field an answer leaves out is empty. A
   one-row table's row is compared column by column. A many-row table's rows are matched by
-  the columns that key it in both releases (its key, The form, below, which its answer
-  carries), each row by its key values, a row only one side
-  holds named as added or removed, a number in a key matched by its value (`1` is `1.0`,
-  and true is no number); when the two releases share no key column, rows are
-  matched by position when the two answers hold as many rows. A number (an integer or a
+  its index in each release, whatever its name there (The form, below, which its answer
+  carries), each row by its index's value, a numbered index of outputs alone never
+  compared as a value, a row only one side holds named as added or removed, a number in an
+  index matched by its value (`1` is `1.0`, and true is no number); two releases whose
+  indexes get their values in different ways, or are of different types, cannot match the
+  table's rows, and each quote holding it is named as no longer comparing. A number (an integer or a
   decimal, not true or false) has moved when it differs from production's by more than a
   millionth of a percent of it, or, from zero, by anything; any other value, an empty one
   against a value included, has moved when it is not the same. A moved number is shown as
   production's value, staging's and the difference, and, when production's is not zero, the
   difference as a percentage of production's size (its absolute value); a move from zero,
   from or to empty, or between a number and another kind of value has no percentage and is
-  counted in no rise or fall. A quote whose rows cannot be matched (a key value held twice on
-  one side, a key column empty, or rows matched by position whose counts differ) is named as
+  counted in no rise or fall. A quote whose rows cannot be matched (an index value held
+  twice on one side, an index empty, or indexes that differ as above) is named as
   no longer comparing, with the table and why.
 
   The report, `impact_report.md` in the working directory, is written on every run that
@@ -344,32 +345,59 @@ Out of scope:
   its table, no two there differing only in case whichever block holds them, a `type` of the
   Quote Input's column types (`str`, `int`, `float`, `bool`, `date`), a `label`, its
   `group` (a name it shares with the columns grouped with it, `""` for none, which a
-  Table showing groups draws over its labels), whether it
-  is a `key` (an output of a many-row table with no inputs, below), its rules (`required`, `min`,
+  Table showing groups draws over its labels), its rules (`required`, `min`,
   `max`, `options`, and `options_source`, the `file` in the pipeline folder's
   `files/params/` and the `column` the allowed values were read from, `null` for none,
-  or for values typed in, which only an older form holds), whether it gives its table a
-  row for each of its allowed values (`row_per_value`, below), whether it is the table's
-  `index`, the input numbering its rows
-  from 1, and how the sheets show it: its `help`, shown beside its label, its
+  or for values typed in, which only an older form holds), whether it is the table's
+  `index` and how the index gets its values (`numbered`, `typed` or `values`, below; null
+  for any other column), and how the sheets show it: its `help`, shown beside its label, its
   `placeholder`, what an empty input cell shows, its `default_value`, what a new quote
   starts with in it (text as typed, or `true` for a tick, `""` for none; only a one-row
   input table's columns start a new quote with theirs), and a number's format as an Explore
   pivot's values take one, `number_format` (`general`, `number`, `percent`,
   `currency_gbp`, `currency_usd`, `currency_eur`), `decimal_places` (0 to 10, or null for
   automatic) and `use_grouping`. An output holds no rule but `required`, no
-  `row_per_value`, no `default_value` and is never the index.
+  `default_value` and is the index only in a table of outputs alone, whose index of values
+  holds its allowed values and their source.
 
-  A table's key says which of its rows is which, and no underwriter types it. A one-row
-  table needs none: the quote's identity is its row's. A many-row input table is keyed by
-  the column that gives it a row for each of its allowed values while one does (A row for
-  each value, below), and otherwise by its index, which every many-row input table has, so
-  its key is filled on every row and unique: the sheets number the rows, and a column's
-  allowed values must be distinct to give them (A row for each value, below). A many-row table of outputs
-  alone is keyed by its outputs marked `key`, which pricing fills; no other column is a
-  `key`. A table with both blocks carries its key to its outputs: the pipeline's frame of
-  its outputs holds its key column, and each output row pricing gives belongs to the input
-  row holding its key value (The Workbench Output, below). Every schema holds Haute's own table of a quote's
+  Every many-row table has exactly one index, `table_index` until renamed, an Integer or
+  Text column straight after the quote's identity: among the outputs of a table of outputs
+  alone (one holding outputs of its own, the index aside, and no typed input), and among
+  the inputs of any other (a table holding no column of its own yet, as one just switched
+  to many rows, has its index among its inputs and no rows). A one-row table has no index.
+  The index gets its values one of three ways:
+  - **Numbered** (`numbered`, a new index's): Haute numbers the rows 1, 2, 3, an input
+    table's as the sheets' grids number them, blank rows counted, and a table of outputs
+    alone's in the order pricing gives its rows; a Text index holds the numbers as text,
+    `"1"`, `"2"`, and is ordered by them as numbers. Nobody types it and no pipeline fills it.
+  - **Typed** (`typed`): an input table's index is typed by the underwriter on each row,
+    such as a location's name, and must be filled on every row and different on each row of
+    a quote: a row holding anything without it, or two rows holding one value, are named
+    as the sheets show them, and the quote is neither saved nor priced while one stands. A
+    table of outputs alone's typed index is the pricing's to fill, each answer row's its own.
+  - **A row for each value** (`values`): the index takes its allowed values from a params
+    file's column (`options_source`), in their order, and each quote has exactly one row for
+    each of them (A row for each value, below), the index holding its row's value.
+
+  The index is each row's own column in the quote store, whose key for a many-row table is
+  the quote's identity with the index, so the project names it for what its rows are
+  (`item_number`, `location_name`, `peril`) and the store's column takes that name; there is
+  no other row number. A Text index's values are at most 255 Unicode characters and
+  366 UTF-16 code units (a supplementary Unicode character uses two units). Together
+  with the longest quote reference and its option this fits SQL Server's 900-byte
+  primary key: 160 bytes for the reference, 8 for the option and 732 for the index. A params
+  file's value longer than that refused as the file is read. The index takes a label, a
+  group, help and, an Integer, a number format as any column does, a typed one a
+  placeholder, and the values kind its allowed values, which give its rows; it takes no
+  `required` (it is always filled), no range and no default. A numbered index is the
+  sheets' numbering, never a value a condition tests, a Chart plots or labels its rows by
+  or an Import fills; a typed index or one of values is a value like any column's.
+
+  A table's key says which of its rows is which: the quote's identity is the key of every
+  table, and of a many-row table with its index; nothing else is a key. The schema editor
+  outlines these key columns' name cells in light blue. A table with both blocks carries its index to its outputs: the pipeline's frame of
+  its outputs holds the index, and each output row pricing gives belongs to the input row
+  holding its index's value (The Workbench Output, below). Every schema holds Haute's own table of a quote's
   details, `quote_details`, first: one row, inputs alone, a quote's administration whatever the
   company or line of business, its columns `quote_reference`, `quote_option`,
   `quote_name`, `insured`, `broker`, `inception_date`, `expiry_date`, `is_renewal`,
@@ -485,13 +513,13 @@ Out of scope:
   `not_one_of`, with one or more, for a Text or number column; and `above`, `at_least`,
   `below` or `at_most`, with one, for a number or a Date column. A condition on a many-row
   table's rows names the table and the tests a row must pass, all in the same row
-  (`where`), each a column of the table other than its index by name, a test and its values,
+  (`where`), each a column of the table other than a numbered index by name, a test and its values,
   every test's column, and a total's, of one block, its inputs or its outputs,
   as a one-row table's condition has them; and which rows: `any` of them or `every` one
   (`rows`), with one test or more; how many, by a test (`op`, `equals`, `not_equals`,
   `above`, `at_least`, `below` or `at_most`) and a whole number of rows, 0 or more
   (`count`); or the `sum`, `min`, `max` or `average` (`total`) of a number column's values
-  in them (`column`, not the index), by such a test and a number typed as text (`value`).
+  in them (`column`, not a numbered index), by such a test and a number typed as text (`value`).
   The sample holds, by table
   name, rows keyed by column name, each an input's value as typed: text or a tick. The blank form, which
   `haute init --workbench` writes, is one sheet 1280 wide holding one section 560 tall,
@@ -515,7 +543,7 @@ Out of scope:
     {
       "rows": "many",
       "inputs": [
-        {"name": "item_number", "type": "int", "index": true},
+        {"name": "item_number", "type": "int", "index": "numbered"},
         {"name": "limit", "type": "float"}
       ],
       "outputs": [
@@ -529,10 +557,12 @@ Out of scope:
     given (a label, group, help, placeholder or number format on any of them; a rule or a
     default on those the underwriter types); the table's rows and blocks and its columns'
     types and order are Haute's and never written. The identity columns are written in no
-    table, and a table's key column only among its inputs, though the pipeline's frame of its
-    outputs holds it too. An output holds no rule but `required` (no `min`, `max`, `options`
-    or `options_source`), no `row_per_value`, no `default_value` and no `index`, and a `key`
-    only in a many-row table with no inputs.
+    table, and a table's index only where it stands, first among its inputs, or first among
+    the outputs of a table of outputs alone, though the pipeline's frame of its outputs holds
+    it too, with how it gets its values (`"index": "numbered"`, `"typed"` or `"values"`). An
+    output holds no rule but `required` (no `min`, `max`, `options` or `options_source`) and
+    no `default_value`, but an output-only table's index of values its `options_source`;
+    nothing is written as a `key`.
   - `sheets/<sheet>.json` for each sheet the index names, named by its title made a name
     (below): its `title`, `width`, `show_when` and `sections`, each section its `title`,
     `height`, `show_when` and `components`, where its components sit: each by its name
@@ -732,7 +762,11 @@ Out of scope:
     the quote's `quote_reference` and `quote_option`) and each column of the form's tables
     that the database holds and the form does not is listed with the quotes holding values
     in it, and such a column is paired with a column of its table that the form has and the
-    database lacks, chosen beside it, as a rename; the database matching the form is said.
+    database lacks, chosen beside it, as a rename; a many-row table's index the database
+    holds under another name, its key column after the quote's identity, is paired with
+    the form's index without being chosen, marked renamed, and the table's key compared
+    under the form's names; a table the database keys by the identity alone is one row, and
+    by one more column many; the database matching the form is said.
     An environment with no connection, one that cannot be read
     or a database that cannot be reached or refuses the sign-in is said, naming the file and
     the variables to set, never a server, a database, a user, a credential or a value read.
@@ -802,14 +836,30 @@ Out of scope:
     again.
 - **The schema editor.** The form's tables, each with its name, its rows (One row per quote,
   or Many rows) and its columns under two headings, Inputs (sent to the pricing engine) and
-  Outputs (returned by it), each with its own Add column, a heading over no column of its
-  own showing Add column alone; each column with its type, drawn as the step editor's marker for
+  Outputs (returned by it), each populated block with its own Add column. A block with
+  no ordinary columns offers Add inputs or Add outputs instead of a heading and Add column.
+  A new table therefore offers both choices, with its automatic identity and any index
+  visible above them without an Inputs heading. Choosing a side adds its first Text
+  column, focuses its name, and places the keys with the chosen block in one undo step;
+  the other side stays available through its Add action. Removing or moving away the last
+  ordinary column restores that side's Add action. The automatic keys alone never enable
+  a block, and Enter in an index name only commits while neither side has ordinary columns.
+  An Add inputs or Add outputs action also accepts a column dragged from the other side,
+  using the same move operation as dropping on a populated heading. Preview and search
+  offer none of these Add actions, and quote_details keeps its fixed Inputs block.
+  This changes only the presentation: the canonical schema still places an empty table's
+  keys among its inputs until the existing column operations place them with its blocks.
+  Each column has its type, drawn as the step editor's marker for
   the kind (a number, text, true/false, a date) in the data preview's colour and changed
-  from it, its name and, among the outputs of a many-row table with no inputs of its own,
-  whether it is a key, blue on a key and grey otherwise; the column keying a table with
-  inputs is marked as its key in blue and its other columns grey, marks that are not
-  controls; the quote's identity and a one-row table's columns show no key. A column's
-  label, group
+  from it, and its name. The name cells of `quote_reference`, `quote_option` and the table's
+  index have a thin light blue outline, including the identity in `quote_details` and
+  the keys repeated under Outputs. The index is identified by its role, so a renamed
+  index keeps the outline and an ordinary column named `table_index` does not acquire it.
+  Ordinary fields and store-only columns keep their normal border. The outline remains
+  in Preview, preserves the existing fills, and leaves keyboard focus visible; there is
+  no key icon or toggle. A many-row table's index offers how it gets its values,
+  Numbered, Typed or A row for each value, inside its config panel, and its type is Integer or
+  Text alone. A column's label, group
   and help open beside it, the group offered from those its table's columns have, the boxes
   holding no hint text; for an Integer or a Decimal other than the index, its format, decimal
   places and thousands separators, separators ticked under General making it a Number as
@@ -835,30 +885,40 @@ Out of scope:
   something to say, cut short as the pane narrows and whole on hover: for any
   column, required; for an input, its range in its own format, its default (in its format, or
   "ticked" for True/false), its allowed values counted with the file they came from and
-  "a row each" for the column giving its table's rows; and, for any column, the format of
-  a number column other than the index unless it shows numbers as typed (General with
+  "a row each" for an index of values; and, for any column, the format of
+  a number column other than a numbered index unless it shows numbers as typed (General with
   automatic decimals): the format's name, a currency's as its sign and code, its decimal
   places when chosen, and "no separators" when they are off.
   Every text field
   commits on blur or Enter, so an edit is one undo step; Enter in the last column's name
-  adds the next column in its block, and in any other only commits it, a new column, by
+  of a populated block adds the next column there, and in any other only commits it, a new column, by
   Enter or its block's Add column, taking the type of the column above it, Text first in
   its block or under its index; a column is dragged by its grip within its block or into
   the other block of its table, or moved by Alt+Up and Alt+Down in its name within its
   block, a table likewise by the grip beside its name or Alt+Up and Alt+Down in it, and a
   new table's or column's name takes the focus. A column moved to the outputs loses what
-  only an input takes, its rules but Required, its default and its row for each value, and
-  its values in the sample, which only what is typed takes; one moved to the inputs loses
-  its key. A table left with no inputs, its last moved to the outputs or removed, loses its
-  rows in the sample, which holds input tables' alone and whose save refuses any other's.
-  Each change is one edit. A many-row input table has its index, a column first in
-  its inputs after the quote's identity, `row_number` until renamed, an Integer whose type
-  cannot change, numbering the rows from 1, which neither a drag nor Alt+Up and Alt+Down
-  moves or passes and which has no remove: the editor gives a table its index, in the same
-  edit, as a many-row table gains its first input or a table with inputs switches to many
-  rows, and takes it away as its last other input goes or it switches to one row, with
-  what shows it. A table gaining its first input loses its outputs' keys, and switching a
-  table to one row clears them; switching it to many rows clears its columns' defaults.
+  only an input takes, its rules but Required and its default, and its values in the
+  sample, which only what is typed takes. A table left with no inputs, its last moved to
+  the outputs or removed, loses its rows in the sample, which holds input tables' alone and
+  whose save refuses any other's.
+  Each change is one edit. A many-row table's index (above) is first after the quote's
+  identity in the block it belongs to, `table_index` until renamed, which neither a drag
+  nor Alt+Up and Alt+Down moves or passes and which has no remove; it is renamed as any
+  column is, its label is what the sheets show, its type is Integer or Text, and how it
+  gets its values is chosen inside the panel opened by its config button: Numbered, Typed (the underwriter's in an input
+  table, the pricing's in a table of outputs alone) or A row for each value, whose params
+  file and column appear in that same panel, chosen as allowed values are and refreshed
+  the same way. The kind choice is shown only while the config panel is open, never
+  beside the field name; opening or closing it changes no schema or undo history, and
+  in Preview it opens with its controls disabled. Taking its
+  values away, or choosing Numbered or Typed, leaves it numbered or typed, its allowed
+  values gone; it takes no Required, range or default, and a placeholder while it is typed
+  alone. The editor gives a table its index, numbered, in the same edit, as it switches to
+  many rows; moves it, its name and its settings kept, to the head of the outputs after the
+  identity as a table holding outputs loses its last typed input, and back to the inputs as
+  it gains one or loses its last output but the index; and takes it away, with what shows
+  it, as the table switches to one row. Switching a table to many rows clears its columns'
+  defaults.
   Removing a column or a table a sheet shows, a
   sheet's, a section's or a component's condition tests, or an Import or an Export uses,
   asks first, and takes it off the
@@ -874,12 +934,11 @@ Out of scope:
   its case, and its ports, the name with `_input` and with `_output`, are held to the port
   rules the Quote Input's labels are held to (an identifier, none of the document's
   reserved labels), a column's name is an identifier that is not a Python keyword,
-  as the server holds it, unique in its table across its blocks, a many-row table of
-  outputs alone needs a key, an input
+  as the server holds it, unique in its table across its blocks, an input
   column's range must not be inverted and its allowed values must be of its type and
   read from a params file, not typed in, as an older form may hold them, True/false and
-  Date columns can have none, a column giving its table's rows must have allowed values
-  that stay distinct in its type, and a default must be a value its column
+  Date columns can have none, an index of values must have allowed values that stay
+  distinct in its type, a Text one's each within the character and UTF-16 limits above, and a default must be a value its column
   takes: a tick for True/false, else text of its type, within its range and one of its
   allowed values. Haute's `quote_details` table, first, keeps
   its structure and its place: its name and rows, its inputs alone and its columns' names,
@@ -892,16 +951,14 @@ Out of scope:
   renamed, retyped, moved or removed, and taking no label, group, help, rule, default or
   format; a table added has them at once, under Inputs, and an index goes after them. A
   table with both blocks shows them at the head of its Outputs too, on that grey, followed in
-  a many-row table by its key column (its index, or the column giving its rows), as the
-  Workbench Output's table of it carries them: rows of what the pricing returns, not columns
-  of the block, with nothing to change. They are not keys,
-  and the sheets are never offered them: a component's fields, a Show when's columns and a
-  Chart's rows leave them out. A many-row table's `table_index`, the quote store's number for
-  each of its rows (below), shows after the identity at the head of the table, with what it
-  holds and its name on that grey; under each table's own columns are the others the quote
-  store keeps in it that the form does not, quote_details' own, shown the same. Nothing of
-  them changes, and a search shows none of them, nor the Outputs' identity and key. A
-  column's Label and rules button and its Remove always show.
+  a many-row table by its index, as the Workbench Output's table of it carries them: rows of
+  what the pricing returns, not columns of the block, with nothing to change. The sheets are
+  never offered them: a component's fields, a Show when's columns and a
+  Chart's rows leave them out. Under each table's own columns are those the quote store
+  keeps in it that the form does not, quote_details' own, each with what it holds and its
+  name on that grey. Nothing of them changes, and a search shows none of them, nor the
+  Outputs' identity and index. A column's Label and rules button and its Remove always show,
+  but the index's Remove, which it has none of.
 - **The sheets.** A sheet is a canvas on an 8px snap grid as wide as its width and as
   long as its sections, drawn at the zoom from its viewport's top-left corner, so it
   stays beside the palette and under the tabs: zooming out draws it smaller, the canvas
@@ -944,8 +1001,11 @@ Out of scope:
   landing at the nearer; resized past the right edge, it widens the sheet, as does
   a component dropped onto a sheet narrower than itself, and the sheet never narrows of
   its own accord. A component is drawn in its
-  section where the form places it: a Table as a grid of its rows with a column per field it shows, the index
-  column numbering the rows, under a header of its labels, as written unless `header` is
+  section where the form places it: a Table as a grid of its rows with a column per field it shows, an
+  input table's numbered index numbering the rows as the grid does, a typed one taking the
+  underwriter's typing as any input does, one of values showing each row's value, and a table of outputs
+  alone's index showing the value of the answer row the grid row lines up with, a dash
+  before a price and on a row no answer row reaches, under a header of its labels, as written unless `header` is
   `caps`, in capitals, that stays in view as
   the rows scroll and is ruled off from them whatever the gridlines, drawn as its options
   say: its rows numbered in a column of their own unless `row_numbers` is off, compact rows
@@ -1110,8 +1170,8 @@ Out of scope:
   its look and its Show when), a
   Chart's chart (its type, Column, Line,
   Area or Pie; while it plots many-row tables, what labels its rows, "Row number" or a
-  column of a table whose rows line up with its fields, other than an index, by table and
-  label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
+  column of a table whose rows line up with its fields, other than a numbered index, by
+  table and label; its legend, Bottom, Top, Left, Right or None; and whether it is stacked, horizontal
   and shows its values as data labels, a pie being neither stacked nor horizontal), and
   the order of the fields it shows, moved
   by dragging or Alt+Up and Alt+Down, each with a cross that stops showing it, and in a
@@ -1123,7 +1183,8 @@ Out of scope:
   Chart, each table
   collapsible with how many of its columns show, its inputs and then its outputs under
   those headings, each column with its type's
-  icon, its name and its label, a Chart's columns other than numbers and an index disabled,
+  icon, its name and its label, a Chart's columns other than numbers and a numbered index
+  disabled,
   since a Chart plots numbers. A search box over the tables filters them as it is typed,
   as the schema's does: only the columns whose name or label, as the list shows it,
   holds the text, whatever its case, show, in the tables holding one, each open though
@@ -1136,11 +1197,18 @@ Out of scope:
   its place in the count with it, a field ticked goes after any spacer at the end, and
   one left showing no fields keeps no spacers.
   A grid holds one kind of row, so once a Table shows a
-  field, tables whose rows do not line up with it (keyed by other columns, or keyless) are
-  greyed out with their unticked columns disabled; a table's inputs and outputs always line
-  up, row by row, and two tables keyed alike, by key columns of the same names and types,
-  line up. A Chart's fields and the column labelling its rows line up the
+  field, tables whose rows do not line up with it are greyed out with their unticked
+  columns disabled; a table's inputs and outputs always line up, row by row, a table whose
+  index is numbered with no other, two tables whose typed indexes share a name and a type
+  line up by value, and two whose indexes take their values from the same params file's
+  column and are of one type line up by value. A Chart's fields and the column labelling its rows line up the
   same way, the first of them deciding, and one-row tables all line up with one another.
+  With several input tables, the first table's rows give the display order; an index
+  found only in a later table adds a row at the end. A missing row shows blank cells,
+  never another row's values. Typing into such a cell creates that table's row with the
+  displayed index. Edits and row deletion target the underlying rows by this mapping.
+  Unkeyed rows remain editable placeholders, shared in order while their indexes are blank;
+  repeated indexes remain separate rows and keep their validation errors.
   With no table of the component's kind in the schema, the panel says so and offers the
   schema. A Table's and a Collection's panel puts these in two panes under its header, as
   Haute's node panel puts an Explore node's in panes: **Config**, the data it shows, its
@@ -1171,8 +1239,9 @@ Out of scope:
   tables, "None" first, a table chosen
   dropping the column names given for the last; while it fills a many-row table, Rows,
   Replace, Append or Update by key; and while it fills a table, Columns, a row for each of
-  the table's inputs an underwriter types (neither the quote's identity nor its index,
-  nor an output, and in quote_details no column the app sets), each with its type's icon, its label, and
+  the table's inputs an underwriter types (neither the quote's identity, a numbered index
+  nor an index of values, nor an output, and in quote_details no column the app sets, but
+  a typed index), each with its type's icon, its label, and
   the name it is read from in a text field showing the column's own while it has none,
   committed on blur or Enter, a blank one taking the column's name away, and a name given
   a column it cannot fill a row of its own, the column's label or "Missing column", with a
@@ -1203,7 +1272,7 @@ Out of scope:
   while it is the sheet's only section. Pressing the empty sheet, Escape, the panel's close,
   or selecting a component or another section closes either. Show when reads "Always" while there are no
   conditions, and Add condition adds one on the first column of a one-row input table, else
-  on any row of a many-row one with a test of its first column but the index,
+  on any row of a many-row one with a test of its first column but a numbered index,
   with the first test its type takes and no value yet; Add group adds a group holding such
   a condition, its conditions all needed while the Show when needs any and any while it needs
   all, in a frame of its own with its own Add condition and a cross that removes it, as
@@ -1227,16 +1296,18 @@ Out of scope:
   and never read as 1 and 0; and a cross that removes it. A test of one value may take
   another field of its column's type in place of a value typed: beside the test, while
   there is such a field, a select of "Value" and those fields, a one-row table's
-  inputs by table, or, in a test of a row, the other columns of its block but the index;
+  inputs by table, or, in a test of a row, the other columns of its block but a numbered
+  index;
   a Date tested against another Date then takes a whole number of days added to that
   date, a negative number taking them away, up to 36,500 either way, `completion_date`
   "is after" `start_date` + 365 days. There is no test against today: a saved quote would
   show other sheets, and be priced otherwise, on another day, so a date field on the
   form stands in for it. A condition on a table's rows
   says which rows, Any row, Every row, Number of rows, or the Sum, Smallest, Largest or
-  Average of a number column of the table other than its index, chosen beside it, then its
-  tests of a row, all passing in the same row, each a column of the table other than its
-  index with its test and value as above and a cross, and Add test; Any row and Every row
+  Average of a number column of the table other than a numbered index, chosen beside it,
+  then its tests of a row, all passing in the same row, each a column of the table other
+  than a numbered index with its test and value as above and a cross, and Add test; Any
+  row and Every row
   need a test, so their only one has no cross; Number of rows and a total end with their
   test, a number's ("equals" to "is at most"), and a whole number of rows, 0 or more, or a
   number, typed into a field that refuses anything else.
@@ -1245,7 +1316,7 @@ Out of scope:
   they fit the test, and the field it is tested against while that is of the column's
   type and not the column itself; a test that takes no value or several leaves the field
   and its days. Choosing a table's rows starts Any row with a test of its first column
-  but the index, or, for a condition on a column of the table, a test of that column as
+  but a numbered index, or, for a condition on a column of the table, a test of that column as
   the condition has it, against the same field while that is another column of the table;
   choosing a one-row table's column for a condition on rows keeps its test of that column,
   if it has one, against the same column of the table, which a test of a row names alone.
@@ -1329,35 +1400,30 @@ Out of scope:
   the details the app sets aside, is neither marked nor priced nor saved, as a blank one is
   not, and a value typed equal to its column's default counts as the default. A many-row
   table's columns take no default.
-- **A row for each value.** A column of a many-row input table that has allowed values can
-  give the table a row for each of them, in their order (`row_per_value`), such as a
-  coverage table with a row for each peril: the table then has those rows, each holding
-  its value in that column, a new quote's included, and since its allowed values come from
-  a params file, the rows follow a refresh and `haute app build`. The rows are read so
-  wherever a table's values are read, on the sheets and in what the server prices, whatever
-  the sample or a quote holds: each value's row is the first holding it there,
-  the rows holding nothing there fill the rows left in order, and any other row is left
-  out. Each row is filled by its value, so once anything else in the quote is typed every
-  one goes to the pipeline, its value too whatever the sheets hide, as the index's does,
-  since it keys the row; a Chart plots each and a Table's output columns line up with each; but
-  a row's value is not typing: a quote holding nothing else typed, a row left out included,
-  is neither marked nor priced nor saved, and the server takes it as the empty quote, as it
-  takes a blank one. A grid showing the table shows its rows, whatever its rows and fixed
-  rows, with no row inserted or deleted, the column's cells showing each row's value as text,
-  which takes no typing, and a value typed into the grid writes all its rows. A grid
-  showing it beside another many-row table whose rows are not the same (another column's
-  values, or rows of its own) shows every row of each, a table's cells past its own rows
-  taking no typing, and says its tables' rows do not line up. The first such column in
-  a table gives its rows: ticking another unticks it, and a form holding two names the
-  second among the schema's problems. While it gives them it is the table's key (The form,
-  above), each output row pricing gives belonging to the row holding its value, so its
-  allowed values must be distinct in its type: two that read as one number (`1` and `01`
-  in an Integer column, `1.5` and `1.50` in a Decimal one) are a schema problem, refused by `haute app
-  build` and `haute deploy`, naming the values and the params file to correct. An output,
-  a column of a one-row table, the index
-  and one without allowed values give none; taking a column's allowed values away,
-  retyping it to True/false or a Date, or switching its table to one row unticks it, and
-  unticked, its rows stay as values typed.
+- **A row for each value.** A many-row input table whose index takes its values from a
+  params file (`values`, The form, above) has a row for each of them, in their order, such
+  as a coverage table with a row for each peril: the table then has those rows, each
+  holding its value in its index, a new quote's included, and the rows follow a refresh of
+  the values and `haute app build`. The rows are read so wherever a table's values are read,
+  on the sheets and in what the server prices, whatever the sample or a quote holds: each
+  value's row is the first holding it there, the rows holding nothing there fill the rows
+  left in order, and any other row is left out. Each row is filled by its value, so once
+  anything else in the quote is typed every one goes to the pipeline, its value too
+  whatever the sheets hide, since it keys the row; a Chart plots each and a Table's output
+  columns line up with each; but a row's value is not typing: a quote holding nothing else
+  typed, a row left out included, is neither marked nor priced nor saved, and the server
+  takes it as the empty quote, as it takes a blank one. A grid showing the table shows its
+  rows, whatever its rows and fixed rows, with no row inserted or deleted, the index's
+  cells showing each row's value as text, which takes no typing, and a value typed into the
+  grid writes all its rows. A grid showing it beside another many-row table whose rows are
+  not the same shows every row of each, a table's cells past its own rows taking no typing,
+  and says its tables' rows do not line up. The values key the rows, so they must be
+  distinct in the index's type: two that read as one number (`1` and `01` in an Integer
+  index) are a schema problem, refused by `haute app build` and `haute deploy`, naming the
+  values and the params file to correct. A table of outputs alone whose index takes values
+  holds a row for each value the pricing answers, each value answered at most once and none
+  but its own. Taking the index's values away makes it numbered, its rows staying as
+  numbered rows.
 - **The sample.** Typing into a component's input columns in Preview types the form's
   sample: the quote an analyst keys in as an underwriter would, saved with the form and
   what the pipeline's previews run on (the Workbench Input, below). A Collection's boxes
@@ -1410,8 +1476,8 @@ Out of scope:
   starts with aside, it is not priced, as a deployed request never holds a blank quote,
   and its outputs show dashes with nothing said. Whether anything is typed is one rule,
   which Preview, the app's pricing and its Save, and the server all apply:
-  a value in a column the sheets show, other than a column the app sets, the index, the
-  column giving a table its rows and a column's default. A pricing asks `POST /api/workbench/tables` for the tables
+  a value in a column the sheets show, other than a column the app sets, a numbered
+  index, an index of values and a column's default; a typed index's value is typing. A pricing asks `POST /api/workbench/tables` for the tables
   and sample Haute takes from the form as it stands, then previews the Workbench Output a
   table at a time through the preview route on the document as the editor holds it, the
   whole pipeline even while a submodel is open, with the active source and the form as it
@@ -1426,17 +1492,17 @@ Out of scope:
   dimmed while a newer answer is on its way, and a dash before the first answer, for
   a column nothing filled, and after pricing fails, when the toolbar says why ("Pricing
   failed: …") until a pricing succeeds. An answer whose rows do not fit their table's
-  inputs, a key empty, given twice or held by no input row priced (The Workbench Output,
-  below), is a pricing that fails, the toolbar saying which table and keys. A Table's output column shows, on each grid row,
-  the value of the row in the answer keyed like it: of a table with inputs, its answer's
-  row holding the grid row's key (the index numbered as the grid numbers the row, or the
-  value giving the row); of a table of outputs alone, the row whose key columns hold
-  what the server typed for the grid row's, found through the first many-row input table
-  the grid shows that is keyed alike;
+  inputs, an index value empty, given twice or held by no input row priced (The Workbench
+  Output, below), is a pricing that fails, the toolbar saying which table and values. A
+  Table's output column shows, on each grid row, the value of the row in the answer keyed
+  like it: of a table with inputs, its answer's row holding the grid row's index value; of
+  a table of outputs alone, the row whose index holds what the server typed for the grid
+  row's, found through the first many-row input table the grid shows whose index lines up
+  with it and which has a record on that display row (below);
   a grid row with nothing typed, or none keyed like it, shows a dash, and a price for other
   values is dimmed on every row. A Table of output columns alone has no typed rows to line
   up with: it shows a row for each of its first field's table's answer, another
-  table's row matched by key, as a Chart of them plots them, none added or deleted; before
+  table's row matched by index, as a Chart of them plots them, none added or deleted; before
   an answer it shows its starting rows of dashes, so it reads as not yet priced or
   connected.
 - **Charts.** A Chart plots its fields' values as the sheets hold them, a new quote's
@@ -1493,8 +1559,10 @@ Out of scope:
   parameter given the value its column holds, and fills its table, each column from the
   column of the name given it, else of its own name or label, whatever its case; a
   one-row table from the first row, a many-row table's rows replaced, added to, or
-  updated by its key (the value giving its rows, or its index, as the file's column of the
-  index's name or label numbers each row), the rows no key matches added. An Export writes
+  updated by its index (as the file's column holds each row's number, typed value or value:
+  for a typed index the column it is read from, else that of the index's name or label),
+  the rows no index value matches added, but for an index of values, whose rows are fixed,
+  left out. An Export writes
   the tables it exports, each with its inputs and its outputs, a CSV of its one table or a
   workbook of a sheet per table named by it, under
   the file name with each `{name}` the quote's value for it, headed and filled as it says,
@@ -1532,8 +1600,11 @@ Out of scope:
   allowed values, a tick left in a column that is no longer True/false, and text left in
   one that now is, which the server would send as held and the pipeline refuse; a one-row
   table's one row is always checked, a many-row table's filled rows only, a cell the
-  sheets hide never, and the index never faults. The
-  marks never stop the pricing. Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
+  sheets hide never, a numbered index or one of values never, and a typed index when it
+  is blank on a row holding anything else, holds a value another row holds or, a Text
+  one, a value beyond either Text index limit. The other marks never stop the pricing, but a
+  typed index's stop it and a save, as the server refuses both (The quote store, below;
+  The Workbench Input). Ctrl/Cmd+S still saves the project in Preview, Ctrl/Cmd+1
   fits the sheet, and Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y) undo and redo
   outside a text field, as Undo and Redo do; the sheet's editing keys do nothing.
 - **Test quotes.** An analyst keeps test quotes: quotes priced again as the pipeline changes,
@@ -1546,7 +1617,7 @@ Out of scope:
   the identity Preview prices a quote under (reference `PREVIEW`, option 1), so the file
   prices as it stands wherever it is read. `expected` is the Workbench Output's answer as
   the underwriter app's price route gives it: every output table's outputs by its name as a
-  list of its rows, each a table with inputs holding its key, a one-row table's included,
+  list of its rows, each a table with inputs holding its index, a one-row table's included,
   values as JSON carries them (a date as ISO text, a
   number that is not finite as null) and a value left empty left out. A file in the folder
   holding anything else (several rows, a row without `expected`, an `expected` that is not
@@ -1580,15 +1651,20 @@ Out of scope:
     the sheets), and compares each answer with its `expected` on the outputs of the
     form as saved: a one-row table column by column, one answering more than one row
     no longer comparing; a many-row table's rows matched by
-    its key (The form, above), or by position when it has none and both hold as many rows; a
+    its index's value (The form, above), a row only one side holds named as added or
+    removed, so a table of outputs alone's numbered index, renumbered as each answer runs,
+    matches its rows by their places, and any other index, a table with inputs' numbered
+    one included, which its answer carries from the request, by their values, its rows
+    unchanged however the answer orders them; a
     number moved when it differs from the expected value by more than a millionth of a
     percent of it (from zero, by anything), or by more than the row's `tolerance_pct` (a
     fraction, as deploy reads it) when it gives one, and anything else when it differs; a
     table or column `expected` holds that the form no longer has is named as removed,
     and one the form has gained reads as empty in `expected`. Each quote shows
     unchanged, moved (each field and its row, the expected value beside the new), no
-    longer compares (a key held twice or empty, or rows matched by position whose counts
-    differ) or failed, with why.
+    longer compares (an index value held twice or empty) or failed, with why: the
+    quote is compared on the form as it is, so a change of how an index gets its values
+    is seen by `haute app impact` between two releases alone.
   - **Accepted.** Accepting a moved or no-longer-comparing quote, or all of them, prices it
     again on the server and writes that answer as its `expected`; Accept all names any it
     did not accept.
@@ -1896,20 +1972,20 @@ Out of scope:
     (On the price, below). A condition that cannot hold as written
     never holds: one naming a column that is not in a one-row table (gone, or a many-row
     table's), a condition on rows naming a table that is not a many-row table, a test of a
-    row naming a column that is not its table's or is its index, a condition on rows whose
+    row naming a column that is not its table's or is a numbered index, a condition on rows whose
     tests and total name both inputs and outputs, a condition on an output
     tested against another field, a total of a column that is not a number column of its table other than its
-    index or against a value that is not a number, a test its column's type does not take, a number of
+    numbered index or against a value that is not a number, a test its column's type does not take, a number of
     values its test does not take (none for the ticks, `filled` and `empty`, at least one
     for `one_of` and `not_one_of`, else one), or a value its column could not hold (blank,
     not a number, a fraction for an Integer, not a `YYYY-MM-DD` day); a test against
     another field that takes no value or several, that has values typed too, whose field
     is not an input of a one-row table (in a test of a row, a column of its block other than
-    its index) or not of its column's type; and days added but to another Date field.
+    a numbered index) or not of its column's type; and days added but to another Date field.
   - **On a list.** A condition on a many-row input table's rows, its tests and total naming
     inputs alone or nothing, holds while each column it
     tests, and a total's column, is on a Table that shows it (for a count without tests,
-    one of its table's columns other than the index), and its rows pass: any of the table's rows
+    one of its table's columns other than a numbered index), and its rows pass: any of the table's rows
     passing all of its tests, every one of them passing them all and there being at least
     one, the number of rows passing them all by its test, compared as whole numbers, or the
     total of its column's numbers in those rows by its test, compared as numbers to 15
@@ -1917,8 +1993,8 @@ Out of scope:
     table's is. A sum of no numbers is 0; a least, greatest or
     average of none is empty and fails every test; a cell that is blank or not a number adds
     nothing to a total. A
-    table's rows are those a grid showing it holds (a column giving it a row for each
-    value gives every one of those) with anything but the index typed in them, whatever
+    table's rows are those a grid showing it holds (an index of values gives every one of
+    those) with anything but a numbered index in them, whatever
     the sheets hide: a row with nothing typed in it is no row, as the quote leaves it out.
   - **At least some.** A `show_when` or a group whose `match` is a number holds while at
     least that many of its conditions hold, a group counting as one: a section that shows
@@ -2025,19 +2101,21 @@ Out of scope:
   its port, that name with `_input` or with `_output` (`ce_equipment_input`,
   `ce_equipment_output`, `quote_details_input`), `one` row per quote or `many`, and its
   columns, each its name and its type: the input side the quote's identity and the table's
-  inputs, the index an Integer; the output side the identity, then, for a many-row table
-  with inputs, its key column under its name and in its inputs' type, then the table's
-  outputs. A table's two ports are never one name, so a node named as the output side it
+  inputs, its index among them in its type; the output side the identity, then, for a
+  many-row table with inputs, its index under its name and in its type, then the table's
+  outputs, a many-row table of outputs alone's index first among them (below). A table's two ports are never one name, so a node named as the output side it
   fills never clashes with the input side's port. The form's labels, rules and allowed
-  values stay in the form: the pipeline has no use for them, and of the keys it holds only
-  the key column an output side carries. In each quote a one-row table is
+  values stay in the form: the pipeline has no use for them, and of how an index gets its
+  values it holds only what the Workbench Output acts on: a numbered index of outputs alone,
+  which it numbers, and the values an output-only index of values holds. In each quote a one-row table is
   an object under its schema table's name and a many-row table a list of objects under it;
   a request is one quote, holding the tables' inputs, and a response one quote, holding their
   outputs. A block with no column of its own is not a port: there is nothing to read into
   it or fill. The
   sample is one quote: each input table with values
   under its name, an object for a one-row table and a list of its filled rows for a many-row
-  one, rows with nothing typed left out and numbered as they stand for the index. Each value
+  one, rows with nothing typed left out, a numbered index numbering them as they stand and
+  a typed one or one of values holding its row's value. Each value
   is as its column's type holds it: a number typed with a currency sign or separators is a
   number, whole digits in an Integer column read exactly however large, an unticked box in
   a filled row is false, and a value that is not of its column's type stays as typed, for
@@ -2197,14 +2275,15 @@ Out of scope:
     port, which a connection from that port would need.
   - **Filled by name.** Each table column is filled from the column of exactly its name, case
     included, in the frame connected to its table's port; nothing else of the frame is taken
-    and no column is filled from another of a different name. The key column of a many-row
-    table with inputs is filled so too, from the frame's column of the key's name, which
-    the frame carries through from the input side. A column the frame lacks, one
+    and no column is filled from another of a different name. The index of a many-row
+    table with inputs is filled so too, from the frame's column of its name, which the frame
+    carries through from the input side, as is a typed or valued index of outputs alone,
+    which the pipeline fills. A column the frame lacks, one
     whose type does not fit its declared type (below) and every column of a table nothing is
     connected to are filled with nulls, and the panel flags each, so the pipeline runs while
     it is being built: a one-row table nothing is connected to holds one row of nulls and a
-    many-row one no rows. None of them stops a run; a key filled with nulls fails pricing a
-    quote instead (Each output row on its input row, below). A table leading with the quote's
+    many-row one no rows. None of them stops a run; an index filled with nulls fails pricing
+    a quote instead (Each output row on its input row, below). A table leading with the quote's
     reference and option holds them null in the node's tables whatever its frame holds, and
     the panel never flags them; the response fills them.
   - **Its tables are its result.** When the node runs, its result is its tables, one frame per
@@ -2234,25 +2313,35 @@ Out of scope:
     null value or an empty list is left out, as a Quote Response's are.
   - **Each output row on its input row.** A many-row table with inputs and outputs is one
     table, so each row pricing gives it belongs to one of the quote's rows of it: the row
-    of the request holding its key value, the index numbered as the grid numbers the row or
-    the value giving the row. Where the response is built for a request (deployed scoring,
-    `Pipeline.run` and `Pipeline.score`, and so the app's pricing, its save and the test
-    quotes), and where Preview lines the answer up with the sample, every row of such a
-    table's answer must hold a key, no two the same, each held by a row of the request's
-    table; otherwise the pricing fails, naming the table and the keys: "ce_equipment_output
-    does not fit ce_equipment's rows: 2 rows have no item_number; item_number 3 is given
-    twice; item_number 7 is on no row priced." Keys compare as their column's type holds
-    them, the answer's cast to it as every column is. A row of the request the answer gives no row has
+    of the request holding its index's value, numbered as the grid numbers the row, typed
+    by the underwriter, or the value giving the row. Where the response is built for a
+    request (deployed scoring, `Pipeline.run` and `Pipeline.score`, and so the app's
+    pricing, its save and the test quotes), and where Preview lines the answer up with the
+    sample, every row of such a table's answer must hold an index value, no two the same,
+    each held by a row of the request's table; otherwise the pricing fails, naming the table
+    and the values: "ce_equipment_output does not fit ce_equipment's rows: 2 rows have no
+    item_number; item_number 3 is given twice; item_number 7 is on no row priced." Values
+    compare as the index's type holds them, the answer's cast to it as every column is. A row of the request the answer gives no row has
     its outputs empty, as a row typed after the price is, and an answer row holding no
     output value (each null, or a number that is not finite, which the store keeps empty)
     is no row: the response and Preview leave it out, since the store keeps outputs on
     the input row and cannot tell the two apart. A request's own rows of such a table must
-    each hold their key, no two the same, which the sheets always give: a request built
-    otherwise, or frames given to `Pipeline.score` so, are refused before anything is
-    priced, naming the table, the key and the rows. A one-row table's one row
-    of outputs is its one row, and a table of outputs alone takes the rows pricing gives
-    as they come. A node preview of the Workbench Output in the pipeline editor checks
-    nothing of this, so the pipeline previews while it is being built.
+    each hold their index's value, no two the same, which the sheets always give a request
+    they price (a typed index's blank or repeated value stops a quote's pricing before it is
+    sent): a request built otherwise, or frames given to `Pipeline.score` so, are refused
+    before anything is priced, naming the table, the index and the rows. A one-row table's
+    one row of outputs is its one row. A table of outputs alone takes the rows pricing
+    gives as they come: a numbered index numbered 1, 2, 3 in that order whatever the frame
+    holds under its name, so the pipeline never fills it; a typed one's values the
+    pipeline's, every row holding one, no two the same, a Text one's at most 255
+    characters, as the store keys the rows by them; and one of values the pipeline's too,
+    each one of the index's values, no two the same, a value not answered being no row. A
+    row breaking those fails the pricing as a misfit does, naming the table and the values:
+    "product_premium_output does not fit product_premium's rows: product "Fire" is given
+    twice; product "Hail" is none of its values.", a value too long saying "product "…" is
+    longer than 255 characters", the value cut to forty. A node preview of the Workbench Output in the
+    pipeline editor checks nothing of this but numbers a numbered index the same, so the
+    pipeline previews while it is being built.
   - **A response node.** A Workbench Output is the pipeline's response as a Quote Response is:
     `Pipeline.run` and `Pipeline.score` return its response, deploy prunes the pipeline to it
     and takes the response's schema from it, and a deployed pipeline answers `/quote` with its
@@ -2286,7 +2375,7 @@ Out of scope:
   - **Its panel** shows each table: its port's name, whether it has one row per quote or many, the
     node connected to it or "Not connected", and whatever the editor finds wrong with its name
     as a port; then each of its columns, its name and type in a box of its own, a table
-    with inputs' key column first, marked as its key. The box's
+    with inputs' index first. The box's
     border is red while the column is missing (the connected frame has no column of its name,
     or nothing is connected to the table) and orange while the frame's column is of a type
     that does not fit, judged by the columns and types the frame's last preview recorded; a
@@ -2306,17 +2395,17 @@ Out of scope:
   a Date a date. Every column of the project's own is nullable, so a draft saves with any of
   them empty; Required is checked as a quote is marked final, never by the database. Every
   row holds the quote's identity, `quote_reference` and `quote_option`, with which every
-  table but `quote_details` leads, and a row of a many-row table holds `table_index` too,
-  Haute's number for it: in a table with inputs, its input row's place on its sheet, blank
-  rows counted, so a grid opens as it was saved, which is the index's number; in a table of
-  outputs alone, its place in the pricing's answer. The identity,
-  with `table_index` in a many-row table, is each table's primary key (Text, unbounded, can
-  key no table on SQL Server, so a value giving a table its rows is a column, never its
-  key), and each table's
+  table but `quote_details` leads, and a row of a many-row table holds its index (the
+  schema, above) under the index's name: numbered, in a table with inputs its input row's
+  place on its sheet, blank rows counted, so a grid opens as it was saved, and in a table of
+  outputs alone its place in the pricing's answer; typed, the underwriter's value; of values,
+  its row's value. The identity, with the index in a many-row table, is each table's primary
+  key, a Text index held to the character and UTF-16 limits above
+  (Text elsewhere is unbounded, which SQL Server keys no row by), and each table's
   identity refers to its quote's `quote_details` row. A one-row table holds one row for each
   quote, null where nothing was typed. A table with inputs holds a row for each row the
-  quote holds of it, its outputs those of its answer's row of the same key, empty while the
-  quote is unpriced or the answer gave that row none. A report reads an item and its price
+  quote holds of it, its outputs those of its answer's row of the same index value, empty
+  while the quote is unpriced or the answer gave that row none. A report reads an item and its price
   from one table, and joins the tables on the identity:
 
   ```sql
@@ -2344,8 +2433,8 @@ Out of scope:
   pricing the outputs hold, null while the quote is unpriced; `source_reference`,
   `source_option` and `source_relation`, the quote this one was made from and how (a
   duplicate, a renewal or an alternative); and the note as it stands, `handover_note` with
-  `note_by` and `note_at`, so a quote's note is read whole. A many-row table's `table_index`
-  is the store's own too.
+  `note_by` and `note_at`, so a quote's note is read whole. No other table holds a column
+  of the store's own: a many-row table's rows are numbered by its index, the form's column.
 
   The details the app changes over a quote's life, `stage`, `assignee`, `archived`,
   `modified_date`, `modified_by` and `haute_version`, are columns of `quote_details` that no
@@ -2365,14 +2454,17 @@ Out of scope:
   is a draft not archived, the version moved on, when and by whom it was saved, the release
   that priced it and the administration set; then, in each other table, the quote's rows
   deleted and its new rows inserted: a table with inputs a row for each of the quote's
-  rows, its outputs filled from the pricing's row of its key (Each output row on its input
-  row, above), a table of outputs alone its rows from the pricing, each value that is
+  rows, its outputs filled from the pricing's row of its index's value (Each output row on
+  its input row, above), a table of outputs alone its rows from the pricing, each value that is
   not finite empty, and no output when the quote is saved unpriced; then its activity row. Rows
   are written from typed values, never from the copies made for JSON, so an integer past
   2^53 is kept exactly, and the clock is read once, before the pricing, so the priced
   request and the rows hold one instant. A save is refused, with nothing written, when a
   value is not of its column's type, naming each table, row (as the sheet numbers it) and
-  column, before anything is priced; otherwise only when the quote has moved on since the
+  column, and when a typed index is blank on a row holding anything else, holds one value
+  on two rows or, a Text one, a value beyond either Text index limit, naming each table, row
+  and value, the index keying the stored rows, before
+  anything is priced; otherwise only when the quote has moved on since the
   page read it, naming who moved it, what they did and when, when it is final or archived,
   for one who may only read quotes, and when nothing is typed. Nothing else a quote's cells
   or outputs hold refuses a save: a required input or output left empty, a value outside its
@@ -2415,10 +2507,27 @@ Out of scope:
   A quote opens from its rows, read together and read again when the quote moved on while
   they were read: each typed value as the cell text it reads as (an Integer its digits, a
   Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
-  none, and null a blank), a many-row table's rows in their places by `table_index`, a gap a
-  blank row, and its outputs as the pricing answered them: a table with inputs gives a row
-  of its answer, its key and its outputs, for each row holding an output value, and a table
-  of outputs alone its rows in `table_index` order. A value comes back as its value,
+  none, and null a blank), a many-row table's rows in their places by its index (numbered,
+  each in its numbered place, a gap a blank row, and a row whose index is not a number as
+  Haute writes one (digits with no sign or leading zero, so `"01"` is none), as one saved
+  before the index was numbered holds, after them in the order it was stored, so no row
+  is lost, a row stored as `"1"` keeps place 1 whichever was stored first, and each keeps
+  its kept values; its stored outputs line up with no grid row until the quote is priced
+  again, since they are held under the value it was saved with, which no grid number
+  matches; typed, in the index's order, by number for
+  an Integer and by text for Text, since nothing else keeps the order they were typed in; of
+  values, each in its value's place), and its outputs as the pricing answered them: a table
+  with inputs gives a row of its answer, its index and its outputs, for each row holding an
+  output value, and a table of outputs alone its rows in its index's order as an input
+  table's are, a numbered one's by its numbers and one of values' by its value's place.
+  A numbered input grid may contain at most 10,000 blank gaps between its stored rows;
+  this does not limit the number of populated rows. Opening or saving a grid that would
+  exceed that allowance is refused before expanding the gaps, naming the table, index,
+  gap count and limit. The message directs the user to remove empty rows, restore a Typed
+  index, or migrate the stored keys to consecutive row numbers. In particular, changing
+  a typed business ID such as 1000000000 to Numbered never allocates a billion rows,
+  silently renumbers saved records, or changes stored data on a refused open or save. A
+  value comes back as its value,
   so `£1,000` comes back as `1000`, which its column's format shows. A preset row whose
   value is no longer allowed is named as dropped. The app's lists read `quote_details`
   alone, a page at a time: the quotes assigned to the signed-in underwriter, the team's or
@@ -2490,10 +2599,25 @@ Out of scope:
   `haute_activity` with them; a column it gains added taking a null; a table or column
   the form renamed is one removed, which the SQL keeps, and one added, but a column paired
   in the pane with the database's is renamed through the engine's own rename, in two steps through
-  temporary names so a change of case or a swap of two names works; a type change as the
+  temporary names so a change of case or a swap of two names works, and a many-row table's
+  index is paired by what it is, never left to the pane: with the earlier form's index of
+  the table in a plan from the default branch's form, and with the database's key column
+  after the quote's identity in a plan from the database, paired before any column is
+  matched by its name, so renaming the index renames the column, its values and the
+  table's primary key kept, its old name free for a new column, and a plan never adds an
+  index beside the key column it keeps; a rename of the index onto a name another of its
+  table's columns holds, as a swap of two names makes, is refused, in a plan from the
+  default branch's form with every change of the table until it is resolved, so no column
+  the swap moved is retyped, and in a plan from the database with a column added under the
+  name the refused rename keeps, the database's other column kept as an extra; a type
+  change as the
   engine's ALTER in place, with a note that a value which does not convert stops it, and on
-  SQLite, which cannot change a column's type, a note alone; a change of a table's rows as
-  a note of what the table needs, and a column moved between a table's inputs and outputs
+  SQLite, which cannot change a column's type, a note alone; a change of a table's rows or
+  of its index's type as a note of what the table needs, since either changes the key its
+  rows are held by; a change of how its index gets its values (numbered, typed or a row
+  for each value) as nothing, its column and key the same and its rows reopening by the
+  new way (A quote opens from its rows, below), which a plan from the database could not
+  tell from the catalogue anyway; and a column moved between a table's inputs and outputs
   as nothing, its column the same; a table or column the form does not have as a DROP
   left commented out, since the check passes a column that takes a null. Such a column of an
   input table keeps its values through saves: opening a quote gives each of its rows a `$kept`
@@ -2503,8 +2627,8 @@ Out of scope:
   a save writes it back, refusing it, by name, for a column the form holds, one the store
   does not hold, or a value its column's kind does not hold. A new row has none; a deleted row
   takes its values with it, and only deleting it does: a row whose cells are all emptied
-  keeps its `$kept` values and is saved as a row with empty cells. A column giving its table a
-  row for each of its values moves each row, with its `$kept` field, to its value's place.
+  keeps its `$kept` values and is saved as a row with empty cells. An index of values moves
+  each row, with its `$kept` field, to its value's place.
   In a table with inputs that holds every column the form no longer holds, a former output's
   too, until its owners drop it. `quote_details` is updated in place, and a table of outputs
   alone is
@@ -2531,8 +2655,8 @@ Out of scope:
   above). Every table and column name is quoted in the SQL Haute writes, so
   a reserved word (`order`, `group`) is a name like any other; refused wherever the form is
   saved, naming each, are two columns of one table whose names differ only in case, a name
-  longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside), a
-  column of a many-row table named `table_index` and a table named starting `sqlite_`. A
+  longer than 63 characters, a name starting `haute_` (Haute's own `haute_version` aside)
+  and a table named starting `sqlite_`. A
   SQLite store keeps foreign keys on and its rollback journal, never write-ahead logging, so
   the file stands alone between writes; its DDL runs in the transaction it is part of, and
   it needs SQLite 3.35 or later.
@@ -2708,9 +2832,9 @@ Out of scope:
 - **Rows matched as the server typed them.** A Table's output rows are matched through
   the typed sample the pricing answers with, not the text in the grid: the server leaves
   empty rows out and numbers the index as the grid does, so the filled grid rows are its
-  typed rows in order, each keyed by its number or by the value giving it, and a key of a
-  table of outputs alone that an input table keyed alike types as "$1,000" matches an
-  output row holding 1000.
+  typed rows in order, each keyed by its index's value, and an index value of a table of
+  outputs alone that an input table lined up with it types as "$1,000" matches an output
+  row holding 1000.
 - **A Chart is a picture of the sheets.** A Chart plots the values the components are
   given, the sample in Preview or the app's quote, with their price, rather than
   values of its own, so it shows what was typed and what it priced at together, its rows
@@ -2770,7 +2894,7 @@ Out of scope:
   is included only when one row holds both the peril and its cover ticked. Counting and
   totalling the rows that pass says the rest, at least two perils included or the
   jobsites' costs above a figure, where the number of a table's rows alone says nothing of
-  a table that gives a row for each value, as every one of those is typed.
+  a table whose index gives a row for each value, as every one of those is typed.
 - **A Chart takes nothing.** A quote holds what can be typed into the sheets that show, so
   a column counts for Shown when only on the components it is typed into. Were a Chart's
   columns to count, a Chart that plots a section's values would keep them in the quote
@@ -2913,25 +3037,40 @@ Out of scope:
   sheets line them up without a join. The pipeline still sees two tables, since it reads
   the inputs and fills the outputs, under ports of their own names: one name for both
   would put the node filling the outputs, named as is usual after what it fills, under the
-  input's name. A row's key is never typed, so it is filled and unique by construction: a
-  row for each value of a params file keys a coverage table by its coverage, which
-  survives a refresh that reorders the values, and the index keys any other, which the
-  grid numbers. An output row the pricing gives on no row typed, or twice, has nowhere to
+  input's name. A row's key is its index: numbered, filled and unique by construction; of
+  values, a coverage table keyed by its coverage, which survives a refresh that reorders
+  the values; or typed, which the sheets hold filled and unique before a quote is priced
+  or saved. An output row the pricing gives on no row typed, or twice, has nowhere to
   go in that one row, so it fails the pricing rather than being dropped; a row the pricing
-  leaves out is empty, as a row typed since the price is. A table of outputs alone keeps
-  its own keys, since its rows are the pricing's, as a breakdown of a premium by peril is.
-  The store's primary key stays its own row number, which is the index's number for a table
-  with inputs: a value of a params file is text, and unbounded text keys no table on SQL
-  Server.
-- **The store's row number is `table_index`.** Each many-row table's rows are numbered by
-  the store under a name of its own, the same in every table and never the project's, so
-  a project renames its index (`item_number`, `loc_no`) freely and a report reads every
-  table's row number alike; it was `quote_row`, which said neither that it numbers a
-  table's rows nor that it is the index's number. Haute had no users when it was renamed,
-  so a store made under the old name is not carried over: its owners rename the column.
-  The store's key, the quote's identity with `table_index`, is the one a run of many
-  quotes at once would match its rows on, so pricing a portfolio later needs no change of
-  the tables; a store holds each quote as last saved, never its earlier versions.
+  leaves out is empty, as a row typed since the price is. A table of outputs alone is keyed
+  by its index too, since its rows are the pricing's: numbered in the pricing's order, or
+  given by the pricing, as a breakdown of a premium by peril is. The store's primary key
+  is the identity with the index, whatever its kind: a Text index is held to 255
+  characters, as unbounded text keys no table on SQL Server.
+- **One index, three ways to fill it.** A many-row table's rows were numbered twice, by
+  the index the sheets number and by a column of the store's own (`quote_row`, then
+  `table_index`) holding the same number, so two columns said one thing and only one could
+  be named; a table with a row for each value of a params file had a third, the column
+  giving its rows, marked as its key beside an index it did not need, and a table of
+  outputs alone marked keys of its own. Every many-row table now has one index,
+  `table_index` until renamed so its name says what the rows are (`item_number`, `peril`,
+  `location_name`), and nothing else is a key: the quote's identity keys every table and
+  the index a many-row one, so none can be left off; the schema editor outlines their
+  name cells in light blue without a key toggle. The index is
+  numbered by Haute, takes a row for each value of a params file's column, or is typed by
+  the underwriter, as a schedule of locations named by the broker is, which the sheets
+  hold filled and unique as no column marked a key ever was. An input table's index is
+  among its inputs and a table of outputs alone's among its outputs, so no table needs a
+  column of the store's own, and the store keys the rows by it under the project's name
+  for it, so the column a report reads is the one the editor shows; renaming it renames
+  the store's column, a rename the store's SQL carries. An index is an Integer or Text, as
+  a decimal or a date rounds or reformats into another value and true or false gives two
+  rows; numbered Text still holds the numbers, ordered as numbers, so "10" follows "9".
+  Haute had no users when this changed, so a store made under the store's own column is
+  not carried over: its owners re-key it by hand. The store's key, the quote's identity with the index, is the
+  one a run of many quotes at once would match its rows on, so pricing a portfolio later
+  needs no change of the tables; a store holds each quote as last saved, never its earlier
+  versions.
 - **The tables are the form's, not the history's.** Fetches can settle out of order, so only
   the newest publishes, and graph edits, undo and redo never start one. Nothing of the
   tables is in the graph, so the history never holds them and an undo never puts back
@@ -3109,9 +3248,14 @@ Out of scope:
   read, is not UTF-8 text, is not JSON, holds a key twice or does not fit its shape, the
   message naming the place; an identity column is written, a table's file names two
   columns alike, in one block or one in each, `schema/quote_details.json`
-  sets something Haute's, an output holds a rule but `required`, a default,
-  `row_per_value` or `index`; a `key` is on an input, or on an output of a table with
-  inputs or of one row; a many-row table with inputs has no index, or more than one; a
+  sets something Haute's, an output holds a rule but `required` (or allowed values, the
+  index of values of a table of outputs alone) or a default, a column
+  holds a `key` or a `row_per_value`, which a form no longer holds; a many-row table has no
+  index or more than one, or its index is in the other block (among the inputs of a table
+  of outputs alone, or among the outputs of any other table); a one-row table has one; an
+  index is neither an Integer nor Text, takes `required`, a range or a default, a
+  placeholder while not typed, or allowed values while not of values, or is of values
+  without them; a
   sample file is for a table the schema does not hold or for a table with no inputs
   ("rename it after its table or remove it"), or holds no rows; the folder
   changed each of three times it was read ("<folder> changed while it was being read: try
@@ -3128,9 +3272,10 @@ Out of scope:
   with why a file or a column cannot give values: the project has no pipeline folder,
   the name is not a CSV directly in `files/params/`, the file does not exist, is empty,
   is neither UTF-8 nor Windows-1252 or cannot be read as a CSV, or the column is not in its header, holds no
-  values or holds more than 5,000. `haute app build` refuses a form with an input column
-  whose file can no longer give its values, naming the form and the column, before the
-  release directory is touched.
+  values or holds more than 5,000. `haute app build` refuses a form with an input column,
+  or an index of values in either block, whose file can no longer give its values, naming
+  the form and the column, before the release directory is touched, and refreshes an index
+  of values' values, a table of outputs alone's included, as it refreshes an input's.
 - `haute app build` and `haute deploy` refuse a form whose sheets, conditions, Imports or
   Exports name a table or column its schema does not hold, naming each file, place and
   name, before anything is built or deployed; the editor opens such a form and shows each
@@ -3164,8 +3309,8 @@ Out of scope:
   range. A component dropped outside the sheet's viewport is not added. Fit never takes
   the zoom below its minimum: a sheet too wide to fit at 25% fits at 25%.
 - A Chart's problems are refused nowhere: the form reads and saves with them, and the view
-  names each on the dashed frame while building. A field that is not a number or is an
-  index, a field whose rows do not line up with the first field's and a field gone from
+  names each on the dashed frame while building. A field that is not a number or is a
+  numbered index, a field whose rows do not line up with the first field's and a field gone from
   the schema plot nothing; a column labelling the rows that does not line up, or is gone,
   leaves them numbered; a pie of many rows plots its first field. A Chart that cannot be
   drawn, its runtime failing to load or its options refused, says why in its place, and the
@@ -3242,8 +3387,8 @@ Out of scope:
   where a one-row table's belongs, or when a many-row table's list holds anything but rows (a
   value, `null` or a list). Resolving a table point and the cache report read the tables
   alone, so a misfit sample never stops them.
-- A request whose rows of a many-row input table do not each hold its key, or hold one
-  twice, is refused before it is priced: "ce_equipment's rows 2 and 5 hold item_number 3;
+- A request whose rows of a many-row input table do not each hold its index's value, or
+  hold one twice, is refused before it is priced: "ce_equipment's rows 2 and 5 hold item_number 3;
   each row's item_number is its own." A deployed `/quote` answers it as a quote that does
   not fit (422). A Preview answer cut short by the preview's limits fails the pricing:
   "ce_equipment_output answers more rows than Preview prices whole (10000 shown): a

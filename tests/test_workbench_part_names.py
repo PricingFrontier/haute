@@ -17,17 +17,24 @@ import pytest
 from haute._workbench_config import WorkbenchError
 from haute._workbench_folder import FormFolderNameError, read_form_document
 from haute._workbench_form import FormSpec, render_form
-from tests._workbench_helpers import enable, form_folder, write_files
-from tests.test_workbench_folder import FORM, changes, config, files_of, put, spec_of, text
+from tests._workbench_helpers import form_folder, write_files
+from tests.test_workbench_folder import (
+    FORM,
+    changes,
+    config,
+    files_of,
+    folder_project,
+    put,
+    spec_of,
+    text,
+)
 
 SHEET = "sheets/br_coverages.json"
 
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    root = tmp_path / "p"
-    enable(root)
-    return root
+    return folder_project(tmp_path / "p")
 
 
 def _read(project: Path, form: dict[str, Any] | FormSpec) -> tuple[FormSpec, dict[str, bytes]]:

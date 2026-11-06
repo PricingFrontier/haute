@@ -598,12 +598,11 @@ describe("PropertiesPanel", () => {
     const settings = screen.getByRole("region", { name: "Chart" })
     const undoSteps = () => useWorkbenchFormStore.getState().undoStack.length
 
-    // Rows: numbered, or labelled by a column of a table lined up with it, other than an index.
+    // Numbered rows belong to equipment alone; its index is not a label choice.
     const rows = within(settings).getByRole("combobox", { name: "Label rows by" })
     expect(rows).toHaveValue("")
-    expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment", "premiums"])
-    // premiums' row_number is its key, an output, not an index, so it can label the rows.
-    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value", "Row number", "Premium"])
+    expect(within(rows).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["equipment"])
+    expect(within(rows).getAllByRole("option").map((option) => option.textContent)).toEqual(["Row number", "Item", "Value"])
     fireEvent.change(rows, { target: { value: JSON.stringify(["equipment", "item"]) } })
     expect(chart()).toMatchObject({ category: { table: "equipment", column: "item" } })
     expect(undoSteps()).toBe(1)
@@ -698,7 +697,7 @@ describe("PropertiesPanel", () => {
   it("greys out a table whose rows do not line up with the fields already chosen", () => {
     const form = sheetForm()
     // Outputs alone keyed by id: not by equipment's row_number, so out of line.
-    form.schema.tables.push(table("claims", { rows: "many", outputs: [column("id", { key: true })] }))
+    form.schema.tables.push(table("claims", { rows: "many", outputs: [column("id", { index: "typed" }), column("paid", { type: "float" })] }))
     loadForm(form)
     select("w_grid")
     render(<PropertiesPanel />)
@@ -707,7 +706,8 @@ describe("PropertiesPanel", () => {
     expect(claims).toHaveStyle({ opacity: "0.5" })
     expect(claims).toHaveAttribute("title", "Its rows don't line up with the fields already chosen")
     expect(within(claims).getByRole("checkbox", { name: "Show claims id" })).toBeDisabled()
-    expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "1" })
+    expect(screen.getByTestId("fields-table-premiums")).toHaveStyle({ opacity: "0.5" })
+    expect(within(screen.getByTestId("fields-table-premiums")).getByRole("checkbox", { name: "Show premiums premium" })).toBeDisabled()
   })
 
   it("searches the fields as the schema is searched: only the columns matching, by name, label or readable name, each table open, kept as the panes change", () => {

@@ -1,13 +1,13 @@
 /**
  * A schema table's block: its name and rows, its problems, its columns under two headings,
- * Inputs and Outputs, each with its own Add column, a column dragged within its block or into
- * the other, or moved within its block; those the quote store keeps in it, locked, a many-row
- * table's table_index after the quote's identity and the others under its own columns; and,
- * at the head of a table's Outputs, what the Workbench Output carries ahead of them
- * (specs/workbench).
+ * Inputs and Outputs, each with Add column once populated, or Add inputs/Add outputs before
+ * its first column, a column dragged within its block or into
+ * the other, or moved within its block; those the quote store keeps in it, locked, under its
+ * own columns; and, at the head of a table's Outputs, what the Workbench Output carries ahead
+ * of them (specs/workbench).
  */
 import { ChevronDown, ChevronRight, Lock, Trash2 } from "lucide-react"
-import { Fragment, useRef, useState, type DragEvent, type KeyboardEvent } from "react"
+import { useRef, useState, type DragEvent, type KeyboardEvent } from "react"
 import type { FormSpec, SchemaTable, WorkbenchStoreColumn } from "../../api/types"
 import { CommittedTextField, INPUT_STYLE, QuietAction } from "../../components/form"
 import useListReorder, { type RowDrag } from "../../hooks/useListReorder"
@@ -16,10 +16,9 @@ import { confirmed } from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
-import { type Block, hasInputs, hasOutputs, identityCount, isIdentityColumn, tableColumns } from "../../utils/quoteIdentity"
+import { type Block, hasInputs, hasOutputs, identityCount, isIdentityColumn, tableColumns, tableIndex } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
-import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, TABLE_INDEX, updateSchemaTable } from "../../utils/workbenchForm"
-import { keyTable } from "../../utils/workbenchTables"
+import { addSchemaColumn, buttonUses, createSchemaColumn, conditionUses, fieldUses, isQuoteDetails, moveSchemaColumn, moveSchemaTable, nameTaken, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_MANAGED, removeSchemaTable, setSchemaTableRows, updateSchemaTable } from "../../utils/workbenchForm"
 import { DatabaseMark } from "../StoreCompare"
 import { CarriedColumnRow, ColumnRow, StoreColumnRow } from "./ColumnRow"
 import { DragGrip } from "./DragGrip"
@@ -133,16 +132,12 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
     onBlur: () => setAdded(null),
   })
   const count = tableColumns(table).length
-  // The quote's identity leads the inputs, or the outputs of a table with none; a many-row
-  // table's table_index, the store's number for each row, shows after it, and the store's
-  // other columns under the table's own.
+  // The quote's identity leads the inputs, or the outputs of a table with none.
   const identity = identityCount(table)
-  const leading: Block = table.inputs.length > 0 && isIdentityColumn(table, table.inputs[0]) ? "inputs" : "outputs"
-  const tableIndex = identity > 0 ? kept.find((column) => column.name === TABLE_INDEX) : undefined
-  const others = kept.filter((column) => column !== tableIndex)
   // What the Workbench Output's table of a table with both blocks carries ahead of its
-  // outputs (`_output_side`): the quote's identity, then a many-row table's key column.
-  const outputLead = hasInputs(table) && hasOutputs(table) ? [...table.inputs.slice(0, identity), ...keyTable(table)] : []
+  // outputs (`_output_side`): the quote's identity, then a many-row table's index.
+  const indexColumn = tableIndex(table)
+  const outputLead = hasInputs(table) && hasOutputs(table) ? [...table.inputs.slice(0, identity), ...(indexColumn === null ? [] : [indexColumn])] : []
   // Haute's quote_details table keeps its structure, and in Preview every table keeps it.
   const locked = isQuoteDetails(table)
   const fixed = locked || readOnly
@@ -251,52 +246,63 @@ export function TableBlock({ form, table, index, refocus: refocusTable, drag, re
         <div className="flex flex-col gap-1 px-1.5 py-1.5" style={{ borderTop: "1px solid var(--border)" }}>
           {BLOCKS.map(({ block: own, title, color }) => {
             const columns = table[own].map((column, at) => ({ column, at })).filter(({ column }) => matched === null || matched.has(column.name))
+            const populated = own === "inputs" ? hasInputs(table) : hasOutputs(table)
             // quote_details holds inputs alone and is given no column; in Preview or while searched nothing is added.
             const adding = !fixed && !filtering
             if (columns.length === 0 && !adding) return null
             const landed = crossing(own) && landing?.block === own && landing.at === table[own].length
             return (
-              <div key={own} role="group" aria-label={`${table.name} ${title}`} className="flex flex-col gap-1">
-                <p
-                  className="px-1 text-[11px] font-semibold"
-                  style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
-                  onDragOver={carryOver(own, table[own].length)}
-                  onDrop={carryIn(own, table[own].length)}
-                  data-drop-target={landed ? "true" : undefined}
-                >
-                  {title}
-                </p>
-                {own === "outputs" && !filtering && outputLead.map((column) => <CarriedColumnRow key={column.name} column={column} isKey={!isIdentityColumn(table, column)} />)}
+              <div key={own} role={populated ? "group" : undefined} aria-label={populated ? `${table.name} ${title}` : undefined} className="flex flex-col gap-1">
+                {populated && (
+                  <p
+                    className="px-1 text-[11px] font-semibold"
+                    style={{ color, boxShadow: landed ? `0 2px 0 0 var(--accent)` : undefined }}
+                    onDragOver={carryOver(own, table[own].length)}
+                    onDrop={carryIn(own, table[own].length)}
+                    data-drop-target={landed ? "true" : undefined}
+                  >
+                    {title}
+                  </p>
+                )}
+                {own === "outputs" && !filtering && outputLead.map((column) => <CarriedColumnRow key={column.name} column={column} isIndex={!isIdentityColumn(table, column)} />)}
                 {columns.map(({ column, at }) => (
-                  <Fragment key={column.name}>
-                    <ColumnRow
-                      form={form}
-                      table={table}
-                      column={column}
-                      block={own}
-                      index={at}
-                      refocus={refocus}
-                      fresh={fresh(columnKey(table.name, column.name))}
-                      open={details === columnKey(table.name, column.name)}
-                      onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
-                      onInsertAfter={() => insertAt(own, at + 1)}
-                      locked={locked}
-                      readOnly={readOnly}
-                      filtering={filtering}
-                      drag={fixed || filtering || column.index || isIdentityColumn(table, column) ? undefined : dragColumn(own, at)}
-                    />
-                    {own === leading && at === identity - 1 && !filtering && tableIndex && <StoreColumnRow column={tableIndex} />}
-                  </Fragment>
+                  <ColumnRow
+                    key={column.name}
+                    form={form}
+                    table={table}
+                    column={column}
+                    block={own}
+                    index={at}
+                    refocus={refocus}
+                    fresh={fresh(columnKey(table.name, column.name))}
+                    open={details === columnKey(table.name, column.name)}
+                    onToggleDetails={() => setDetails(details === columnKey(table.name, column.name) ? null : columnKey(table.name, column.name))}
+                    onInsertAfter={() => {
+                      if (populated) insertAt(own, at + 1)
+                    }}
+                    locked={locked}
+                    readOnly={readOnly}
+                    filtering={filtering}
+                    // The quote's identity and the index stay where they are, moving only with the blocks.
+                    drag={fixed || filtering || column.index || isIdentityColumn(table, column) ? undefined : dragColumn(own, at)}
+                  />
                 ))}
                 {adding && (
-                  <QuietAction onClick={() => insertAt(own, table[own].length)} className="justify-self-start">
-                    Add column
+                  <QuietAction
+                    onClick={() => insertAt(own, table[own].length)}
+                    onDragOver={carryOver(own, table[own].length)}
+                    onDrop={carryIn(own, table[own].length)}
+                    data-drop-target={landed ? "true" : undefined}
+                    style={{ boxShadow: landed ? "0 2px 0 0 var(--accent)" : undefined }}
+                    className="self-start"
+                  >
+                    {populated ? "Add column" : `Add ${own}`}
                   </QuietAction>
                 )}
               </div>
             )
           })}
-          {!filtering && others.map((column) => <StoreColumnRow key={column.name} column={column} />)}
+          {!filtering && kept.map((column) => <StoreColumnRow key={column.name} column={column} />)}
           {locked && (
             <p className="px-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Kept with each quote and listed on the Quotes page; the app sets {APP_SET}.
