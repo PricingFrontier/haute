@@ -517,7 +517,7 @@ Out of scope:
   (`rows`), with one test or more; how many, by a test (`op`, `equals`, `not_equals`,
   `above`, `at_least`, `below` or `at_most`) and a whole number of rows, 0 or more
   (`count`); or the `sum`, `min`, `max` or `average` (`total`) of a number column's values
-  in them (`column`, not the index), by such a test and a number typed as text (`value`).
+  in them (`column`, not a numbered index), by such a test and a number typed as text (`value`).
   The sample holds, by table
   name, rows keyed by column name, each an input's value as typed: text or a tick. The blank form, which
   `haute init --workbench` writes, is one sheet 1280 wide holding one section 560 tall,
@@ -1623,16 +1623,17 @@ Out of scope:
     the sheets), and compares each answer with its `expected` on the outputs of the
     form as saved: a one-row table column by column, one answering more than one row
     no longer comparing; a many-row table's rows matched by
-    its index's value (The form, above), or by position for a numbered index of outputs
-    alone when both hold as many rows; a
+    its index's value (The form, above), a row only one side holds named as added or
+    removed, so a numbered index's rows, renumbered as each answer runs, are matched by
+    their places and a typed index's or an index of values' by their values; a
     number moved when it differs from the expected value by more than a millionth of a
     percent of it (from zero, by anything), or by more than the row's `tolerance_pct` (a
     fraction, as deploy reads it) when it gives one, and anything else when it differs; a
     table or column `expected` holds that the form no longer has is named as removed,
     and one the form has gained reads as empty in `expected`. Each quote shows
     unchanged, moved (each field and its row, the expected value beside the new), no
-    longer compares (a key held twice or empty, or rows matched by position whose counts
-    differ) or failed, with why.
+    longer compares (an index value held twice or empty, or indexes that get their values
+    in different ways) or failed, with why.
   - **Accepted.** Accepting a moved or no-longer-comparing quote, or all of them, prices it
     again on the server and writes that answer as its `expected`; Accept all names any it
     did not accept.
@@ -2476,9 +2477,10 @@ Out of scope:
   they were read: each typed value as the cell text it reads as (an Integer its digits, a
   Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
   none, and null a blank), a many-row table's rows in their places by its index (numbered,
-  each in its numbered place, a gap a blank row, and a row whose index is no number or
-  repeats another's number (`"01"` beside `"1"`), as one saved before the index was
-  numbered holds, after them in the order it was stored, so no row is lost and each keeps
+  each in its numbered place, a gap a blank row, and a row whose index is not a number as
+  Haute writes one (digits with no sign or leading zero, so `"01"` is none), as one saved
+  before the index was numbered holds, after them in the order it was stored, so no row
+  is lost, a row stored as `"1"` keeps place 1 whichever was stored first, and each keeps
   its kept values; its stored outputs line up with no grid row until the quote is priced
   again, since they are held under the value it was saved with, which no grid number
   matches; typed, in the index's order, by number for
