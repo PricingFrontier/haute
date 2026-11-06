@@ -804,9 +804,9 @@ Out of scope:
     exported. Retained input-table columns say that supported values survive saves until
     their row is deleted; retained output-only columns say that later saves clear their
     values. Permanent database deletion is left to the database owner, never performed
-    by a schema edit. Renames, retyping and row/key changes say to coordinate with the app
-    release because a running app may still require the old structure; the pane does not
-    claim that release compatibility was checked.
+    by a schema edit. Renames, retyping, row/key changes and manual database repairs say to
+    coordinate with the app release because a running app may still require the old
+    structure; the pane does not claim that release compatibility was checked.
 
     The target is explicitly the current working schema, labelled as unsaved or with its
     saved form revision, never presented as the deployed release. One environment selection

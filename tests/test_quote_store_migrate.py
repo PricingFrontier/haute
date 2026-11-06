@@ -109,6 +109,26 @@ def script(base: FormSpec | None, release: FormSpec, dialect: str = "sqlite") ->
 # ── The plan ────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("renamed", ["table", "column"])
+def test_requested_counts_cover_table_and_column_renames(renamed: str) -> None:
+    after = structure(form(POLICY))
+    before = json.loads(json.dumps(after))
+    policy = next(table for table in before["tables"] if table["name"] == "policy")
+    if renamed == "table":
+        policy["name"] = "previous_policy"
+    else:
+        region = next(column for column in policy["columns"] if column["name"] == "region")
+        region["name"] = "previous_region"
+
+    counts = dict.fromkeys(_migrate.wanted_counts(after, before), 7)
+    made = _migrate.plan(after, before, counts)
+
+    assert len(made.steps) == 1
+    assert made.steps[0].kind == f"rename {renamed}"
+    assert made.steps[0].quotes == 7
+    assert counts == {("policy", None if renamed == "table" else "region"): 7}
+
+
 def test_a_plan_names_each_step_by_name_a_rename_one_kept_and_one_made() -> None:
     before = structure(form(POLICY, table("extras", column("notes"))))
     # region renamed area and seats added in policy, extras renamed additions, drivers new.

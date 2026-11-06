@@ -124,7 +124,7 @@ def _count(counts: Mapping[Key, int] | None, key: Key) -> int | None:
 
 def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[Key]:
     """The tables and columns of *recorded* a plan to *form* says the quotes of: those the
-    form removed, and those whose type or rows it changed."""
+    form removed or renamed, and those whose type or rows it changed."""
     new = _by_key(form["tables"])
     wanted: set[Key] = set()
     for table in recorded["tables"]:
@@ -133,12 +133,16 @@ def wanted_counts(form: Mapping[str, Any], recorded: Mapping[str, Any]) -> set[K
             # A table removed is counted whole.
             wanted.add((table["key"], None))
             continue
-        if table["rows"] != after["rows"]:
+        if table["rows"] != after["rows"] or table["name"] != after["name"]:
             wanted.add((table["key"], None))
         columns = _by_key(after["columns"])
         for column in table["columns"]:
             changed = columns.get(column["key"])
-            if changed is None or changed["type"] != column["type"]:
+            if (
+                changed is None
+                or changed["type"] != column["type"]
+                or changed["name"] != column["name"]
+            ):
                 wanted.add((table["key"], column["key"]))
     return wanted
 

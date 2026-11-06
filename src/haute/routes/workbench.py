@@ -484,7 +484,8 @@ def _store_compare(
             *comparison.plan.refusals,
             *rename_problems(renames, comparison.renames, catalogue, spec),
         ],
-        requires_maintenance=any(step.kind in MAINTENANCE_KINDS for step in comparison.plan.steps),
+        requires_maintenance=bool(comparison.plan.notes)
+        or any(step.kind in MAINTENANCE_KINDS for step in comparison.plan.steps),
         sql=render_sql(
             comparison.plan,
             spec,

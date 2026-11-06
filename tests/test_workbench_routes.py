@@ -1481,6 +1481,24 @@ def test_store_review_blocks_an_unresolved_rename_instead_of_suggesting_an_empty
     ]
 
 
+def test_store_review_requires_release_coordination_for_manual_key_repairs(project: Path) -> None:
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    tables = _catalogue().json()["tables"]
+    policy = next(table for table in tables if table["name"] == "policy_details")
+    policy["primary_key"] = []
+
+    response = _compare(form(POLICY), tables)
+
+    assert response.status_code == 200, response.text
+    review = response.json()
+    assert not review["matches"]
+    assert review["changes"] == []
+    assert any("is keyed by nothing" in note for note in review["manual"])
+    assert review["requires_maintenance"]
+
+
 def test_an_environment_the_editor_cannot_read_is_said_naming_what_to_set(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
